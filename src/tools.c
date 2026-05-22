@@ -183,14 +183,19 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     fwrite(content, 1, len, f);
     fclose(f);
 
+    /* Store written content for full audit trail */
+    char *ref = store_save(ctx->store, content, "txt");
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
     cJSON_AddStringToObject(meta, "path", path);
     cJSON_AddNumberToObject(meta, "bytes", (double)len);
+    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    journal_append(ctx->journal, ctx->step, "file_write", params, NULL,
+    journal_append(ctx->journal, ctx->step, "file_write", params, ref,
                    len, count_lines(content), NULL);
 
+    free(ref);
     return make_result(1, meta, NULL);
 }
 
@@ -345,12 +350,17 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         fclose(f);
     }
 
+    /* Store scratchpad content for full audit trail */
+    char *ref = store_save(ctx->store, ctx->scratchpad, "txt");
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
+    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    journal_append(ctx->journal, ctx->step, "notes", params, NULL,
+    journal_append(ctx->journal, ctx->step, "notes", params, ref,
                    strlen(ctx->scratchpad), 0, NULL);
 
+    free(ref);
     return make_result(1, meta, NULL);
 }
 
@@ -361,13 +371,17 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     const char *result = result_j && result_j->valuestring
                          ? result_j->valuestring : "(no result)";
 
+    /* Store result for full audit */
+    char *ref = store_save(ctx->store, result, "txt");
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "result", result);
+    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    journal_append(ctx->journal, ctx->step, "done", params, NULL,
+    journal_append(ctx->journal, ctx->step, "done", params, ref,
                    strlen(result), 0, NULL);
 
-    return make_result(1, meta, NULL);
+    return make_result(1, meta, ref);
 }
 
 /* ── dispatcher ──────────────────────────────────────────── */
