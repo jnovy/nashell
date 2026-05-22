@@ -69,4 +69,8 @@ int llm_fetch_context_size(const char *api_base);
  * Returns strdup'd model name on success, NULL on failure. Caller must free. */
 char *llm_fetch_model_name(const char *api_base);
 
+/* Fetch the raw /props JSON from the server (caller must free).
+ * Returns NULL on failure. */
+char *llm_fetch_props_json(const char *api_base);
+
 #endif

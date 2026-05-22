@@ -483,3 +483,29 @@ char *llm_fetch_model_name(const char *api_base) {
     cJSON_Delete(resp);
     return model_name;
 }
+
+/* ── Fetch raw /props JSON ──────────────────────────── */
+
+char *llm_fetch_props_json(const char *api_base) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/props", api_base);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    str_t response = str_new(4096);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        str_free(&response);
+        return NULL;
+    }
+
+    return str_steal(&response);
+}
