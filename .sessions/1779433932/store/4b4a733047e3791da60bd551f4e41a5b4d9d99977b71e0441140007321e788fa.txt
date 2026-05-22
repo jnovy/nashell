@@ -1,0 +1,43 @@
+#2094 Refactor mount operations to use procfd and new mount API
+#2093 krun: request enabling DHCP client
+#2091 Enable KRUN_INIT_PID1=1 when using krun
+#2090 Support podman exec in krun
+#2086 Use OPEN_TREE_NAMESPACE
+#2037 tests: fix running c/r tests in GHA
+#2023 seccomp: refactor error handling
+#2021 seccomp: possible error leak
+#1952 the init in krun guest should handle flags like --tmpfs, not crun in host
+#1945 Warning is not always printed when using a poststop hook with `/bin/false`
+#1898 runc configuration on rootless startup
+#1895 Error: OCI runtime error: crun: Failed to re-execute libcrun via memory file descriptor
+#1894 krun requires permissions beyond group access on /dev/kvm
+#1886 ld.lld: error: undefined symbol: error
+#1871 Running WASIp2 Components with crun+wasmtime supported?
+#1841 Older Toolbx Containers fail to run with crun >= 1.8.2
+#1820 tests: run all py tests with cgroupfs and systemd
+#1801 regression test failure for 1.22 release build
+#1777 Cannot run any container if storage owned by group not mapped into container with --userns=keep-id
+#1766 drop default sub-cgroup with the systemd driver
+#1764 drop cgroup v1
+#1759 Investigate podman checkpoint test failures on centos-stream-10-x86_64
+#1724 report errors when attempting to reset a locked mount flag
+#1625 Can't create containers if there is a v1 cpuset cgroup with exclusive cores
+#1594 Question: Supporting modifications to a read-only rootfs
+#1560 flake: unable to create pod cgroup: slice was already loaded or has a fragment file
+#1445 container create failed: sd-bus call: Cannot set property CPUQuotaPeriodUSec, or unknown propert
+#1438 Discrepancy between crun and runc when disallowing access by default to devices with cgroups v1
+#1434 Crun not starting in amd64/x86_64 docker container on Apple Silicon 
+#1322 OCI runtime error: crun: writing file `/sys/fs/cgroup/cgroup.subtree_control`: Invalid argument
+#1273 [Feature request] Implement `crun events ...`
+#1210 crun should never checkpoint the netns
+#1207 checkpoint of contianer with userns is not working
+#1204 Checkpointing of Wasm container with podman+crun fails : `Can't lookup mount`
+#1203 read from the init process error
+#1178 Exposing/leveraging filesystem features for containers (casefolding, reflinks)
+#1121 OCI runtime error: crun: mount `proc` to `/proc`: Too many levels of symbolic links
+#1092 Triggering OOM leaves cgroups in bad state
+#1040 FYI - Experimenting with wasm support via Node.js
+#1018 Can't find any documentation of libcrun API, nor explanation of what are the "top"-level functions/header files
+#922 How to Nix static build with wasmedge?
+#822 Needs a header for libcrun
+#716 Multiple containers in the same cgroup

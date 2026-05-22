@@ -1,0 +1,5 @@
+/home/jnovy/git/jnovy/podman/branches/specfix-symlink-rhel/vendor/go.podman.io/common/pkg/libartifact/store
+/home/jnovy/ai/llama.cpp/tools/server/webui/node_modules/svelte/src/store
+/home/jnovy/ai/llama.cpp/tools/ui/node_modules/svelte/src/store
+/home/jnovy/ai/qwen-code/packages/webui/node_modules/argparse/lib/action/store
+/home/jnovy/ai/vllm/vllm/distributed/kv_transfer/kv_connector/v1/mooncake/store

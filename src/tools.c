@@ -78,15 +78,15 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    /* first line as preview (max 120 chars) */
-    if (out.len > 0) {
-        char preview[121];
-        size_t plen = out.len < 120 ? out.len : 120;
-        memcpy(preview, out.data, plen);
-        preview[plen] = '\0';
-        char *nl = strchr(preview, '\n');
-        if (nl) *nl = '\0';
-        cJSON_AddStringToObject(meta, "preview", preview);
+    /* Return output inline — ALL output is saved to store/, but model sees content too */
+    if (out.len > 0 && out.len <= 8000) {
+        cJSON_AddStringToObject(meta, "stdout", out.data);
+    } else if (out.len > 8000) {
+        char trunc[8001];
+        memcpy(trunc, out.data, 8000);
+        trunc[8000] = '\0';
+        cJSON_AddStringToObject(meta, "stdout", trunc);
+        cJSON_AddBoolToObject(meta, "truncated", 1);
     }
 
     /* journal */
@@ -105,6 +105,14 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         return make_error("missing 'path' parameter");
 
     const char *path = path_j->valuestring;
+    char resolved[4096];
+
+    /* Resolve store/ paths relative to session directory */
+    if (strncmp(path, "store/", 6) == 0) {
+        snprintf(resolved, sizeof(resolved), "%s/%s", ctx->session_dir, path);
+        path = resolved;
+    }
+
     size_t len = 0;
     char *content = read_file_contents(path, &len);
     if (!content) {
@@ -117,10 +125,22 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     char *ref = store_save(ctx->store, content, "txt");
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "path", path);
+    cJSON_AddStringToObject(meta, "path", path_j->valuestring);
     cJSON_AddNumberToObject(meta, "lines", lines);
     cJSON_AddNumberToObject(meta, "chars", (double)len);
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+
+    /* Return actual content — truncate at 50K to avoid context explosion */
+    if (len <= 50000) {
+        cJSON_AddStringToObject(meta, "content", content);
+    } else {
+        char *trunc = malloc(50001);
+        memcpy(trunc, content, 50000);
+        trunc[50000] = '\0';
+        cJSON_AddStringToObject(meta, "content", trunc);
+        cJSON_AddBoolToObject(meta, "truncated", 1);
+        free(trunc);
+    }
 
     { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "file_read", _pj, ref,
                    len, lines, NULL); free(_pj); }
@@ -231,6 +251,13 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     const char *pattern = pattern_j->valuestring;
     const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
 
+    /* Resolve store/ paths relative to session directory */
+    char resolved_path[4096];
+    if (strncmp(path, "store/", 6) == 0) {
+        snprintf(resolved_path, sizeof(resolved_path), "%s/%s", ctx->session_dir, path);
+        path = resolved_path;
+    }
+
     /* use grep via shell */
     char cmd[4096];
     snprintf(cmd, sizeof(cmd),
@@ -258,6 +285,16 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "matches", matches);
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+
+    /* Return grep results inline (usually small) */
+    if (out.len > 0 && out.len <= 8000) {
+        cJSON_AddStringToObject(meta, "content", out.data);
+    } else if (out.len > 8000) {
+        char trunc[8001];
+        memcpy(trunc, out.data, 8000);
+        trunc[8000] = '\0';
+        cJSON_AddStringToObject(meta, "content", trunc);
+    }
 
     { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "grep_search", _pj, ref,
                    out.len, matches, NULL); free(_pj); }
