@@ -103,13 +103,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* Record system prompt and user query in journal (step 0) */
     {
         const char *sys_prompt = tools_system_prompt();
-        char *sys_ref = store_save(ctx->tools->store, sys_prompt, "txt");
+        char *sys_hash = store_save(ctx->tools->store, sys_prompt, "txt");
+        /* Register alias S0 for system prompt */
+        tool_register_alias(ctx->tools, "S0", sys_hash);
         cJSON *sys_p = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_p, "type", "system_prompt");
-        journal_append(ctx->tools->journal, 0, "system", sys_p, sys_ref,
+        journal_append(ctx->tools->journal, 0, "system", sys_p, sys_hash,
                        strlen(sys_prompt), count_lines(sys_prompt), NULL);
         cJSON_Delete(sys_p);
-        free(sys_ref);
+        free(sys_hash);
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);

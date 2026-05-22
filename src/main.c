@@ -144,13 +144,15 @@ int main(int argc, char **argv) {
     /* Print banner showing client config + server props */
     print_banner(&llm_cfg, props_json);
 
+    /* Shared store at project root (dedup across all sessions) */
+    store_t *shared_store = store_new(".");
+
     /* One-shot headless mode: run query and exit */
     if (query) {
         char *session_dir = create_session_dir();
-        store_t   *store   = store_new(session_dir);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
-            .store = store, .journal = journal,
+            .store = shared_store, .journal = journal,
             .session_dir = session_dir, .scratchpad = NULL
         };
         react_ctx_t react = {
@@ -161,7 +163,7 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        store_free(store);
+        store_free(shared_store);
         free(session_dir);
         free(props_json);
         free(server_model);
@@ -180,10 +182,9 @@ int main(int argc, char **argv) {
         char *session_dir = create_session_dir();
         printf("[session: %s]\n", session_dir);
 
-        store_t   *store   = store_new(session_dir);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
-            .store = store, .journal = journal,
+            .store = shared_store, .journal = journal,
             .session_dir = session_dir, .scratchpad = NULL
         };
         react_ctx_t react = {
@@ -201,7 +202,7 @@ int main(int argc, char **argv) {
 
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        store_free(store);
+        store_free(shared_store);
         free(session_dir);
         free(line);
     }

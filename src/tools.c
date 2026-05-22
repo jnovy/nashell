@@ -10,7 +10,7 @@
 #include <regex.h>
 #include <errno.h>
 
-/* ── helpers ─────────────────────────────────────────────── */
+/* ── helpers ─────────────────────────────────────────── */
 
 static char *read_file_contents(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "r");
@@ -44,7 +44,33 @@ static tool_result_t make_error(const char *msg) {
     return make_result(0, m, NULL);
 }
 
-/* ── run_command: fork/execve helper ─────────────────────── */
+/* ── alias management ──────────────────────────────────── */
+
+const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *ext) {
+    if (ctx->alias_count >= MAX_ALIASES) return "S?";
+    alias_entry_t *a = &ctx->aliases[ctx->alias_count];
+    snprintf(a->alias, sizeof(a->alias), "S%d", ctx->alias_count);
+    snprintf(a->hash, sizeof(a->hash), "%s", hash);
+    snprintf(a->ext, sizeof(a->ext), "%s", ext ? ext : "txt");
+    ctx->alias_count++;
+    return a->alias;
+}
+
+const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
+    /* Check if it looks like an alias: S0, S1, S2, ... */
+    if (!alias || alias[0] != 'S' || alias[1] < '0' || alias[1] > '9')
+        return NULL;
+    for (int i = 0; i < ctx->alias_count; i++) {
+        if (strcmp(ctx->aliases[i].alias, alias) == 0) {
+            /* Return the full store path */
+            return store_resolve(ctx->store, ctx->aliases[i].hash,
+                                 ctx->aliases[i].ext);
+        }
+    }
+    return NULL;
+}
+
+/* ── run_command: fork/execve helper ─────────────────── */
 
 static int run_command_argv(char *const argv[], str_t *out) {
     int pipefd[2];
@@ -54,7 +80,6 @@ static int run_command_argv(char *const argv[], str_t *out) {
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
 
     if (pid == 0) {
-        /* child: redirect stdout+stderr to pipe */
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
@@ -63,7 +88,6 @@ static int run_command_argv(char *const argv[], str_t *out) {
         _exit(127);
     }
 
-    /* parent: read from pipe */
     close(pipefd[1]);
     char buf[4096];
     ssize_t n;
@@ -76,7 +100,7 @@ static int run_command_argv(char *const argv[], str_t *out) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* ── shell_exec ──────────────────────────────────────────── */
+/* ── shell_exec ──────────────────────────────────────── */
 
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON *cmd_j = cJSON_GetObjectItem(params, "command");
@@ -85,30 +109,32 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     const char *command = cmd_j->valuestring;
 
-    /* run via fork/execve — no shell string interpolation */
     str_t out = str_new(4096);
-    char *argv[] = { "/bin/sh", "-c", (char *)command, NULL };
+    char *argv[] = { "sh", "-c", (char *)command, NULL };
     int exit_code = run_command_argv(argv, &out);
 
-    /* store full output */
-    char *ref = store_save(ctx->store, out.data, "txt");
+    /* Store to shared store */
+    char *hash = store_save(ctx->store, out.data, "txt");
 
-    /* build metadata */
+    /* Register alias */
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "exit_code", exit_code);
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    /* journal */
-    journal_append(ctx->journal, ctx->step, "shell_exec", params, ref,
+    journal_append(ctx->journal, ctx->step, "shell_exec", params, hash,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit");
 
+    char *ref_copy = strdup(alias);
     str_free(&out);
-    return make_result(exit_code == 0, meta, ref);
+    free(hash);
+    return make_result(exit_code == 0, meta, ref_copy);
 }
 
-/* ── file_read ───────────────────────────────────────────── */
+/* ── file_read ───────────────────────────────────────── */
 
 static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
@@ -116,12 +142,16 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         return make_error("missing 'path' parameter");
 
     const char *path = path_j->valuestring;
-    char resolved[4096];
 
-    /* Resolve store/ paths relative to session directory */
+    /* Resolve step aliases (S0, S1, S2...) */
+    const char *resolved = tool_resolve_alias(ctx, path);
+    if (resolved) path = resolved;
+
+    /* Resolve store/ paths relative to session directory (legacy) */
+    char resolved_buf[4096];
     if (strncmp(path, "store/", 6) == 0) {
-        snprintf(resolved, sizeof(resolved), "%s/%s", ctx->session_dir, path);
-        path = resolved;
+        snprintf(resolved_buf, sizeof(resolved_buf), "%s/%s", ctx->session_dir, path);
+        path = resolved_buf;
     }
 
     size_t len = 0;
@@ -133,36 +163,39 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     int lines = count_lines(content);
-    char *ref = store_save(ctx->store, content, "txt");
+    char *hash = store_save(ctx->store, content, "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "path", path_j->valuestring);
     cJSON_AddNumberToObject(meta, "lines", lines);
     cJSON_AddNumberToObject(meta, "chars", (double)len);
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    /* file_read MUST return content — that's its purpose.
-     * The model calls file_read specifically to SEE content.
-     * Truncate at 50K to prevent context explosion on huge files. */
+    /* file_read MUST return content — that's its purpose */
     if (len <= 50000) {
         cJSON_AddStringToObject(meta, "content", content);
     } else {
         char *trunc = malloc(50001);
-        memcpy(trunc, content, 50000);
-        trunc[50000] = '\0';
-        cJSON_AddStringToObject(meta, "content", trunc);
-        cJSON_AddBoolToObject(meta, "truncated", 1);
-        free(trunc);
+        if (trunc) {
+            memcpy(trunc, content, 50000);
+            trunc[50000] = '\0';
+            cJSON_AddStringToObject(meta, "content", trunc);
+            cJSON_AddBoolToObject(meta, "truncated", 1);
+            free(trunc);
+        }
     }
 
-    journal_append(ctx->journal, ctx->step, "file_read", params, ref,
+    journal_append(ctx->journal, ctx->step, "file_read", params, hash,
                    len, lines, NULL);
 
+    char *ref_copy = strdup(alias);
     free(content);
-    return make_result(1, meta, ref);
+    free(hash);
+    return make_result(1, meta, ref_copy);
 }
 
-/* ── file_write ──────────────────────────────────────────── */
+/* ── file_write ──────────────────────────────────────── */
 
 static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
@@ -179,58 +212,70 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
         snprintf(msg, sizeof(msg), "cannot write '%s': %s", path, strerror(errno));
         return make_error(msg);
     }
+
     size_t len = strlen(content);
     fwrite(content, 1, len, f);
     fclose(f);
 
     /* Store written content for full audit trail */
-    char *ref = store_save(ctx->store, content, "txt");
+    char *hash = store_save(ctx->store, content, "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
     cJSON_AddStringToObject(meta, "path", path);
     cJSON_AddNumberToObject(meta, "bytes", (double)len);
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "file_write", params, ref,
+    journal_append(ctx->journal, ctx->step, "file_write", params, hash,
                    len, count_lines(content), NULL);
 
-    free(ref);
-    return make_result(1, meta, NULL);
+    char *ref_copy = strdup(alias);
+    free(hash);
+    return make_result(1, meta, ref_copy);
 }
 
-/* ── file_edit ───────────────────────────────────────────── */
+/* ── file_edit ───────────────────────────────────────── */
 
 static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *path_j = cJSON_GetObjectItem(params, "path");
-    cJSON *old_j  = cJSON_GetObjectItem(params, "old_text");
-    cJSON *new_j  = cJSON_GetObjectItem(params, "new_text");
-    if (!path_j || !old_j || !new_j ||
-        !path_j->valuestring || !old_j->valuestring || !new_j->valuestring)
-        return make_error("missing path/old_text/new_text");
+    cJSON *path_j     = cJSON_GetObjectItem(params, "path");
+    cJSON *old_text_j = cJSON_GetObjectItem(params, "old_text");
+    cJSON *new_text_j = cJSON_GetObjectItem(params, "new_text");
+    if (!path_j || !path_j->valuestring ||
+        !old_text_j || !old_text_j->valuestring ||
+        !new_text_j || !new_text_j->valuestring)
+        return make_error("missing 'path', 'old_text', or 'new_text' parameter");
 
     const char *path = path_j->valuestring;
-    const char *old_text = old_j->valuestring;
-    const char *new_text = new_j->valuestring;
+    const char *old_text = old_text_j->valuestring;
+    const char *new_text = new_text_j->valuestring;
 
     size_t flen = 0;
     char *content = read_file_contents(path, &flen);
-    if (!content) return make_error("cannot read file for editing");
+    if (!content) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "cannot read '%s': %s", path, strerror(errno));
+        return make_error(msg);
+    }
 
-    /* store pre-edit content */
-    char *pre_ref = store_save(ctx->store, content, "txt");
+    /* Store pre-edit content */
+    char *pre_hash = store_save(ctx->store, content, "txt");
+    const char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "", "txt");
 
-    /* find and replace (first occurrence) */
     char *pos = strstr(content, old_text);
     if (!pos) {
         free(content);
+        free(pre_hash);
         return make_error("old_text not found in file");
     }
 
+    /* Build new content */
     size_t old_len = strlen(old_text);
     size_t new_len = strlen(new_text);
     size_t result_len = flen - old_len + new_len;
     char *result = malloc(result_len + 1);
+    if (!result) { free(content); free(pre_hash); return make_error("malloc failed"); }
+
     size_t prefix_len = (size_t)(pos - content);
     memcpy(result, content, prefix_len);
     memcpy(result + prefix_len, new_text, new_len);
@@ -238,27 +283,25 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     result[result_len] = '\0';
 
     FILE *f = fopen(path, "w");
-    if (!f) { free(content); free(result); return make_error("cannot write file"); }
+    if (!f) { free(content); free(result); free(pre_hash); return make_error("cannot write file"); }
     fwrite(result, 1, result_len, f);
     fclose(f);
 
-    /* store diff info */
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
     cJSON_AddStringToObject(meta, "path", path);
-    cJSON_AddNumberToObject(meta, "old_chars", (double)old_len);
-    cJSON_AddNumberToObject(meta, "new_chars", (double)new_len);
-    if (pre_ref) cJSON_AddStringToObject(meta, "pre_ref", pre_ref);
+    cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
 
-    journal_append(ctx->journal, ctx->step, "file_edit", params, pre_ref,
+    journal_append(ctx->journal, ctx->step, "file_edit", params, pre_hash,
                    result_len, count_lines(result), NULL);
 
     free(content);
     free(result);
+    free(pre_hash);
     return make_result(1, meta, NULL);
 }
 
-/* ── grep_search ─────────────────────────────────────────── */
+/* ── grep_search ─────────────────────────────────────── */
 
 static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
@@ -269,14 +312,18 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     const char *pattern = pattern_j->valuestring;
     const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
 
-    /* Resolve store/ paths relative to session directory */
+    /* Resolve step aliases */
+    const char *resolved = tool_resolve_alias(ctx, path);
+    if (resolved) path = resolved;
+
+    /* Resolve store/ paths (legacy) */
     char resolved_path[4096];
     if (strncmp(path, "store/", 6) == 0) {
         snprintf(resolved_path, sizeof(resolved_path), "%s/%s", ctx->session_dir, path);
         path = resolved_path;
     }
 
-    /* use fork/execvp to avoid shell injection via pattern/path */
+    /* use fork/execvp to avoid shell injection */
     int pipefd[2];
     if (pipe(pipefd) < 0) return make_error("pipe failed");
 
@@ -284,7 +331,6 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return make_error("fork failed"); }
 
     if (pid == 0) {
-        /* child: exec grep with proper argv (no shell interpolation) */
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
@@ -296,12 +342,12 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
                "--include=*.sh", "--include=*.go", "--include=*.rs",
                "--include=*.toml", "--include=*.xml", "--include=*.html",
                "--include=*.java", "--include=*.rb", "--include=*.php",
-               "-m", "50",  /* max 50 matches (replaces | head -50) */
+               "--include=*.cfg", "--include=*.ini", "--include=*.conf",
+               "-m", "50",
                pattern, path, (char *)NULL);
         _exit(127);
     }
 
-    /* parent: read output */
     close(pipefd[1]);
     str_t out = str_new(4096);
     char buf[4096];
@@ -314,57 +360,62 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     waitpid(pid, &status, 0);
 
     int matches = count_lines(out.data);
-    char *ref = store_save(ctx->store, out.data, "txt");
+    char *hash = store_save(ctx->store, out.data, "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "pattern", pattern);
-    cJSON_AddStringToObject(meta, "path", path);
+    cJSON_AddStringToObject(meta, "path", path_j && path_j->valuestring ? path_j->valuestring : ".");
     cJSON_AddNumberToObject(meta, "matches", matches);
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "grep_search", params, ref,
+    journal_append(ctx->journal, ctx->step, "grep_search", params, hash,
                    out.len, matches, NULL);
 
+    char *ref_copy = strdup(alias);
     str_free(&out);
-    return make_result(1, meta, ref);
+    free(hash);
+    return make_result(1, meta, ref_copy);
 }
 
-/* ── notes (scratchpad) ──────────────────────────────────── */
+/* ── notes (scratchpad) ──────────────────────────────── */
 
 static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     cJSON *content_j = cJSON_GetObjectItem(params, "content");
     if (!content_j || !content_j->valuestring)
         return make_error("missing 'content' parameter");
 
-    /* update scratchpad */
-    free(ctx->scratchpad);
+    /* Update scratchpad */
+    if (ctx->scratchpad) free(ctx->scratchpad);
     ctx->scratchpad = strdup(content_j->valuestring);
 
-    /* persist to disk */
-    char path[1024];
-    snprintf(path, sizeof(path), "%s/scratchpad.md", ctx->session_dir);
-    FILE *f = fopen(path, "w");
+    /* Persist to disk */
+    char scratch_path[512];
+    snprintf(scratch_path, sizeof(scratch_path), "%s/scratchpad.md", ctx->session_dir);
+    FILE *f = fopen(scratch_path, "w");
     if (f) {
         fputs(ctx->scratchpad, f);
         fclose(f);
     }
 
-    /* Store scratchpad content for full audit trail */
-    char *ref = store_save(ctx->store, ctx->scratchpad, "txt");
+    /* Store for audit */
+    char *hash = store_save(ctx->store, ctx->scratchpad, "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "notes", params, ref,
+    journal_append(ctx->journal, ctx->step, "notes", params, hash,
                    strlen(ctx->scratchpad), 0, NULL);
 
-    free(ref);
-    return make_result(1, meta, NULL);
+    char *ref_copy = strdup(alias);
+    free(hash);
+    return make_result(1, meta, ref_copy);
 }
 
-/* ── done ────────────────────────────────────────────────── */
+/* ── done ────────────────────────────────────────────── */
 
 static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON *result_j = cJSON_GetObjectItem(params, "result");
@@ -372,23 +423,24 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
                          ? result_j->valuestring : "(no result)";
 
     /* Store result for full audit */
-    char *ref = store_save(ctx->store, result, "txt");
+    char *hash = store_save(ctx->store, result, "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "result", result);
-    if (ref) cJSON_AddStringToObject(meta, "ref", ref);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "done", params, ref,
+    journal_append(ctx->journal, ctx->step, "done", params, hash,
                    strlen(result), 0, NULL);
 
-    return make_result(1, meta, ref);
+    char *ref_copy = strdup(alias);
+    free(hash);
+    return make_result(1, meta, ref_copy);
 }
 
-/* ── dispatcher ──────────────────────────────────────────── */
+/* ── dispatcher ──────────────────────────────────────── */
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
-    if (!params) params = cJSON_CreateObject();
-
     if (strcmp(action, "shell_exec")  == 0) return tool_shell_exec(ctx, params);
     if (strcmp(action, "file_read")   == 0) return tool_file_read(ctx, params);
     if (strcmp(action, "file_write")  == 0) return tool_file_write(ctx, params);
@@ -403,11 +455,13 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
 }
 
 void tool_result_free(tool_result_t *r) {
-    if (r->meta)      { cJSON_Delete(r->meta); r->meta = NULL; }
-    if (r->store_ref) { free(r->store_ref); r->store_ref = NULL; }
+    if (r->meta) cJSON_Delete(r->meta);
+    free(r->store_ref);
+    r->meta = NULL;
+    r->store_ref = NULL;
 }
 
-/* ── system prompt ───────────────────────────────────────── */
+/* ── system prompt ───────────────────────────────────── */
 
 const char *tools_system_prompt(void) {
     return
@@ -419,29 +473,30 @@ const char *tools_system_prompt(void) {
     "Available tools:\n"
     "\n"
     "shell_exec(command) - Execute a shell command. Output is stored; you see metadata.\n"
-    "  Returns: {exit_code, chars, lines, ref, preview}\n"
+    "  Returns: {exit_code, chars, lines, ref}\n"
     "\n"
-    "file_read(path) - Read a file. Content is stored; you see metadata.\n"
-    "  Returns: {path, lines, chars, ref}\n"
+    "file_read(path) - Read a file. Content returned inline.\n"
+    "  Use step aliases (S0, S1, S2...) to read stored tool outputs.\n"
+    "  Returns: {path, lines, chars, ref, content}\n"
     "\n"
     "file_write(path, content) - Write content to a file.\n"
-    "  Returns: {status, path, bytes}\n"
+    "  Returns: {status, path, bytes, ref}\n"
     "\n"
     "file_edit(path, old_text, new_text) - Replace exact text in a file.\n"
-    "  Always file_read first to get exact text. Returns: {status, path}\n"
+    "  Always file_read first to get exact text. Returns: {status, path, pre_ref}\n"
     "\n"
     "grep_search(pattern, path) - Search files with regex. Results stored.\n"
     "  Returns: {pattern, path, matches, chars, ref}\n"
     "\n"
     "notes(content) - Save persistent scratchpad. Survives context resets.\n"
-    "  Returns: {status}\n"
+    "  Returns: {status, ref}\n"
     "\n"
     "done(result) - Signal task completion with final answer.\n"
-    "  Returns: {result}\n"
+    "  Returns: {result, ref}\n"
     "\n"
     "Rules:\n"
-    "- Tool outputs are stored to disk. You see ONLY metadata (exit_code, path, lines, chars, ref).\n"
-    "- To see actual content, call file_read with the ref path (e.g. file_read(path=\"store/abc123.txt\")).\n"
+    "- Tool outputs are stored. You see metadata with a ref alias (S0, S1, S2...).\n"
+    "- To read stored output, use file_read with the ref alias: file_read(path=\"S1\")\n"
     "- You MUST file_read the ref if you need to see what a command output or file contains.\n"
     "- Never guess tool results. Wait for actual output.\n"
     "- file_edit: old_text must exactly match. Always file_read first.\n"

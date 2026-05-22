@@ -1,3 +1,6 @@
 *.o
 nash
 .sessions/
+.store/
+factorial
+factorial.c

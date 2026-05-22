@@ -9,11 +9,11 @@
 #include <sys/stat.h>
 #include <openssl/sha.h>
 
-store_t *store_new(const char *session_dir) {
+store_t *store_new(const char *project_root) {
     store_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     char path[4096];
-    snprintf(path, sizeof(path), "%s/store", session_dir);
+    snprintf(path, sizeof(path), "%s/.store", project_root);
     mkdir(path, 0755);  /* ignore EEXIST */
     s->dir = strdup(path);
     return s;
@@ -44,23 +44,26 @@ char *store_save(store_t *s, const char *content, const char *ext) {
 
     const char *e = ext ? ext : "txt";
 
-    /* Build full path */
+    /* Build full path: .store/<hash>.<ext> */
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s.%s", s->dir, hex, e);
 
-    /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL
-     * Avoids TOCTOU race between stat() and fopen() */
+    /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
     if (fd >= 0) {
         /* New file — write content */
         write(fd, content, clen);
         close(fd);
     }
-    /* fd < 0 && errno == EEXIST means file already exists (dedup hit) — OK */
+    /* If EEXIST, file already exists with same content — dedup! */
 
-    /* Return relative ref: store/<hash>.<ext> */
-    char *ref = NULL;
-    if (asprintf(&ref, "store/%s.%s", hex, e) < 0) ref = NULL;
-    free(hex);
-    return ref;
+    return hex;  /* caller gets the hash, not a path */
+}
+
+char *store_resolve(store_t *s, const char *hash, const char *ext) {
+    if (!s || !hash) return NULL;
+    const char *e = ext ? ext : "txt";
+    char *path = NULL;
+    if (asprintf(&path, "%s/%s.%s", s->dir, hash, e) < 0) return NULL;
+    return path;
 }
