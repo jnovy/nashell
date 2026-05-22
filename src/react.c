@@ -200,6 +200,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
                     (int)(strlen(meta_str) < 300 ? strlen(meta_str) : 300),
                     meta_str,
                     strlen(meta_str) > 300 ? "..." : "");
+
+            /* Print stored file contents for shell_exec/grep_search */
+            if (tr.store_ref) {
+                char ref_path[4096];
+                snprintf(ref_path, sizeof(ref_path), "%s/%s",
+                         ctx->tools->session_dir, tr.store_ref);
+                FILE *rf = fopen(ref_path, "r");
+                if (rf) {
+                    char rbuf[4096];
+                    size_t total_read = 0;
+                    size_t n;
+                    while ((n = fread(rbuf, 1, sizeof(rbuf) - 1, rf)) > 0
+                           && total_read < 8000) {
+                        rbuf[n] = '\0';
+                        fprintf(stderr, "%s", rbuf);
+                        total_read += n;
+                    }
+                    if (total_read > 0 && rbuf[n > 0 ? n - 1 : 0] != '\n')
+                        fprintf(stderr, "\n");
+                    if (total_read >= 8000)
+                        fprintf(stderr, "  ... (truncated at 8K)\n");
+                    fclose(rf);
+                }
+            }
         }
 
         size_t result_len = strlen(meta_str) + 128;
