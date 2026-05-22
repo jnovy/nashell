@@ -52,9 +52,38 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
     cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
     cJSON_AddBoolToObject(req, "stream", 0);
 
-    /* Response format: force JSON output */
+    /* Response format: JSON Schema enforcement for structured tool calls */
     cJSON *resp_fmt = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp_fmt, "type", "json_object");
+    cJSON_AddStringToObject(resp_fmt, "type", "json_schema");
+    cJSON *schema_wrap = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema_wrap, "name", "action");
+    cJSON_AddBoolToObject(schema_wrap, "strict", 1);
+    cJSON *schema = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema, "type", "object");
+
+    cJSON *props = cJSON_CreateObject();
+    cJSON_AddItemToObject(props, "thought", cJSON_Parse("{\"type\":\"string\"}"));
+    /* Action enum: constrained to valid tool names */
+    cJSON_AddItemToObject(props, "action", cJSON_Parse(
+        "{\"type\":\"string\",\"enum\":[\"shell_exec\",\"file_read\",\"file_write\","
+        "\"file_edit\",\"grep_search\",\"notes\",\"done\"]}"));
+    cJSON_AddItemToObject(props, "command", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "path", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "content", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "old_text", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "new_text", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "pattern", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "result", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(schema, "properties", props);
+
+    cJSON *required = cJSON_CreateArray();
+    cJSON_AddItemToArray(required, cJSON_CreateString("thought"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("action"));
+    cJSON_AddItemToObject(schema, "required", required);
+    cJSON_AddBoolToObject(schema, "additionalProperties", 0);
+
+    cJSON_AddItemToObject(schema_wrap, "schema", schema);
+    cJSON_AddItemToObject(resp_fmt, "json_schema", schema_wrap);
     cJSON_AddItemToObject(req, "response_format", resp_fmt);
 
     /* Disable thinking mode for Qwen models (uses reasoning_content otherwise) */
@@ -363,8 +392,34 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
     cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
     cJSON_AddBoolToObject(req, "stream", 1);
 
+    /* Response format: JSON Schema enforcement (same as non-streaming) */
     cJSON *resp_fmt = cJSON_CreateObject();
-    cJSON_AddStringToObject(resp_fmt, "type", "json_object");
+    cJSON_AddStringToObject(resp_fmt, "type", "json_schema");
+    cJSON *schema_wrap = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema_wrap, "name", "action");
+    cJSON_AddBoolToObject(schema_wrap, "strict", 1);
+    cJSON *schema = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema, "type", "object");
+    cJSON *props = cJSON_CreateObject();
+    cJSON_AddItemToObject(props, "thought", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "action", cJSON_Parse(
+        "{\"type\":\"string\",\"enum\":[\"shell_exec\",\"file_read\",\"file_write\","
+        "\"file_edit\",\"grep_search\",\"notes\",\"done\"]}"));
+    cJSON_AddItemToObject(props, "command", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "path", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "content", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "old_text", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "new_text", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "pattern", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "result", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(schema, "properties", props);
+    cJSON *required = cJSON_CreateArray();
+    cJSON_AddItemToArray(required, cJSON_CreateString("thought"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("action"));
+    cJSON_AddItemToObject(schema, "required", required);
+    cJSON_AddBoolToObject(schema, "additionalProperties", 0);
+    cJSON_AddItemToObject(schema_wrap, "schema", schema);
+    cJSON_AddItemToObject(resp_fmt, "json_schema", schema_wrap);
     cJSON_AddItemToObject(req, "response_format", resp_fmt);
 
     cJSON *tmpl_kwargs = cJSON_CreateObject();
