@@ -4,7 +4,8 @@ LDFLAGS ?= -lcurl -lcrypto -lreadline
 
 SRC     = src/main.c src/str.c src/arena.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
-          src/frontend_tui.c
+          src/frontend_tui.c \
+          src/memory.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 

@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "memory.h"
 #include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -448,6 +449,99 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── dispatcher ──────────────────────────────────────── */
 
+/* ── memory_store ──────────────────────────────────────── */
+
+static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    cJSON *val_j = cJSON_GetObjectItem(params, "value");
+    if (!key_j || !key_j->valuestring || !val_j || !val_j->valuestring)
+        return make_error("missing 'key' or 'value' parameter");
+
+    const char *key = key_j->valuestring;
+    const char *value = val_j->valuestring;
+
+    /* Parse tags (comma-separated string) */
+    const char *tags_arr[32];
+    int n_tags = 0;
+    cJSON *tags_j = cJSON_GetObjectItem(params, "tags");
+    char *tags_copy = NULL;
+    if (tags_j && tags_j->valuestring) {
+        tags_copy = strdup(tags_j->valuestring);
+        char *tok = strtok(tags_copy, ",");
+        while (tok && n_tags < 32) {
+            while (*tok == ' ') tok++;  /* trim leading space */
+            tags_arr[n_tags++] = tok;
+            tok = strtok(NULL, ",");
+        }
+    }
+
+    int pinned = 0;
+    cJSON *pin_j = cJSON_GetObjectItem(params, "pinned");
+    if (pin_j && cJSON_IsTrue(pin_j)) pinned = 1;
+
+    int rc = memory_store(ctx->memory, key, value, tags_arr, n_tags, pinned);
+    free(tags_copy);
+
+    if (rc != 0) return make_error("failed to store memory");
+
+    /* Store for audit */
+    char *hash = store_save(ctx->store, value);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "ok");
+    cJSON_AddStringToObject(meta, "key", key);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_store",
+                   params, alias, strlen(value), 0, NULL);
+
+    free(hash);
+    return make_result(1, meta, alias ? strdup(alias) : NULL);
+}
+
+/* ── memory_recall ─────────────────────────────────────── */
+
+static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *query_j = cJSON_GetObjectItem(params, "query");
+    if (!query_j || !query_j->valuestring)
+        return make_error("missing 'query' parameter");
+
+    const char *query = query_j->valuestring;
+    memory_results_t results = memory_recall(ctx->memory, query, 5);
+
+    /* Build result string */
+    str_t out = str_new(1024);
+    for (int i = 0; i < results.count; i++) {
+        memory_entry_t *e = &results.entries[i];
+        str_appendf(&out, "--- %s ---\n%s\n\n", e->key, e->value);
+    }
+
+    char *hash = NULL;
+    const char *alias = NULL;
+    if (out.len > 0) {
+        hash = store_save(ctx->store, out.data);
+        alias = tool_register_alias(ctx, hash ? hash : "");
+    }
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddNumberToObject(meta, "matches", results.count);
+    if (results.count > 0 && out.len <= 8000) {
+        cJSON_AddStringToObject(meta, "content", out.data);
+    }
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
+                   params, alias, out.len, results.count, NULL);
+
+    memory_results_free(&results);
+    free(hash);
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    str_free(&out);
+    return make_result(1, meta, ref_copy);
+}
+
+
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "shell_exec")  == 0) return tool_shell_exec(ctx, params);
     if (strcmp(action, "file_read")   == 0) return tool_file_read(ctx, params);
@@ -456,6 +550,8 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "grep_search") == 0) return tool_grep_search(ctx, params);
     if (strcmp(action, "notes")       == 0) return tool_notes(ctx, params);
     if (strcmp(action, "done")        == 0) return tool_done(ctx, params);
+    if (strcmp(action, "memory_store") == 0) return tool_memory_store(ctx, params);
+    if (strcmp(action, "memory_recall")== 0) return tool_memory_recall(ctx, params);
 
     char msg[256];
     snprintf(msg, sizeof(msg), "unknown tool: %s", action);

@@ -4,6 +4,7 @@
 #include "cJSON.h"
 #include "store.h"
 #include "journal.h"
+#include "memory.h"
 
 /* Tool result: metadata JSON + optional stored content hash */
 typedef struct {
@@ -23,10 +24,11 @@ typedef struct {
 typedef struct {
     store_t       *store;
     journal_t     *journal;
+    memory_t      *memory;        /* long-term memory store (.memory/) */
     char          *session_dir;   /* .sessions/<id>/ */
     char          *scratchpad;    /* current scratchpad content (owned) */
     int            step;          /* current step number (within react loop) */
-    int            react_loop;    /* react loop counter (1-based, increments per query) */
+    int            react_loop;    /* react loop counter (0-based, increments per query) */
     /* Step alias tracking */
     alias_entry_t  aliases[MAX_ALIASES];
     int            alias_count;

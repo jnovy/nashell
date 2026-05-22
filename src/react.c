@@ -1,4 +1,5 @@
 #include "react.h"
+#include "memory.h"
 #include "journal.h"
 #include "store.h"
 #include "cJSON.h"
@@ -74,6 +75,32 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (manifest) {
         llm_chat_add(chat, "user", manifest);
         free(manifest);
+    }
+
+    /* Inject memory index (list of available memories for the LLM to know about) */
+    if (ctx->tools->memory) {
+        char *mem_index = memory_build_index(ctx->tools->memory);
+        if (mem_index && strlen(mem_index) > 0) {
+            char *mem_msg = malloc(strlen(mem_index) + 64);
+            if (mem_msg) {
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s", mem_index);
+                llm_chat_add(chat, "user", mem_msg);
+                free(mem_msg);
+            }
+        }
+        free(mem_index);
+
+        /* Inject pinned memories (always-active knowledge) */
+        char *pinned = memory_load_pinned(ctx->tools->memory);
+        if (pinned && strlen(pinned) > 0) {
+            char *pin_msg = malloc(strlen(pinned) + 64);
+            if (pin_msg) {
+                sprintf(pin_msg, "[PINNED KNOWLEDGE]\n%s", pinned);
+                llm_chat_add(chat, "user", pin_msg);
+                free(pin_msg);
+            }
+        }
+        free(pinned);
     }
 
     /* Compute scratchpad limit from context size (5% of context, min 2K, max 32K) */

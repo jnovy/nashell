@@ -12,6 +12,7 @@
 #include "store.h"
 #include "journal.h"
 #include "frontend_tui.h"
+#include "memory.h"
 
 #define DEFAULT_API_BASE "http://192.168.1.18:8080"
 
@@ -146,6 +147,7 @@ int main(int argc, char **argv) {
 
     /* Shared store at project root (dedup across all sessions) */
     store_t *shared_store = store_new(".");
+    memory_t *memory = memory_new(".");
 
     /* One-shot headless mode: run query and exit */
     if (query) {
@@ -153,7 +155,9 @@ int main(int argc, char **argv) {
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
-            .session_dir = session_dir, .scratchpad = NULL
+            .session_dir = session_dir, .scratchpad = NULL,
+            .memory = memory,
+            .memory = memory
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
@@ -218,6 +222,7 @@ int main(int argc, char **argv) {
     }
 
     printf("Bye.\n");
+    memory_free(memory);
     store_free(shared_store);
     free(props_json);
     free(server_model);
