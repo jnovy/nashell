@@ -32,6 +32,7 @@ typedef struct {
     const char  *store_ref;   /* store/ path for tool output */
     cJSON       *tool_meta;   /* tool result metadata JSON (borrowed, do not free) */
     llm_stats_t  stats;       /* LLM timing/token stats */
+    int          context_size; /* server's n_ctx (for computing context utilization %) */
 } react_event_t;
 
 /* Frontend callback: implement this to handle react engine events */

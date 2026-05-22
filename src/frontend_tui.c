@@ -58,7 +58,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
             if (ev->stats.predicted_per_second > 0)
                 snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s",
                          ev->stats.predicted_per_second);
-            /* Context utilization would need context_size — skip for now */
+            if (ev->context_size > 0 && ev->stats.prompt_tokens > 0) {
+                int pct = (int)(100.0 * ev->stats.prompt_tokens / ev->context_size);
+                snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", pct);
+            }
             snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s%s]",
                      ev->stats.prompt_tokens, ev->stats.completion_tokens,
                      pp_str, gen_str, ctx_str);
@@ -118,6 +121,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
             if (ev->stats.predicted_per_second > 0)
                 snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s",
                          ev->stats.predicted_per_second);
+            if (ev->context_size > 0 && ev->stats.prompt_tokens > 0) {
+                int pct = (int)(100.0 * ev->stats.prompt_tokens / ev->context_size);
+                snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", pct);
+            }
             fprintf(stderr, "[%d→%d tok%s%s%s | total %.1fs]\n",
                     ev->stats.prompt_tokens, ev->stats.completion_tokens,
                     pp_str, gen_str, ctx_str, ev->total_elapsed);

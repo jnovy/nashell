@@ -240,6 +240,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.description = desc;
             ev.result = final_result;
             ev.stats = stats;
+            ev.context_size = ctx->llm->context_size;
             emit(on_event, userdata, &ev);
 
             cJSON_Delete(action);
@@ -300,6 +301,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.action = action_name;
             ev.description = desc ? desc : "";
             ev.stats = stats;
+            ev.context_size = ctx->llm->context_size;
             emit(on_event, userdata, &ev);
         }
 
