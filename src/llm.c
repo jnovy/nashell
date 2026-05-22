@@ -249,3 +249,172 @@ int llm_fetch_context_size(const char *api_base) {
     cJSON_Delete(resp);
     return n_ctx;
 }
+
+/* ── Streaming SSE state ─────────────────────────────────── */
+
+typedef struct {
+    str_t          line_buf;      /* accumulates partial SSE lines */
+    str_t          full_content;  /* assembled full response */
+    llm_token_fn   on_token;
+    void          *userdata;
+    llm_stats_t   *stats;
+} sse_state_t;
+
+static void sse_process_line(sse_state_t *st, const char *line) {
+    /* Skip empty lines and non-data lines */
+    if (line[0] == '\0' || line[0] == '\n') return;
+    if (strncmp(line, "data: ", 6) != 0) return;
+
+    const char *json_str = line + 6;
+
+    /* Check for stream end */
+    if (strncmp(json_str, "[DONE]", 6) == 0) return;
+
+    /* Parse the SSE JSON chunk */
+    cJSON *chunk = cJSON_Parse(json_str);
+    if (!chunk) return;
+
+    /* Extract delta.content from choices[0].delta.content */
+    cJSON *choices = cJSON_GetObjectItem(chunk, "choices");
+    if (choices && cJSON_IsArray(choices) && cJSON_GetArraySize(choices) > 0) {
+        cJSON *choice0 = cJSON_GetArrayItem(choices, 0);
+        cJSON *delta = cJSON_GetObjectItem(choice0, "delta");
+        if (delta) {
+            cJSON *content = cJSON_GetObjectItem(delta, "content");
+            if (content && content->valuestring && content->valuestring[0]) {
+                /* Got a token! */
+                str_append_cstr(&st->full_content, content->valuestring);
+                if (st->on_token)
+                    st->on_token(content->valuestring, st->userdata);
+            }
+        }
+
+        /* Check for finish_reason — last chunk has usage/timings */
+        cJSON *finish = cJSON_GetObjectItem(choice0, "finish_reason");
+        if (finish && cJSON_IsString(finish) && finish->valuestring) {
+            /* Extract stats from the final chunk */
+            if (st->stats) {
+                cJSON *usage = cJSON_GetObjectItem(chunk, "usage");
+                if (usage) {
+                    cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
+                    cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
+                    if (pt) st->stats->prompt_tokens = (int)cJSON_GetNumberValue(pt);
+                    if (ct) st->stats->completion_tokens = (int)cJSON_GetNumberValue(ct);
+                }
+                cJSON *timings = cJSON_GetObjectItem(chunk, "timings");
+                if (timings) {
+                    cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
+                    cJSON *gps = cJSON_GetObjectItem(timings, "predicted_per_second");
+                    cJSON *dn  = cJSON_GetObjectItem(timings, "draft_n");
+                    cJSON *da  = cJSON_GetObjectItem(timings, "draft_n_accepted");
+                    if (pps) st->stats->prompt_per_second = cJSON_GetNumberValue(pps);
+                    if (gps) st->stats->predicted_per_second = cJSON_GetNumberValue(gps);
+                    if (dn)  st->stats->draft_n = (int)cJSON_GetNumberValue(dn);
+                    if (da)  st->stats->draft_accepted = (int)cJSON_GetNumberValue(da);
+                }
+            }
+        }
+    }
+
+    cJSON_Delete(chunk);
+}
+
+static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    sse_state_t *st = userdata;
+    size_t total = size * nmemb;
+    const char *data = ptr;
+
+    for (size_t i = 0; i < total; i++) {
+        if (data[i] == '\n') {
+            /* Process complete line */
+            sse_process_line(st, str_cstr(&st->line_buf));
+            str_clear(&st->line_buf);
+        } else {
+            str_append(&st->line_buf, &data[i], 1);
+        }
+    }
+
+    return total;
+}
+
+char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
+                          llm_stats_t *stats, llm_token_fn on_token,
+                          void *userdata) {
+    if (stats) memset(stats, 0, sizeof(*stats));
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/v1/chat/completions", cfg->api_base);
+
+    /* Build request with stream=true */
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "model", cfg->model);
+    cJSON_AddNumberToObject(req, "max_tokens", cfg->max_tokens);
+    cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
+    cJSON_AddBoolToObject(req, "stream", 1);
+
+    cJSON *resp_fmt = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp_fmt, "type", "json_object");
+    cJSON_AddItemToObject(req, "response_format", resp_fmt);
+
+    cJSON *tmpl_kwargs = cJSON_CreateObject();
+    cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", 0);
+    cJSON_AddItemToObject(req, "chat_template_kwargs", tmpl_kwargs);
+
+    cJSON *msgs = cJSON_CreateArray();
+    for (int i = 0; i < chat->n_msgs; i++) {
+        cJSON *m = cJSON_CreateObject();
+        cJSON_AddStringToObject(m, "role", chat->msgs[i].role);
+        cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
+        cJSON_AddItemToArray(msgs, m);
+    }
+    cJSON_AddItemToObject(req, "messages", msgs);
+
+    char *req_body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (!req_body) return NULL;
+
+    /* Set up SSE state */
+    sse_state_t st = {
+        .line_buf     = str_new(256),
+        .full_content = str_new(4096),
+        .on_token     = on_token,
+        .userdata     = userdata,
+        .stats        = stats,
+    };
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { free(req_body); str_free(&st.line_buf); str_free(&st.full_content); return NULL; }
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(req_body);
+
+    /* Process any remaining data in line buffer */
+    if (st.line_buf.len > 0)
+        sse_process_line(&st, str_cstr(&st.line_buf));
+    str_free(&st.line_buf);
+
+    if (res != CURLE_OK) {
+        str_free(&st.full_content);
+        return NULL;
+    }
+
+    /* Return assembled content */
+    if (st.full_content.len == 0) {
+        str_free(&st.full_content);
+        return NULL;
+    }
+
+    return str_steal(&st.full_content);
+}

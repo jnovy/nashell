@@ -23,6 +23,23 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
+/* Streaming token callback context — bridges llm_token_fn to react_event_fn */
+typedef struct {
+    react_event_fn on_event;
+    void          *userdata;
+    int            step;
+} stream_ctx_t;
+
+static void stream_token_cb(const char *token, void *userdata) {
+    stream_ctx_t *sctx = userdata;
+    if (!sctx->on_event) return;
+    react_event_t ev = {0};
+    ev.type  = REACT_EVENT_LLM_TOKEN;
+    ev.step  = sctx->step;
+    ev.token = token;
+    sctx->on_event(&ev, sctx->userdata);
+}
+
 static void emit(react_event_fn fn, void *ud, react_event_t *ev) {
     if (fn) fn(ev, ud);
 }
@@ -120,7 +137,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         clock_gettime(CLOCK_MONOTONIC, &step_start);
 
         llm_stats_t stats = {0};
-        char *response = llm_complete(ctx->llm, chat, &stats);
+        stream_ctx_t sctx = { on_event, userdata, step + 1 };
+        char *response = llm_complete_stream(ctx->llm, chat, &stats,
+            on_event ? stream_token_cb : NULL, &sctx);
         if (!response) {
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;

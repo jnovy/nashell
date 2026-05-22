@@ -45,6 +45,17 @@ typedef struct {
  * On error returns NULL. */
 char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats);
 
+/* Token callback for streaming — called for each token as it arrives */
+typedef void (*llm_token_fn)(const char *token, void *userdata);
+
+/* Streaming chat completion. Calls on_token for each token as it arrives.
+ * Returns the full assembled response content (caller frees).
+ * If stats is non-NULL, fills it with timing/usage data from the final SSE event.
+ * If on_token is NULL, behaves like llm_complete (non-streaming).
+ * On error returns NULL. */
+char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
+                          llm_stats_t *stats, llm_token_fn on_token, void *userdata);
+
 /* Parse the assistant's JSON response into action fields.
  * Returns cJSON object with thought, action, and tool-specific params.
  * Caller must cJSON_Delete. Returns NULL on parse failure. */
