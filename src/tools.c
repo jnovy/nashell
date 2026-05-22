@@ -78,17 +78,6 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    /* Return output inline — ALL output is saved to store/, but model sees content too */
-    if (out.len > 0 && out.len <= 8000) {
-        cJSON_AddStringToObject(meta, "stdout", out.data);
-    } else if (out.len > 8000) {
-        char trunc[8001];
-        memcpy(trunc, out.data, 8000);
-        trunc[8000] = '\0';
-        cJSON_AddStringToObject(meta, "stdout", trunc);
-        cJSON_AddBoolToObject(meta, "truncated", 1);
-    }
-
     /* journal */
     { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "shell_exec", _pj, ref,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit"); free(_pj); }
@@ -130,7 +119,9 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)len);
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    /* Return actual content — truncate at 50K to avoid context explosion */
+    /* file_read MUST return content — that's its purpose.
+     * The model calls file_read specifically to SEE content.
+     * Truncate at 50K to prevent context explosion on huge files. */
     if (len <= 50000) {
         cJSON_AddStringToObject(meta, "content", content);
     } else {
@@ -286,16 +277,6 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    /* Return grep results inline (usually small) */
-    if (out.len > 0 && out.len <= 8000) {
-        cJSON_AddStringToObject(meta, "content", out.data);
-    } else if (out.len > 8000) {
-        char trunc[8001];
-        memcpy(trunc, out.data, 8000);
-        trunc[8000] = '\0';
-        cJSON_AddStringToObject(meta, "content", trunc);
-    }
-
     { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "grep_search", _pj, ref,
                    out.len, matches, NULL); free(_pj); }
 
@@ -404,8 +385,9 @@ const char *tools_system_prompt(void) {
     "  Returns: {result}\n"
     "\n"
     "Rules:\n"
-    "- Tool outputs are stored to disk. You see only metadata (exit_code, path, lines, chars, ref).\n"
-    "- To read stored output, use file_read on the ref path, or grep_search on it.\n"
+    "- Tool outputs are stored to disk. You see ONLY metadata (exit_code, path, lines, chars, ref).\n"
+    "- To see actual content, call file_read with the ref path (e.g. file_read(path=\"store/abc123.txt\")).\n"
+    "- You MUST file_read the ref if you need to see what a command output or file contains.\n"
     "- Never guess tool results. Wait for actual output.\n"
     "- file_edit: old_text must exactly match. Always file_read first.\n"
     "- Record key findings in notes after each discovery.\n"
