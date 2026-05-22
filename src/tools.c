@@ -54,16 +54,13 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *e
     snprintf(a->ext, sizeof(a->ext), "%s", ext ? ext : "txt");
     ctx->alias_count++;
 
-    /* Persist alias→hash mapping to session directory for post-mortem resolution */
-    if (ctx->session_dir) {
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/aliases.jsonl", ctx->session_dir);
-        FILE *f = fopen(path, "a");
-        if (f) {
-            fprintf(f, "{\"alias\":\"%s\",\"hash\":\"%s\",\"ext\":\"%s\"}\n",
-                    a->alias, a->hash, a->ext);
-            fclose(f);
-        }
+    /* Create symlink in session directory: S0 → ../../.store/hash.ext */
+    if (ctx->session_dir && hash && hash[0]) {
+        char link_path[4096];
+        char target[4096];
+        snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, a->alias);
+        snprintf(target, sizeof(target), "../../.store/%s.%s", hash, ext ? ext : "txt");
+        symlink(target, link_path);  /* ignore EEXIST */
     }
 
     return a->alias;
