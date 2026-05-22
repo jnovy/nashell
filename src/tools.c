@@ -46,20 +46,19 @@ static tool_result_t make_error(const char *msg) {
 
 /* ── alias management ──────────────────────────────────── */
 
-const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *ext) {
-    if (ctx->alias_count >= MAX_ALIASES) return "S?";
+const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
+    if (ctx->alias_count >= MAX_ALIASES) return "R?S?";
     alias_entry_t *a = &ctx->aliases[ctx->alias_count];
     snprintf(a->alias, sizeof(a->alias), "R%dS%d", ctx->react_loop, ctx->step);
     snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
-    snprintf(a->ext, sizeof(a->ext), "%s", ext ? ext : "txt");
     ctx->alias_count++;
 
-    /* Create symlink in session directory: S0 → ../../.store/hash.ext */
+    /* Create symlink in session directory: R1S0 → ../../.store/hash */
     if (ctx->session_dir && hash && hash[0]) {
         char link_path[4096];
         char target[4096];
         snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, a->alias);
-        snprintf(target, sizeof(target), "../../.store/%s.%s", hash, ext ? ext : "txt");
+        snprintf(target, sizeof(target), "../../.store/%s", hash);
         symlink(target, link_path);  /* ignore EEXIST */
     }
 
@@ -73,8 +72,7 @@ const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
     for (int i = 0; i < ctx->alias_count; i++) {
         if (strcmp(ctx->aliases[i].alias, alias) == 0) {
             /* Return the full store path */
-            return store_resolve(ctx->store, ctx->aliases[i].hash,
-                                 ctx->aliases[i].ext);
+            return store_resolve(ctx->store, ctx->aliases[i].hash);
         }
     }
     return NULL;
@@ -124,10 +122,10 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     int exit_code = run_command_argv(argv, &out);
 
     /* Store to shared store */
-    char *hash = store_save(ctx->store, out.data, "txt");
+    char *hash = store_save(ctx->store, out.data);
 
     /* Register alias */
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "exit_code", exit_code);
@@ -173,8 +171,8 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     int lines = count_lines(content);
-    char *hash = store_save(ctx->store, content, "txt");
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    char *hash = store_save(ctx->store, content);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "path", path_j->valuestring);
@@ -228,8 +226,8 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     fclose(f);
 
     /* Store written content for full audit trail */
-    char *hash = store_save(ctx->store, content, "txt");
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    char *hash = store_save(ctx->store, content);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -269,8 +267,8 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     }
 
     /* Store pre-edit content */
-    char *pre_hash = store_save(ctx->store, content, "txt");
-    const char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "", "txt");
+    char *pre_hash = store_save(ctx->store, content);
+    const char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "");
 
     char *pos = strstr(content, old_text);
     if (!pos) {
@@ -370,8 +368,8 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     waitpid(pid, &status, 0);
 
     int matches = count_lines(out.data);
-    char *hash = store_save(ctx->store, out.data, "txt");
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    char *hash = store_save(ctx->store, out.data);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "pattern", pattern);
@@ -410,8 +408,8 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     }
 
     /* Store for audit */
-    char *hash = store_save(ctx->store, ctx->scratchpad, "txt");
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    char *hash = store_save(ctx->store, ctx->scratchpad);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -433,8 +431,8 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
                          ? result_j->valuestring : "(no result)";
 
     /* Store result for full audit */
-    char *hash = store_save(ctx->store, result, "txt");
-    const char *alias = tool_register_alias(ctx, hash ? hash : "", "txt");
+    char *hash = store_save(ctx->store, result);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "result", result);

@@ -12,12 +12,11 @@ typedef struct {
     int     success;    /* 1 = ok, 0 = error */
 } tool_result_t;
 
-/* Step alias entry: maps S0, S1, ... to store hashes */
+/* Step alias entry: maps R1S0, R1S1, ... to store hashes */
 #define MAX_ALIASES 256
 typedef struct {
-    char alias[16];     /* "S0", "S1", "S2", ... */
+    char alias[16];     /* "R1S0", "R1S1", "R2S1", ... */
     char hash[128];     /* content hash in shared store */
-    char ext[16];       /* file extension (txt, diff, json) */
 } alias_entry_t;
 
 /* Session context passed to all tools */
@@ -33,11 +32,11 @@ typedef struct {
     int            alias_count;
 } tool_ctx_t;
 
-/* Register a store hash as a step alias, returns alias string like "S0", "S1" */
-const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *ext);
+/* Register a store hash as a step alias, returns alias string like "R1S0" */
+const char *tool_register_alias(tool_ctx_t *ctx, const char *hash);
 
-/* Resolve a step alias (e.g. "S1") to the full store path. Returns NULL if not found.
- * Returned string is static/internal — do not free. */
+/* Resolve a step alias (e.g. "R1S1") to the full store path. Returns NULL if not found.
+ * Returned string must be freed by caller. */
 const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias);
 
 /* Execute a tool by name, returns result (caller frees) */

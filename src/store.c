@@ -36,34 +36,29 @@ char *sha256_hex(const char *data, size_t len) {
     return hex;
 }
 
-char *store_save(store_t *s, const char *content, const char *ext) {
+char *store_save(store_t *s, const char *content) {
     if (!s || !content) return NULL;
     size_t clen = strlen(content);
     char *hex = sha256_hex(content, clen);
     if (!hex) return NULL;
 
-    const char *e = ext ? ext : "txt";
-
-    /* Build full path: .store/<hash>.<ext> */
+    /* Build full path: .store/<hash> (no extension) */
     char path[4096];
-    snprintf(path, sizeof(path), "%s/%s.%s", s->dir, hex, e);
+    snprintf(path, sizeof(path), "%s/%s", s->dir, hex);
 
     /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
     if (fd >= 0) {
-        /* New file — write content */
         write(fd, content, clen);
         close(fd);
     }
-    /* If EEXIST, file already exists with same content — dedup! */
 
-    return hex;  /* caller gets the hash, not a path */
+    return hex;  /* caller gets the hash */
 }
 
-char *store_resolve(store_t *s, const char *hash, const char *ext) {
+char *store_resolve(store_t *s, const char *hash) {
     if (!s || !hash) return NULL;
-    const char *e = ext ? ext : "txt";
     char *path = NULL;
-    if (asprintf(&path, "%s/%s.%s", s->dir, hash, e) < 0) return NULL;
+    if (asprintf(&path, "%s/%s", s->dir, hash) < 0) return NULL;
     return path;
 }
