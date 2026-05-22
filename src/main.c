@@ -41,59 +41,56 @@ static int jbool(cJSON *obj, const char *key, int def) {
     return item ? cJSON_IsTrue(item) : def;
 }
 
-/* Print banner: client config + server props */
+/* Print banner: server props first, then client overrides */
 static void print_banner(const llm_config_t *cfg, const char *props_json) {
     printf("nash - agentic shell prototype\n\n");
 
-    /* 1. Client config (what nash sends to the server) */
-    printf("client: temp=%.1f max_tokens=%d json_mode=on thinking=off stream=on\n\n",
-           cfg->temperature, cfg->max_tokens);
-
-    /* 2. Server props (what the server reports) */
+    /* 1. Server props (what the server reports — the baseline) */
     if (!props_json) {
         printf("server: %s (props unavailable)\n\n",
                cfg->api_base ? cfg->api_base : "(none)");
-        return;
+    } else {
+        cJSON *props = cJSON_Parse(props_json);
+        if (!props) {
+            printf("server: %s (props parse error)\n\n",
+                   cfg->api_base ? cfg->api_base : "(none)");
+        } else {
+            cJSON *gs = cJSON_GetObjectItem(props, "default_generation_settings");
+            cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
+            cJSON *caps = cJSON_GetObjectItem(props, "chat_template_caps");
+            cJSON *mods = cJSON_GetObjectItem(props, "modalities");
+            int n_ctx = (int)jnum(gs, "n_ctx", 0);
+
+            printf("server: %s\n", cfg->api_base ? cfg->api_base : "(none)");
+            printf("  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
+            printf("  build:    %s\n", jstr(props, "build_info", "?"));
+            printf("  ctx:      %d tok (%dk)", n_ctx, n_ctx / 1024);
+            printf(" | slots: %d\n", (int)jnum(props, "total_slots", 0));
+
+            if (params) {
+                printf("  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f",
+                       jnum(params, "temperature", 0),
+                       (int)jnum(params, "top_k", 0),
+                       jnum(params, "top_p", 0),
+                       jnum(params, "min_p", 0));
+                double rp = jnum(params, "repeat_penalty", 1.0);
+                if (rp != 1.0) printf(" rep=%.1f", rp);
+                printf("\n");
+            }
+
+            printf("  caps:     tools=%s vision=%s reasoning=%s\n",
+                   caps && jbool(caps, "supports_tools", 0) ? "yes" : "no",
+                   mods && jbool(mods, "vision", 0) ? "yes" : "no",
+                   params ? jstr(params, "reasoning_format", "none") : "?");
+
+            printf("\n");
+            cJSON_Delete(props);
+        }
     }
 
-    cJSON *props = cJSON_Parse(props_json);
-    if (!props) {
-        printf("server: %s (props parse error)\n\n",
-               cfg->api_base ? cfg->api_base : "(none)");
-        return;
-    }
-
-    cJSON *gs = cJSON_GetObjectItem(props, "default_generation_settings");
-    cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
-    cJSON *caps = cJSON_GetObjectItem(props, "chat_template_caps");
-    cJSON *mods = cJSON_GetObjectItem(props, "modalities");
-
-    int n_ctx = (int)jnum(gs, "n_ctx", 0);
-
-    printf("server: %s\n", cfg->api_base ? cfg->api_base : "(none)");
-    printf("  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
-    printf("  build:    %s\n", jstr(props, "build_info", "?"));
-    printf("  ctx:      %d tok (%dk)", n_ctx, n_ctx / 1024);
-    printf(" | slots: %d\n", (int)jnum(props, "total_slots", 0));
-
-    if (params) {
-        printf("  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f",
-               jnum(params, "temperature", 0),
-               (int)jnum(params, "top_k", 0),
-               jnum(params, "top_p", 0),
-               jnum(params, "min_p", 0));
-        double rp = jnum(params, "repeat_penalty", 1.0);
-        if (rp != 1.0) printf(" rep=%.1f", rp);
-        printf("\n");
-    }
-
-    printf("  caps:     tools=%s vision=%s reasoning=%s\n",
-           caps && jbool(caps, "supports_tools", 0) ? "yes" : "no",
-           mods && jbool(mods, "vision", 0) ? "yes" : "no",
-           params ? jstr(params, "reasoning_format", "none") : "?");
-
-    printf("\n");
-    cJSON_Delete(props);
+    /* 2. Client overrides (what nash sends per-request, overriding server defaults) */
+    printf("client: temp=%.1f max_tokens=%d json_mode=on thinking=off stream=on\n\n",
+           cfg->temperature, cfg->max_tokens);
 }
 
 int main(int argc, char **argv) {
