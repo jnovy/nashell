@@ -64,7 +64,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         struct timespec step_start;
         clock_gettime(CLOCK_MONOTONIC, &step_start);
 
-        char *response = llm_complete(ctx->llm, chat);
+        llm_stats_t stats = {0};
+        char *response = llm_complete(ctx->llm, chat, &stats);
         if (!response) {
             fprintf(stderr, "[error] LLM call failed (returned NULL)\n");
             fflush(stderr);
@@ -139,8 +140,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
                 desc_buf[197] = '.'; desc_buf[198] = '.'; desc_buf[199] = '.'; desc_buf[200] = '\0';
                 desc = desc_buf;
             }
-            fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)\n",
-                    step + 1, action_name, desc, step_elapsed);
+            /* Build stats suffix */
+            char stats_buf[128] = "";
+            if (stats.prompt_tokens > 0 || stats.completion_tokens > 0) {
+                char pp_str[32] = "", gen_str[32] = "";
+                if (stats.prompt_per_second > 0)
+                    snprintf(pp_str, sizeof(pp_str), " | pp %.0f t/s", stats.prompt_per_second);
+                if (stats.predicted_per_second > 0)
+                    snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s", stats.predicted_per_second);
+                snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s]",
+                         stats.prompt_tokens, stats.completion_tokens,
+                         pp_str, gen_str);
+            }
+            fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)%s\n",
+                    step + 1, action_name, desc, step_elapsed, stats_buf);
         }
 
         /* Check for done */

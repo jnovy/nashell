@@ -1,0 +1,10 @@
+total 80
+drwxr-xr-x. 1 jnovy jnovy    94 May 22 10:48 .
+drwxr-xr-x. 1 jnovy jnovy    32 May 22 08:34 ..
+drwxr-xr-x. 1 jnovy jnovy   128 May 22 10:48 .git
+-rw-r--r--. 1 jnovy jnovy    19 May 22 08:55 .gitignore
+-rw-r--r--. 1 jnovy jnovy   444 May 22 08:34 Makefile
+-rwxr-xr-x. 1 jnovy jnovy 66168 May 22 10:48 nash
+-rw-r--r--. 1 jnovy jnovy    31 May 22 08:34 README.md
+drwxr-xr-x. 1 jnovy jnovy   512 May 22 10:49 .sessions
+drwxr-xr-x. 1 jnovy jnovy   348 May 22 10:48 src

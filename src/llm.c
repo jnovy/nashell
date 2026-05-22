@@ -78,7 +78,8 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
 
 /* ── Main completion call ────────────────────────────────────── */
 
-char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat) {
+char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats) {
+    if (stats) memset(stats, 0, sizeof(*stats));
     char url[1024];
     snprintf(url, sizeof(url), "%s/v1/chat/completions", cfg->api_base);
 
@@ -153,6 +154,29 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat) {
         if (raw) {
             fprintf(stderr, "[debug] raw API response: %.500s\n", raw);
             free(raw);
+        }
+    }
+
+    /* Parse usage + timings into stats output param */
+    if (stats) {
+        memset(stats, 0, sizeof(*stats));
+        cJSON *usage = cJSON_GetObjectItem(resp, "usage");
+        if (usage) {
+            cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
+            cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
+            if (pt) stats->prompt_tokens = (int)cJSON_GetNumberValue(pt);
+            if (ct) stats->completion_tokens = (int)cJSON_GetNumberValue(ct);
+        }
+        cJSON *timings = cJSON_GetObjectItem(resp, "timings");
+        if (timings) {
+            cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
+            cJSON *gps = cJSON_GetObjectItem(timings, "predicted_per_second");
+            cJSON *dn  = cJSON_GetObjectItem(timings, "draft_n");
+            cJSON *da  = cJSON_GetObjectItem(timings, "draft_n_accepted");
+            if (pps) stats->prompt_per_second = cJSON_GetNumberValue(pps);
+            if (gps) stats->predicted_per_second = cJSON_GetNumberValue(gps);
+            if (dn)  stats->draft_n = (int)cJSON_GetNumberValue(dn);
+            if (da)  stats->draft_accepted = (int)cJSON_GetNumberValue(da);
         }
     }
 
