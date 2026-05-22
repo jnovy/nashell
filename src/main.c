@@ -14,7 +14,6 @@
 #include "frontend_tui.h"
 
 #define DEFAULT_API_BASE "http://192.168.1.18:8080"
-#define DEFAULT_MODEL    "qwen3.6-35b-a3b"
 
 /* Create session directory: .sessions/<epoch.NNNNN>/ */
 static char *create_session_dir(void) {
@@ -40,19 +39,16 @@ static void print_banner(const char *api_base, const char *model_name,
 
 int main(int argc, char **argv) {
     const char *api_base = DEFAULT_API_BASE;
-    const char *model    = DEFAULT_MODEL;
     const char *query    = NULL;  /* -p: one-shot headless mode */
 
     /* Simple arg parsing */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc)
             api_base = argv[++i];
-        else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc)
-            model = argv[++i];
         else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc)
             query = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [--model NAME] [-p QUERY]\n");
+            printf("Usage: nash [--api URL] [-p QUERY]\n");
             return 0;
         }
     }
@@ -63,10 +59,10 @@ int main(int argc, char **argv) {
 
     /* One-shot headless mode: run query and exit */
     if (query) {
-        print_banner(api_base, server_model ? server_model : model, context_size);
+        print_banner(api_base, server_model, context_size);
         char *session_dir = create_session_dir();
         llm_config_t llm_cfg = {
-            .api_base = api_base, .model = model,
+            .api_base = api_base, .model = server_model,
             .max_tokens = 4096, .temperature = 0.7,
             .context_size = context_size
         };
@@ -86,10 +82,11 @@ int main(int argc, char **argv) {
         journal_free(journal);
         store_free(store);
         free(session_dir);
+        free(server_model);
         return result ? 0 : 1;
     }
 
-    print_banner(api_base, server_model ? server_model : model, context_size);
+    print_banner(api_base, server_model, context_size);
 
     /* Main input loop */
     char *line;
@@ -115,7 +112,7 @@ int main(int argc, char **argv) {
         /* Initialize components */
         llm_config_t llm_cfg = {
             .api_base = api_base,
-            .model    = model,
+            .model    = server_model,
             .max_tokens = 4096,
             .temperature = 0.7,
             .context_size = context_size
@@ -156,6 +153,7 @@ int main(int argc, char **argv) {
         free(line);
     }
 
+    free(server_model);
     printf("Bye.\n");
     return 0;
 }

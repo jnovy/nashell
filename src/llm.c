@@ -47,7 +47,7 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
 
 static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
     cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "model", cfg->model);
+    if (cfg->model) cJSON_AddStringToObject(req, "model", cfg->model);
     cJSON_AddNumberToObject(req, "max_tokens", cfg->max_tokens);
     cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
     cJSON_AddBoolToObject(req, "stream", 0);
@@ -347,7 +347,7 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
 
     /* Build request with stream=true */
     cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "model", cfg->model);
+    if (cfg->model) cJSON_AddStringToObject(req, "model", cfg->model);
     cJSON_AddNumberToObject(req, "max_tokens", cfg->max_tokens);
     cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
     cJSON_AddBoolToObject(req, "stream", 1);
