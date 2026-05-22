@@ -50,9 +50,22 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *e
     if (ctx->alias_count >= MAX_ALIASES) return "S?";
     alias_entry_t *a = &ctx->aliases[ctx->alias_count];
     snprintf(a->alias, sizeof(a->alias), "S%d", ctx->alias_count);
-    snprintf(a->hash, sizeof(a->hash), "%s", hash);
+    snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
     snprintf(a->ext, sizeof(a->ext), "%s", ext ? ext : "txt");
     ctx->alias_count++;
+
+    /* Persist alias→hash mapping to session directory for post-mortem resolution */
+    if (ctx->session_dir) {
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/aliases.jsonl", ctx->session_dir);
+        FILE *f = fopen(path, "a");
+        if (f) {
+            fprintf(f, "{\"alias\":\"%s\",\"hash\":\"%s\",\"ext\":\"%s\"}\n",
+                    a->alias, a->hash, a->ext);
+            fclose(f);
+        }
+    }
+
     return a->alias;
 }
 
