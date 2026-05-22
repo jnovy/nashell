@@ -152,14 +152,36 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
                          stats.prompt_tokens, stats.completion_tokens,
                          pp_str, gen_str);
             }
-            fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)%s\n",
-                    step + 1, action_name, desc, step_elapsed, stats_buf);
+            if (strcmp(action_name, "done") == 0) {
+                /* For done: print step line WITHOUT stats — stats go after result */
+                fprintf(stderr, "\r\033[K[step %d] done (%.1fs)\n",
+                        step + 1, step_elapsed);
+            } else {
+                fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)%s\n",
+                        step + 1, action_name, desc, step_elapsed, stats_buf);
+            }
         }
 
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
             const char *result = json_get_str(action, "result");
             final_result = result ? strdup(result) : strdup("(no result)");
+            /* Print result first, then stats */
+            fprintf(stderr, "\r\033[K");
+            if (ctx->verbose && (stats.prompt_tokens > 0 || stats.completion_tokens > 0)) {
+                char pp_str[32] = "", gen_str[32] = "";
+                if (stats.prompt_per_second > 0)
+                    snprintf(pp_str, sizeof(pp_str), " | pp %.0f t/s", stats.prompt_per_second);
+                if (stats.predicted_per_second > 0)
+                    snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s", stats.predicted_per_second);
+                struct timespec now2;
+                clock_gettime(CLOCK_MONOTONIC, &now2);
+                double total = (now2.tv_sec - task_start.tv_sec) +
+                               (now2.tv_nsec - task_start.tv_nsec) / 1e9;
+                fprintf(stderr, "[%d→%d tok%s%s | total %.1fs]\n",
+                        stats.prompt_tokens, stats.completion_tokens,
+                        pp_str, gen_str, total);
+            }
             cJSON_Delete(action);
             free(response);
             break;
