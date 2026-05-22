@@ -89,8 +89,10 @@ int main(int argc, char **argv) {
         };
 
         react_ctx_t react = {
-            .llm   = &llm_cfg,
-            .tools = &tools,
+            .llm       = &llm_cfg,
+            .tools     = &tools,
+            .max_steps = MAX_REACT_STEPS,
+            .verbose   = 1,
         };
 
         /* Run the react loop */

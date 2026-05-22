@@ -57,6 +57,11 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
     cJSON_AddStringToObject(resp_fmt, "type", "json_object");
     cJSON_AddItemToObject(req, "response_format", resp_fmt);
 
+    /* Disable thinking mode for Qwen models (uses reasoning_content otherwise) */
+    cJSON *tmpl_kwargs = cJSON_CreateObject();
+    cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", 0);
+    cJSON_AddItemToObject(req, "chat_template_kwargs", tmpl_kwargs);
+
     cJSON *msgs = cJSON_CreateArray();
     for (int i = 0; i < chat->n_msgs; i++) {
         cJSON *m = cJSON_CreateObject();
@@ -132,8 +137,23 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat) {
     cJSON *content = cJSON_GetObjectItem(message, "content");
 
     char *result = NULL;
-    if (content && content->valuestring) {
+    if (content && content->valuestring && content->valuestring[0]) {
         result = strdup(content->valuestring);
+    }
+
+    /* If content is empty, check reasoning_content (thinking mode fallback) */
+    if (!result) {
+        cJSON *reasoning = cJSON_GetObjectItem(message, "reasoning_content");
+        if (reasoning && reasoning->valuestring && reasoning->valuestring[0]) {
+            fprintf(stderr, "[debug] LLM returned reasoning_content instead of content (thinking mode still active?)\n");
+            fprintf(stderr, "[debug] reasoning: %.200s...\n", reasoning->valuestring);
+        }
+        /* Dump raw response for debugging */
+        char *raw = cJSON_PrintUnformatted(resp);
+        if (raw) {
+            fprintf(stderr, "[debug] raw API response: %.500s\n", raw);
+            free(raw);
+        }
     }
 
     cJSON_Delete(resp);
