@@ -100,8 +100,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* User query */
     llm_chat_add(chat, "user", user_query);
 
-    /* Increment react loop counter and reset per-loop step counter */
-    ctx->tools->react_loop++;
+    /* Reset per-loop step counter (react_loop is 0-based, incremented at END of loop) */
     ctx->tools->step = 0;
 
     /* Record system prompt and user query in journal (step 0) */
@@ -325,5 +324,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     llm_chat_free(chat);
+    /* Increment react loop counter for next query */
+    ctx->tools->react_loop++;
+
     return final_result;
 }
