@@ -44,6 +44,38 @@ static tool_result_t make_error(const char *msg) {
     return make_result(0, m, NULL);
 }
 
+/* ── run_command: fork/execve helper ─────────────────────── */
+
+static int run_command_argv(char *const argv[], str_t *out) {
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return -1;
+
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
+
+    if (pid == 0) {
+        /* child: redirect stdout+stderr to pipe */
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+
+    /* parent: read from pipe */
+    close(pipefd[1]);
+    char buf[4096];
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+        str_append(out, buf, (size_t)n);
+    close(pipefd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 /* ── shell_exec ──────────────────────────────────────────── */
 
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
@@ -53,20 +85,10 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     const char *command = cmd_j->valuestring;
 
-    /* run via popen, capture stdout+stderr */
+    /* run via fork/execve — no shell string interpolation */
     str_t out = str_new(4096);
-    char redir[4096];
-    snprintf(redir, sizeof(redir), "(%s) 2>&1", command);
-
-    FILE *fp = popen(redir, "r");
-    if (!fp) return make_error("popen failed");
-
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), fp))
-        str_append(&out, buf, strlen(buf));
-
-    int status = pclose(fp);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    char *argv[] = { "/bin/sh", "-c", (char *)command, NULL };
+    int exit_code = run_command_argv(argv, &out);
 
     /* store full output */
     char *ref = store_save(ctx->store, out.data, "txt");
@@ -249,23 +271,42 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
         path = resolved_path;
     }
 
-    /* use grep via shell */
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-             "grep -rn --include='*.c' --include='*.h' --include='*.py' "
-             "--include='*.js' --include='*.json' --include='*.yaml' "
-             "--include='*.yml' --include='*.md' --include='*.txt' "
-             "--include='*.sh' --include='*.go' --include='*.rs' "
-             "'%s' '%s' 2>/dev/null | head -50", pattern, path);
+    /* use fork/execvp to avoid shell injection via pattern/path */
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return make_error("pipe failed");
 
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return make_error("fork failed"); }
+
+    if (pid == 0) {
+        /* child: exec grep with proper argv (no shell interpolation) */
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
+        execlp("grep", "grep", "-rn",
+               "--include=*.c", "--include=*.h", "--include=*.py",
+               "--include=*.js", "--include=*.json", "--include=*.yaml",
+               "--include=*.yml", "--include=*.md", "--include=*.txt",
+               "--include=*.sh", "--include=*.go", "--include=*.rs",
+               "--include=*.toml", "--include=*.xml", "--include=*.html",
+               "--include=*.java", "--include=*.rb", "--include=*.php",
+               "-m", "50",  /* max 50 matches (replaces | head -50) */
+               pattern, path, (char *)NULL);
+        _exit(127);
+    }
+
+    /* parent: read output */
+    close(pipefd[1]);
     str_t out = str_new(4096);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return make_error("grep failed");
-
     char buf[4096];
-    while (fgets(buf, sizeof(buf), fp))
-        str_append(&out, buf, strlen(buf));
-    pclose(fp);
+    ssize_t n;
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
+        str_append(&out, buf, (size_t)n);
+    close(pipefd[0]);
+
+    int status;
+    waitpid(pid, &status, 0);
 
     int matches = count_lines(out.data);
     char *ref = store_save(ctx->store, out.data, "txt");
