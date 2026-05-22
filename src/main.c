@@ -11,6 +11,7 @@
 #include "react.h"
 #include "store.h"
 #include "journal.h"
+#include "frontend_tui.h"
 
 #define DEFAULT_API_BASE "http://192.168.1.18:8080"
 #define DEFAULT_MODEL    "qwen3.6-35b-a3b"
@@ -75,7 +76,7 @@ int main(int argc, char **argv) {
             .llm = &llm_cfg, .tools = &tools,
             .max_steps = MAX_REACT_STEPS, .verbose = 1,
         };
-        char *result = react_run(&react, query);
+        char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
         if (result) { printf("%s\n", result); free(result); }
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
@@ -133,8 +134,8 @@ int main(int argc, char **argv) {
             .verbose   = 1,
         };
 
-        /* Run the react loop */
-        char *result = react_run(&react, line);
+        /* Run the react loop with TUI frontend */
+        char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
 
         if (result) {
             printf("\n--- Result ---\n%s\n\n", result);

@@ -1,0 +1,40 @@
+#ifndef REACT_EVENT_H
+#define REACT_EVENT_H
+
+#include "cJSON.h"
+#include "llm.h"
+
+/* Event types emitted by the react engine */
+typedef enum {
+    REACT_EVENT_STEP_START,      /* about to call LLM for step N */
+    REACT_EVENT_LLM_TOKEN,       /* streaming: one token received from LLM */
+    REACT_EVENT_STEP_COMPLETE,   /* step N finished: tool executed, result available */
+    REACT_EVENT_TOOL_OUTPUT,     /* tool result metadata + store ref available */
+    REACT_EVENT_ERROR,           /* recoverable error (parse failure, missing action) */
+    REACT_EVENT_WARNING,         /* cycling detected, context pressure */
+    REACT_EVENT_DONE,            /* task complete, final result */
+} react_event_type_t;
+
+/* Event data — all fields set to 0/NULL by default, only relevant ones populated */
+typedef struct {
+    react_event_type_t type;
+    int    step;              /* current step number (1-based) */
+    int    max_steps;         /* total max steps allowed */
+    double step_elapsed;      /* seconds for this step's LLM call */
+    double total_elapsed;     /* seconds since task start */
+
+    /* Per-type data */
+    const char  *action;      /* tool name: "shell_exec", "file_read", etc. */
+    const char  *description; /* key param: command, path, pattern */
+    const char  *token;       /* REACT_EVENT_LLM_TOKEN: single token text */
+    const char  *message;     /* REACT_EVENT_ERROR/WARNING: error/warning text */
+    const char  *result;      /* REACT_EVENT_DONE: final result text */
+    const char  *store_ref;   /* store/ path for tool output */
+    cJSON       *tool_meta;   /* tool result metadata JSON (borrowed, do not free) */
+    llm_stats_t  stats;       /* LLM timing/token stats */
+} react_event_t;
+
+/* Frontend callback: implement this to handle react engine events */
+typedef void (*react_event_fn)(const react_event_t *event, void *userdata);
+
+#endif

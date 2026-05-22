@@ -1,12 +1,15 @@
 #include "react.h"
 #include "journal.h"
+#include "store.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#define MAX_SCRATCHPAD_CHARS 8192  /* limit scratchpad injection to 8K */
+#define MAX_SCRATCHPAD_CHARS 8192
+
+/* ── helpers ─────────────────────────────────────────── */
 
 static int count_lines(const char *s) {
     int n = 0;
@@ -14,14 +17,38 @@ static int count_lines(const char *s) {
     return n;
 }
 
-/* Extract a JSON string field, returns NULL if missing */
 static const char *json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
     return NULL;
 }
 
-char *react_run(react_ctx_t *ctx, const char *user_query) {
+static void emit(react_event_fn fn, void *ud, react_event_t *ev) {
+    if (fn) fn(ev, ud);
+}
+
+/* Extract the key display parameter for a tool action */
+static const char *get_action_desc(cJSON *action, const char *action_name,
+                                   const char *thought) {
+    if (strcmp(action_name, "shell_exec") == 0)
+        return json_get_str(action, "command");
+    if (strcmp(action_name, "file_read") == 0 ||
+        strcmp(action_name, "file_write") == 0 ||
+        strcmp(action_name, "file_edit") == 0)
+        return json_get_str(action, "path");
+    if (strcmp(action_name, "grep_search") == 0)
+        return json_get_str(action, "pattern");
+    if (strcmp(action_name, "notes") == 0)
+        return "[saving notes]";
+    if (strcmp(action_name, "done") == 0)
+        return thought;
+    return thought;
+}
+
+/* ── main react loop ─────────────────────────────────── */
+
+char *react_run(react_ctx_t *ctx, const char *user_query,
+                react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
     /* System message */
@@ -34,7 +61,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         free(manifest);
     }
 
-    /* Inject scratchpad if exists (capped at MAX_SCRATCHPAD_CHARS) */
+    /* Inject scratchpad if exists (capped) */
     if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
         size_t slen = strlen(ctx->tools->scratchpad);
         if (slen > MAX_SCRATCHPAD_CHARS) slen = MAX_SCRATCHPAD_CHARS;
@@ -79,9 +106,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
     for (int step = 0; step < ctx->max_steps; step++) {
         ctx->tools->step = step + 1;
 
-        if (ctx->verbose) {
-            fprintf(stderr, "\r\033[K[step %d/%d] thinking...", step + 1, ctx->max_steps);
-            fflush(stderr);
+        /* Emit step start */
+        {
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_STEP_START;
+            ev.step = step + 1;
+            ev.max_steps = ctx->max_steps;
+            emit(on_event, userdata, &ev);
         }
 
         /* Call LLM */
@@ -91,8 +122,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         llm_stats_t stats = {0};
         char *response = llm_complete(ctx->llm, chat, &stats);
         if (!response) {
-            fprintf(stderr, "[error] LLM call failed (returned NULL)\n");
-            fflush(stderr);
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_ERROR;
+            ev.step = step + 1;
+            ev.message = "LLM call failed (returned NULL)";
+            emit(on_event, userdata, &ev);
             break;
         }
 
@@ -101,13 +135,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         double step_elapsed = (step_end.tv_sec - step_start.tv_sec) +
                               (step_end.tv_nsec - step_start.tv_nsec) / 1e9;
 
-        /* Parse JSON response — strip markdown fences if present */
+        /* Parse JSON response */
         cJSON *action = llm_parse_action(response);
 
         if (!action) {
-            fprintf(stderr, "\n[error] failed to parse LLM response as JSON\n");
-            if (ctx->verbose) fprintf(stderr, "  raw: %.200s...\n", response);
-            /* Add as assistant message and ask to retry */
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_ERROR;
+            ev.step = step + 1;
+            ev.message = "Failed to parse LLM response as JSON";
+            emit(on_event, userdata, &ev);
+            /* Retry */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user",
                 "Your response was not valid JSON. "
@@ -121,14 +158,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         const char *action_name = json_get_str(action, "action");
 
         if (!action_name) {
-            fprintf(stderr, "\n[error] no 'action' field in response\n");
-            if (ctx->verbose) {
-                char *raw = cJSON_PrintUnformatted(action);
-                fprintf(stderr, "  parsed JSON: %.300s%s\n",
-                        raw ? raw : "(null)", raw && strlen(raw) > 300 ? "..." : "");
-                free(raw);
-            }
-            /* Retry like JSON parse failure — add response + correction prompt */
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_ERROR;
+            ev.step = step + 1;
+            ev.message = "No 'action' field in response";
+            emit(on_event, userdata, &ev);
+            /* Retry */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user",
                 "Your JSON response is missing the required 'action' field. "
@@ -141,79 +176,29 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
             continue;
         }
 
-        if (ctx->verbose) {
-            /* Show the key parameter for each tool, not the thought */
-            const char *desc = NULL;
-            if (strcmp(action_name, "shell_exec") == 0)
-                desc = json_get_str(action, "command");
-            else if (strcmp(action_name, "file_read") == 0 ||
-                     strcmp(action_name, "file_write") == 0 ||
-                     strcmp(action_name, "file_edit") == 0)
-                desc = json_get_str(action, "path");
-            else if (strcmp(action_name, "grep_search") == 0)
-                desc = json_get_str(action, "pattern");
-            else if (strcmp(action_name, "done") == 0)
-                desc = thought;  /* for done, show the thought/summary */
-            else if (strcmp(action_name, "notes") == 0)
-                desc = "[saving notes]";
-            if (!desc) desc = thought ? thought : "";
-            /* Truncate long descriptions for display */
-            char desc_buf[201];
-            if (strlen(desc) > 200) {
-                memcpy(desc_buf, desc, 197);
-                desc_buf[197] = '.'; desc_buf[198] = '.'; desc_buf[199] = '.'; desc_buf[200] = '\0';
-                desc = desc_buf;
-            }
-            /* Build stats suffix */
-            char stats_buf[128] = "";
-            if (stats.prompt_tokens > 0 || stats.completion_tokens > 0) {
-                char pp_str[32] = "", gen_str[32] = "", ctx_str[32] = "";
-                if (stats.prompt_per_second > 0)
-                    snprintf(pp_str, sizeof(pp_str), " | pp %.0f t/s", stats.prompt_per_second);
-                if (stats.predicted_per_second > 0)
-                    snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s", stats.predicted_per_second);
-                if (ctx->llm->context_size > 0)
-                    snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%",
-                             (int)(100.0 * stats.prompt_tokens / ctx->llm->context_size));
-                snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s%s]",
-                         stats.prompt_tokens, stats.completion_tokens,
-                         pp_str, gen_str, ctx_str);
-            }
-            if (strcmp(action_name, "done") == 0) {
-                /* For done: print step line WITHOUT stats — stats go after result */
-                fprintf(stderr, "\r\033[K[step %d] done (%.1fs)\n",
-                        step + 1, step_elapsed);
-            } else {
-                fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)%s\n",
-                        step + 1, action_name, desc, step_elapsed, stats_buf);
-            }
-        }
+        const char *desc = get_action_desc(action, action_name, thought);
 
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
             const char *result = json_get_str(action, "result");
             final_result = result ? strdup(result) : strdup("(no result)");
-            /* Print result first, then stats */
-            fprintf(stderr, "\r\033[K");
-            if (ctx->verbose && (stats.prompt_tokens > 0 || stats.completion_tokens > 0)) {
-                char pp_str[32] = "", gen_str[32] = "";
-                if (stats.prompt_per_second > 0)
-                    snprintf(pp_str, sizeof(pp_str), " | pp %.0f t/s", stats.prompt_per_second);
-                if (stats.predicted_per_second > 0)
-                    snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s", stats.predicted_per_second);
-                struct timespec now2;
-                clock_gettime(CLOCK_MONOTONIC, &now2);
-                double total = (now2.tv_sec - task_start.tv_sec) +
-                               (now2.tv_nsec - task_start.tv_nsec) / 1e9;
-                char ctx_str2[32] = "";
-                if (ctx->llm->context_size > 0 && stats.prompt_tokens > 0) {
-                    int pct = (int)(100.0 * stats.prompt_tokens / ctx->llm->context_size);
-                    snprintf(ctx_str2, sizeof(ctx_str2), " | ctx %d%%", pct);
-                }
-                fprintf(stderr, "[%d→%d tok%s%s%s | total %.1fs]\n",
-                        stats.prompt_tokens, stats.completion_tokens,
-                        pp_str, gen_str, ctx_str2, total);
-            }
+
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double total = (now.tv_sec - task_start.tv_sec) +
+                           (now.tv_nsec - task_start.tv_nsec) / 1e9;
+
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_DONE;
+            ev.step = step + 1;
+            ev.step_elapsed = step_elapsed;
+            ev.total_elapsed = total;
+            ev.action = action_name;
+            ev.description = desc;
+            ev.result = final_result;
+            ev.stats = stats;
+            emit(on_event, userdata, &ev);
+
             cJSON_Delete(action);
             free(response);
             break;
@@ -245,54 +230,50 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         }
 
         if (repeated >= 2) {
-            fprintf(stderr, "\n[warning] cycling detected — same action repeated %d times\n",
-                    repeated + 1);
+            char warn_msg[256];
+            snprintf(warn_msg, sizeof(warn_msg),
+                     "Cycling detected — same action repeated %d times", repeated + 1);
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_WARNING;
+            ev.step = step + 1;
+            ev.message = warn_msg;
+            emit(on_event, userdata, &ev);
         }
 
         /* Execute tool */
         tool_result_t tr = tool_execute(ctx->tools, action_name, action);
 
-        /* Build step metadata */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
         double total_elapsed = (now.tv_sec - task_start.tv_sec) +
                                (now.tv_nsec - task_start.tv_nsec) / 1e9;
 
-        /* Build tool result string for context */
-        char *meta_str = cJSON_PrintUnformatted(tr.meta);
-
-        /* Debug: show tool output metadata */
-        if (ctx->verbose) {
-            fprintf(stderr, "  → %.*s%s\n",
-                    (int)(strlen(meta_str) < 300 ? strlen(meta_str) : 300),
-                    meta_str,
-                    strlen(meta_str) > 300 ? "..." : "");
-
-            /* Print stored file contents for shell_exec/grep_search */
-            if (tr.store_ref) {
-                char ref_path[4096];
-                snprintf(ref_path, sizeof(ref_path), "%s/%s",
-                         ctx->tools->session_dir, tr.store_ref);
-                FILE *rf = fopen(ref_path, "r");
-                if (rf) {
-                    char rbuf[4096];
-                    size_t total_read = 0;
-                    size_t n;
-                    while ((n = fread(rbuf, 1, sizeof(rbuf) - 1, rf)) > 0
-                           && total_read < 8000) {
-                        rbuf[n] = '\0';
-                        fprintf(stderr, "%s", rbuf);
-                        total_read += n;
-                    }
-                    if (total_read > 0 && rbuf[n > 0 ? n - 1 : 0] != '\n')
-                        fprintf(stderr, "\n");
-                    if (total_read >= 8000)
-                        fprintf(stderr, "  ... (truncated at 8K)\n");
-                    fclose(rf);
-                }
-            }
+        /* Emit step complete */
+        {
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_STEP_COMPLETE;
+            ev.step = step + 1;
+            ev.max_steps = ctx->max_steps;
+            ev.step_elapsed = step_elapsed;
+            ev.total_elapsed = total_elapsed;
+            ev.action = action_name;
+            ev.description = desc ? desc : "";
+            ev.stats = stats;
+            emit(on_event, userdata, &ev);
         }
 
+        /* Emit tool output */
+        {
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_TOOL_OUTPUT;
+            ev.step = step + 1;
+            ev.tool_meta = tr.meta;
+            ev.store_ref = tr.store_ref;
+            emit(on_event, userdata, &ev);
+        }
+
+        /* Build tool result string for context */
+        char *meta_str = cJSON_PrintUnformatted(tr.meta);
         size_t result_len = strlen(meta_str) + 128;
         char *result_msg = malloc(result_len);
         snprintf(result_msg, result_len, "%s\n[step %d | %.1fs]",
@@ -310,10 +291,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         free(response);
     }
 
-    if (ctx->verbose) {
-        fprintf(stderr, "\r\033[K");
-    }
-
     llm_chat_free(chat);
-    return final_result ? final_result : strdup("(no result — max steps reached)");
+    return final_result;
 }
