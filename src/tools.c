@@ -127,8 +127,8 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     size_t len = 0;
     char *content = read_file_contents(path, &len);
     if (!content) {
-        char msg[512];
-        snprintf(msg, sizeof(msg), "cannot read '%s': %s", path, strerror(errno));
+        char msg[4224];
+        snprintf(msg, sizeof(msg), "cannot read '%.4095s': %s", path, strerror(errno));
         return make_error(msg);
     }
 

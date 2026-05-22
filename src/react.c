@@ -239,13 +239,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             if (strcmp(last_sigs[i], sig) == 0) repeated++;
         }
         if (sig_count < 8) {
-            strncpy(last_sigs[sig_count], sig, 255);
-            last_sigs[sig_count][255] = '\0';
+            snprintf(last_sigs[sig_count], 256, "%s", sig);
             sig_count++;
         } else {
             memmove(last_sigs, last_sigs + 1, 7 * 256);
-            strncpy(last_sigs[7], sig, 255);
-            last_sigs[7][255] = '\0';
+            snprintf(last_sigs[7], 256, "%s", sig);
         }
 
         if (repeated >= 2) {
