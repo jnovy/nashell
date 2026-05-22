@@ -8,10 +8,13 @@
 
 journal_t *journal_new(const char *session_dir) {
     journal_t *j = calloc(1, sizeof(*j));
+    if (!j) return NULL;
     j->session_dir = strdup(session_dir);
+    if (!j->session_dir) { free(j); return NULL; }
     char path[4096];
     snprintf(path, sizeof(path), "%s/journal.jsonl", session_dir);
     j->path = strdup(path);
+    if (!j->path) { free(j->session_dir); free(j); return NULL; }
     return j;
 }
 
@@ -23,7 +26,7 @@ void journal_free(journal_t *j) {
 }
 
 int journal_append(journal_t *j, int step, const char *tool,
-                   const char *params_json, const char *ref,
+                   cJSON *params, const char *ref,
                    size_t size, int lines, const char *error) {
     FILE *f = fopen(j->path, "a");
     if (!f) return -1;
@@ -38,10 +41,7 @@ int journal_append(journal_t *j, int step, const char *tool,
     cJSON_AddNumberToObject(entry, "step", step);
     cJSON_AddStringToObject(entry, "ts", ts);
     cJSON_AddStringToObject(entry, "tool", tool);
-    if (params_json) {
-        cJSON *params = cJSON_Parse(params_json);
-        if (params) cJSON_AddItemToObject(entry, "params", params);
-    }
+    if (params) cJSON_AddItemReferenceToObject(entry, "params", params);
     if (ref) cJSON_AddStringToObject(entry, "ref", ref);
     cJSON_AddNumberToObject(entry, "size", (double)size);
     cJSON_AddNumberToObject(entry, "lines", lines);

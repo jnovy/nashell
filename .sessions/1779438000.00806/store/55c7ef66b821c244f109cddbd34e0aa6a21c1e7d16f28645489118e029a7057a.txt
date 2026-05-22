@@ -5,5 +5,5 @@ src/store.c
 src/journal.c
 src/llm.c
 src/main.c
-src/tools.c
 src/react.c
+src/tools.c

@@ -7,6 +7,7 @@ str_t str_new(size_t initial_cap) {
     str_t s;
     s.cap  = initial_cap > 0 ? initial_cap : 64;
     s.data = malloc(s.cap);
+    if (!s.data) { s.len = 0; s.cap = 0; return s; }
     s.len  = 0;
     s.data[0] = '\0';
     return s;
@@ -25,9 +26,11 @@ void str_clear(str_t *s) {
 
 static void str_grow(str_t *s, size_t need) {
     if (s->len + need + 1 <= s->cap) return;
-    size_t new_cap = s->cap * 2;
+    size_t new_cap = s->cap ? s->cap * 2 : 64;
     while (new_cap < s->len + need + 1) new_cap *= 2;
-    s->data = realloc(s->data, new_cap);
+    char *p = realloc(s->data, new_cap);
+    if (!p) return;  /* keep old data on OOM */
+    s->data = p;
     s->cap  = new_cap;
 }
 

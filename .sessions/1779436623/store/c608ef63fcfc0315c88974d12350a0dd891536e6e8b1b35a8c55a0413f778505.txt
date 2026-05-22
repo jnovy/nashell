@@ -1,9 +1,0 @@
-src/str.c
-src/arena.c
-src/cJSON.c
-src/store.c
-src/journal.c
-src/llm.c
-src/main.c
-src/tools.c
-src/react.c

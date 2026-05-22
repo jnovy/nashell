@@ -101,8 +101,8 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
     /* journal */
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "shell_exec", _pj, ref,
-                   out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit"); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "shell_exec", params, ref,
+                   out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit");
 
     str_free(&out);
     return make_result(exit_code == 0, meta, ref);
@@ -155,8 +155,8 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         free(trunc);
     }
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "file_read", _pj, ref,
-                   len, lines, NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "file_read", params, ref,
+                   len, lines, NULL);
 
     free(content);
     return make_result(1, meta, ref);
@@ -188,8 +188,8 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "path", path);
     cJSON_AddNumberToObject(meta, "bytes", (double)len);
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "file_write", _pj, NULL,
-                   len, count_lines(content), NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "file_write", params, NULL,
+                   len, count_lines(content), NULL);
 
     return make_result(1, meta, NULL);
 }
@@ -245,8 +245,8 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "new_chars", (double)new_len);
     if (pre_ref) cJSON_AddStringToObject(meta, "pre_ref", pre_ref);
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "file_edit", _pj, pre_ref,
-                   result_len, count_lines(result), NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "file_edit", params, pre_ref,
+                   result_len, count_lines(result), NULL);
 
     free(content);
     free(result);
@@ -318,8 +318,8 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     if (ref) cJSON_AddStringToObject(meta, "ref", ref);
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "grep_search", _pj, ref,
-                   out.len, matches, NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "grep_search", params, ref,
+                   out.len, matches, NULL);
 
     str_free(&out);
     return make_result(1, meta, ref);
@@ -348,8 +348,8 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "notes", _pj, NULL,
-                   strlen(ctx->scratchpad), 0, NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "notes", params, NULL,
+                   strlen(ctx->scratchpad), 0, NULL);
 
     return make_result(1, meta, NULL);
 }
@@ -364,8 +364,8 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "result", result);
 
-    { char *_pj = cJSON_PrintUnformatted(params); journal_append(ctx->journal, ctx->step, "done", _pj, NULL,
-                   strlen(result), 0, NULL); free(_pj); }
+    journal_append(ctx->journal, ctx->step, "done", params, NULL,
+                   strlen(result), 0, NULL);
 
     return make_result(1, meta, NULL);
 }

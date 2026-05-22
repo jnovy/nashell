@@ -1,6 +1,7 @@
 #ifndef JOURNAL_H
 #define JOURNAL_H
 
+#include "cJSON.h"
 #include <stddef.h>
 
 /* Journal handle — wraps the path to journal.jsonl */
@@ -13,14 +14,14 @@ journal_t *journal_new(const char *session_dir);
 void       journal_free(journal_t *j);
 
 /* Append a step entry to journal.jsonl
- * params_json: JSON string of tool parameters (or NULL)
+ * params: cJSON object of tool parameters (borrowed, not consumed)
  * ref: store/ reference path (or NULL)
  * size: raw output size in bytes
  * lines: line count of output
  * error: error string (or NULL for success)
  */
 int journal_append(journal_t *j, int step, const char *tool,
-                   const char *params_json, const char *ref,
+                   cJSON *params, const char *ref,
                    size_t size, int lines, const char *error);
 
 /* Build a compact manifest string for context injection.

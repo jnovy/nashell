@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <openssl/sha.h>
 
@@ -46,14 +48,15 @@ char *store_save(store_t *s, const char *content, const char *ext) {
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s.%s", s->dir, hex, e);
 
-    /* Content-addressed dedup: skip write if exists */
-    struct stat st;
-    if (stat(path, &st) != 0) {
-        FILE *f = fopen(path, "w");
-        if (!f) { free(hex); return NULL; }
-        fwrite(content, 1, clen, f);
-        fclose(f);
+    /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL
+     * Avoids TOCTOU race between stat() and fopen() */
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    if (fd >= 0) {
+        /* New file — write content */
+        write(fd, content, clen);
+        close(fd);
     }
+    /* fd < 0 && errno == EEXIST means file already exists (dedup hit) — OK */
 
     /* Return relative ref: store/<hash>.<ext> */
     char *ref = NULL;

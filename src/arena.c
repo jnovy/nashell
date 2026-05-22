@@ -6,7 +6,9 @@
 
 static arena_block_t *block_new(size_t cap) {
     arena_block_t *b = malloc(sizeof(arena_block_t));
+    if (!b) return NULL;
     b->base = malloc(cap);
+    if (!b->base) { free(b); return NULL; }
     b->used = 0;
     b->cap  = cap;
     b->next = NULL;
@@ -15,7 +17,9 @@ static arena_block_t *block_new(size_t cap) {
 
 arena_t *arena_new(size_t initial_cap) {
     arena_t *a = malloc(sizeof(arena_t));
+    if (!a) return NULL;
     a->head = block_new(initial_cap > 0 ? initial_cap : 4096);
+    if (!a->head) { free(a); return NULL; }
     a->current = a->head;
     return a;
 }

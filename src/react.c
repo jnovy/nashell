@@ -1,9 +1,12 @@
 #include "react.h"
+#include "journal.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#define MAX_SCRATCHPAD_CHARS 8192  /* limit scratchpad injection to 8K */
 
 /* Extract a JSON string field, returns NULL if missing */
 static const char *json_get_str(cJSON *obj, const char *key) {
@@ -18,12 +21,24 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
     /* System message */
     llm_chat_add(chat, "system", tools_system_prompt());
 
-    /* Inject scratchpad if exists */
-    if (ctx->tools->scratchpad && strlen(ctx->tools->scratchpad) > 0) {
-        char *scratch_msg = malloc(strlen(ctx->tools->scratchpad) + 32);
-        sprintf(scratch_msg, "[SCRATCHPAD]\n%s", ctx->tools->scratchpad);
-        llm_chat_add(chat, "user", scratch_msg);
-        free(scratch_msg);
+    /* Inject journal manifest (shows what previous steps produced) */
+    char *manifest = journal_manifest(ctx->tools->journal, 50);
+    if (manifest) {
+        llm_chat_add(chat, "user", manifest);
+        free(manifest);
+    }
+
+    /* Inject scratchpad if exists (capped at MAX_SCRATCHPAD_CHARS) */
+    if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
+        size_t slen = strlen(ctx->tools->scratchpad);
+        if (slen > MAX_SCRATCHPAD_CHARS) slen = MAX_SCRATCHPAD_CHARS;
+        char *scratch_msg = malloc(slen + 32);
+        if (scratch_msg) {
+            snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%.*s",
+                     (int)slen, ctx->tools->scratchpad);
+            llm_chat_add(chat, "user", scratch_msg);
+            free(scratch_msg);
+        }
     }
 
     /* User query */
