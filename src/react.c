@@ -97,9 +97,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
 
         if (!action_name) {
             fprintf(stderr, "\n[error] no 'action' field in response\n");
+            if (ctx->verbose) {
+                char *raw = cJSON_PrintUnformatted(action);
+                fprintf(stderr, "  parsed JSON: %.300s%s\n",
+                        raw ? raw : "(null)", raw && strlen(raw) > 300 ? "..." : "");
+                free(raw);
+            }
+            /* Retry like JSON parse failure — add response + correction prompt */
+            llm_chat_add(chat, "assistant", response);
+            llm_chat_add(chat, "user",
+                "Your JSON response is missing the required 'action' field. "
+                "Reply with ONLY a JSON object like: "
+                "{\"thought\": \"...\", \"action\": \"tool_name\", \"param\": \"value\"}\n"
+                "Available actions: shell_exec, file_read, file_write, file_edit, "
+                "grep_search, notes, done");
             cJSON_Delete(action);
             free(response);
-            break;
+            continue;
         }
 
         if (ctx->verbose) {
