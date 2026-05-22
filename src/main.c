@@ -15,11 +15,13 @@
 #define DEFAULT_API_BASE "http://192.168.1.18:8080"
 #define DEFAULT_MODEL    "qwen3.6-35b-a3b"
 
-/* Create session directory: .sessions/<timestamp>/ */
+/* Create session directory: .sessions/<epoch.NNNNN>/ */
 static char *create_session_dir(void) {
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
     char path[512];
-    time_t now = time(NULL);
-    snprintf(path, sizeof(path), ".sessions/%ld", (long)now);
+    snprintf(path, sizeof(path), ".sessions/%ld.%05ld",
+             (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(".sessions", 0755);
     mkdir(path, 0755);
     return strdup(path);

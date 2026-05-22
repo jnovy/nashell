@@ -28,11 +28,11 @@ int journal_append(journal_t *j, int step, const char *tool,
     FILE *f = fopen(j->path, "a");
     if (!f) return -1;
 
-    /* ISO 8601 timestamp */
-    time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
-    char ts[64];
-    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm);
+    /* Unix epoch timestamp with microsecond precision */
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
+    char ts[32];
+    snprintf(ts, sizeof(ts), "%ld.%05ld", (long)tp.tv_sec, tp.tv_nsec / 10000);
 
     cJSON *entry = cJSON_CreateObject();
     cJSON_AddNumberToObject(entry, "step", step);
