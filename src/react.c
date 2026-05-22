@@ -143,14 +143,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
             /* Build stats suffix */
             char stats_buf[128] = "";
             if (stats.prompt_tokens > 0 || stats.completion_tokens > 0) {
-                char pp_str[32] = "", gen_str[32] = "";
+                char pp_str[32] = "", gen_str[32] = "", ctx_str[32] = "";
                 if (stats.prompt_per_second > 0)
                     snprintf(pp_str, sizeof(pp_str), " | pp %.0f t/s", stats.prompt_per_second);
                 if (stats.predicted_per_second > 0)
                     snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s", stats.predicted_per_second);
-                snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s]",
+                if (ctx->llm->context_size > 0)
+                    snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%",
+                             (int)(100.0 * stats.prompt_tokens / ctx->llm->context_size));
+                snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s%s]",
                          stats.prompt_tokens, stats.completion_tokens,
-                         pp_str, gen_str);
+                         pp_str, gen_str, ctx_str);
             }
             if (strcmp(action_name, "done") == 0) {
                 /* For done: print step line WITHOUT stats — stats go after result */
@@ -178,9 +181,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
                 clock_gettime(CLOCK_MONOTONIC, &now2);
                 double total = (now2.tv_sec - task_start.tv_sec) +
                                (now2.tv_nsec - task_start.tv_nsec) / 1e9;
-                fprintf(stderr, "[%d→%d tok%s%s | total %.1fs]\n",
+                char ctx_str2[32] = "";
+                if (ctx->llm->context_size > 0 && stats.prompt_tokens > 0) {
+                    int pct = (int)(100.0 * stats.prompt_tokens / ctx->llm->context_size);
+                    snprintf(ctx_str2, sizeof(ctx_str2), " | ctx %d%%", pct);
+                }
+                fprintf(stderr, "[%d→%d tok%s%s%s | total %.1fs]\n",
                         stats.prompt_tokens, stats.completion_tokens,
-                        pp_str, gen_str, total);
+                        pp_str, gen_str, ctx_str2, total);
             }
             cJSON_Delete(action);
             free(response);

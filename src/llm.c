@@ -211,3 +211,41 @@ cJSON *llm_parse_action(const char *response) {
     cJSON *action = cJSON_Parse(brace);
     return action;
 }
+
+/* ── Fetch context size from /props ──────────────────────── */
+
+int llm_fetch_context_size(const char *api_base) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/props", api_base);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return 0;
+
+    str_t response = str_new(4096);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        str_free(&response);
+        return 0;
+    }
+
+    cJSON *resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) return 0;
+
+    int n_ctx = 0;
+    cJSON *dgs = cJSON_GetObjectItem(resp, "default_generation_settings");
+    if (dgs) {
+        cJSON *ctx = cJSON_GetObjectItem(dgs, "n_ctx");
+        if (ctx && cJSON_IsNumber(ctx)) n_ctx = (int)cJSON_GetNumberValue(ctx);
+    }
+
+    cJSON_Delete(resp);
+    return n_ctx;
+}

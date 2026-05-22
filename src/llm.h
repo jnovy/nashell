@@ -9,6 +9,7 @@ typedef struct {
     const char *model;          /* e.g. "qwen3.6-35b-a3b" */
     int   max_tokens;     /* max completion tokens */
     float temperature;    /* sampling temperature */
+    int   context_size;   /* server's n_ctx (0 = unknown, fetched via /props) */
 } llm_config_t;
 
 /* A single chat message */
@@ -48,5 +49,9 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
  * Returns cJSON object with thought, action, and tool-specific params.
  * Caller must cJSON_Delete. Returns NULL on parse failure. */
 cJSON *llm_parse_action(const char *response);
+
+/* Fetch the server's context window size (n_ctx) from /props endpoint.
+ * Returns n_ctx on success, 0 on failure. */
+int llm_fetch_context_size(const char *api_base);
 
 #endif

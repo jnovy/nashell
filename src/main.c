@@ -52,12 +52,18 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Fetch context size from server (once) */
+    int context_size = llm_fetch_context_size(api_base);
+    if (context_size > 0)
+        fprintf(stderr, "[info] server context: %d tokens\n", context_size);
+
     /* One-shot headless mode: run query and exit */
     if (query) {
         char *session_dir = create_session_dir();
         llm_config_t llm_cfg = {
             .api_base = api_base, .model = model,
-            .max_tokens = 4096, .temperature = 0.7
+            .max_tokens = 4096, .temperature = 0.7,
+            .context_size = context_size
         };
         store_t   *store   = store_new(session_dir);
         journal_t *journal = journal_new(session_dir);
@@ -106,7 +112,8 @@ int main(int argc, char **argv) {
             .api_base = api_base,
             .model    = model,
             .max_tokens = 4096,
-            .temperature = 0.7
+            .temperature = 0.7,
+            .context_size = context_size
         };
 
         store_t   *store   = store_new(session_dir);
