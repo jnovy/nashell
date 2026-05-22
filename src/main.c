@@ -45,12 +45,12 @@ static int jbool(cJSON *obj, const char *key, int def) {
 static void print_banner(const llm_config_t *cfg, const char *props_json) {
     /* ASCII art header with gradient blue ANSI colors */
     printf("\n");
-    printf("  \033[1m\033[38;2;80;220;255m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
-    printf("  \033[1m\033[38;2;70;190;255m( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \033[0m\n");
-    printf("  \033[1m\033[38;2;60;160;255m ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \033[0m\n");
-    printf("  \033[1m\033[38;2;50;130;255m(___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \033[0m\n");
+    printf("  \033[1m\033[38;2;80;255;120m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
+    printf("  \033[1m\033[38;2;60;220;100m( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \033[0m\n");
+    printf("  \033[1m\033[38;2;40;190;80m ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \033[0m\n");
+    printf("  \033[1m\033[38;2;30;160;60m(___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \033[0m\n");
     printf("\n");
-    printf("  \033[38;2;100;180;255m--------- * New Agentic Shell * ---------\033[0m\n");
+    printf("  \033[38;2;70;200;90m--------- * New Agentic Shell * ---------\033[0m\n");
     printf("\n");
 
     /* 1. Server props (what the server reports — the baseline) */
