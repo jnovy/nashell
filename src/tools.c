@@ -528,9 +528,7 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "matches", results.count);
-    if (results.count > 0 && out.len <= 8000) {
-        cJSON_AddStringToObject(meta, "content", out.data);
-    }
+    /* Content stored to .store/ — model reads via file_read(ref) */
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
@@ -611,19 +609,7 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     if (content_type) cJSON_AddStringToObject(meta, "content_type", content_type);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
-    /* Return content inline if small enough */
-    if (body.len > 0 && body.len <= 50000) {
-        cJSON_AddStringToObject(meta, "content", body.data);
-    } else if (body.len > 50000) {
-        char *trunc = malloc(50001);
-        if (trunc) {
-            memcpy(trunc, body.data, 50000);
-            trunc[50000] = '\0';
-            cJSON_AddStringToObject(meta, "content", trunc);
-            cJSON_AddBoolToObject(meta, "truncated", 1);
-            free(trunc);
-        }
-    }
+    /* Content stored to .store/ — model reads via file_read(ref) */
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
                    params, alias, body.len, count_lines(body.data), NULL);
@@ -736,10 +722,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)results.len);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
-    /* Inline results (usually small) */
-    if (results.len > 0 && results.len <= 8000) {
-        cJSON_AddStringToObject(meta, "content", results.data);
-    }
+    /* Content stored to .store/ — model reads via file_read(ref) */
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
                    params, alias, results.len, result_count, NULL);
