@@ -208,6 +208,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             const char *result = json_get_str(action, "result");
             final_result = result ? strdup(result) : strdup("(no result)");
 
+            /* Store result for full audit trail (journal + store/) */
+            tool_result_t tr = tool_execute(ctx->tools, action_name, action);
+            tool_result_free(&tr);
+
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             double total = (now.tv_sec - task_start.tv_sec) +
