@@ -193,6 +193,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
 
         /* Build tool result string for context */
         char *meta_str = cJSON_PrintUnformatted(tr.meta);
+
+        /* Debug: show tool output metadata */
+        if (ctx->verbose) {
+            fprintf(stderr, "  → %.*s%s\n",
+                    (int)(strlen(meta_str) < 300 ? strlen(meta_str) : 300),
+                    meta_str,
+                    strlen(meta_str) > 300 ? "..." : "");
+        }
+
         size_t result_len = strlen(meta_str) + 128;
         char *result_msg = malloc(result_len);
         snprintf(result_msg, result_len, "%s\n[step %d | %.1fs]",
