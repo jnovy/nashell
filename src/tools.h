@@ -26,7 +26,8 @@ typedef struct {
     journal_t     *journal;
     char          *session_dir;   /* .sessions/<id>/ */
     char          *scratchpad;    /* current scratchpad content (owned) */
-    int            step;          /* current step number */
+    int            step;          /* current step number (within react loop) */
+    int            react_loop;    /* react loop counter (1-based, increments per query) */
     /* Step alias tracking */
     alias_entry_t  aliases[MAX_ALIASES];
     int            alias_count;

@@ -49,7 +49,7 @@ static tool_result_t make_error(const char *msg) {
 const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *ext) {
     if (ctx->alias_count >= MAX_ALIASES) return "S?";
     alias_entry_t *a = &ctx->aliases[ctx->alias_count];
-    snprintf(a->alias, sizeof(a->alias), "S%d", ctx->alias_count);
+    snprintf(a->alias, sizeof(a->alias), "R%dS%d", ctx->react_loop, ctx->step);
     snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
     snprintf(a->ext, sizeof(a->ext), "%s", ext ? ext : "txt");
     ctx->alias_count++;
@@ -67,8 +67,8 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash, const char *e
 }
 
 const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
-    /* Check if it looks like an alias: S0, S1, S2, ... */
-    if (!alias || alias[0] != 'S' || alias[1] < '0' || alias[1] > '9')
+    /* Check if it looks like an alias: R1S1, R1S2, R2S1, ... */
+    if (!alias || alias[0] != 'R')
         return NULL;
     for (int i = 0; i < ctx->alias_count; i++) {
         if (strcmp(ctx->aliases[i].alias, alias) == 0) {

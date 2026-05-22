@@ -100,6 +100,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* User query */
     llm_chat_add(chat, "user", user_query);
 
+    /* Increment react loop counter and reset per-loop step counter */
+    ctx->tools->react_loop++;
+    ctx->tools->step = 0;
+
     /* Record system prompt and user query in journal (step 0) */
     {
         const char *sys_prompt = tools_system_prompt();
