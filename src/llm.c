@@ -294,6 +294,7 @@ static void sse_process_line(sse_state_t *st, const char *line) {
         if (finish && cJSON_IsString(finish) && finish->valuestring) {
             /* Extract stats from the final chunk */
             if (st->stats) {
+                /* Extract from usage (if present) */
                 cJSON *usage = cJSON_GetObjectItem(chunk, "usage");
                 if (usage) {
                     cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
@@ -301,6 +302,7 @@ static void sse_process_line(sse_state_t *st, const char *line) {
                     if (pt) st->stats->prompt_tokens = (int)cJSON_GetNumberValue(pt);
                     if (ct) st->stats->completion_tokens = (int)cJSON_GetNumberValue(ct);
                 }
+                /* Extract from timings (always present in llama.cpp SSE) */
                 cJSON *timings = cJSON_GetObjectItem(chunk, "timings");
                 if (timings) {
                     cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
@@ -311,6 +313,15 @@ static void sse_process_line(sse_state_t *st, const char *line) {
                     if (gps) st->stats->predicted_per_second = cJSON_GetNumberValue(gps);
                     if (dn)  st->stats->draft_n = (int)cJSON_GetNumberValue(dn);
                     if (da)  st->stats->draft_accepted = (int)cJSON_GetNumberValue(da);
+                    /* Fallback: if usage was missing, get token counts from timings */
+                    if (st->stats->prompt_tokens == 0) {
+                        cJSON *pn = cJSON_GetObjectItem(timings, "prompt_n");
+                        if (pn) st->stats->prompt_tokens = (int)cJSON_GetNumberValue(pn);
+                    }
+                    if (st->stats->completion_tokens == 0) {
+                        cJSON *cn = cJSON_GetObjectItem(timings, "predicted_n");
+                        if (cn) st->stats->completion_tokens = (int)cJSON_GetNumberValue(cn);
+                    }
                 }
             }
         }

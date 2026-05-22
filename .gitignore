@@ -1,5 +1,3 @@
 *.o
 nash
 .sessions/
-factorial
-factorial.c
