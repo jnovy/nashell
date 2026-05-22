@@ -70,7 +70,8 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
     /* Action enum: constrained to valid tool names */
     cJSON_AddItemToObject(props, "action", cJSON_Parse(
         "{\"type\":\"string\",\"enum\":[\"shell_exec\",\"file_read\",\"file_write\","
-        "\"file_edit\",\"grep_search\",\"notes\",\"done\"]}"));
+        "\"file_edit\",\"grep_search\",\"web_fetch\",\"web_search\","
+        "\"memory_store\",\"memory_recall\",\"notes\",\"done\"]}"));
     cJSON_AddItemToObject(props, "command", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "path", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "content", cJSON_Parse("{\"type\":\"string\"}"));
@@ -78,6 +79,7 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat) {
     cJSON_AddItemToObject(props, "new_text", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "pattern", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "result", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "url", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(schema, "properties", props);
 
     cJSON *required = cJSON_CreateArray();
@@ -436,7 +438,7 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
     cJSON_AddItemToObject(props, "thought", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "action", cJSON_Parse(
         "{\"type\":\"string\",\"enum\":[\"shell_exec\",\"file_read\",\"file_write\","
-        "\"file_edit\",\"grep_search\",\"notes\",\"done\"]}"));
+        "\"file_edit\",\"grep_search\",\"notes\",\"done\",\"web_fetch\",\"web_search\",\"memory_store\",\"memory_recall\"]}"));
     cJSON_AddItemToObject(props, "command", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "path", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "content", cJSON_Parse("{\"type\":\"string\"}"));
@@ -444,6 +446,7 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
     cJSON_AddItemToObject(props, "new_text", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "pattern", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(props, "result", cJSON_Parse("{\"type\":\"string\"}"));
+    cJSON_AddItemToObject(props, "url", cJSON_Parse("{\"type\":\"string\"}"));
     cJSON_AddItemToObject(schema, "properties", props);
     cJSON *required = cJSON_CreateArray();
     cJSON_AddItemToArray(required, cJSON_CreateString("thought"));

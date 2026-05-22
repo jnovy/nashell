@@ -8,8 +8,10 @@
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <curl/curl.h>
 #include <regex.h>
 #include <errno.h>
+#include <curl/curl.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -542,12 +544,222 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
 }
 
 
+/* ── web_fetch ──────────────────────────────────────────── */
+
+static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    str_t *buf = userdata;
+    size_t total = size * nmemb;
+    /* Cap at 500KB to prevent memory explosion */
+    if (buf->len + total > 512000) {
+        size_t remaining = 512000 - buf->len;
+        if (remaining > 0) str_append(buf, ptr, remaining);
+        return total;  /* tell curl we consumed it all */
+    }
+    str_append(buf, ptr, total);
+    return total;
+}
+
+static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *url_j = cJSON_GetObjectItem(params, "url");
+    if (!url_j || !url_j->valuestring)
+        return make_error("missing 'url' parameter");
+
+    const char *url = url_j->valuestring;
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return make_error("curl_easy_init failed");
+
+    str_t body = str_new(8192);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    char *content_type = NULL;
+    char *ct = NULL;
+    curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
+    if (ct) content_type = strdup(ct);
+
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "fetch failed: %s", curl_easy_strerror(res));
+        str_free(&body);
+        free(content_type);
+        return make_error(msg);
+    }
+
+    /* Store to shared store */
+    char *hash = store_save(ctx->store, body.data);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    /* Build metadata */
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "url", url);
+    cJSON_AddNumberToObject(meta, "http_code", http_code);
+    cJSON_AddNumberToObject(meta, "chars", (double)body.len);
+    cJSON_AddNumberToObject(meta, "lines", count_lines(body.data));
+    if (content_type) cJSON_AddStringToObject(meta, "content_type", content_type);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    /* Return content inline if small enough */
+    if (body.len > 0 && body.len <= 50000) {
+        cJSON_AddStringToObject(meta, "content", body.data);
+    } else if (body.len > 50000) {
+        char *trunc = malloc(50001);
+        if (trunc) {
+            memcpy(trunc, body.data, 50000);
+            trunc[50000] = '\0';
+            cJSON_AddStringToObject(meta, "content", trunc);
+            cJSON_AddBoolToObject(meta, "truncated", 1);
+            free(trunc);
+        }
+    }
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
+                   params, alias, body.len, count_lines(body.data), NULL);
+
+    free(hash);
+    free(content_type);
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    str_free(&body);
+    return make_result(http_code >= 200 && http_code < 400, meta, ref_copy);
+}
+
+/* ── web_search ────────────────────────────────────────── */
+
+static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *query_j = cJSON_GetObjectItem(params, "query");
+    if (!query_j || !query_j->valuestring)
+        return make_error("missing 'query' parameter");
+
+    const char *query = query_j->valuestring;
+
+    /* Use DuckDuckGo lite HTML search */
+    /* URL-encode the query */
+    CURL *curl = curl_easy_init();
+    if (!curl) return make_error("curl_easy_init failed");
+
+    char *encoded_q = curl_easy_escape(curl, query, 0);
+    char url[2048];
+    snprintf(url, sizeof(url), "https://lite.duckduckgo.com/lite/?q=%s", encoded_q);
+    curl_free(encoded_q);
+
+    str_t body = str_new(32768);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        char msg[512];
+        snprintf(msg, sizeof(msg), "search failed: %s", curl_easy_strerror(res));
+        str_free(&body);
+        return make_error(msg);
+    }
+
+    /* Parse DuckDuckGo lite HTML results — extract links and snippets */
+    str_t results = str_new(4096);
+    int result_count = 0;
+
+    /* Simple HTML parsing: find result links in <a class="result-link"> or <a> tags with http */
+    const char *p = body.data;
+    while (p && result_count < 10) {
+        /* Look for result links — DDG lite uses <a rel="nofollow" href="..."> */
+        const char *href = strstr(p, "href=\"http");
+        if (!href) break;
+        href += 6;  /* skip href=" */
+        const char *end = strchr(href, '"');
+        if (!end || end - href > 500) { p = href; continue; }
+
+        /* Extract URL */
+        char link[512];
+        size_t link_len = (size_t)(end - href);
+        if (link_len >= sizeof(link)) link_len = sizeof(link) - 1;
+        memcpy(link, href, link_len);
+        link[link_len] = '\0';
+
+        /* Skip DDG internal links */
+        if (strstr(link, "duckduckgo.com") || strstr(link, "duck.co")) {
+            p = end;
+            continue;
+        }
+
+        /* Try to find a title — look for text between > and < after the <a> tag */
+        const char *tag_end = strchr(end, '>');
+        char title[256] = "";
+        if (tag_end) {
+            tag_end++;
+            const char *title_end = strchr(tag_end, '<');
+            if (title_end && title_end - tag_end > 0 && title_end - tag_end < 250) {
+                size_t tlen = (size_t)(title_end - tag_end);
+                memcpy(title, tag_end, tlen);
+                title[tlen] = '\0';
+            }
+        }
+
+        if (title[0]) {
+            str_appendf(&results, "%d. %s\n   %s\n\n", result_count + 1, title, link);
+        } else {
+            str_appendf(&results, "%d. %s\n\n", result_count + 1, link);
+        }
+        result_count++;
+        p = end;
+    }
+
+    if (result_count == 0) {
+        str_append_cstr(&results, "(no results found)\n");
+    }
+
+    /* Store results */
+    char *hash = store_save(ctx->store, results.data);
+    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "query", query);
+    cJSON_AddNumberToObject(meta, "results", result_count);
+    cJSON_AddNumberToObject(meta, "chars", (double)results.len);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    /* Inline results (usually small) */
+    if (results.len > 0 && results.len <= 8000) {
+        cJSON_AddStringToObject(meta, "content", results.data);
+    }
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
+                   params, alias, results.len, result_count, NULL);
+
+    free(hash);
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    str_free(&results);
+    str_free(&body);
+    return make_result(1, meta, ref_copy);
+}
+
+
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "shell_exec")  == 0) return tool_shell_exec(ctx, params);
     if (strcmp(action, "file_read")   == 0) return tool_file_read(ctx, params);
     if (strcmp(action, "file_write")  == 0) return tool_file_write(ctx, params);
     if (strcmp(action, "file_edit")   == 0) return tool_file_edit(ctx, params);
     if (strcmp(action, "grep_search") == 0) return tool_grep_search(ctx, params);
+    if (strcmp(action, "web_fetch")   == 0) return tool_web_fetch(ctx, params);
+    if (strcmp(action, "web_search")  == 0) return tool_web_search(ctx, params);
     if (strcmp(action, "notes")       == 0) return tool_notes(ctx, params);
     if (strcmp(action, "done")        == 0) return tool_done(ctx, params);
     if (strcmp(action, "memory_store") == 0) return tool_memory_store(ctx, params);
@@ -591,6 +803,19 @@ const char *tools_system_prompt(void) {
     "\n"
     "grep_search(pattern, path) - Search files with regex. Results stored.\n"
     "  Returns: {pattern, path, matches, chars, ref}\n"
+    "\n"
+    "web_fetch(url) - Fetch a URL. Content stored; you see metadata.\n"
+    "  Returns: {url, chars, lines, ref, content_type}\n"
+    "\n"
+    "web_search(query) - Search the web via DuckDuckGo. Results stored.\n"
+    "  Returns: {query, results_count, chars, ref}\n"
+    "\n"
+    "memory_store(key, value, tags) - Save knowledge for future sessions.\n"
+    "  key format: lesson:name, strategy:name, fact:name, task:name\n"
+    "  Returns: {status, key, ref}\n"
+    "\n"
+    "memory_recall(query) - Search saved knowledge by keyword.\n"
+    "  Returns: {query, results_count, results}\n"
     "\n"
     "notes(content) - Save persistent scratchpad. Survives context resets.\n"
     "  Returns: {status, ref}\n"
