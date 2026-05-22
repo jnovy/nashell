@@ -8,6 +8,12 @@
 
 #define MAX_SCRATCHPAD_CHARS 8192  /* limit scratchpad injection to 8K */
 
+static int count_lines(const char *s) {
+    int n = 0;
+    for (; *s; s++) if (*s == '\n') n++;
+    return n;
+}
+
 /* Extract a JSON string field, returns NULL if missing */
 static const char *json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
@@ -43,6 +49,24 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
 
     /* User query */
     llm_chat_add(chat, "user", user_query);
+
+    /* Record system prompt and user query in journal (step 0) */
+    {
+        const char *sys_prompt = tools_system_prompt();
+        char *sys_ref = store_save(ctx->tools->store, sys_prompt, "txt");
+        cJSON *sys_p = cJSON_CreateObject();
+        cJSON_AddStringToObject(sys_p, "type", "system_prompt");
+        journal_append(ctx->tools->journal, 0, "system", sys_p, sys_ref,
+                       strlen(sys_prompt), count_lines(sys_prompt), NULL);
+        cJSON_Delete(sys_p);
+        free(sys_ref);
+
+        cJSON *q_p = cJSON_CreateObject();
+        cJSON_AddStringToObject(q_p, "text", user_query);
+        journal_append(ctx->tools->journal, 0, "query", q_p, NULL,
+                       strlen(user_query), 0, NULL);
+        cJSON_Delete(q_p);
+    }
 
     char *final_result = NULL;
     struct timespec task_start;
