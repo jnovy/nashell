@@ -27,14 +27,16 @@ static char *create_session_dir(void) {
     return strdup(path);
 }
 
-static void print_banner(const char *api_base, const char *model_name,
-                         int context_size) {
+/* Print banner showing the ACTUAL running configuration */
+static void print_banner(const llm_config_t *cfg) {
     printf("nash - agentic shell prototype\n");
-    printf("model:  %s\n", model_name ? model_name : "(unknown)");
-    printf("server: %s", api_base);
-    if (context_size > 0)
-        printf(" (%dk context)", context_size / 1024);
-    printf("\n\n");
+    printf("model:  %s\n", cfg->model ? cfg->model : "(unknown)");
+    printf("server: %s", cfg->api_base ? cfg->api_base : "(none)");
+    if (cfg->context_size > 0)
+        printf(" (%dk context)", cfg->context_size / 1024);
+    printf("\n");
+    printf("config: temp=%.1f max_tokens=%d\n", cfg->temperature, cfg->max_tokens);
+    printf("\n");
 }
 
 int main(int argc, char **argv) {
@@ -57,15 +59,21 @@ int main(int argc, char **argv) {
     int context_size = llm_fetch_context_size(api_base);
     char *server_model = llm_fetch_model_name(api_base);
 
+    /* Build the LLM config ONCE — this is the actual running configuration */
+    llm_config_t llm_cfg = {
+        .api_base     = api_base,
+        .model        = server_model,
+        .max_tokens   = 4096,
+        .temperature  = 0.7,
+        .context_size = context_size,
+    };
+
+    /* Print banner showing the actual config that will be used */
+    print_banner(&llm_cfg);
+
     /* One-shot headless mode: run query and exit */
     if (query) {
-        print_banner(api_base, server_model, context_size);
         char *session_dir = create_session_dir();
-        llm_config_t llm_cfg = {
-            .api_base = api_base, .model = server_model,
-            .max_tokens = 4096, .temperature = 0.7,
-            .context_size = context_size
-        };
         store_t   *store   = store_new(session_dir);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
@@ -85,8 +93,6 @@ int main(int argc, char **argv) {
         free(server_model);
         return result ? 0 : 1;
     }
-
-    print_banner(api_base, server_model, context_size);
 
     /* Main input loop */
     char *line;
@@ -108,15 +114,6 @@ int main(int argc, char **argv) {
         /* Create a fresh session for each query */
         char *session_dir = create_session_dir();
         printf("[session: %s]\n", session_dir);
-
-        /* Initialize components */
-        llm_config_t llm_cfg = {
-            .api_base = api_base,
-            .model    = server_model,
-            .max_tokens = 4096,
-            .temperature = 0.7,
-            .context_size = context_size
-        };
 
         store_t   *store   = store_new(session_dir);
         journal_t *journal = journal_new(session_dir);
