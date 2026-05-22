@@ -34,6 +34,7 @@ static void print_banner(void) {
 int main(int argc, char **argv) {
     const char *api_base = DEFAULT_API_BASE;
     const char *model    = DEFAULT_MODEL;
+    const char *query    = NULL;  /* -p: one-shot headless mode */
 
     /* Simple arg parsing */
     for (int i = 1; i < argc; i++) {
@@ -41,10 +42,38 @@ int main(int argc, char **argv) {
             api_base = argv[++i];
         else if (strcmp(argv[i], "--model") == 0 && i + 1 < argc)
             model = argv[++i];
+        else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc)
+            query = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [--model NAME]\n");
+            printf("Usage: nash [--api URL] [--model NAME] [-p QUERY]\n");
             return 0;
         }
+    }
+
+    /* One-shot headless mode: run query and exit */
+    if (query) {
+        char *session_dir = create_session_dir();
+        llm_config_t llm_cfg = {
+            .api_base = api_base, .model = model,
+            .max_tokens = 4096, .temperature = 0.7
+        };
+        store_t   *store   = store_new(session_dir);
+        journal_t *journal = journal_new(session_dir);
+        tool_ctx_t tools = {
+            .store = store, .journal = journal,
+            .session_dir = session_dir, .scratchpad = NULL
+        };
+        react_ctx_t react = {
+            .llm = &llm_cfg, .tools = &tools,
+            .max_steps = MAX_REACT_STEPS, .verbose = 1,
+        };
+        char *result = react_run(&react, query);
+        if (result) { printf("%s\n", result); free(result); }
+        if (tools.scratchpad) free(tools.scratchpad);
+        journal_free(journal);
+        store_free(store);
+        free(session_dir);
+        return result ? 0 : 1;
     }
 
     print_banner();
