@@ -196,10 +196,17 @@ int main(int argc, char **argv) {
             char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
             if (result) {
                 printf("\n--- Result ---\n%s\n\n", result);
-                free(result);
             } else {
                 printf("\n[no result]\n\n");
             }
+
+            /* Save last exchange for next react loop's context */
+            if (react.last_query) free(react.last_query);
+            if (react.last_result) free(react.last_result);
+            react.last_query = strdup(line);
+            react.last_result = result ? result : strdup("(no result)");
+            /* Don't free result — it's now owned by react.last_result */
+            if (!result) { /* only free the strdup'd "(no result)" on next iteration */ }
 
             free(line);
         }

@@ -97,6 +97,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
     }
 
+    /* Inject last exchange summary for cross-query context (handles "do the same..." references) */
+    if (ctx->last_query && ctx->last_result) {
+        char last_ex[1024];
+        snprintf(last_ex, sizeof(last_ex),
+                 "[Previous query: \"%.200s\" → \"%.500s\"]",
+                 ctx->last_query, ctx->last_result);
+        llm_chat_add(chat, "user", last_ex);
+    }
+
     /* User query */
     llm_chat_add(chat, "user", user_query);
 
@@ -315,6 +324,55 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         llm_chat_add(chat, "assistant", response);
         llm_chat_add(chat, "user", result_msg);
 
+        /* Within-loop context management: evict old messages when context gets full */
+        if (ctx->llm->context_size > 0) {
+            int total_chars = 0;
+            for (int i = 0; i < chat->n_msgs; i++)
+                total_chars += (int)strlen(chat->msgs[i].content);
+            int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
+            if (usage_pct > 70 && chat->n_msgs > 6) {
+                /* Keep: first 3 msgs (system + manifest + scratchpad/query) + last 4 */
+                int keep_head = 3;
+                int keep_tail = 4;
+                int evict_start = keep_head;
+                int evict_end = chat->n_msgs - keep_tail;
+                if (evict_end > evict_start) {
+                    /* Free evicted messages */
+                    for (int i = evict_start; i < evict_end; i++) {
+                        free(chat->msgs[i].role);
+                        free(chat->msgs[i].content);
+                    }
+                    /* Shift tail messages down */
+                    int tail_count = chat->n_msgs - evict_end;
+                    memmove(&chat->msgs[evict_start], &chat->msgs[evict_end],
+                            tail_count * sizeof(llm_msg_t));
+                    chat->n_msgs = evict_start + tail_count;
+
+                    /* Re-inject fresh manifest at position keep_head */
+                    char *fresh_manifest = journal_manifest(ctx->tools->journal, 50);
+                    if (fresh_manifest) {
+                        /* Insert manifest as a new message at keep_head */
+                        if (chat->n_msgs >= chat->cap_msgs) {
+                            chat->cap_msgs *= 2;
+                            chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+                        }
+                        memmove(&chat->msgs[evict_start + 1], &chat->msgs[evict_start],
+                                (chat->n_msgs - evict_start) * sizeof(llm_msg_t));
+                        chat->msgs[evict_start].role = strdup("user");
+                        chat->msgs[evict_start].content = fresh_manifest;
+                        chat->n_msgs++;
+                    }
+
+                    /* Emit warning */
+                    react_event_t ev = {0};
+                    ev.type = REACT_EVENT_WARNING;
+                    ev.step = step + 1;
+                    ev.message = "Context compacted — old messages evicted, manifest refreshed";
+                    emit(on_event, userdata, &ev);
+                }
+            }
+        }
+
         /* Cleanup */
         free(meta_str);
         free(result_msg);
@@ -324,6 +382,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     llm_chat_free(chat);
+
+    /* Save last query+result for next react loop's context injection */
+    if (ctx->last_query) free(ctx->last_query);
+    if (ctx->last_result) free(ctx->last_result);
+    ctx->last_query = strdup(user_query);
+    ctx->last_result = final_result ? strdup(final_result) : NULL;
+
     /* Increment react loop counter for next query */
     ctx->tools->react_loop++;
 

@@ -58,53 +58,77 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
 
 char *journal_manifest(journal_t *j, int max_steps) {
     FILE *f = fopen(j->path, "r");
-    if (!f) return strdup("Journal: (empty)");
+    if (!f) return strdup("Session history: (empty — new session)");
 
-    str_t out = str_new(1024);
-    str_append_cstr(&out, "Journal:\n");
+    str_t out = str_new(2048);
+    str_append_cstr(&out, "Session history:\n");
 
     char line[65536];
     int count = 0;
+    int current_loop = -1;
+
     while (fgets(line, sizeof(line), f) && count < max_steps) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
 
+        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
         int step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
         const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
         const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
         double sz = cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
-        const char *err = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "error"));
-
-        /* Extract key param for display */
         cJSON *params = cJSON_GetObjectItem(entry, "params");
-        const char *key_param = "";
-        if (params) {
-            cJSON *cmd = cJSON_GetObjectItem(params, "command");
-            cJSON *p = cJSON_GetObjectItem(params, "path");
-            cJSON *q = cJSON_GetObjectItem(params, "query");
-            if (cmd && cmd->valuestring) key_param = cmd->valuestring;
-            else if (p && p->valuestring) key_param = p->valuestring;
-            else if (q && q->valuestring) key_param = q->valuestring;
-        }
 
-        char buf[512];
-        if (err) {
-            snprintf(buf, sizeof(buf), "  S%d: %s \"%.60s\" -> ERROR: %.80s (%d chars)\n",
-                     step, tool ? tool : "?", key_param, err, (int)sz);
-        } else {
-            snprintf(buf, sizeof(buf), "  S%d: %s \"%.60s\" -> %d chars",
-                     step, tool ? tool : "?", key_param, (int)sz);
-            str_append_cstr(&out, buf);
-            if (ref) {
-                snprintf(buf, sizeof(buf), " [%s]", ref);
-                str_append_cstr(&out, buf);
+        /* New react loop — show header with query text */
+        if (loop != current_loop) {
+            current_loop = loop;
+            if (loop > 0) str_append_cstr(&out, "\n");
+            str_appendf(&out, "  [Query R%d]", loop);
+
+            /* Look for the query text in this entry or next */
+            if (tool && strcmp(tool, "query") == 0 && params) {
+                cJSON *text = cJSON_GetObjectItem(params, "text");
+                if (text && text->valuestring) {
+                    char truncated[101];
+                    snprintf(truncated, sizeof(truncated), "%.100s", text->valuestring);
+                    str_appendf(&out, " \"%s\"", truncated);
+                }
             }
             str_append_cstr(&out, "\n");
+        }
+
+        /* Skip system and query entries (already shown in header) */
+        if (tool && (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0)) {
             cJSON_Delete(entry);
             count++;
             continue;
         }
+
+        /* Extract key param for display */
+        const char *key_param = "";
+        if (params) {
+            cJSON *cmd = cJSON_GetObjectItem(params, "command");
+            cJSON *p = cJSON_GetObjectItem(params, "path");
+            cJSON *pat = cJSON_GetObjectItem(params, "pattern");
+            cJSON *res = cJSON_GetObjectItem(params, "result");
+            if (cmd && cmd->valuestring) key_param = cmd->valuestring;
+            else if (p && p->valuestring) key_param = p->valuestring;
+            else if (pat && pat->valuestring) key_param = pat->valuestring;
+            else if (res && res->valuestring) key_param = res->valuestring;
+        }
+
+        /* Format: "    R0S1: shell_exec "ls -la" → 473 chars" */
+        char buf[512];
+        if (tool && strcmp(tool, "done") == 0) {
+            /* Show result for done actions */
+            snprintf(buf, sizeof(buf), "    %s: → \"%.100s\"",
+                     ref ? ref : "?", key_param);
+        } else {
+            snprintf(buf, sizeof(buf), "    %s: %s \"%.80s\" → %d chars",
+                     ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);
+        }
         str_append_cstr(&out, buf);
+        str_append_cstr(&out, "\n");
+
         cJSON_Delete(entry);
         count++;
     }
