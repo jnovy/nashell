@@ -1,0 +1,168 @@
+#include "react.h"
+#include "cJSON.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* Extract a JSON string field, returns NULL if missing */
+static const char *json_get_str(cJSON *obj, const char *key) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item && cJSON_IsString(item)) return item->valuestring;
+    return NULL;
+}
+
+char *react_run(react_ctx_t *ctx, const char *user_query) {
+    llm_chat_t *chat = llm_chat_new();
+
+    /* System message */
+    llm_chat_add(chat, "system", tools_system_prompt());
+
+    /* Inject scratchpad if exists */
+    if (ctx->tools->scratchpad && strlen(ctx->tools->scratchpad) > 0) {
+        char *scratch_msg = malloc(strlen(ctx->tools->scratchpad) + 32);
+        sprintf(scratch_msg, "[SCRATCHPAD]\n%s", ctx->tools->scratchpad);
+        llm_chat_add(chat, "user", scratch_msg);
+        free(scratch_msg);
+    }
+
+    /* User query */
+    llm_chat_add(chat, "user", user_query);
+
+    char *final_result = NULL;
+    struct timespec task_start;
+    clock_gettime(CLOCK_MONOTONIC, &task_start);
+
+    /* Action signature tracking for cycling detection */
+    char last_sigs[8][256];
+    int sig_count = 0;
+
+    for (int step = 0; step < ctx->max_steps; step++) {
+        ctx->tools->step = step + 1;
+
+        if (ctx->verbose) {
+            fprintf(stderr, "\r\033[K[step %d/%d] thinking...", step + 1, ctx->max_steps);
+            fflush(stderr);
+        }
+
+        /* Call LLM */
+        struct timespec step_start;
+        clock_gettime(CLOCK_MONOTONIC, &step_start);
+
+        char *response = llm_complete(ctx->llm, chat);
+        if (!response) {
+            fprintf(stderr, "\n[error] LLM call failed\n");
+            break;
+        }
+
+        struct timespec step_end;
+        clock_gettime(CLOCK_MONOTONIC, &step_end);
+        double step_elapsed = (step_end.tv_sec - step_start.tv_sec) +
+                              (step_end.tv_nsec - step_start.tv_nsec) / 1e9;
+
+        /* Parse JSON response — strip markdown fences if present */
+        cJSON *action = llm_parse_action(response);
+
+        if (!action) {
+            fprintf(stderr, "\n[error] failed to parse LLM response as JSON\n");
+            if (ctx->verbose) fprintf(stderr, "  raw: %.200s...\n", response);
+            /* Add as assistant message and ask to retry */
+            llm_chat_add(chat, "assistant", response);
+            llm_chat_add(chat, "user",
+                "Your response was not valid JSON. "
+                "Reply with ONLY a JSON object: "
+                "{\"thought\": \"...\", \"action\": \"tool_name\", ...}");
+            free(response);
+            continue;
+        }
+
+        const char *thought = json_get_str(action, "thought");
+        const char *action_name = json_get_str(action, "action");
+
+        if (!action_name) {
+            fprintf(stderr, "\n[error] no 'action' field in response\n");
+            cJSON_Delete(action);
+            free(response);
+            break;
+        }
+
+        if (ctx->verbose) {
+            fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)\n",
+                    step + 1, action_name,
+                    thought ? thought : "", step_elapsed);
+        }
+
+        /* Check for done */
+        if (strcmp(action_name, "done") == 0) {
+            const char *result = json_get_str(action, "result");
+            final_result = result ? strdup(result) : strdup("(no result)");
+            cJSON_Delete(action);
+            free(response);
+            break;
+        }
+
+        /* Cycling detection */
+        char sig[256];
+        const char *cmd = json_get_str(action, "command");
+        const char *path = json_get_str(action, "path");
+        const char *pattern = json_get_str(action, "pattern");
+        snprintf(sig, sizeof(sig), "%s:%s:%s:%s",
+                 action_name,
+                 cmd ? cmd : "",
+                 path ? path : "",
+                 pattern ? pattern : "");
+
+        int repeated = 0;
+        for (int i = 0; i < sig_count && i < 8; i++) {
+            if (strcmp(last_sigs[i], sig) == 0) repeated++;
+        }
+        if (sig_count < 8) {
+            strncpy(last_sigs[sig_count], sig, 255);
+            last_sigs[sig_count][255] = '\0';
+            sig_count++;
+        } else {
+            memmove(last_sigs, last_sigs + 1, 7 * 256);
+            strncpy(last_sigs[7], sig, 255);
+            last_sigs[7][255] = '\0';
+        }
+
+        if (repeated >= 2) {
+            fprintf(stderr, "\n[warning] cycling detected — same action repeated %d times\n",
+                    repeated + 1);
+        }
+
+        /* Execute tool */
+        tool_result_t tr = tool_execute(ctx->tools, action_name, action);
+
+        /* Build step metadata */
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double total_elapsed = (now.tv_sec - task_start.tv_sec) +
+                               (now.tv_nsec - task_start.tv_nsec) / 1e9;
+
+        /* Build tool result string for context */
+        char *meta_str = cJSON_PrintUnformatted(tr.meta);
+        size_t result_len = strlen(meta_str) + 128;
+        char *result_msg = malloc(result_len);
+        snprintf(result_msg, result_len, "%s\n[step %d | %.1fs]",
+                 meta_str, step + 1, total_elapsed);
+
+        /* Add assistant + tool result to chat */
+        llm_chat_add(chat, "assistant", response);
+        llm_chat_add(chat, "user", result_msg);
+
+        /* Cleanup */
+        free(meta_str);
+        free(result_msg);
+        tool_result_free(&tr);
+        cJSON_Delete(action);
+        free(response);
+    }
+
+    if (ctx->verbose) {
+        fprintf(stderr, "\r\033[K");
+    }
+
+    llm_chat_free(chat);
+    return final_result ? final_result : strdup("(no result — max steps reached)");
+}

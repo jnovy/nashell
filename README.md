@@ -1,0 +1,1 @@
+nash - agentic shell prototype
