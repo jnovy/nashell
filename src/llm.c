@@ -4,6 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>  /* sleep */
+
+#define LLM_MAX_RETRIES    10
+#define LLM_RETRY_BASE_SEC 10  /* linear backoff: 10s, 20s, 30s, ... */
 
 /* ── Chat management ─────────────────────────────────────────── */
 
@@ -115,52 +119,80 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
     char *req_body = build_request(cfg, chat);
     if (!req_body) return NULL;
 
-    CURL *curl = curl_easy_init();
-    if (!curl) { free(req_body); return NULL; }
-
+    cJSON *resp = NULL;
     str_t response = str_new(4096);
 
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+    for (int attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+        /* Reset response buffer for each attempt */
+        str_clear(&response);
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  /* 5 min timeout */
+        CURL *curl = curl_easy_init();
+        if (!curl) { free(req_body); str_free(&response); return NULL; }
 
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+
+        CURLcode res = curl_easy_perform(curl);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            int delay = attempt * LLM_RETRY_BASE_SEC;
+            fprintf(stderr, "[llm] curl error: %s (attempt %d/%d, retry in %ds)\n",
+                    curl_easy_strerror(res), attempt, LLM_MAX_RETRIES, delay);
+            if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
+            free(req_body); str_free(&response);
+            return NULL;
+        }
+
+        /* Parse response JSON */
+        resp = cJSON_Parse(response.data);
+        str_free(&response);
+        if (!resp) {
+            int delay = attempt * LLM_RETRY_BASE_SEC;
+            fprintf(stderr, "[llm] failed to parse response JSON (attempt %d/%d, retry in %ds)\n",
+                    attempt, LLM_MAX_RETRIES, delay);
+            if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
+            free(req_body);
+            return NULL;
+        }
+
+        /* Check for API error in response */
+        cJSON *choices = cJSON_GetObjectItem(resp, "choices");
+        if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
+            cJSON *err = cJSON_GetObjectItem(resp, "error");
+            if (err) {
+                cJSON *msg = cJSON_GetObjectItem(err, "message");
+                int delay = attempt * LLM_RETRY_BASE_SEC;
+                fprintf(stderr, "[llm] API error: %s (attempt %d/%d, retry in %ds)\n",
+                        msg ? msg->valuestring : "unknown", attempt, LLM_MAX_RETRIES, delay);
+                cJSON_Delete(resp); resp = NULL;
+                if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
+                free(req_body);
+                return NULL;
+            }
+            /* No error field but no choices — unexpected, don't retry */
+            cJSON_Delete(resp);
+            free(req_body);
+            return NULL;
+        }
+
+        /* Success — break out of retry loop */
+        break;
+    }
     free(req_body);
 
-    if (res != CURLE_OK) {
-        fprintf(stderr, "[llm] curl error: %s\n", curl_easy_strerror(res));
-        str_free(&response);
-        return NULL;
-    }
-
-    /* Parse response JSON */
-    cJSON *resp = cJSON_Parse(response.data);
-    str_free(&response);
-    if (!resp) {
-        fprintf(stderr, "[llm] failed to parse response JSON\n");
-        return NULL;
-    }
+    if (!resp) return NULL;  /* should not happen, but safety */
 
     /* Extract choices[0].message.content */
     cJSON *choices = cJSON_GetObjectItem(resp, "choices");
-    if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
-        /* Check for error */
-        cJSON *err = cJSON_GetObjectItem(resp, "error");
-        if (err) {
-            cJSON *msg = cJSON_GetObjectItem(err, "message");
-            if (msg) fprintf(stderr, "[llm] API error: %s\n", msg->valuestring);
-        }
-        cJSON_Delete(resp);
-        return NULL;
-    }
 
     cJSON *choice0 = cJSON_GetArrayItem(choices, 0);
     cJSON *message = cJSON_GetObjectItem(choice0, "message");
@@ -448,41 +480,55 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
         .stats        = stats,
     };
 
-    CURL *curl = curl_easy_init();
-    if (!curl) { free(req_body); str_free(&st.line_buf); str_free(&st.full_content); return NULL; }
+    /* Retry loop with linear backoff */
+    char *result = NULL;
+    for (int attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+        /* Reset SSE state for each attempt */
+        str_clear(&st.line_buf);
+        str_clear(&st.full_content);
+        if (stats) memset(stats, 0, sizeof(*stats));
 
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
+        CURL *curl = curl_easy_init();
+        if (!curl) { free(req_body); str_free(&st.line_buf); str_free(&st.full_content); return NULL; }
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+
+        CURLcode res = curl_easy_perform(curl);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+
+        if (res == CURLE_OK && st.full_content.len > 0) {
+            /* Success */
+            if (st.line_buf.len > 0)
+                sse_process_line(&st, str_cstr(&st.line_buf));
+            result = str_steal(&st.full_content);
+            break;
+        }
+
+        /* Failure — retry with backoff */
+        if (attempt < LLM_MAX_RETRIES) {
+            int delay = attempt * LLM_RETRY_BASE_SEC;
+            fprintf(stderr, "[llm] %s, retry %d/%d in %ds...\n",
+                    res != CURLE_OK ? curl_easy_strerror(res) : "empty response",
+                    attempt, LLM_MAX_RETRIES, delay);
+            sleep(delay);
+        } else {
+            fprintf(stderr, "[llm] failed after %d attempts\n", LLM_MAX_RETRIES);
+        }
+    }
+
     free(req_body);
-
-    /* Process any remaining data in line buffer */
-    if (st.line_buf.len > 0)
-        sse_process_line(&st, str_cstr(&st.line_buf));
     str_free(&st.line_buf);
-
-    if (res != CURLE_OK) {
-        str_free(&st.full_content);
-        return NULL;
-    }
-
-    /* Return assembled content */
-    if (st.full_content.len == 0) {
-        str_free(&st.full_content);
-        return NULL;
-    }
-
-    return str_steal(&st.full_content);
+    if (!result) str_free(&st.full_content);
+    return result;
 }
 
 /* ── Fetch model name from /v1/models ──────────────────────── */
