@@ -1,0 +1,2 @@
+{"step":0,"ts":"1779444960.36649","tool":"system","params":{"type":"system_prompt"},"ref":"store/085e061fdeaadbb4264cab5f93d343662a33a19e7de9422c84777ee505877cf6.txt","size":1459,"lines":36}
+{"step":0,"ts":"1779444960.36650","tool":"query","params":{"text":"what is 2+2?"},"size":12,"lines":0}

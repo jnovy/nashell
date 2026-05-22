@@ -7,8 +7,6 @@
 #include <string.h>
 #include <time.h>
 
-#define MAX_SCRATCHPAD_CHARS 8192
-
 /* ── helpers ─────────────────────────────────────────── */
 
 static int count_lines(const char *s) {
@@ -78,10 +76,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(manifest);
     }
 
-    /* Inject scratchpad if exists (capped) */
+    /* Compute scratchpad limit from context size (5% of context, min 2K, max 32K) */
+    size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
+    if (ctx->llm->context_size > 0) {
+        max_scratchpad = (size_t)ctx->llm->context_size * 4 / 20;  /* ~5% in chars (~4 chars/tok) */
+        if (max_scratchpad < 2048)  max_scratchpad = 2048;
+        if (max_scratchpad > 32768) max_scratchpad = 32768;
+    }
+
+    /* Inject scratchpad if exists (capped at computed limit) */
     if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
         size_t slen = strlen(ctx->tools->scratchpad);
-        if (slen > MAX_SCRATCHPAD_CHARS) slen = MAX_SCRATCHPAD_CHARS;
+        if (slen > max_scratchpad) slen = max_scratchpad;
         char *scratch_msg = malloc(slen + 32);
         if (scratch_msg) {
             snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%.*s",
