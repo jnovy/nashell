@@ -103,9 +103,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         }
 
         if (ctx->verbose) {
+            /* Show the key parameter for each tool, not the thought */
+            const char *desc = NULL;
+            if (strcmp(action_name, "shell_exec") == 0)
+                desc = json_get_str(action, "command");
+            else if (strcmp(action_name, "file_read") == 0 ||
+                     strcmp(action_name, "file_write") == 0 ||
+                     strcmp(action_name, "file_edit") == 0)
+                desc = json_get_str(action, "path");
+            else if (strcmp(action_name, "grep_search") == 0)
+                desc = json_get_str(action, "pattern");
+            else if (strcmp(action_name, "done") == 0)
+                desc = thought;  /* for done, show the thought/summary */
+            else if (strcmp(action_name, "notes") == 0)
+                desc = "[saving notes]";
+            if (!desc) desc = thought ? thought : "";
+            /* Truncate long descriptions for display */
+            char desc_buf[201];
+            if (strlen(desc) > 200) {
+                memcpy(desc_buf, desc, 197);
+                desc_buf[197] = '.'; desc_buf[198] = '.'; desc_buf[199] = '.'; desc_buf[200] = '\0';
+                desc = desc_buf;
+            }
             fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)\n",
-                    step + 1, action_name,
-                    thought ? thought : "", step_elapsed);
+                    step + 1, action_name, desc, step_elapsed);
         }
 
         /* Check for done */

@@ -1,0 +1,40 @@
+Handle 0x0003, DMI type 16, 23 bytes
+	Error Correction Type: None
+Handle 0x0004, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x0005, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x0006, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x0007, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x0008, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x0009, DMI type 17, 92 bytes
+	Type: LPDDR5
+	Type Detail: Synchronous
+	Speed: 7500 MT/s
+	Configured Memory Speed: 7467 MT/s
+	Configured Voltage: 0.5 V
+Handle 0x000A, DMI type 17, 92 bytes
+	Type: LPDDR5
