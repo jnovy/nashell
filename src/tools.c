@@ -133,7 +133,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
     cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "shell_exec", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "shell_exec", params, alias,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit");
 
     char *ref_copy = strdup(alias);
@@ -194,7 +194,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
-    journal_append(ctx->journal, ctx->step, "file_read", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_read", params, alias,
                    len, lines, NULL);
 
     char *ref_copy = strdup(alias);
@@ -235,7 +235,7 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "bytes", (double)len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "file_write", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_write", params, alias,
                    len, count_lines(content), NULL);
 
     char *ref_copy = strdup(alias);
@@ -300,7 +300,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "path", path);
     cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
 
-    journal_append(ctx->journal, ctx->step, "file_edit", params, pre_alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, pre_alias,
                    result_len, count_lines(result), NULL);
 
     free(content);
@@ -378,7 +378,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "grep_search", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "grep_search", params, alias,
                    out.len, matches, NULL);
 
     char *ref_copy = strdup(alias);
@@ -415,7 +415,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", "ok");
     cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "notes", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
                    strlen(ctx->scratchpad), 0, NULL);
 
     char *ref_copy = strdup(alias);
@@ -438,7 +438,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "result", result);
     cJSON_AddStringToObject(meta, "ref", alias);
 
-    journal_append(ctx->journal, ctx->step, "done", params, alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "done", params, alias,
                    strlen(result), 0, NULL);
 
     char *ref_copy = strdup(alias);

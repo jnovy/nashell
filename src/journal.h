@@ -20,7 +20,7 @@ void       journal_free(journal_t *j);
  * lines: line count of output
  * error: error string (or NULL for success)
  */
-int journal_append(journal_t *j, int step, const char *tool,
+int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error);
 

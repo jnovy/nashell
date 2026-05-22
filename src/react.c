@@ -111,14 +111,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
         cJSON *sys_p = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_p, "type", "system_prompt");
-        journal_append(ctx->tools->journal, 0, "system", sys_p, sys_alias,
+        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
                        strlen(sys_prompt), count_lines(sys_prompt), NULL);
         cJSON_Delete(sys_p);
         free(sys_hash);
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
-        journal_append(ctx->tools->journal, 0, "query", q_p, NULL,
+        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, NULL,
                        strlen(user_query), 0, NULL);
         cJSON_Delete(q_p);
     }
