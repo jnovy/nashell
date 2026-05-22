@@ -418,3 +418,57 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
 
     return str_steal(&st.full_content);
 }
+
+/* ── Fetch model name from /v1/models ──────────────────────── */
+
+char *llm_fetch_model_name(const char *api_base) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/v1/models", api_base);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    str_t response = str_new(4096);
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        str_free(&response);
+        return NULL;
+    }
+
+    cJSON *resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) return NULL;
+
+    char *model_name = NULL;
+
+    /* Try OpenAI format: data[0].id */
+    cJSON *data = cJSON_GetObjectItem(resp, "data");
+    if (data && cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
+        cJSON *first = cJSON_GetArrayItem(data, 0);
+        cJSON *id = cJSON_GetObjectItem(first, "id");
+        if (id && id->valuestring)
+            model_name = strdup(id->valuestring);
+    }
+
+    /* Fallback: try models[0].model (Ollama format) */
+    if (!model_name) {
+        cJSON *models = cJSON_GetObjectItem(resp, "models");
+        if (models && cJSON_IsArray(models) && cJSON_GetArraySize(models) > 0) {
+            cJSON *first = cJSON_GetArrayItem(models, 0);
+            cJSON *m = cJSON_GetObjectItem(first, "model");
+            if (m && m->valuestring)
+                model_name = strdup(m->valuestring);
+        }
+    }
+
+    cJSON_Delete(resp);
+    return model_name;
+}

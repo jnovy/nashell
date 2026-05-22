@@ -28,10 +28,14 @@ static char *create_session_dir(void) {
     return strdup(path);
 }
 
-static void print_banner(void) {
+static void print_banner(const char *api_base, const char *model_name,
+                         int context_size) {
     printf("nash - agentic shell prototype\n");
-    printf("LLM: %s (%s)\n", DEFAULT_API_BASE, DEFAULT_MODEL);
-    printf("Type a task, or 'quit' to exit.\n\n");
+    printf("model:  %s\n", model_name ? model_name : "(unknown)");
+    printf("server: %s", api_base);
+    if (context_size > 0)
+        printf(" (%dk context)", context_size / 1024);
+    printf("\n\n");
 }
 
 int main(int argc, char **argv) {
@@ -53,13 +57,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Fetch context size from server (once) */
+    /* Fetch model info from server (once) */
     int context_size = llm_fetch_context_size(api_base);
-    if (context_size > 0)
-        fprintf(stderr, "[info] server context: %d tokens\n", context_size);
+    char *server_model = llm_fetch_model_name(api_base);
 
     /* One-shot headless mode: run query and exit */
     if (query) {
+        print_banner(api_base, server_model ? server_model : model, context_size);
         char *session_dir = create_session_dir();
         llm_config_t llm_cfg = {
             .api_base = api_base, .model = model,
@@ -85,7 +89,7 @@ int main(int argc, char **argv) {
         return result ? 0 : 1;
     }
 
-    print_banner();
+    print_banner(api_base, server_model ? server_model : model, context_size);
 
     /* Main input loop */
     char *line;

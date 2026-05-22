@@ -65,4 +65,8 @@ cJSON *llm_parse_action(const char *response);
  * Returns n_ctx on success, 0 on failure. */
 int llm_fetch_context_size(const char *api_base);
 
+/* Fetch the model name from /v1/models endpoint.
+ * Returns strdup'd model name on success, NULL on failure. Caller must free. */
+char *llm_fetch_model_name(const char *api_base);
+
 #endif
