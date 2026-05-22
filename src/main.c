@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        store_free(shared_store);
+        /* NOTE: do NOT free shared_store here — it's shared across all sessions */
         free(session_dir);
         free(props_json);
         free(server_model);
@@ -202,12 +202,13 @@ int main(int argc, char **argv) {
 
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        store_free(shared_store);
+        /* NOTE: do NOT free shared_store here — it's shared across all queries */
         free(session_dir);
         free(line);
     }
 
     printf("Bye.\n");
+    store_free(shared_store);
     free(props_json);
     free(server_model);
     return 0;
