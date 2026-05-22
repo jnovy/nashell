@@ -170,17 +170,10 @@ int main(int argc, char **argv) {
         return result ? 0 : 1;
     }
 
-    /* Interactive REPL mode */
-    char *line;
-    while ((line = readline("nash> ")) != NULL) {
-        if (line[0] == '\0') { free(line); continue; }
-        if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) {
-            free(line); break;
-        }
-        add_history(line);
-
+    /* Interactive REPL mode — ONE session for ALL queries */
+    {
         char *session_dir = create_session_dir();
-        printf("[session: %s]\n", session_dir);
+        printf("[session: %s]\n\n", session_dir);
 
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
@@ -192,19 +185,29 @@ int main(int argc, char **argv) {
             .max_steps = MAX_REACT_STEPS, .verbose = 1,
         };
 
-        char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
-        if (result) {
-            printf("\n--- Result ---\n%s\n\n", result);
-            free(result);
-        } else {
-            printf("\n[no result]\n\n");
+        char *line;
+        while ((line = readline("nash> ")) != NULL) {
+            if (line[0] == '\0') { free(line); continue; }
+            if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) {
+                free(line); break;
+            }
+            add_history(line);
+
+            char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
+            if (result) {
+                printf("\n--- Result ---\n%s\n\n", result);
+                free(result);
+            } else {
+                printf("\n[no result]\n\n");
+            }
+
+            free(line);
         }
 
+        /* Cleanup — session ends when user quits */
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        /* NOTE: do NOT free shared_store here — it's shared across all queries */
         free(session_dir);
-        free(line);
     }
 
     printf("Bye.\n");
