@@ -64,19 +64,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query) {
         struct timespec step_start;
         clock_gettime(CLOCK_MONOTONIC, &step_start);
 
-        fprintf(stderr, "[debug] step %d: calling LLM with %d messages...\n", step+1, chat->n_msgs);
-        fflush(stderr);
         char *response = llm_complete(ctx->llm, chat);
         if (!response) {
             fprintf(stderr, "[error] LLM call failed (returned NULL)\n");
             fflush(stderr);
             break;
         }
-
-        /* Debug: show raw LLM response */
-        fprintf(stderr, "[debug] LLM response (%zu chars): %.200s%s\n",
-                strlen(response), response,
-                strlen(response) > 200 ? "..." : "");
 
         struct timespec step_end;
         clock_gettime(CLOCK_MONOTONIC, &step_end);
