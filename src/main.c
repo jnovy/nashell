@@ -16,14 +16,28 @@
 
 #define DEFAULT_API_BASE "http://192.168.1.18:8080"
 
-/* Create session directory: .sessions/<epoch.NNNNN>/ */
-static char *create_session_dir(void) {
+/* Get the nash data directory: ~/.nash/ */
+static char *get_nash_dir(void) {
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.nash", home);
+    mkdir(path, 0755);
+    return strdup(path);
+}
+
+/* Create session directory: ~/.nash/sessions/<epoch.NNNNN>/ */
+static char *create_session_dir(const char *nash_dir) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
+
+    char sessions_base[512];
+    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", nash_dir);
+    mkdir(sessions_base, 0755);
+
     char path[512];
-    snprintf(path, sizeof(path), ".sessions/%ld.%05ld",
-             (long)tp.tv_sec, tp.tv_nsec / 10000);
-    mkdir(".sessions", 0755);
+    snprintf(path, sizeof(path), "%s/%ld.%05ld",
+             sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(path, 0755);
     return strdup(path);
 }
@@ -43,8 +57,9 @@ static int jbool(cJSON *obj, const char *key, int def) {
 }
 
 /* Print banner: header art + server props + client overrides */
-static void print_banner(const llm_config_t *cfg, const char *props_json) {
-    /* ASCII art header with gradient blue ANSI colors */
+static void print_banner(const llm_config_t *cfg, const char *props_json,
+                         const char *nash_dir) {
+    /* ASCII art header with gradient green ANSI colors */
     printf("\n");
     printf("  \033[1m\033[38;2;80;255;120m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
     printf("  \033[1m\033[38;2;60;220;100m( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \033[0m\n");
@@ -97,14 +112,16 @@ static void print_banner(const llm_config_t *cfg, const char *props_json) {
         }
     }
 
-    /* 2. Client overrides (what nash sends per-request, overriding server defaults) */
-    printf("client: temp=%.1f max_tokens=%d json_mode=on thinking=off stream=on\n\n",
+    /* 2. Client overrides (what nash sends per-request) */
+    printf("client: temp=%.1f max_tokens=%d json_mode=on thinking=off stream=on\n",
            cfg->temperature, cfg->max_tokens);
+    printf("data:   %s\n\n", nash_dir);
 }
 
 int main(int argc, char **argv) {
     const char *api_base = DEFAULT_API_BASE;
     const char *query    = NULL;  /* -p: one-shot headless mode */
+    const char *data_dir = NULL;  /* --data-dir: custom data directory */
 
     /* Simple arg parsing */
     for (int i = 1; i < argc; i++) {
@@ -112,10 +129,24 @@ int main(int argc, char **argv) {
             api_base = argv[++i];
         else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc)
             query = argv[++i];
+        else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc)
+            data_dir = argv[++i];
         else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [-p QUERY]\n");
+            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH]\n");
+            printf("  --api URL       LLM server URL (default: %s)\n", DEFAULT_API_BASE);
+            printf("  -p QUERY        Run single query and exit (headless mode)\n");
+            printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
             return 0;
         }
+    }
+
+    /* Initialize nash data directory: custom or ~/.nash/ */
+    char *nash_dir;
+    if (data_dir) {
+        mkdir(data_dir, 0755);
+        nash_dir = strdup(data_dir);
+    } else {
+        nash_dir = get_nash_dir();
     }
 
     /* Fetch all server info (once) */
@@ -142,21 +173,20 @@ int main(int argc, char **argv) {
         .context_size = context_size,
     };
 
-    /* Print banner showing client config + server props */
-    print_banner(&llm_cfg, props_json);
+    /* Print banner showing client config + server props + data dir */
+    print_banner(&llm_cfg, props_json, nash_dir);
 
-    /* Shared store at project root (dedup across all sessions) */
-    store_t *shared_store = store_new(".");
-    memory_t *memory = memory_new(".");
+    /* Shared store and memory at ~/.nash/ */
+    store_t *shared_store = store_new(nash_dir);
+    memory_t *memory = memory_new(nash_dir);
 
     /* One-shot headless mode: run query and exit */
     if (query) {
-        char *session_dir = create_session_dir();
+        char *session_dir = create_session_dir(nash_dir);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .session_dir = session_dir, .scratchpad = NULL,
-            .memory = memory,
             .memory = memory
         };
         react_ctx_t react = {
@@ -167,22 +197,25 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
-        /* NOTE: do NOT free shared_store here — it's shared across all sessions */
         free(session_dir);
+        free(nash_dir);
         free(props_json);
         free(server_model);
+        memory_free(memory);
+        store_free(shared_store);
         return result ? 0 : 1;
     }
 
     /* Interactive REPL mode — ONE session for ALL queries */
     {
-        char *session_dir = create_session_dir();
+        char *session_dir = create_session_dir(nash_dir);
         printf("[session: %s]\n\n", session_dir);
 
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
-            .session_dir = session_dir, .scratchpad = NULL
+            .session_dir = session_dir, .scratchpad = NULL,
+            .memory = memory
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
@@ -209,8 +242,6 @@ int main(int argc, char **argv) {
             if (react.last_result) free(react.last_result);
             react.last_query = strdup(line);
             react.last_result = result ? result : strdup("(no result)");
-            /* Don't free result — it's now owned by react.last_result */
-            if (!result) { /* only free the strdup'd "(no result)" on next iteration */ }
 
             free(line);
         }
@@ -224,6 +255,7 @@ int main(int argc, char **argv) {
     printf("Bye.\n");
     memory_free(memory);
     store_free(shared_store);
+    free(nash_dir);
     free(props_json);
     free(server_model);
     return 0;

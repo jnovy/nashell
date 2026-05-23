@@ -1,7 +1,5 @@
 *.o
 nash
 .sessions/
-.store/
-factorial
-factorial.c
 .memory/
+.store/

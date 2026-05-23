@@ -32,7 +32,7 @@ memory_t *memory_new(const char *project_root) {
     memory_t *m = calloc(1, sizeof(*m));
     if (!m) return NULL;
     char path[4096];
-    snprintf(path, sizeof(path), "%s/.memory", project_root);
+    snprintf(path, sizeof(path), "%s/memory", project_root);
     mkdir(path, 0755);
     m->dir = strdup(path);
     return m;

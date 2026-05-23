@@ -56,12 +56,12 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
     ctx->alias_count++;
 
-    /* Create symlink in session directory: R1S0 → ../../.store/hash */
+    /* Create symlink in session directory: R1S0 → ../store/hash */
     if (ctx->session_dir && hash && hash[0]) {
         char link_path[4096];
         char target[4096];
         snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, a->alias);
-        snprintf(target, sizeof(target), "../../.store/%s", hash);
+        snprintf(target, sizeof(target), "../../store/%s", hash);
         symlink(target, link_path);  /* ignore EEXIST */
     }
 

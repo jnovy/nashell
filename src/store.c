@@ -13,7 +13,7 @@ store_t *store_new(const char *project_root) {
     store_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
     char path[4096];
-    snprintf(path, sizeof(path), "%s/.store", project_root);
+    snprintf(path, sizeof(path), "%s/store", project_root);
     mkdir(path, 0755);  /* ignore EEXIST */
     s->dir = strdup(path);
     return s;
