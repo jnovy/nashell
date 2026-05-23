@@ -34,6 +34,13 @@ llm_repeat_threshold = 100   # stop after N consecutive identical tokens
 # Context management
 scratchpad_max = 0           # max scratchpad chars (0 = auto: 5% of context)
 max_react_steps = 50         # max steps per react loop
+context_eviction_pct = 70    # context usage % that triggers message eviction
+file_read_max_inline = 50000 # max chars returned inline by file_read (50KB)
+
+# Memory
+memory_index_max = 50        # max entries shown in memory index injection
+max_skills_per_query = 3     # max skill memories loaded per query
+max_reflection_steps = 4     # max LLM steps for post-task reflection
 
 [paths]
 data_dir = ""                # data directory (empty = ~/.nash/)

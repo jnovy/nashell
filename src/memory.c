@@ -288,7 +288,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
 /* ── build_index ─────────────────────────────────────── */
 
-char *memory_build_index(memory_t *m) {
+char *memory_build_index(memory_t *m, int max_entries) {
     if (!m) return NULL;
 
     DIR *dir = opendir(m->dir);
@@ -336,7 +336,7 @@ char *memory_build_index(memory_t *m) {
             else if (strncmp(k->valuestring, "skill:", 6) == 0) n_skills++;
             else n_other++;
 
-            /* Progressive disclosure: only show first 50 entries inline */
+            /* Progressive disclosure: only show first N entries inline */
             if (total < 50) {
                 str_appendf(&out, "  %s", k->valuestring);
                 if (tags && cJSON_GetArraySize(tags) > 0) {
@@ -373,8 +373,8 @@ char *memory_build_index(memory_t *m) {
     if (n_other > 0) str_appendf(&result, ", %d other", n_other);
     str_append_cstr(&result, "\n");
 
-    if (total > 50) {
-        str_appendf(&result, "  (showing first 50 of %d — use memory_recall to search)\n", total);
+    if (total > max_entries && max_entries > 0) {
+        str_appendf(&result, "  (showing first %d of %d — use memory_recall to search)\n", max_entries, total);
     }
     str_append_cstr(&result, str_cstr(&out));
     str_free(&out);
@@ -390,7 +390,7 @@ int memory_write_index_file(memory_t *m) {
     char path[4096];
     snprintf(path, sizeof(path), "%s/../MEMORY.md", m->dir);
 
-    char *index = memory_build_index(m);
+    char *index = memory_build_index(m, 0);  /* 0 = show all for MEMORY.md */
 
     FILE *f = fopen(path, "w");
     if (!f) { free(index); return -1; }

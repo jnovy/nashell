@@ -79,7 +79,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Inject memory index (list of available memories for the LLM to know about) */
     if (ctx->tools->memory) {
-        char *mem_index = memory_build_index(ctx->tools->memory);
+        int mem_max = ctx->tools->cfg ? ctx->tools->cfg->memory_index_max : 50;
+        char *mem_index = memory_build_index(ctx->tools->memory, mem_max);
         if (mem_index && strlen(mem_index) > 0) {
             char *mem_msg = malloc(strlen(mem_index) + 64);
             if (mem_msg) {
@@ -103,7 +104,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(pinned);
 
         /* Inject relevant skills (procedural memory — loaded on-demand based on query) */
-        memory_results_t skills = memory_recall(ctx->tools->memory, "skill:", 3);
+        int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
+        memory_results_t skills = memory_recall(ctx->tools->memory, "skill:", max_skills);
         if (skills.count > 0) {
             str_t skill_msg = str_new(4096);
             str_append_cstr(&skill_msg, "[RELEVANT SKILLS]\n");
@@ -382,7 +384,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             for (int i = 0; i < chat->n_msgs; i++)
                 total_chars += (int)strlen(chat->msgs[i].content);
             int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
-            if (usage_pct > 70 && chat->n_msgs > 6) {
+            if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > 6) {
                 /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
                 for (int i = 3; i < chat->n_msgs - 4; i++) {
                     if (chat->msgs[i].content && strstr(chat->msgs[i].content, "ERROR:")) {
@@ -406,7 +408,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 int keep_tail = 4;
                 int evict_start = keep_head;
                 int evict_end = chat->n_msgs - keep_tail;
-                if (usage_pct > 70 && evict_end > evict_start) {
+                if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
                     /* Free evicted messages */
                     for (int i = evict_start; i < evict_end; i++) {
                         free(chat->msgs[i].role);
@@ -478,7 +480,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             "Call memory_store for each, or done if none.");
 
         /* Mini react loop for reflection (max 4 steps) */
-        for (int rstep = 0; rstep < 4; rstep++) {
+        for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
             llm_stats_t rstats = {0};
             int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
             int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;

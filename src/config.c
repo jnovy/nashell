@@ -40,6 +40,16 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->llm_max_response == 0)   cfg->llm_max_response = 10485760;
     if (cfg->llm_repeat_threshold == 0) cfg->llm_repeat_threshold = 100;
     if (cfg->max_react_steps == 0)    cfg->max_react_steps = 50;
+    if (cfg->memory_index_max == 0)   cfg->memory_index_max = 50;
+    if (cfg->max_skills_per_query == 0) cfg->max_skills_per_query = 3;
+    if (cfg->context_eviction_pct == 0) cfg->context_eviction_pct = 70;
+    if (cfg->max_reflection_steps == 0) cfg->max_reflection_steps = 4;
+    if (cfg->file_read_max_inline == 0) cfg->file_read_max_inline = 50000;
+    if (cfg->memory_index_max == 0)   cfg->memory_index_max = 50;
+    if (cfg->max_skills_per_query == 0) cfg->max_skills_per_query = 3;
+    if (cfg->context_eviction_pct == 0) cfg->context_eviction_pct = 70;
+    if (cfg->max_reflection_steps == 0) cfg->max_reflection_steps = 4;
+    if (cfg->file_read_max_inline == 0) cfg->file_read_max_inline = 50000;
     cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
     if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
@@ -97,6 +107,11 @@ config_t *config_load(const char *path) {
         cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", 0);
         cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", 0);
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", 0);
+        cfg->memory_index_max   = toml_int(limits, "memory_index_max", 0);
+        cfg->max_skills_per_query = toml_int(limits, "max_skills_per_query", 0);
+        cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", 0);
+        cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", 0);
+        cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", 0);
     }
 
     /* [paths] */
