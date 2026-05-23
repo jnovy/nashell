@@ -18,7 +18,29 @@ $(BIN): $(OBJ)
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-clean:
-	rm -f $(OBJ) $(BIN)
+# Library objects (everything except main.c for linking with tests)
+LIB_SRC = src/str.c src/arena.c src/cJSON.c src/journal.c src/store.c \
+          src/llm.c src/tools.c src/react.c src/config.c src/toml.c \
+          src/frontend_tui.c src/memory.c
+LIB_OBJ = $(LIB_SRC:.c=.o)
 
-.PHONY: all clean
+# Test binaries
+TEST_BIN = tests/test_memory tests/test_store tests/test_config \
+           tests/test_str tests/test_journal
+
+tests/test_%: tests/test_%.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+test: $(TEST_BIN)
+	@echo "=== Running tests ==="
+	@failures=0; \
+	for t in $(TEST_BIN); do \
+		echo "--- $$t ---"; \
+		if ./$$t; then echo "PASS"; else echo "FAIL"; failures=$$((failures+1)); fi; \
+	done; \
+	echo "=== $$failures failures ==="
+
+clean:
+	rm -f $(OBJ) $(BIN) $(TEST_BIN)
+
+.PHONY: all clean test
