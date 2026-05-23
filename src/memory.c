@@ -110,6 +110,10 @@ int memory_store(memory_t *m, const char *key, const char *value,
     }
     free(json);
     cJSON_Delete(entry);
+
+    /* Auto-update MEMORY.md index file */
+    memory_write_index_file(m);
+
     return 0;
 }
 
@@ -290,8 +294,11 @@ char *memory_build_index(memory_t *m) {
     DIR *dir = opendir(m->dir);
     if (!dir) return NULL;
 
-    str_t out = str_new(1024);
-    int count = 0;
+    /* Count entries by type for progressive disclosure */
+    int n_lessons = 0, n_strategies = 0, n_facts = 0, n_tasks = 0, n_skills = 0, n_other = 0;
+    int total = 0;
+
+    str_t out = str_new(2048);
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
@@ -321,29 +328,84 @@ char *memory_build_index(memory_t *m) {
         cJSON *tags = cJSON_GetObjectItem(entry, "tags");
 
         if (k && k->valuestring) {
-            str_appendf(&out, "  %s", k->valuestring);
-            if (tags && cJSON_GetArraySize(tags) > 0) {
-                str_append_cstr(&out, " [");
-                int n = cJSON_GetArraySize(tags);
-                for (int i = 0; i < n; i++) {
-                    cJSON *t = cJSON_GetArrayItem(tags, i);
-                    if (i > 0) str_append_cstr(&out, ", ");
-                    if (t && t->valuestring) str_append_cstr(&out, t->valuestring);
+            /* Count by type */
+            if (strncmp(k->valuestring, "lesson:", 7) == 0) n_lessons++;
+            else if (strncmp(k->valuestring, "strategy:", 9) == 0) n_strategies++;
+            else if (strncmp(k->valuestring, "fact:", 5) == 0) n_facts++;
+            else if (strncmp(k->valuestring, "task:", 5) == 0) n_tasks++;
+            else if (strncmp(k->valuestring, "skill:", 6) == 0) n_skills++;
+            else n_other++;
+
+            /* Progressive disclosure: only show first 50 entries inline */
+            if (total < 50) {
+                str_appendf(&out, "  %s", k->valuestring);
+                if (tags && cJSON_GetArraySize(tags) > 0) {
+                    str_append_cstr(&out, " [");
+                    int n = cJSON_GetArraySize(tags);
+                    for (int i = 0; i < n; i++) {
+                        cJSON *t = cJSON_GetArrayItem(tags, i);
+                        if (i > 0) str_append_cstr(&out, ", ");
+                        if (t && t->valuestring) str_append_cstr(&out, t->valuestring);
+                    }
+                    str_append_cstr(&out, "]");
                 }
-                str_append_cstr(&out, "]");
+                str_append_cstr(&out, "\n");
             }
-            str_append_cstr(&out, "\n");
-            count++;
+            total++;
         }
         cJSON_Delete(entry);
     }
     closedir(dir);
 
-    if (count == 0) {
+    if (total == 0) {
         str_free(&out);
         return NULL;
     }
-    return str_steal(&out);
+
+    /* Build header with topic summary */
+    str_t result = str_new(2048);
+    str_appendf(&result, "Memory: %d entries", total);
+    if (n_lessons > 0) str_appendf(&result, ", %d lessons", n_lessons);
+    if (n_strategies > 0) str_appendf(&result, ", %d strategies", n_strategies);
+    if (n_skills > 0) str_appendf(&result, ", %d skills", n_skills);
+    if (n_facts > 0) str_appendf(&result, ", %d facts", n_facts);
+    if (n_tasks > 0) str_appendf(&result, ", %d tasks", n_tasks);
+    if (n_other > 0) str_appendf(&result, ", %d other", n_other);
+    str_append_cstr(&result, "\n");
+
+    if (total > 50) {
+        str_appendf(&result, "  (showing first 50 of %d — use memory_recall to search)\n", total);
+    }
+    str_append_cstr(&result, str_cstr(&out));
+    str_free(&out);
+
+    return str_steal(&result);
+}
+
+/* — write MEMORY.md index file ——————————————————————— */
+
+int memory_write_index_file(memory_t *m) {
+    if (!m) return -1;
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/../MEMORY.md", m->dir);
+
+    char *index = memory_build_index(m);
+
+    FILE *f = fopen(path, "w");
+    if (!f) { free(index); return -1; }
+
+    fprintf(f, "# Nash Memory Index\n\n");
+    fprintf(f, "Auto-generated — do not edit manually.\n");
+    fprintf(f, "Use `memory_store` and `memory_recall` to manage.\n\n");
+    if (index) {
+        fprintf(f, "%s", index);
+        free(index);
+    } else {
+        fprintf(f, "(empty)\n");
+    }
+    fclose(f);
+    return 0;
 }
 
 /* ── load_pinned ─────────────────────────────────────── */

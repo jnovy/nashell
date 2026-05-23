@@ -101,6 +101,26 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
         free(pinned);
+
+        /* Inject relevant skills (procedural memory — loaded on-demand based on query) */
+        memory_results_t skills = memory_recall(ctx->tools->memory, "skill:", 3);
+        if (skills.count > 0) {
+            str_t skill_msg = str_new(4096);
+            str_append_cstr(&skill_msg, "[RELEVANT SKILLS]\n");
+            for (int i = 0; i < skills.count; i++) {
+                if (skills.entries[i].key &&
+                    strncmp(skills.entries[i].key, "skill:", 6) == 0) {
+                    str_appendf(&skill_msg, "\n--- %s ---\n%s\n",
+                                skills.entries[i].key,
+                                skills.entries[i].value ? skills.entries[i].value : "");
+                }
+            }
+            if (skill_msg.len > 20) {  /* more than just the header */
+                llm_chat_add(chat, "user", str_cstr(&skill_msg));
+            }
+            str_free(&skill_msg);
+        }
+        memory_results_free(&skills);
     }
 
     /* Compute scratchpad limit from context size (5% of context, min 2K, max 32K) */
@@ -363,12 +383,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 total_chars += (int)strlen(chat->msgs[i].content);
             int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
             if (usage_pct > 70 && chat->n_msgs > 6) {
-                /* Keep: first 3 msgs (system + manifest + scratchpad/query) + last 4 */
+                /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
+                for (int i = 3; i < chat->n_msgs - 4; i++) {
+                    if (chat->msgs[i].content && strstr(chat->msgs[i].content, "ERROR:")) {
+                        free(chat->msgs[i].role);
+                        free(chat->msgs[i].content);
+                        memmove(&chat->msgs[i], &chat->msgs[i + 1],
+                                (chat->n_msgs - i - 1) * sizeof(llm_msg_t));
+                        chat->n_msgs--;
+                        i--;  /* re-check this position */
+                    }
+                }
+
+                /* Recalculate after error eviction */
+                total_chars = 0;
+                for (int i = 0; i < chat->n_msgs; i++)
+                    total_chars += (int)strlen(chat->msgs[i].content);
+                usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
+
+                /* If still over 70%, do standard eviction */
                 int keep_head = 3;
                 int keep_tail = 4;
                 int evict_start = keep_head;
                 int evict_end = chat->n_msgs - keep_tail;
-                if (evict_end > evict_start) {
+                if (usage_pct > 70 && evict_end > evict_start) {
                     /* Free evicted messages */
                     for (int i = evict_start; i < evict_end; i++) {
                         free(chat->msgs[i].role);
@@ -420,10 +458,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         llm_chat_t *reflect = llm_chat_new();
         llm_chat_add(reflect, "system",
             "You just completed a task. Review what happened and extract 0-3 reusable "
-            "lessons or strategies. For each, call memory_store with:\n"
-            "- key: lesson:short-name or strategy:short-name\n"
-            "- value: the reusable knowledge\n"
+            "lessons, strategies, or reusable skills. For each, call memory_store with:\n"
+            "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
+            "- value: the reusable knowledge (for skills: include approach, pitfalls, verification)\n"
             "- tags: comma-separated relevant tags\n"
+            "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
             "If nothing worth storing, call done immediately.\n"
             "Respond with ONE JSON object per turn: "
             "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");

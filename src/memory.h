@@ -59,4 +59,8 @@ void memory_results_free(memory_results_t *r);
  * Returns number of entries pruned. */
 int memory_prune(memory_t *m, int max_age_days, int min_access_count);
 
+/* Write MEMORY.md index file (auto-generated, human-readable).
+ * Called automatically after memory_store. */
+int memory_write_index_file(memory_t *m);
+
 #endif
