@@ -321,6 +321,13 @@ typedef struct {
     llm_token_fn   on_token;
     void          *userdata;
     llm_stats_t   *stats;
+    /* Safety limits */
+    size_t         max_response;  /* max response bytes (0 = unlimited) */
+    int            repeat_threshold; /* consecutive identical tokens to detect degenerate output */
+    char           last_tokens[16][64]; /* ring buffer of last N tokens */
+    int            last_token_idx;
+    int            repeat_count;  /* consecutive identical tokens */
+    int            stopped;       /* 1 = stopped due to limit */
 } sse_state_t;
 
 static void sse_process_line(sse_state_t *st, const char *line) {
@@ -344,7 +351,39 @@ static void sse_process_line(sse_state_t *st, const char *line) {
         cJSON *delta = cJSON_GetObjectItem(choice0, "delta");
         if (delta) {
             cJSON *content = cJSON_GetObjectItem(delta, "content");
-            if (content && content->valuestring && content->valuestring[0]) {
+            if (content && content->valuestring && content->valuestring[0] && !st->stopped) {
+                /* Safety: max response size */
+                if (st->max_response > 0 && st->full_content.len > st->max_response) {
+                    fprintf(stderr, "\n[llm] response exceeded %zu bytes — stopping\n",
+                            st->max_response);
+                    st->stopped = 1;
+                    cJSON_Delete(chunk);
+                    return;
+                }
+
+                /* Safety: repetition detection */
+                if (st->repeat_threshold > 0) {
+                    const char *tok = content->valuestring;
+                    int idx = st->last_token_idx % 16;
+                    if (st->last_token_idx > 0) {
+                        int prev = (st->last_token_idx - 1) % 16;
+                        if (strcmp(st->last_tokens[prev], tok) == 0)
+                            st->repeat_count++;
+                        else
+                            st->repeat_count = 0;
+                    }
+                    snprintf(st->last_tokens[idx], 64, "%.63s", tok);
+                    st->last_token_idx++;
+
+                    if (st->repeat_count >= st->repeat_threshold) {
+                        fprintf(stderr, "\n[llm] degenerate output: token '%s' repeated %d times — stopping\n",
+                                tok, st->repeat_count);
+                        st->stopped = 1;
+                        cJSON_Delete(chunk);
+                        return;
+                    }
+                }
+
                 /* Got a token! */
                 str_append_cstr(&st->full_content, content->valuestring);
                 if (st->on_token)
@@ -413,7 +452,8 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 
 char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
                           llm_stats_t *stats, llm_token_fn on_token,
-                          void *userdata) {
+                          void *userdata,
+                          int max_response_bytes, int repeat_threshold) {
     if (stats) memset(stats, 0, sizeof(*stats));
 
     char url[1024];
@@ -481,6 +521,10 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
         .on_token     = on_token,
         .userdata     = userdata,
         .stats        = stats,
+        .max_response       = (size_t)max_response_bytes,
+        .repeat_threshold   = repeat_threshold,
+        .repeat_count       = 0,
+        .stopped            = 0,
     };
 
     /* Retry loop with linear backoff */

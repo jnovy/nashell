@@ -185,8 +185,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         llm_stats_t stats = {0};
         stream_ctx_t sctx = { on_event, userdata, step + 1 };
+        int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
+        int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
         char *response = llm_complete_stream(ctx->llm, chat, &stats,
-            on_event ? stream_token_cb : NULL, &sctx);
+            on_event ? stream_token_cb : NULL, &sctx,
+            max_resp, rep_thresh);
         if (!response) {
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;

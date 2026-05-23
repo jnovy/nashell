@@ -1,0 +1,43 @@
+# Nash configuration file
+# Copy to ~/.nash/config.toml and edit as needed
+
+[server]
+api_base = "http://192.168.1.18:8080"
+
+[client]
+temperature = 0.7
+max_tokens = 4096
+json_mode = true
+thinking = false
+stream = true
+
+[limits]
+# Shell command execution
+shell_timeout = 300          # max seconds for shell_exec (0 = no limit)
+shell_max_output = 512000    # max bytes of shell output (500KB)
+
+# File operations
+file_max_size = 52428800     # max file size for file_read (50MB)
+
+# Grep search
+grep_timeout = 60            # max seconds for grep_search
+grep_max_matches = 50        # max grep results
+
+# Web operations
+web_timeout = 30             # max seconds for web_fetch/web_search
+web_max_size = 512000        # max bytes for web response (500KB)
+
+# LLM streaming safety
+llm_max_response = 10485760  # max bytes from LLM response (10MB)
+llm_repeat_threshold = 100   # stop after N consecutive identical tokens
+
+# Context management
+scratchpad_max = 0           # max scratchpad chars (0 = auto: 5% of context)
+max_react_steps = 50         # max steps per react loop
+
+[paths]
+data_dir = ""                # data directory (empty = ~/.nash/)
+
+[search]
+engine = "duckduckgo"        # "duckduckgo" or "searxng"
+searxng_url = "http://localhost:8888/search"

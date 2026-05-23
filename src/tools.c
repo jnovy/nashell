@@ -11,7 +11,9 @@
 #include <curl/curl.h>
 #include <regex.h>
 #include <errno.h>
-#include <curl/curl.h>
+#include <signal.h>
+#include <poll.h>
+#include <fcntl.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -83,7 +85,12 @@ const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
 
 /* ── run_command: fork/execve helper ─────────────────── */
 
-static int run_command_argv(char *const argv[], str_t *out) {
+/* Run a command with timeout and output cap.
+ * timeout_sec: max wall-clock seconds (0 = no limit)
+ * max_output:  max bytes to capture (0 = no limit)
+ * Returns exit code, or -1 on error, -2 on timeout. */
+static int run_command_argv_limited(char *const argv[], str_t *out,
+                                    int timeout_sec, int max_output) {
     int pipefd[2];
     if (pipe(pipefd) < 0) return -1;
 
@@ -100,11 +107,90 @@ static int run_command_argv(char *const argv[], str_t *out) {
     }
 
     close(pipefd[1]);
-    char buf[4096];
-    ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
-        str_append(out, buf, (size_t)n);
+
+    /* Set pipe to non-blocking for poll-based reading */
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    int timed_out = 0;
+    int output_capped = 0;
+
+    while (1) {
+        /* Check timeout */
+        if (timeout_sec > 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = (now.tv_sec - start.tv_sec) +
+                             (now.tv_nsec - start.tv_nsec) / 1e9;
+            if (elapsed > timeout_sec) {
+                timed_out = 1;
+                break;
+            }
+        }
+
+        /* Check output cap */
+        if (max_output > 0 && (int)out->len >= max_output) {
+            output_capped = 1;
+            break;
+        }
+
+        /* Poll for data with 100ms timeout */
+        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+        int pr = poll(&pfd, 1, 100);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+            char buf[4096];
+            ssize_t n = read(pipefd[0], buf, sizeof(buf));
+            if (n <= 0) break;  /* EOF or error */
+            /* Respect output cap */
+            if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
+                size_t remaining = (size_t)max_output - out->len;
+                if (remaining > 0) str_append(out, buf, remaining);
+                output_capped = 1;
+                break;
+            }
+            str_append(out, buf, (size_t)n);
+        } else if (pr == 0) {
+            /* Timeout on poll — check if child exited */
+            int status;
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w > 0) {
+                /* Child exited — drain remaining output */
+                char buf[4096];
+                ssize_t n;
+                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                    if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
+                        size_t remaining = (size_t)max_output - out->len;
+                        if (remaining > 0) str_append(out, buf, remaining);
+                        break;
+                    }
+                    str_append(out, buf, (size_t)n);
+                }
+                close(pipefd[0]);
+                return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            }
+        } else if (pr < 0 && errno != EINTR) {
+            break;  /* poll error */
+        }
+    }
+
     close(pipefd[0]);
+
+    /* Kill the child if we broke out early */
+    if (timed_out || output_capped) {
+        kill(pid, SIGKILL);
+        int status;
+        waitpid(pid, &status, 0);
+        if (timed_out) {
+            str_appendf(out, "\n[TIMEOUT: killed after %ds]\n", timeout_sec);
+            return -2;
+        }
+        if (output_capped) {
+            str_appendf(out, "\n[OUTPUT CAPPED at %d bytes]\n", max_output);
+        }
+        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
 
     int status;
     waitpid(pid, &status, 0);
@@ -122,7 +208,9 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     str_t out = str_new(4096);
     char *argv[] = { "sh", "-c", (char *)command, NULL };
-    int exit_code = run_command_argv(argv, &out);
+    int timeout = ctx->cfg ? ctx->cfg->shell_timeout : 300;
+    int max_out = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
+    int exit_code = run_command_argv_limited(argv, &out, timeout, max_out);
 
     /* Store to shared store */
     char *hash = store_save(ctx->store, out.data);
@@ -163,6 +251,23 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     if (strncmp(path, "store/", 6) == 0) {
         snprintf(resolved_buf, sizeof(resolved_buf), "%s/%s", ctx->session_dir, path);
         path = resolved_buf;
+    }
+
+    /* Safety: check file type and size before reading */
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        char msg[4224];
+        snprintf(msg, sizeof(msg), "cannot stat '%.4095s': %s", path, strerror(errno));
+        return make_error(msg);
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return make_error("not a regular file (refusing to read pipes, devices, etc.)");
+    }
+    int max_file = ctx->cfg ? ctx->cfg->file_max_size : 52428800;  /* 50MB default */
+    if (st.st_size > max_file) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "file too large (%ld bytes, limit %d)", (long)st.st_size, max_file);
+        return make_error(msg);
     }
 
     size_t len = 0;
@@ -363,10 +468,39 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     str_t out = str_new(4096);
     char buf[4096];
     ssize_t n;
-    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0)
-        str_append(&out, buf, (size_t)n);
+
+    /* Read with timeout + output cap */
+    int grep_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
+    int grep_max = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
+    time_t start = time(NULL);
+    int timed_out = 0;
+
+    /* Set pipe to non-blocking for timeout support */
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+    while (1) {
+        n = read(pipefd[0], buf, sizeof(buf));
+        if (n > 0) {
+            str_append(&out, buf, (size_t)n);
+            if ((int)out.len >= grep_max) {
+                str_append_cstr(&out, "\n... [output truncated at limit]\n");
+                break;
+            }
+        } else if (n == 0) {
+            break;  /* EOF */
+        } else {
+            /* EAGAIN — no data yet */
+            if (time(NULL) - start >= grep_timeout) {
+                timed_out = 1;
+                break;
+            }
+            { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms poll */
+        }
+    }
     close(pipefd[0]);
 
+    if (timed_out) kill(pid, SIGKILL);
     int status;
     waitpid(pid, &status, 0);
 

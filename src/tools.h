@@ -5,6 +5,7 @@
 #include "store.h"
 #include "journal.h"
 #include "memory.h"
+#include "config.h"
 
 /* Tool result: metadata JSON + optional stored content hash */
 typedef struct {
@@ -25,6 +26,7 @@ typedef struct {
     store_t       *store;
     journal_t     *journal;
     memory_t      *memory;        /* long-term memory store (.memory/) */
+    config_t      *cfg;           /* configuration (tool limits, etc.) */
     char          *session_dir;   /* .sessions/<id>/ */
     char          *scratchpad;    /* current scratchpad content (owned) */
     int            step;          /* current step number (within react loop) */

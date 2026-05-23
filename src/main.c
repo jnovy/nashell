@@ -6,6 +6,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+#include "config.h"
 #include "llm.h"
 #include "tools.h"
 #include "react.h"
@@ -14,10 +15,12 @@
 #include "frontend_tui.h"
 #include "memory.h"
 
-#define DEFAULT_API_BASE "http://192.168.1.18:8080"
-
-/* Get the nash data directory: ~/.nash/ */
-static char *get_nash_dir(void) {
+/* Get the nash data directory: ~/.nash/ or config override */
+static char *get_nash_dir(const config_t *cfg) {
+    if (cfg->data_dir && cfg->data_dir[0]) {
+        mkdir(cfg->data_dir, 0755);
+        return strdup(cfg->data_dir);
+    }
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
     char path[512];
@@ -26,7 +29,7 @@ static char *get_nash_dir(void) {
     return strdup(path);
 }
 
-/* Create session directory: ~/.nash/sessions/<epoch.NNNNN>/ */
+/* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/ */
 static char *create_session_dir(const char *nash_dir) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
@@ -57,7 +60,7 @@ static int jbool(cJSON *obj, const char *key, int def) {
 }
 
 /* Print banner: header art + server props + client overrides */
-static void print_banner(const llm_config_t *cfg, const char *props_json,
+static void print_banner(const config_t *cfg, const char *props_json,
                          const char *nash_dir) {
     /* ASCII art header with gradient green ANSI colors */
     printf("\n");
@@ -69,7 +72,7 @@ static void print_banner(const llm_config_t *cfg, const char *props_json,
     printf("  \033[38;2;70;200;90m--------- * New Agentic Shell * ---------\033[0m\n");
     printf("\n");
 
-    /* 1. Server props (what the server reports — the baseline) */
+    /* 1. Server props */
     if (!props_json) {
         printf("server: %s (props unavailable)\n\n",
                cfg->api_base ? cfg->api_base : "(none)");
@@ -112,97 +115,99 @@ static void print_banner(const llm_config_t *cfg, const char *props_json,
         }
     }
 
-    /* 2. Client overrides (what nash sends per-request) */
-    printf("client: temp=%.1f max_tokens=%d json_mode=on thinking=off stream=on\n",
-           cfg->temperature, cfg->max_tokens);
-    printf("data:   %s\n\n", nash_dir);
+    /* 2. Client config */
+    printf("client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
+           cfg->temperature, cfg->max_tokens,
+           cfg->json_mode ? "on" : "off",
+           cfg->thinking ? "on" : "off",
+           cfg->stream ? "on" : "off");
+    printf("data:   %s\n", nash_dir);
+    printf("\n");
 }
 
 int main(int argc, char **argv) {
-    const char *api_base = DEFAULT_API_BASE;
-    const char *query    = NULL;  /* -p: one-shot headless mode */
-    const char *data_dir = NULL;  /* --data-dir: custom data directory */
+    /* Load config from ~/.nash/config.toml (or default) */
+    char config_path[512];
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    snprintf(config_path, sizeof(config_path), "%s/.nash/config.toml", home);
 
-    /* Simple arg parsing */
+    config_t *cfg = config_load(config_path);
+
+    /* CLI flags override config */
+    const char *query = NULL;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--api") == 0 && i + 1 < argc)
-            api_base = argv[++i];
-        else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc)
+        if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
+            free(cfg->api_base);
+            cfg->api_base = strdup(argv[++i]);
+        } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc) {
             query = argv[++i];
-        else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc)
-            data_dir = argv[++i];
-        else if (strcmp(argv[i], "--help") == 0) {
+        } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
+            free(cfg->data_dir);
+            cfg->data_dir = strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH]\n");
-            printf("  --api URL       LLM server URL (default: %s)\n", DEFAULT_API_BASE);
+            printf("  --api URL       LLM server URL (default: %s)\n", cfg->api_base);
             printf("  -p QUERY        Run single query and exit (headless mode)\n");
             printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
+            printf("\nConfig: %s\n", config_path);
+            config_free(cfg);
             return 0;
         }
     }
 
-    /* Initialize nash data directory: custom or ~/.nash/ */
-    char *nash_dir;
-    if (data_dir) {
-        mkdir(data_dir, 0755);
-        nash_dir = strdup(data_dir);
-    } else {
-        nash_dir = get_nash_dir();
-    }
+    /* Initialize data directory */
+    char *nash_dir = get_nash_dir(cfg);
 
-    /* Fetch all server info (once) */
-    char *props_json  = llm_fetch_props_json(api_base);
-    char *server_model = llm_fetch_model_name(api_base);
+    /* Write default config if it doesn't exist */
+    config_write_default(config_path);
 
-    /* Extract context_size from props */
-    int context_size = 0;
-    if (props_json) {
-        cJSON *p = cJSON_Parse(props_json);
-        if (p) {
-            cJSON *gs = cJSON_GetObjectItem(p, "default_generation_settings");
-            if (gs) context_size = (int)jnum(gs, "n_ctx", 0);
-            cJSON_Delete(p);
-        }
-    }
+    /* Fetch model info from server */
+    int context_size = llm_fetch_context_size(cfg->api_base);
+    char *server_model = llm_fetch_model_name(cfg->api_base);
+    char *props_json = llm_fetch_props_json(cfg->api_base);
 
-    /* Build the LLM config — this is the actual running configuration */
+    /* Build LLM config from TOML config */
     llm_config_t llm_cfg = {
-        .api_base     = api_base,
+        .api_base     = cfg->api_base,
         .model        = server_model,
-        .max_tokens   = 4096,
-        .temperature  = 0.7,
+        .max_tokens   = cfg->max_tokens,
+        .temperature  = cfg->temperature,
         .context_size = context_size,
     };
 
-    /* Print banner showing client config + server props + data dir */
-    print_banner(&llm_cfg, props_json, nash_dir);
+    /* Print banner */
+    print_banner(cfg, props_json, nash_dir);
 
-    /* Shared store and memory at ~/.nash/ */
+    /* Shared store + memory */
     store_t *shared_store = store_new(nash_dir);
     memory_t *memory = memory_new(nash_dir);
 
-    /* One-shot headless mode: run query and exit */
+    /* One-shot headless mode */
     if (query) {
         char *session_dir = create_session_dir(nash_dir);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
+            .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .memory = memory
+            .cfg = cfg,
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
-            .max_steps = MAX_REACT_STEPS, .verbose = 1,
+            .max_steps = cfg->max_react_steps, .verbose = 1,
         };
         char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
         if (result) { printf("%s\n", result); free(result); }
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
         free(session_dir);
+        store_free(shared_store);
+        memory_free(memory);
         free(nash_dir);
         free(props_json);
         free(server_model);
-        memory_free(memory);
-        store_free(shared_store);
+        config_free(cfg);
         return result ? 0 : 1;
     }
 
@@ -214,12 +219,13 @@ int main(int argc, char **argv) {
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
+            .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .memory = memory
+            .cfg = cfg,
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
-            .max_steps = MAX_REACT_STEPS, .verbose = 1,
+            .max_steps = cfg->max_react_steps, .verbose = 1,
         };
 
         char *line;
@@ -241,22 +247,25 @@ int main(int argc, char **argv) {
             if (react.last_query) free(react.last_query);
             if (react.last_result) free(react.last_result);
             react.last_query = strdup(line);
-            react.last_result = result ? result : strdup("(no result)");
-
+            react.last_result = result ? strdup(result) : NULL;
+            free(result);
             free(line);
         }
 
-        /* Cleanup — session ends when user quits */
+        /* Cleanup */
+        if (react.last_query) free(react.last_query);
+        if (react.last_result) free(react.last_result);
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
         free(session_dir);
     }
 
     printf("Bye.\n");
-    memory_free(memory);
     store_free(shared_store);
+    memory_free(memory);
     free(nash_dir);
     free(props_json);
     free(server_model);
+    config_free(cfg);
     return 0;
 }
