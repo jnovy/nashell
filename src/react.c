@@ -374,9 +374,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         snprintf(result_msg, result_len, "%s\n[step %d | %.1fs]",
                  meta_str, step + 1, total_elapsed);
 
-        /* Add assistant + tool result to chat */
-        llm_chat_add(chat, "assistant", response);
-        llm_chat_add(chat, "user", result_msg);
+        /* Add assistant + tool result to chat (with tool_calls threading if available) */
+        if (chat->last_tool_call_id) {
+            /* Tool calls API: add assistant with tool_calls, then tool result */
+            llm_chat_add_assistant_tool_call(chat, response,
+                                              chat->last_tool_calls_json);
+            llm_chat_add_tool_result(chat, chat->last_tool_call_id, result_msg);
+        } else {
+            /* Fallback: legacy JSON-in-content format */
+            llm_chat_add(chat, "assistant", response);
+            llm_chat_add(chat, "user", result_msg);
+        }
 
         /* Within-loop context management: evict old messages when context gets full */
         if (ctx->llm->context_size > 0) {
