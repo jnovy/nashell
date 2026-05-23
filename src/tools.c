@@ -151,6 +151,19 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
                 break;
             }
             str_append(out, buf, (size_t)n);
+        } else if (pr > 0 && (pfd.revents & (POLLHUP | POLLERR))) {
+            /* Pipe closed (child exited) or error — drain any remaining data */
+            char buf[4096];
+            ssize_t n;
+            while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+                if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
+                    size_t remaining = (size_t)max_output - out->len;
+                    if (remaining > 0) str_append(out, buf, remaining);
+                    break;
+                }
+                str_append(out, buf, (size_t)n);
+            }
+            break;
         } else if (pr == 0) {
             /* Timeout on poll — check if child exited */
             int status;
