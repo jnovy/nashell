@@ -415,6 +415,71 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     llm_chat_free(chat);
 
+    /* Post-task reflection: ask LLM to extract reusable lessons/strategies */
+    if (final_result && ctx->tools->step > 2 && ctx->tools->memory) {
+        llm_chat_t *reflect = llm_chat_new();
+        llm_chat_add(reflect, "system",
+            "You just completed a task. Review what happened and extract 0-3 reusable "
+            "lessons or strategies. For each, call memory_store with:\n"
+            "- key: lesson:short-name or strategy:short-name\n"
+            "- value: the reusable knowledge\n"
+            "- tags: comma-separated relevant tags\n"
+            "If nothing worth storing, call done immediately.\n"
+            "Respond with ONE JSON object per turn: "
+            "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
+
+        /* Inject journal manifest as context for reflection */
+        char *manifest = journal_manifest(ctx->tools->journal, 50);
+        if (manifest) {
+            llm_chat_add(reflect, "user", manifest);
+            free(manifest);
+        }
+        llm_chat_add(reflect, "user",
+            "What lessons or strategies should be stored from this task? "
+            "Call memory_store for each, or done if none.");
+
+        /* Mini react loop for reflection (max 4 steps) */
+        for (int rstep = 0; rstep < 4; rstep++) {
+            llm_stats_t rstats = {0};
+            int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
+            int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
+            char *rresp = llm_complete_stream(ctx->llm, reflect, &rstats,
+                NULL, NULL, max_resp, rep_thresh);
+            if (!rresp) break;
+
+            cJSON *raction = llm_parse_action(rresp);
+            if (!raction) { free(rresp); break; }
+
+            const char *ract = NULL;
+            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(raction, "action");
+            if (act_item && cJSON_IsString(act_item)) ract = act_item->valuestring;
+
+            if (!ract || strcmp(ract, "done") == 0) {
+                cJSON_Delete(raction);
+                free(rresp);
+                break;
+            }
+
+            if (strcmp(ract, "memory_store") == 0) {
+                tool_result_t tr = tool_execute(ctx->tools, "memory_store", raction);
+                /* Emit event so frontend can show it */
+                react_event_t ev = {0};
+                ev.type = REACT_EVENT_STEP_COMPLETE;
+                ev.action = "memory_store";
+                ev.description = "[reflection]";
+                emit(on_event, userdata, &ev);
+                tool_result_free(&tr);
+            }
+
+            llm_chat_add(reflect, "assistant", rresp);
+            llm_chat_add(reflect, "user",
+                "Stored. Any more lessons? Call memory_store or done.");
+            cJSON_Delete(raction);
+            free(rresp);
+        }
+        llm_chat_free(reflect);
+    }
+
     /* Save last query+result for next react loop's context injection */
     if (ctx->last_query) free(ctx->last_query);
     if (ctx->last_result) free(ctx->last_result);

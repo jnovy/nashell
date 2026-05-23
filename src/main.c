@@ -183,6 +183,11 @@ int main(int argc, char **argv) {
     store_t *shared_store = store_new(nash_dir);
     memory_t *memory = memory_new(nash_dir);
 
+    /* Prune stale memories at startup (90 days, access_count < 2) */
+    int pruned = memory_prune(memory, 90, 2);
+    if (pruned > 0)
+        fprintf(stderr, "[info] pruned %d stale memories\n", pruned);
+
     /* One-shot headless mode */
     if (query) {
         char *session_dir = create_session_dir(nash_dir);

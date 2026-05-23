@@ -53,4 +53,10 @@ char *memory_load_pinned(memory_t *m);
 /* Free a memory_results_t */
 void memory_results_free(memory_results_t *r);
 
+/* Prune stale, low-value memories.
+ * Deletes entries older than max_age_days with access_count < min_access_count.
+ * Never prunes pinned memories, strategies, or lessons.
+ * Returns number of entries pruned. */
+int memory_prune(memory_t *m, int max_age_days, int min_access_count);
+
 #endif

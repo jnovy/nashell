@@ -8,6 +8,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <strings.h>  /* strcasestr */
+#include <unistd.h>   /* unlink */
+#include <math.h>     /* exp, log */
+#include <math.h>     /* exp, log */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -112,24 +115,34 @@ int memory_store(memory_t *m, const char *key, const char *value,
 
 /* ── recall (search) ─────────────────────────────────── */
 
-/* Score a memory entry against a query (higher = more relevant) */
-static int score_entry(const char *key, const char *value,
-                       cJSON *tags, const char *query) {
-    int score = 0;
-    /* Key match (most valuable) */
-    if (strcasestr(key, query)) score += 3;
-    /* Tag match */
+/* Composite scoring: relevance × recency × importance (research-backed) */
+static double score_entry_composite(const char *key, const char *value,
+                                     cJSON *tags, const char *query,
+                                     double last_accessed, int access_count) {
+    /* Relevance: substring match on key, tags, value */
+    double relevance = 0;
+    if (strcasestr(key, query)) relevance += 3.0;
     if (tags) {
         int n = cJSON_GetArraySize(tags);
         for (int i = 0; i < n; i++) {
             cJSON *t = cJSON_GetArrayItem(tags, i);
             if (t && t->valuestring && strcasestr(t->valuestring, query))
-                score += 2;
+                relevance += 2.0;
         }
     }
-    /* Value match */
-    if (strcasestr(value, query)) score += 1;
-    return score;
+    if (strcasestr(value, query)) relevance += 1.0;
+    if (relevance == 0) return 0;  /* no match at all */
+
+    /* Recency: exponential decay — recent memories score higher */
+    double age_days = (epoch_now() - last_accessed) / 86400.0;
+    if (age_days < 0) age_days = 0;
+    double recency = exp(-age_days / 30.0);  /* half-life ~30 days */
+
+    /* Importance: logarithmic access frequency */
+    double importance = 1.0 + log(1.0 + (double)access_count);
+
+    /* Composite: weighted combination */
+    return relevance * 0.6 + recency * 0.2 + importance * 0.2;
 }
 
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
@@ -140,7 +153,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     if (!dir) return results;
 
     /* Temporary storage for scored results */
-    typedef struct { char path[4096]; int score; } scored_t;
+    typedef struct { char path[4096]; double score; } scored_t;
     scored_t *scored = calloc(1024, sizeof(scored_t));
     int n_scored = 0;
 
@@ -176,8 +189,18 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (k && k->valuestring) key = k->valuestring;
         if (v && v->valuestring) value = v->valuestring;
 
-        int s = score_entry(key, value, tags, query);
-        if (s > 0) {
+        /* Get recency/importance data for composite scoring */
+        double last_acc = 0, created = 0;
+        int acc_count = 0;
+        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
+        cJSON *ca = cJSON_GetObjectItem(entry, "created_at");
+        cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
+        if (la && la->valuestring) last_acc = atof(la->valuestring);
+        if (ca && ca->valuestring) created = atof(ca->valuestring);
+        if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
+
+        double s = score_entry_composite(key, value, tags, query, last_acc, acc_count);
+        if (s > 0.01) {
             snprintf(scored[n_scored].path, sizeof(scored[n_scored].path), "%s", path);
             scored[n_scored].score = s;
             n_scored++;
@@ -393,4 +416,72 @@ void memory_results_free(memory_results_t *r) {
     free(r->entries);
     r->entries = NULL;
     r->count = 0;
+}
+
+/* ── prune (forgetting/decay) ─────────────────────────────── */
+
+int memory_prune(memory_t *m, int max_age_days, int min_access_count) {
+    if (!m) return 0;
+
+    DIR *dir = opendir(m->dir);
+    if (!dir) return 0;
+
+    double now = epoch_now();
+    double max_age_sec = (double)max_age_days * 86400.0;
+    int pruned = 0;
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
+
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *buf = malloc((size_t)sz + 1);
+        if (!buf) { fclose(f); continue; }
+        fread(buf, 1, (size_t)sz, f);
+        buf[sz] = '\0';
+        fclose(f);
+
+        cJSON *entry = cJSON_Parse(buf);
+        free(buf);
+        if (!entry) continue;
+
+        /* Never prune pinned memories */
+        cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
+        if (pin && cJSON_IsTrue(pin)) { cJSON_Delete(entry); continue; }
+
+        /* Never prune strategies or lessons (high-value) */
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        if (k && k->valuestring) {
+            if (strncmp(k->valuestring, "strategy:", 9) == 0 ||
+                strncmp(k->valuestring, "lesson:", 7) == 0) {
+                cJSON_Delete(entry);
+                continue;
+            }
+        }
+
+        /* Check age and access count */
+        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
+        cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
+        double last_acc = la && la->valuestring ? atof(la->valuestring) : now;
+        int acc_count = ac ? (int)cJSON_GetNumberValue(ac) : 0;
+
+        double age = now - last_acc;
+        if (age > max_age_sec && acc_count < min_access_count) {
+            unlink(path);
+            pruned++;
+        }
+
+        cJSON_Delete(entry);
+    }
+    closedir(dir);
+    return pruned;
 }
