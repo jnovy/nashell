@@ -1,4 +1,5 @@
 #include "ui_state.h"
+#include "md_render.h"
 #include "str.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -308,7 +309,11 @@ void ui_state_down(ui_state_t *ui) {
     if (ui->focus == FOCUS_JOURNAL && ui->doc) {
         if (ui->cursor_link < ui->doc->link_count - 1) {
             ui->cursor_link++;
-            /* Auto-scroll handled by renderer */
+            /* Auto-scroll to keep cursor visible */
+            int link_line = md_link_line(ui->doc, ui->cursor_link);
+            int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+            if (link_line >= ui->scroll_y + vis)
+                ui->scroll_y = link_line - vis + 1;
         }
     }
     ui->dirty = 1;
@@ -331,6 +336,15 @@ void ui_state_enter(ui_state_t *ui) {
 
     /* Regenerate MD to reflect new state */
     ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
 }
 
 void ui_state_back(ui_state_t *ui) {
@@ -341,6 +355,15 @@ void ui_state_back(ui_state_t *ui) {
             ui->link_states[idx] != LINK_COLLAPSED) {
             ui->link_states[idx] = LINK_COLLAPSED;
             ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         }
     }
     ui->dirty = 1;
@@ -429,6 +452,15 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
         ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         break;
     }
     case REACT_EVENT_LLM_TOKEN:
@@ -442,12 +474,30 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
             ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         }
         break;
 
     case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
         ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         break;
 
     case REACT_EVENT_DONE:
@@ -457,11 +507,29 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
         ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         break;
 
     case REACT_EVENT_ERROR:
     case REACT_EVENT_WARNING:
         ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
         break;
     }
 }
@@ -481,6 +549,15 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
     free(ui->banner);
     ui->banner = banner ? strdup(banner) : NULL;
     ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
 }
 
 void ui_state_add_query(ui_state_t *ui, const char *query_text) {
@@ -498,10 +575,28 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
     ui->link_states_count = new_idx + 1;
     ui->cursor_link = new_idx;
     ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
 }
 
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
     if (!ui) return;
     ui->journal = journal;
     ui_state_rebuild_md(ui);
+    /* Auto-scroll to keep cursor visible after expansion change */
+    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y)
+            ui->scroll_y = link_line;
+        else if (link_line >= ui->scroll_y + vis)
+            ui->scroll_y = link_line - vis + 1;
+    }
 }

@@ -87,6 +87,7 @@ static void resize_panes(void) {
 
 static void render_main(ui_state_t *ui) {
     int rows = getmaxy(win_main);
+    ui->visible_rows = rows;  /* tell ui_state how tall the main pane is */
     int cols = getmaxx(win_main);
     (void)rows;
 
