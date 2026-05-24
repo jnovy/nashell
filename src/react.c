@@ -236,12 +236,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.step = step + 1;
             ev.message = "Failed to parse LLM response as JSON";
             emit(on_event, userdata, &ev);
-            /* Retry */
+
+            /* Log the invalid response to journal for analysis */
+            char *err_hash = store_save(ctx->tools->store, response);
+            const char *err_alias = tool_register_alias(ctx->tools,
+                                        err_hash ? err_hash : "");
+            cJSON *err_p = cJSON_CreateObject();
+            cJSON_AddStringToObject(err_p, "type", "parse_error");
+            cJSON_AddStringToObject(err_p, "raw_preview",
+                strlen(response) > 200 ? "(truncated)" : response);
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "parse_error", err_p, err_alias,
+                           strlen(response), 0,
+                           "LLM response was not valid JSON");
+            cJSON_Delete(err_p);
+            free(err_hash);
+
+            /* Retry — tell model to use tool_calls */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user",
-                "Your response was not valid JSON. "
-                "Reply with ONLY a JSON object: "
-                "{\"thought\": \"...\", \"action\": \"tool_name\", ...}");
+                "Your response could not be parsed. "
+                "You must call one of the available tools. "
+                "Do not write free-form text.");
             free(response);
             continue;
         }
@@ -255,14 +271,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.step = step + 1;
             ev.message = "No 'action' field in response";
             emit(on_event, userdata, &ev);
-            /* Retry */
+
+            /* Log the invalid response to journal for analysis */
+            char *err_hash = store_save(ctx->tools->store, response);
+            const char *err_alias = tool_register_alias(ctx->tools,
+                                        err_hash ? err_hash : "");
+            cJSON *err_p = cJSON_CreateObject();
+            cJSON_AddStringToObject(err_p, "type", "missing_action");
+            cJSON_AddStringToObject(err_p, "raw_preview",
+                strlen(response) > 200 ? "(truncated)" : response);
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "parse_error", err_p, err_alias,
+                           strlen(response), 0,
+                           "LLM response missing 'action' field");
+            cJSON_Delete(err_p);
+            free(err_hash);
+
+            /* Retry — tell model to use tool_calls */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user",
-                "Your JSON response is missing the required 'action' field. "
-                "Reply with ONLY a JSON object like: "
-                "{\"thought\": \"...\", \"action\": \"tool_name\", \"param\": \"value\"}\n"
-                "Available actions: shell_exec, file_read, file_write, file_edit, "
-                "grep_search, notes, done");
+                "Your response could not be parsed. "
+                "You must call one of the available tools. "
+                "Do not write free-form text.");
             cJSON_Delete(action);
             free(response);
             continue;
