@@ -1,6 +1,8 @@
 #ifndef UI_STATE_H
 #define UI_STATE_H
+#include <pthread.h>
 
+#include <pthread.h>
 #include "react_event.h"
 #include "journal.h"
 #include "store.h"
@@ -92,6 +94,7 @@ typedef struct {
 
     /* ── Dirty flag (renderer checks this) ── */
     int            dirty;            /* 1 = needs redraw */
+    pthread_mutex_t mtx;              /* protects concurrent access */
 } ui_state_t;
 
 /* ── Lifecycle ───────────────────────────────────────── */

@@ -1,4 +1,5 @@
 #include "tui.h"
+#include <pthread.h>
 #include <time.h>
 #include "str.h"
 #include <ncurses.h>
@@ -353,13 +354,16 @@ static void render_bottom(ui_state_t *ui) {
 /* ── public API ───────────────────────────────────── */
 
 void tui_render(ui_state_t *ui) {
-    if (!ui || !ui->dirty) return;
+    if (!ui) return;
+    pthread_mutex_lock(&ui->mtx);
+    if (!ui->dirty) { pthread_mutex_unlock(&ui->mtx); return; }
 
     resize_panes(ui);
     render_main(ui);
     render_bottom(ui);
     doupdate();
     ui->dirty = 0;
+    pthread_mutex_unlock(&ui->mtx);
 }
 
 int tui_input(ui_state_t *ui, char **out_query) {

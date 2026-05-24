@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +193,30 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
     return str_steal(&s);
 }
 
+
+/* --- Threading for non-blocking inference --- */
+typedef struct {
+    react_ctx_t *react;
+    char        *query;
+    ui_state_t  *ui;
+    char        *result;
+    volatile int done;
+} infer_args_t;
+
+static void threaded_event_cb(const react_event_t *ev, void *userdata) {
+    infer_args_t *a = (infer_args_t *)userdata;
+    pthread_mutex_lock(&a->ui->mtx);
+    ui_state_on_event(ev, (void *)a->ui);
+    pthread_mutex_unlock(&a->ui->mtx);
+}
+
+static void *infer_worker(void *arg) {
+    infer_args_t *a = (infer_args_t *)arg;
+    a->result = react_run(a->react, a->query, threaded_event_cb, a);
+    a->done = 1;
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     /* Load config from ~/.nash/config.toml (or default) */
     char config_path[512];
@@ -318,7 +343,41 @@ int main(int argc, char **argv) {
 
         /* Main TUI event loop */
         int running = 1;
+        int inferring = 0;
+        pthread_t infer_tid;
+        static infer_args_t iargs;
         while (running) {
+            /* Check if inference thread completed */
+            if (inferring && iargs.done) {
+                pthread_join(infer_tid, NULL);
+                inferring = 0;
+                char *result = iargs.result;
+                pthread_mutex_lock(&ui->mtx);
+                if (result) {
+                    ui_state_set_status(ui, STATUS_DONE, "Done");
+                    if (ui->query_count > 0) {
+                        ui_query_t *q = &ui->queries[ui->query_count - 1];
+                        free(q->result_preview);
+                        q->result_preview = strndup(result, 100);
+                    }
+                } else {
+                    ui_state_set_status(ui, STATUS_ERROR, "No result");
+                }
+                pthread_mutex_unlock(&ui->mtx);
+                tui_render(ui);
+                if (react.last_query) free(react.last_query);
+                if (react.last_result) free(react.last_result);
+                react.last_query = strdup(iargs.query);
+                react.last_result = result ? strdup(result) : NULL;
+                free(result);
+                free(iargs.query);
+                iargs.query = NULL;
+                pthread_mutex_lock(&ui->mtx);
+                ui_state_load_journal(ui, journal);
+                ui_state_set_status(ui, STATUS_READY, "Ready");
+                pthread_mutex_unlock(&ui->mtx);
+                tui_render(ui);
+            }
             char *submitted_query = NULL;
             int rc = tui_input(ui, &submitted_query);
 
@@ -400,42 +459,18 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                /* Regular query — run react loop with TUI event bridge */
+                /* Regular query — spawn inference in background thread */
+                pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_RUNNING, "Running...");
-                tui_render(ui);
-
-                /* Add query to journal pane */
                 ui_state_add_query(ui, submitted_query);
+                pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
-
-                char *result = react_run(&react, submitted_query,
-                    ui_state_on_event, (void *)ui);
-
-                /* Update status */
-                if (result) {
-                    ui_state_set_status(ui, STATUS_DONE, "Done");
-                    /* Update the current query's result preview */
-                    if (ui->query_count > 0) {
-                        ui_query_t *q = &ui->queries[ui->query_count - 1];
-                        free(q->result_preview);
-                        q->result_preview = strndup(result, 100);
-                    }
-                } else {
-                    ui_state_set_status(ui, STATUS_ERROR, "No result");
-                }
-                tui_render(ui);
-
-                /* Save last exchange for cross-query context */
-                if (react.last_query) free(react.last_query);
-                if (react.last_result) free(react.last_result);
-                react.last_query = strdup(submitted_query);
-                react.last_result = result ? strdup(result) : NULL;
-                free(result);
-                free(submitted_query);
-
-                /* Reload journal into UI state */
-                ui_state_load_journal(ui, journal);
-                ui_state_set_status(ui, STATUS_READY, "Ready");
+                iargs = (infer_args_t){
+                    .react = &react, .query = strdup(submitted_query),
+                    .ui = ui, .result = NULL, .done = 0,
+                };
+                pthread_create(&infer_tid, NULL, infer_worker, &iargs);
+                inferring = 1;
                 tui_render(ui);
             }
 

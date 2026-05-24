@@ -20,6 +20,7 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
     ui->input_buffer = calloc(1, ui->input_cap);
     ui->stream_cap = 8192;
     ui->stream_tokens = calloc(1, ui->stream_cap);
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
     return ui;
 }
@@ -49,6 +50,7 @@ static void free_steps(ui_state_t *ui) {
 
 void ui_state_free(ui_state_t *ui) {
     if (!ui) return;
+    pthread_mutex_destroy(&ui->mtx);
     free_queries(ui);
     free_steps(ui);
     free(ui->detail_content);
@@ -63,6 +65,7 @@ void ui_state_free(ui_state_t *ui) {
 
 void ui_state_tab(ui_state_t *ui) {
     ui->focus = (ui->focus == FOCUS_JOURNAL) ? FOCUS_QUERY : FOCUS_JOURNAL;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -80,6 +83,7 @@ void ui_state_up(ui_state_t *ui) {
         if (ui->detail_scroll > 0) ui->detail_scroll--;
         break;
     }
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -97,6 +101,7 @@ void ui_state_down(ui_state_t *ui) {
         if (ui->detail_scroll < ui->detail_lines - 1) ui->detail_scroll++;
         break;
     }
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -125,6 +130,7 @@ void ui_state_enter(ui_state_t *ui) {
         /* Already at deepest level — no-op */
         break;
     }
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -146,6 +152,7 @@ void ui_state_back(ui_state_t *ui) {
         ui->detail_lines = 0;
         break;
     }
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -153,6 +160,7 @@ void ui_state_page_up(ui_state_t *ui) {
     if (ui->focus == FOCUS_JOURNAL && ui->view == VIEW_DETAIL) {
         ui->detail_scroll -= 20;
         if (ui->detail_scroll < 0) ui->detail_scroll = 0;
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
     }
 }
@@ -162,6 +170,7 @@ void ui_state_page_down(ui_state_t *ui) {
         ui->detail_scroll += 20;
         if (ui->detail_scroll > ui->detail_lines - 1)
             ui->detail_scroll = ui->detail_lines > 0 ? ui->detail_lines - 1 : 0;
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
     }
 }
@@ -180,6 +189,7 @@ void ui_state_input_char(ui_state_t *ui, int ch) {
     ui->input_buffer[ui->cursor_pos] = (char)ch;
     ui->cursor_pos++;
     ui->input_len++;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -190,6 +200,7 @@ void ui_state_input_backspace(ui_state_t *ui) {
                 ui->input_len - ui->cursor_pos + 1);
         ui->cursor_pos--;
         ui->input_len--;
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
     }
 }
@@ -200,23 +211,28 @@ void ui_state_input_delete(ui_state_t *ui) {
                 ui->input_buffer + ui->cursor_pos + 1,
                 ui->input_len - ui->cursor_pos);
         ui->input_len--;
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
     }
 }
 
 void ui_state_input_left(ui_state_t *ui) {
+    pthread_mutex_init(&ui->mtx, NULL);
     if (ui->cursor_pos > 0) { ui->cursor_pos--; ui->dirty = 1; }
 }
 
 void ui_state_input_right(ui_state_t *ui) {
+    pthread_mutex_init(&ui->mtx, NULL);
     if (ui->cursor_pos < ui->input_len) { ui->cursor_pos++; ui->dirty = 1; }
 }
 
 void ui_state_input_home(ui_state_t *ui) {
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->cursor_pos = 0; ui->dirty = 1;
 }
 
 void ui_state_input_end(ui_state_t *ui) {
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->cursor_pos = ui->input_len; ui->dirty = 1;
 }
 
@@ -232,6 +248,7 @@ static void input_clear(ui_state_t *ui) {
     ui->input_buffer[0] = '\0';
     ui->input_len = 0;
     ui->cursor_pos = 0;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -301,6 +318,7 @@ void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
         cJSON_Delete(entry);
     }
     fclose(f);
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -379,6 +397,7 @@ void ui_state_load_manifest(ui_state_t *ui, int query_idx) {
         cJSON_Delete(entry);
     }
     fclose(f);
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -420,6 +439,7 @@ void ui_state_load_detail(ui_state_t *ui, int step_idx) {
     for (size_t i = 0; i < n; i++)
         if (buf[i] == '\n') lines++;
     ui->detail_lines = lines;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -429,6 +449,7 @@ void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
     ui->status = status;
     free(ui->status_text);
     ui->status_text = text ? strdup(text) : strdup("");
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -463,6 +484,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
         }
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
         break;
 
@@ -483,6 +505,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     case REACT_EVENT_TOOL_OUTPUT:
         /* Tool result available — could auto-refresh manifest */
+    pthread_mutex_init(&ui->mtx, NULL);
         ui->dirty = 1;
         break;
 
@@ -601,6 +624,7 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
     q->timestamp = (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
     q->react_loop = ui->query_count - 1;
     ui->selected_query = ui->query_count - 1;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
 
@@ -609,5 +633,6 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
     if (!ui) return;
     free(ui->banner);
     ui->banner = banner ? strdup(banner) : NULL;
+    pthread_mutex_init(&ui->mtx, NULL);
     ui->dirty = 1;
 }
