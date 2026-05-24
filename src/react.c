@@ -3,6 +3,7 @@
 #include "journal.h"
 #include "store.h"
 #include "cJSON.h"
+#include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -371,8 +372,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         char *meta_str = cJSON_PrintUnformatted(tr.meta);
         size_t result_len = strlen(meta_str) + 128;
         char *result_msg = malloc(result_len);
-        snprintf(result_msg, result_len, "%s\n[step %d | %.1fs]",
-                 meta_str, step + 1, total_elapsed);
+        { char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
+        snprintf(result_msg, result_len, "%s\n[step %d | %s]",
+                 meta_str, step + 1, _dur); }
 
         /* Add assistant + tool result to chat (with tool_calls threading if available) */
         if (chat->last_tool_call_id) {

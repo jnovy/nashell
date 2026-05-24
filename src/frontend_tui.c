@@ -1,8 +1,10 @@
 #include "react_event.h"
+#include "str.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 
 /* ── Simple TUI frontend ─────────────────────────────── */
 /* Reproduces the original terminal output via react events */
@@ -75,9 +77,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
             desc_buf[199] = '.'; desc_buf[200] = '\0';
             desc = desc_buf;
         }
-        fprintf(stderr, "\r\033[K[step %d] %s: %s (%.1fs)%s\n",
+        { char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
+        fprintf(stderr, "\r\033[K[step %d] %s: %s (%s)%s\n",
                 ev->step, ev->action ? ev->action : "?",
-                desc, ev->step_elapsed, stats_buf);
+                desc, _dur, stats_buf); }
         break;
     }
 
@@ -109,7 +112,8 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
         break;
 
     case REACT_EVENT_DONE: {
-        fprintf(stderr, "\r\033[K[step %d] done (%.1fs)\n", ev->step, ev->step_elapsed);
+        { char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
+        fprintf(stderr, "\r\033[K[step %d] done (%s)\n", ev->step, _dur); }
         /* Stats printed AFTER result (main.c prints the result between done event and this) */
         /* We print stats here since the result will be printed by main.c via printf */
         fprintf(stderr, "\r\033[K");
@@ -125,9 +129,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
                 int pct = (int)(100.0 * ev->stats.prompt_tokens / ev->context_size);
                 snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", pct);
             }
-            fprintf(stderr, "[%d→%d tok%s%s%s | total %.1fs]\n",
+            char _tdur[32]; fmt_duration(ev->total_elapsed, _tdur, sizeof(_tdur));
+            fprintf(stderr, "[%d→%d tok%s%s%s | total %s]\n",
                     ev->stats.prompt_tokens, ev->stats.completion_tokens,
-                    pp_str, gen_str, ctx_str, ev->total_elapsed);
+                    pp_str, gen_str, ctx_str, _tdur);
         }
         break;
     }

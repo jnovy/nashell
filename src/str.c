@@ -70,3 +70,25 @@ char *str_steal(str_t *s) {
 const char *str_cstr(const str_t *s) {
     return s->data ? s->data : "";
 }
+
+/* Format seconds into human-readable duration */
+const char *fmt_duration(double seconds, char *buf, size_t sz) {
+    int s = (int)seconds;
+    if (s < 60) {
+        snprintf(buf, sz, "%ds", s);
+    } else {
+        int m = s / 60; s %= 60;
+        if (m < 60) {
+            snprintf(buf, sz, "%dm%02ds", m, s);
+        } else {
+            int h = m / 60; m %= 60;
+            if (h < 24) {
+                snprintf(buf, sz, "%dh%02dm%02ds", h, m, s);
+            } else {
+                int d = h / 24; h %= 24;
+                snprintf(buf, sz, "%dd%02dh%02dm%02ds", d, h, m, s);
+            }
+        }
+    }
+    return buf;
+}
