@@ -119,23 +119,23 @@ char *journal_manifest(journal_t *j, int max_steps) {
             else if (res && res->valuestring) key_param = res->valuestring;
         }
 
-        /* Format: "    ✓ R0S1: shell_exec "ls -la" → 473 chars"
+        /* Format: "    ✓ R0S1: shell_exec "ls -la" -> 473 chars"
          *         "    ✗ R0S3: web_search "query""
          * Errors NOT inlined — model can file_read(ref) if it needs details. */
         char buf[512];
         cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
         int failed = (failed_j && cJSON_IsTrue(failed_j));
-        const char *mark = failed ? "✗" : "✓";
+        const char *mark = failed ? "x" : "+";
 
         if (tool && strcmp(tool, "done") == 0) {
-            snprintf(buf, sizeof(buf), "    %s %s: → \"%.100s\"",
+            snprintf(buf, sizeof(buf), "    %s %s: -> \"%.100s\"",
                      mark, ref ? ref : "?", key_param);
         } else if (failed) {
             /* Failed — just show ✗ and ref, no inline error text */
             snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\"",
                      mark, ref ? ref : "?", tool ? tool : "?", key_param);
         } else {
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\" → %d chars",
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\" -> %d chars",
                      mark, ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);
         }
         str_append_cstr(&out, buf);

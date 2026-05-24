@@ -1,6 +1,6 @@
 CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncurses -lpthread -lm
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm
 
 SRC     = src/main.c src/str.c src/arena.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \

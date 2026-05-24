@@ -168,8 +168,8 @@ static void test_failed_field(void) {
     /* Verify manifest shows ✓/✗ markers */
     char *manifest = journal_manifest(j, 50);
     ASSERT_NOT_NULL(manifest);
-    ASSERT(strstr(manifest, "\xe2\x9c\x93") != NULL);  /* ✓ UTF-8 */
-    ASSERT(strstr(manifest, "\xe2\x9c\x97") != NULL);  /* ✗ UTF-8 */
+    ASSERT(strstr(manifest, "+") != NULL);  /* ✓ UTF-8 */
+    ASSERT(strstr(manifest, "x") != NULL);  /* ✗ UTF-8 */
     /* Error text NOT inlined in manifest — model looks it up via ref */
     ASSERT(strstr(manifest, "ERROR") == NULL);
     free(manifest);
