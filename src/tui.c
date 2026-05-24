@@ -1,19 +1,31 @@
 #include "tui.h"
-#include <pthread.h>
-#include <time.h>
 #include "str.h"
 #include <ncurses.h>
-#include <locale.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
+#include <locale.h>
+#include <unistd.h>
 
-/* ── globals ──────────────────────────────────────── */
+/* ── Windows ─────────────────────────────────────────── */
 
-static WINDOW *win_main   = NULL;   /* top pane: banner + journal */
-static WINDOW *win_bottom = NULL;   /* bottom pane: status + input / preview */
-static int     term_rows, term_cols;
+static WINDOW *win_main   = NULL;   /* top pane: banner + tree view */
+static WINDOW *win_bottom = NULL;   /* bottom pane: content / status+input */
+static int main_height = 0;
+static int bottom_height = 0;
 
-/* ── init / shutdown ──────────────────────────────── */
+/* ── Colors ──────────────────────────────────────────── */
+
+#define C_NORMAL    0
+#define C_SELECTED  1
+#define C_FAILED    2
+#define C_SUCCESS   3
+#define C_STATUS    4
+#define C_DIM       5
+#define C_FOCUS     6
+#define C_STREAM    7
+
+/* ── Init / Shutdown ─────────────────────────────────── */
 
 void tui_init(void) {
     setlocale(LC_ALL, "");
@@ -21,116 +33,102 @@ void tui_init(void) {
     cbreak();
     noecho();
     keypad(stdscr, TRUE);
-    nodelay(stdscr, TRUE);   /* non-blocking getch */
+    nodelay(stdscr, TRUE);
     curs_set(1);
 
     if (has_colors()) {
         start_color();
         use_default_colors();
-        init_pair(1, COLOR_GREEN,  -1);   /* success */
-        init_pair(2, COLOR_RED,    -1);   /* failure */
-        init_pair(3, COLOR_CYAN,   -1);   /* info/thinking */
-        init_pair(4, COLOR_YELLOW, -1);   /* status */
-        init_pair(5, COLOR_WHITE,  -1);   /* normal */
-        init_pair(6, COLOR_MAGENTA,-1);   /* header */
+        init_pair(C_SELECTED, COLOR_BLACK, COLOR_CYAN);
+        init_pair(C_FAILED,   COLOR_RED,   -1);
+        init_pair(C_SUCCESS,  COLOR_GREEN,  -1);
+        init_pair(C_STATUS,   COLOR_BLACK, COLOR_WHITE);
+        init_pair(C_DIM,      COLOR_WHITE,  -1);
+        init_pair(C_FOCUS,    COLOR_YELLOW, -1);
+        init_pair(C_STREAM,   COLOR_CYAN,   -1);
     }
 
-    getmaxyx(stdscr, term_rows, term_cols);
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    /* Bottom pane starts as 2 lines (status + input) */
+    bottom_height = 2;
+    main_height = rows - bottom_height;
 
-    /* Create initial windows — bottom = 2 lines (status + input) */
-    int bottom_h = 2;
-    int main_h = term_rows - bottom_h;
-    win_main   = newwin(main_h, term_cols, 0, 0);
-    win_bottom = newwin(bottom_h, term_cols, main_h, 0);
-
+    win_main   = newwin(main_height, cols, 0, 0);
+    win_bottom = newwin(bottom_height, cols, main_height, 0);
     scrollok(win_main, FALSE);
     scrollok(win_bottom, FALSE);
     keypad(win_main, TRUE);
     keypad(win_bottom, TRUE);
-
-    refresh();
 }
 
 void tui_shutdown(void) {
     if (win_main)   delwin(win_main);
     if (win_bottom) delwin(win_bottom);
-    win_main = win_bottom = NULL;
     endwin();
 }
 
-/* ── helpers ──────────────────────────────────────── */
+/* ── Resize panes based on content ───────────────────── */
 
-/* Compute bottom pane height based on content */
-static int compute_bottom_height(ui_state_t *ui) {
-    int max_bottom = term_rows / 2;  /* max 50% of screen */
-
-    if (ui->focus == FOCUS_QUERY) {
-        /* Query mode: 2 lines (status + input) when empty,
-         * grows with multi-line input up to max */
-        int lines = 2;  /* status + input */
-        if (ui->input_len > 0) {
-            /* Count wrapped lines */
-            int input_lines = (ui->input_len / (term_cols - 6)) + 1;
-            lines = 1 + input_lines;  /* status + input lines */
-        }
-        if (lines > max_bottom) lines = max_bottom;
-        return lines;
-    }
-
-    if (ui->focus == FOCUS_JOURNAL) {
-        /* Journal browsing: bottom shows preview */
-        if (ui->view == VIEW_QUERIES && ui->query_count > 0) {
-            /* Preview: show first few steps of selected query */
-            int preview_lines = 8;
-            if (preview_lines > max_bottom) preview_lines = max_bottom;
-            return preview_lines;
-        }
-        if (ui->view == VIEW_MANIFEST && ui->step_count > 0) {
-            /* Preview: show step detail */
-            int preview_lines = 10;
-            if (preview_lines > max_bottom) preview_lines = max_bottom;
-            return preview_lines;
-        }
-    }
-
-    return 2;  /* default: status + input */
-}
-
-/* Resize windows if needed */
 static void resize_panes(ui_state_t *ui) {
-    int new_rows, new_cols;
-    getmaxyx(stdscr, new_rows, new_cols);
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
 
-    int bottom_h = compute_bottom_height(ui);
-    int main_h = new_rows - bottom_h;
-    if (main_h < 3) main_h = 3;
-    bottom_h = new_rows - main_h;
+    /* Bottom pane sizing:
+     * - Default: 2 lines (status + input)
+     * - When browsing with content: up to half screen
+     * - When content loaded: show content lines + 1 status line, capped at half */
+    int want_bottom = 2;  /* minimum: status + input */
 
-    if (new_rows != term_rows || new_cols != term_cols ||
-        getmaxy(win_main) != main_h || getmaxy(win_bottom) != bottom_h) {
-        term_rows = new_rows;
-        term_cols = new_cols;
+    if (ui->bottom_content && ui->bottom_lines > 0) {
+        want_bottom = ui->bottom_lines + 1;  /* content + status */
+        if (want_bottom > rows / 2) want_bottom = rows / 2;
+        if (want_bottom < 2) want_bottom = 2;
+    }
 
-        wresize(win_main, main_h, term_cols);
+    if (want_bottom != bottom_height || rows - want_bottom != main_height) {
+        bottom_height = want_bottom;
+        main_height = rows - bottom_height;
+
+        wresize(win_main, main_height, cols);
         mvwin(win_main, 0, 0);
-
-        wresize(win_bottom, bottom_h, term_cols);
-        mvwin(win_bottom, main_h, 0);
-
+        wresize(win_bottom, bottom_height, cols);
+        mvwin(win_bottom, main_height, 0);
         ui->dirty = 1;
     }
 }
 
-/* Print a string, truncating at width */
-static void wprint_trunc(WINDOW *w, int y, int x, const char *s, int maxw) {
-    if (!s || maxw <= 0) return;
-    wmove(w, y, x);
-    int col = 0;
-    for (const char *p = s; *p && col < maxw; p++, col++)
-        waddch(w, (unsigned char)*p);
+/* ── Helper: count lines in string ───────────────────── */
+
+static int count_str_lines(const char *s) {
+    if (!s || !s[0]) return 0;
+    int n = 0;
+    for (; *s; s++) if (*s == '\n') n++;
+    return n + 1;  /* last line may not end with \n */
 }
 
-/* ── render main pane ─────────────────────────────── */
+/* ── Helper: read store content via session symlink ──── */
+
+static char *read_ref_content(ui_state_t *ui, const char *ref, int max_bytes) {
+    if (!ui || !ui->session_dir || !ref) return NULL;
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", ui->session_dir, ref);
+    FILE *f = fopen(path, "r");  /* symlink resolves automatically */
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    if (sz > max_bytes) sz = max_bytes;
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    buf[n] = '\0';
+    fclose(f);
+    return buf;
+}
+
+/* ── Render main pane (banner + tree view) ───────────── */
 
 static void render_main(ui_state_t *ui) {
     int rows = getmaxy(win_main);
@@ -138,145 +136,132 @@ static void render_main(ui_state_t *ui) {
 
     werase(win_main);
 
-    if (ui->view == VIEW_QUERIES || ui->view == VIEW_MANIFEST) {
-        /* Show banner first, then journal content */
-        int line = 0;
+    int line = 0;
 
-        /* Render banner if present */
-        if (ui->banner) {
-            const char *p = ui->banner;
-            while (*p && line < rows - 1) {
-                const char *eol = strchr(p, '\n');
-                int len = eol ? (int)(eol - p) : (int)strlen(p);
-                if (len > cols) len = cols;
-
-                /* Color the banner lines */
-                if (line < 6) {
-                    wattron(win_main, COLOR_PAIR(1) | A_BOLD);
-                    mvwaddnstr(win_main, line, 0, p, len);
-                    wattroff(win_main, COLOR_PAIR(1) | A_BOLD);
-                } else {
-                    wattron(win_main, COLOR_PAIR(3));
-                    mvwaddnstr(win_main, line, 0, p, len);
-                    wattroff(win_main, COLOR_PAIR(3));
-                }
-                line++;
-                p = eol ? eol + 1 : p + strlen(p);
-            }
-            line++;  /* blank line after banner */
+    /* Show banner if present */
+    if (ui->banner && ui->banner[0]) {
+        const char *p = ui->banner;
+        while (*p && line < rows - 1) {
+            const char *nl = strchr(p, '\n');
+            int len = nl ? (int)(nl - p) : (int)strlen(p);
+            if (len > cols) len = cols;
+            wattron(win_main, COLOR_PAIR(C_SUCCESS));
+            mvwaddnstr(win_main, line, 0, p, len);
+            wattroff(win_main, COLOR_PAIR(C_SUCCESS));
+            line++;
+            p = nl ? nl + 1 : p + strlen(p);
         }
+        line++;  /* blank line after banner */
+    }
 
-        /* Show queries */
-        if (ui->view == VIEW_QUERIES) {
-            if (ui->query_count == 0 && !ui->banner) {
-                wattron(win_main, COLOR_PAIR(3));
-                mvwaddstr(win_main, line, 0, "  (no queries yet - type below and press Enter)");
-                wattroff(win_main, COLOR_PAIR(3));
-            } else {
-                for (int i = 0; i < ui->query_count && line < rows; i++) {
-                    ui_query_t *q = &ui->queries[i];
-                    int selected = (i == ui->selected_query && ui->focus == FOCUS_JOURNAL);
+    /* Tree view: queries with expandable steps */
+    if (ui->query_count == 0 && line < rows) {
+        wattron(win_main, COLOR_PAIR(C_DIM));
+        mvwaddstr(win_main, line, 2, "(no queries yet - type below and press Enter)");
+        wattroff(win_main, COLOR_PAIR(C_DIM));
+    } else {
+        /* Build flat list of visible items for cursor tracking */
+        int item_idx = 0;  /* tracks position for cursor highlight */
 
-                    if (selected) wattron(win_main, A_REVERSE);
+        for (int qi = 0; qi < ui->query_count && line < rows; qi++) {
+            ui_query_t *q = &ui->queries[qi];
 
-                    /* Format: "2026-05-24 10:51  query text..." */
-                    char ts[32] = "";
-                    if (q->timestamp > 0) {
-                        time_t t = (time_t)q->timestamp;
-                        struct tm *tm = localtime(&t);
-                        if (tm) strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M", tm);
+            /* Format timestamp */
+            char ts_buf[32] = "";
+            if (q->timestamp > 0) {
+                time_t t = (time_t)q->timestamp;
+                struct tm *tm = localtime(&t);
+                if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
+            }
+
+            /* Query line: ▸/▼ timestamp  query text */
+            char qline[512];
+            snprintf(qline, sizeof(qline), "  %s %s  %s",
+                     q->expanded ? "\xe2\x96\xbc" : "\xe2\x96\xb8",  /* ▼ or ▸ */
+                     ts_buf,
+                     q->query_text ? q->query_text : "(empty)");
+
+            int is_selected = (ui->focus == FOCUS_JOURNAL &&
+                               qi == ui->selected_query &&
+                               ui->selected_step < 0);
+
+            if (is_selected) wattron(win_main, A_REVERSE);
+            mvwaddnstr(win_main, line, 0, qline, cols);
+            /* Pad to full width for reverse video */
+            int qlen = (int)strlen(qline);
+            if (is_selected && qlen < cols) {
+                for (int x = qlen; x < cols; x++)
+                    mvwaddch(win_main, line, x, ' ');
+            }
+            if (is_selected) wattroff(win_main, A_REVERSE);
+            line++;
+
+            /* If expanded, show steps underneath */
+            if (q->expanded && q->steps && q->step_count > 0) {
+                for (int si = 0; si < q->step_count && line < rows; si++) {
+                    ui_step_t *s = &q->steps[si];
+
+                    char sline[512];
+                    const char *mark = s->failed ? "\xe2\x9c\x97" : "\xe2\x9c\x93";  /* ✗ or ✓ */
+                    if (s->failed) {
+                        snprintf(sline, sizeof(sline), "      %s %s: %s \"%s\"",
+                                 mark,
+                                 s->ref ? s->ref : "?",
+                                 s->tool ? s->tool : "?",
+                                 s->description ? s->description : "");
+                    } else {
+                        snprintf(sline, sizeof(sline), "      %s %s: %s \"%s\" -> %d chars",
+                                 mark,
+                                 s->ref ? s->ref : "?",
+                                 s->tool ? s->tool : "?",
+                                 s->description ? s->description : "",
+                                 s->size);
                     }
 
-                    char buf[512];
-                    snprintf(buf, sizeof(buf), "  %s  %s",
-                             ts, q->query_text ? q->query_text : "?");
-                    wprint_trunc(win_main, line, 0, buf, cols);
+                    int step_selected = (ui->focus == FOCUS_JOURNAL &&
+                                         qi == ui->selected_query &&
+                                         si == ui->selected_step);
 
-                    /* Fill rest of line for reverse video */
-                    if (selected) {
-                        int cur_x = getcurx(win_main);
-                        for (int x = cur_x; x < cols; x++)
-                            waddch(win_main, ' ');
-                        wattroff(win_main, A_REVERSE);
+                    if (step_selected) wattron(win_main, A_REVERSE);
+                    if (s->failed) wattron(win_main, COLOR_PAIR(C_FAILED));
+                    else wattron(win_main, COLOR_PAIR(C_SUCCESS));
+
+                    mvwaddnstr(win_main, line, 0, sline, cols);
+                    int slen = (int)strlen(sline);
+                    if (step_selected && slen < cols) {
+                        for (int x = slen; x < cols; x++)
+                            mvwaddch(win_main, line, x, ' ');
                     }
+
+                    if (s->failed) wattroff(win_main, COLOR_PAIR(C_FAILED));
+                    else wattroff(win_main, COLOR_PAIR(C_SUCCESS));
+                    if (step_selected) wattroff(win_main, A_REVERSE);
                     line++;
                 }
             }
-        } else if (ui->view == VIEW_MANIFEST) {
-            /* Show steps for selected query */
-            wattron(win_main, COLOR_PAIR(4) | A_BOLD);
-            if (ui->selected_query >= 0 && ui->selected_query < ui->query_count) {
-                char hdr[256];
-                snprintf(hdr, sizeof(hdr), "  Query R%d: %s",
-                         ui->queries[ui->selected_query].react_loop,
-                         ui->queries[ui->selected_query].query_text ?
-                         ui->queries[ui->selected_query].query_text : "?");
-                wprint_trunc(win_main, line, 0, hdr, cols);
-            }
-            wattroff(win_main, COLOR_PAIR(4) | A_BOLD);
-            line += 2;
-
-            for (int i = 0; i < ui->step_count && line < rows; i++) {
-                ui_step_t *s = &ui->steps[i];
-                int selected = (i == ui->selected_step && ui->focus == FOCUS_JOURNAL);
-
-                if (selected) wattron(win_main, A_REVERSE);
-
-                /* Format: "  V R0S3: shell_exec "ls -la" -> 473 chars" */
-                char mark = s->failed ? 'X' : 'V';
-                int pair = s->failed ? 2 : 1;
-                wattron(win_main, COLOR_PAIR(pair));
-                mvwprintw(win_main, line, 0, "  %c ", mark);
-                wattroff(win_main, COLOR_PAIR(pair));
-
-                char buf[512];
-                if (s->failed) {
-                    snprintf(buf, sizeof(buf), "%s: %s \"%s\"",
-                             s->ref ? s->ref : "?",
-                             s->tool ? s->tool : "?",
-                             s->description ? s->description : "");
-                } else {
-                    snprintf(buf, sizeof(buf), "%s: %s \"%s\" -> %d chars",
-                             s->ref ? s->ref : "?",
-                             s->tool ? s->tool : "?",
-                             s->description ? s->description : "",
-                             s->size);
-                }
-                wprint_trunc(win_main, line, 4, buf, cols - 4);
-
-                if (selected) {
-                    int cur_x = getcurx(win_main);
-                    for (int x = cur_x; x < cols; x++)
-                        waddch(win_main, ' ');
-                    wattroff(win_main, A_REVERSE);
-                }
-                line++;
-            }
         }
-    } else if (ui->view == VIEW_DETAIL) {
-        /* Show full tool output */
-        if (ui->detail_content) {
-            const char *p = ui->detail_content;
-            int line = -ui->detail_scroll;  /* scroll offset */
-            while (*p && line < rows) {
-                const char *eol = strchr(p, '\n');
-                int len = eol ? (int)(eol - p) : (int)strlen(p);
-                if (line >= 0) {
-                    if (len > cols) len = cols;
-                    mvwaddnstr(win_main, line, 0, p, len);
-                }
-                line++;
-                p = eol ? eol + 1 : p + strlen(p);
-            }
-        } else {
-            mvwaddstr(win_main, 0, 0, "  (no content)");
+    }
+
+    /* Streaming tokens during inference */
+    if (ui->status == STATUS_RUNNING && ui->stream_tokens && ui->stream_len > 0) {
+        line++;
+        wattron(win_main, COLOR_PAIR(C_STREAM));
+        const char *p = ui->stream_tokens;
+        while (*p && line < rows) {
+            const char *nl = strchr(p, '\n');
+            int len = nl ? (int)(nl - p) : (int)strlen(p);
+            if (len > cols) len = cols;
+            mvwaddnstr(win_main, line, 4, p, len);
+            line++;
+            p = nl ? nl + 1 : p + strlen(p);
         }
+        wattroff(win_main, COLOR_PAIR(C_STREAM));
     }
 
     wnoutrefresh(win_main);
 }
 
-/* ── render bottom pane ───────────────────────────── */
+/* ── Render bottom pane (content + status + input) ───── */
 
 static void render_bottom(ui_state_t *ui) {
     int rows = getmaxy(win_bottom);
@@ -284,173 +269,193 @@ static void render_bottom(ui_state_t *ui) {
 
     werase(win_bottom);
 
-    /* Row 0: separator line */
-    wattron(win_bottom, COLOR_PAIR(3));
-    for (int x = 0; x < cols; x++)
-        mvwaddch(win_bottom, 0, x, ACS_HLINE);
-    wattroff(win_bottom, COLOR_PAIR(3));
+    /* Separator line at top of bottom pane */
+    wattron(win_bottom, COLOR_PAIR(C_DIM));
+    mvwhline(win_bottom, 0, 0, ACS_HLINE, cols);
+    wattroff(win_bottom, COLOR_PAIR(C_DIM));
 
-    /* Row 0 right side: status indicator */
-    if (ui->status_text) {
-        const char *indicator;
-        int pair;
-        switch (ui->status) {
-            case STATUS_RUNNING:        indicator = "* "; pair = 4; break;
-            case STATUS_AWAITING_INPUT: indicator = "? "; pair = 4; break;
-            case STATUS_DONE:           indicator = "  "; pair = 1; break;
-            case STATUS_ERROR:          indicator = "! "; pair = 2; break;
-            default:                    indicator = "  "; pair = 5; break;
+    /* Show actual content if loaded */
+    if (ui->bottom_content && ui->bottom_content[0] && rows > 2) {
+        const char *p = ui->bottom_content;
+        /* Skip to scroll offset */
+        for (int i = 0; i < ui->bottom_scroll && *p; i++) {
+            const char *nl = strchr(p, '\n');
+            if (nl) p = nl + 1; else break;
         }
-        int slen = (int)strlen(ui->status_text) + 4;
-        int sx = cols - slen - 1;
-        if (sx < 0) sx = 0;
-        wattron(win_bottom, COLOR_PAIR(pair));
-        mvwprintw(win_bottom, 0, sx, " %s%s ", indicator, ui->status_text);
-        wattroff(win_bottom, COLOR_PAIR(pair));
-    }
-
-    /* Row 1+: input line or preview */
-    if (rows > 1) {
-        if (ui->focus == FOCUS_QUERY || ui->view == VIEW_QUERIES) {
-            /* Show input prompt */
-            wattron(win_bottom, COLOR_PAIR(1) | A_BOLD);
-            mvwaddstr(win_bottom, 1, 0, "nash> ");
-            wattroff(win_bottom, COLOR_PAIR(1) | A_BOLD);
-
-            /* Show input text */
-            if (ui->input_buffer && ui->input_len > 0) {
-                int maxw = cols - 6;
-                int start = 0;
-                if (ui->cursor_pos > maxw)
-                    start = ui->cursor_pos - maxw;
-                waddnstr(win_bottom, ui->input_buffer + start,
-                         maxw < ui->input_len - start ? maxw : ui->input_len - start);
-            }
-        } else if (ui->view == VIEW_MANIFEST && ui->focus == FOCUS_JOURNAL) {
-            /* Preview: show selected step's output preview */
-            if (ui->selected_step >= 0 && ui->selected_step < ui->step_count) {
-                ui_step_t *s = &ui->steps[ui->selected_step];
-                wattron(win_bottom, COLOR_PAIR(3));
-                mvwprintw(win_bottom, 1, 0, "  [%s output - press Enter for full view]",
-                          s->ref ? s->ref : "?");
-                wattroff(win_bottom, COLOR_PAIR(3));
-            }
+        /* Render content lines */
+        for (int line = 1; line < rows - 1 && *p; line++) {
+            const char *nl = strchr(p, '\n');
+            int len = nl ? (int)(nl - p) : (int)strlen(p);
+            if (len > cols) len = cols;
+            mvwaddnstr(win_bottom, line, 0, p, len);
+            p = nl ? nl + 1 : p + strlen(p);
         }
     }
 
-    /* Position cursor at input */
-    if (ui->focus == FOCUS_QUERY && rows > 1) {
-        int cx = 6 + ui->cursor_pos;
-        if (cx >= cols) cx = cols - 1;
-        wmove(win_bottom, 1, cx);
-        curs_set(1);
-    } else {
-        curs_set(0);
+    /* Status + input on last line */
+    int last_line = rows - 1;
+
+    /* Status indicator */
+    const char *status_icon = "";
+    int status_color = C_DIM;
+    switch (ui->status) {
+        case STATUS_READY:          status_icon = "Ready"; status_color = C_SUCCESS; break;
+        case STATUS_RUNNING:        status_icon = "Running"; status_color = C_FOCUS; break;
+        case STATUS_AWAITING_INPUT: status_icon = "Awaiting"; status_color = C_FOCUS; break;
+        case STATUS_DONE:           status_icon = "Done"; status_color = C_SUCCESS; break;
+        case STATUS_ERROR:          status_icon = "Error"; status_color = C_FAILED; break;
+    }
+
+    wattron(win_bottom, COLOR_PAIR(status_color));
+    mvwprintw(win_bottom, last_line, 0, "%s", status_icon);
+    wattroff(win_bottom, COLOR_PAIR(status_color));
+
+    /* Show status text if running */
+    if (ui->status_text && ui->status == STATUS_RUNNING) {
+        wattron(win_bottom, COLOR_PAIR(C_DIM));
+        wprintw(win_bottom, " %s", ui->status_text);
+        wattroff(win_bottom, COLOR_PAIR(C_DIM));
+    }
+
+    /* Input prompt */
+    int prompt_x = 0;
+    if (ui->focus == FOCUS_QUERY) {
+        /* Show input on the last line after status */
+        prompt_x = getcurx(win_bottom) + 2;
+        mvwaddstr(win_bottom, last_line, prompt_x, "nash> ");
+        prompt_x += 6;
+        if (ui->input_buffer && ui->input_len > 0) {
+            waddnstr(win_bottom, ui->input_buffer, ui->input_len);
+        }
+        /* Position cursor */
+        wmove(win_bottom, last_line, prompt_x + ui->cursor_pos);
     }
 
     wnoutrefresh(win_bottom);
 }
 
-/* ── public API ───────────────────────────────────── */
+/* ── Public API ──────────────────────────────────────── */
 
 void tui_render(ui_state_t *ui) {
     if (!ui) return;
+
     pthread_mutex_lock(&ui->mtx);
-    if (!ui->dirty) { pthread_mutex_unlock(&ui->mtx); return; }
+    if (!ui->dirty) {
+        pthread_mutex_unlock(&ui->mtx);
+        return;
+    }
 
     resize_panes(ui);
     render_main(ui);
     render_bottom(ui);
     doupdate();
     ui->dirty = 0;
+
     pthread_mutex_unlock(&ui->mtx);
 }
 
 int tui_input(ui_state_t *ui, char **out_query) {
-    if (out_query) *out_query = NULL;
+    if (!ui) return 0;
+    *out_query = NULL;
 
     int ch = getch();
     if (ch == ERR) return 0;  /* no input */
 
-    /* Handle resize */
-    if (ch == KEY_RESIZE) {
-        ui->dirty = 1;
-        return 1;
-    }
+    pthread_mutex_lock(&ui->mtx);
 
-    /* TAB: switch focus */
-    if (ch == '\t' || ch == 9) {
+    switch (ch) {
+    case '\t':
+    case KEY_BTAB:
         ui_state_tab(ui);
-        return 1;
-    }
+        break;
 
-    /* Escape: go back */
-    if (ch == 27) {
+    case KEY_UP:
+        ui_state_up(ui);
+        break;
+
+    case KEY_DOWN:
+        ui_state_down(ui);
+        break;
+
+    case '\n':
+    case KEY_ENTER:
+        if (ui->focus == FOCUS_QUERY && ui->input_len > 0) {
+            /* Submit query */
+            *out_query = strndup(ui->input_buffer, ui->input_len);
+            ui->input_len = 0;
+            ui->cursor_pos = 0;
+            memset(ui->input_buffer, 0, ui->input_cap);
+        } else if (ui->focus == FOCUS_JOURNAL) {
+            ui_state_enter(ui);
+        }
+        ui->dirty = 1;
+        break;
+
+    case 27:  /* Escape */
         ui_state_back(ui);
-        return 1;
+        break;
+
+    case KEY_PPAGE:
+        ui_state_page_up(ui);
+        break;
+
+    case KEY_NPAGE:
+        ui_state_page_down(ui);
+        break;
+
+    case KEY_BACKSPACE:
+    case 127:
+    case 8:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_backspace(ui);
+        }
+        break;
+
+    case KEY_DC:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_delete(ui);
+        }
+        break;
+
+    case KEY_LEFT:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_left(ui);
+        }
+        break;
+
+    case KEY_RIGHT:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_right(ui);
+        }
+        break;
+
+    case KEY_HOME:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_home(ui);
+        }
+        break;
+
+    case KEY_END:
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_end(ui);
+        }
+        break;
+
+    case 'q':
+        if (ui->focus == FOCUS_JOURNAL) {
+            pthread_mutex_unlock(&ui->mtx);
+            return -1;  /* quit */
+        }
+        /* fall through to typing */
+        /* FALLTHROUGH */
+
+    default:
+        if (ui->focus == FOCUS_QUERY && ch >= 32 && ch < 127) {
+            ui_state_input_char(ui, ch);
+        }
+        break;
     }
 
-    /* Ctrl-C / Ctrl-D: quit */
-    if (ch == 3 || ch == 4) return -1;
-
-    /* Focus-specific input */
-    if (ui->focus == FOCUS_JOURNAL) {
-        switch (ch) {
-            case KEY_UP:   case 'k': ui_state_up(ui); break;
-            case KEY_DOWN: case 'j': ui_state_down(ui); break;
-            case KEY_PPAGE: ui_state_page_up(ui); break;
-            case KEY_NPAGE: ui_state_page_down(ui); break;
-            case '\n': case KEY_ENTER: case '\r':
-                ui_state_enter(ui);
-                break;
-            case 'q':
-                return -1;
-        }
-    } else if (ui->focus == FOCUS_QUERY) {
-        switch (ch) {
-            case '\n': case KEY_ENTER: case '\r':
-                /* Submit query */
-                if (ui->input_buffer && ui->input_len > 0) {
-                    if (out_query) {
-                        *out_query = strndup(ui->input_buffer, ui->input_len);
-                    }
-                    /* Check for quit */
-                    if (ui->input_len == 4 &&
-                        (strncmp(ui->input_buffer, "quit", 4) == 0 ||
-                         strncmp(ui->input_buffer, "exit", 4) == 0)) {
-                        return -1;
-                    }
-                    /* Clear input */
-                    ui->input_len = 0;
-                    ui->cursor_pos = 0;
-                    ui->dirty = 1;
-                }
-                break;
-            case KEY_BACKSPACE: case 127: case 8:
-                ui_state_input_backspace(ui);
-                break;
-            case KEY_DC:
-                ui_state_input_delete(ui);
-                break;
-            case KEY_LEFT:
-                ui_state_input_left(ui);
-                break;
-            case KEY_RIGHT:
-                ui_state_input_right(ui);
-                break;
-            case KEY_HOME:
-                ui_state_input_home(ui);
-                break;
-            case KEY_END:
-                ui_state_input_end(ui);
-                break;
-            default:
-                if (ch >= 32 && ch < 127) {
-                    ui_state_input_char(ui, ch);
-                }
-                break;
-        }
-    }
-
+    pthread_mutex_unlock(&ui->mtx);
     return 1;
 }

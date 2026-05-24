@@ -1,6 +1,5 @@
 #ifndef UI_STATE_H
 #define UI_STATE_H
-#include <pthread.h>
 
 #include <pthread.h>
 #include "react_event.h"
@@ -11,7 +10,6 @@
 /* ── Focus & View enums ──────────────────────────────── */
 
 typedef enum { FOCUS_JOURNAL, FOCUS_QUERY } ui_focus_t;
-typedef enum { VIEW_QUERIES, VIEW_MANIFEST, VIEW_DETAIL } journal_view_t;
 typedef enum {
     STATUS_READY,
     STATUS_RUNNING,
@@ -22,17 +20,7 @@ typedef enum {
 
 /* ── Journal pane data ───────────────────────────────── */
 
-/* One query in the query list (VIEW_QUERIES) */
-typedef struct {
-    char   *query_text;       /* user's query */
-    double  timestamp;        /* epoch when submitted */
-    int     react_loop;       /* R0, R1, etc. */
-    int     step_count;       /* total steps for this query */
-    int     failed_count;     /* failed steps */
-    char   *result_preview;   /* first 100 chars of done result (or NULL) */
-} ui_query_t;
-
-/* One step in the manifest (VIEW_MANIFEST) */
+/* One step in a query's react loop */
 typedef struct {
     char   *ref;              /* "R0S3" */
     char   *tool;             /* "shell_exec" */
@@ -43,26 +31,33 @@ typedef struct {
     int     step;             /* step number */
 } ui_step_t;
 
+/* One query in the tree view */
+typedef struct {
+    char       *query_text;       /* user's query */
+    double      timestamp;        /* epoch when submitted */
+    int         react_loop;       /* R0, R1, etc. */
+    int         step_count;       /* total steps for this query */
+    int         step_cap;
+    int         failed_count;     /* failed steps */
+    char       *result_preview;   /* first 200 chars of done result (or NULL) */
+    int         expanded;         /* 1 = show react steps underneath in tree view */
+    ui_step_t  *steps;            /* per-query steps (loaded when expanded) */
+} ui_query_t;
+
 /* ── Main UI state (the ViewModel) ───────────────────── */
 
 typedef struct {
-    /* ── Journal pane ── */
+    /* ── Journal pane (tree view) ── */
     ui_query_t    *queries;
     int            query_count;
     int            query_cap;
     int            selected_query;   /* cursor in query list */
-    journal_view_t view;             /* current drill-down level */
+    int            selected_step;    /* cursor within expanded query's steps (-1 = on query itself) */
 
-    /* Expanded manifest (VIEW_MANIFEST) */
-    ui_step_t     *steps;
-    int            step_count;
-    int            step_cap;
-    int            selected_step;    /* cursor in step list */
-
-    /* Step detail (VIEW_DETAIL) */
-    char          *detail_content;   /* full tool output from store */
-    int            detail_lines;     /* total lines in detail */
-    int            detail_scroll;    /* scroll offset */
+    /* ── Bottom pane content (actual file content from store) ── */
+    char          *bottom_content;   /* actual content loaded from store */
+    int            bottom_lines;     /* total lines */
+    int            bottom_scroll;    /* scroll offset */
 
     /* ── Query pane ── */
     ui_focus_t     focus;            /* which pane has focus */
@@ -94,7 +89,7 @@ typedef struct {
 
     /* ── Dirty flag (renderer checks this) ── */
     int            dirty;            /* 1 = needs redraw */
-    pthread_mutex_t mtx;              /* protects concurrent access */
+    pthread_mutex_t mtx;             /* protects concurrent access */
 } ui_state_t;
 
 /* ── Lifecycle ───────────────────────────────────────── */
@@ -107,12 +102,12 @@ void        ui_state_free(ui_state_t *ui);
 void ui_state_tab(ui_state_t *ui);           /* switch focus */
 void ui_state_up(ui_state_t *ui);            /* move cursor up */
 void ui_state_down(ui_state_t *ui);          /* move cursor down */
-void ui_state_enter(ui_state_t *ui);         /* drill down / submit */
-void ui_state_back(ui_state_t *ui);          /* go back one level (Escape) */
-void ui_state_page_up(ui_state_t *ui);       /* scroll page up (detail view) */
-void ui_state_page_down(ui_state_t *ui);     /* scroll page down (detail view) */
+void ui_state_enter(ui_state_t *ui);         /* toggle expand / drill down */
+void ui_state_back(ui_state_t *ui);          /* collapse / go back */
+void ui_state_page_up(ui_state_t *ui);       /* scroll bottom pane up */
+void ui_state_page_down(ui_state_t *ui);     /* scroll bottom pane down */
 
-/* ── Input editing ───────────────────────────────────── */
+/* ── Input editing ─────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch);
 void ui_state_input_backspace(ui_state_t *ui);
@@ -121,7 +116,6 @@ void ui_state_input_left(ui_state_t *ui);
 void ui_state_input_right(ui_state_t *ui);
 void ui_state_input_home(ui_state_t *ui);
 void ui_state_input_end(ui_state_t *ui);
-const char *ui_state_input_submit(ui_state_t *ui);  /* returns query text, clears input */
 
 /* ── React event handler (updates ViewModel from engine events) ── */
 
@@ -132,17 +126,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata);
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal);
 void ui_state_load_manifest(ui_state_t *ui, int query_idx);
 void ui_state_load_detail(ui_state_t *ui, int step_idx);
+void ui_state_load_bottom_content(ui_state_t *ui);
 
 /* ── Status updates ──────────────────────────────────── */
 
 void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text);
 void ui_state_add_query(ui_state_t *ui, const char *query_text);
 void ui_state_set_banner(ui_state_t *ui, const char *banner);
-
-/* ── Serialization (for web frontend) ────────────────── */
-
-/* Serialize the visible portion of ui_state to JSON.
- * Caller must free returned string. */
-char *ui_state_to_json(const ui_state_t *ui);
 
 #endif
