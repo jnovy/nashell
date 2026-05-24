@@ -426,14 +426,66 @@ void ui_state_back(ui_state_t *ui) {
 
 void ui_state_page_up(ui_state_t *ui) {
     if (!ui) return;
-    ui->scroll_y -= 10;
+    int page = ui->visible_rows > 2 ? ui->visible_rows - 2 : 10;
+    ui->scroll_y -= page;
     if (ui->scroll_y < 0) ui->scroll_y = 0;
+
+    /* Snap cursor to nearest visible link at bottom of viewport */
+    if (ui->doc && ui->doc->link_count > 0) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line >= ui->scroll_y + vis) {
+            /* Cursor is below viewport — find closest link at bottom of visible area */
+            for (int i = ui->doc->link_count - 1; i >= 0; i--) {
+                int ll = md_link_line(ui->doc, i);
+                if (ll >= ui->scroll_y && ll < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
+        } else if (link_line < ui->scroll_y) {
+            /* Cursor is above viewport — find closest link at top of visible area */
+            for (int i = 0; i < ui->doc->link_count; i++) {
+                int ll = md_link_line(ui->doc, i);
+                if (ll >= ui->scroll_y && ll < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
+        }
+    }
     ui->dirty = 1;
 }
 
 void ui_state_page_down(ui_state_t *ui) {
     if (!ui) return;
-    ui->scroll_y += 10;
+    int page = ui->visible_rows > 2 ? ui->visible_rows - 2 : 10;
+    ui->scroll_y += page;
+
+    /* Snap cursor to nearest visible link at top of viewport */
+    if (ui->doc && ui->doc->link_count > 0) {
+        int link_line = md_link_line(ui->doc, ui->cursor_link);
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        if (link_line < ui->scroll_y) {
+            /* Cursor is above viewport — find closest link at top of visible area */
+            for (int i = 0; i < ui->doc->link_count; i++) {
+                int ll = md_link_line(ui->doc, i);
+                if (ll >= ui->scroll_y && ll < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
+        } else if (link_line >= ui->scroll_y + vis) {
+            /* Cursor is below viewport — find closest link at bottom of visible area */
+            for (int i = ui->doc->link_count - 1; i >= 0; i--) {
+                int ll = md_link_line(ui->doc, i);
+                if (ll >= ui->scroll_y && ll < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
+        }
+    }
     ui->dirty = 1;
 }
 
