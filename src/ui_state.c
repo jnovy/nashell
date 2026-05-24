@@ -722,15 +722,23 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
 
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
     if (!ui) return;
+    int first_load = (ui->journal == NULL);
     ui->journal = journal;
     ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
-    if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
-        int link_line = md_link_line(ui->doc, ui->cursor_link);
-        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
-        if (link_line < ui->scroll_y)
-            ui->scroll_y = link_line;
-        else if (link_line >= ui->scroll_y + vis)
-            ui->scroll_y = link_line - vis + 1;
+
+    if (first_load) {
+        /* First load: show banner at top, cursor on first link */
+        ui->scroll_y = 0;
+        ui->cursor_link = 0;
+    } else {
+        /* Subsequent reloads (after query completes): keep cursor visible */
+        if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
+            int link_line = md_link_line(ui->doc, ui->cursor_link);
+            int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+            if (link_line < ui->scroll_y)
+                ui->scroll_y = link_line;
+            else if (link_line >= ui->scroll_y + vis)
+                ui->scroll_y = link_line - vis + 1;
+        }
     }
 }
