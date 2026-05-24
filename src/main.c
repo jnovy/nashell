@@ -388,7 +388,15 @@ int main(int argc, char **argv) {
             }
 
             if (submitted_query) {
-                /* User submitted a query — run the react loop */
+                /* Handle exit/quit commands */
+                if (strcmp(submitted_query, "quit") == 0 ||
+                    strcmp(submitted_query, "exit") == 0 ||
+                    strcmp(submitted_query, "/quit") == 0 ||
+                    strcmp(submitted_query, "/exit") == 0) {
+                    free(submitted_query);
+                    running = 0;
+                    break;
+                }
 
                 /* Handle /fork command */
                 if (strncmp(submitted_query, "/fork ", 6) == 0) {
