@@ -68,70 +68,90 @@ void md_doc_free(md_doc_t *doc) {
 
 /* ── Render helpers ── */
 
-/* Check if a line is a heading, return level (1-3) or 0 */
-static int heading_level(const char *line) {
-    int n = 0;
-    while (line[n] == '#') n++;
-    if (n >= 1 && n <= 3 && (line[n] == ' ' || line[n] == '\0'))
-        return n;
-    return 0;
-}
-
-/* Check if line is a horizontal rule (--- or ===) */
-static int is_hrule(const char *line) {
-    int dashes = 0;
-    const char *p = line;
-    while (*p == ' ') p++;
-    while (*p == '-' || *p == '=') { dashes++; p++; }
-    while (*p == ' ') p++;
-    return (*p == '\0' && dashes >= 3);
-}
-
-/* Find the link index for a given source line, or -1 */
-static int find_link_at_line(md_doc_t *doc, int line_num) {
-    for (int i = 0; i < doc->link_count; i++) {
-        if (doc->links[i].doc_line == line_num)
-            return i;
+/* Count the number of display columns a UTF-8 string occupies.
+ * For ASCII, 1 byte = 1 column. For multi-byte UTF-8, we count
+ * only the leading bytes (skip continuation bytes 10xxxxxx). */
+static int utf8_display_len(const char *s, int max_bytes) {
+    int cols = 0;
+    for (int i = 0; i < max_bytes && s[i]; i++) {
+        /* Skip UTF-8 continuation bytes (10xxxxxx) */
+        if ((s[i] & 0xC0) != 0x80)
+            cols++;
     }
-    return -1;
+    return cols;
 }
 
-/* Render inline formatting within a line (bold, code, italic) */
+/* Render a text segment to ncurses using mvwaddnstr (handles UTF-8).
+ * Returns the number of display columns consumed. */
+static int render_segment(WINDOW *win, int row, int col, const char *text,
+                          int len, int max_cols) {
+    if (len <= 0 || col >= getmaxx(win)) return 0;
+    /* Truncate to max_cols display columns */
+    int display_cols = utf8_display_len(text, len);
+    if (display_cols > max_cols) {
+        /* Find byte position that fits in max_cols display columns */
+        int cols = 0;
+        int byte_pos = 0;
+        while (byte_pos < len && cols < max_cols) {
+            if ((text[byte_pos] & 0xC0) != 0x80)
+                cols++;
+            byte_pos++;
+        }
+        len = byte_pos;
+        display_cols = cols;
+    }
+    mvwaddnstr(win, row, col, text, len);
+    return display_cols;
+}
+
+/* Render inline formatting within a line (bold, code, italic).
+ * Uses mvwaddnstr for proper UTF-8 handling instead of byte-by-byte mvwaddch. */
 static void render_inline(WINDOW *win, int row, int col, const char *text,
                           int max_width, int base_attr) {
     int x = col;
     const char *p = text;
+    (void)base_attr;
 
     while (*p && x < col + max_width) {
         if (*p == '`') {
-            /* Inline code */
+            /* Inline code: find closing backtick */
             p++;
+            const char *start = p;
+            while (*p && *p != '`') p++;
+            int seg_len = (int)(p - start);
             wattron(win, COLOR_PAIR(C_STREAM));
-            while (*p && *p != '`' && x < col + max_width) {
-                mvwaddch(win, row, x++, *p++);
-            }
+            x += render_segment(win, row, x, start, seg_len, col + max_width - x);
             wattroff(win, COLOR_PAIR(C_STREAM));
             if (*p == '`') p++;
         } else if (p[0] == '*' && p[1] == '*') {
-            /* Bold */
+            /* Bold: find closing ** */
             p += 2;
+            const char *start = p;
+            while (*p && !(p[0] == '*' && p[1] == '*')) p++;
+            int seg_len = (int)(p - start);
             wattron(win, A_BOLD);
-            while (*p && !(p[0] == '*' && p[1] == '*') && x < col + max_width) {
-                mvwaddch(win, row, x++, *p++);
-            }
+            x += render_segment(win, row, x, start, seg_len, col + max_width - x);
             wattroff(win, A_BOLD);
             if (p[0] == '*' && p[1] == '*') p += 2;
         } else if (*p == '*') {
-            /* Italic (rendered as underline in ncurses) */
+            /* Italic (underline in ncurses): find closing * */
             p++;
+            const char *start = p;
+            while (*p && *p != '*') p++;
+            int seg_len = (int)(p - start);
             wattron(win, A_UNDERLINE);
-            while (*p && *p != '*' && x < col + max_width) {
-                mvwaddch(win, row, x++, *p++);
-            }
+            x += render_segment(win, row, x, start, seg_len, col + max_width - x);
             wattroff(win, A_UNDERLINE);
             if (*p == '*') p++;
         } else {
-            mvwaddch(win, row, x++, *p++);
+            /* Regular text: collect until next formatting marker or end */
+            const char *start = p;
+            while (*p && *p != '`' && *p != '*' && x < col + max_width) {
+                p++;
+            }
+            int seg_len = (int)(p - start);
+            if (seg_len > 0)
+                x += render_segment(win, row, x, start, seg_len, col + max_width - x);
         }
     }
 }
@@ -144,50 +164,64 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
 
     int rows = getmaxy(win);
     int cols = getmaxx(win);
+
     werase(win);
 
     const char *src = doc->source;
-    int src_line = 0;       /* line number in source */
-    int render_line = 0;    /* line number in rendered output */
+    int render_line = 0;  /* line number in the full document */
+    int src_line = 0;     /* source line number (for link matching) */
+    int link_idx = 0;     /* current link index */
+    int in_code_block = 0;
 
     while (*src) {
-        /* Extract one source line */
+        /* Extract one line */
         const char *eol = strchr(src, '\n');
         int line_len = eol ? (int)(eol - src) : (int)strlen(src);
+
+        /* Copy line to buffer for processing */
         char line_buf[4096];
         int copy_len = line_len < (int)sizeof(line_buf) - 1 ? line_len : (int)sizeof(line_buf) - 1;
         memcpy(line_buf, src, copy_len);
         line_buf[copy_len] = '\0';
 
-        /* Check if this line contains a link */
-        int link_idx = find_link_at_line(doc, src_line);
-
-        /* Determine rendering style */
-        int vis_line = render_line - scroll_y;  /* visible row on screen */
+        /* Check if this line is within the visible window */
+        int vis_line = render_line - scroll_y;
 
         if (vis_line >= 0 && vis_line < rows) {
-            int hlevel = heading_level(line_buf);
+            /* Code block toggle */
+            if (strncmp(line_buf, "```", 3) == 0) {
+                in_code_block = !in_code_block;
+                /* Don't render the ``` markers themselves */
+            } else if (in_code_block) {
+                /* Code block content: render in cyan, no formatting */
+                wattron(win, COLOR_PAIR(C_STREAM));
+                mvwaddnstr(win, vis_line, 2, line_buf, cols - 2);
+                wattroff(win, COLOR_PAIR(C_STREAM));
 
-            if (hlevel > 0) {
+            } else if (line_buf[0] == '#') {
                 /* Heading */
-                const char *htext = line_buf + hlevel;
+                int level = 0;
+                while (line_buf[level] == '#') level++;
+                const char *htext = line_buf + level;
                 while (*htext == ' ') htext++;
-                int attr = A_BOLD;
-                int pair = (hlevel == 1) ? C_SUCCESS : C_FOCUS;
-                wattron(win, attr | COLOR_PAIR(pair));
-                mvwaddnstr(win, vis_line, 0, htext, cols);
-                wattroff(win, attr | COLOR_PAIR(pair));
 
-            } else if (is_hrule(line_buf)) {
+                int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
+                wattron(win, COLOR_PAIR(pair) | A_BOLD);
+                mvwaddnstr(win, vis_line, 0, htext, cols);
+                wattroff(win, COLOR_PAIR(pair) | A_BOLD);
+
+            } else if (strncmp(line_buf, "---", 3) == 0) {
                 /* Horizontal rule */
                 wattron(win, COLOR_PAIR(C_DIM));
                 mvwhline(win, vis_line, 0, ACS_HLINE, cols);
                 wattroff(win, COLOR_PAIR(C_DIM));
 
-            } else if (link_idx >= 0) {
+            } else if (line_buf[0] == '[' && link_idx < doc->link_count &&
+                       src_line == doc->links[link_idx].doc_line) {
                 /* Hyperlink line */
-                md_link_t *lk = &doc->links[link_idx];
                 int is_cursor = (focus && link_idx == cursor_link);
+                md_link_t *lk = &doc->links[link_idx];
+                link_idx++;
 
                 if (is_cursor) {
                     wattron(win, A_REVERSE | A_BOLD);
@@ -195,7 +229,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                     wattron(win, COLOR_PAIR(C_FOCUS));
                 }
 
-                /* Render the link text (not the [text](uri) syntax) */
+                /* Render the link text (not the URI) */
                 mvwaddnstr(win, vis_line, 0, lk->text, cols);
 
                 /* Pad for reverse video */
@@ -227,6 +261,18 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
             } else {
                 /* Regular text with inline formatting */
                 render_inline(win, vis_line, 0, line_buf, cols, 0);
+            }
+        } else if (vis_line >= rows) {
+            /* Past visible area — still need to count links */
+            if (line_buf[0] == '[' && link_idx < doc->link_count &&
+                src_line == doc->links[link_idx].doc_line) {
+                link_idx++;
+            }
+        } else {
+            /* Before visible area — still need to count links */
+            if (line_buf[0] == '[' && link_idx < doc->link_count &&
+                src_line == doc->links[link_idx].doc_line) {
+                link_idx++;
             }
         }
 
