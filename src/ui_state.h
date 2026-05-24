@@ -126,6 +126,7 @@ void ui_state_load_detail(ui_state_t *ui, int step_idx);
 /* ── Status updates ──────────────────────────────────── */
 
 void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text);
+void ui_state_add_query(ui_state_t *ui, const char *query_text);
 
 /* ── Serialization (for web frontend) ────────────────── */
 

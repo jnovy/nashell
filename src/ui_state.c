@@ -585,3 +585,21 @@ char *ui_state_to_json(const ui_state_t *ui) {
     cJSON_Delete(root);
     return json;
 }
+
+/* Add a new query entry to the journal pane */
+void ui_state_add_query(ui_state_t *ui, const char *query_text) {
+    if (!ui || !query_text) return;
+    if (ui->query_count >= ui->query_cap) {
+        ui->query_cap = ui->query_cap ? ui->query_cap * 2 : 16;
+        ui->queries = realloc(ui->queries, ui->query_cap * sizeof(ui_query_t));
+    }
+    ui_query_t *q = &ui->queries[ui->query_count++];
+    memset(q, 0, sizeof(*q));
+    q->query_text = strdup(query_text);
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
+    q->timestamp = (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
+    q->react_loop = ui->query_count - 1;
+    ui->selected_query = ui->query_count - 1;
+    ui->dirty = 1;
+}

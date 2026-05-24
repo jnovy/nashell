@@ -15,6 +15,8 @@
 #include "journal.h"
 #include "frontend_tui.h"
 #include "memory.h"
+#include "ui_state.h"
+#include "tui.h"
 
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
@@ -217,10 +219,9 @@ int main(int argc, char **argv) {
         return result ? 0 : 1;
     }
 
-    /* Interactive REPL mode — ONE session for ALL queries */
+    /* Interactive TUI mode — ONE session for ALL queries */
     {
         char *session_dir = create_session_dir(nash_dir);
-        printf("[session: %s]\n\n", session_dir);
 
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
@@ -234,111 +235,156 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
 
-        char *line;
-        while ((line = readline("nash> ")) != NULL) {
-            if (line[0] == '\0') { free(line); continue; }
-            if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) {
-                free(line); break;
-            }
-            add_history(line);
+        /* Create UI state and initialize TUI */
+        ui_state_t *ui = ui_state_new(session_dir, shared_store);
+        ui_state_set_status(ui, STATUS_READY, "Ready");
 
-            /* Handle /fork command */
-            if (strncmp(line, "/fork ", 6) == 0) {
-                int fork_step = atoi(line + 6);
-                if (fork_step <= 0) {
-                    fprintf(stderr, "[fork] usage: /fork <step_number>\n");
-                    free(line); continue;
-                }
-                char *new_dir = create_session_dir(nash_dir);
-                /* Copy journal lines where step <= fork_step */
-                char src_j[4096], dst_j[4096];
-                snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
-                snprintf(dst_j, sizeof(dst_j), "%s/journal.jsonl", new_dir);
-                FILE *sf = fopen(src_j, "r");
-                FILE *df = fopen(dst_j, "w");
-                if (sf && df) {
-                    char jl[65536];
-                    while (fgets(jl, sizeof(jl), sf)) {
-                        cJSON *e = cJSON_Parse(jl);
-                        if (e) {
-                            int s = (int)cJSON_GetNumberValue(
-                                cJSON_GetObjectItem(e, "step"));
-                            if (s <= fork_step) fputs(jl, df);
-                            cJSON_Delete(e);
+        /* Load existing journal entries into UI state */
+        ui_state_load_journal(ui, journal);
+
+        tui_init();
+        tui_render(ui);
+
+        /* Wrapper event callback: updates ViewModel + redraws TUI */
+        /* We use a struct to pass both ui and tui context */
+
+        /* Main TUI event loop */
+        int running = 1;
+        while (running) {
+            char *submitted_query = NULL;
+            int rc = tui_input(ui, &submitted_query);
+
+            if (rc == -1) {
+                /* Quit requested */
+                running = 0;
+                break;
+            }
+
+            if (submitted_query) {
+                /* User submitted a query — run the react loop */
+
+                /* Handle /fork command */
+                if (strncmp(submitted_query, "/fork ", 6) == 0) {
+                    int fork_step = atoi(submitted_query + 6);
+                    if (fork_step > 0) {
+                        char *new_dir = create_session_dir(nash_dir);
+                        /* Copy journal lines where step <= fork_step */
+                        char src_j[4096], dst_j[4096];
+                        snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
+                        snprintf(dst_j, sizeof(dst_j), "%s/journal.jsonl", new_dir);
+                        FILE *sf = fopen(src_j, "r");
+                        FILE *df = fopen(dst_j, "w");
+                        if (sf && df) {
+                            char jl[65536];
+                            while (fgets(jl, sizeof(jl), sf)) {
+                                cJSON *e = cJSON_Parse(jl);
+                                if (e) {
+                                    int s = (int)cJSON_GetNumberValue(
+                                        cJSON_GetObjectItem(e, "step"));
+                                    if (s <= fork_step) fputs(jl, df);
+                                    cJSON_Delete(e);
+                                }
+                            }
                         }
+                        if (sf) fclose(sf);
+                        if (df) fclose(df);
+                        /* Copy symlinks */
+                        for (int i = 0; i <= fork_step + 5; i++) {
+                            char ref[32], sl[4096], tgt[4096], dl[4096];
+                            snprintf(ref, sizeof(ref), "R%dS%d",
+                                     tools.react_loop, i);
+                            snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
+                            ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
+                            if (n > 0) {
+                                tgt[n] = '\0';
+                                snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
+                                symlink(tgt, dl);
+                            }
+                        }
+                        /* Write checkpoint */
+                        cJSON *cp = cJSON_CreateObject();
+                        cJSON_AddNumberToObject(cp, "version", 1);
+                        cJSON_AddNumberToObject(cp, "step", fork_step);
+                        cJSON_AddNumberToObject(cp, "react_loop", tools.react_loop);
+                        if (react.last_query)
+                            cJSON_AddStringToObject(cp, "user_query", react.last_query);
+                        if (tools.scratchpad)
+                            cJSON_AddStringToObject(cp, "scratchpad", tools.scratchpad);
+                        char *cpj = cJSON_Print(cp);
+                        char cp_path[4096];
+                        snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", new_dir);
+                        FILE *cpf = fopen(cp_path, "w");
+                        if (cpf) { fputs(cpj, cpf); fclose(cpf); }
+                        free(cpj);
+                        cJSON_Delete(cp);
+                        /* Switch to forked session */
+                        journal_free(journal);
+                        free(session_dir);
+                        session_dir = new_dir;
+                        journal = journal_new(session_dir);
+                        tools.journal = journal;
+                        tools.session_dir = session_dir;
+                        ui_state_set_status(ui, STATUS_READY,
+                            "Forked — ready for new query");
+                        tui_render(ui);
                     }
+                    free(submitted_query);
+                    continue;
                 }
-                if (sf) fclose(sf);
-                if (df) fclose(df);
-                /* Copy symlinks */
-                for (int i = 0; i <= fork_step + 5; i++) {
-                    char ref[32], sl[4096], tgt[4096], dl[4096];
-                    snprintf(ref, sizeof(ref), "R%dS%d",
-                             tools.react_loop, i);
-                    snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
-                    ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
-                    if (n > 0) {
-                        tgt[n] = '\0';
-                        snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
-                        symlink(tgt, dl);
+
+                /* Regular query — run react loop with TUI event bridge */
+                ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+                tui_render(ui);
+
+                /* Add query to journal pane */
+                ui_state_add_query(ui, submitted_query);
+                tui_render(ui);
+
+                char *result = react_run(&react, submitted_query,
+                    ui_state_on_event, (void *)ui);
+
+                /* Update status */
+                if (result) {
+                    ui_state_set_status(ui, STATUS_DONE, "Done");
+                    /* Update the current query's result preview */
+                    if (ui->query_count > 0) {
+                        ui_query_t *q = &ui->queries[ui->query_count - 1];
+                        free(q->result_preview);
+                        q->result_preview = strndup(result, 100);
                     }
+                } else {
+                    ui_state_set_status(ui, STATUS_ERROR, "No result");
                 }
-                /* Write checkpoint.json using cJSON */
-                cJSON *cp = cJSON_CreateObject();
-                cJSON_AddNumberToObject(cp, "version", 1);
-                cJSON_AddNumberToObject(cp, "step", fork_step);
-                cJSON_AddNumberToObject(cp, "react_loop",
-                                        tools.react_loop);
-                cJSON_AddStringToObject(cp, "user_query",
-                    react.last_query ? react.last_query : "");
-                cJSON_AddStringToObject(cp, "scratchpad",
-                    tools.scratchpad ? tools.scratchpad : "");
-                char *cpj = cJSON_Print(cp);
-                char cpp[4096];
-                snprintf(cpp, sizeof(cpp),
-                         "%s/checkpoint.json", new_dir);
-                FILE *cpf = fopen(cpp, "w");
-                if (cpf && cpj) { fputs(cpj, cpf); fclose(cpf); }
-                free(cpj);
-                cJSON_Delete(cp);
-                /* Switch to forked session */
-                journal_free(journal);
-                free(session_dir);
-                session_dir = new_dir;
-                journal = journal_new(session_dir);
-                tools.journal = journal;
-                tools.session_dir = session_dir;
-                printf("[forked at step %d -> %s]\n",
-                       fork_step, session_dir);
-                free(line); continue;
+                tui_render(ui);
+
+                /* Save last exchange for cross-query context */
+                if (react.last_query) free(react.last_query);
+                if (react.last_result) free(react.last_result);
+                react.last_query = strdup(submitted_query);
+                react.last_result = result ? strdup(result) : NULL;
+                free(result);
+                free(submitted_query);
+
+                /* Reload journal into UI state */
+                ui_state_load_journal(ui, journal);
+                ui_state_set_status(ui, STATUS_READY, "Ready");
+                tui_render(ui);
             }
 
+            /* Always render if dirty */
+            if (ui->dirty) tui_render(ui);
 
-
-            char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
-            if (result) {
-                printf("\n--- Result ---\n%s\n\n", result);
-            } else {
-                printf("\n[no result]\n\n");
-            }
-
-            /* Save last exchange for next react loop's context */
-            if (react.last_query) free(react.last_query);
-            if (react.last_result) free(react.last_result);
-            react.last_query = strdup(line);
-            react.last_result = result ? strdup(result) : NULL;
-            free(result);
-            free(line);
+            /* Small sleep to avoid busy-waiting when no input */
+            { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms */
         }
 
-        /* Cleanup */
-        if (react.last_query) free(react.last_query);
-        if (react.last_result) free(react.last_result);
+        tui_shutdown();
+        ui_state_free(ui);
+
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
         free(session_dir);
     }
-
     printf("Bye.\n");
     store_free(shared_store);
     memory_free(memory);
