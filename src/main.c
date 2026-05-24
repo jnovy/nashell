@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -240,6 +241,79 @@ int main(int argc, char **argv) {
                 free(line); break;
             }
             add_history(line);
+
+            /* Handle /fork command */
+            if (strncmp(line, "/fork ", 6) == 0) {
+                int fork_step = atoi(line + 6);
+                if (fork_step <= 0) {
+                    fprintf(stderr, "[fork] usage: /fork <step_number>\n");
+                    free(line); continue;
+                }
+                char *new_dir = create_session_dir(nash_dir);
+                /* Copy journal lines where step <= fork_step */
+                char src_j[4096], dst_j[4096];
+                snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
+                snprintf(dst_j, sizeof(dst_j), "%s/journal.jsonl", new_dir);
+                FILE *sf = fopen(src_j, "r");
+                FILE *df = fopen(dst_j, "w");
+                if (sf && df) {
+                    char jl[65536];
+                    while (fgets(jl, sizeof(jl), sf)) {
+                        cJSON *e = cJSON_Parse(jl);
+                        if (e) {
+                            int s = (int)cJSON_GetNumberValue(
+                                cJSON_GetObjectItem(e, "step"));
+                            if (s <= fork_step) fputs(jl, df);
+                            cJSON_Delete(e);
+                        }
+                    }
+                }
+                if (sf) fclose(sf);
+                if (df) fclose(df);
+                /* Copy symlinks */
+                for (int i = 0; i <= fork_step + 5; i++) {
+                    char ref[32], sl[4096], tgt[4096], dl[4096];
+                    snprintf(ref, sizeof(ref), "R%dS%d",
+                             tools.react_loop, i);
+                    snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
+                    ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
+                    if (n > 0) {
+                        tgt[n] = '\0';
+                        snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
+                        symlink(tgt, dl);
+                    }
+                }
+                /* Write checkpoint.json using cJSON */
+                cJSON *cp = cJSON_CreateObject();
+                cJSON_AddNumberToObject(cp, "version", 1);
+                cJSON_AddNumberToObject(cp, "step", fork_step);
+                cJSON_AddNumberToObject(cp, "react_loop",
+                                        tools.react_loop);
+                cJSON_AddStringToObject(cp, "user_query",
+                    react.last_query ? react.last_query : "");
+                cJSON_AddStringToObject(cp, "scratchpad",
+                    tools.scratchpad ? tools.scratchpad : "");
+                char *cpj = cJSON_Print(cp);
+                char cpp[4096];
+                snprintf(cpp, sizeof(cpp),
+                         "%s/checkpoint.json", new_dir);
+                FILE *cpf = fopen(cpp, "w");
+                if (cpf && cpj) { fputs(cpj, cpf); fclose(cpf); }
+                free(cpj);
+                cJSON_Delete(cp);
+                /* Switch to forked session */
+                journal_free(journal);
+                free(session_dir);
+                session_dir = new_dir;
+                journal = journal_new(session_dir);
+                tools.journal = journal;
+                tools.session_dir = session_dir;
+                printf("[forked at step %d -> %s]\n",
+                       fork_step, session_dir);
+                free(line); continue;
+            }
+
+
 
             char *result = react_run(&react, line, tui_on_event, (void *)session_dir);
             if (result) {

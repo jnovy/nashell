@@ -30,6 +30,304 @@ typedef struct {
     void          *userdata;
     int            step;
 } stream_ctx_t;
+/* Checkpoint restore function — to be inserted into react.c after checkpoint_remove() */
+
+/* Restore conversation state from checkpoint.json + journal.jsonl + .store/
+ * Returns the step number to resume from, or -1 if no checkpoint exists.
+ * Populates chat with reconstructed messages. */
+static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
+                               const char *user_query) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/checkpoint.json",
+             ctx->tools->session_dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;  /* no checkpoint — start fresh */
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return -1; }
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+
+    cJSON *cp = cJSON_Parse(buf);
+    free(buf);
+    if (!cp) return -1;
+
+    int saved_step = (int)cJSON_GetNumberValue(
+        cJSON_GetObjectItem(cp, "step"));
+    int saved_loop = (int)cJSON_GetNumberValue(
+        cJSON_GetObjectItem(cp, "react_loop"));
+
+    /* Restore scratchpad */
+    cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
+    if (sp && sp->valuestring && sp->valuestring[0]) {
+        free(ctx->tools->scratchpad);
+        ctx->tools->scratchpad = strdup(sp->valuestring);
+    }
+
+    /* Restore aliases from journal symlinks */
+    /* (aliases are re-derived from journal refs below) */
+
+    cJSON_Delete(cp);
+
+    /* Step 1: Add system prompt (fresh — may have changed) */
+    llm_chat_add(chat, "system", tools_system_prompt());
+
+    /* Step 2: Add fresh manifest (shows full history including pre-crash steps) */
+    char *manifest = journal_manifest(ctx->tools->journal, 50);
+    if (manifest) {
+        llm_chat_add(chat, "user", manifest);
+        free(manifest);
+    }
+
+    /* Step 3: Add memory context (fresh) */
+    if (ctx->tools->memory) {
+        int mem_max = ctx->tools->cfg ? ctx->tools->cfg->memory_index_max : 50;
+        char *mem_index = memory_build_index(ctx->tools->memory, mem_max);
+        if (mem_index && strlen(mem_index) > 0) {
+            char *mem_msg = malloc(strlen(mem_index) + 64);
+            if (mem_msg) {
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s", mem_index);
+                llm_chat_add(chat, "user", mem_msg);
+                free(mem_msg);
+            }
+        }
+        free(mem_index);
+
+        char *pinned = memory_load_pinned(ctx->tools->memory);
+        if (pinned && strlen(pinned) > 0) {
+            char *pin_msg = malloc(strlen(pinned) + 64);
+            if (pin_msg) {
+                sprintf(pin_msg, "[PINNED KNOWLEDGE]\n%s", pinned);
+                llm_chat_add(chat, "user", pin_msg);
+                free(pin_msg);
+            }
+        }
+        free(pinned);
+    }
+
+    /* Step 4: Add scratchpad if exists */
+    if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
+        size_t slen = strlen(ctx->tools->scratchpad);
+        char *scratch_msg = malloc(slen + 32);
+        if (scratch_msg) {
+            snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%.*s",
+                     (int)slen, ctx->tools->scratchpad);
+            llm_chat_add(chat, "user", scratch_msg);
+            free(scratch_msg);
+        }
+    }
+
+    /* Step 5: Add user query */
+    llm_chat_add(chat, "user", user_query);
+
+    /* Step 6: Replay tool calls from journal to rebuild conversation history */
+    char jpath[4096];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
+             ctx->tools->session_dir);
+    f = fopen(jpath, "r");
+    if (!f) return saved_step;
+
+    char line[65536];
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+
+        int loop = (int)cJSON_GetNumberValue(
+            cJSON_GetObjectItem(entry, "react_loop"));
+        int step = (int)cJSON_GetNumberValue(
+            cJSON_GetObjectItem(entry, "step"));
+        const char *tool = cJSON_GetStringValue(
+            cJSON_GetObjectItem(entry, "tool"));
+        const char *ref = cJSON_GetStringValue(
+            cJSON_GetObjectItem(entry, "ref"));
+        const char *tc_id = cJSON_GetStringValue(
+            cJSON_GetObjectItem(entry, "tc_id"));
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+
+        /* Only replay entries from the current react loop */
+        if (loop != saved_loop) { cJSON_Delete(entry); continue; }
+
+        /* Skip system, query, parse_error entries */
+        if (!tool || strcmp(tool, "system") == 0 ||
+            strcmp(tool, "query") == 0 ||
+            strcmp(tool, "parse_error") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Re-register alias */
+        if (ref) {
+            /* Extract hash from ref by resolving the symlink */
+            char ref_path[4096];
+            snprintf(ref_path, sizeof(ref_path), "%s/%s",
+                     ctx->tools->session_dir, ref);
+            char link_target[4096];
+            ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
+            if (llen > 0) {
+                link_target[llen] = '\0';
+                /* Extract hash from "../../store/<hash>" */
+                const char *hash = strrchr(link_target, '/');
+                if (hash) {
+                    hash++;  /* skip the '/' */
+                    /* Register in alias table */
+                    if (ctx->tools->alias_count < MAX_ALIASES) {
+                        alias_entry_t *a = &ctx->tools->aliases[ctx->tools->alias_count];
+                        snprintf(a->alias, sizeof(a->alias), "%s", ref);
+                        snprintf(a->hash, sizeof(a->hash), "%s", hash);
+                        ctx->tools->alias_count++;
+                    }
+                }
+            }
+        }
+
+        /* Handle thinking steps */
+        if (strcmp(tool, "thinking") == 0) {
+            const char *thought = NULL;
+            if (params) {
+                cJSON *t = cJSON_GetObjectItem(params, "thought");
+                if (t && t->valuestring) thought = t->valuestring;
+            }
+            if (thought) {
+                /* Read the stored response for the full thinking content */
+                if (ref) {
+                    char *store_path = store_resolve(ctx->tools->store,
+                        /* need hash — get from alias we just registered */
+                        ctx->tools->aliases[ctx->tools->alias_count - 1].hash);
+                    if (store_path) {
+                        size_t content_len;
+                        char *content = NULL;
+                        FILE *sf = fopen(store_path, "r");
+                        if (sf) {
+                            fseek(sf, 0, SEEK_END);
+                            long csz = ftell(sf);
+                            fseek(sf, 0, SEEK_SET);
+                            content = malloc((size_t)csz + 1);
+                            if (content) {
+                                fread(content, 1, (size_t)csz, sf);
+                                content[csz] = '\0';
+                                content_len = (size_t)csz;
+                            }
+                            fclose(sf);
+                        }
+                        if (content) {
+                            llm_chat_add(chat, "assistant", content);
+                            free(content);
+                        }
+                        free(store_path);
+                    }
+                }
+            }
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Regular tool call — reconstruct assistant + tool result messages */
+        const char *thought = "";
+        const char *action_name = tool;
+        if (params) {
+            cJSON *t = cJSON_GetObjectItem(params, "thought");
+            if (t && t->valuestring) thought = t->valuestring;
+        }
+
+        if (tc_id) {
+            /* Native tool_calls API format */
+            /* Build tool_calls JSON */
+            cJSON *tc_arr = cJSON_CreateArray();
+            cJSON *tc = cJSON_CreateObject();
+            cJSON_AddStringToObject(tc, "id", tc_id);
+            cJSON_AddStringToObject(tc, "type", "function");
+            cJSON *fn = cJSON_CreateObject();
+            cJSON_AddStringToObject(fn, "name", action_name);
+
+            /* Build arguments from params (exclude thought and action) */
+            cJSON *args = cJSON_CreateObject();
+            if (params) {
+                cJSON *child = params->child;
+                while (child) {
+                    if (strcmp(child->string, "thought") != 0 &&
+                        strcmp(child->string, "action") != 0) {
+                        cJSON_AddItemToObject(args, child->string,
+                            cJSON_Duplicate(child, 1));
+                    }
+                    child = child->next;
+                }
+            }
+            char *args_str = cJSON_PrintUnformatted(args);
+            cJSON_AddStringToObject(fn, "arguments", args_str ? args_str : "{}");
+            free(args_str);
+            cJSON_Delete(args);
+
+            cJSON_AddItemToObject(tc, "function", fn);
+            cJSON_AddItemToArray(tc_arr, tc);
+
+            char *tc_json = cJSON_PrintUnformatted(tc_arr);
+            cJSON_Delete(tc_arr);
+
+            /* Add assistant message with tool_calls */
+            llm_chat_add_assistant_tool_call(chat,
+                (thought && thought[0]) ? thought : NULL,
+                tc_json);
+
+            /* Build tool result content */
+            char result_content[1024];
+            int rsize = (int)cJSON_GetNumberValue(
+                cJSON_GetObjectItem(entry, "size"));
+            snprintf(result_content, sizeof(result_content),
+                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
+                     ref ? ref : "?", rsize, step);
+
+            llm_chat_add_tool_result(chat, tc_id, result_content);
+            free(tc_json);
+        } else {
+            /* Legacy JSON-in-content format (no tc_id) */
+            /* Build a unified JSON response */
+            cJSON *unified = cJSON_CreateObject();
+            cJSON_AddStringToObject(unified, "thought", thought);
+            cJSON_AddStringToObject(unified, "action", action_name);
+            if (params) {
+                cJSON *child = params->child;
+                while (child) {
+                    if (strcmp(child->string, "thought") != 0 &&
+                        strcmp(child->string, "action") != 0) {
+                        cJSON_AddItemToObject(unified, child->string,
+                            cJSON_Duplicate(child, 1));
+                    }
+                    child = child->next;
+                }
+            }
+            char *resp = cJSON_PrintUnformatted(unified);
+            cJSON_Delete(unified);
+
+            llm_chat_add(chat, "assistant", resp ? resp : "{}");
+
+            char result_content[1024];
+            int rsize = (int)cJSON_GetNumberValue(
+                cJSON_GetObjectItem(entry, "size"));
+            snprintf(result_content, sizeof(result_content),
+                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
+                     ref ? ref : "?", rsize, step);
+            llm_chat_add(chat, "user", result_content);
+            free(resp);
+        }
+
+        cJSON_Delete(entry);
+    }
+    fclose(f);
+
+    /* Set step counter to resume position */
+    ctx->tools->step = saved_step;
+    ctx->tools->react_loop = saved_loop;
+
+    fprintf(stderr, "[checkpoint] Restored from step %d (react loop %d)\n",
+            saved_step, saved_loop);
+
+    return saved_step;
+}
 
 static void stream_token_cb(const char *token, void *userdata) {
     stream_ctx_t *sctx = userdata;
@@ -109,6 +407,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
+    /* Check for checkpoint — resume interrupted task */
+    int resume_step = 0;
+    resume_step = checkpoint_restore(ctx, chat, user_query);
+    int restored = (resume_step >= 0);
+    if (restored) {
+        fprintf(stderr, "[checkpoint] resuming from step %d\n", resume_step);
+    }
+
+
+    if (!restored) {
     /* System message */
     llm_chat_add(chat, "system", tools_system_prompt());
 
@@ -223,6 +531,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON_Delete(q_p);
     }
 
+    } /* end if (!restored) */
     char *final_result = NULL;
     struct timespec task_start;
     clock_gettime(CLOCK_MONOTONIC, &task_start);
@@ -231,7 +540,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     char last_sigs[8][256];
     int sig_count = 0;
 
-    for (int step = 0; step < ctx->max_steps; step++) {
+    for (int step = resume_step; step < ctx->max_steps; step++) {
         ctx->tools->step = step + 1;
 
         /* Emit step start */
