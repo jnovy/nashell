@@ -10,6 +10,27 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
+
+/* Sanitize text for use inside MD link [text](uri) syntax.
+ * Replaces characters that break the link: ] [ ( ) and newlines.
+ * Returns a static buffer u2014 NOT thread-safe, use immediately. */
+static const char *sanitize_md_link(const char *text) {
+    static char buf[512];
+    int j = 0;
+    if (!text) return "";
+    for (int i = 0; text[i] && j < (int)sizeof(buf) - 1; i++) {
+        switch (text[i]) {
+            case ']': buf[j++] = ')'; break;
+            case '[': buf[j++] = '('; break;
+            case '\n': buf[j++] = ' '; break;
+            case '\r': break; /* skip */
+            default: buf[j++] = text[i]; break;
+        }
+    }
+    buf[j] = '\0';
+    return buf;
+}
+
 static char *read_file_content(const char *path, int max_bytes) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
