@@ -224,7 +224,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                     const char *t = cJSON_GetStringValue(
                         cJSON_GetObjectItem(e, "tool"));
                     if (loop == qi->react_loop && t &&
-                        strcmp(t, "system") != 0 && strcmp(t, "query") != 0) {
+                        strcmp(t, "query") != 0) {
 
                         const char *ref = cJSON_GetStringValue(
                             cJSON_GetObjectItem(e, "ref"));
