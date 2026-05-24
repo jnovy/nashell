@@ -191,11 +191,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
         if (ls == LINK_SHOW_RESULT && qi->result) {
             str_appendf(&md, "\n> %.400s\n\n", qi->result);
         } else if (ls == LINK_SHOW_STEPS) {
-            /* Show result if available */
-            if (qi->result)
-                str_appendf(&md, "\n> %.200s\n\n", qi->result);
-
-            /* Read journal again for this query's steps */
+            /* Read journal for this query's steps (shown BEFORE result) */
             FILE *f2 = fopen(jpath, "r");
             if (f2) {
                 char line2[65536];
@@ -288,7 +284,12 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                 }
                 fclose(f2);
             }
-            str_append_cstr(&md, "\n");
+
+            /* Show result AFTER steps (at the bottom) */
+            if (qi->result)
+                str_appendf(&md, "\n> %.400s\n\n", qi->result);
+            else
+                str_append_cstr(&md, "\n");
         }
     }
 
