@@ -266,33 +266,67 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *action_name = json_get_str(action, "action");
 
         if (!action_name) {
-            react_event_t ev = {0};
-            ev.type = REACT_EVENT_ERROR;
-            ev.step = step + 1;
-            ev.message = "No 'action' field in response";
-            emit(on_event, userdata, &ev);
+            if (thought && thought[0]) {
+                /* Thought-only response — the model is reasoning without acting.
+                 * This is valid (e.g., deep code analysis, planning).
+                 * Log as "thinking" step (not an error), preserve in context. */
+                char *think_hash = store_save(ctx->tools->store, response);
+                const char *think_alias = tool_register_alias(ctx->tools,
+                                            think_hash ? think_hash : "");
+                cJSON *think_p = cJSON_CreateObject();
+                cJSON_AddStringToObject(think_p, "type", "thinking");
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "thinking", think_p, think_alias,
+                               strlen(thought), 0, NULL);
+                cJSON_Delete(think_p);
+                free(think_hash);
 
-            /* Log the invalid response to journal for analysis */
-            char *err_hash = store_save(ctx->tools->store, response);
-            const char *err_alias = tool_register_alias(ctx->tools,
-                                        err_hash ? err_hash : "");
-            cJSON *err_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(err_p, "type", "missing_action");
-            cJSON_AddStringToObject(err_p, "raw_preview",
-                strlen(response) > 200 ? "(truncated)" : response);
-            journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step + 1, "parse_error", err_p, err_alias,
-                           strlen(response), 0,
-                           "LLM response missing 'action' field");
-            cJSON_Delete(err_p);
-            free(err_hash);
+                /* Emit as a step complete (not error) so TUI shows it */
+                {
+                    react_event_t ev = {0};
+                    ev.type = REACT_EVENT_STEP_COMPLETE;
+                    ev.step = step + 1;
+                    ev.max_steps = ctx->max_steps;
+                    ev.step_elapsed = step_elapsed;
+                    ev.action = "thinking";
+                    ev.description = thought;
+                    ev.stats = stats;
+                    ev.context_size = ctx->llm->context_size;
+                    emit(on_event, userdata, &ev);
+                }
 
-            /* Retry — tell model to use tool_calls */
-            llm_chat_add(chat, "assistant", response);
-            llm_chat_add(chat, "user",
-                "Your response could not be parsed. "
-                "You must call one of the available tools. "
-                "Do not write free-form text.");
+                /* Add thought to conversation as assistant message
+                 * (preserves reasoning in context, no retry prompt needed) */
+                llm_chat_add(chat, "assistant", response);
+            } else {
+                /* No thought AND no action — genuine parse error */
+                react_event_t ev = {0};
+                ev.type = REACT_EVENT_ERROR;
+                ev.step = step + 1;
+                ev.message = "No 'action' field in response";
+                emit(on_event, userdata, &ev);
+
+                char *err_hash = store_save(ctx->tools->store, response);
+                const char *err_alias = tool_register_alias(ctx->tools,
+                                            err_hash ? err_hash : "");
+                cJSON *err_p = cJSON_CreateObject();
+                cJSON_AddStringToObject(err_p, "type", "missing_action");
+                cJSON_AddStringToObject(err_p, "raw_preview",
+                    strlen(response) > 200 ? "(truncated)" : response);
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "parse_error", err_p, err_alias,
+                               strlen(response), 0,
+                               "LLM response missing 'action' field");
+                cJSON_Delete(err_p);
+                free(err_hash);
+
+                /* Retry — tell model to use tool_calls */
+                llm_chat_add(chat, "assistant", response);
+                llm_chat_add(chat, "user",
+                    "Your response could not be parsed. "
+                    "You must call one of the available tools. "
+                    "Do not write free-form text.");
+            }
             cJSON_Delete(action);
             free(response);
             continue;
