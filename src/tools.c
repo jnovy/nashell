@@ -976,6 +976,8 @@ const char *tools_system_prompt(void) {
     "or what a file contains.\n"
     "\n"
     "Rules:\n"
+    "- Never invoke tools speculatively. Every tool call must have a clear reason "
+    "and you MUST read the result (file_read the ref) before proceeding.\n"
     "- Never guess tool results. Wait for actual output.\n"
     "- file_edit: old_text must match exactly. Always file_read first.\n"
     "- Record key findings in notes — they survive context eviction.\n"
