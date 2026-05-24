@@ -339,6 +339,21 @@ done:;
     ui->doc = md_parse(md_source);
     free(md_source);
 
+    /* Resize link_states to cover ALL links (queries + steps).
+     * The initial sizing (qcount) only covers query links.
+     * Step links get indices beyond qcount and need states too. */
+    if (ui->doc && ui->doc->link_count > ui->link_states_count) {
+        if (ui->doc->link_count > ui->link_states_cap) {
+            ui->link_states_cap = ui->doc->link_count + 16;
+            ui->link_states = realloc(ui->link_states,
+                                       ui->link_states_cap * sizeof(link_state_t));
+        }
+        /* Initialize new step link states to COLLAPSED */
+        for (int i = ui->link_states_count; i < ui->doc->link_count; i++)
+            ui->link_states[i] = LINK_COLLAPSED;
+        ui->link_states_count = ui->doc->link_count;
+    }
+
     /* Clamp cursor */
     if (ui->doc && ui->cursor_link >= ui->doc->link_count)
         ui->cursor_link = ui->doc->link_count > 0 ? ui->doc->link_count - 1 : 0;
