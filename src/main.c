@@ -534,6 +534,18 @@ int main(int argc, char **argv) {
             if (ui->dirty) tui_render(ui);
 
             /* Small sleep to avoid busy-waiting when no input */
+            /* Auto-refresh MD every 1 second during inference */
+            if (inferring) {
+                static time_t last_refresh = 0;
+                time_t now = time(NULL);
+                if (now > last_refresh) {
+                    last_refresh = now;
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_rebuild_md(ui);
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+                }
+            }
             { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms */
         }
 

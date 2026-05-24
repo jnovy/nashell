@@ -24,7 +24,8 @@ typedef enum {
 typedef enum {
     LINK_COLLAPSED,     /* just show the query line */
     LINK_SHOW_RESULT,   /* show query + result preview */
-    LINK_SHOW_STEPS     /* show query + all react steps */
+    LINK_SHOW_STEPS,
+    LINK_SHOW_CONTENT     /* show query + all react steps */
 } link_state_t;
 
 /* ── Main UI state (the ViewModel) ───────────────────── */

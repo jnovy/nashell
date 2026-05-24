@@ -234,13 +234,55 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             else if (res && res->valuestring) desc = res->valuestring;
                         }
 
-                        str_appendf(&md, "  %s %s: %s \"%.60s\"",
-                                    failed ? "x" : "+",
-                                    ref ? ref : "?",
-                                    t, desc);
-                        if (!failed && sz > 0)
-                            str_appendf(&md, " -> %d chars", sz);
-                        str_append_cstr(&md, "\n");
+                        /* Render step as a hyperlink so cursor can land on it */
+                        {
+                            char step_uri[256];
+                            snprintf(step_uri, sizeof(step_uri),
+                                     "file://session/R%d/S%d", qi->react_loop, (int)cJSON_GetNumberValue(cJSON_GetObjectItem(e, "step")));
+                            str_appendf(&md, "[  %s %s: %s \"%.60s\"",
+                                        failed ? "x" : "+",
+                                        ref ? ref : "?",
+                                        t, desc);
+                            if (!failed && sz > 0)
+                                str_appendf(&md, " -> %d chars", sz);
+                            str_appendf(&md, "](%s)\n", step_uri);
+
+                            /* If this step link is in SHOW_CONTENT state, insert content */
+                            int step_link_state = LINK_COLLAPSED;
+                            if (ui->doc) {
+                                for (int li = 0; li < ui->doc->link_count; li++) {
+                                    if (ui->doc->links[li].uri &&
+                                        strcmp(ui->doc->links[li].uri, step_uri) == 0 &&
+                                        li < ui->link_states_count) {
+                                        step_link_state = ui->link_states[li];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (step_link_state == LINK_SHOW_CONTENT && ref) {
+                                /* Read content from store */
+                                char rpath[4096];
+                                snprintf(rpath, sizeof(rpath), "%s/%s",
+                                         ui->session_dir, ref);
+                                FILE *cf = fopen(rpath, "r");
+                                if (cf) {
+                                    str_append_cstr(&md, "```\n");
+                                    char cbuf[4096];
+                                    size_t total = 0;
+                                    size_t n;
+                                    while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
+                                           && total < 8000) {
+                                        cbuf[n] = '\0';
+                                        str_append(&md, cbuf, n);
+                                        total += n;
+                                    }
+                                    if (total >= 8000)
+                                        str_append_cstr(&md, "\n... (truncated)\n");
+                                    str_append_cstr(&md, "\n```\n");
+                                    fclose(cf);
+                                }
+                            }
+                        }
                     }
                     cJSON_Delete(e);
                 }
@@ -327,11 +369,24 @@ void ui_state_enter(ui_state_t *ui) {
     int idx = ui->cursor_link;
     if (idx < 0 || idx >= ui->link_states_count) return;
 
-    /* Cycle: COLLAPSED -> SHOW_RESULT -> SHOW_STEPS -> COLLAPSED */
-    switch (ui->link_states[idx]) {
-        case LINK_COLLAPSED:   ui->link_states[idx] = LINK_SHOW_RESULT; break;
-        case LINK_SHOW_RESULT: ui->link_states[idx] = LINK_SHOW_STEPS;  break;
-        case LINK_SHOW_STEPS:  ui->link_states[idx] = LINK_COLLAPSED;   break;
+    /* Check if this is a step link (URI contains "/S") or a query link */
+    const char *uri = (idx < ui->doc->link_count) ? ui->doc->links[idx].uri : NULL;
+    int is_step_link = (uri && strstr(uri, "/S") != NULL);
+
+    if (is_step_link) {
+        /* Step link: toggle COLLAPSED <-> SHOW_CONTENT */
+        if (ui->link_states[idx] == LINK_SHOW_CONTENT)
+            ui->link_states[idx] = LINK_COLLAPSED;
+        else
+            ui->link_states[idx] = LINK_SHOW_CONTENT;
+    } else {
+        /* Query link: cycle COLLAPSED -> SHOW_RESULT -> SHOW_STEPS -> COLLAPSED */
+        switch (ui->link_states[idx]) {
+            case LINK_COLLAPSED:   ui->link_states[idx] = LINK_SHOW_RESULT; break;
+            case LINK_SHOW_RESULT: ui->link_states[idx] = LINK_SHOW_STEPS;  break;
+            case LINK_SHOW_STEPS:  ui->link_states[idx] = LINK_COLLAPSED;   break;
+            default:               ui->link_states[idx] = LINK_COLLAPSED;   break;
+        }
     }
 
     /* Regenerate MD to reflect new state */
@@ -452,6 +507,19 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
         ui_state_rebuild_md(ui);
+        /* Auto-expand current query to show steps during inference */
+        if (ui->doc) {
+            for (int i = ui->doc->link_count - 1; i >= 0; i--) {
+                if (ui->doc->links[i].uri && strstr(ui->doc->links[i].uri, "file://session/R") &&
+                    !strstr(ui->doc->links[i].uri, "/S")) {
+                    if (i < ui->link_states_count && ui->link_states[i] != LINK_SHOW_STEPS) {
+                        ui->link_states[i] = LINK_SHOW_STEPS;
+                        ui_state_rebuild_md(ui);
+                    }
+                    break;
+                }
+            }
+        }
     /* Auto-scroll to keep cursor visible after expansion change */
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
@@ -507,6 +575,19 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
         ui_state_rebuild_md(ui);
+        /* Auto-collapse to show result when done */
+        if (ui->doc) {
+            for (int i = ui->doc->link_count - 1; i >= 0; i--) {
+                if (ui->doc->links[i].uri && strstr(ui->doc->links[i].uri, "file://session/R") &&
+                    !strstr(ui->doc->links[i].uri, "/S")) {
+                    if (i < ui->link_states_count) {
+                        ui->link_states[i] = LINK_SHOW_RESULT;
+                        ui_state_rebuild_md(ui);
+                    }
+                    break;
+                }
+            }
+        }
     /* Auto-scroll to keep cursor visible after expansion change */
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
