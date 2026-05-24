@@ -128,6 +128,70 @@ static void print_banner(const config_t *cfg, const char *props_json,
     printf("\n");
 }
 
+/* Build banner as a string for ncurses TUI (no ANSI escapes) */
+static char *build_banner_string(const config_t *cfg, const char *props_json,
+                                  const char *nash_dir, const char *session_dir) {
+    str_t s = str_new(2048);
+
+    str_append_cstr(&s, "\n");
+    str_append_cstr(&s, "   _  _    __   ____  _  _  ____  __    __   \n");
+    str_append_cstr(&s, "  ( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \n");
+    str_append_cstr(&s, "   ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \n");
+    str_append_cstr(&s, "  (___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \n");
+    str_append_cstr(&s, "\n");
+    str_append_cstr(&s, "  --------- * New Agentic Shell * ---------\n");
+    str_append_cstr(&s, "\n");
+
+    if (!props_json) {
+        str_appendf(&s, "server: %s (props unavailable)\n\n",
+                    cfg->api_base ? cfg->api_base : "(none)");
+    } else {
+        cJSON *props = cJSON_Parse(props_json);
+        if (!props) {
+            str_appendf(&s, "server: %s (props parse error)\n\n",
+                        cfg->api_base ? cfg->api_base : "(none)");
+        } else {
+            cJSON *gs = cJSON_GetObjectItem(props, "default_generation_settings");
+            cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
+            cJSON *caps = cJSON_GetObjectItem(props, "chat_template_caps");
+            cJSON *mods = cJSON_GetObjectItem(props, "modalities");
+            int n_ctx = (int)jnum(gs, "n_ctx", 0);
+
+            str_appendf(&s, "server: %s\n", cfg->api_base ? cfg->api_base : "(none)");
+            str_appendf(&s, "  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
+            str_appendf(&s, "  build:    %s\n", jstr(props, "build_info", "?"));
+            str_appendf(&s, "  ctx:      %d tok (%dk) | slots: %d\n",
+                        n_ctx, n_ctx / 1024, (int)jnum(props, "total_slots", 0));
+
+            if (params) {
+                str_appendf(&s, "  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f\n",
+                            jnum(params, "temperature", 0),
+                            (int)jnum(params, "top_k", 0),
+                            jnum(params, "top_p", 0),
+                            jnum(params, "min_p", 0));
+            }
+
+            str_appendf(&s, "  caps:     tools=%s vision=%s reasoning=%s\n",
+                        caps && jbool(caps, "supports_tools", 0) ? "yes" : "no",
+                        mods && jbool(mods, "vision", 0) ? "yes" : "no",
+                        params ? jstr(params, "reasoning_format", "none") : "?");
+            str_append_cstr(&s, "\n");
+            cJSON_Delete(props);
+        }
+    }
+
+    str_appendf(&s, "client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
+                cfg->temperature, cfg->max_tokens,
+                cfg->json_mode ? "on" : "off",
+                cfg->thinking ? "on" : "off",
+                cfg->stream ? "on" : "off");
+    str_appendf(&s, "data:   %s\n", nash_dir);
+    if (session_dir)
+        str_appendf(&s, "\n[session: %s]\n", session_dir);
+
+    return str_steal(&s);
+}
+
 int main(int argc, char **argv) {
     /* Load config from ~/.nash/config.toml (or default) */
     char config_path[512];
@@ -238,6 +302,10 @@ int main(int argc, char **argv) {
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
         ui_state_set_status(ui, STATUS_READY, "Ready");
+        /* Set banner text for main pane */
+        char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir);
+        ui_state_set_banner(ui, banner);
+        free(banner);
 
         /* Load existing journal entries into UI state */
         ui_state_load_journal(ui, journal);

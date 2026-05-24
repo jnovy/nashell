@@ -603,3 +603,11 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
     ui->selected_query = ui->query_count - 1;
     ui->dirty = 1;
 }
+
+/* Set the banner text (shown in main pane on startup) */
+void ui_state_set_banner(ui_state_t *ui, const char *banner) {
+    if (!ui) return;
+    free(ui->banner);
+    ui->banner = banner ? strdup(banner) : NULL;
+    ui->dirty = 1;
+}

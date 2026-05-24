@@ -83,6 +83,13 @@ typedef struct {
     char          *session_dir;
     store_t       *store;            /* for reading tool outputs */
 
+    /* ── Banner (shown in main pane on startup) ── */
+    char          *banner;           /* ASCII art + server info (no ANSI escapes) */
+
+    /* ── Preview content (shown in bottom pane during browsing) ── */
+    char          *preview;          /* preview text for bottom pane */
+    int            preview_scroll;   /* scroll offset in preview */
+
     /* ── Dirty flag (renderer checks this) ── */
     int            dirty;            /* 1 = needs redraw */
 } ui_state_t;
@@ -127,6 +134,7 @@ void ui_state_load_detail(ui_state_t *ui, int step_idx);
 
 void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text);
 void ui_state_add_query(ui_state_t *ui, const char *query_text);
+void ui_state_set_banner(ui_state_t *ui, const char *banner);
 
 /* ── Serialization (for web frontend) ────────────────── */
 
