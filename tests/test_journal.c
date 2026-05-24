@@ -118,11 +118,72 @@ static void test_error_entries(void) {
     free(dir);
 }
 
+/* —— test_failed_field —— */
+static void test_failed_field(void) {
+    char *dir = make_test_dir();
+    journal_t *j = journal_new(dir);
+
+    /* Success entry */
+    cJSON *p1 = cJSON_CreateObject();
+    cJSON_AddStringToObject(p1, "command", "ls");
+    journal_append(j, 0, 1, "shell_exec", p1, "R0S1", 100, 5, NULL);
+    cJSON_Delete(p1);
+
+    /* Failed entry */
+    cJSON *p2 = cJSON_CreateObject();
+    cJSON_AddStringToObject(p2, "query", "nonexistent");
+    journal_append(j, 0, 2, "web_search", p2, NULL, 0, 0, "no results found");
+    cJSON_Delete(p2);
+
+    /* Read journal.jsonl and verify failed field */
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/journal.jsonl", dir);
+    FILE *f = fopen(path, "r");
+    ASSERT_NOT_NULL(f);
+
+    char line[65536];
+    int line_num = 0;
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        ASSERT_NOT_NULL(entry);
+        cJSON *failed = cJSON_GetObjectItem(entry, "failed");
+        ASSERT_NOT_NULL(failed);  /* failed field must always be present */
+
+        if (line_num == 0) {
+            /* Success: failed=false */
+            ASSERT(cJSON_IsFalse(failed));
+        } else if (line_num == 1) {
+            /* Failure: failed=true */
+            ASSERT(cJSON_IsTrue(failed));
+            cJSON *err = cJSON_GetObjectItem(entry, "error");
+            ASSERT_NOT_NULL(err);
+            ASSERT_STR_CONTAINS(err->valuestring, "no results");
+        }
+        cJSON_Delete(entry);
+        line_num++;
+    }
+    fclose(f);
+    ASSERT_EQ(line_num, 2);
+
+    /* Verify manifest shows ✓/✗ markers */
+    char *manifest = journal_manifest(j, 50);
+    ASSERT_NOT_NULL(manifest);
+    ASSERT(strstr(manifest, "\xe2\x9c\x93") != NULL);  /* ✓ UTF-8 */
+    ASSERT(strstr(manifest, "\xe2\x9c\x97") != NULL);  /* ✗ UTF-8 */
+    ASSERT(strstr(manifest, "ERROR") != NULL);
+    free(manifest);
+
+    journal_free(j);
+    rm_rf(dir);
+    free(dir);
+}
+
 int main(void) {
     printf("test_journal:\n");
     RUN_TEST(test_append_and_manifest);
     RUN_TEST(test_react_loop_grouping);
     RUN_TEST(test_empty_manifest);
     RUN_TEST(test_error_entries);
+    RUN_TEST(test_failed_field);
     TEST_SUMMARY();
 }

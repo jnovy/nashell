@@ -46,6 +46,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     if (ref) cJSON_AddStringToObject(entry, "ref", ref);
     cJSON_AddNumberToObject(entry, "size", (double)size);
     cJSON_AddNumberToObject(entry, "lines", lines);
+    cJSON_AddBoolToObject(entry, "failed", error != NULL);
     if (error) cJSON_AddStringToObject(entry, "error", error);
 
     char *json = cJSON_PrintUnformatted(entry);
@@ -116,22 +117,27 @@ char *journal_manifest(journal_t *j, int max_steps) {
             else if (res && res->valuestring) key_param = res->valuestring;
         }
 
-        /* Format: "    R0S1: shell_exec "ls -la" → 473 chars" */
+        /* Format: "    ✓ R0S1: shell_exec "ls -la" → 473 chars"
+         *         "    ✗ ?: web_search "query" — ERROR: no results" */
         char buf[512];
+        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
         cJSON *err_j = cJSON_GetObjectItem(entry, "error");
+        int failed = (failed_j && cJSON_IsTrue(failed_j)) ||
+                     (err_j && err_j->valuestring);
         const char *err = (err_j && err_j->valuestring) ? err_j->valuestring : NULL;
+        const char *mark = failed ? "✗" : "✓";
 
         if (tool && strcmp(tool, "done") == 0) {
             /* Show result for done actions */
-            snprintf(buf, sizeof(buf), "    %s: → \"%.100s\"",
-                     ref ? ref : "?", key_param);
+            snprintf(buf, sizeof(buf), "    %s %s: → \"%.100s\"",
+                     mark, ref ? ref : "?", key_param);
         } else if (err) {
             /* Show error — tool failed */
-            snprintf(buf, sizeof(buf), "    %s: %s \"%.60s\" ⚠ ERROR: %.120s",
-                     ref ? ref : "?", tool ? tool : "?", key_param, err);
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.60s\" — ERROR: %.100s",
+                     mark, ref ? ref : "?", tool ? tool : "?", key_param, err);
         } else {
-            snprintf(buf, sizeof(buf), "    %s: %s \"%.80s\" → %d chars",
-                     ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\" → %d chars",
+                     mark, ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);
         }
         str_append_cstr(&out, buf);
         str_append_cstr(&out, "\n");
