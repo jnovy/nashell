@@ -463,19 +463,41 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     llm_chat_free(chat);
 
-    /* Post-task reflection: ask LLM to extract reusable lessons/strategies */
-    if (final_result && ctx->tools->step > 2 && ctx->tools->memory) {
+    /* Post-task reflection: ask LLM to extract reusable lessons/strategies.
+     * Fires for BOTH successful and failed tasks — failures are often more
+     * valuable for learning (what went wrong, what to avoid next time). */
+    int task_succeeded = (final_result != NULL);
+    if (ctx->tools->step > 2 && ctx->tools->memory) {
         llm_chat_t *reflect = llm_chat_new();
-        llm_chat_add(reflect, "system",
-            "You just completed a task. Review what happened and extract 0-3 reusable "
-            "lessons, strategies, or reusable skills. For each, call memory_store with:\n"
-            "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
-            "- value: the reusable knowledge (for skills: include approach, pitfalls, verification)\n"
-            "- tags: comma-separated relevant tags\n"
-            "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
-            "If nothing worth storing, call done immediately.\n"
-            "Respond with ONE JSON object per turn: "
-            "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
+        if (task_succeeded) {
+            llm_chat_add(reflect, "system",
+                "You just completed a task successfully. Review what happened and extract "
+                "0-3 reusable lessons, strategies, or reusable skills. For each, call "
+                "memory_store with:\n"
+                "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
+                "- value: the reusable knowledge (for skills: include approach, pitfalls, "
+                "verification)\n"
+                "- tags: comma-separated relevant tags\n"
+                "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
+                "If nothing worth storing, call done immediately.\n"
+                "Respond with ONE JSON object per turn: "
+                "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
+        } else {
+            llm_chat_add(reflect, "system",
+                "The task FAILED or was not completed (hit max steps, error, or timeout). "
+                "Review the step history and extract 1-3 lessons about what went wrong. "
+                "Focus on:\n"
+                "- What caused the failure (wrong approach, missing tool, bad assumption)\n"
+                "- What to do differently next time\n"
+                "- Any pitfalls or gotchas to remember\n"
+                "For each lesson, call memory_store with:\n"
+                "- key: lesson:short-name (e.g. lesson:avoid-recursive-grep-on-large-dirs)\n"
+                "- value: what went wrong and how to avoid it\n"
+                "- tags: comma-separated relevant tags\n"
+                "If nothing worth storing, call done immediately.\n"
+                "Respond with ONE JSON object per turn: "
+                "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
+        }
 
         /* Inject journal manifest as context for reflection */
         char *manifest = journal_manifest(ctx->tools->journal, 50);
@@ -484,8 +506,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(manifest);
         }
         llm_chat_add(reflect, "user",
-            "What lessons or strategies should be stored from this task? "
-            "Call memory_store for each, or done if none.");
+            task_succeeded
+                ? "What lessons or strategies should be stored from this task? "
+                  "Call memory_store for each, or done if none."
+                : "This task failed. What went wrong? What lessons should be stored "
+                  "to avoid this failure next time? Call memory_store for each, or "
+                  "done if none.");
 
         /* Mini react loop for reflection (max 4 steps) */
         for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
