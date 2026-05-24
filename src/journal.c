@@ -27,7 +27,8 @@ void journal_free(journal_t *j) {
 
 int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
-                   size_t size, int lines, const char *error) {
+                   size_t size, int lines, const char *error,
+                   const char *tool_call_id) {
     FILE *f = fopen(j->path, "a");
     if (!f) return -1;
 
@@ -48,6 +49,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     cJSON_AddNumberToObject(entry, "lines", lines);
     cJSON_AddBoolToObject(entry, "failed", error != NULL);
     if (error) cJSON_AddStringToObject(entry, "error", error);
+    if (tool_call_id) cJSON_AddStringToObject(entry, "tc_id", tool_call_id);
 
     char *json = cJSON_PrintUnformatted(entry);
     fprintf(f, "%s\n", json);

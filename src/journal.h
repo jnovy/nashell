@@ -19,10 +19,12 @@ void       journal_free(journal_t *j);
  * size: raw output size in bytes
  * lines: line count of output
  * error: error string (or NULL for success)
+ * tool_call_id: LLM-generated tool_call ID for API threading (or NULL)
  */
 int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
-                   size_t size, int lines, const char *error);
+                   size_t size, int lines, const char *error,
+                   const char *tool_call_id);
 
 /* Build a compact manifest string for context injection.
  * Caller must free returned string. */

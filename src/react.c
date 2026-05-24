@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -60,6 +61,46 @@ static const char *get_action_desc(cJSON *action, const char *action_name,
     if (strcmp(action_name, "done") == 0)
         return thought;
     return thought;
+}
+
+
+/* ── checkpoint ──────────────────────────────────────────── */
+
+/* Save minimal checkpoint after each tool execution.
+ * The journal + store contain the actual data; this just records
+ * the ephemeral state needed to resume: step, scratchpad, evicted steps. */
+static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
+                            const char *last_tc_id) {
+    char path[4096], tmp_path[4096];
+    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
+    snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
+
+    cJSON *cp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(cp, "version", 1);
+    cJSON_AddNumberToObject(cp, "step", step);
+    cJSON_AddNumberToObject(cp, "react_loop", ctx->tools->react_loop);
+    if (user_query) cJSON_AddStringToObject(cp, "user_query", user_query);
+    if (ctx->tools->scratchpad)
+        cJSON_AddStringToObject(cp, "scratchpad", ctx->tools->scratchpad);
+    if (last_tc_id)
+        cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
+
+    char *json = cJSON_Print(cp);
+    FILE *f = fopen(tmp_path, "w");
+    if (f) {
+        fputs(json, f);
+        fclose(f);
+        rename(tmp_path, path);  /* atomic write */
+    }
+    free(json);
+    cJSON_Delete(cp);
+}
+
+/* Remove checkpoint on successful completion (task done, no resume needed) */
+static void checkpoint_remove(react_ctx_t *ctx) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
+    unlink(path);
 }
 
 /* ── main react loop ─────────────────────────────────── */
@@ -171,14 +212,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *sys_p = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_p, "type", "system_prompt");
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
-                       strlen(sys_prompt), count_lines(sys_prompt), NULL);
+                       strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL);
         cJSON_Delete(sys_p);
         free(sys_hash);
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, NULL,
-                       strlen(user_query), 0, NULL);
+                       strlen(user_query), 0, NULL, NULL);
         cJSON_Delete(q_p);
     }
 
@@ -248,7 +289,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             journal_append(ctx->tools->journal, ctx->tools->react_loop,
                            step + 1, "parse_error", err_p, err_alias,
                            strlen(response), 0,
-                           "LLM response was not valid JSON");
+                           "LLM response was not valid JSON", NULL);
             cJSON_Delete(err_p);
             free(err_hash);
 
@@ -277,7 +318,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddStringToObject(think_p, "type", "thinking");
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "thinking", think_p, think_alias,
-                               strlen(thought), 0, NULL);
+                               strlen(thought), 0, NULL, NULL);
                 cJSON_Delete(think_p);
                 free(think_hash);
 
@@ -316,7 +357,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "parse_error", err_p, err_alias,
                                strlen(response), 0,
-                               "LLM response missing 'action' field");
+                               "LLM response missing 'action' field", NULL);
                 cJSON_Delete(err_p);
                 free(err_hash);
 
@@ -338,6 +379,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (strcmp(action_name, "done") == 0) {
             const char *result = json_get_str(action, "result");
             final_result = result ? strdup(result) : strdup("(no result)");
+            checkpoint_remove(ctx);
 
             /* Store result for full audit trail (journal + store/) */
             tool_result_t tr = tool_execute(ctx->tools, action_name, action);
@@ -523,6 +565,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(meta_str);
         free(result_msg);
         tool_result_free(&tr);
+
+        /* Save checkpoint after each tool execution (atomic write) */
+        checkpoint_save(ctx, step + 1, user_query,
+                        chat->last_tool_call_id);
+
         cJSON_Delete(action);
         free(response);
     }

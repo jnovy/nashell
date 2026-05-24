@@ -13,12 +13,12 @@ static void test_append_and_manifest(void) {
     /* Append a few entries */
     cJSON *params1 = cJSON_CreateObject();
     cJSON_AddStringToObject(params1, "command", "ls -la");
-    journal_append(j, 0, 1, "shell_exec", params1, "R0S1", 100, 5, NULL);
+    journal_append(j, 0, 1, "shell_exec", params1, "R0S1", 100, 5, NULL, NULL);
     cJSON_Delete(params1);
 
     cJSON *params2 = cJSON_CreateObject();
     cJSON_AddStringToObject(params2, "path", "test.c");
-    journal_append(j, 0, 2, "file_read", params2, "R0S2", 500, 20, NULL);
+    journal_append(j, 0, 2, "file_read", params2, "R0S2", 500, 20, NULL, NULL);
     cJSON_Delete(params2);
 
     /* Verify journal file exists */
@@ -49,23 +49,23 @@ static void test_react_loop_grouping(void) {
     /* React loop 0: query + shell_exec + done */
     cJSON *q0 = cJSON_CreateObject();
     cJSON_AddStringToObject(q0, "text", "list files");
-    journal_append(j, 0, 0, "query", q0, NULL, 10, 0, NULL);
+    journal_append(j, 0, 0, "query", q0, NULL, 10, 0, NULL, NULL);
     cJSON_Delete(q0);
 
     cJSON *s0 = cJSON_CreateObject();
     cJSON_AddStringToObject(s0, "command", "ls");
-    journal_append(j, 0, 1, "shell_exec", s0, "R0S1", 50, 3, NULL);
+    journal_append(j, 0, 1, "shell_exec", s0, "R0S1", 50, 3, NULL, NULL);
     cJSON_Delete(s0);
 
     /* React loop 1: different query */
     cJSON *q1 = cJSON_CreateObject();
     cJSON_AddStringToObject(q1, "text", "show kernel");
-    journal_append(j, 1, 0, "query", q1, NULL, 11, 0, NULL);
+    journal_append(j, 1, 0, "query", q1, NULL, 11, 0, NULL, NULL);
     cJSON_Delete(q1);
 
     cJSON *s1 = cJSON_CreateObject();
     cJSON_AddStringToObject(s1, "command", "uname -r");
-    journal_append(j, 1, 1, "shell_exec", s1, "R1S1", 24, 1, NULL);
+    journal_append(j, 1, 1, "shell_exec", s1, "R1S1", 24, 1, NULL, NULL);
     cJSON_Delete(s1);
 
     /* Manifest should group by react loop */
@@ -104,7 +104,7 @@ static void test_error_entries(void) {
 
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "command", "false");
-    journal_append(j, 0, 1, "shell_exec", p, "R0S1", 0, 0, "non-zero exit");
+    journal_append(j, 0, 1, "shell_exec", p, "R0S1", 0, 0, "non-zero exit", NULL);
     cJSON_Delete(p);
 
     char *manifest = journal_manifest(j, 50);
@@ -126,13 +126,13 @@ static void test_failed_field(void) {
     /* Success entry */
     cJSON *p1 = cJSON_CreateObject();
     cJSON_AddStringToObject(p1, "command", "ls");
-    journal_append(j, 0, 1, "shell_exec", p1, "R0S1", 100, 5, NULL);
+    journal_append(j, 0, 1, "shell_exec", p1, "R0S1", 100, 5, NULL, NULL);
     cJSON_Delete(p1);
 
     /* Failed entry */
     cJSON *p2 = cJSON_CreateObject();
     cJSON_AddStringToObject(p2, "query", "nonexistent");
-    journal_append(j, 0, 2, "web_search", p2, NULL, 0, 0, "no results found");
+    journal_append(j, 0, 2, "web_search", p2, NULL, 0, 0, "no results found", NULL);
     cJSON_Delete(p2);
 
     /* Read journal.jsonl and verify failed field */

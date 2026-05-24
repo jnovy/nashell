@@ -238,7 +238,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "shell_exec", params, alias,
-                   out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit");
+                   out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
 
     char *ref_copy = strdup(alias);
     str_free(&out);
@@ -316,7 +316,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_read", params, alias,
-                   len, lines, NULL);
+                   len, lines, NULL, NULL);
 
     char *ref_copy = strdup(alias);
     free(content);
@@ -357,7 +357,7 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_write", params, alias,
-                   len, count_lines(content), NULL);
+                   len, count_lines(content), NULL, NULL);
 
     char *ref_copy = strdup(alias);
     free(hash);
@@ -422,7 +422,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, pre_alias,
-                   result_len, count_lines(result), NULL);
+                   result_len, count_lines(result), NULL, NULL);
 
     free(content);
     free(result);
@@ -529,7 +529,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "grep_search", params, alias,
-                   out.len, matches, NULL);
+                   out.len, matches, NULL, NULL);
 
     char *ref_copy = strdup(alias);
     str_free(&out);
@@ -566,7 +566,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
-                   strlen(ctx->scratchpad), 0, NULL);
+                   strlen(ctx->scratchpad), 0, NULL, NULL);
 
     char *ref_copy = strdup(alias);
     free(hash);
@@ -589,7 +589,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "done", params, alias,
-                   strlen(result), 0, NULL);
+                   strlen(result), 0, NULL, NULL);
 
     char *ref_copy = strdup(alias);
     free(hash);
@@ -643,7 +643,7 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_store",
-                   params, alias, strlen(value), 0, NULL);
+                   params, alias, strlen(value), 0, NULL, NULL);
 
     free(hash);
     return make_result(1, meta, alias ? strdup(alias) : NULL);
@@ -679,7 +679,7 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
-                   params, alias, out.len, results.count, NULL);
+                   params, alias, out.len, results.count, NULL, NULL);
 
     memory_results_free(&results);
     free(hash);
@@ -705,7 +705,7 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
-                   params, NULL, 0, 0, NULL);
+                   params, NULL, 0, 0, NULL, NULL);
 
     return make_result(1, meta, NULL);
 }
@@ -725,7 +725,7 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
-                   params, NULL, 0, 0, NULL);
+                   params, NULL, 0, 0, NULL, NULL);
 
     return make_result(1, meta, NULL);
 }
@@ -800,7 +800,7 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     /* Content stored to .store/ — model reads via file_read(ref) */
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
-                   params, alias, body.len, count_lines(body.data), NULL);
+                   params, alias, body.len, count_lines(body.data), NULL, NULL);
 
     free(hash);
     free(content_type);
@@ -904,7 +904,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
                  "no results found for query: %s", query);
 
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
-                       params, NULL, 0, 0, errmsg);
+                       params, NULL, 0, 0, errmsg, NULL);
 
         str_free(&results);
         str_free(&body);
@@ -924,7 +924,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     /* Content stored to .store/ — model reads via file_read(ref) */
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
-                   params, alias, results.len, result_count, NULL);
+                   params, alias, results.len, result_count, NULL, NULL);
 
     free(hash);
     char *ref_copy = alias ? strdup(alias) : NULL;
