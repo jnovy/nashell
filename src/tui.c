@@ -58,6 +58,7 @@ void tui_init(void) {
     win_bottom = newwin(bottom_height, cols, main_height, 0);
     scrollok(win_main, FALSE);
     scrollok(win_bottom, FALSE);
+    refresh();  /* flush stdscr so subwindows can render */
     keypad(win_main, TRUE);
     keypad(win_bottom, TRUE);
 }
@@ -177,7 +178,7 @@ static void render_main(ui_state_t *ui) {
             /* Query line: ▸/▼ timestamp  query text */
             char qline[512];
             snprintf(qline, sizeof(qline), "  %s %s  %s",
-                     q->expanded ? "\xe2\x96\xbc" : "\xe2\x96\xb8",  /* ▼ or ▸ */
+                     q->expanded ? "v" : ">",  /* ▼ or ▸ */
                      ts_buf,
                      q->query_text ? q->query_text : "(empty)");
 
@@ -202,7 +203,7 @@ static void render_main(ui_state_t *ui) {
                     ui_step_t *s = &q->steps[si];
 
                     char sline[512];
-                    const char *mark = s->failed ? "\xe2\x9c\x97" : "\xe2\x9c\x93";  /* ✗ or ✓ */
+                    const char *mark = s->failed ? "x" : "+";  /* ✗ or ✓ */
                     if (s->failed) {
                         snprintf(sline, sizeof(sline), "      %s %s: %s \"%s\"",
                                  mark,

@@ -291,13 +291,10 @@ void ui_state_load_manifest(ui_state_t *ui, int query_idx) {
     q->step_cap = 0;
 
     /* Read journal and collect steps for this react_loop */
-    FILE *f = fopen(ui->session_dir, "r");
-    if (!f) {
-        /* Try journal.jsonl path */
-        char jpath[4096];
-        snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
-        f = fopen(jpath, "r");
-    }
+    /* Read journal.jsonl for this session */
+    char jpath[4096];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
+    FILE *f = fopen(jpath, "r");
     if (!f) return;
 
     char line[65536];
