@@ -54,7 +54,7 @@ static tool_result_t make_error(const char *msg) {
 const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     if (ctx->alias_count >= MAX_ALIASES) return "R?S?";
     alias_entry_t *a = &ctx->aliases[ctx->alias_count];
-    snprintf(a->alias, sizeof(a->alias), "R%dS%d", ctx->react_loop, ctx->step);
+    snprintf(a->alias, sizeof(a->alias), "R%dS%d", ctx->react_loop, ctx->alias_count);
     snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
     ctx->alias_count++;
 
