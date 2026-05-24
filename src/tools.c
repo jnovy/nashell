@@ -689,6 +689,47 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
 }
 
 
+
+/* ── memory_pin ─────────────────────────────────────────── */
+
+static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    if (!key_j || !key_j->valuestring)
+        return make_error("missing 'key' parameter");
+
+    int rc = memory_pin(ctx->memory, key_j->valuestring);
+    if (rc != 0) return make_error("memory entry not found");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "pinned");
+    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
+                   params, NULL, 0, 0, NULL);
+
+    return make_result(1, meta, NULL);
+}
+
+/* ── memory_unpin ───────────────────────────────────────── */
+
+static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    if (!key_j || !key_j->valuestring)
+        return make_error("missing 'key' parameter");
+
+    int rc = memory_unpin(ctx->memory, key_j->valuestring);
+    if (rc != 0) return make_error("memory entry not found");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "unpinned");
+    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
+                   params, NULL, 0, 0, NULL);
+
+    return make_result(1, meta, NULL);
+}
+
 /* ── web_fetch ──────────────────────────────────────────── */
 
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -894,6 +935,8 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "done")        == 0) return tool_done(ctx, params);
     if (strcmp(action, "memory_store") == 0) return tool_memory_store(ctx, params);
     if (strcmp(action, "memory_recall")== 0) return tool_memory_recall(ctx, params);
+    if (strcmp(action, "memory_pin")  == 0) return tool_memory_pin(ctx, params);
+    if (strcmp(action, "memory_unpin")== 0) return tool_memory_unpin(ctx, params);
 
     char msg[256];
     snprintf(msg, sizeof(msg), "unknown tool: %s", action);
@@ -946,6 +989,12 @@ const char *tools_system_prompt(void) {
     "\n"
     "memory_recall(query) - Search saved knowledge by keyword.\n"
     "  Returns: {query, results_count, results}\n"
+    "\n"
+    "memory_pin(key) - Pin a memory to always inject into system prompt.\n"
+    "  Returns: {status, key}\n"
+    "\n"
+    "memory_unpin(key) - Unpin a memory from system prompt injection.\n"
+    "  Returns: {status, key}\n"
     "\n"
     "notes(content) - Save persistent scratchpad. Survives context resets.\n"
     "  Returns: {status, ref}\n"

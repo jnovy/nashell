@@ -1,5 +1,5 @@
 CC      ?= gcc
-CFLAGS  ?= -Wall -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
+CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
 LDFLAGS ?= -lcurl -lcrypto -lreadline -lm
 
 SRC     = src/main.c src/str.c src/arena.c src/cJSON.c \

@@ -35,6 +35,12 @@ void      memory_free(memory_t *m);
 int memory_store(memory_t *m, const char *key, const char *value,
                  const char **tags, int n_tags, int pinned);
 
+/* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
+int memory_pin(memory_t *m, const char *key);
+
+/* Unpin an existing memory (set pinned=false). Returns 0 on success, -1 if not found. */
+int memory_unpin(memory_t *m, const char *key);
+
 /* Search memories by query (substring match on key + value + tags).
  * Returns up to max_results matches, sorted by relevance.
  * Caller must free with memory_results_free(). */

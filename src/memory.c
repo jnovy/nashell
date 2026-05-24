@@ -117,6 +117,68 @@ int memory_store(memory_t *m, const char *key, const char *value,
     return 0;
 }
 
+
+/* ── pin/unpin ───────────────────────────────────────────── */
+
+/* Helper: load entry JSON from file, modify pinned flag, write back */
+static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
+    if (!m || !key) return -1;
+
+    char fname[512];
+    key_to_filename(key, fname, sizeof(fname));
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;  /* entry not found */
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return -1; }
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    if (!entry) return -1;
+
+    /* Replace or add the pinned field */
+    cJSON *p = cJSON_GetObjectItem(entry, "pinned");
+    if (p) {
+        cJSON_ReplaceItemInObject(entry, "pinned",
+                                  pinned ? cJSON_CreateTrue() : cJSON_CreateFalse());
+    } else {
+        cJSON_AddBoolToObject(entry, "pinned", pinned);
+    }
+
+    /* Write back */
+    char *json = cJSON_Print(entry);
+    f = fopen(path, "w");
+    if (f) {
+        fputs(json, f);
+        fclose(f);
+    }
+    free(json);
+    cJSON_Delete(entry);
+
+    /* Update MEMORY.md index */
+    memory_write_index_file(m);
+
+    return 0;
+}
+
+int memory_pin(memory_t *m, const char *key) {
+    return memory_set_pinned(m, key, 1);
+}
+
+int memory_unpin(memory_t *m, const char *key) {
+    return memory_set_pinned(m, key, 0);
+}
+
 /* ── recall (search) ─────────────────────────────────── */
 
 /* Composite scoring: relevance × recency × importance (research-backed) */

@@ -135,6 +135,14 @@ static cJSON *build_tools_array(void) {
         "Search saved knowledge by keyword.",
         "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}");
 
+    ADD_TOOL("memory_pin",
+        "Pin an existing memory so it is always injected into the system prompt.",
+        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to pin\"}},\"required\":[\"key\"]}");
+
+    ADD_TOOL("memory_unpin",
+        "Unpin a memory so it is no longer always injected into the system prompt.",
+        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to unpin\"}},\"required\":[\"key\"]}");
+
     ADD_TOOL("notes",
         "Save persistent scratchpad. Survives context resets.",
         "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Scratchpad content\"}},\"required\":[\"content\"]}");

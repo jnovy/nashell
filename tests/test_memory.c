@@ -426,6 +426,138 @@ static void test_index_unlimited_with_zero(void) {
     free(dir);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+ * Priority 4: Pin/Unpin Tests
+ * ═══════════════════════════════════════════════════════════════ */
+
+/* ── test_pin_unpinned_entry: pin an entry that was stored unpinned ── */
+static void test_pin_unpinned_entry(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    /* Store unpinned */
+    memory_store(m, "fact:server-ip", "192.168.1.1", NULL, 0, 0);
+
+    /* Verify not pinned initially */
+    char *pinned = memory_load_pinned(m);
+    ASSERT(pinned == NULL || strstr(pinned, "server-ip") == NULL);
+    free(pinned);
+
+    /* Pin it */
+    int rc = memory_pin(m, "fact:server-ip");
+    ASSERT_EQ(rc, 0);
+
+    /* Verify now pinned */
+    pinned = memory_load_pinned(m);
+    ASSERT_NOT_NULL(pinned);
+    ASSERT_STR_CONTAINS(pinned, "192.168.1.1");
+    ASSERT_STR_CONTAINS(pinned, "fact:server-ip");
+    free(pinned);
+
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_unpin_pinned_entry: unpin an entry that was stored pinned ── */
+static void test_unpin_pinned_entry(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    /* Store pinned */
+    memory_store(m, "fact:api-url", "https://api.example.com", NULL, 0, 1);
+
+    /* Verify pinned initially */
+    char *pinned = memory_load_pinned(m);
+    ASSERT_NOT_NULL(pinned);
+    ASSERT_STR_CONTAINS(pinned, "api-url");
+    free(pinned);
+
+    /* Unpin it */
+    int rc = memory_unpin(m, "fact:api-url");
+    ASSERT_EQ(rc, 0);
+
+    /* Verify no longer pinned */
+    pinned = memory_load_pinned(m);
+    ASSERT(pinned == NULL || strstr(pinned, "api-url") == NULL);
+    free(pinned);
+
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_pin_nonexistent: pin a key that doesn't exist ── */
+static void test_pin_nonexistent(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    int rc = memory_pin(m, "fact:does-not-exist");
+    ASSERT_EQ(rc, -1);
+
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_unpin_nonexistent: unpin a key that doesn't exist ── */
+static void test_unpin_nonexistent(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    int rc = memory_unpin(m, "fact:does-not-exist");
+    ASSERT_EQ(rc, -1);
+
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_pin_already_pinned: pin an already-pinned entry (idempotent) ── */
+static void test_pin_already_pinned(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    memory_store(m, "lesson:important", "critical knowledge", NULL, 0, 1);
+
+    /* Pin again — should succeed (idempotent) */
+    int rc = memory_pin(m, "lesson:important");
+    ASSERT_EQ(rc, 0);
+
+    /* Still pinned */
+    char *pinned = memory_load_pinned(m);
+    ASSERT_NOT_NULL(pinned);
+    ASSERT_STR_CONTAINS(pinned, "critical knowledge");
+    free(pinned);
+
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_pin_preserves_value: pinning doesn't alter the stored value ── */
+static void test_pin_preserves_value(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    const char *tags[] = {"redis", "migration"};
+    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", tags, 2, 0);
+
+    /* Pin it */
+    memory_pin(m, "lesson:redis-v7");
+
+    /* Recall and verify value + tags preserved */
+    memory_results_t results = memory_recall(m, "redis-v7", 5);
+    ASSERT_GT(results.count, 0);
+    ASSERT_STR_EQ(results.entries[0].value, "HMSET renamed to HSET");
+    ASSERT_EQ(results.entries[0].pinned, 1);
+
+    memory_results_free(&results);
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
 int main(void) {
     printf("test_memory:\n");
 
@@ -458,6 +590,15 @@ int main(void) {
     /* Priority 3: Error Eviction Pattern */
     printf("\n  --- Error Eviction Pattern ---\n");
     RUN_TEST(test_error_detection_pattern);
+
+    /* Priority 4: Pin/Unpin */
+    printf("\n  --- Pin/Unpin ---\n");
+    RUN_TEST(test_pin_unpinned_entry);
+    RUN_TEST(test_unpin_pinned_entry);
+    RUN_TEST(test_pin_nonexistent);
+    RUN_TEST(test_unpin_nonexistent);
+    RUN_TEST(test_pin_already_pinned);
+    RUN_TEST(test_pin_preserves_value);
 
     TEST_SUMMARY();
 }
