@@ -355,11 +355,8 @@ int main(int argc, char **argv) {
                 pthread_mutex_lock(&ui->mtx);
                 if (result) {
                     ui_state_set_status(ui, STATUS_DONE, "Done");
-                    if (ui->query_count > 0) {
-                        ui_query_t *q = &ui->queries[ui->query_count - 1];
-                        free(q->result_preview);
-                        q->result_preview = strndup(result, 100);
-                    }
+                    /* Refresh journal view to show completed query */
+                    ui_state_load_journal(ui, journal);
                 } else {
                     ui_state_set_status(ui, STATUS_ERROR, "No result");
                 }

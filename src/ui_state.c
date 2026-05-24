@@ -1,12 +1,39 @@
 #include "ui_state.h"
 #include "str.h"
+#include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
-/* ── Create / Free ─────────────────────────────────────── */
+/* ── helpers ─────────────────────────────────────────── */
+
+static char *read_file_content(const char *path, int max_bytes) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    if (max_bytes > 0 && sz > max_bytes) sz = max_bytes;
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    buf[n] = '\0';
+    fclose(f);
+    return buf;
+}
+
+/* Read content from a session ref (symlink -> store) */
+static char *read_ref_content(const char *session_dir, const char *ref, int max_bytes) {
+    if (!session_dir || !ref) return NULL;
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", session_dir, ref);
+    return read_file_content(path, max_bytes);
+}
+
+/* ── lifecycle ───────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
     ui_state_t *ui = calloc(1, sizeof(*ui));
@@ -20,7 +47,7 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
     ui->input_buffer = calloc(1, ui->input_cap);
     ui->stream_cap = 8192;
     ui->stream_tokens = calloc(1, ui->stream_cap);
-    ui->selected_step = -1;  /* -1 = cursor on query, not on a step */
+    ui->cursor_link = 0;
     ui->dirty = 1;
     pthread_mutex_init(&ui->mtx, NULL);
     return ui;
@@ -28,210 +55,56 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
 
 void ui_state_free(ui_state_t *ui) {
     if (!ui) return;
-    pthread_mutex_destroy(&ui->mtx);
+    md_doc_free(ui->doc);
+    free(ui->link_states);
+    free(ui->banner);
     free(ui->session_dir);
     free(ui->status_text);
     free(ui->input_buffer);
     free(ui->stream_tokens);
-    free(ui->banner);
-    free(ui->preview);
-    free(ui->bottom_content);
-    for (int i = 0; i < ui->query_count; i++) {
-        ui_query_t *q = &ui->queries[i];
-        free(q->query_text);
-        free(q->result_preview);
-        for (int j = 0; j < q->step_count; j++) {
-            free(q->steps[j].ref);
-            free(q->steps[j].tool);
-            free(q->steps[j].description);
-        }
-        free(q->steps);
-    }
-    free(ui->queries);
+    pthread_mutex_destroy(&ui->mtx);
     free(ui);
 }
 
-/* ── Navigation ────────────────────────────────────────── */
+/* ── MD document generation from journal ─────────────── */
 
-void ui_state_tab(ui_state_t *ui) {
-    ui->focus = (ui->focus == FOCUS_JOURNAL) ? FOCUS_QUERY : FOCUS_JOURNAL;
-    ui->dirty = 1;
-}
+void ui_state_rebuild_md(ui_state_t *ui) {
+    if (!ui) return;
 
-void ui_state_up(ui_state_t *ui) {
-    if (ui->focus != FOCUS_JOURNAL || ui->query_count == 0) return;
+    str_t md = str_new(8192);
 
-    if (ui->selected_step >= 0) {
-        /* Currently on a step — move up within steps or back to query */
-        ui->selected_step--;
-        /* selected_step == -1 means back on the query header */
-    } else {
-        /* On a query header — move to previous query */
-        if (ui->selected_query > 0) {
-            ui->selected_query--;
-            /* If previous query is expanded, jump to its last step */
-            ui_query_t *q = &ui->queries[ui->selected_query];
-            if (q->expanded && q->step_count > 0) {
-                ui->selected_step = q->step_count - 1;
-            }
-        }
+    /* Banner */
+    if (ui->banner && ui->banner[0]) {
+        str_append_cstr(&md, ui->banner);
+        str_append_cstr(&md, "\n---\n\n");
     }
 
-    /* Load bottom content for selected item */
-    ui_state_load_bottom_content(ui);
-    ui->dirty = 1;
-}
-
-void ui_state_down(ui_state_t *ui) {
-    if (ui->focus != FOCUS_JOURNAL || ui->query_count == 0) return;
-
-    ui_query_t *q = &ui->queries[ui->selected_query];
-
-    if (q->expanded && ui->selected_step < q->step_count - 1) {
-        /* Move down within expanded steps */
-        ui->selected_step++;
-    } else {
-        /* Move to next query */
-        if (ui->selected_query < ui->query_count - 1) {
-            ui->selected_query++;
-            ui->selected_step = -1;
-        }
+    /* Read journal and build query list */
+    if (!ui->journal) {
+        /* No journal yet — just show banner */
+        if (md.len == 0)
+            str_append_cstr(&md, "# Nash\n\n*No session loaded*\n");
+        goto done;
     }
 
-    ui_state_load_bottom_content(ui);
-    ui->dirty = 1;
-}
+    char jpath[4096];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
+             ui->session_dir ? ui->session_dir : ".");
+    FILE *f = fopen(jpath, "r");
+    if (!f) goto done;
 
-void ui_state_enter(ui_state_t *ui) {
-    if (ui->focus != FOCUS_JOURNAL || ui->query_count == 0) return;
+    /* First pass: collect queries (tool="query" entries) */
+    typedef struct {
+        char *text;
+        double ts;
+        int react_loop;
+        int step_count;
+        int failed_count;
+        char *result;
+    } qinfo_t;
 
-    ui_query_t *q = &ui->queries[ui->selected_query];
-
-    if (ui->selected_step < 0) {
-        /* On a query header — toggle expansion */
-        q->expanded = !q->expanded;
-        if (q->expanded && q->step_count == 0) {
-            /* Load manifest steps for this query */
-            ui_state_load_manifest(ui, ui->selected_query);
-        }
-        if (!q->expanded) {
-            ui->selected_step = -1;
-        }
-    }
-    /* On a step — bottom pane already shows content */
-
-    ui_state_load_bottom_content(ui);
-    ui->dirty = 1;
-}
-
-void ui_state_back(ui_state_t *ui) {
-    if (ui->focus == FOCUS_JOURNAL) {
-        ui_query_t *q = &ui->queries[ui->selected_query];
-        if (ui->selected_step >= 0) {
-            /* Back from step to query header */
-            ui->selected_step = -1;
-        } else if (q->expanded) {
-            /* Collapse the query */
-            q->expanded = 0;
-        }
-    }
-    ui_state_load_bottom_content(ui);
-    ui->dirty = 1;
-}
-
-void ui_state_page_up(ui_state_t *ui) {
-    if (ui->bottom_scroll > 0) {
-        ui->bottom_scroll -= 10;
-        if (ui->bottom_scroll < 0) ui->bottom_scroll = 0;
-        ui->dirty = 1;
-    }
-}
-
-void ui_state_page_down(ui_state_t *ui) {
-    if (ui->bottom_content) {
-        ui->bottom_scroll += 10;
-        ui->dirty = 1;
-    }
-}
-
-/* ── Input editing ─────────────────────────────────────── */
-
-void ui_state_input_char(ui_state_t *ui, int ch) {
-    if (ui->input_len >= ui->input_cap - 1) return;
-    /* Insert at cursor position */
-    if (ui->cursor_pos < ui->input_len) {
-        memmove(ui->input_buffer + ui->cursor_pos + 1,
-                ui->input_buffer + ui->cursor_pos,
-                ui->input_len - ui->cursor_pos);
-    }
-    ui->input_buffer[ui->cursor_pos] = (char)ch;
-    ui->cursor_pos++;
-    ui->input_len++;
-    ui->input_buffer[ui->input_len] = '\0';
-    ui->dirty = 1;
-}
-
-void ui_state_input_backspace(ui_state_t *ui) {
-    if (ui->cursor_pos > 0) {
-        memmove(ui->input_buffer + ui->cursor_pos - 1,
-                ui->input_buffer + ui->cursor_pos,
-                ui->input_len - ui->cursor_pos);
-        ui->cursor_pos--;
-        ui->input_len--;
-        ui->input_buffer[ui->input_len] = '\0';
-        ui->dirty = 1;
-    }
-}
-
-void ui_state_input_delete(ui_state_t *ui) {
-    if (ui->cursor_pos < ui->input_len) {
-        memmove(ui->input_buffer + ui->cursor_pos,
-                ui->input_buffer + ui->cursor_pos + 1,
-                ui->input_len - ui->cursor_pos - 1);
-        ui->input_len--;
-        ui->input_buffer[ui->input_len] = '\0';
-        ui->dirty = 1;
-    }
-}
-
-void ui_state_input_left(ui_state_t *ui) {
-    if (ui->cursor_pos > 0) { ui->cursor_pos--; ui->dirty = 1; }
-}
-
-void ui_state_input_right(ui_state_t *ui) {
-    if (ui->cursor_pos < ui->input_len) { ui->cursor_pos++; ui->dirty = 1; }
-}
-
-void ui_state_input_home(ui_state_t *ui) {
-    ui->cursor_pos = 0; ui->dirty = 1;
-}
-
-void ui_state_input_end(ui_state_t *ui) {
-    ui->cursor_pos = ui->input_len; ui->dirty = 1;
-}
-
-/* ── Load journal entries into query list ──────────────── */
-
-void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
-    if (!ui || !journal) return;
-
-    /* Clear existing queries */
-    for (int i = 0; i < ui->query_count; i++) {
-        ui_query_t *q = &ui->queries[i];
-        free(q->query_text);
-        free(q->result_preview);
-        for (int j = 0; j < q->step_count; j++) {
-            free(q->steps[j].ref);
-            free(q->steps[j].tool);
-            free(q->steps[j].description);
-        }
-        free(q->steps);
-    }
-    ui->query_count = 0;
-
-    /* Read journal.jsonl */
-    FILE *f = fopen(journal->path, "r");
-    if (!f) return;
+    qinfo_t *qinfos = NULL;
+    int qcount = 0, qcap = 0;
 
     char line[65536];
     while (fgets(line, sizeof(line), f)) {
@@ -242,230 +115,301 @@ void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
         int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
 
         if (tool && strcmp(tool, "query") == 0) {
-            /* New query entry */
-            cJSON *params = cJSON_GetObjectItem(entry, "params");
-            const char *text = params ? cJSON_GetStringValue(cJSON_GetObjectItem(params, "text")) : NULL;
-            double ts = 0;
-            cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
-            if (ts_j && ts_j->valuestring) ts = atof(ts_j->valuestring);
-
-            /* Ensure capacity */
-            if (ui->query_count >= ui->query_cap) {
-                ui->query_cap = ui->query_cap ? ui->query_cap * 2 : 16;
-                ui->queries = realloc(ui->queries, ui->query_cap * sizeof(ui_query_t));
+            /* New query */
+            if (qcount >= qcap) {
+                qcap = qcap ? qcap * 2 : 16;
+                qinfos = realloc(qinfos, qcap * sizeof(qinfo_t));
             }
-            ui_query_t *q = &ui->queries[ui->query_count++];
-            memset(q, 0, sizeof(*q));
-            q->query_text = text ? strdup(text) : strdup("(empty)");
-            q->timestamp = ts;
-            q->react_loop = loop;
-        }
+            qinfo_t *qi = &qinfos[qcount++];
+            memset(qi, 0, sizeof(*qi));
+            cJSON *params = cJSON_GetObjectItem(entry, "params");
+            cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
+            qi->text = (text && text->valuestring) ? strdup(text->valuestring) : strdup("?");
+            cJSON *ts = cJSON_GetObjectItem(entry, "ts");
+            qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+            qi->react_loop = loop;
+        } else if (tool && strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0) {
+            /* Count steps per query */
+            for (int i = qcount - 1; i >= 0; i--) {
+                if (qinfos[i].react_loop == loop) {
+                    qinfos[i].step_count++;
+                    cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
+                    if (failed_j && cJSON_IsTrue(failed_j))
+                        qinfos[i].failed_count++;
 
+                    /* Capture done result */
+                    if (strcmp(tool, "done") == 0) {
+                        cJSON *params = cJSON_GetObjectItem(entry, "params");
+                        cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
+                        if (res && res->valuestring) {
+                            free(qinfos[i].result);
+                            qinfos[i].result = strndup(res->valuestring, 500);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         cJSON_Delete(entry);
     }
     fclose(f);
 
-    /* Load steps for each query */
-    for (int i = 0; i < ui->query_count; i++) {
-        ui_state_load_manifest(ui, i);
+    /* Ensure link_states array is big enough */
+    if (qcount > ui->link_states_cap) {
+        ui->link_states_cap = qcount + 16;
+        ui->link_states = realloc(ui->link_states,
+                                   ui->link_states_cap * sizeof(link_state_t));
     }
+    /* Initialize new link states to COLLAPSED */
+    for (int i = ui->link_states_count; i < qcount; i++)
+        ui->link_states[i] = LINK_COLLAPSED;
+    ui->link_states_count = qcount;
 
-    ui->dirty = 1;
-}
+    /* Generate MD with session history */
+    str_append_cstr(&md, "## Session History\n\n");
 
-/* ── Load manifest steps for a specific query ──────────── */
+    for (int i = 0; i < qcount; i++) {
+        qinfo_t *qi = &qinfos[i];
+        link_state_t ls = (i < ui->link_states_count) ?
+                          ui->link_states[i] : LINK_COLLAPSED;
 
-void ui_state_load_manifest(ui_state_t *ui, int query_idx) {
-    if (!ui || query_idx < 0 || query_idx >= ui->query_count) return;
-    ui_query_t *q = &ui->queries[query_idx];
-
-    /* Free existing steps */
-    for (int j = 0; j < q->step_count; j++) {
-        free(q->steps[j].ref);
-        free(q->steps[j].tool);
-        free(q->steps[j].description);
-    }
-    free(q->steps);
-    q->steps = NULL;
-    q->step_count = 0;
-    q->step_cap = 0;
-
-    /* Read journal and collect steps for this react_loop */
-    /* Read journal.jsonl for this session */
-    char jpath[4096];
-    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
-    FILE *f = fopen(jpath, "r");
-    if (!f) return;
-
-    char line[65536];
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-
-        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
-        const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
-        int step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
-
-        if (loop == q->react_loop && tool &&
-            strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0) {
-
-            /* Extract key parameter for display */
-            cJSON *params = cJSON_GetObjectItem(entry, "params");
-            const char *desc = "";
-            static char desc_buf[512];  /* static buffer for combined descriptions */
-            if (params) {
-                cJSON *cmd = cJSON_GetObjectItem(params, "command");
-                cJSON *path = cJSON_GetObjectItem(params, "path");
-                cJSON *pat = cJSON_GetObjectItem(params, "pattern");
-                cJSON *qry = cJSON_GetObjectItem(params, "query");
-                cJSON *res = cJSON_GetObjectItem(params, "result");
-                /* grep_search: show pattern (and path if present) */
-                if (strcmp(tool, "grep_search") == 0 && pat && pat->valuestring) {
-                    if (path && path->valuestring)
-                        snprintf(desc_buf, sizeof(desc_buf), "/%s/ in %s",
-                                 pat->valuestring, path->valuestring);
-                    else
-                        snprintf(desc_buf, sizeof(desc_buf), "/%s/",
-                                 pat->valuestring);
-                    desc = desc_buf;
-                }
-                else if (cmd && cmd->valuestring) desc = cmd->valuestring;
-                else if (path && path->valuestring) desc = path->valuestring;
-                else if (pat && pat->valuestring) desc = pat->valuestring;
-                else if (qry && qry->valuestring) desc = qry->valuestring;
-                else if (res && res->valuestring) desc = res->valuestring;
-            }
-
-            const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
-            int sz = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
-            cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-            int failed = (failed_j && cJSON_IsTrue(failed_j));
-
-            /* Add step */
-            if (q->step_count >= q->step_cap) {
-                q->step_cap = q->step_cap ? q->step_cap * 2 : 32;
-                q->steps = realloc(q->steps, q->step_cap * sizeof(ui_step_t));
-            }
-            ui_step_t *s = &q->steps[q->step_count++];
-            memset(s, 0, sizeof(*s));
-            s->ref = ref ? strdup(ref) : NULL;
-            s->tool = tool ? strdup(tool) : NULL;
-            s->description = strdup(desc);
-            s->failed = failed;
-            s->size = sz;
-            s->step = step;
+        /* Format timestamp */
+        char ts_buf[32] = "";
+        if (qi->ts > 0) {
+            time_t t = (time_t)qi->ts;
+            struct tm *tm = localtime(&t);
+            if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
         }
 
-        cJSON_Delete(entry);
-    }
-    fclose(f);
+        /* Query as hyperlink */
+        char prefix = (ls == LINK_COLLAPSED) ? '>' : 'v';
+        str_appendf(&md, "[%c %s  %s](file://session/R%d)\n",
+                    prefix, ts_buf, qi->text, qi->react_loop);
 
-    q->failed_count = 0;
-    for (int j = 0; j < q->step_count; j++) {
-        if (q->steps[j].failed) q->failed_count++;
-    }
-}
+        /* Expanded content based on link state */
+        if (ls == LINK_SHOW_RESULT && qi->result) {
+            str_appendf(&md, "\n> %.400s\n\n", qi->result);
+        } else if (ls == LINK_SHOW_STEPS) {
+            /* Show result if available */
+            if (qi->result)
+                str_appendf(&md, "\n> %.200s\n\n", qi->result);
 
-/* ── Load bottom pane content based on selection ───────── */
+            /* Read journal again for this query's steps */
+            FILE *f2 = fopen(jpath, "r");
+            if (f2) {
+                char line2[65536];
+                while (fgets(line2, sizeof(line2), f2)) {
+                    cJSON *e = cJSON_Parse(line2);
+                    if (!e) continue;
+                    int loop = (int)cJSON_GetNumberValue(
+                        cJSON_GetObjectItem(e, "react_loop"));
+                    const char *t = cJSON_GetStringValue(
+                        cJSON_GetObjectItem(e, "tool"));
+                    if (loop == qi->react_loop && t &&
+                        strcmp(t, "system") != 0 && strcmp(t, "query") != 0) {
 
-void ui_state_load_bottom_content(ui_state_t *ui) {
-    if (!ui) return;
+                        const char *ref = cJSON_GetStringValue(
+                            cJSON_GetObjectItem(e, "ref"));
+                        int sz = (int)cJSON_GetNumberValue(
+                            cJSON_GetObjectItem(e, "size"));
+                        cJSON *failed_j = cJSON_GetObjectItem(e, "failed");
+                        int failed = (failed_j && cJSON_IsTrue(failed_j));
 
-    free(ui->bottom_content);
-    ui->bottom_content = NULL;
-    ui->bottom_lines = 0;
-    ui->bottom_scroll = 0;
+                        /* Extract key param */
+                        cJSON *params = cJSON_GetObjectItem(e, "params");
+                        const char *desc = "";
+                        if (params) {
+                            cJSON *cmd = cJSON_GetObjectItem(params, "command");
+                            cJSON *path = cJSON_GetObjectItem(params, "path");
+                            cJSON *pat = cJSON_GetObjectItem(params, "pattern");
+                            cJSON *qry = cJSON_GetObjectItem(params, "query");
+                            cJSON *res = cJSON_GetObjectItem(params, "result");
+                            if (strcmp(t, "grep_search") == 0 && pat && pat->valuestring)
+                                desc = pat->valuestring;
+                            else if (cmd && cmd->valuestring) desc = cmd->valuestring;
+                            else if (path && path->valuestring) desc = path->valuestring;
+                            else if (pat && pat->valuestring) desc = pat->valuestring;
+                            else if (qry && qry->valuestring) desc = qry->valuestring;
+                            else if (res && res->valuestring) desc = res->valuestring;
+                        }
 
-    if (ui->query_count == 0 || ui->selected_query < 0) return;
-    ui_query_t *q = &ui->queries[ui->selected_query];
-
-    if (ui->selected_step >= 0 && ui->selected_step < q->step_count) {
-        /* Step selected — show actual file content from store */
-        ui_step_t *s = &q->steps[ui->selected_step];
-        if (s->ref) {
-            char path[4096];
-            snprintf(path, sizeof(path), "%s/%s", ui->session_dir, s->ref);
-            FILE *f = fopen(path, "r");
-            if (f) {
-                fseek(f, 0, SEEK_END);
-                long sz = ftell(f);
-                if (sz > 32768) sz = 32768;  /* cap at 32K */
-                fseek(f, 0, SEEK_SET);
-                ui->bottom_content = malloc((size_t)sz + 1);
-                if (ui->bottom_content) {
-                    size_t n = fread(ui->bottom_content, 1, (size_t)sz, f);
-                    ui->bottom_content[n] = '\0';
-                    /* Count lines */
-                    ui->bottom_lines = 0;
-                    for (size_t i = 0; i < n; i++)
-                        if (ui->bottom_content[i] == '\n') ui->bottom_lines++;
-                    if (n > 0 && ui->bottom_content[n-1] != '\n') ui->bottom_lines++;
+                        str_appendf(&md, "  %s %s: %s \"%.60s\"",
+                                    failed ? "x" : "+",
+                                    ref ? ref : "?",
+                                    t, desc);
+                        if (!failed && sz > 0)
+                            str_appendf(&md, " -> %d chars", sz);
+                        str_append_cstr(&md, "\n");
+                    }
+                    cJSON_Delete(e);
                 }
-                fclose(f);
+                fclose(f2);
             }
+            str_append_cstr(&md, "\n");
         }
-    } else if (ui->selected_step < 0 && q->expanded && q->step_count > 0) {
-        /* Query selected with steps — show summary in bottom */
-        str_t s = str_new(1024);
-        str_appendf(&s, "Query: %s\n", q->query_text ? q->query_text : "");
-        str_appendf(&s, "Steps: %d | Failed: %d\n", q->step_count, q->failed_count);
-        if (q->result_preview)
-            str_appendf(&s, "Result: %s\n", q->result_preview);
-        ui->bottom_content = str_steal(&s);
-        ui->bottom_lines = 3;
     }
 
-    ui->dirty = 1;
-}
-
-/* ── Load detail for a step ────────────────────────────── */
-
-void ui_state_load_detail(ui_state_t *ui, int step_idx) {
-    /* Now handled by ui_state_load_bottom_content */
-    (void)ui; (void)step_idx;
-}
-
-/* ── Status ────────────────────────────────────────────── */
-
-void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
-    if (!ui) return;
-    ui->status = status;
-    free(ui->status_text);
-    ui->status_text = text ? strdup(text) : NULL;
-    ui->dirty = 1;
-}
-
-/* ── Add query ─────────────────────────────────────────── */
-
-void ui_state_add_query(ui_state_t *ui, const char *query_text) {
-    if (!ui || !query_text) return;
-    if (ui->query_count >= ui->query_cap) {
-        ui->query_cap = ui->query_cap ? ui->query_cap * 2 : 16;
-        ui->queries = realloc(ui->queries, ui->query_cap * sizeof(ui_query_t));
+    /* Streaming tokens (during inference) */
+    if (ui->status == STATUS_RUNNING && ui->stream_tokens && ui->stream_len > 0) {
+        str_append_cstr(&md, "\n---\n\n");
+        str_appendf(&md, "**Step %d/%d** — thinking...\n\n",
+                    ui->current_step, ui->max_steps);
+        str_append_cstr(&md, "```\n");
+        str_append(&md, ui->stream_tokens, ui->stream_len);
+        str_append_cstr(&md, "\n```\n");
     }
-    ui_query_t *q = &ui->queries[ui->query_count++];
-    memset(q, 0, sizeof(*q));
-    q->query_text = strdup(query_text);
-    struct timespec tp;
-    clock_gettime(CLOCK_REALTIME, &tp);
-    q->timestamp = (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
-    q->react_loop = ui->query_count - 1;
-    q->expanded = 1;  /* Auto-expand the current query */
-    ui->selected_query = ui->query_count - 1;
-    ui->selected_step = -1;
+
+    /* Free query infos */
+    for (int i = 0; i < qcount; i++) {
+        free(qinfos[i].text);
+        free(qinfos[i].result);
+    }
+    free(qinfos);
+
+done:;
+    char *md_source = str_steal(&md);
+
+    /* Parse into MD document */
+    md_doc_free(ui->doc);
+    ui->doc = md_parse(md_source);
+    free(md_source);
+
+    /* Clamp cursor */
+    if (ui->doc && ui->cursor_link >= ui->doc->link_count)
+        ui->cursor_link = ui->doc->link_count > 0 ? ui->doc->link_count - 1 : 0;
+
     ui->dirty = 1;
 }
 
-/* ── Set banner ────────────────────────────────────────── */
+/* ── Navigation ──────────────────────────────────────── */
 
-void ui_state_set_banner(ui_state_t *ui, const char *banner) {
+void ui_state_tab(ui_state_t *ui) {
     if (!ui) return;
-    free(ui->banner);
-    ui->banner = banner ? strdup(banner) : NULL;
+    ui->focus = (ui->focus == FOCUS_JOURNAL) ? FOCUS_QUERY : FOCUS_JOURNAL;
     ui->dirty = 1;
 }
 
-/* ── React event handler ───────────────────────────────── */
+void ui_state_up(ui_state_t *ui) {
+    if (!ui) return;
+    if (ui->focus == FOCUS_JOURNAL && ui->doc) {
+        if (ui->cursor_link > 0) {
+            ui->cursor_link--;
+            /* Auto-scroll to keep cursor visible */
+            int link_line = md_link_line(ui->doc, ui->cursor_link);
+            if (link_line < ui->scroll_y)
+                ui->scroll_y = link_line;
+        }
+    }
+    ui->dirty = 1;
+}
+
+void ui_state_down(ui_state_t *ui) {
+    if (!ui) return;
+    if (ui->focus == FOCUS_JOURNAL && ui->doc) {
+        if (ui->cursor_link < ui->doc->link_count - 1) {
+            ui->cursor_link++;
+            /* Auto-scroll handled by renderer */
+        }
+    }
+    ui->dirty = 1;
+}
+
+void ui_state_enter(ui_state_t *ui) {
+    if (!ui) return;
+    if (ui->focus != FOCUS_JOURNAL) return;
+    if (!ui->doc || ui->doc->link_count == 0) return;
+
+    int idx = ui->cursor_link;
+    if (idx < 0 || idx >= ui->link_states_count) return;
+
+    /* Cycle: COLLAPSED -> SHOW_RESULT -> SHOW_STEPS -> COLLAPSED */
+    switch (ui->link_states[idx]) {
+        case LINK_COLLAPSED:   ui->link_states[idx] = LINK_SHOW_RESULT; break;
+        case LINK_SHOW_RESULT: ui->link_states[idx] = LINK_SHOW_STEPS;  break;
+        case LINK_SHOW_STEPS:  ui->link_states[idx] = LINK_COLLAPSED;   break;
+    }
+
+    /* Regenerate MD to reflect new state */
+    ui_state_rebuild_md(ui);
+}
+
+void ui_state_back(ui_state_t *ui) {
+    if (!ui) return;
+    if (ui->focus == FOCUS_JOURNAL) {
+        int idx = ui->cursor_link;
+        if (idx >= 0 && idx < ui->link_states_count &&
+            ui->link_states[idx] != LINK_COLLAPSED) {
+            ui->link_states[idx] = LINK_COLLAPSED;
+            ui_state_rebuild_md(ui);
+        }
+    }
+    ui->dirty = 1;
+}
+
+void ui_state_page_up(ui_state_t *ui) {
+    if (!ui) return;
+    ui->scroll_y -= 10;
+    if (ui->scroll_y < 0) ui->scroll_y = 0;
+    ui->dirty = 1;
+}
+
+void ui_state_page_down(ui_state_t *ui) {
+    if (!ui) return;
+    ui->scroll_y += 10;
+    ui->dirty = 1;
+}
+
+/* ── Input editing ───────────────────────────────────── */
+
+void ui_state_input_char(ui_state_t *ui, int ch) {
+    if (!ui || ch < 32 || ch > 126) return;
+    if (ui->input_len >= ui->input_cap - 1) {
+        ui->input_cap *= 2;
+        ui->input_buffer = realloc(ui->input_buffer, ui->input_cap);
+    }
+    /* Insert at cursor position */
+    memmove(ui->input_buffer + ui->cursor_pos + 1,
+            ui->input_buffer + ui->cursor_pos,
+            ui->input_len - ui->cursor_pos + 1);
+    ui->input_buffer[ui->cursor_pos] = (char)ch;
+    ui->cursor_pos++;
+    ui->input_len++;
+    ui->dirty = 1;
+}
+
+void ui_state_input_backspace(ui_state_t *ui) {
+    if (!ui || ui->cursor_pos <= 0) return;
+    memmove(ui->input_buffer + ui->cursor_pos - 1,
+            ui->input_buffer + ui->cursor_pos,
+            ui->input_len - ui->cursor_pos + 1);
+    ui->cursor_pos--;
+    ui->input_len--;
+    ui->dirty = 1;
+}
+
+void ui_state_input_delete(ui_state_t *ui) {
+    if (!ui || ui->cursor_pos >= ui->input_len) return;
+    memmove(ui->input_buffer + ui->cursor_pos,
+            ui->input_buffer + ui->cursor_pos + 1,
+            ui->input_len - ui->cursor_pos);
+    ui->input_len--;
+    ui->dirty = 1;
+}
+
+void ui_state_input_left(ui_state_t *ui) {
+    if (ui && ui->cursor_pos > 0) { ui->cursor_pos--; ui->dirty = 1; }
+}
+void ui_state_input_right(ui_state_t *ui) {
+    if (ui && ui->cursor_pos < ui->input_len) { ui->cursor_pos++; ui->dirty = 1; }
+}
+void ui_state_input_home(ui_state_t *ui) {
+    if (ui) { ui->cursor_pos = 0; ui->dirty = 1; }
+}
+void ui_state_input_end(ui_state_t *ui) {
+    if (ui) { ui->cursor_pos = ui->input_len; ui->dirty = 1; }
+}
+
+/* ── React event handler ─────────────────────────────── */
 
 void ui_state_on_event(const react_event_t *ev, void *userdata) {
     ui_state_t *ui = (ui_state_t *)userdata;
@@ -476,102 +420,88 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         char buf[128];
         snprintf(buf, sizeof(buf), "Running step %d/%d...",
                  ev->step, ev->max_steps);
-        ui_state_set_status(ui, STATUS_RUNNING, buf);
+        ui->status = STATUS_RUNNING;
+        free(ui->status_text);
+        ui->status_text = strdup(buf);
         ui->current_step = ev->step;
         ui->max_steps = ev->max_steps;
         /* Clear streaming tokens for new step */
-        if (ui->stream_tokens) {
-            ui->stream_tokens[0] = '\0';
-            ui->stream_len = 0;
-        }
-        ui->dirty = 1;
+        if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
+        ui->stream_len = 0;
+        ui_state_rebuild_md(ui);
         break;
     }
-
     case REACT_EVENT_LLM_TOKEN:
-        if (ev->token && ui->stream_tokens) {
+        if (ev->token && ev->token[0]) {
             int tlen = (int)strlen(ev->token);
-            if (ui->stream_len + tlen < ui->stream_cap - 1) {
-                memcpy(ui->stream_tokens + ui->stream_len, ev->token, tlen);
-                ui->stream_len += tlen;
-                ui->stream_tokens[ui->stream_len] = '\0';
+            if (ui->stream_len + tlen >= ui->stream_cap - 1) {
+                ui->stream_cap = (ui->stream_len + tlen + 1) * 2;
+                ui->stream_tokens = realloc(ui->stream_tokens, ui->stream_cap);
             }
-            ui->dirty = 1;
+            memcpy(ui->stream_tokens + ui->stream_len, ev->token, tlen);
+            ui->stream_len += tlen;
+            ui->stream_tokens[ui->stream_len] = '\0';
+            ui_state_rebuild_md(ui);
         }
         break;
 
-    case REACT_EVENT_STEP_COMPLETE: {
-        /* Add step to the current (last) query */
-        if (ui->query_count > 0) {
-            ui_query_t *q = &ui->queries[ui->query_count - 1];
-
-            if (q->step_count >= q->step_cap) {
-                q->step_cap = q->step_cap ? q->step_cap * 2 : 32;
-                q->steps = realloc(q->steps, q->step_cap * sizeof(ui_step_t));
-            }
-            ui_step_t *s = &q->steps[q->step_count++];
-            memset(s, 0, sizeof(*s));
-            s->tool = ev->action ? strdup(ev->action) : NULL;
-            s->description = ev->description ? strdup(ev->description) : NULL;
-            s->step = ev->step;
-            s->elapsed = ev->step_elapsed;
-        }
-        /* Clear streaming tokens */
-        if (ui->stream_tokens) {
-            ui->stream_tokens[0] = '\0';
-            ui->stream_len = 0;
-        }
-        ui->dirty = 1;
-        break;
-    }
-
+    case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
-        /* Update the last step with store ref and metadata */
-        if (ui->query_count > 0) {
-            ui_query_t *q = &ui->queries[ui->query_count - 1];
-            if (q->step_count > 0) {
-                ui_step_t *s = &q->steps[q->step_count - 1];
-                if (ev->store_ref) {
-                    free(s->ref);
-                    s->ref = strdup(ev->store_ref);
-                }
-                if (ev->tool_meta) {
-                    cJSON *sz = cJSON_GetObjectItem(ev->tool_meta, "chars");
-                    if (!sz) sz = cJSON_GetObjectItem(ev->tool_meta, "size");
-                    if (sz) s->size = (int)cJSON_GetNumberValue(sz);
-                    cJSON *err = cJSON_GetObjectItem(ev->tool_meta, "error");
-                    if (err) s->failed = 1;
-                }
+        ui_state_rebuild_md(ui);
+        break;
 
-                /* Auto-load bottom content for the latest step */
-                ui->selected_step = q->step_count - 1;
-                ui_state_load_bottom_content(ui);
-            }
-        }
-        ui->dirty = 1;
+    case REACT_EVENT_DONE:
+        ui->status = STATUS_DONE;
+        free(ui->status_text);
+        ui->status_text = strdup("Done");
+        if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
+        ui->stream_len = 0;
+        ui_state_rebuild_md(ui);
         break;
 
     case REACT_EVENT_ERROR:
     case REACT_EVENT_WARNING:
-        if (ev->message) {
-            char buf[256];
-            snprintf(buf, sizeof(buf), "%s: %s",
-                     ev->type == REACT_EVENT_ERROR ? "Error" : "Warning",
-                     ev->message);
-            ui_state_set_status(ui, STATUS_ERROR, buf);
-        }
-        ui->dirty = 1;
-        break;
-
-    case REACT_EVENT_DONE:
-        ui_state_set_status(ui, STATUS_DONE, "Done");
-        /* Update result preview */
-        if (ui->query_count > 0 && ev->result) {
-            ui_query_t *q = &ui->queries[ui->query_count - 1];
-            free(q->result_preview);
-            q->result_preview = strndup(ev->result, 200);
-        }
-        ui->dirty = 1;
+        ui_state_rebuild_md(ui);
         break;
     }
+}
+
+/* ── Status & data updates ───────────────────────────── */
+
+void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
+    if (!ui) return;
+    ui->status = status;
+    free(ui->status_text);
+    ui->status_text = text ? strdup(text) : NULL;
+    ui->dirty = 1;
+}
+
+void ui_state_set_banner(ui_state_t *ui, const char *banner) {
+    if (!ui) return;
+    free(ui->banner);
+    ui->banner = banner ? strdup(banner) : NULL;
+    ui_state_rebuild_md(ui);
+}
+
+void ui_state_add_query(ui_state_t *ui, const char *query_text) {
+    (void)query_text;
+    if (!ui) return;
+    /* The query will appear in journal.jsonl after react_run processes it.
+     * We auto-expand the latest query during inference. */
+    int new_idx = ui->link_states_count;
+    if (new_idx >= ui->link_states_cap) {
+        ui->link_states_cap = (new_idx + 1) * 2;
+        ui->link_states = realloc(ui->link_states,
+                                   ui->link_states_cap * sizeof(link_state_t));
+    }
+    ui->link_states[new_idx] = LINK_SHOW_STEPS;  /* auto-expand new query */
+    ui->link_states_count = new_idx + 1;
+    ui->cursor_link = new_idx;
+    ui_state_rebuild_md(ui);
+}
+
+void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
+    if (!ui) return;
+    ui->journal = journal;
+    ui_state_rebuild_md(ui);
 }

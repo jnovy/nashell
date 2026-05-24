@@ -6,7 +6,7 @@ SRC     = src/main.c src/str.c src/arena.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
           src/config.c src/toml.c \
           src/frontend_tui.c \
-          src/ui_state.c src/tui.c \
+          src/ui_state.c src/tui.c src/md_render.c \
           src/memory.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
@@ -22,7 +22,7 @@ src/%.o: src/%.c
 # Library objects (everything except main.c for linking with tests)
 LIB_SRC = src/str.c src/arena.c src/cJSON.c src/journal.c src/store.c \
           src/llm.c src/tools.c src/react.c src/config.c src/toml.c \
-          src/frontend_tui.c src/ui_state.c src/tui.c src/memory.c
+          src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries
