@@ -118,23 +118,20 @@ char *journal_manifest(journal_t *j, int max_steps) {
         }
 
         /* Format: "    ✓ R0S1: shell_exec "ls -la" → 473 chars"
-         *         "    ✗ ?: web_search "query" — ERROR: no results" */
+         *         "    ✗ R0S3: web_search "query""
+         * Errors NOT inlined — model can file_read(ref) if it needs details. */
         char buf[512];
         cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-        cJSON *err_j = cJSON_GetObjectItem(entry, "error");
-        int failed = (failed_j && cJSON_IsTrue(failed_j)) ||
-                     (err_j && err_j->valuestring);
-        const char *err = (err_j && err_j->valuestring) ? err_j->valuestring : NULL;
+        int failed = (failed_j && cJSON_IsTrue(failed_j));
         const char *mark = failed ? "✗" : "✓";
 
         if (tool && strcmp(tool, "done") == 0) {
-            /* Show result for done actions */
             snprintf(buf, sizeof(buf), "    %s %s: → \"%.100s\"",
                      mark, ref ? ref : "?", key_param);
-        } else if (err) {
-            /* Show error — tool failed */
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.60s\" — ERROR: %.100s",
-                     mark, ref ? ref : "?", tool ? tool : "?", key_param, err);
+        } else if (failed) {
+            /* Failed — just show ✗ and ref, no inline error text */
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\"",
+                     mark, ref ? ref : "?", tool ? tool : "?", key_param);
         } else {
             snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\" → %d chars",
                      mark, ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);

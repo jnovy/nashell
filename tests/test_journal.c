@@ -170,7 +170,8 @@ static void test_failed_field(void) {
     ASSERT_NOT_NULL(manifest);
     ASSERT(strstr(manifest, "\xe2\x9c\x93") != NULL);  /* ✓ UTF-8 */
     ASSERT(strstr(manifest, "\xe2\x9c\x97") != NULL);  /* ✗ UTF-8 */
-    ASSERT(strstr(manifest, "ERROR") != NULL);
+    /* Error text NOT inlined in manifest — model looks it up via ref */
+    ASSERT(strstr(manifest, "ERROR") == NULL);
     free(manifest);
 
     journal_free(j);
