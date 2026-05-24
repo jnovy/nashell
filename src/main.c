@@ -228,6 +228,7 @@ int main(int argc, char **argv) {
 
     /* CLI flags override config */
     const char *query = NULL;
+    const char *session_dir_arg = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -237,11 +238,15 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
             free(cfg->data_dir);
             cfg->data_dir = strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc) {
+            session_dir_arg = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH]\n");
+            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR]\n");
+            printf("  --session DIR   Open existing session directory\n");
             printf("  --api URL       LLM server URL (default: %s)\n", cfg->api_base);
             printf("  -p QUERY        Run single query and exit (headless mode)\n");
             printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
+            printf("  --session DIR   Open existing session directory\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -282,7 +287,30 @@ int main(int argc, char **argv) {
 
     /* One-shot headless mode */
     if (query) {
-        char *session_dir = create_session_dir(nash_dir);
+        /* Detect existing session: --session arg, or CWD with journal.jsonl */
+        char *session_dir = NULL;
+        if (session_dir_arg) {
+            char jpath[4096];
+            snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
+            if (access(jpath, F_OK) == 0) {
+                session_dir = strdup(session_dir_arg);
+            } else {
+                fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
+            }
+        }
+        if (!session_dir) {
+            char cwd[4096];
+            if (getcwd(cwd, sizeof(cwd))) {
+                char jpath[4096];
+                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
+                if (access(jpath, F_OK) == 0) {
+                    session_dir = strdup(cwd);
+                }
+            }
+        }
+        if (!session_dir) {
+            session_dir = create_session_dir(nash_dir);
+        }
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
@@ -310,7 +338,30 @@ int main(int argc, char **argv) {
 
     /* Interactive TUI mode — ONE session for ALL queries */
     {
-        char *session_dir = create_session_dir(nash_dir);
+        /* Detect existing session: --session arg, or CWD with journal.jsonl */
+        char *session_dir = NULL;
+        if (session_dir_arg) {
+            char jpath[4096];
+            snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
+            if (access(jpath, F_OK) == 0) {
+                session_dir = strdup(session_dir_arg);
+            } else {
+                fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
+            }
+        }
+        if (!session_dir) {
+            char cwd[4096];
+            if (getcwd(cwd, sizeof(cwd))) {
+                char jpath[4096];
+                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
+                if (access(jpath, F_OK) == 0) {
+                    session_dir = strdup(cwd);
+                }
+            }
+        }
+        if (!session_dir) {
+            session_dir = create_session_dir(nash_dir);
+        }
 
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools = {
