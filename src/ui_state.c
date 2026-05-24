@@ -309,16 +309,27 @@ void ui_state_load_manifest(ui_state_t *ui, int query_idx) {
         if (loop == q->react_loop && tool &&
             strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0) {
 
-            /* Extract key parameter */
+            /* Extract key parameter for display */
             cJSON *params = cJSON_GetObjectItem(entry, "params");
             const char *desc = "";
+            static char desc_buf[512];  /* static buffer for combined descriptions */
             if (params) {
                 cJSON *cmd = cJSON_GetObjectItem(params, "command");
                 cJSON *path = cJSON_GetObjectItem(params, "path");
                 cJSON *pat = cJSON_GetObjectItem(params, "pattern");
                 cJSON *qry = cJSON_GetObjectItem(params, "query");
                 cJSON *res = cJSON_GetObjectItem(params, "result");
-                if (cmd && cmd->valuestring) desc = cmd->valuestring;
+                /* grep_search: show pattern (and path if present) */
+                if (strcmp(tool, "grep_search") == 0 && pat && pat->valuestring) {
+                    if (path && path->valuestring)
+                        snprintf(desc_buf, sizeof(desc_buf), "/%s/ in %s",
+                                 pat->valuestring, path->valuestring);
+                    else
+                        snprintf(desc_buf, sizeof(desc_buf), "/%s/",
+                                 pat->valuestring);
+                    desc = desc_buf;
+                }
+                else if (cmd && cmd->valuestring) desc = cmd->valuestring;
                 else if (path && path->valuestring) desc = path->valuestring;
                 else if (pat && pat->valuestring) desc = pat->valuestring;
                 else if (qry && qry->valuestring) desc = qry->valuestring;
