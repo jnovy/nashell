@@ -118,10 +118,17 @@ char *journal_manifest(journal_t *j, int max_steps) {
 
         /* Format: "    R0S1: shell_exec "ls -la" → 473 chars" */
         char buf[512];
+        cJSON *err_j = cJSON_GetObjectItem(entry, "error");
+        const char *err = (err_j && err_j->valuestring) ? err_j->valuestring : NULL;
+
         if (tool && strcmp(tool, "done") == 0) {
             /* Show result for done actions */
             snprintf(buf, sizeof(buf), "    %s: → \"%.100s\"",
                      ref ? ref : "?", key_param);
+        } else if (err) {
+            /* Show error — tool failed */
+            snprintf(buf, sizeof(buf), "    %s: %s \"%.60s\" ⚠ ERROR: %.120s",
+                     ref ? ref : "?", tool ? tool : "?", key_param, err);
         } else {
             snprintf(buf, sizeof(buf), "    %s: %s \"%.80s\" → %d chars",
                      ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);

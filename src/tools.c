@@ -897,7 +897,18 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     }
 
     if (result_count == 0) {
-        str_append_cstr(&results, "(no results found)\n");
+        /* No results = explicit failure — don't store useless content,
+         * record as error in journal so reflection can see it */
+        char errmsg[512];
+        snprintf(errmsg, sizeof(errmsg),
+                 "no results found for query: %s", query);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
+                       params, NULL, 0, 0, errmsg);
+
+        str_free(&results);
+        str_free(&body);
+        return make_error(errmsg);
     }
 
     /* Store results */
