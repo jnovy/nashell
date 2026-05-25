@@ -751,10 +751,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.step = step + 1;
             ev.message = warn_msg;
             emit(on_event, userdata, &ev);
+
+            /* Fix 1: Inject warning into chat so the model KNOWS it's cycling */
+            llm_chat_add(chat, "user",
+                "WARNING: You are repeating the same action. "
+                "The output is already stored — use file_read(ref) to read it. "
+                "Do NOT re-run the same command.");
         }
 
-        /* Execute tool */
-        tool_result_t tr = tool_execute(ctx->tools, action_name, action);
+        /* Fix 2: Refuse execution after 3+ consecutive identical actions */
+        tool_result_t tr;
+        if (repeated >= 3) {
+            cJSON *err_meta = cJSON_CreateObject();
+            cJSON_AddStringToObject(err_meta, "error",
+                "Refused: same action repeated 4+ times. "
+                "Read previous results with file_read(ref) instead.");
+            tr = (tool_result_t){ .meta = err_meta, .store_ref = NULL, .success = 0 };
+
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "cycling_refused", NULL, NULL,
+                           0, 0, "same action repeated 4+ times", NULL);
+        } else {
+            /* Normal execution */
+            tr = tool_execute(ctx->tools, action_name, action);
+        }
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);

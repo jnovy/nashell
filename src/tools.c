@@ -237,6 +237,17 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    /* Fix 3: Conditional preview — saves file_read steps for small outputs */
+    if (out.len > 0 && out.len < 500) {
+        /* Small output: include full content inline */
+        cJSON_AddStringToObject(meta, "preview", out.data);
+    } else if (out.len >= 500) {
+        /* Large output: first 200 chars with ... suffix */
+        char preview[256];
+        snprintf(preview, sizeof(preview), "%.200s...", out.data);
+        cJSON_AddStringToObject(meta, "preview", preview);
+    }
+
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "shell_exec", params, alias,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
 
