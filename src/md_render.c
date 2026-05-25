@@ -193,9 +193,23 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 in_code_block = !in_code_block;
                 /* Don't render the ``` markers themselves */
             } else if (in_code_block) {
-                /* Code block content: render in cyan, no formatting */
+                /* Code block content: render in cyan with line wrapping */
                 wattron(win, COLOR_PAIR(C_STREAM));
-                mvwaddnstr(win, vis_line, 2, line_buf, cols - 2);
+                int remaining = copy_len;
+                const char *wp = line_buf;
+                int first = 1;
+                while (remaining > 0) {
+                    int chunk = remaining > (cols - 2) ? (cols - 2) : remaining;
+                    if (vis_line >= 0 && vis_line < rows)
+                        mvwaddnstr(win, vis_line, first ? 2 : 4, wp, chunk);
+                    wp += chunk;
+                    remaining -= chunk;
+                    if (remaining > 0) {
+                        render_line++;
+                        vis_line = render_line - scroll_y;
+                        first = 0;
+                    }
+                }
                 wattroff(win, COLOR_PAIR(C_STREAM));
 
             } else if (line_buf[0] == '#') {

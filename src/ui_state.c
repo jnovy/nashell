@@ -314,14 +314,28 @@ void ui_state_rebuild_md(ui_state_t *ui) {
         }
     }
 
-    /* Streaming tokens (during inference) */
-    if (ui->status == STATUS_RUNNING && ui->stream_tokens && ui->stream_len > 0) {
+    /* Streaming progress (during inference) */
+    if (ui->status == STATUS_RUNNING) {
         str_append_cstr(&md, "\n---\n\n");
-        str_appendf(&md, "**Step %d/%d** — thinking...\n\n",
+        str_appendf(&md, "**Step %d/%d** -- thinking...\n",
                     ui->current_step, ui->max_steps);
-        str_append_cstr(&md, "```\n");
-        str_append(&md, ui->stream_tokens, ui->stream_len);
-        str_append_cstr(&md, "\n```\n");
+        /* Show brief preview of streaming content (first 200 chars, sanitized) */
+        if (ui->stream_tokens && ui->stream_len > 0) {
+            int plen = ui->stream_len < 200 ? ui->stream_len : 200;
+            char preview[256];
+            int j = 0;
+            for (int i = 0; i < plen && j < (int)sizeof(preview) - 4; i++) {
+                if (ui->stream_tokens[i] == '\n' || ui->stream_tokens[i] == '\r')
+                    preview[j++] = ' ';
+                else
+                    preview[j++] = ui->stream_tokens[i];
+            }
+            if (ui->stream_len > 200) {
+                preview[j++] = '.'; preview[j++] = '.'; preview[j++] = '.';
+            }
+            preview[j] = '\0';
+            str_appendf(&md, "\n`%s`\n", preview);
+        }
     }
 
     /* Free query infos */
