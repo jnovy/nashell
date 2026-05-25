@@ -169,7 +169,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                         cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
                         if (res && res->valuestring) {
                             free(qinfos[i].result);
-                            qinfos[i].result = strndup(res->valuestring, 500);
+                            qinfos[i].result = strdup(res->valuestring);
                         }
                     }
                     break;
@@ -214,7 +214,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
 
         /* Expanded content based on link state */
         if (ls == LINK_SHOW_RESULT && qi->result) {
-            str_appendf(&md, "\n> %.400s\n\n", qi->result);
+            str_appendf(&md, "\n> %s\n\n", qi->result);
         } else if (ls == LINK_SHOW_STEPS) {
             /* Read journal for this query's steps (shown BEFORE result) */
             FILE *f2 = fopen(jpath, "r");
@@ -308,7 +308,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
 
             /* Show result AFTER steps (at the bottom) */
             if (qi->result)
-                str_appendf(&md, "\n> %.400s\n\n", qi->result);
+                str_appendf(&md, "\n> %s\n\n", qi->result);
             else
                 str_append_cstr(&md, "\n");
         }
