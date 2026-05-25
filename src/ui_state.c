@@ -210,7 +210,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
         /* Query as hyperlink */
         char prefix = (ls == LINK_COLLAPSED) ? '>' : 'v';
         str_appendf(&md, "[%c %s  %s](file://session/R%d)\n",
-                    prefix, ts_buf, qi->text, qi->react_loop);
+                    prefix, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
 
         /* Expanded content based on link state */
         if (ls == LINK_SHOW_RESULT && qi->result) {
@@ -263,7 +263,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             str_appendf(&md, "[  %s %s: %s \"%.60s\"",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
-                                        t, desc);
+                                        t, sanitize_md_link(desc));
                             if (!failed && sz > 0)
                                 str_appendf(&md, " -> %d chars", sz);
                             str_appendf(&md, "](%s)\n", step_uri);
