@@ -195,9 +195,19 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
         symlink(target, link_path);  /* ignore EEXIST */
     }
 
-    /* Return a stable pointer — stored in the map node. We leak alias_buf
-     * by design since it's now owned by the map node's strdup. */
-    return alias_map_lookup(ctx->aliases, alias_buf);
+    /* Return the alias NAME (e.g., "R0S1"), not the hash value.
+     * alias_map_lookup returns the hash, but callers need the alias.
+     * Walk the bucket to find the node we just inserted. */
+    {
+        unsigned int h = alias_hash(alias_buf) % (unsigned int)ctx->aliases->capacity;
+        alias_node_t *node = ctx->aliases->buckets[h];
+        while (node) {
+            if (strcmp(node->alias, alias_buf) == 0)
+                return node->alias;  /* persistent pointer into hash map */
+            node = node->next;
+        }
+    }
+    return "R?S?";  /* shouldn't happen — we just inserted */
 }
 
 const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
