@@ -226,56 +226,46 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
             continue;
         }
 
-        /* Check if this line is within the visible window */
+        /* Compute visibility — but process ALL lines for accurate render_line counting.
+         * Only skip the actual ncurses drawing calls for off-screen lines. */
         int vis_line = render_line - scroll_y;
+        int visible = (vis_line >= 0 && vis_line < rows);
 
-        if (vis_line >= 0 && vis_line < rows) {
-            if (in_code_block) {
-                /* Code block content: render in cyan with line wrapping */
-                wattron(win, COLOR_PAIR(C_STREAM));
-                int remaining = copy_len;
-                const char *wp = line_buf;
-                int first = 1;
-                while (remaining > 0) {
-                    int chunk = remaining > (cols - 2) ? (cols - 2) : remaining;
-                    if (vis_line >= 0 && vis_line < rows)
-                        mvwaddnstr(win, vis_line, first ? 2 : 4, wp, chunk);
-                    wp += chunk;
-                    remaining -= chunk;
-                    if (remaining > 0) {
-                        render_line++;
-                        vis_line = render_line - scroll_y;
-                        first = 0;
-                    }
+        /* Track links regardless of visibility */
+        int is_link_line = (line_buf[0] == '[' && link_idx < doc->link_count &&
+                            src_line == doc->links[link_idx].doc_line);
+
+        if (in_code_block) {
+            /* Code block content: wrap at cols-2, render in cyan */
+            int usable = cols - 2;
+            if (usable < 10) usable = 10;
+            int remaining = copy_len;
+            const char *wp = line_buf;
+            int first = 1;
+            while (remaining > 0) {
+                int chunk = remaining > usable ? usable : remaining;
+                int vl = render_line - scroll_y;
+                if (vl >= 0 && vl < rows) {
+                    wattron(win, COLOR_PAIR(C_STREAM));
+                    mvwaddnstr(win, vl, first ? 2 : 4, wp, chunk);
+                    wattroff(win, COLOR_PAIR(C_STREAM));
                 }
-                wattroff(win, COLOR_PAIR(C_STREAM));
+                wp += chunk;
+                remaining -= chunk;
+                if (remaining > 0) {
+                    render_line++;
+                    first = 0;
+                }
+            }
 
-            } else if (line_buf[0] == '#') {
-                /* Heading */
-                int level = 0;
-                while (line_buf[level] == '#') level++;
-                const char *htext = line_buf + level;
-                while (*htext == ' ') htext++;
+        } else if (is_link_line) {
+            /* Hyperlink line */
+            int is_cursor = (focus && link_idx == cursor_link);
+            md_link_t *lk = &doc->links[link_idx];
+            lk->render_line = render_line;
+            link_idx++;
 
-                int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
-                wattron(win, COLOR_PAIR(pair) | A_BOLD);
-                mvwaddnstr(win, vis_line, 0, htext, cols);
-                wattroff(win, COLOR_PAIR(pair) | A_BOLD);
-
-            } else if (strncmp(line_buf, "---", 3) == 0) {
-                /* Horizontal rule */
-                wattron(win, COLOR_PAIR(C_DIM));
-                mvwhline(win, vis_line, 0, ACS_HLINE, cols);
-                wattroff(win, COLOR_PAIR(C_DIM));
-
-            } else if (line_buf[0] == '[' && link_idx < doc->link_count &&
-                       src_line == doc->links[link_idx].doc_line) {
-                /* Hyperlink line */
-                int is_cursor = (focus && link_idx == cursor_link);
-                md_link_t *lk = &doc->links[link_idx];
-                lk->render_line = render_line;
-                link_idx++;
-
+            if (visible) {
                 if (is_cursor) {
                     wattron(win, A_REVERSE | A_BOLD);
                 } else {
@@ -294,241 +284,215 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 } else {
                     wattroff(win, COLOR_PAIR(C_FOCUS));
                 }
+            }
 
-            } else if (line_buf[0] == '>' && line_buf[1] == ' ') {
-                /* Blockquote */
+        } else if (line_buf[0] == '#') {
+            /* Heading */
+            if (visible) {
+                int level = 0;
+                while (line_buf[level] == '#') level++;
+                const char *htext = line_buf + level;
+                while (*htext == ' ') htext++;
+                int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
+                wattron(win, COLOR_PAIR(pair) | A_BOLD);
+                mvwaddnstr(win, vis_line, 0, htext, cols);
+                wattroff(win, COLOR_PAIR(pair) | A_BOLD);
+            }
+
+        } else if (strncmp(line_buf, "---", 3) == 0) {
+            /* Horizontal rule */
+            if (visible) {
+                wattron(win, COLOR_PAIR(C_DIM));
+                mvwhline(win, vis_line, 0, ACS_HLINE, cols);
+                wattroff(win, COLOR_PAIR(C_DIM));
+            }
+
+        } else if (line_buf[0] == '>' && line_buf[1] == ' ') {
+            /* Blockquote */
+            if (visible) {
                 wattron(win, COLOR_PAIR(C_DIM));
                 mvwaddch(win, vis_line, 0, ACS_VLINE);
                 wattroff(win, COLOR_PAIR(C_DIM));
                 render_inline(win, vis_line, 2, line_buf + 2, cols - 2, 0);
+            }
 
-            } else if (strncmp(line_buf, "  + ", 4) == 0 ||
-                       strncmp(line_buf, "  x ", 4) == 0) {
-                /* React step line: success (+) or failure (x) */
+        } else if (strncmp(line_buf, "  + ", 4) == 0 ||
+                   strncmp(line_buf, "  x ", 4) == 0) {
+            /* React step line: success (+) or failure (x) */
+            if (visible) {
                 int is_fail = (line_buf[2] == 'x');
                 int pair = is_fail ? C_FAILED : C_SUCCESS;
                 wattron(win, COLOR_PAIR(pair));
                 mvwaddnstr(win, vis_line, 0, line_buf, cols);
                 wattroff(win, COLOR_PAIR(pair));
+            }
 
-            } else if (line_buf[0] == '|') {
-                /* Table block — render ALL consecutive | rows at once
-                 * so column widths are consistent across the entire table. */
-                #define MAX_TABLE_COLS 20
+        } else if (line_buf[0] == '|') {
+            /* Table block — render ALL consecutive | rows at once
+             * so column widths are consistent across the entire table. */
+            #define MAX_TABLE_COLS 20
 
-                /* Pass 1: scan ALL consecutive | lines to find max column widths */
-                int col_widths[MAX_TABLE_COLS] = {0};
-                int num_cols = 0;
-                int table_rows = 0;
-                {
-                    const char *scan = src;
-                    while (scan && *scan == '|') {
-                        const char *sp = scan + 1;
-                        int ci = 0;
-                        while (*sp && *sp != '\n') {
-                            if (*sp == '|') { ci++; sp++; continue; }
-                            const char *cs = sp;
-                            while (*sp && *sp != '|' && *sp != '\n') sp++;
-                            const char *ts = cs, *te = sp;
-                            while (ts < te && *ts == ' ') ts++;
-                            while (te > ts && *(te-1) == ' ') te--;
-                            int w = (int)(te - ts);
-                            int is_dash = 1;
-                            for (const char *dp = ts; dp < te; dp++)
-                                if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
-                            if (!is_dash && ci < MAX_TABLE_COLS) {
-                                if (w > col_widths[ci]) col_widths[ci] = w;
-                                if (ci + 1 > num_cols) num_cols = ci + 1;
-                            }
-                            if (*sp == '|') { ci++; sp++; }
+            /* Pass 1: scan ALL consecutive | lines to find max column widths */
+            int col_widths[MAX_TABLE_COLS] = {0};
+            int num_cols = 0;
+            int table_rows = 0;
+            {
+                const char *scan = src;
+                while (scan && *scan == '|') {
+                    const char *sp = scan + 1;
+                    int ci = 0;
+                    while (*sp && *sp != '\n') {
+                        if (*sp == '|') { ci++; sp++; continue; }
+                        const char *cs = sp;
+                        while (*sp && *sp != '|' && *sp != '\n') sp++;
+                        const char *ts = cs, *te = sp;
+                        while (ts < te && *ts == ' ') ts++;
+                        while (te > ts && *(te-1) == ' ') te--;
+                        int w = (int)(te - ts);
+                        int is_dash = 1;
+                        for (const char *dp = ts; dp < te; dp++)
+                            if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
+                        if (!is_dash && ci < MAX_TABLE_COLS) {
+                            if (w > col_widths[ci]) col_widths[ci] = w;
+                            if (ci + 1 > num_cols) num_cols = ci + 1;
                         }
-                        table_rows++;
-                        const char *nl = strchr(scan, '\n');
-                        scan = nl ? nl + 1 : NULL;
-                        if (!scan || *scan != '|') break;
+                        if (*sp == '|') { ci++; sp++; }
                     }
+                    table_rows++;
+                    const char *nl = strchr(scan, '\n');
+                    scan = nl ? nl + 1 : NULL;
+                    if (!scan || *scan != '|') break;
                 }
+            }
 
-                /* Pass 2: render ALL table rows with consistent col_widths.
-                 * Tables use horizontal scroll (scroll_x) instead of wrapping. */
-                int tbl_sx = scroll_x;
-                const char *trow = src;
-                for (int tr = 0; tr < table_rows && trow; tr++) {
-                    const char *trow_eol = strchr(trow, '\n');
-                    int trow_len = trow_eol ? (int)(trow_eol - trow) : (int)strlen(trow);
-                    char tbuf[4096];
-                    int tcopy = trow_len < (int)sizeof(tbuf)-1 ? trow_len : (int)sizeof(tbuf)-1;
-                    memcpy(tbuf, trow, tcopy);
-                    tbuf[tcopy] = '\0';
+            /* Pass 2: render ALL table rows with consistent col_widths.
+             * Tables use horizontal scroll (scroll_x) instead of wrapping. */
+            int tbl_sx = scroll_x;
+            const char *trow = src;
+            for (int tr = 0; tr < table_rows && trow; tr++) {
+                const char *trow_eol = strchr(trow, '\n');
+                int trow_len = trow_eol ? (int)(trow_eol - trow) : (int)strlen(trow);
+                char tbuf[4096];
+                int tcopy = trow_len < (int)sizeof(tbuf)-1 ? trow_len : (int)sizeof(tbuf)-1;
+                memcpy(tbuf, trow, tcopy);
+                tbuf[tcopy] = '\0';
 
-                    vis_line = render_line - scroll_y;
+                vis_line = render_line - scroll_y;
+                visible = (vis_line >= 0 && vis_line < rows);
 
-                    if (vis_line >= 0 && vis_line < rows) {
-                        /* Check if separator */
-                        int is_sep = 1;
-                        for (const char *sp = tbuf + 1; *sp; sp++)
-                            if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
-                                { is_sep = 0; break; }
+                if (visible) {
+                    /* Check if separator */
+                    int is_sep = 1;
+                    for (const char *sp = tbuf + 1; *sp; sp++)
+                        if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
+                            { is_sep = 0; break; }
 
-                        if (is_sep) {
-                            int x = -tbl_sx;
-                            wattron(win, COLOR_PAIR(C_DIM));
-                            for (int ci = 0; ci < num_cols; ci++) {
-                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
-                                x++;
-                                int w = col_widths[ci] + 2;
-                                for (int k = 0; k < w; k++) {
-                                    if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
-                                    x++;
-                                }
-                            }
+                    if (is_sep) {
+                        int x = -tbl_sx;
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        for (int ci = 0; ci < num_cols; ci++) {
                             if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
-                            wattroff(win, COLOR_PAIR(C_DIM));
-                        } else {
-                            /* Check if header (next row is separator) */
-                            int is_header = 0;
-                            const char *nxt = trow_eol ? trow_eol + 1 : NULL;
-                            if (nxt && *nxt == '|') {
-                                int ns = 1;
-                                for (const char *np = nxt+1; *np && *np != '\n'; np++)
-                                    if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
-                                        { ns = 0; break; }
-                                if (ns) is_header = 1;
+                            x++;
+                            int w = col_widths[ci] + 2;
+                            for (int k = 0; k < w; k++) {
+                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
+                                x++;
                             }
+                        }
+                        if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                        wattroff(win, COLOR_PAIR(C_DIM));
+                    } else {
+                        /* Check if header (next row is separator) */
+                        int is_header = 0;
+                        const char *nxt = trow_eol ? trow_eol + 1 : NULL;
+                        if (nxt && *nxt == '|') {
+                            int ns = 1;
+                            for (const char *np = nxt+1; *np && *np != '\n'; np++)
+                                if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
+                                    { ns = 0; break; }
+                            if (ns) is_header = 1;
+                        }
 
-                            int x = -tbl_sx;
-                            const char *cp = tbuf + 1;
-                            int ci = 0;
-                            while (*cp && *cp != '\n') {
-                                if (*cp == '|') { cp++; ci++; continue; }
-                                if (x >= 0 && x < cols) {
-                                    wattron(win, COLOR_PAIR(C_DIM));
-                                    mvwaddch(win, vis_line, x, ACS_VLINE);
-                                    wattroff(win, COLOR_PAIR(C_DIM));
-                                }
-                                x++;
-                                const char *cs = cp;
-                                while (*cp && *cp != '|' && *cp != '\n') cp++;
-                                const char *ts = cs, *te = cp;
-                                while (ts < te && *ts == ' ') ts++;
-                                while (te > ts && *(te-1) == ' ') te--;
-                                int tlen = (int)(te - ts);
-                                int pw = (ci < num_cols) ? col_widths[ci] : tlen;
-                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
-                                x++;
-                                if (is_header) wattron(win, A_BOLD);
-                                if (tlen > 0) {
-                                    /* Render cell text, clipping to visible region */
-                                    for (int ti = 0; ti < tlen; ti++) {
-                                        if (x >= 0 && x < cols)
-                                            mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
-                                        x++;
-                                    }
-                                }
-                                if (is_header) wattroff(win, A_BOLD);
-                                int tx = x + (pw - tlen) + 1;
-                                while (x < tx) {
-                                    if (x >= 0 && x < cols)
-                                        mvwaddch(win, vis_line, x, ' ');
-                                    x++;
-                                }
-                                if (*cp == '|') { ci++; cp++; }
-                            }
+                        int x = -tbl_sx;
+                        const char *cp = tbuf + 1;
+                        int ci = 0;
+                        while (*cp && *cp != '\n') {
+                            if (*cp == '|') { cp++; ci++; continue; }
                             if (x >= 0 && x < cols) {
                                 wattron(win, COLOR_PAIR(C_DIM));
                                 mvwaddch(win, vis_line, x, ACS_VLINE);
                                 wattroff(win, COLOR_PAIR(C_DIM));
                             }
-                        }
-                    }
-
-                    /* Advance to next table row */
-                    if (tr < table_rows - 1) {
-                        render_line++;
-                        src_line++;
-                        trow = trow_eol ? trow_eol + 1 : NULL;
-                    } else {
-                        /* Last row — let the main loop advance normally */
-                        /* Update src/eol to point to the last table row */
-                        src = trow;
-                        eol = trow_eol;
-                    }
-                }
-
-            } else {
-                /* Regular text — wrap to terminal width.
-                 * Use mvwaddnstr (byte-accurate) for ALL paths to avoid
-                 * render_inline's display-columns vs source-bytes mismatch. */
-                int tlen = copy_len;
-                if (tlen <= cols) {
-                    mvwaddnstr(win, vis_line, 0, line_buf, cols);
-                } else {
-                    /* Word-wrap: render in chunks of cols width.
-                     * All chunks use mvwaddnstr (byte-accurate) to avoid
-                     * the display-columns vs source-bytes mismatch that
-                     * render_inline causes with formatting markers. */
-                    const char *wp = line_buf;
-                    int remaining = tlen;
-                    while (remaining > 0) {
-                        int chunk = remaining > cols ? cols : remaining;
-                        /* Word-wrap: if we're splitting, find the last space
-                         * within the chunk to break at a word boundary. */
-                        if (chunk < remaining) {
-                            int last_space = -1;
-                            for (int k = chunk - 1; k > cols / 4; k--) {
-                                if (wp[k] == ' ') { last_space = k; break; }
+                            x++;
+                            const char *cs = cp;
+                            while (*cp && *cp != '|' && *cp != '\n') cp++;
+                            const char *ts = cs, *te = cp;
+                            while (ts < te && *ts == ' ') ts++;
+                            while (te > ts && *(te-1) == ' ') te--;
+                            int tlen = (int)(te - ts);
+                            int pw = (ci < num_cols) ? col_widths[ci] : tlen;
+                            if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
+                            x++;
+                            if (is_header) wattron(win, A_BOLD);
+                            if (tlen > 0) {
+                                for (int ti = 0; ti < tlen; ti++) {
+                                    if (x >= 0 && x < cols)
+                                        mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
+                                    x++;
+                                }
                             }
-                            if (last_space > 0) chunk = last_space + 1;
+                            if (is_header) wattroff(win, A_BOLD);
+                            int tx = x + (pw - tlen) + 1;
+                            while (x < tx) {
+                                if (x >= 0 && x < cols)
+                                    mvwaddch(win, vis_line, x, ' ');
+                                x++;
+                            }
+                            if (*cp == '|') { ci++; cp++; }
                         }
-                        int vl = render_line - scroll_y;
-                        if (vl >= 0 && vl < rows)
-                            mvwaddnstr(win, vl, 0, wp, chunk);
-                        wp += chunk;
-                        remaining -= chunk;
-                        if (remaining > 0)
-                            render_line++;
+                        if (x >= 0 && x < cols) {
+                            wattron(win, COLOR_PAIR(C_DIM));
+                            mvwaddch(win, vis_line, x, ACS_VLINE);
+                            wattroff(win, COLOR_PAIR(C_DIM));
+                        }
                     }
+                }
+
+                /* Advance to next table row */
+                if (tr < table_rows - 1) {
+                    render_line++;
+                    src_line++;
+                    trow = trow_eol ? trow_eol + 1 : NULL;
+                } else {
+                    /* Last row — let the main loop advance normally */
+                    src = trow;
+                    eol = trow_eol;
                 }
             }
 
-        /* --- Lines OUTSIDE visible window still need wrapping for line count --- */
         } else {
-            /* Off-screen: count wrapped lines so render_line stays accurate.
-             * Must simulate the SAME wrapping as on-screen rendering,
-             * otherwise render_line drifts and cursor highlights wrong line. */
+            /* Regular text — wrap to terminal width.
+             * Use mvwaddnstr (byte-accurate) for ALL paths. */
             int tlen = copy_len;
-            if (line_buf[0] == '|') {
-                /* Tables: no wrapping, 1 line per row (handled by table block) */
-            } else if (in_code_block) {
-                /* Code blocks wrap at cols-2 (indented by 2) */
-                int usable = cols - 2;
-                if (usable < 10) usable = 10;
-                if (tlen > usable) {
-                    int orem = tlen;
-                    while (orem > usable) {
-                        orem -= usable;
-                        render_line++;
-                    }
-                }
-            } else if (tlen > cols) {
-                /* Regular text: word-boundary wrapping at cols */
-                const char *owp = line_buf;
-                int orem = tlen;
-                while (orem > cols) {
-                    int chunk = cols;
+            const char *wp = line_buf;
+            int remaining = tlen;
+            while (remaining > 0) {
+                int chunk = remaining > cols ? cols : remaining;
+                /* Word-wrap: find last space within chunk */
+                if (chunk < remaining) {
+                    int last_space = -1;
                     for (int k = chunk - 1; k > cols / 4; k--) {
-                        if (owp[k] == ' ') { chunk = k + 1; break; }
+                        if (wp[k] == ' ') { last_space = k; break; }
                     }
-                    owp += chunk;
-                    orem -= chunk;
-                    render_line++;
+                    if (last_space > 0) chunk = last_space + 1;
                 }
-            }
-            /* Off-screen: still need to count links */
-            if (line_buf[0] == '[' && link_idx < doc->link_count &&
-                src_line == doc->links[link_idx].doc_line) {
-                doc->links[link_idx].render_line = render_line;
-                link_idx++;
+                int vl = render_line - scroll_y;
+                if (vl >= 0 && vl < rows)
+                    mvwaddnstr(win, vl, 0, wp, chunk);
+                wp += chunk;
+                remaining -= chunk;
+                if (remaining > 0)
+                    render_line++;
             }
         }
 
