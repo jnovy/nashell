@@ -79,6 +79,10 @@ void ui_state_free(ui_state_t *ui) {
     if (!ui) return;
     md_doc_free(ui->doc);
     free(ui->link_states);
+    /* Free expanded step URIs */
+    for (int i = 0; i < ui->expanded_count; i++)
+        free(ui->expanded_uris[i]);
+    free(ui->expanded_uris);
     free(ui->banner);
     free(ui->session_dir);
     free(ui->status_text);
@@ -264,19 +268,15 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 str_appendf(&md, " -> %d chars", sz);
                             str_appendf(&md, "](%s)\n", step_uri);
 
-                            /* If this step link is in SHOW_CONTENT state, insert content */
-                            int step_link_state = LINK_COLLAPSED;
-                            if (ui->doc) {
-                                for (int li = 0; li < ui->doc->link_count; li++) {
-                                    if (ui->doc->links[li].uri &&
-                                        strcmp(ui->doc->links[li].uri, step_uri) == 0 &&
-                                        li < ui->link_states_count) {
-                                        step_link_state = ui->link_states[li];
-                                        break;
-                                    }
+                            /* Check if this step is expanded (URI-based lookup) */
+                            int is_expanded = 0;
+                            for (int ei = 0; ei < ui->expanded_count; ei++) {
+                                if (strcmp(ui->expanded_uris[ei], step_uri) == 0) {
+                                    is_expanded = 1;
+                                    break;
                                 }
                             }
-                            if (step_link_state == LINK_SHOW_CONTENT && ref) {
+                            if (is_expanded && ref) {
                                 /* Read content from store */
                                 char rpath[4096];
                                 snprintf(rpath, sizeof(rpath), "%s/%s",
@@ -410,12 +410,29 @@ void ui_state_enter(ui_state_t *ui) {
     const char *uri = (idx < ui->doc->link_count) ? ui->doc->links[idx].uri : NULL;
     int is_step_link = (uri && strstr(uri, "/S") != NULL);
 
-    if (is_step_link) {
-        /* Step link: toggle COLLAPSED <-> SHOW_CONTENT */
-        if (ui->link_states[idx] == LINK_SHOW_CONTENT)
-            ui->link_states[idx] = LINK_COLLAPSED;
-        else
-            ui->link_states[idx] = LINK_SHOW_CONTENT;
+    if (is_step_link && uri) {
+        /* Step link: toggle expansion via URI-based tracking.
+         * We can't rely on link_states[idx] because indices change
+         * when the MD is regenerated (content insertion shifts links). */
+        int found = 0;
+        for (int i = 0; i < ui->expanded_count; i++) {
+            if (strcmp(ui->expanded_uris[i], uri) == 0) {
+                /* Already expanded — collapse: remove from list */
+                free(ui->expanded_uris[i]);
+                ui->expanded_uris[i] = ui->expanded_uris[--ui->expanded_count];
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            /* Not expanded — expand: add URI to list */
+            if (ui->expanded_count >= ui->expanded_cap) {
+                ui->expanded_cap = ui->expanded_cap ? ui->expanded_cap * 2 : 16;
+                ui->expanded_uris = realloc(ui->expanded_uris,
+                                             ui->expanded_cap * sizeof(char *));
+            }
+            ui->expanded_uris[ui->expanded_count++] = strdup(uri);
+        }
     } else {
         /* Query link: cycle COLLAPSED -> SHOW_RESULT -> SHOW_STEPS -> COLLAPSED */
         switch (ui->link_states[idx]) {

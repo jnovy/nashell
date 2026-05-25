@@ -42,6 +42,11 @@ typedef struct {
     int            link_states_count;
     int            link_states_cap;
 
+    /* Step content expansion — tracked by URI, not link index */
+    char         **expanded_uris;     /* URIs of steps in SHOW_CONTENT state */
+    int            expanded_count;
+    int            expanded_cap;
+
     /* ── Source data for MD generation ── */
     char          *banner;           /* ASCII art + server info */
     char          *session_dir;
