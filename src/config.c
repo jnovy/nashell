@@ -65,11 +65,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->thinking.probe_tokens == 0)     cfg->thinking.probe_tokens = 30;
     if (cfg->thinking.probe_n_probs == 0)    cfg->thinking.probe_n_probs = 10;
     if (cfg->thinking.probe_temperature == 0) cfg->thinking.probe_temperature = 0.6f;
-    /* tau_rho uses -999 as TOML sentinel (see config_load).
-     * 0 is a valid user value from calloc when no config exists.
-     * Check for sentinel first, then calloc-zero. */
-    if (cfg->thinking.tau_rho == -999.0f)     cfg->thinking.tau_rho = -0.1f; /* sentinel → default */
-    else if (cfg->thinking.tau_rho == 0)      cfg->thinking.tau_rho = -0.1f; /* calloc zero → default */
+    if (cfg->thinking.tau_rho == 0)          cfg->thinking.tau_rho = -0.1f;
     if (cfg->thinking.tau_vnr == 0)          cfg->thinking.tau_vnr = 1.5f;
     if (cfg->thinking.tau_h == 0)            cfg->thinking.tau_h = 4.0f;
     if (cfg->thinking.budget == 0)           cfg->thinking.budget = -1; /* -1 = unrestricted */
@@ -171,7 +167,7 @@ config_t *config_load(const char *path) {
         cfg->thinking.probe_tokens     = toml_int(thinking, "probe_tokens", 0);
         cfg->thinking.probe_n_probs    = toml_int(thinking, "probe_n_probs", 0);
         cfg->thinking.probe_temperature = (float)toml_dbl(thinking, "probe_temperature", 0);
-        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", -999);
+        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", 0);
         cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", 0);
         cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", 0);
         cfg->thinking.budget           = toml_int(thinking, "budget", -1);
