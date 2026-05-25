@@ -159,8 +159,8 @@ static void render_inline(WINDOW *win, int row, int col, const char *text,
 
 /* ── Main render function ── */
 
-int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
-              int focus, int scroll_x) {
+int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
+              int cursor_link, int focus) {
     if (!win || !doc || !doc->source) return 0;
 
     int rows = getmaxy(win);
