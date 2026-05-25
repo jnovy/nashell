@@ -173,12 +173,29 @@ void tui_render(ui_state_t *ui) {
     }
 
     resize_panes();
+
+    /* Clear stdscr to prevent stale background content showing through */
+    werase(stdscr);
+    wnoutrefresh(stdscr);
+
+    /* Render both panes (each does werase + draw + wnoutrefresh) */
     render_main(ui);
     render_bottom(ui);
+
+    /* Force ncurses to redraw every character (not just changes).
+     * This implements true double-buffering: the entire screen is
+     * recomposed from scratch on every render cycle. */
+    touchwin(win_main);
+    touchwin(win_bottom);
+    wnoutrefresh(win_main);
+    wnoutrefresh(win_bottom);
 
     /* Set cursor visibility based on focus */
     curs_set(ui->focus == FOCUS_QUERY ? 1 : 0);
 
+    /* Single doupdate() flushes ALL window changes to terminal at once.
+     * This is ncurses' built-in double-buffer: all changes are computed
+     * in memory, then written to the terminal in one batch. */
     doupdate();
     ui->dirty = 0;
 
