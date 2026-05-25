@@ -2,7 +2,7 @@ CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
 LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm
 
-SRC     = src/main.c src/str.c src/arena.c src/cJSON.c \
+SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
           src/config.c src/toml.c \
           src/frontend_tui.c \
@@ -25,7 +25,7 @@ src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Library objects (everything except main.c for linking with tests)
-LIB_SRC = src/str.c src/arena.c src/cJSON.c src/journal.c src/store.c \
+LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/llm.c src/tools.c src/react.c src/config.c src/toml.c \
           src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
