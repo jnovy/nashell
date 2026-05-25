@@ -456,14 +456,17 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 }
 
             } else {
-                /* Regular text with inline formatting — wrap to terminal width */
+                /* Regular text — wrap to terminal width.
+                 * Use mvwaddnstr (byte-accurate) for ALL paths to avoid
+                 * render_inline's display-columns vs source-bytes mismatch. */
                 int tlen = copy_len;
                 if (tlen <= cols) {
-                    render_inline(win, vis_line, 0, line_buf, cols, 0);
+                    mvwaddnstr(win, vis_line, 0, line_buf, cols);
                 } else {
                     /* Word-wrap: render in chunks of cols width.
-                     * First chunk uses render_inline (formatting), continuation
-                     * lines use mvwaddnstr (plain) to avoid splitting markers. */
+                     * All chunks use mvwaddnstr (byte-accurate) to avoid
+                     * the display-columns vs source-bytes mismatch that
+                     * render_inline causes with formatting markers. */
                     const char *wp = line_buf;
                     int remaining = tlen;
                     while (remaining > 0) {
