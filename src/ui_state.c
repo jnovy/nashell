@@ -241,6 +241,10 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                      "file://session/%s", ref ? ref : "?");
                             char desc_trunc[61];
                             utf8_truncate(desc_trunc, sanitize_md_link(desc), 60);
+                            /* Show thought as a line ABOVE the step entry */
+                            if (thought[0]) {
+                                str_appendf(&md, "> 💭 %s\n", thought);
+                            }
                             str_appendf(&md, "[  %s %s: %s \"%s\"",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
@@ -258,12 +262,6 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 }
                             }
                             if (is_expanded && ref) {
-                                /* Show thought if available */
-                                if (thought[0]) {
-                                    str_appendf(&md, "> 💭 %s\n",
-                                                thought);
-                                }
-
                                 /* Read content from store */
                                 char rpath[4096];
                                 snprintf(rpath, sizeof(rpath), "%s/%s",
