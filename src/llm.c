@@ -418,6 +418,52 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
 
 /* ── Parse action from assistant response ────────────────────── */
 
+/* Attempt to repair common JSON errors produced by models:
+ * - "key="value"  → "key":"value"  (missing colon)
+ * - "key=value"   → "key":"value"  (missing colon and quotes)
+ * - XML fragments after JSON start → truncated at first < */
+static char *repair_json(const char *src) {
+    if (!src) return NULL;
+    size_t len = strlen(src);
+    /* Allocate extra space for inserted colons */
+    char *buf = malloc(len * 2 + 1);
+    if (!buf) return NULL;
+
+    size_t j = 0;
+    int in_string = 0;
+    int escape = 0;
+
+    for (size_t i = 0; src[i] && j < len * 2 - 1; i++) {
+        if (escape) { buf[j++] = src[i]; escape = 0; continue; }
+        if (src[i] == '\\') { buf[j++] = src[i]; escape = 1; continue; }
+        if (src[i] == '"') in_string = !in_string;
+
+        /* Detect XML fragment: truncate at < outside strings */
+        if (src[i] == '<' && !in_string) {
+            /* Close any open JSON structure */
+            buf[j++] = '}';
+            break;
+        }
+
+        /* Fix: "key="value" → "key":"value" (missing colon after key) */
+        if (src[i] == '=' && !in_string) {
+            /* Check if this looks like "key"=... or "key=... */
+            /* Replace = with : */
+            buf[j++] = ':';
+            /* If next char is not a quote, add one for the value */
+            if (src[i+1] && src[i+1] != '"' && src[i+1] != '{' &&
+                src[i+1] != '[' && src[i+1] != ' ') {
+                buf[j++] = '"';
+            }
+            continue;
+        }
+
+        buf[j++] = src[i];
+    }
+    buf[j] = '\0';
+    return buf;
+}
+
 cJSON *llm_parse_action(const char *response) {
     if (!response) return NULL;
 
@@ -437,7 +483,19 @@ cJSON *llm_parse_action(const char *response) {
     const char *brace = strchr(start, '{');
     if (!brace) return NULL;
 
+    /* Try strict parse first */
     cJSON *action = cJSON_Parse(brace);
+    if (action) return action;
+
+    /* Strict parse failed — try repairing common JSON errors */
+    char *repaired = repair_json(brace);
+    if (repaired) {
+        action = cJSON_Parse(repaired);
+        if (action) {
+            fprintf(stderr, "[llm] repaired malformed JSON response\n");
+        }
+        free(repaired);
+    }
     return action;
 }
 
