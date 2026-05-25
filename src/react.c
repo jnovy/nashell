@@ -885,6 +885,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     llm_chat_free(chat);
 
+    /* Remove checkpoint — task completed (successfully or not) */
+    checkpoint_remove(ctx);
+
     /* Post-task reflection: ask LLM to extract reusable lessons/strategies.
      * Fires for BOTH successful and failed tasks — failures are often more
      * valuable for learning (what went wrong, what to avoid next time). */
