@@ -241,9 +241,17 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                      "file://session/%s", ref ? ref : "?");
                             char desc_trunc[61];
                             utf8_truncate(desc_trunc, sanitize_md_link(desc), 60);
-                            /* Show thought as a line ABOVE the step entry */
+                            /* Show thought as a line ABOVE the step entry,
+                             * aligned with "  + R0S6:" step lines. */
                             if (thought[0]) {
-                                str_appendf(&md, "> 💭 %s\n", thought);
+                                /* Trim trailing whitespace/newlines from thought */
+                                int tlen = (int)strlen(thought);
+                                while (tlen > 0 && (thought[tlen-1] == '\n' ||
+                                       thought[tlen-1] == '\r' ||
+                                       thought[tlen-1] == ' '))
+                                    tlen--;
+                                if (tlen > 0)
+                                    str_appendf(&md, "  💭 %.*s\n", tlen, thought);
                             }
                             str_appendf(&md, "[  %s %s: %s \"%s\"",
                                         failed ? "x" : "+",
