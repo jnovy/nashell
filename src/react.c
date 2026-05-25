@@ -162,7 +162,9 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             continue;
         }
 
-        /* Re-register alias */
+        /* Re-register alias and track the hash for this entry */
+        const char *entry_hash = NULL;
+        char entry_hash_buf[128] = "";
         if (ref) {
             /* Extract hash from ref by resolving the symlink */
             char ref_path[4096];
@@ -173,14 +175,16 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             if (llen > 0) {
                 link_target[llen] = '\0';
                 /* Extract hash from "../../store/<hash>" */
-                const char *hash = strrchr(link_target, '/');
-                if (hash) {
-                    hash++;  /* skip the '/' */
+                const char *slash = strrchr(link_target, '/');
+                if (slash) {
+                    slash++;  /* skip the '/' */
+                    snprintf(entry_hash_buf, sizeof(entry_hash_buf), "%s", slash);
+                    entry_hash = entry_hash_buf;
                     /* Register in alias table */
                     if (ctx->tools->alias_count < MAX_ALIASES) {
                         alias_entry_t *a = &ctx->tools->aliases[ctx->tools->alias_count];
                         snprintf(a->alias, sizeof(a->alias), "%s", ref);
-                        snprintf(a->hash, sizeof(a->hash), "%s", hash);
+                        snprintf(a->hash, sizeof(a->hash), "%s", slash);
                         ctx->tools->alias_count++;
                     }
                 }
@@ -196,10 +200,9 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             }
             if (thought) {
                 /* Read the stored response for the full thinking content */
-                if (ref) {
+                if (ref && entry_hash) {
                     char *store_path = store_resolve(ctx->tools->store,
-                        /* need hash — get from alias we just registered */
-                        ctx->tools->aliases[ctx->tools->alias_count - 1].hash);
+                        entry_hash);
                     if (store_path) {
                         size_t content_len = 0; (void)content_len;
                         char *content = NULL;
