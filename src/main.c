@@ -120,10 +120,12 @@ static void print_banner(const config_t *cfg, const char *props_json,
     }
 
     /* 2. Client config */
+    const char *think_str = cfg->thinking.mode == THINKING_ON ? "yes" :
+                            cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
     printf("client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
            cfg->temperature, cfg->max_tokens,
            cfg->json_mode ? "on" : "off",
-           cfg->thinking ? "on" : "off",
+           think_str,
            cfg->stream ? "on" : "off");
     printf("data:   %s\n", nash_dir);
     printf("\n");
@@ -181,10 +183,12 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
         }
     }
 
+    const char *ts = cfg->thinking.mode == THINKING_ON ? "yes" :
+                     cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
     str_appendf(&s, "client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
                 cfg->temperature, cfg->max_tokens,
                 cfg->json_mode ? "on" : "off",
-                cfg->thinking ? "on" : "off",
+                ts,
                 cfg->stream ? "on" : "off");
     str_appendf(&s, "data:   %s\n", nash_dir);
     if (session_dir)

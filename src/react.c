@@ -1,4 +1,5 @@
 #include "react.h"
+#include "config.h"
 #include "memory.h"
 #include "journal.h"
 #include "store.h"
@@ -555,6 +556,49 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Call LLM */
         struct timespec step_start;
         clock_gettime(CLOCK_MONOTONIC, &step_start);
+
+        /* EDRM routing: decide thinking mode before LLM call.
+         * On step 0, probe entropy dynamics to determine if CoT is beneficial.
+         * Subsequent steps inherit the decision from step 0.
+         * See [arXiv:2605.22873] for the theory. */
+        if (ctx->tools->cfg && step == resume_step) {
+            int mode = ctx->tools->cfg->thinking.mode;
+            if (mode == THINKING_ON) {
+                ctx->llm->enable_thinking = 1;
+            } else if (mode == THINKING_OFF) {
+                ctx->llm->enable_thinking = 0;
+            } else if (mode == THINKING_EDRM) {
+                /* Build probe prompt from user query */
+                str_t probe = str_new(8192);
+                str_appendf(&probe,
+                    "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
+                    user_query);
+
+                thinking_config_t *tc = &ctx->tools->cfg->thinking;
+                edrm_result_t edrm = llm_edrm_probe(
+                    ctx->llm->api_base, probe.data,
+                    tc->probe_tokens, tc->probe_n_probs,
+                    tc->probe_temperature,
+                    tc->tau_rho, tc->tau_vnr, tc->tau_h);
+                str_free(&probe);
+
+                ctx->llm->enable_thinking = edrm.route;
+
+                /* Log the routing decision */
+                {
+                    char msg[256];
+                    snprintf(msg, sizeof(msg),
+                        "EDRM: H̄=%.2f ρ=%.2f VNR=%.2f → %s",
+                        edrm.h_mean, edrm.rho_s, edrm.vnr,
+                        edrm.route ? "thinking ON" : "thinking OFF");
+                    react_event_t ev = {0};
+                    ev.type = REACT_EVENT_WARNING;
+                    ev.step = step + 1;
+                    ev.message = msg;
+                    emit(on_event, userdata, &ev);
+                }
+            }
+        }
 
         llm_stats_t stats = {0};
         stream_ctx_t sctx = { on_event, userdata, step + 1 };

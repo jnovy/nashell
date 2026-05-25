@@ -51,6 +51,18 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->file_read_max_inline == 0) cfg->file_read_max_inline = 50000;
     cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
+
+    /* [thinking] defaults — EDRM is the default mode */
+    if (cfg->thinking.mode == 0 && cfg->thinking.probe_tokens == 0) {
+        /* Not explicitly set — default to EDRM */
+        cfg->thinking.mode = THINKING_EDRM;
+    }
+    if (cfg->thinking.probe_tokens == 0)     cfg->thinking.probe_tokens = 30;
+    if (cfg->thinking.probe_n_probs == 0)    cfg->thinking.probe_n_probs = 10;
+    if (cfg->thinking.probe_temperature == 0) cfg->thinking.probe_temperature = 0.6f;
+    if (cfg->thinking.tau_rho < -900)        cfg->thinking.tau_rho = -0.1f;
+    if (cfg->thinking.tau_vnr == 0)          cfg->thinking.tau_vnr = 1.5f;
+    if (cfg->thinking.tau_h == 0)            cfg->thinking.tau_h = 4.0f;
     if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
 }
@@ -88,8 +100,12 @@ config_t *config_load(const char *path) {
         cfg->temperature = (float)toml_dbl(client, "temperature", 0);
         cfg->max_tokens  = toml_int(client, "max_tokens", 0);
         cfg->json_mode   = toml_bl(client, "json_mode", 1);
-        cfg->thinking    = toml_bl(client, "thinking", 0);
         cfg->stream      = toml_bl(client, "stream", 1);
+
+        /* Backward compat: old "thinking = true/false" in [client] */
+        toml_datum_t old_think = toml_bool_in(client, "thinking");
+        if (old_think.ok)
+            cfg->thinking.mode = old_think.u.b ? THINKING_ON : THINKING_OFF;
     }
 
     /* [limits] */
@@ -126,6 +142,27 @@ config_t *config_load(const char *path) {
         cfg->searxng_url   = toml_str(search, "searxng_url");
     }
 
+    /* [thinking] — overrides old [client].thinking if both present */
+    toml_table_t *thinking = toml_table_in(root, "thinking");
+    if (thinking) {
+        char *mode_str = toml_str(thinking, "mode");
+        if (mode_str) {
+            if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
+                cfg->thinking.mode = THINKING_ON;
+            else if (strcmp(mode_str, "edrm") == 0)
+                cfg->thinking.mode = THINKING_EDRM;
+            else  /* "no", "off", or anything else */
+                cfg->thinking.mode = THINKING_OFF;
+            free(mode_str);
+        }
+        cfg->thinking.probe_tokens     = toml_int(thinking, "probe_tokens", 0);
+        cfg->thinking.probe_n_probs    = toml_int(thinking, "probe_n_probs", 0);
+        cfg->thinking.probe_temperature = (float)toml_dbl(thinking, "probe_temperature", 0);
+        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", -999);
+        cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", 0);
+        cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", 0);
+    }
+
     toml_free(root);
     config_set_defaults(cfg);
     return cfg;
@@ -159,8 +196,19 @@ int config_write_default(const char *path) {
         "temperature = 0.7\n"
         "max_tokens = 16384\n"
         "json_mode = true\n"
-        "thinking = false\n"
         "stream = true\n"
+        "\n"
+        "# Thinking mode: \"yes\" = always, \"no\" = never, \"edrm\" = adaptive (default)\n"
+        "# EDRM routing based on: \"When Do LLMs Reason? A Dynamical Systems View\n"
+        "# via Entropy Phase Transitions\" [arXiv:2605.22873]\n"
+        "[thinking]\n"
+        "mode = \"edrm\"\n"
+        "# probe_tokens = 30\n"
+        "# probe_n_probs = 10\n"
+        "# probe_temperature = 0.6\n"
+        "# tau_rho = -0.1\n"
+        "# tau_vnr = 1.5\n"
+        "# tau_h = 4.0\n"
         "\n"
         "[limits]\n"
         "shell_timeout = 300          # max seconds for shell_exec\n"

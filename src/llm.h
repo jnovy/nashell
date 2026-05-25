@@ -10,7 +10,22 @@ typedef struct {
     int   max_tokens;     /* max completion tokens */
     float temperature;    /* sampling temperature */
     int   context_size;   /* server's n_ctx (0 = unknown, fetched via /props) */
+    int   enable_thinking; /* 0=off, 1=on — set per-request by EDRM routing */
 } llm_config_t;
+
+/* EDRM entropy probe result — see [arXiv:2605.22873] */
+typedef struct {
+    float h_mean;    /* mean entropy over probe tokens */
+    float rho_s;     /* Spearman rank correlation (entropy vs step) */
+    float vnr;       /* von Neumann ratio (smoothness) */
+    int   route;     /* 0=direct (thinking off), 1=cot (thinking on) */
+} edrm_result_t;
+
+/* EDRM entropy probe: generate a short completion and analyze entropy dynamics.
+ * Returns routing decision based on entropy trajectory descriptors. */
+edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
+                               int n_predict, int n_probs, float temperature,
+                               float tau_rho, float tau_vnr, float tau_h);
 
 /* A single chat message — supports tool_calls API threading */
 typedef struct {

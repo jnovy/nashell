@@ -8,8 +8,19 @@ api_base = "http://192.168.1.18:8080"
 temperature = 0.7
 max_tokens = 4096
 json_mode = true
-thinking = false
 stream = true
+
+# Thinking mode: "yes" = always, "no" = never, "edrm" = adaptive (default)
+# EDRM routing based on: "When Do LLMs Reason? A Dynamical Systems View
+# via Entropy Phase Transitions" [arXiv:2605.22873]
+[thinking]
+mode = "edrm"
+# probe_tokens = 30          # tokens to generate in entropy probe
+# probe_n_probs = 10         # top-N logprobs to request
+# probe_temperature = 0.6    # probe sampling temperature
+# tau_rho = -0.1             # Spearman correlation threshold
+# tau_vnr = 1.5              # von Neumann ratio threshold
+# tau_h = 4.0                # mean entropy threshold
 
 [limits]
 # Shell command execution

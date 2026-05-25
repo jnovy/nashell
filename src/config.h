@@ -3,6 +3,25 @@
 
 /* Nash configuration — loaded from ~/.nash/config.toml */
 
+/* Thinking mode: off=0, on=1, edrm=2
+ * EDRM (Entropy Dynamics-based Reasoning Manifold) routing based on:
+ *   "When Do LLMs Reason? A Dynamical Systems View via Entropy Phase
+ *    Transitions" [arXiv:2605.22873, May 2026]
+ * Probes early decoding entropy to decide if CoT reasoning is beneficial. */
+#define THINKING_OFF   0
+#define THINKING_ON    1
+#define THINKING_EDRM  2
+
+typedef struct {
+    int    mode;              /* THINKING_OFF / THINKING_ON / THINKING_EDRM */
+    int    probe_tokens;      /* EDRM: tokens to generate in probe (default 30) */
+    int    probe_n_probs;     /* EDRM: top-N logprobs to request (default 10) */
+    float  probe_temperature; /* EDRM: probe sampling temperature (default 0.6) */
+    float  tau_rho;           /* EDRM: Spearman correlation threshold (default -0.1) */
+    float  tau_vnr;           /* EDRM: von Neumann ratio threshold (default 1.5) */
+    float  tau_h;             /* EDRM: mean entropy threshold (default 4.0) */
+} thinking_config_t;
+
 typedef struct {
     /* [server] */
     char  *api_base;
@@ -11,8 +30,10 @@ typedef struct {
     float  temperature;
     int    max_tokens;
     int    json_mode;
-    int    thinking;
     int    stream;
+
+    /* [thinking] */
+    thinking_config_t thinking;
 
     /* [limits] */
     int    shell_timeout;        /* seconds, 0 = no limit */

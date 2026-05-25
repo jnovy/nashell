@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>    /* sqrtf, expf — for EDRM entropy probe */
 #include <unistd.h>  /* sleep */
 
 #define LLM_MAX_RETRIES    10
@@ -168,9 +169,9 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
     cJSON *tools = build_tools_array();
     cJSON_AddItemToObject(req, "tools", tools);
 
-    /* Disable thinking mode for Qwen models */
+    /* Set thinking mode — controlled by EDRM routing or config */
     cJSON *tmpl_kwargs = cJSON_CreateObject();
-    cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", 0);
+    cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", cfg->enable_thinking);
     cJSON_AddItemToObject(req, "chat_template_kwargs", tmpl_kwargs);
 
     /* Build messages array — handle tool_calls and tool results */
@@ -895,4 +896,178 @@ char *llm_fetch_props_json(const char *api_base) {
     }
 
     return str_steal(&response);
+}
+
+/* ── EDRM entropy probe ──────────────────────────────────────────────
+ * Implements the entropy dynamics routing from [arXiv:2605.22873]:
+ *   "When Do LLMs Reason? A Dynamical Systems View via Entropy Phase
+ *    Transitions"
+ *
+ * Sends a short /completion probe, extracts per-token entropy from
+ * logprobs, computes three descriptors (H̄, ρ_s, VNR), and returns
+ * a routing decision: 0=direct (thinking off), 1=cot (thinking on).
+ * ─────────────────────────────────────────────────────────────────── */
+
+/* Spearman rank correlation between two arrays of length n */
+static float spearman_corr(const float *x, const float *y, int n) {
+    if (n < 3) return 0.0f;
+    /* Compute ranks for x and y (simple: sort indices) */
+    float *rx = calloc(n, sizeof(float));
+    float *ry = calloc(n, sizeof(float));
+    if (!rx || !ry) { free(rx); free(ry); return 0.0f; }
+
+    /* Rank by sorting indices */
+    int *idx = calloc(n, sizeof(int));
+    for (int i = 0; i < n; i++) idx[i] = i;
+
+    /* Rank x */
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (x[idx[i]] > x[idx[j]]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    for (int i = 0; i < n; i++) rx[idx[i]] = (float)(i + 1);
+
+    /* Rank y */
+    for (int i = 0; i < n; i++) idx[i] = i;
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (y[idx[i]] > y[idx[j]]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
+    for (int i = 0; i < n; i++) ry[idx[i]] = (float)(i + 1);
+
+    /* Pearson correlation on ranks */
+    float mx = 0, my = 0;
+    for (int i = 0; i < n; i++) { mx += rx[i]; my += ry[i]; }
+    mx /= n; my /= n;
+
+    float num = 0, dx = 0, dy = 0;
+    for (int i = 0; i < n; i++) {
+        float a = rx[i] - mx, b = ry[i] - my;
+        num += a * b;
+        dx += a * a;
+        dy += b * b;
+    }
+    free(rx); free(ry); free(idx);
+    if (dx == 0 || dy == 0) return 0.0f;
+    return num / sqrtf(dx * dy);
+}
+
+edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
+                               int n_predict, int n_probs, float temperature,
+                               float tau_rho, float tau_vnr, float tau_h) {
+    edrm_result_t result = {0, 0, 0, 0};
+
+    /* Build /completion request with logprobs */
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt", prompt);
+    cJSON_AddNumberToObject(req, "n_predict", n_predict);
+    cJSON_AddNumberToObject(req, "n_probs", n_probs);
+    cJSON_AddNumberToObject(req, "temperature", temperature);
+    cJSON_AddBoolToObject(req, "cache_prompt", 1);
+    cJSON_AddBoolToObject(req, "stream", 0);
+
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (!body) return result;
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/completion", api_base);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { free(body); return result; }
+
+    str_t response = str_new(16384);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+    curl_slist_free_all(headers);
+    free(body);
+
+    if (res != CURLE_OK) {
+        str_free(&response);
+        return result;
+    }
+
+    /* Parse response and extract entropy from completion_probabilities */
+    cJSON *resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) return result;
+
+    cJSON *probs_arr = cJSON_GetObjectItem(resp, "completion_probabilities");
+    if (!probs_arr || !cJSON_IsArray(probs_arr)) {
+        cJSON_Delete(resp);
+        return result;
+    }
+
+    int n_tokens = cJSON_GetArraySize(probs_arr);
+    if (n_tokens < 3) {
+        cJSON_Delete(resp);
+        return result;
+    }
+
+    /* Compute per-token entropy from top logprobs */
+    float *entropies = calloc(n_tokens, sizeof(float));
+    float *steps = calloc(n_tokens, sizeof(float));
+    if (!entropies || !steps) {
+        free(entropies); free(steps);
+        cJSON_Delete(resp);
+        return result;
+    }
+
+    for (int i = 0; i < n_tokens; i++) {
+        cJSON *tok = cJSON_GetArrayItem(probs_arr, i);
+        cJSON *top = cJSON_GetObjectItem(tok, "top_logprobs");
+        if (!top || !cJSON_IsArray(top)) continue;
+
+        float h = 0;
+        int k = cJSON_GetArraySize(top);
+        for (int j = 0; j < k; j++) {
+            cJSON *entry = cJSON_GetArrayItem(top, j);
+            cJSON *lp = cJSON_GetObjectItem(entry, "logprob");
+            if (lp && cJSON_IsNumber(lp)) {
+                float logp = (float)lp->valuedouble;
+                float p = expf(logp);
+                if (p > 0) h -= p * logp;  /* H = -Σ p·log(p) */
+            }
+        }
+        entropies[i] = h;
+        steps[i] = (float)i;
+    }
+
+    /* Descriptor 1: mean entropy (H̄) */
+    float h_sum = 0;
+    for (int i = 0; i < n_tokens; i++) h_sum += entropies[i];
+    result.h_mean = h_sum / n_tokens;
+
+    /* Descriptor 2: Spearman correlation (ρ_s) — entropy vs step index */
+    result.rho_s = spearman_corr(entropies, steps, n_tokens);
+
+    /* Descriptor 3: von Neumann ratio (VNR) — smoothness measure */
+    float diff_sq_sum = 0, var_sum = 0;
+    for (int i = 1; i < n_tokens; i++) {
+        float d = entropies[i] - entropies[i - 1];
+        diff_sq_sum += d * d;
+    }
+    for (int i = 0; i < n_tokens; i++) {
+        float d = entropies[i] - result.h_mean;
+        var_sum += d * d;
+    }
+    result.vnr = (var_sum > 0) ? diff_sq_sum / var_sum : 999.0f;
+
+    /* Routing decision: convergent regime → CoT, otherwise → Direct */
+    result.route = (result.rho_s < tau_rho &&
+                    result.vnr < tau_vnr &&
+                    result.h_mean < tau_h) ? 1 : 0;
+
+    free(entropies);
+    free(steps);
+    cJSON_Delete(resp);
+    return result;
 }
