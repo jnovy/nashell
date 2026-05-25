@@ -304,7 +304,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                     }
                                     if (total >= 8000)
                                         str_append_cstr(&md, "\n... (truncated)\n");
-                                    str_append_cstr(&md, "\n```\n");
+                                    str_append_cstr(&md, "```\n");
                                     fclose(cf);
                                 }
                             }
