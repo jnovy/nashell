@@ -178,6 +178,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
         int _first = 1; \
         while (_remaining > 0) { \
             int _chunk = _remaining > _usable ? _usable : _remaining; \
+            /* Word-boundary wrapping: find last space in chunk */ \
+            if (_chunk < _remaining) { \
+                int _ls = -1; \
+                for (int _k = _chunk - 1; _k > _usable / 4; _k--) \
+                    if (_wp[_k] == ' ') { _ls = _k; break; } \
+                if (_ls > 0) _chunk = _ls + 1; \
+            } \
             int _vl = (render_line) - scroll_y; \
             if (_vl >= 0 && _vl < (rows)) \
                 mvwaddnstr((win), _vl, _first ? (indent) : (indent), _wp, _chunk); \
@@ -459,7 +466,6 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                      * lines use mvwaddnstr (plain) to avoid splitting markers. */
                     const char *wp = line_buf;
                     int remaining = tlen;
-                    int first = 1;
                     while (remaining > 0) {
                         int chunk = remaining > cols ? cols : remaining;
                         /* Word-wrap: if we're splitting, find the last space
@@ -472,29 +478,34 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                             if (last_space > 0) chunk = last_space + 1;
                         }
                         int vl = render_line - scroll_y;
-                        if (vl >= 0 && vl < rows) {
-                            if (first)
-                                render_inline(win, vl, 0, wp, chunk, 0);
-                            else
-                                mvwaddnstr(win, vl, 0, wp, chunk);
-                        }
+                        if (vl >= 0 && vl < rows)
+                            mvwaddnstr(win, vl, 0, wp, chunk);
                         wp += chunk;
                         remaining -= chunk;
-                        first = 0;
-                        if (remaining > 0) {
+                        if (remaining > 0)
                             render_line++;
-                        }
                     }
                 }
             }
 
         /* --- Lines OUTSIDE visible window still need wrapping for line count --- */
         } else {
-            /* Off-screen: count wrapped lines so render_line stays accurate */
+            /* Off-screen: count wrapped lines so render_line stays accurate.
+             * Must simulate the same word-boundary splitting as on-screen
+             * rendering, otherwise render_line drifts and cursor is wrong. */
             int tlen = copy_len;
             if (tlen > cols && !in_code_block && line_buf[0] != '|') {
-                int extra = (tlen - 1) / cols;  /* additional lines from wrapping */
-                render_line += extra;
+                const char *owp = line_buf;
+                int orem = tlen;
+                while (orem > cols) {
+                    int chunk = cols;
+                    for (int k = chunk - 1; k > cols / 4; k--) {
+                        if (owp[k] == ' ') { chunk = k + 1; break; }
+                    }
+                    owp += chunk;
+                    orem -= chunk;
+                    render_line++;
+                }
             }
             /* Off-screen: still need to count links */
             if (line_buf[0] == '[' && link_idx < doc->link_count &&
