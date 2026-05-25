@@ -405,7 +405,6 @@ static void checkpoint_remove(react_ctx_t *ctx) {
 
 char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
-    fprintf(stderr, "[DEBUG] react_run START: react_loop=%d\n", ctx->tools->react_loop);
     llm_chat_t *chat = llm_chat_new();
 
     /* Check for checkpoint — resume interrupted task */
