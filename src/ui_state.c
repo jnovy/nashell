@@ -494,9 +494,22 @@ void ui_state_enter(ui_state_t *ui) {
     int idx = ui->cursor_link;
     if (idx < 0 || idx >= ui->link_states_count) return;
 
-    /* Check if this is a step link (URI contains "/S") or a query link */
+    /* Check if this is a step link (ref-based URI like "file://session/R0S3")
+     * or a query link. Step refs always match R<digit>S<digit> pattern. */
     const char *uri = (idx < ui->doc->link_count) ? ui->doc->links[idx].uri : NULL;
-    int is_step_link = (uri && strstr(uri, "/S") != NULL);
+    int is_step_link = 0;
+    if (uri) {
+        const char *r = strstr(uri, "/R");
+        if (r) {
+            r++;  /* skip the '/' */
+            /* Check for R<digits>S<digits> pattern */
+            if (*r == 'R' && r[1] >= '0' && r[1] <= '9') {
+                const char *s = strchr(r, 'S');
+                if (s && s[1] >= '0' && s[1] <= '9')
+                    is_step_link = 1;
+            }
+        }
+    }
 
     if (is_step_link && uri) {
         /* Step link: toggle expansion via URI-based tracking.
