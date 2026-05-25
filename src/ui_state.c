@@ -214,7 +214,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
 
         /* Expanded content based on link state */
         if (ls == LINK_SHOW_RESULT && qi->result) {
-            str_appendf(&md, "\n> %s\n\n", qi->result);
+            str_appendf(&md, "> %s\n", qi->result);
         } else if (ls == LINK_SHOW_STEPS) {
             /* Read journal for this query's steps (shown BEFORE result) */
             FILE *f2 = fopen(jpath, "r");
@@ -282,7 +282,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             if (is_expanded && ref) {
                                 /* Show thought if available */
                                 if (thought[0]) {
-                                    str_appendf(&md, "> 💭 %s\n\n",
+                                    str_appendf(&md, "> 💭 %s\n",
                                                 thought);
                                 }
 
@@ -317,9 +317,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
 
             /* Show result AFTER steps (at the bottom) */
             if (qi->result)
-                str_appendf(&md, "\n> %s\n\n", qi->result);
-            else
-                str_append_cstr(&md, "\n");
+                str_appendf(&md, "> %s\n", qi->result);
         }
     }
 
