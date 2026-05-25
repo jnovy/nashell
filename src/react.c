@@ -645,9 +645,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     emit(on_event, userdata, &ev);
                 }
 
-                /* Add thought to conversation as assistant message
-                 * (preserves reasoning in context, no retry prompt needed) */
+                /* Add thought to conversation as assistant message,
+                 * followed by a brief user nudge to prevent consecutive
+                 * assistant messages (which llama.cpp rejects with 400). */
                 llm_chat_add(chat, "assistant", response);
+                llm_chat_add(chat, "user",
+                    "Good thinking. Now call a tool to act on it.");
             } else {
                 /* No thought AND no action — genuine parse error */
                 react_event_t ev = {0};
