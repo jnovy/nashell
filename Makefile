@@ -16,7 +16,12 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-src/%.o: src/%.c
+# Header dependencies — ALL .o files depend on ALL headers.
+# This is conservative but safe: changing any header recompiles everything.
+# For a 15-file project this adds <1s to rebuilds.
+HDRS    = $(wildcard src/*.h)
+
+src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Library objects (everything except main.c for linking with tests)
