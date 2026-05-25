@@ -474,7 +474,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                         int vl = render_line - scroll_y;
                         if (vl >= 0 && vl < rows) {
                             if (first)
-                                render_inline(win, vl, 0, wp, cols, 0);
+                                render_inline(win, vl, 0, wp, chunk, 0);
                             else
                                 mvwaddnstr(win, vl, 0, wp, chunk);
                         }
