@@ -30,25 +30,27 @@ void config_set_defaults(config_t *cfg) {
     if (!cfg->api_base)      cfg->api_base = strdup("http://192.168.1.18:8080");
     if (cfg->temperature == 0) cfg->temperature = 0.7f;
     if (cfg->max_tokens == 0)  cfg->max_tokens = 16384;
-    if (cfg->shell_timeout == 0)      cfg->shell_timeout = 300;
-    if (cfg->shell_max_output == 0)   cfg->shell_max_output = 512000;
-    if (cfg->file_max_size == 0)      cfg->file_max_size = 52428800;
-    if (cfg->grep_timeout == 0)       cfg->grep_timeout = 60;
-    if (cfg->grep_max_matches == 0)   cfg->grep_max_matches = 50;
-    if (cfg->web_timeout == 0)        cfg->web_timeout = 30;
-    if (cfg->web_max_size == 0)       cfg->web_max_size = 512000;
-    if (cfg->llm_max_response == 0)   cfg->llm_max_response = 10485760;
-    if (cfg->llm_repeat_threshold == 0) cfg->llm_repeat_threshold = 100;
-    if (cfg->memory_index_max == 0)   cfg->memory_index_max = 50;
-    if (cfg->max_skills_per_query == 0) cfg->max_skills_per_query = 3;
-    if (cfg->context_eviction_pct == 0) cfg->context_eviction_pct = 70;
-    if (cfg->max_reflection_steps == 0) cfg->max_reflection_steps = 4;
-    if (cfg->file_read_max_inline == 0) cfg->file_read_max_inline = 50000;
-    if (cfg->memory_index_max == 0)   cfg->memory_index_max = 50;
-    if (cfg->max_skills_per_query == 0) cfg->max_skills_per_query = 3;
-    if (cfg->context_eviction_pct == 0) cfg->context_eviction_pct = 70;
-    if (cfg->max_reflection_steps == 0) cfg->max_reflection_steps = 4;
-    if (cfg->file_read_max_inline == 0) cfg->file_read_max_inline = 50000;
+    /* Replace -1 (sentinel for "not set in config") with actual defaults.
+     * -1 comes from TOML parsing when the field is absent.
+     * 0 comes from calloc when no config file exists at all.
+     * User-specified 0 is valid (e.g., shell_timeout=0 means no limit),
+     * so we use -1 as sentinel in TOML parsing and check <= 0 here
+     * only for fields where 0 is NOT a valid user value.
+     * For timeout/size fields where 0 = "no limit", we check == -1 only. */
+    if (cfg->shell_timeout == -1)       cfg->shell_timeout = 300;
+    if (cfg->shell_max_output <= 0)     cfg->shell_max_output = 512000;
+    if (cfg->file_max_size <= 0)        cfg->file_max_size = 52428800;
+    if (cfg->grep_timeout == -1)        cfg->grep_timeout = 60;
+    if (cfg->grep_max_matches <= 0)     cfg->grep_max_matches = 50;
+    if (cfg->web_timeout == -1)         cfg->web_timeout = 30;
+    if (cfg->web_max_size <= 0)         cfg->web_max_size = 512000;
+    if (cfg->llm_max_response <= 0)     cfg->llm_max_response = 10485760;
+    if (cfg->llm_repeat_threshold <= 0) cfg->llm_repeat_threshold = 100;
+    if (cfg->memory_index_max <= 0)     cfg->memory_index_max = 50;
+    if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 3;
+    if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
+    if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
+    if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
     cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
 
@@ -115,22 +117,25 @@ config_t *config_load(const char *path) {
     /* [limits] */
     toml_table_t *limits = toml_table_in(root, "limits");
     if (limits) {
-        cfg->shell_timeout      = toml_int(limits, "shell_timeout", 0);
-        cfg->shell_max_output   = toml_int(limits, "shell_max_output", 0);
-        cfg->file_max_size      = toml_int(limits, "file_max_size", 0);
-        cfg->grep_timeout       = toml_int(limits, "grep_timeout", 0);
-        cfg->grep_max_matches   = toml_int(limits, "grep_max_matches", 0);
-        cfg->web_timeout        = toml_int(limits, "web_timeout", 0);
-        cfg->web_max_size       = toml_int(limits, "web_max_size", 0);
-        cfg->llm_max_response   = toml_int(limits, "llm_max_response", 0);
-        cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", 0);
-        cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", 0);
-        cfg->max_react_steps    = toml_int(limits, "max_react_steps", 0);
-        cfg->memory_index_max   = toml_int(limits, "memory_index_max", 0);
-        cfg->max_skills_per_query = toml_int(limits, "max_skills_per_query", 0);
-        cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", 0);
-        cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", 0);
-        cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", 0);
+        /* Use -1 as sentinel for "not set in config file" so that
+         * user-specified 0 (e.g., shell_timeout=0 for no limit) is preserved.
+         * config_set_defaults() replaces -1 with the actual default value. */
+        cfg->shell_timeout      = toml_int(limits, "shell_timeout", -1);
+        cfg->shell_max_output   = toml_int(limits, "shell_max_output", -1);
+        cfg->file_max_size      = toml_int(limits, "file_max_size", -1);
+        cfg->grep_timeout       = toml_int(limits, "grep_timeout", -1);
+        cfg->grep_max_matches   = toml_int(limits, "grep_max_matches", -1);
+        cfg->web_timeout        = toml_int(limits, "web_timeout", -1);
+        cfg->web_max_size       = toml_int(limits, "web_max_size", -1);
+        cfg->llm_max_response   = toml_int(limits, "llm_max_response", -1);
+        cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", -1);
+        cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", -1);
+        cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
+        cfg->memory_index_max   = toml_int(limits, "memory_index_max", -1);
+        cfg->max_skills_per_query = toml_int(limits, "max_skills_per_query", -1);
+        cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
+        cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", -1);
+        cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
     }
 
     /* [paths] */
