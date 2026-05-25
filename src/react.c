@@ -407,9 +407,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
-    /* Clear alias hash map at the start of every react loop.
-     * Aliases start at R<N>S0 for each query. */
-    alias_map_clear(ctx->tools->aliases);
+    /* Reset alias sequence counter so new aliases start at R<N>S0.
+     * Do NOT clear the hash map — old aliases (R0S0, R0S1, etc.) must
+     * remain resolvable for cross-loop file_read("R0S5") references. */
+    ctx->tools->aliases->next_seq = 0;
 
     /* Check for checkpoint — resume interrupted task */
     int resume_step = 0;
