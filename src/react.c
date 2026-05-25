@@ -516,8 +516,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* User query */
     llm_chat_add(chat, "user", user_query);
 
-    /* Reset per-loop step counter (react_loop is 0-based, incremented at END of loop) */
+    /* Reset per-loop counters (react_loop is 0-based, incremented at END of loop) */
     ctx->tools->step = 0;
+    ctx->tools->alias_count = 0;  /* reset so aliases start at R<N>S0, not R<N>S<prev_count> */
 
     /* Record system prompt and user query in journal (step 0) */
     {
