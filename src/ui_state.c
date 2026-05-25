@@ -396,15 +396,56 @@ void ui_state_tab(ui_state_t *ui) {
     ui->dirty = 1;
 }
 
+/* Find the range of link indices visible in the current viewport.
+ * Returns count of visible links. first/last are set to the first and
+ * last visible link index (-1 if none visible). */
+static int find_visible_links(md_doc_t *doc, int scroll_y, int vis_h,
+                               int *first, int *last) {
+    *first = -1;
+    *last = -1;
+    if (!doc || doc->link_count == 0) return 0;
+    int count = 0;
+    for (int i = 0; i < doc->link_count; i++) {
+        int line = md_link_line(doc, i);
+        if (line >= scroll_y && line < scroll_y + vis_h) {
+            if (*first < 0) *first = i;
+            *last = i;
+            count++;
+        }
+    }
+    return count;
+}
+
 void ui_state_up(ui_state_t *ui) {
     if (!ui) return;
     if (ui->focus == FOCUS_JOURNAL && ui->doc) {
-        if (ui->cursor_link > 0) {
-            ui->cursor_link--;
-            /* Auto-scroll to keep cursor visible */
-            int link_line = md_link_line(ui->doc, ui->cursor_link);
-            if (link_line < ui->scroll_y)
-                ui->scroll_y = link_line;
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int first_vis, last_vis;
+        int n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
+                                        &first_vis, &last_vis);
+
+        if (n_vis == 0) {
+            /* No links on screen — pure scroll mode */
+            if (ui->scroll_y > 0) ui->scroll_y--;
+        } else if (ui->cursor_link <= first_vis) {
+            /* At or above topmost visible link — scroll up */
+            if (ui->scroll_y > 0) ui->scroll_y--;
+            /* Re-find visible links after scroll and snap cursor */
+            n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
+                                        &first_vis, &last_vis);
+            if (n_vis > 0 && ui->cursor_link > first_vis)
+                ui->cursor_link = first_vis;
+            else if (n_vis > 0 && first_vis < ui->cursor_link)
+                ui->cursor_link = first_vis;
+        } else {
+            /* Move cursor to previous visible link (no scroll) */
+            for (int i = ui->cursor_link - 1; i >= 0; i--) {
+                int line = md_link_line(ui->doc, i);
+                if (line >= ui->scroll_y && line < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
         }
     }
     ui->dirty = 1;
@@ -413,13 +454,33 @@ void ui_state_up(ui_state_t *ui) {
 void ui_state_down(ui_state_t *ui) {
     if (!ui) return;
     if (ui->focus == FOCUS_JOURNAL && ui->doc) {
-        if (ui->cursor_link < ui->doc->link_count - 1) {
-            ui->cursor_link++;
-            /* Auto-scroll to keep cursor visible */
-            int link_line = md_link_line(ui->doc, ui->cursor_link);
-            int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
-            if (link_line >= ui->scroll_y + vis)
-                ui->scroll_y = link_line - vis + 1;
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int first_vis, last_vis;
+        int n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
+                                        &first_vis, &last_vis);
+
+        if (n_vis == 0) {
+            /* No links on screen — pure scroll mode */
+            if (ui->scroll_y < ui->doc->total_lines - 1)
+                ui->scroll_y++;
+        } else if (ui->cursor_link >= last_vis) {
+            /* At or below bottommost visible link — scroll down */
+            if (ui->scroll_y < ui->doc->total_lines - 1)
+                ui->scroll_y++;
+            /* Re-find visible links after scroll and snap cursor */
+            n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
+                                        &first_vis, &last_vis);
+            if (n_vis > 0 && ui->cursor_link < last_vis)
+                ui->cursor_link = last_vis;
+        } else {
+            /* Move cursor to next visible link (no scroll) */
+            for (int i = ui->cursor_link + 1; i < ui->doc->link_count; i++) {
+                int line = md_link_line(ui->doc, i);
+                if (line >= ui->scroll_y && line < ui->scroll_y + vis) {
+                    ui->cursor_link = i;
+                    break;
+                }
+            }
         }
     }
     ui->dirty = 1;
