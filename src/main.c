@@ -316,11 +316,13 @@ int main(int argc, char **argv) {
             session_dir = create_session_dir(nash_dir);
         }
         journal_t *journal = journal_new(session_dir);
+        int start_loop = journal_max_react_loop(journal) + 1;
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
             .cfg = cfg,
+            .react_loop = start_loop,
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
@@ -369,11 +371,13 @@ int main(int argc, char **argv) {
         }
 
         journal_t *journal = journal_new(session_dir);
+        int start_loop = journal_max_react_loop(journal) + 1;
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
             .cfg = cfg,
+            .react_loop = start_loop,
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,

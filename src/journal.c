@@ -154,3 +154,25 @@ char *journal_manifest(journal_t *j, int max_steps) {
 
     return str_steal(&out);
 }
+
+/* Scan journal.jsonl and return the highest react_loop value found.
+ * Returns -1 if the journal is empty or doesn't exist. */
+int journal_max_react_loop(journal_t *j) {
+    if (!j || !j->path) return -1;
+
+    FILE *f = fopen(j->path, "r");
+    if (!f) return -1;
+
+    int max_loop = -1;
+    char line[65536];
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+        int loop = (int)cJSON_GetNumberValue(
+            cJSON_GetObjectItem(entry, "react_loop"));
+        if (loop > max_loop) max_loop = loop;
+        cJSON_Delete(entry);
+    }
+    fclose(f);
+    return max_loop;
+}
