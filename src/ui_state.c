@@ -31,30 +31,6 @@ static const char *sanitize_md_link(const char *text) {
     return buf;
 }
 
-static char *read_file_content(const char *path, int max_bytes) {
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return NULL; }
-    if (max_bytes > 0 && sz > max_bytes) sz = max_bytes;
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    buf[n] = '\0';
-    fclose(f);
-    return buf;
-}
-
-/* Read content from a session ref (symlink -> store) */
-static char *read_ref_content(const char *session_dir, const char *ref, int max_bytes) {
-    if (!session_dir || !ref) return NULL;
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/%s", session_dir, ref);
-    return read_file_content(path, max_bytes);
-}
-
 /* ── lifecycle ───────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store) {

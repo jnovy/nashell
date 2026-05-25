@@ -255,13 +255,11 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (v && v->valuestring) value = v->valuestring;
 
         /* Get recency/importance data for composite scoring */
-        double last_acc = 0, created = 0;
+        double last_acc = 0;
         int acc_count = 0;
         cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
-        cJSON *ca = cJSON_GetObjectItem(entry, "created_at");
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
         if (la && la->valuestring) last_acc = atof(la->valuestring);
-        if (ca && ca->valuestring) created = atof(ca->valuestring);
         if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
 
         double s = score_entry_composite(key, value, tags, query, last_acc, acc_count);

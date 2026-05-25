@@ -75,7 +75,7 @@ char *journal_manifest(journal_t *j, int max_steps) {
         if (!entry) continue;
 
         int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
-        int step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
+        (void)cJSON_GetObjectItem(entry, "step");  /* step parsed but unused in manifest */
         const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
         const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
         double sz = cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));

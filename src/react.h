@@ -5,8 +5,6 @@
 #include "tools.h"
 #include "react_event.h"
 
-#define MAX_REACT_STEPS 0
-
 typedef struct {
     llm_config_t *llm;
     tool_ctx_t   *tools;
