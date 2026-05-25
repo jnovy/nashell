@@ -462,6 +462,15 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                     int first = 1;
                     while (remaining > 0) {
                         int chunk = remaining > cols ? cols : remaining;
+                        /* Word-wrap: if we're splitting, find the last space
+                         * within the chunk to break at a word boundary. */
+                        if (chunk < remaining) {
+                            int last_space = -1;
+                            for (int k = chunk - 1; k > cols / 4; k--) {
+                                if (wp[k] == ' ') { last_space = k; break; }
+                            }
+                            if (last_space > 0) chunk = last_space + 1;
+                        }
                         int vl = render_line - scroll_y;
                         if (vl >= 0 && vl < rows) {
                             if (first)
