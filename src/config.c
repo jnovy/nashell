@@ -235,7 +235,7 @@ int config_write_default(const char *path) {
         "\n"
         "# Context management\n"
         "scratchpad_max = 0           # max scratchpad chars (0 = auto: 5%% of context)\n"
-        "max_react_steps = 50         # max steps per react loop\n"
+        "max_react_steps = 0          # max steps per react loop (0 = unlimited)\n"
         "context_eviction_pct = 70    # context usage %% that triggers message eviction\n"
         "file_read_max_inline = 50000 # max chars returned inline by file_read (50KB)\n"
         "\n"
