@@ -44,6 +44,7 @@ md_doc_t *md_parse(const char *source) {
                     lk->text = strndup(text_start, (size_t)(text_end - text_start));
                     lk->uri = strndup(uri_start, (size_t)(uri_end - uri_start));
                     lk->doc_line = line_num;
+                    lk->render_line = -1;  /* set during md_render() */
                     p = uri_end + 1;
                     continue;
                 }
@@ -184,15 +185,23 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
         memcpy(line_buf, src, copy_len);
         line_buf[copy_len] = '\0';
 
+        /* Code block fence toggle — handle BEFORE visibility check
+         * so in_code_block state is always correct, and skip render_line++
+         * so fence lines don't produce blank lines in the output. */
+        if (strncmp(line_buf, "```", 3) == 0) {
+            in_code_block = !in_code_block;
+            /* Don't render ``` markers and don't increment render_line —
+             * they should be invisible (no blank line). */
+            src_line++;
+            src = eol ? eol + 1 : src + strlen(src);
+            continue;
+        }
+
         /* Check if this line is within the visible window */
         int vis_line = render_line - scroll_y;
 
         if (vis_line >= 0 && vis_line < rows) {
-            /* Code block toggle */
-            if (strncmp(line_buf, "```", 3) == 0) {
-                in_code_block = !in_code_block;
-                /* Don't render the ``` markers themselves */
-            } else if (in_code_block) {
+            if (in_code_block) {
                 /* Code block content: render in cyan with line wrapping */
                 wattron(win, COLOR_PAIR(C_STREAM));
                 int remaining = copy_len;
@@ -235,6 +244,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 /* Hyperlink line */
                 int is_cursor = (focus && link_idx == cursor_link);
                 md_link_t *lk = &doc->links[link_idx];
+                lk->render_line = render_line;
                 link_idx++;
 
                 if (is_cursor) {
@@ -410,12 +420,14 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
             /* Past visible area — still need to count links */
             if (line_buf[0] == '[' && link_idx < doc->link_count &&
                 src_line == doc->links[link_idx].doc_line) {
+                doc->links[link_idx].render_line = render_line;
                 link_idx++;
             }
         } else {
             /* Before visible area — still need to count links */
             if (line_buf[0] == '[' && link_idx < doc->link_count &&
                 src_line == doc->links[link_idx].doc_line) {
+                doc->links[link_idx].render_line = render_line;
                 link_idx++;
             }
         }
@@ -433,5 +445,8 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
 int md_link_line(md_doc_t *doc, int link_idx) {
     if (!doc || link_idx < 0 || link_idx >= doc->link_count)
         return 0;
-    return doc->links[link_idx].doc_line;
+    /* Use render_line if set (accounts for skipped ``` fence lines),
+     * otherwise fall back to doc_line (before first render). */
+    int rl = doc->links[link_idx].render_line;
+    return (rl >= 0) ? rl : doc->links[link_idx].doc_line;
 }

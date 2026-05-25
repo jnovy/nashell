@@ -7,7 +7,8 @@
 typedef struct {
     char *uri;          /* "file://session/R0" */
     char *text;         /* display text */
-    int   doc_line;     /* line in rendered output where this link starts */
+    int   doc_line;     /* line in source where this link starts */
+    int   render_line;  /* line in rendered output (set by md_render, accounts for skipped ``` lines) */
 } md_link_t;
 
 /* ── Parsed MD document ── */
