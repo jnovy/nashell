@@ -175,6 +175,14 @@ void ui_state_rebuild_md(ui_state_t *ui) {
         link_state_t ls = (i < ui->link_states_count) ?
                           ui->link_states[i] : LINK_COLLAPSED;
 
+        /* When a react loop is actively running, override display:
+         * - Active loop (last one): force SHOW_STEPS so agent progress is visible
+         * - All other loops: force COLLAPSED to reduce noise */
+        int is_active_loop = (ui->status == STATUS_RUNNING && i == qcount - 1);
+        if (ui->status == STATUS_RUNNING) {
+            ls = is_active_loop ? LINK_SHOW_STEPS : LINK_COLLAPSED;
+        }
+
         /* Format timestamp */
         char ts_buf[32] = "";
         if (qi->ts > 0) {
@@ -302,34 +310,23 @@ void ui_state_rebuild_md(ui_state_t *ui) {
             /* Show result AFTER steps (at the bottom) */
             if (qi->result)
                 str_appendf(&md, "> %s\n", qi->result);
-        }
-    }
 
-    /* Streaming progress (during inference) */
-    if (ui->status == STATUS_RUNNING) {
-        str_append_cstr(&md, "\n---\n\n");
-        if (ui->max_steps > 0)
-            str_appendf(&md, "**Step %d/%d** -- thinking...\n",
-                        ui->current_step, ui->max_steps);
-        else
-            str_appendf(&md, "**Step %d** -- thinking...\n",
-                        ui->current_step);
-        /* Show brief preview of streaming content (first 200 chars, sanitized) */
-        if (ui->stream_tokens && ui->stream_len > 0) {
-            int plen = ui->stream_len < 200 ? ui->stream_len : 200;
-            char preview[256];
-            int j = 0;
-            for (int i = 0; i < plen && j < (int)sizeof(preview) - 4; i++) {
-                if (ui->stream_tokens[i] == '\n' || ui->stream_tokens[i] == '\r')
-                    preview[j++] = ' ';
+            /* If this is the active loop during inference, show streaming
+             * content directly after the steps (no separate section). */
+            if (is_active_loop && ui->status == STATUS_RUNNING) {
+                if (ui->max_steps > 0)
+                    str_appendf(&md, "  ⏳ Step %d/%d thinking...\n",
+                                ui->current_step, ui->max_steps);
                 else
-                    preview[j++] = ui->stream_tokens[i];
+                    str_appendf(&md, "  ⏳ Step %d thinking...\n",
+                                ui->current_step);
+                /* Show streaming content (full, not just preview) */
+                if (ui->stream_tokens && ui->stream_len > 0) {
+                    str_append_cstr(&md, "```\n");
+                    str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
+                    str_append_cstr(&md, "```\n");
+                }
             }
-            if (ui->stream_len > 200) {
-                preview[j++] = '.'; preview[j++] = '.'; preview[j++] = '.';
-            }
-            preview[j] = '\0';
-            str_appendf(&md, "\n`%s`\n", preview);
         }
     }
 
@@ -347,6 +344,14 @@ done:;
     md_doc_free(ui->doc);
     ui->doc = md_parse(md_source);
     free(md_source);
+
+    /* Auto-scroll to bottom when actively streaming */
+    if (ui->status == STATUS_RUNNING && ui->doc) {
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int bottom = ui->doc->total_lines - vis;
+        if (bottom < 0) bottom = 0;
+        ui->scroll_y = bottom;
+    }
 
     /* Resize link_states to cover ALL links (queries + steps).
      * The initial sizing (qcount) only covers query links.
