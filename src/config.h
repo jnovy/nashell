@@ -20,6 +20,11 @@ typedef struct {
     float  tau_rho;           /* EDRM: Spearman correlation threshold (default -0.1) */
     float  tau_vnr;           /* EDRM: von Neumann ratio threshold (default 1.5) */
     float  tau_h;             /* EDRM: mean entropy threshold (default 4.0) */
+    int    budget;            /* thinking token budget: -1=unrestricted (default),
+                               * 0=no thinking, N>0=max thinking tokens.
+                               * Maps to llama.cpp --reasoning-budget.
+                               * Qwen3 natively supports thinking budgets via
+                               * early truncation of the <think> block. */
 } thinking_config_t;
 
 typedef struct {

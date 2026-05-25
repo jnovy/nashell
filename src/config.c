@@ -63,6 +63,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->thinking.tau_rho < -900)        cfg->thinking.tau_rho = -0.1f;
     if (cfg->thinking.tau_vnr == 0)          cfg->thinking.tau_vnr = 1.5f;
     if (cfg->thinking.tau_h == 0)            cfg->thinking.tau_h = 4.0f;
+    if (cfg->thinking.budget == 0)           cfg->thinking.budget = -1; /* -1 = unrestricted */
     if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
 }
@@ -161,6 +162,7 @@ config_t *config_load(const char *path) {
         cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", -999);
         cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", 0);
         cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", 0);
+        cfg->thinking.budget           = toml_int(thinking, "budget", -1);
     }
 
     toml_free(root);
@@ -209,6 +211,7 @@ int config_write_default(const char *path) {
         "# tau_rho = -0.1\n"
         "# tau_vnr = 1.5\n"
         "# tau_h = 4.0\n"
+        "# budget = -1               # thinking token budget: -1=unrestricted, 0=none, N>0=max tokens\n"
         "\n"
         "[limits]\n"
         "shell_timeout = 300          # max seconds for shell_exec\n"

@@ -11,6 +11,7 @@ typedef struct {
     float temperature;    /* sampling temperature */
     int   context_size;   /* server's n_ctx (0 = unknown, fetched via /props) */
     int   enable_thinking; /* 0=off, 1=on — set per-request by EDRM routing */
+    int   thinking_budget; /* -1=unrestricted, 0=none, N>0=max thinking tokens */
 } llm_config_t;
 
 /* EDRM entropy probe result — see [arXiv:2605.22873] */

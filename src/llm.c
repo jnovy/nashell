@@ -174,6 +174,11 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
     cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", cfg->enable_thinking);
     cJSON_AddItemToObject(req, "chat_template_kwargs", tmpl_kwargs);
 
+    /* Thinking budget: limit reasoning tokens (-1 = unrestricted) */
+    if (cfg->thinking_budget >= 0) {
+        cJSON_AddNumberToObject(req, "reasoning_budget", cfg->thinking_budget);
+    }
+
     /* Build messages array — handle tool_calls and tool results */
     cJSON *msgs = cJSON_CreateArray();
     for (int i = 0; i < chat->n_msgs; i++) {

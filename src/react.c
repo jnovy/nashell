@@ -598,6 +598,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     emit(on_event, userdata, &ev);
                 }
             }
+            /* Propagate thinking budget from config */
+            ctx->llm->thinking_budget = ctx->tools->cfg->thinking.budget;
         }
 
         llm_stats_t stats = {0};

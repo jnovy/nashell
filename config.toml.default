@@ -6,7 +6,7 @@ api_base = "http://192.168.1.18:8080"
 
 [client]
 temperature = 0.7
-max_tokens = 4096
+max_tokens = 16384
 json_mode = true
 stream = true
 
@@ -21,6 +21,7 @@ mode = "edrm"
 # tau_rho = -0.1             # Spearman correlation threshold
 # tau_vnr = 1.5              # von Neumann ratio threshold
 # tau_h = 4.0                # mean entropy threshold
+# budget = -1                # thinking token budget: -1=unrestricted, 0=none, N>0=max tokens
 
 [limits]
 # Shell command execution
