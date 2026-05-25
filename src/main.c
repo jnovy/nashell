@@ -323,6 +323,7 @@ int main(int argc, char **argv) {
             .session_dir = session_dir, .scratchpad = NULL,
             .cfg = cfg,
             .react_loop = start_loop,
+            .aliases = alias_map_new(),
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
@@ -332,6 +333,7 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         tools.react_loop++;  /* increment for next query */
         if (tools.scratchpad) free(tools.scratchpad);
+        alias_map_free(tools.aliases);
         journal_free(journal);
         free(session_dir);
         store_free(shared_store);
@@ -378,6 +380,7 @@ int main(int argc, char **argv) {
             .session_dir = session_dir, .scratchpad = NULL,
             .cfg = cfg,
             .react_loop = start_loop,
+            .aliases = alias_map_new(),
         };
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
@@ -517,6 +520,7 @@ int main(int argc, char **argv) {
                         journal = journal_new(session_dir);
                         tools.journal = journal;
                         tools.session_dir = session_dir;
+                        alias_map_clear(tools.aliases);
                         ui_state_set_status(ui, STATUS_READY,
                             "Forked — ready for new query");
                         tui_render(ui);
@@ -575,6 +579,7 @@ int main(int argc, char **argv) {
         ui_state_free(ui);
 
         if (tools.scratchpad) free(tools.scratchpad);
+        alias_map_free(tools.aliases);
         journal_free(journal);
         free(session_dir);
     }

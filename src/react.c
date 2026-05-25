@@ -180,13 +180,8 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                     slash++;  /* skip the '/' */
                     snprintf(entry_hash_buf, sizeof(entry_hash_buf), "%s", slash);
                     entry_hash = entry_hash_buf;
-                    /* Register in alias table */
-                    if (ctx->tools->alias_count < MAX_ALIASES) {
-                        alias_entry_t *a = &ctx->tools->aliases[ctx->tools->alias_count];
-                        snprintf(a->alias, sizeof(a->alias), "%s", ref);
-                        snprintf(a->hash, sizeof(a->hash), "%s", slash);
-                        ctx->tools->alias_count++;
-                    }
+                    /* Register in alias hash map */
+                    alias_map_insert(ctx->tools->aliases, ref, slash);
                 }
             }
         }
@@ -412,12 +407,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
-    /* Reset alias table at the start of every react loop.
-     * alias_count must be 0 so aliases start at R<N>S0 for each query.
-     * Without this, alias_count accumulates across queries and eventually
-     * overflows MAX_ALIASES (256), and alias names become wrong
-     * (e.g. R1S11 instead of R1S0). */
-    ctx->tools->alias_count = 0;
+    /* Clear alias hash map at the start of every react loop.
+     * Aliases start at R<N>S0 for each query. */
+    alias_map_clear(ctx->tools->aliases);
 
     /* Check for checkpoint — resume interrupted task */
     int resume_step = 0;

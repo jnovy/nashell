@@ -14,12 +14,27 @@ typedef struct {
     int     success;    /* 1 = ok, 0 = error */
 } tool_result_t;
 
-/* Step alias entry: maps R1S0, R1S1, ... to store hashes */
-#define MAX_ALIASES 256
+/* Dynamic hash map for step aliases (R1S0 → store hash).
+ * Grows automatically — no artificial limit. */
+typedef struct alias_node {
+    char        *alias;      /* "R1S0", "R1S1", etc. */
+    char        *hash;       /* content hash in shared store */
+    struct alias_node *next; /* chain for collisions */
+} alias_node_t;
+
 typedef struct {
-    char alias[16];     /* "R1S0", "R1S1", "R2S1", ... */
-    char hash[128];     /* content hash in shared store */
-} alias_entry_t;
+    alias_node_t **buckets;
+    int            capacity;
+    int            count;
+    int            next_seq;  /* next step sequence number for alias generation */
+} alias_map_t;
+
+/* Hash map lifecycle */
+alias_map_t *alias_map_new(void);
+void         alias_map_free(alias_map_t *map);
+void         alias_map_clear(alias_map_t *map);  /* keep allocated buckets */
+void        *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
+const char  *alias_map_lookup(alias_map_t *map, const char *alias);
 
 /* Session context passed to all tools */
 typedef struct {
@@ -31,9 +46,8 @@ typedef struct {
     char          *scratchpad;    /* current scratchpad content (owned) */
     int            step;          /* current step number (within react loop) */
     int            react_loop;    /* react loop counter (0-based, increments per query) */
-    /* Step alias tracking */
-    alias_entry_t  aliases[MAX_ALIASES];
-    int            alias_count;
+    /* Step alias tracking — dynamic hash map, no size limit */
+    alias_map_t   *aliases;
 } tool_ctx_t;
 
 /* Register a store hash as a step alias, returns alias string like "R1S0" */

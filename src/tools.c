@@ -49,36 +49,164 @@ static tool_result_t make_error(const char *msg) {
     return make_result(0, m, NULL);
 }
 
-/* ── alias management ──────────────────────────────────── */
+/* ── alias hash map implementation ───────────────────────
+ * Chained hash table. Grows when load factor > 0.75.
+ * Aliases are short strings like "R1S0", "R1S1", etc.
+ * Hash is DJB2 on the alias string.
+ */
+
+static unsigned int alias_hash(const char *s) {
+    unsigned int h = 5381;
+    while (*s) {
+        h = ((h << 5) + h) + (unsigned char)*s;
+        s++;
+    }
+    return h;
+}
+
+static void alias_map_grow(alias_map_t *map) {
+    int new_cap = map->capacity * 2;
+    if (new_cap == 0) new_cap = 16;
+    alias_node_t **new_buckets = calloc((size_t)new_cap, sizeof(alias_node_t *));
+    if (!new_buckets) return;  /* keep old table, just keep growing count */
+
+    /* Rehash all entries */
+    for (int i = 0; i < map->capacity; i++) {
+        alias_node_t *node = map->buckets[i];
+        while (node) {
+            unsigned int h = alias_hash(node->alias) % (unsigned int)new_cap;
+            alias_node_t *next = node->next;
+            node->next = new_buckets[h];
+            new_buckets[h] = node;
+            node = next;
+        }
+    }
+    free(map->buckets);
+    map->buckets = new_buckets;
+    map->capacity = new_cap;
+}
+
+alias_map_t *alias_map_new(void) {
+    alias_map_t *map = calloc(1, sizeof(alias_map_t));
+    if (!map) return NULL;
+    map->capacity = 16;
+    map->buckets = calloc((size_t)map->capacity, sizeof(alias_node_t *));
+    if (!map->buckets) { free(map); return NULL; }
+    map->count = 0;
+    map->next_seq = 0;
+    return map;
+}
+
+void alias_map_free(alias_map_t *map) {
+    if (!map) return;
+    for (int i = 0; i < map->capacity; i++) {
+        alias_node_t *node = map->buckets[i];
+        while (node) {
+            alias_node_t *next = node->next;
+            free(node->alias);
+            free(node->hash);
+            free(node);
+            node = next;
+        }
+    }
+    free(map->buckets);
+    free(map);
+}
+
+void alias_map_clear(alias_map_t *map) {
+    if (!map) return;
+    for (int i = 0; i < map->capacity; i++) {
+        alias_node_t *node = map->buckets[i];
+        while (node) {
+            alias_node_t *next = node->next;
+            free(node->alias);
+            free(node->hash);
+            free(node);
+            node = next;
+        }
+        map->buckets[i] = NULL;
+    }
+    map->count = 0;
+    map->next_seq = 0;
+}
+
+void *alias_map_insert(alias_map_t *map, const char *alias, const char *hash) {
+    if (!map || !alias) return NULL;
+
+    /* Check if alias already exists — update in place */
+    unsigned int h = alias_hash(alias) % (unsigned int)map->capacity;
+    alias_node_t *node = map->buckets[h];
+    while (node) {
+        if (strcmp(node->alias, alias) == 0) {
+            free(node->hash);
+            node->hash = hash ? strdup(hash) : strdup("");
+            return NULL;  /* updated, not inserted */
+        }
+        node = node->next;
+    }
+
+    /* Insert new node at head of chain */
+    alias_node_t *new_node = malloc(sizeof(alias_node_t));
+    if (!new_node) return NULL;
+    new_node->alias = strdup(alias);
+    new_node->hash = hash ? strdup(hash) : strdup("");
+    new_node->next = map->buckets[h];
+    map->buckets[h] = new_node;
+    map->count++;
+
+    /* Grow if load factor exceeds 0.75 */
+    if (map->count > map->capacity * 3 / 4) {
+        alias_map_grow(map);
+    }
+
+    return new_node;  /* non-NULL means new insertion */
+}
+
+const char *alias_map_lookup(alias_map_t *map, const char *alias) {
+    if (!map || !alias) return NULL;
+    unsigned int h = alias_hash(alias) % (unsigned int)map->capacity;
+    alias_node_t *node = map->buckets[h];
+    while (node) {
+        if (strcmp(node->alias, alias) == 0) {
+            return node->hash;
+        }
+        node = node->next;
+    }
+    return NULL;
+}
+
+/* ── public alias API (thin wrappers over hash map) ───── */
 
 const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
-    if (ctx->alias_count >= MAX_ALIASES) return "R?S?";
-    alias_entry_t *a = &ctx->aliases[ctx->alias_count];
-    snprintf(a->alias, sizeof(a->alias), "R%dS%d", ctx->react_loop, ctx->alias_count);
-    snprintf(a->hash, sizeof(a->hash), "%s", hash ? hash : "");
-    ctx->alias_count++;
+    if (!ctx || !ctx->aliases) return "R?S?";
+
+    char alias_buf[32];
+    snprintf(alias_buf, sizeof(alias_buf), "R%dS%d", ctx->react_loop, ctx->aliases->next_seq);
+    ctx->aliases->next_seq++;
+
+    alias_map_insert(ctx->aliases, alias_buf, hash ? hash : "");
 
     /* Create symlink in session directory: R1S0 → ../store/hash */
     if (ctx->session_dir && hash && hash[0]) {
         char link_path[4096];
         char target[4096];
-        snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, a->alias);
+        snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, alias_buf);
         snprintf(target, sizeof(target), "../../store/%s", hash);
         symlink(target, link_path);  /* ignore EEXIST */
     }
 
-    return a->alias;
+    /* Return a stable pointer — stored in the map node. We leak alias_buf
+     * by design since it's now owned by the map node's strdup. */
+    return alias_map_lookup(ctx->aliases, alias_buf);
 }
 
 const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
     /* Check if it looks like an alias: R1S1, R1S2, R2S1, ... */
-    if (!alias || alias[0] != 'R')
+    if (!ctx || !alias || alias[0] != 'R')
         return NULL;
-    for (int i = 0; i < ctx->alias_count; i++) {
-        if (strcmp(ctx->aliases[i].alias, alias) == 0) {
-            /* Return the full store path */
-            return store_resolve(ctx->store, ctx->aliases[i].hash);
-        }
+    const char *h = alias_map_lookup(ctx->aliases, alias);
+    if (h) {
+        return store_resolve(ctx->store, h);
     }
     return NULL;
 }
