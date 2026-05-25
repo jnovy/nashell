@@ -405,6 +405,7 @@ static void checkpoint_remove(react_ctx_t *ctx) {
 
 char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
+    fprintf(stderr, "[DEBUG] react_run START: react_loop=%d\n", ctx->tools->react_loop);
     llm_chat_t *chat = llm_chat_new();
 
     /* Check for checkpoint — resume interrupted task */
@@ -876,7 +877,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         tool_result_free(&tr);
 
         /* Save checkpoint after each tool execution (atomic write) */
-        checkpoint_save(ctx, step + 1, user_query,
+        if (!final_result) checkpoint_save(ctx, step + 1, user_query,
                         chat->last_tool_call_id);
 
         cJSON_Delete(action);
