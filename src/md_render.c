@@ -494,10 +494,24 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
         /* --- Lines OUTSIDE visible window still need wrapping for line count --- */
         } else {
             /* Off-screen: count wrapped lines so render_line stays accurate.
-             * Must simulate the same word-boundary splitting as on-screen
-             * rendering, otherwise render_line drifts and cursor is wrong. */
+             * Must simulate the SAME wrapping as on-screen rendering,
+             * otherwise render_line drifts and cursor highlights wrong line. */
             int tlen = copy_len;
-            if (tlen > cols && !in_code_block && line_buf[0] != '|') {
+            if (line_buf[0] == '|') {
+                /* Tables: no wrapping, 1 line per row (handled by table block) */
+            } else if (in_code_block) {
+                /* Code blocks wrap at cols-2 (indented by 2) */
+                int usable = cols - 2;
+                if (usable < 10) usable = 10;
+                if (tlen > usable) {
+                    int orem = tlen;
+                    while (orem > usable) {
+                        orem -= usable;
+                        render_line++;
+                    }
+                }
+            } else if (tlen > cols) {
+                /* Regular text: word-boundary wrapping at cols */
                 const char *owp = line_buf;
                 int orem = tlen;
                 while (orem > cols) {
