@@ -262,7 +262,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                         {
                             char step_uri[256];
                             snprintf(step_uri, sizeof(step_uri),
-                                     "file://session/R%d/S%d", qi->react_loop, (int)cJSON_GetNumberValue(cJSON_GetObjectItem(e, "step")));
+                                     "file://session/%s", ref ? ref : "?");
                             str_appendf(&md, "[  %s %s: %s \"%.60s\"",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
