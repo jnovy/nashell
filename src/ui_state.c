@@ -317,8 +317,12 @@ void ui_state_rebuild_md(ui_state_t *ui) {
     /* Streaming progress (during inference) */
     if (ui->status == STATUS_RUNNING) {
         str_append_cstr(&md, "\n---\n\n");
-        str_appendf(&md, "**Step %d/%d** -- thinking...\n",
-                    ui->current_step, ui->max_steps);
+        if (ui->max_steps > 0)
+            str_appendf(&md, "**Step %d/%d** -- thinking...\n",
+                        ui->current_step, ui->max_steps);
+        else
+            str_appendf(&md, "**Step %d** -- thinking...\n",
+                        ui->current_step);
         /* Show brief preview of streaming content (first 200 chars, sanitized) */
         if (ui->stream_tokens && ui->stream_len > 0) {
             int plen = ui->stream_len < 200 ? ui->stream_len : 200;
@@ -616,8 +620,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     switch (ev->type) {
     case REACT_EVENT_STEP_START: {
         char buf[128];
-        snprintf(buf, sizeof(buf), "Running step %d/%d...",
-                 ev->step, ev->max_steps);
+        if (ev->max_steps > 0)
+            snprintf(buf, sizeof(buf), "Running step %d/%d...",
+                     ev->step, ev->max_steps);
+        else
+            snprintf(buf, sizeof(buf), "Running step %d...",
+                     ev->step);
         ui->status = STATUS_RUNNING;
         free(ui->status_text);
         ui->status_text = strdup(buf);
