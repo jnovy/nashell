@@ -10,7 +10,6 @@
 #include <strings.h>  /* strcasestr */
 #include <unistd.h>   /* unlink */
 #include <math.h>     /* exp, log */
-#include <math.h>     /* exp, log */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -70,9 +69,9 @@ int memory_store(memory_t *m, const char *key, const char *value,
 
     cJSON_AddBoolToObject(entry, "pinned", pinned);
 
-    /* Check if entry already exists (update access_count) */
+    /* Check if entry already exists (read access_count, then increment) */
     FILE *existing = fopen(path, "r");
-    int access_count = 0;
+    int access_count = 1;  /* store itself counts as one access */
     double created_at = epoch_now();
     if (existing) {
         fseek(existing, 0, SEEK_END);
@@ -85,7 +84,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
             cJSON *old = cJSON_Parse(buf);
             if (old) {
                 cJSON *ac = cJSON_GetObjectItem(old, "access_count");
-                if (ac) access_count = (int)cJSON_GetNumberValue(ac);
+                if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
                 cJSON *ca = cJSON_GetObjectItem(old, "created_at");
                 if (ca) created_at = cJSON_GetNumberValue(ca);
                 cJSON_Delete(old);
