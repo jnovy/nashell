@@ -273,8 +273,48 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 wattroff(win, COLOR_PAIR(pair));
 
             } else if (line_buf[0] == '|') {
-                /* Table row */
-                /* Check if this is a separator line (|---|---|) */
+                /* Table row — two-pass: scan for column widths, then render padded */
+                #define MAX_TABLE_COLS 20
+
+                /* Pass 1: scan all consecutive | lines from current position
+                 * to find max column widths */
+                int col_widths[MAX_TABLE_COLS] = {0};
+                int num_cols = 0;
+                {
+                    const char *scan = src;
+                    while (scan && *scan == '|') {
+                        /* Parse this line's columns */
+                        const char *sp = scan + 1;  /* skip leading | */
+                        int ci = 0;
+                        while (*sp && *sp != '\n') {
+                            if (*sp == '|') { ci++; sp++; continue; }
+                            /* Find cell content */
+                            const char *cs = sp;
+                            while (*sp && *sp != '|' && *sp != '\n') sp++;
+                            /* Trim */
+                            const char *ts = cs, *te = sp;
+                            while (ts < te && *ts == ' ') ts++;
+                            while (te > ts && *(te-1) == ' ') te--;
+                            int w = (int)(te - ts);
+                            /* Skip separator cells (---) */
+                            int is_dash = 1;
+                            for (const char *dp = ts; dp < te; dp++)
+                                if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
+                            if (!is_dash && ci < MAX_TABLE_COLS) {
+                                if (w > col_widths[ci]) col_widths[ci] = w;
+                                if (ci + 1 > num_cols) num_cols = ci + 1;
+                            }
+                            if (*sp == '|') { ci++; sp++; }
+                        }
+                        /* Advance to next line */
+                        const char *nl = strchr(scan, '\n');
+                        scan = nl ? nl + 1 : NULL;
+                        if (scan && *scan != '|') break;
+                    }
+                }
+
+                /* Pass 2: render this row with padded columns */
+                /* Check if separator line */
                 int is_sep = 1;
                 for (const char *sp = line_buf + 1; *sp; sp++) {
                     if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
@@ -282,17 +322,22 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 }
 
                 if (is_sep) {
-                    /* Separator: render as thin horizontal line */
+                    /* Separator: render padded horizontal line */
+                    int x = 0;
                     wattron(win, COLOR_PAIR(C_DIM));
-                    mvwhline(win, vis_line, 0, ACS_HLINE, cols);
+                    for (int ci = 0; ci < num_cols && x < cols; ci++) {
+                        mvwaddch(win, vis_line, x++, ACS_PLUS);
+                        int w = col_widths[ci] + 2; /* +2 for padding spaces */
+                        for (int k = 0; k < w && x < cols; k++)
+                            mvwaddch(win, vis_line, x++, ACS_HLINE);
+                    }
+                    if (x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
                     wattroff(win, COLOR_PAIR(C_DIM));
                 } else {
-                    /* Data/header row: render columns with pipe separators */
-                    /* Check if this is a header row (first row before separator) */
+                    /* Data/header row */
                     int is_header = 0;
                     const char *next_src = eol ? eol + 1 : NULL;
                     if (next_src && *next_src == '|') {
-                        /* Check if next line is separator */
                         int ns = 1;
                         for (const char *np = next_src + 1; *np && *np != '\n'; np++) {
                             if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
@@ -301,37 +346,53 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                         if (ns) is_header = 1;
                     }
 
+                    /* Parse and render cells with padding */
                     int x = 0;
-                    const char *cp = line_buf;
-                    while (*cp && x < cols) {
+                    const char *cp = line_buf + 1; /* skip leading | */
+                    int ci = 0;
+                    while (*cp && *cp != '\n' && x < cols) {
                         if (*cp == '|') {
-                            wattron(win, COLOR_PAIR(C_DIM));
-                            mvwaddch(win, vis_line, x, ACS_VLINE);
-                            wattroff(win, COLOR_PAIR(C_DIM));
-                            x++;
-                            cp++;
-                        } else {
-                            /* Find next pipe or end */
-                            const char *cell_start = cp;
-                            while (*cp && *cp != '|') cp++;
-                            int cell_len = (int)(cp - cell_start);
-
-                            /* Trim leading/trailing spaces */
-                            const char *ts = cell_start;
-                            const char *te = cell_start + cell_len;
-                            while (ts < te && *ts == ' ') ts++;
-                            while (te > ts && *(te-1) == ' ') te--;
-                            int trimmed_len = (int)(te - ts);
-
-                            if (is_header) wattron(win, A_BOLD);
-                            if (trimmed_len > 0 && x < cols) {
-                                int maxw = cols - x;
-                                if (trimmed_len > maxw) trimmed_len = maxw;
-                                mvwaddnstr(win, vis_line, x, ts, trimmed_len);
-                            }
-                            if (is_header) wattroff(win, A_BOLD);
-                            x += cell_len;
+                            cp++; ci++;
+                            continue;
                         }
+                        /* Render pipe separator */
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        mvwaddch(win, vis_line, x++, ACS_VLINE);
+                        wattroff(win, COLOR_PAIR(C_DIM));
+
+                        /* Find cell content */
+                        const char *cell_start = cp;
+                        while (*cp && *cp != '|' && *cp != '\n') cp++;
+                        /* Trim */
+                        const char *ts = cell_start;
+                        const char *te = cp;
+                        while (ts < te && *ts == ' ') ts++;
+                        while (te > ts && *(te-1) == ' ') te--;
+                        int trimmed_len = (int)(te - ts);
+
+                        /* Render cell with padding */
+                        int pad_w = (ci < num_cols) ? col_widths[ci] : trimmed_len;
+                        if (x < cols) mvwaddch(win, vis_line, x++, ' '); /* left pad */
+                        if (is_header) wattron(win, A_BOLD);
+                        if (trimmed_len > 0 && x < cols) {
+                            int maxw = cols - x;
+                            if (trimmed_len > maxw) trimmed_len = maxw;
+                            mvwaddnstr(win, vis_line, x, ts, trimmed_len);
+                        }
+                        if (is_header) wattroff(win, A_BOLD);
+                        x += trimmed_len;
+                        /* Right-pad to column width */
+                        int target_x = x + (pad_w - trimmed_len) + 1;
+                        while (x < target_x && x < cols) {
+                            mvwaddch(win, vis_line, x++, ' ');
+                        }
+                        if (*cp == '|') { ci++; cp++; }
+                    }
+                    /* Trailing pipe */
+                    if (x < cols) {
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        mvwaddch(win, vis_line, x, ACS_VLINE);
+                        wattroff(win, COLOR_PAIR(C_DIM));
                     }
                 }
 
