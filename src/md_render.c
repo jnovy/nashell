@@ -454,31 +454,40 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 if (tlen <= cols) {
                     render_inline(win, vis_line, 0, line_buf, cols, 0);
                 } else {
-                    /* Word-wrap: render in chunks of cols width */
+                    /* Word-wrap: render in chunks of cols width.
+                     * First chunk uses render_inline (formatting), continuation
+                     * lines use mvwaddnstr (plain) to avoid splitting markers. */
                     const char *wp = line_buf;
                     int remaining = tlen;
+                    int first = 1;
                     while (remaining > 0) {
                         int chunk = remaining > cols ? cols : remaining;
                         int vl = render_line - scroll_y;
-                        if (vl >= 0 && vl < rows)
-                            render_inline(win, vl, 0, wp, chunk, 0);
+                        if (vl >= 0 && vl < rows) {
+                            if (first)
+                                render_inline(win, vl, 0, wp, cols, 0);
+                            else
+                                mvwaddnstr(win, vl, 0, wp, chunk);
+                        }
                         wp += chunk;
                         remaining -= chunk;
+                        first = 0;
                         if (remaining > 0) {
                             render_line++;
                         }
                     }
                 }
             }
-        } else if (vis_line >= rows) {
-            /* Past visible area — still need to count links */
-            if (line_buf[0] == '[' && link_idx < doc->link_count &&
-                src_line == doc->links[link_idx].doc_line) {
-                doc->links[link_idx].render_line = render_line;
-                link_idx++;
-            }
+
+        /* --- Lines OUTSIDE visible window still need wrapping for line count --- */
         } else {
-            /* Before visible area — still need to count links */
+            /* Off-screen: count wrapped lines so render_line stays accurate */
+            int tlen = copy_len;
+            if (tlen > cols && !in_code_block && line_buf[0] != '|') {
+                int extra = (tlen - 1) / cols;  /* additional lines from wrapping */
+                render_line += extra;
+            }
+            /* Off-screen: still need to count links */
             if (line_buf[0] == '[' && link_idx < doc->link_count &&
                 src_line == doc->links[link_idx].doc_line) {
                 doc->links[link_idx].render_line = render_line;
