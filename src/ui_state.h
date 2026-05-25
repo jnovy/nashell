@@ -34,6 +34,7 @@ typedef struct {
     /* ── MD document for main pane ── */
     md_doc_t      *doc;              /* parsed MD document */
     int            scroll_y;         /* vertical scroll offset */
+    int            scroll_x;         /* horizontal scroll offset (for wide tables) */
     int            visible_rows;     /* main pane height (set by tui.c) */
     int            cursor_link;      /* index into doc->links[] */
 

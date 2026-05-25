@@ -160,13 +160,35 @@ static void render_inline(WINDOW *win, int row, int col, const char *text,
 /* ── Main render function ── */
 
 int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
-              int focus) {
+              int focus, int scroll_x) {
     if (!win || !doc || !doc->source) return 0;
 
     int rows = getmaxy(win);
     int cols = getmaxx(win);
 
     werase(win);
+
+    /* Helper: render text with word-wrapping.
+     * Returns the number of extra lines consumed (0 if no wrap needed). */
+    #define RENDER_WRAPPED(win, vis_line, indent, text, textlen, cols, rows, render_line) do { \
+        int _remaining = (textlen); \
+        const char *_wp = (text); \
+        int _usable = (cols) - (indent); \
+        if (_usable < 10) _usable = 10; \
+        int _first = 1; \
+        while (_remaining > 0) { \
+            int _chunk = _remaining > _usable ? _usable : _remaining; \
+            int _vl = (render_line) - scroll_y; \
+            if (_vl >= 0 && _vl < (rows)) \
+                mvwaddnstr((win), _vl, _first ? (indent) : (indent), _wp, _chunk); \
+            _wp += _chunk; \
+            _remaining -= _chunk; \
+            if (_remaining > 0) { \
+                (render_line)++; \
+            } \
+            _first = 0; \
+        } \
+    } while(0)
 
     const char *src = doc->source;
     int render_line = 0;  /* line number in the full document */
@@ -320,7 +342,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                     }
                 }
 
-                /* Pass 2: render ALL table rows with consistent col_widths */
+                /* Pass 2: render ALL table rows with consistent col_widths.
+                 * Tables use horizontal scroll (scroll_x) instead of wrapping. */
+                int tbl_sx = scroll_x;
                 const char *trow = src;
                 for (int tr = 0; tr < table_rows && trow; tr++) {
                     const char *trow_eol = strchr(trow, '\n');
@@ -340,15 +364,18 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                                 { is_sep = 0; break; }
 
                         if (is_sep) {
-                            int x = 0;
+                            int x = -tbl_sx;
                             wattron(win, COLOR_PAIR(C_DIM));
-                            for (int ci = 0; ci < num_cols && x < cols; ci++) {
-                                mvwaddch(win, vis_line, x++, ACS_PLUS);
+                            for (int ci = 0; ci < num_cols; ci++) {
+                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                                x++;
                                 int w = col_widths[ci] + 2;
-                                for (int k = 0; k < w && x < cols; k++)
-                                    mvwaddch(win, vis_line, x++, ACS_HLINE);
+                                for (int k = 0; k < w; k++) {
+                                    if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
+                                    x++;
+                                }
                             }
-                            if (x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                            if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
                             wattroff(win, COLOR_PAIR(C_DIM));
                         } else {
                             /* Check if header (next row is separator) */
@@ -362,14 +389,17 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                                 if (ns) is_header = 1;
                             }
 
-                            int x = 0;
+                            int x = -tbl_sx;
                             const char *cp = tbuf + 1;
                             int ci = 0;
-                            while (*cp && *cp != '\n' && x < cols) {
+                            while (*cp && *cp != '\n') {
                                 if (*cp == '|') { cp++; ci++; continue; }
-                                wattron(win, COLOR_PAIR(C_DIM));
-                                mvwaddch(win, vis_line, x++, ACS_VLINE);
-                                wattroff(win, COLOR_PAIR(C_DIM));
+                                if (x >= 0 && x < cols) {
+                                    wattron(win, COLOR_PAIR(C_DIM));
+                                    mvwaddch(win, vis_line, x, ACS_VLINE);
+                                    wattroff(win, COLOR_PAIR(C_DIM));
+                                }
+                                x++;
                                 const char *cs = cp;
                                 while (*cp && *cp != '|' && *cp != '\n') cp++;
                                 const char *ts = cs, *te = cp;
@@ -377,21 +407,27 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                                 while (te > ts && *(te-1) == ' ') te--;
                                 int tlen = (int)(te - ts);
                                 int pw = (ci < num_cols) ? col_widths[ci] : tlen;
-                                if (x < cols) mvwaddch(win, vis_line, x++, ' ');
+                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
+                                x++;
                                 if (is_header) wattron(win, A_BOLD);
-                                if (tlen > 0 && x < cols) {
-                                    int mw = cols - x;
-                                    if (tlen > mw) tlen = mw;
-                                    mvwaddnstr(win, vis_line, x, ts, tlen);
+                                if (tlen > 0) {
+                                    /* Render cell text, clipping to visible region */
+                                    for (int ti = 0; ti < tlen; ti++) {
+                                        if (x >= 0 && x < cols)
+                                            mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
+                                        x++;
+                                    }
                                 }
                                 if (is_header) wattroff(win, A_BOLD);
-                                x += tlen;
                                 int tx = x + (pw - tlen) + 1;
-                                while (x < tx && x < cols)
-                                    mvwaddch(win, vis_line, x++, ' ');
+                                while (x < tx) {
+                                    if (x >= 0 && x < cols)
+                                        mvwaddch(win, vis_line, x, ' ');
+                                    x++;
+                                }
                                 if (*cp == '|') { ci++; cp++; }
                             }
-                            if (x < cols) {
+                            if (x >= 0 && x < cols) {
                                 wattron(win, COLOR_PAIR(C_DIM));
                                 mvwaddch(win, vis_line, x, ACS_VLINE);
                                 wattroff(win, COLOR_PAIR(C_DIM));
@@ -413,8 +449,26 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 }
 
             } else {
-                /* Regular text with inline formatting */
-                render_inline(win, vis_line, 0, line_buf, cols, 0);
+                /* Regular text with inline formatting — wrap to terminal width */
+                int tlen = copy_len;
+                if (tlen <= cols) {
+                    render_inline(win, vis_line, 0, line_buf, cols, 0);
+                } else {
+                    /* Word-wrap: render in chunks of cols width */
+                    const char *wp = line_buf;
+                    int remaining = tlen;
+                    while (remaining > 0) {
+                        int chunk = remaining > cols ? cols : remaining;
+                        int vl = render_line - scroll_y;
+                        if (vl >= 0 && vl < rows)
+                            render_inline(win, vl, 0, wp, chunk, 0);
+                        wp += chunk;
+                        remaining -= chunk;
+                        if (remaining > 0) {
+                            render_line++;
+                        }
+                    }
+                }
             }
         } else if (vis_line >= rows) {
             /* Past visible area — still need to count links */

@@ -33,7 +33,8 @@ void md_doc_free(md_doc_t *doc);
  * cursor_link: index into doc->links[] for the selected hyperlink (-1 = none)
  * focus: 1 = this pane has focus (cursor visible), 0 = no focus
  * Returns: total number of rendered lines */
-int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link, int focus);
+int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
+              int cursor_link, int focus);
 
 /* Get the rendered line number of a link (for auto-scrolling to keep cursor visible) */
 int md_link_line(md_doc_t *doc, int link_idx);

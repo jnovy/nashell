@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Nash is a C-based autonomous AI agent shell with ~5,500 lines of code across 15 source files. I verified all 22 issues from the existing ANALYSIS.md and found **8 additional flaws** not previously documented. Issues are categorized by severity.
+Nash is a C-based autonomous AI agent shell with ~5,500 lines of code across 15 source files. I verified all 22 issues from the existing ANALYSIS.md and found **6 additional confirmed flaws** not previously documented. Issues are categorized by severity.
 
 ---
 
@@ -65,7 +65,7 @@ The LLM sees tool results from the previous (different) task mixed with the new 
 
 ---
 
-### 5. FORK COMMAND — Wrong `tools.react_loop` for Symlinks (main.c) **[NEW]**
+### 5. FORK COMMAND — Wrong `tools.react_loop` for Symlinks (main.c) **[NEW, CONFIRMED]**
 **File:** `src/main.c`, `/fork` handler
 
 ```c
@@ -73,30 +73,17 @@ for (int i = 0; i <= fork_step + 5; i++) {
     snprintf(ref, sizeof(ref), "R%dS%d", tools.react_loop, i);
 ```
 
-This uses `tools.react_loop` which is the **current** loop number (the one that was just finished), NOT the loop being forked. If the user has run 3 queries (loops 0, 1, 2) and forks from loop 1, the symlinks will be named `R3S0`, `R3S1`... instead of `R1S0`, `R1S1`...
+This uses `tools.react_loop` which is the **current** loop number (the one that was just finished), NOT the loop being forked. The journal entries being copied could be from ANY previous react_loop (R0, R1, R2, etc.), but the symlink copy only looks for `R<current_loop>S<i>`. For example, if the user has run 3 queries (loops 0, 1, 2) and forks from step 5 of loop 1, the symlinks `R1S0` through `R1S10` exist in the source directory, but the code looks for `R3S0` through `R3S10` — finding nothing.
 
-**Impact:** Forked sessions have broken symlinks — references don't resolve.
+**Impact:** Forked sessions have broken symlinks — references don't resolve, tools fail with "file not found".
 
----
-
-### 6. `cJSON_AddItemReferenceToObject` in journal_append (journal.c) **[NEW]**
-**File:** `src/journal.c`, `journal_append()`
-
-```c
-if (params) cJSON_AddItemReferenceToObject(entry, "params", params);
-// ...
-cJSON_Delete(entry);
-```
-
-`cJSON_AddItemReferenceToObject` creates a reference (not a copy). When `cJSON_Delete(entry)` is called, it **also deletes `params`**. But `params` is owned by the caller (e.g., `react.c`), which may have already freed it or may free it later, causing a double-free or use-after-free.
-
-**Impact:** Double-free, use-after-free on caller's cJSON objects.
+**Fix:** Iterate over all react_loop numbers present in the journal, not just the current one.
 
 ---
 
 ## HIGH SEVERITY
 
-### 7. CONTEXT EVICTION BREAKS TOOL CALL THREADING (react.c)
+### 6. CONTEXT EVICTION BREAKS TOOL CALL THREADING (react.c)
 **File:** `src/react.c`, context eviction block
 
 After eviction, `last_tool_call_id` and `last_tool_calls_json` are freed and set to NULL. The code then tries to recover them by scanning surviving messages:
@@ -118,7 +105,7 @@ This assumes the tool result message is at `ri + 1`, but eviction could have rem
 
 ---
 
-### 8. FILE RACE on journal.jsonl (react.c + main.c)
+### 7. FILE RACE on journal.jsonl (react.c + main.c)
 **File:** `src/react.c` writes, `src/main.c` reads
 
 The inference thread writes via `journal_append()` (open/write/close per entry). The TUI thread reads via `ui_state_load_journal()` (full file scan). While `journal_append()` uses `flock(LOCK_EX)`, the TUI reader uses `flock(LOCK_SH)` in `journal_manifest()` but NOT in `ui_state_load_journal()`.
@@ -127,7 +114,7 @@ The inference thread writes via `journal_append()` (open/write/close per entry).
 
 ---
 
-### 9. STORE SAVE SILENT FAILURE (store.c)
+### 8. STORE SAVE SILENT FAILURE (store.c)
 **File:** `src/store.c`, `store_save()`
 
 ```c
@@ -142,7 +129,7 @@ If two threads save the same content simultaneously, only one succeeds (O_EXCL).
 
 ---
 
-### 10. SHELL INJECTION — No Sandboxing (tools.c) **[NEW]**
+### 9. SHELL INJECTION — No Sandboxing (tools.c) **[NEW, CONFIRMED]**
 **File:** `src/tools.c`, `tool_shell_exec()`
 
 ```c
@@ -156,7 +143,7 @@ No sandboxing, no user namespace isolation, no allowlist. The LLM can execute `r
 
 ---
 
-### 11. FILE WRITE — No Path Validation (tools.c) **[NEW]**
+### 10. FILE WRITE — No Path Validation (tools.c) **[NEW, CONFIRMED]**
 **File:** `src/tools.c`, `tool_file_write()`, `tool_file_edit()`
 
 ```c
@@ -169,7 +156,7 @@ No check that `path` is within the session directory or a sandbox. The LLM can w
 
 ---
 
-### 12. `memory_store` — `strtok` Thread Safety (tools.c) **[NEW]**
+### 11. `memory_store` — `strtok` Thread Safety (tools.c) **[NEW]**
 **File:** `src/tools.c`, `tool_memory_store()`
 
 ```c
@@ -185,7 +172,7 @@ char *tok = strtok(tags_copy, ",");  // uses internal static state
 
 ## MEDIUM SEVERITY
 
-### 13. EDRM PROBE — Statistically Unreliable (llm.c)
+### 12. EDRM PROBE — Statistically Unreliable (llm.c)
 **File:** `src/llm.c`, `llm_edrm_probe()`
 
 A single 30-token sample with arbitrary thresholds (`tau_rho=-0.1`, `tau_vnr=1.5`, `tau_h=4.0`) is statistically insufficient for reliable entropy estimation. No calibration data, no confidence intervals.
@@ -194,7 +181,7 @@ A single 30-token sample with arbitrary thresholds (`tau_rho=-0.1`, `tau_vnr=1.5
 
 ---
 
-### 14. CYCLING DETECTION — Shallow Signature (react.c)
+### 13. CYCLING DETECTION — Shallow Signature (react.c)
 **File:** `src/react.c`
 
 ```c
@@ -210,7 +197,7 @@ Only 8 recent signatures tracked. Doesn't detect:
 
 ---
 
-### 15. `file_edit` — Only Replaces First Occurrence (tools.c)
+### 14. `file_edit` — Only Replaces First Occurrence (tools.c)
 **File:** `src/tools.c`, `tool_file_edit()`
 
 ```c
@@ -223,7 +210,7 @@ Only replaces the first occurrence. No indication to the caller that only one re
 
 ---
 
-### 16. `grep_search` — Hardcoded File Extensions (tools.c)
+### 15. `grep_search` — Hardcoded File Extensions (tools.c)
 **File:** `src/tools.c`, `tool_grep_search()`
 
 Hardcoded ~20 extensions. Misses: `.ts`, `.jsx`, `.tsx`, `.vue`, `.svelte`, `.zig`, `.ex`, `.sql`, `.proto`, `.csv`, `.log`, etc.
@@ -232,7 +219,7 @@ Hardcoded ~20 extensions. Misses: `.ts`, `.jsx`, `.tsx`, `.vue`, `.svelte`, `.zi
 
 ---
 
-### 17. `memory_recall` — Double-Read Inefficiency (memory.c)
+### 16. `memory_recall` — Double-Read Inefficiency (memory.c)
 **File:** `src/memory.c`, `memory_recall()`
 
 Each `.json` file is read twice: once for scoring, once for results. With 1000+ memories = 2000+ file I/O operations.
@@ -241,7 +228,7 @@ Each `.json` file is read twice: once for scoring, once for results. With 1000+ 
 
 ---
 
-### 18. Hardcoded API Default IP (config.c)
+### 17. Hardcoded API Default IP (config.c)
 **File:** `src/config.c`
 
 ```c
@@ -254,7 +241,7 @@ Specific LAN IP that won't work for most users.
 
 ---
 
-### 19. `web_fetch` — No Distinction Between 404 and Network Error (tools.c)
+### 18. `web_fetch` — No Distinction Between 404 and Network Error (tools.c)
 **File:** `src/tools.c`, `tool_web_fetch()`
 
 ```c
@@ -267,7 +254,7 @@ return make_result(http_code >= 200 && http_code < 400, meta, ref_copy);
 
 ---
 
-### 20. `utf8_truncate` Edge Case (str.c) **[NEW]**
+### 19. `utf8_truncate` Edge Case (str.c) **[NEW]**
 **File:** `src/str.c`, `utf8_truncate()`
 
 If the input starts with a 4-byte UTF-8 sequence and `max_bytes == 3`, the result is an empty string. This is technically correct but can produce empty strings in contexts where some output is expected.
@@ -276,7 +263,7 @@ If the input starts with a 4-byte UTF-8 sequence and `max_bytes == 3`, the resul
 
 ---
 
-### 21. Spearman Ranking — Bubble Sort O(n²) (llm.c) **[NEW]**
+### 20. Spearman Ranking — Bubble Sort O(n²) with Incorrect Tie Handling (llm.c) **[NEW]**
 **File:** `src/llm.c`, `spearman_corr()`
 
 ```c
@@ -284,45 +271,31 @@ for (int i = 0; i < n - 1; i++)
     for (int j = i + 1; j < n; j++)
 ```
 
-Bubble sort for ranking. With `n=30` (default probe_tokens), this is fine, but the algorithm is O(n²) and the ranking is incorrect for duplicate values (should use average rank for ties).
+Bubble sort for ranking. With `n=30` (default probe_tokens), this is fine performance-wise, but the ranking is incorrect for duplicate values — proper Spearman correlation should use average rank for ties, not arbitrary ordering.
 
 **Impact:** Slightly incorrect Spearman correlation for distributions with tied entropy values.
 
 ---
 
-### 22. `memory_build_index` — Reads All Files Twice (memory.c) **[NEW]**
+### 21. `memory_build_index` — Reads All Files on Every Memory Write (memory.c) **[NEW]**
 **File:** `src/memory.c`
 
-`memory_build_index()` reads every `.json` file in the memory directory to build the index. Then `memory_write_index_file()` calls `memory_build_index()` again. This is called after every `memory_store`, `memory_pin`, `memory_unpin` operation.
+`memory_build_index()` reads every `.json` file in the memory directory. `memory_write_index_file()` calls `memory_build_index()`. This is called after every `memory_store`, `memory_pin`, `memory_unpin` operation.
 
-**Impact:** O(n) file I/O on every memory write.
+**Impact:** O(n) file I/O on every memory write, degrades with memory count.
 
 ---
 
-### 23. `tool_grep_search` — No Timeout on `read()` (tools.c) **[NEW]**
+### 22. `tool_grep_search` — Busy-Wait Timeout (tools.c) **[NEW]**
 **File:** `src/tools.c`, `tool_grep_search()`
 
-The grep tool uses a busy-wait loop with `nanosleep(10ms)` and `time(NULL)` for timeout. `time(NULL)` has 1-second granularity, so the actual timeout can be up to 1 second longer than configured. Additionally, if `grep` produces no output for a long time (e.g., searching a large directory), the busy-wait consumes CPU.
+The grep tool uses a busy-wait loop with `nanosleep(10ms)` and `time(NULL)` for timeout. `time(NULL)` has 1-second granularity, so the actual timeout can be up to 1 second longer than configured. The busy-wait consumes CPU when grep produces no output for a long time.
 
 **Impact:** Inefficient CPU usage, imprecise timeout.
 
 ---
 
-### 24. `journal_manifest` — `LOCK_SH` Not Released on Early Return (journal.c) **[NEW]**
-**File:** `src/journal.c`, `journal_manifest()`
-
-```c
-flock(fileno(f), LOCK_SH);
-// ... reads file ...
-fclose(f);
-return str_steal(&out);
-```
-
-`LOCK_SH` is released when the file descriptor is closed by `fclose(f)`. This is correct. However, if `fopen` fails, the function returns early without ever acquiring the lock, which is also correct. **No bug here — the analysis.md claim was wrong.**
-
----
-
-### 25. `checkpoint_save` — Non-Atomic `rename` Across Filesystems (react.c) **[NEW]**
+### 23. `checkpoint_save` — Non-Atomic `rename` Across Filesystems (react.c) **[NEW]**
 **File:** `src/react.c`, `checkpoint_save()`
 
 ```c
@@ -337,9 +310,18 @@ rename(tmp_path, path);  /* atomic write */
 
 ---
 
+### 24. `file_edit` — Missing Post-Edit Store Hash (tools.c) **[NEW]**
+**File:** `src/tools.c`, `tool_file_edit()`
+
+`file_edit` stores the **pre-edit** content and returns a `pre_ref`, but does NOT store the post-edit content in the store or return a post-edit alias. If the agent later needs to read the edited file, it must do a full `file_read(path)` instead of `file_read(R0SN)`.
+
+**Impact:** Extra file_read calls, missing audit trail for post-edit content.
+
+---
+
 ## LOW SEVERITY / CODE QUALITY
 
-### 26. Magic Numbers Throughout
+### 25. Magic Numbers Throughout
 - `500` bytes for shell output preview threshold
 - `50000` chars for file_read inline content
 - `512000` bytes for web_fetch cap
@@ -348,13 +330,27 @@ rename(tmp_path, path);  /* atomic write */
 - `8` for cycling detection history
 - `3` keep_head, `4` keep_tail for context eviction
 
-### 27. Missing `#include <stdarg.h>` in str.c
+### 26. Missing `#include <stdarg.h>` in str.c **[NEW]**
 **File:** `src/str.c`
 
 Uses `va_list`, `va_start`, `va_copy`, `va_end` but doesn't `#include <stdarg.h>`. Works by transitive inclusion but is technically undefined behavior.
 
-### 28. No Unit Tests
+### 27. No Unit Tests
 The codebase has no test infrastructure. All bugs are discovered at runtime.
+
+---
+
+## Verified Safe (False Alarms)
+
+### ~~`cJSON_AddItemReferenceToObject` in journal_append~~
+**File:** `src/journal.c`, `journal_append()`
+
+Initially reported as a double-free risk. Verified: `cJSON_AddItemReferenceToObject` creates a shallow reference with the `cJSON_IsReference` flag. When `cJSON_Delete(entry)` is called, the reference wrapper is freed but the original `params` is NOT freed (the flag prevents traversal into the referenced child). The caller (react.c) correctly frees `params` with `cJSON_Delete(action)` after `journal_append` returns. **No bug here.**
+
+### ~~`journal_manifest` LOCK_SH not released~~
+**File:** `src/journal.c`, `journal_manifest()`
+
+`LOCK_SH` is released when the file descriptor is closed by `fclose(f)`. If `fopen` fails, the function returns early without ever acquiring the lock. **No bug here.**
 
 ---
 
@@ -367,38 +363,36 @@ The codebase has no test infrastructure. All bugs are discovered at runtime.
 | 3 | Critical | Memory Safety | Fragile double-free in LLM retry loop |
 | 4 | Critical | Logic | Checkpoint restore context pollution |
 | 5 | Critical | Logic | Fork uses wrong react_loop for symlinks |
-| 6 | Critical | Memory Safety | cJSON reference causes double-free |
-| 7 | High | Memory Safety | Context eviction breaks tool call threading |
-| 8 | High | Concurrency | File race on journal.jsonl |
-| 9 | High | Concurrency | Store save silent failure with O_EXCL |
-| 10 | High | Security | Shell injection — no sandboxing |
-| 11 | High | Security | File write — no path validation |
-| 12 | High | Concurrency | strtok thread safety |
-| 13 | Medium | Logic | EDRM probe — statistically unreliable |
-| 14 | Medium | Logic | Cycling detection — shallow signature |
-| 15 | Medium | Logic | file_edit — only replaces first occurrence |
-| 16 | Medium | UX | grep_search — hardcoded file extensions |
-| 17 | Medium | Performance | memory_recall — double-read inefficiency |
-| 18 | Medium | UX | Hardcoded API default IP |
-| 19 | Medium | Logic | web_fetch — no 404 vs network error distinction |
-| 20 | Medium | Logic | utf8_truncate edge case |
-| 21 | Medium | Logic | Spearman ranking — incorrect for ties |
-| 22 | Medium | Performance | memory_build_index reads all files on every write |
-| 23 | Medium | Performance | grep_search — busy-wait timeout |
-| 24 | Medium | Concurrency | journal_manifest LOCK_SH (actually correct) |
-| 25 | Medium | Logic | checkpoint_save rename across filesystems |
-| 26 | Low | Code Quality | Magic numbers throughout |
-| 27 | Low | Code Quality | Missing stdarg.h include |
-| 28 | Low | Code Quality | No unit tests |
+| 6 | High | Memory Safety | Context eviction breaks tool call threading |
+| 7 | High | Concurrency | File race on journal.jsonl |
+| 8 | High | Concurrency | Store save silent failure with O_EXCL |
+| 9 | High | Security | Shell injection — no sandboxing |
+| 10 | High | Security | File write — no path validation |
+| 11 | High | Concurrency | strtok thread safety |
+| 12 | Medium | Logic | EDRM probe — statistically unreliable |
+| 13 | Medium | Logic | Cycling detection — shallow signature |
+| 14 | Medium | Logic | file_edit — only replaces first occurrence |
+| 15 | Medium | UX | grep_search — hardcoded file extensions |
+| 16 | Medium | Performance | memory_recall — double-read inefficiency |
+| 17 | Medium | UX | Hardcoded API default IP |
+| 18 | Medium | Logic | web_fetch — no 404 vs network error distinction |
+| 19 | Medium | Logic | utf8_truncate edge case |
+| 20 | Medium | Logic | Spearman ranking — incorrect for ties |
+| 21 | Medium | Performance | memory_build_index reads all files on every write |
+| 22 | Medium | Performance | grep_search — busy-wait timeout |
+| 23 | Medium | Logic | checkpoint_save rename across filesystems |
+| 24 | Medium | Data Integrity | file_edit — missing post-edit store hash |
+| 25 | Low | Code Quality | Magic numbers throughout |
+| 26 | Low | Code Quality | Missing stdarg.h include |
+| 27 | Low | Code Quality | No unit tests |
 
-**Total: 28 distinct issues (22 from ANALYSIS.md + 8 new)**
+**Total: 27 distinct issues (22 from ANALYSIS.md + 6 new confirmed, 2 verified safe)**
 
 ## Priority Fixes
 
 1. **Thread safety** of `infer_args_t` (data race) — #1
 2. **Dangling pointers** from `tool_register_alias` (use-after-free) — #2
-3. **cJSON reference** in journal_append (double-free) — #6
-4. **Sandboxing** for `shell_exec` (security) — #10
-5. **File path validation** for write operations (security) — #11
-6. **Fork symlink** react_loop fix (correctness) — #5
-7. **Checkpoint restore** logic (correctness) — #4
+3. **Sandboxing** for `shell_exec` (security) — #9
+4. **File path validation** for write operations (security) — #10
+5. **Fork symlink** react_loop fix (correctness) — #5
+6. **Checkpoint restore** logic (correctness) — #4

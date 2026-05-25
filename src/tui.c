@@ -95,7 +95,8 @@ static void render_main(ui_state_t *ui) {
 
     if (ui->doc) {
         int focus = (ui->focus == FOCUS_JOURNAL);
-        md_render(win_main, ui->doc, ui->scroll_y, ui->cursor_link, focus);
+        md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
+                 ui->cursor_link, focus);
     } else {
         wattron(win_main, COLOR_PAIR(C_DIM));
         mvwaddstr(win_main, 0, 0, "  Loading...");
@@ -255,10 +256,19 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     case KEY_LEFT:
         if (ui->focus == FOCUS_QUERY) ui_state_input_left(ui);
+        else if (ui->focus == FOCUS_JOURNAL && ui->scroll_x > 0) {
+            ui->scroll_x -= 4;
+            if (ui->scroll_x < 0) ui->scroll_x = 0;
+            ui->dirty = 1;
+        }
         break;
 
     case KEY_RIGHT:
         if (ui->focus == FOCUS_QUERY) ui_state_input_right(ui);
+        else if (ui->focus == FOCUS_JOURNAL) {
+            ui->scroll_x += 4;
+            ui->dirty = 1;
+        }
         break;
 
     case KEY_HOME:
