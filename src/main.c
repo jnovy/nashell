@@ -526,6 +526,18 @@ int main(int argc, char **argv) {
                 }
 
                 /* Regular query — spawn inference in background thread */
+                if (inferring) {
+                    /* Previous inference still running — reject new query.
+                     * react_ctx_t and tools are shared state that can't
+                     * support concurrent react loops. */
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_RUNNING,
+                        "Still running — wait for completion");
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+                    free(submitted_query);
+                    continue;
+                }
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_RUNNING, "Running...");
                 ui_state_add_query(ui, submitted_query);
