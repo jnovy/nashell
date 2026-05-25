@@ -272,6 +272,69 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int cursor_link,
                 mvwaddnstr(win, vis_line, 0, line_buf, cols);
                 wattroff(win, COLOR_PAIR(pair));
 
+            } else if (line_buf[0] == '|') {
+                /* Table row */
+                /* Check if this is a separator line (|---|---|) */
+                int is_sep = 1;
+                for (const char *sp = line_buf + 1; *sp; sp++) {
+                    if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
+                        { is_sep = 0; break; }
+                }
+
+                if (is_sep) {
+                    /* Separator: render as thin horizontal line */
+                    wattron(win, COLOR_PAIR(C_DIM));
+                    mvwhline(win, vis_line, 0, ACS_HLINE, cols);
+                    wattroff(win, COLOR_PAIR(C_DIM));
+                } else {
+                    /* Data/header row: render columns with pipe separators */
+                    /* Check if this is a header row (first row before separator) */
+                    int is_header = 0;
+                    const char *next_src = eol ? eol + 1 : NULL;
+                    if (next_src && *next_src == '|') {
+                        /* Check if next line is separator */
+                        int ns = 1;
+                        for (const char *np = next_src + 1; *np && *np != '\n'; np++) {
+                            if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
+                                { ns = 0; break; }
+                        }
+                        if (ns) is_header = 1;
+                    }
+
+                    int x = 0;
+                    const char *cp = line_buf;
+                    while (*cp && x < cols) {
+                        if (*cp == '|') {
+                            wattron(win, COLOR_PAIR(C_DIM));
+                            mvwaddch(win, vis_line, x, ACS_VLINE);
+                            wattroff(win, COLOR_PAIR(C_DIM));
+                            x++;
+                            cp++;
+                        } else {
+                            /* Find next pipe or end */
+                            const char *cell_start = cp;
+                            while (*cp && *cp != '|') cp++;
+                            int cell_len = (int)(cp - cell_start);
+
+                            /* Trim leading/trailing spaces */
+                            const char *ts = cell_start;
+                            const char *te = cell_start + cell_len;
+                            while (ts < te && *ts == ' ') ts++;
+                            while (te > ts && *(te-1) == ' ') te--;
+                            int trimmed_len = (int)(te - ts);
+
+                            if (is_header) wattron(win, A_BOLD);
+                            if (trimmed_len > 0 && x < cols) {
+                                int maxw = cols - x;
+                                if (trimmed_len > maxw) trimmed_len = maxw;
+                                mvwaddnstr(win, vis_line, x, ts, trimmed_len);
+                            }
+                            if (is_header) wattroff(win, A_BOLD);
+                            x += cell_len;
+                        }
+                    }
+                }
+
             } else {
                 /* Regular text with inline formatting */
                 render_inline(win, vis_line, 0, line_buf, cols, 0);
