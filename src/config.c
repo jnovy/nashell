@@ -52,15 +52,18 @@ void config_set_defaults(config_t *cfg) {
     cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
 
-    /* [thinking] defaults — EDRM is the default mode */
-    if (cfg->thinking.mode == 0 && cfg->thinking.probe_tokens == 0) {
-        /* Not explicitly set — default to EDRM */
+    /* [thinking] defaults — EDRM is the default mode.
+     * After calloc, all fields are 0. We check multiple fields to distinguish
+     * "nothing configured" from explicit mode="no" (THINKING_OFF=0). */
+    if (cfg->thinking.mode == THINKING_OFF && cfg->thinking.probe_tokens == 0
+        && cfg->thinking.tau_vnr == 0 && cfg->thinking.tau_h == 0) {
+        /* Nothing was set by TOML parsing — default to EDRM */
         cfg->thinking.mode = THINKING_EDRM;
     }
     if (cfg->thinking.probe_tokens == 0)     cfg->thinking.probe_tokens = 30;
     if (cfg->thinking.probe_n_probs == 0)    cfg->thinking.probe_n_probs = 10;
     if (cfg->thinking.probe_temperature == 0) cfg->thinking.probe_temperature = 0.6f;
-    if (cfg->thinking.tau_rho < -900)        cfg->thinking.tau_rho = -0.1f;
+    if (cfg->thinking.tau_rho == 0)           cfg->thinking.tau_rho = -0.1f; /* 0 = unset (calloc) */
     if (cfg->thinking.tau_vnr == 0)          cfg->thinking.tau_vnr = 1.5f;
     if (cfg->thinking.tau_h == 0)            cfg->thinking.tau_h = 4.0f;
     if (cfg->thinking.budget == 0)           cfg->thinking.budget = -1; /* -1 = unrestricted */

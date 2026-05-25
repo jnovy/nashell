@@ -239,8 +239,23 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     /* Fix 3: Conditional preview — saves file_read steps for small outputs */
     if (out.len > 0 && out.len < 500) {
-        /* Small output: include full content inline */
-        cJSON_AddStringToObject(meta, "preview", out.data);
+        /* Small output: include full content inline.
+         * #19: Check for embedded NUL or invalid bytes that crash JSON. */
+        int valid = 1;
+        for (size_t vi = 0; vi < out.len; vi++) {
+            unsigned char c = (unsigned char)out.data[vi];
+            if (c == 0 || (c < 0x20 && c != '\n' && c != '\r' && c != '\t')) {
+                valid = 0; break;
+            }
+        }
+        if (valid) {
+            cJSON_AddStringToObject(meta, "preview", out.data);
+        } else {
+            char preview[256];
+            utf8_truncate(preview, out.data, 200);
+            strcat(preview, "...");
+            cJSON_AddStringToObject(meta, "preview", preview);
+        }
     } else if (out.len >= 500) {
         /* Large output: first ~200 bytes with ... suffix (UTF-8 safe) */
         char preview[256];

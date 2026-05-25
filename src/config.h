@@ -8,9 +8,12 @@
  *   "When Do LLMs Reason? A Dynamical Systems View via Entropy Phase
  *    Transitions" [arXiv:2605.22873, May 2026]
  * Probes early decoding entropy to decide if CoT reasoning is beneficial. */
+#define THINKING_UNSET -1  /* calloc zeros mode to 0; we detect unset via this sentinel */
 #define THINKING_OFF   0
 #define THINKING_ON    1
 #define THINKING_EDRM  2
+#define THINKING_UNSET -1  /* before config_set_defaults runs */
+#define THINKING_UNSET -1  /* before config_set_defaults runs */
 
 typedef struct {
     int    mode;              /* THINKING_OFF / THINKING_ON / THINKING_EDRM */

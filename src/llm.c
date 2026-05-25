@@ -174,7 +174,9 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
     cJSON_AddBoolToObject(tmpl_kwargs, "enable_thinking", cfg->enable_thinking);
     cJSON_AddItemToObject(req, "chat_template_kwargs", tmpl_kwargs);
 
-    /* Thinking budget: limit reasoning tokens (-1 = unrestricted) */
+    /* Thinking budget: limit reasoning tokens (-1 = unrestricted).
+     * NOTE (#16): reasoning_budget is a server-level flag in llama.cpp
+     * (--reasoning-budget N). Per-request may be silently ignored. */
     if (cfg->thinking_budget >= 0) {
         cJSON_AddNumberToObject(req, "reasoning_budget", cfg->thinking_budget);
     }
@@ -901,6 +903,62 @@ char *llm_fetch_props_json(const char *api_base) {
     }
 
     return str_steal(&response);
+}
+
+
+/* Apply chat template via /apply-template endpoint (#7).
+ * Sends a minimal [{"role":"user","content":query}] and gets back
+ * the formatted prompt string. Returns malloc'd string or NULL. */
+char *llm_apply_template(const char *api_base, const char *user_query) {
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/apply-template", api_base);
+
+    cJSON *req = cJSON_CreateObject();
+    cJSON *msgs = cJSON_CreateArray();
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", "user");
+    cJSON_AddStringToObject(msg, "content", user_query);
+    cJSON_AddItemToArray(msgs, msg);
+    cJSON_AddItemToObject(req, "messages", msgs);
+
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) { free(body); return NULL; }
+
+    str_t response = str_new(4096);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(body);
+
+    if (res != CURLE_OK) {
+        str_free(&response);
+        return NULL;
+    }
+
+    /* Parse response: {"prompt": "..."} */
+    cJSON *resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) return NULL;
+
+    cJSON *prompt = cJSON_GetObjectItem(resp, "prompt");
+    char *result = NULL;
+    if (prompt && prompt->valuestring)
+        result = strdup(prompt->valuestring);
+    cJSON_Delete(resp);
+    return result;
 }
 
 /* ── EDRM entropy probe ──────────────────────────────────────────────

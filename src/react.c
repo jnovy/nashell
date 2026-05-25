@@ -47,11 +47,12 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
+    if (sz < 0) { fclose(f); return -1; }  /* #3: ftell failure */
     fseek(f, 0, SEEK_SET);
     char *buf = malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return -1; }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
+    size_t nread = fread(buf, 1, (size_t)sz, f);  /* #2: check fread */
+    buf[nread] = '\0';
     fclose(f);
 
     cJSON *cp = cJSON_Parse(buf);
@@ -200,7 +201,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                         /* need hash — get from alias we just registered */
                         ctx->tools->aliases[ctx->tools->alias_count - 1].hash);
                     if (store_path) {
-                        size_t content_len;
+                        size_t content_len = 0; (void)content_len;
                         char *content = NULL;
                         FILE *sf = fopen(store_path, "r");
                         if (sf) {
@@ -571,11 +572,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             } else if (mode == THINKING_OFF) {
                 ctx->llm->enable_thinking = 0;
             } else if (mode == THINKING_EDRM) {
-                /* Build probe prompt from user query */
+                /* Build probe prompt from user query.
+                 * #7: Use /apply-template for correct template, fallback to ChatML. */
                 str_t probe = str_new(8192);
-                str_appendf(&probe,
-                    "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
-                    user_query);
+                char *templated = llm_apply_template(ctx->llm->api_base, user_query);
+                if (templated) {
+                    str_append_cstr(&probe, templated);
+                    free(templated);
+                } else {
+                    str_appendf(&probe,
+                        "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
+                        user_query);
+                }
 
                 thinking_config_t *tc = &ctx->tools->cfg->thinking;
                 edrm_result_t edrm = llm_edrm_probe(
@@ -887,6 +895,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     if (chat->msgs[i].content && strstr(chat->msgs[i].content, "ERROR:")) {
                         free(chat->msgs[i].role);
                         free(chat->msgs[i].content);
+                        free(chat->msgs[i].tool_call_id);    /* #8 */
+                        free(chat->msgs[i].tool_calls_json); /* #8 */
                         memmove(&chat->msgs[i], &chat->msgs[i + 1],
                                 (chat->n_msgs - i - 1) * sizeof(llm_msg_t));
                         chat->n_msgs--;
@@ -910,12 +920,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     for (int i = evict_start; i < evict_end; i++) {
                         free(chat->msgs[i].role);
                         free(chat->msgs[i].content);
+                        free(chat->msgs[i].tool_call_id);    /* #8 */
+                        free(chat->msgs[i].tool_calls_json); /* #8 */
                     }
                     /* Shift tail messages down */
                     int tail_count = chat->n_msgs - evict_end;
                     memmove(&chat->msgs[evict_start], &chat->msgs[evict_end],
                             tail_count * sizeof(llm_msg_t));
                     chat->n_msgs = evict_start + tail_count;
+
+                    /* #9: NULL dangling pointers after eviction */
+                    free(chat->last_tool_call_id);
+                    chat->last_tool_call_id = NULL;
+                    free(chat->last_tool_calls_json);
+                    chat->last_tool_calls_json = NULL;
 
                     /* Re-inject fresh manifest at position keep_head */
                     char *fresh_manifest = journal_manifest(ctx->tools->journal, 50);

@@ -24,6 +24,10 @@ typedef struct {
 
 /* EDRM entropy probe: generate a short completion and analyze entropy dynamics.
  * Returns routing decision based on entropy trajectory descriptors. */
+/* Apply chat template via server /apply-template endpoint.
+ * Returns malloc'd formatted prompt string, or NULL on failure. */
+char *llm_apply_template(const char *api_base, const char *user_query);
+
 edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
                                int n_predict, int n_probs, float temperature,
                                float tau_rho, float tau_vnr, float tau_h);
