@@ -29,7 +29,7 @@ static int toml_bl(toml_table_t *tbl, const char *key, int def) {
 void config_set_defaults(config_t *cfg) {
     if (!cfg->api_base)      cfg->api_base = strdup("http://192.168.1.18:8080");
     if (cfg->temperature == 0) cfg->temperature = 0.7f;
-    if (cfg->max_tokens == 0)  cfg->max_tokens = 4096;
+    if (cfg->max_tokens == 0)  cfg->max_tokens = 16384;
     if (cfg->shell_timeout == 0)      cfg->shell_timeout = 300;
     if (cfg->shell_max_output == 0)   cfg->shell_max_output = 512000;
     if (cfg->file_max_size == 0)      cfg->file_max_size = 52428800;
@@ -157,7 +157,7 @@ int config_write_default(const char *path) {
         "\n"
         "[client]\n"
         "temperature = 0.7\n"
-        "max_tokens = 4096\n"
+        "max_tokens = 16384\n"
         "json_mode = true\n"
         "thinking = false\n"
         "stream = true\n"
