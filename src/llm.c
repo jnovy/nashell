@@ -628,7 +628,7 @@ static void sse_process_line(sse_state_t *st, const char *line) {
                         else
                             st->repeat_count = 0;
                     }
-                    snprintf(st->last_tokens[idx], 64, "%.63s", tok);
+                    utf8_truncate(st->last_tokens[idx], tok, 63);
                     st->last_token_idx++;
 
                     if (st->repeat_count >= st->repeat_threshold) {

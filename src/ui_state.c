@@ -263,10 +263,12 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             char step_uri[256];
                             snprintf(step_uri, sizeof(step_uri),
                                      "file://session/%s", ref ? ref : "?");
-                            str_appendf(&md, "[  %s %s: %s \"%.60s\"",
+                            char desc_trunc[61];
+                            utf8_truncate(desc_trunc, sanitize_md_link(desc), 60);
+                            str_appendf(&md, "[  %s %s: %s \"%s\"",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
-                                        t, sanitize_md_link(desc));
+                                        t, desc_trunc);
                             if (!failed && sz > 0)
                                 str_appendf(&md, " -> %d chars", sz);
                             str_appendf(&md, "](%s)\n", step_uri);

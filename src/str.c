@@ -72,6 +72,51 @@ const char *str_cstr(const str_t *s) {
 }
 
 /* Format seconds into human-readable duration */
+/* ── UTF-8 safe truncation ──────────────────────────────────────── */
+
+int utf8_truncate(char *dst, const char *src, int max_bytes) {
+    if (!dst || !src || max_bytes <= 0) {
+        if (dst) dst[0] = '\0';
+        return 0;
+    }
+
+    /* Find actual length to copy (min of strlen and max_bytes) */
+    int len = 0;
+    while (len < max_bytes && src[len]) len++;
+
+    /* If we didn't hit max_bytes, the string fits entirely */
+    if (!src[len]) {
+        memcpy(dst, src, len);
+        dst[len] = '\0';
+        return len;
+    }
+
+    /* We hit max_bytes — back up past any incomplete UTF-8 sequence.
+     * UTF-8 continuation bytes have the form 10xxxxxx (0x80..0xBF).
+     * Walk backwards past continuation bytes, then check if the
+     * leading byte expects more bytes than we have. */
+    int cut = len;
+    while (cut > 0 && ((unsigned char)src[cut] & 0xC0) == 0x80)
+        cut--;
+
+    /* If we backed up to a multi-byte leader, check if the full
+     * sequence fits. If not, drop the incomplete leader too. */
+    if (cut > 0) {
+        unsigned char lead = (unsigned char)src[cut - 1];
+        int expected = 1;
+        if ((lead & 0xE0) == 0xC0) expected = 2;       /* 110xxxxx */
+        else if ((lead & 0xF0) == 0xE0) expected = 3;  /* 1110xxxx */
+        else if ((lead & 0xF8) == 0xF0) expected = 4;  /* 11110xxx */
+        int have = len - (cut - 1);
+        if (have < expected)
+            cut--;  /* drop the incomplete leader */
+    }
+
+    memcpy(dst, src, cut);
+    dst[cut] = '\0';
+    return cut;
+}
+
 const char *fmt_duration(double seconds, char *buf, size_t sz) {
     int s = (int)seconds;
     if (s < 60) {

@@ -499,10 +499,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Inject last exchange summary for cross-query context (handles "do the same..." references) */
     if (ctx->last_query && ctx->last_result) {
+        char lq[201], lr[501];
+        utf8_truncate(lq, ctx->last_query, 200);
+        utf8_truncate(lr, ctx->last_result, 500);
         char last_ex[1024];
         snprintf(last_ex, sizeof(last_ex),
-                 "[Previous query: \"%.200s\" → \"%.500s\"]",
-                 ctx->last_query, ctx->last_result);
+                 "[Previous query: \"%s\" → \"%s\"]",
+                 lq, lr);
         llm_chat_add(chat, "user", last_ex);
     }
 

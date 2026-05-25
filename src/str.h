@@ -23,4 +23,10 @@ const char *str_cstr(const str_t *s);
  * Writes into buf and returns buf for convenience. */
 const char *fmt_duration(double seconds, char *buf, size_t sz);
 
+/* UTF-8 safe truncation: copy at most max_bytes from src into dst,
+ * ensuring the result never cuts in the middle of a multi-byte UTF-8
+ * sequence. dst must have room for max_bytes+1 (NUL terminator).
+ * Returns the number of bytes written (excluding NUL). */
+int utf8_truncate(char *dst, const char *src, int max_bytes);
+
 #endif

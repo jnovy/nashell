@@ -242,18 +242,9 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
         /* Small output: include full content inline */
         cJSON_AddStringToObject(meta, "preview", out.data);
     } else if (out.len >= 500) {
-        /* Large output: first ~200 bytes with ... suffix.
-         * Must be UTF-8 safe: don't cut in the middle of a
-         * multi-byte sequence or llama.cpp rejects the JSON. */
+        /* Large output: first ~200 bytes with ... suffix (UTF-8 safe) */
         char preview[256];
-        int cut = 200;
-        if (cut > (int)out.len) cut = (int)out.len;
-        /* Back up past any incomplete UTF-8 sequence at the cut point.
-         * Continuation bytes have the form 10xxxxxx (0x80..0xBF). */
-        while (cut > 0 && ((unsigned char)out.data[cut] & 0xC0) == 0x80)
-            cut--;
-        memcpy(preview, out.data, cut);
-        preview[cut] = '\0';
+        utf8_truncate(preview, out.data, 200);
         strcat(preview, "...");
         cJSON_AddStringToObject(meta, "preview", preview);
     }

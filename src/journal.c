@@ -92,7 +92,7 @@ char *journal_manifest(journal_t *j, int max_steps) {
                 cJSON *text = cJSON_GetObjectItem(params, "text");
                 if (text && text->valuestring) {
                     char truncated[101];
-                    snprintf(truncated, sizeof(truncated), "%.100s", text->valuestring);
+                    utf8_truncate(truncated, text->valuestring, 100);
                     str_appendf(&out, " \"%s\"", truncated);
                 }
             }
@@ -127,16 +127,22 @@ char *journal_manifest(journal_t *j, int max_steps) {
         int failed = (failed_j && cJSON_IsTrue(failed_j));
         const char *mark = failed ? "x" : "+";
 
+        /* Pre-truncate key_param to avoid cutting mid-UTF-8 */
+        char kp[101];
+        utf8_truncate(kp, key_param, 80);
+
         if (tool && strcmp(tool, "done") == 0) {
-            snprintf(buf, sizeof(buf), "    %s %s: -> \"%.100s\"",
-                     mark, ref ? ref : "?", key_param);
+            char kp_done[101];
+            utf8_truncate(kp_done, key_param, 100);
+            snprintf(buf, sizeof(buf), "    %s %s: -> \"%s\"",
+                     mark, ref ? ref : "?", kp_done);
         } else if (failed) {
             /* Failed — just show ✗ and ref, no inline error text */
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\"",
-                     mark, ref ? ref : "?", tool ? tool : "?", key_param);
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\"",
+                     mark, ref ? ref : "?", tool ? tool : "?", kp);
         } else {
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%.80s\" -> %d chars",
-                     mark, ref ? ref : "?", tool ? tool : "?", key_param, (int)sz);
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\" -> %d chars",
+                     mark, ref ? ref : "?", tool ? tool : "?", kp, (int)sz);
         }
         str_append_cstr(&out, buf);
         str_append_cstr(&out, "\n");
