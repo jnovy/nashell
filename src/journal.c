@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/file.h>  /* flock */
 
 journal_t *journal_new(const char *session_dir) {
     journal_t *j = calloc(1, sizeof(*j));
@@ -31,6 +32,9 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    const char *tool_call_id) {
     FILE *f = fopen(j->path, "a");
     if (!f) return -1;
+
+    /* Exclusive lock for writes — prevents torn reads from TUI thread */
+    flock(fileno(f), LOCK_EX);
 
     /* Unix epoch timestamp with microsecond precision */
     struct timespec tp;
@@ -62,6 +66,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
 char *journal_manifest(journal_t *j, int max_steps) {
     FILE *f = fopen(j->path, "r");
     if (!f) return strdup("Session history: (empty — new session)");
+    flock(fileno(f), LOCK_SH);  /* shared lock for reading */
 
     str_t out = str_new(2048);
     str_append_cstr(&out, "Session history:\n");
@@ -162,6 +167,7 @@ int journal_max_react_loop(journal_t *j) {
 
     FILE *f = fopen(j->path, "r");
     if (!f) return -1;
+    flock(fileno(f), LOCK_SH);  /* shared lock for reading */
 
     int max_loop = -1;
     char line[65536];

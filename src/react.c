@@ -932,11 +932,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             tail_count * sizeof(llm_msg_t));
                     chat->n_msgs = evict_start + tail_count;
 
-                    /* #9: NULL dangling pointers after eviction */
+                    /* #9: Recover tool_call threading from surviving messages.
+                     * Scan backwards for the most recent assistant message with
+                     * tool_calls_json — this preserves API threading after eviction
+                     * instead of falling back to legacy JSON-in-content format. */
                     free(chat->last_tool_call_id);
                     chat->last_tool_call_id = NULL;
                     free(chat->last_tool_calls_json);
                     chat->last_tool_calls_json = NULL;
+                    for (int ri = chat->n_msgs - 1; ri >= 0; ri--) {
+                        if (chat->msgs[ri].tool_calls_json) {
+                            chat->last_tool_calls_json = strdup(chat->msgs[ri].tool_calls_json);
+                            /* Find the corresponding tool result's tool_call_id */
+                            if (ri + 1 < chat->n_msgs && chat->msgs[ri + 1].tool_call_id)
+                                chat->last_tool_call_id = strdup(chat->msgs[ri + 1].tool_call_id);
+                            break;
+                        }
+                    }
 
                     /* Re-inject fresh manifest at position keep_head */
                     char *fresh_manifest = journal_manifest(ctx->tools->journal, 50);
