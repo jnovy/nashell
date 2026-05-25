@@ -126,11 +126,9 @@ static void render_bottom(ui_state_t *ui) {
             case STATUS_ERROR:          indicator = "! "; pair = C_FAILED; break;
             default:                    indicator = "  "; pair = C_DIM; break;
         }
-        int slen = (int)strlen(ui->status_text) + 4;
-        int sx = cols - slen - 1;
-        if (sx < 0) sx = 0;
+        (void)cols;  /* status is now left-aligned */
         wattron(win_bottom, COLOR_PAIR(pair));
-        mvwprintw(win_bottom, 0, sx, " %s%s ", indicator, ui->status_text);
+        mvwprintw(win_bottom, 0, 1, " %s%s ", indicator, ui->status_text);
         wattroff(win_bottom, COLOR_PAIR(pair));
     }
 
