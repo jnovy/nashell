@@ -240,7 +240,10 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                         /* Extract key param */
                         cJSON *params = cJSON_GetObjectItem(e, "params");
                         const char *desc = "";
+                        const char *thought = "";
                         if (params) {
+                            cJSON *th = cJSON_GetObjectItem(params, "thought");
+                            if (th && th->valuestring) thought = th->valuestring;
                             cJSON *cmd = cJSON_GetObjectItem(params, "command");
                             cJSON *path = cJSON_GetObjectItem(params, "path");
                             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -277,6 +280,12 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 }
                             }
                             if (is_expanded && ref) {
+                                /* Show thought if available */
+                                if (thought[0]) {
+                                    str_appendf(&md, "> 💭 %s\n\n",
+                                                thought);
+                                }
+
                                 /* Read content from store */
                                 char rpath[4096];
                                 snprintf(rpath, sizeof(rpath), "%s/%s",
