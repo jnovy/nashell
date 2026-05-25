@@ -324,6 +324,7 @@ int main(int argc, char **argv) {
         };
         char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
         if (result) { printf("%s\n", result); free(result); }
+        tools.react_loop++;  /* increment for next query */
         if (tools.scratchpad) free(tools.scratchpad);
         journal_free(journal);
         free(session_dir);
@@ -402,6 +403,7 @@ int main(int argc, char **argv) {
             if (inferring && iargs.done) {
                 pthread_join(infer_tid, NULL);
                 inferring = 0;
+                tools.react_loop++;  /* increment for next query */
                 char *result = iargs.result;
                 pthread_mutex_lock(&ui->mtx);
                 if (result) {

@@ -987,7 +987,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->last_result = final_result ? strdup(final_result) : NULL;
 
     /* Increment react loop counter for next query */
-    ctx->tools->react_loop++;
 
     return final_result;
 }
