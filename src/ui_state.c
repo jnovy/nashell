@@ -377,9 +377,26 @@ done:;
 
 /* ── Navigation ──────────────────────────────────────── */
 
+/* Forward declaration — defined below */
+static int find_visible_links(md_doc_t *doc, int scroll_y, int vis_h,
+                               int *first, int *last);
+
 void ui_state_tab(ui_state_t *ui) {
     if (!ui) return;
     ui->focus = (ui->focus == FOCUS_JOURNAL) ? FOCUS_QUERY : FOCUS_JOURNAL;
+
+    /* When switching TO journal, snap cursor to first visible link
+     * so the highlight is immediately visible (not stuck on an
+     * off-screen link at index 0). */
+    if (ui->focus == FOCUS_JOURNAL && ui->doc && ui->doc->link_count > 0) {
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int first_vis, last_vis;
+        int n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
+                                        &first_vis, &last_vis);
+        if (n_vis > 0 && (ui->cursor_link < first_vis || ui->cursor_link > last_vis))
+            ui->cursor_link = first_vis;
+    }
+
     ui->dirty = 1;
 }
 
