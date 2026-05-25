@@ -39,7 +39,6 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->web_max_size == 0)       cfg->web_max_size = 512000;
     if (cfg->llm_max_response == 0)   cfg->llm_max_response = 10485760;
     if (cfg->llm_repeat_threshold == 0) cfg->llm_repeat_threshold = 100;
-    if (cfg->max_react_steps == 0)    cfg->max_react_steps = 50;
     if (cfg->memory_index_max == 0)   cfg->memory_index_max = 50;
     if (cfg->max_skills_per_query == 0) cfg->max_skills_per_query = 3;
     if (cfg->context_eviction_pct == 0) cfg->context_eviction_pct = 70;
@@ -174,7 +173,7 @@ int config_write_default(const char *path) {
         "llm_max_response = 10485760  # max bytes from LLM response (10MB)\n"
         "llm_repeat_threshold = 100   # stop after N identical tokens\n"
         "scratchpad_max = 0           # 0 = auto (5%% of context)\n"
-        "max_react_steps = 50\n"
+        "max_react_steps = 0\n"
         "\n"
         "[paths]\n"
         "data_dir = \"\"                # empty = ~/.nash/\n"
