@@ -325,6 +325,25 @@ int main(int argc, char **argv) {
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
+        /* Load scratchpad from previous session if it exists */
+        {
+            char sp_path[4096];
+            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+            FILE *spf = fopen(sp_path, "r");
+            if (spf) {
+                fseek(spf, 0, SEEK_END);
+                long spsz = ftell(spf);
+                if (spsz > 0 && spsz < 32768) {
+                    fseek(spf, 0, SEEK_SET);
+                    tools.scratchpad = malloc((size_t)spsz + 1);
+                    if (tools.scratchpad) {
+                        size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
+                        tools.scratchpad[n] = '\0';
+                    }
+                }
+                fclose(spf);
+            }
+        }
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
@@ -382,6 +401,25 @@ int main(int argc, char **argv) {
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
+        /* Load scratchpad from previous session if it exists */
+        {
+            char sp_path[4096];
+            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+            FILE *spf = fopen(sp_path, "r");
+            if (spf) {
+                fseek(spf, 0, SEEK_END);
+                long spsz = ftell(spf);
+                if (spsz > 0 && spsz < 32768) {
+                    fseek(spf, 0, SEEK_SET);
+                    tools.scratchpad = malloc((size_t)spsz + 1);
+                    if (tools.scratchpad) {
+                        size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
+                        tools.scratchpad[n] = '\0';
+                    }
+                }
+                fclose(spf);
+            }
+        }
         react_ctx_t react = {
             .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
