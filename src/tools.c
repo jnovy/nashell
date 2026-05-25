@@ -975,22 +975,40 @@ void tool_result_free(tool_result_t *r) {
 /* ── system prompt ───────────────────────────────────── */
 
 const char *tools_system_prompt(void) {
-    return
-    "You are an autonomous coding agent. Solve the user's task step by step "
-    "using the available tools.\n"
-    "\n"
-    "Store-and-reference pattern:\n"
-    "- Most tool outputs are stored to disk. You see only metadata with a ref "
-    "alias (R0S1, R0S2, etc.).\n"
-    "- To read the actual content, call file_read(path=\"R0S1\").\n"
-    "- You MUST file_read the ref if you need to see what a command produced "
-    "or what a file contains.\n"
-    "\n"
-    "Rules:\n"
-    "- Never invoke tools speculatively. Every tool call must have a clear reason "
-    "and you MUST read the result (file_read the ref) before proceeding.\n"
-    "- Never guess tool results. Wait for actual output.\n"
-    "- file_edit: old_text must match exactly. Always file_read first.\n"
-    "- Record key findings in notes — they survive context eviction.\n"
-    "- Call done with the final answer when finished.\n";
+    static char buf[4096];
+
+    /* UTC timestamp */
+    time_t now = time(NULL);
+    struct tm *utc = gmtime(&now);
+    char timebuf[64];
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M UTC", utc);
+
+    /* Current working directory */
+    char cwdbuf[1024];
+    if (!getcwd(cwdbuf, sizeof(cwdbuf)))
+        snprintf(cwdbuf, sizeof(cwdbuf), "(unknown)");
+
+    snprintf(buf, sizeof(buf),
+        "You are an autonomous coding agent. Solve the user's task step by step "
+        "using the available tools.\n"
+        "\n"
+        "Now is %s. CWD: %s\n"
+        "\n"
+        "Store-and-reference pattern:\n"
+        "- Most tool outputs are stored to disk. You see only metadata with a ref "
+        "alias (R0S1, R0S2, etc.).\n"
+        "- To read the actual content, call file_read(path=\"R0S1\").\n"
+        "- You MUST file_read the ref if you need to see what a command produced "
+        "or what a file contains.\n"
+        "\n"
+        "Rules:\n"
+        "- Never invoke tools speculatively. Every tool call must have a clear reason "
+        "and you MUST read the result (file_read the ref) before proceeding.\n"
+        "- Never guess tool results. Wait for actual output.\n"
+        "- file_edit: old_text must match exactly. Always file_read first.\n"
+        "- Record key findings in notes — they survive context eviction.\n"
+        "- Call done with the final answer when finished.\n",
+        timebuf, cwdbuf);
+
+    return buf;
 }
