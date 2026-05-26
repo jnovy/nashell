@@ -572,6 +572,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * See [arXiv:2605.22873] for the theory. */
         if (ctx->tools->cfg && step == resume_step) {
             int mode = ctx->tools->cfg->thinking.mode;
+
+            /* EDRM only works with local llama.cpp servers (needs logprobs).
+             * For API providers (Vertex, Anthropic, OpenAI), skip EDRM and
+             * default to thinking OFF. */
+            int is_api_provider = ctx->provider &&
+                ctx->provider->type != PROVIDER_LOCAL;
+            if (is_api_provider && mode == THINKING_EDRM) {
+                mode = THINKING_OFF;
+            }
+
             if (mode == THINKING_ON) {
                 ctx->llm->enable_thinking = 1;
             } else if (mode == THINKING_OFF) {

@@ -463,8 +463,17 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
     if (!converted) return NULL;
 
     cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "model",
-                            p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+
+    /* Vertex AI streamRawPredict requires anthropic_version in the body
+     * (not as a header like the direct Anthropic API).
+     * Also: model is specified in the URL path, NOT in the body —
+     * Vertex rejects "model" as an extra input. */
+    if (p->type == PROVIDER_VERTEX) {
+        cJSON_AddStringToObject(req, "anthropic_version", "vertex-2023-10-16");
+    } else {
+        cJSON_AddStringToObject(req, "model",
+                                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+    }
     cJSON_AddNumberToObject(req, "max_tokens", p->cfg.max_tokens);
     cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
 
@@ -520,8 +529,9 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
         headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     }
 
-    /* Enable prompt caching beta */
-    if (p->cfg.caching) {
+    /* Enable prompt caching beta (direct Anthropic API only — Vertex AI
+     * does not support the anthropic-beta header and rejects it with 400) */
+    if (p->cfg.caching && p->type == PROVIDER_ANTHROPIC) {
         headers = curl_slist_append(headers,
                                     "anthropic-beta: prompt-caching-2024-07-31");
     }

@@ -577,6 +577,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 
         CURLcode res = curl_easy_perform(curl);
+
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
@@ -587,6 +590,13 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             } else {
                 sse_process_line_openai(&st, str_cstr(&st.line_buf));
             }
+        }
+
+        /* Log error response body for debugging API failures */
+        if (http_code >= 400) {
+            fprintf(stderr, "[provider] HTTP %ld error: %.2000s\n",
+                    http_code,
+                    st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
         }
 
         if (res != CURLE_OK && !st.stopped) {
