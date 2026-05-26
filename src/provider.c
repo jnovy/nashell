@@ -592,11 +592,21 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             }
         }
 
-        /* Log error response body for debugging API failures */
+        /* Handle HTTP errors: 4xx = fatal (bad request), 5xx = retryable */
         if (http_code >= 400) {
             fprintf(stderr, "[provider] HTTP %ld error: %.2000s\n",
                     http_code,
                     st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
+            if (http_code >= 500 && attempt < PROVIDER_MAX_RETRIES) {
+                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+                fprintf(stderr, "[provider] server error (attempt %d/%d, retry in %ds)\n",
+                        attempt, PROVIDER_MAX_RETRIES, delay);
+                sleep(delay);
+                continue;
+            }
+            /* 4xx or final 5xx attempt: fatal — don't parse garbage SSE */
+            free(req_body);
+            goto cleanup;
         }
 
         if (res != CURLE_OK && !st.stopped) {
