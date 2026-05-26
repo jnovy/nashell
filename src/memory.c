@@ -76,6 +76,7 @@ static void memory_git_init(memory_t *m) {
 }
 
 /* Stage all changes and commit with a descriptive message.
+ * Appends "Stored-by: <model>" signoff when model is known.
  * No-op if nothing changed (git commit will exit 1, which we ignore). */
 static void memory_git_commit(memory_t *m, const char *msg) {
     if (!m || !msg) return;
@@ -86,8 +87,17 @@ static void memory_git_commit(memory_t *m, const char *msg) {
 
     const char *add_argv[] = {"git", "add", "-A", NULL};
     memory_git_run(m, add_argv);
+
+    /* Append model signoff if available (like /dream's Consolidated-by:) */
+    char full_msg[1024];
+    if (m->model) {
+        snprintf(full_msg, sizeof(full_msg), "%s\n\nStored-by: %s", msg, m->model);
+    } else {
+        snprintf(full_msg, sizeof(full_msg), "%s", msg);
+    }
+
     const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty-message",
-                                  "-m", msg, NULL};
+                                  "-m", full_msg, NULL};
     memory_git_run(m, commit_argv);
 }
 
@@ -106,6 +116,7 @@ memory_t *memory_new(const char *project_root) {
 void memory_free(memory_t *m) {
     if (!m) return;
     free(m->dir);
+    free(m->model);
     free(m);
 }
 

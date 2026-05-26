@@ -9,6 +9,7 @@
 
 typedef struct {
     char *dir;   /* .memory/ directory path */
+    char *model; /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
 } memory_t;
 
 typedef struct {

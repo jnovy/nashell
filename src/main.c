@@ -361,6 +361,8 @@ int main(int argc, char **argv) {
     /* Shared store + memory */
     store_t *shared_store = store_new(nash_dir);
     memory_t *memory = memory_new(nash_dir);
+    if (server_model)
+        memory->model = strdup(server_model);
 
     /* Prune stale memories at startup (90 days, access_count < 2) */
     int pruned = memory_prune(memory,
