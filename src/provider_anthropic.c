@@ -222,12 +222,22 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                         cJSON *fn = cJSON_GetObjectItem(tc, "function");
                         if (!fn) continue;
 
-                        char tool_id[32];
-                        snprintf(tool_id, sizeof(tool_id), "call_%d", call_idx++);
+                        /* Use the actual tool_call ID from the API response,
+                         * NOT a synthetic one. Anthropic requires tool_use.id
+                         * to match the tool_result.tool_use_id exactly. */
+                        cJSON *tc_id_obj = cJSON_GetObjectItem(tc, "id");
+                        const char *real_id = (tc_id_obj && cJSON_IsString(tc_id_obj))
+                            ? tc_id_obj->valuestring : NULL;
+                        char synth_id[32];
+                        if (!real_id) {
+                            snprintf(synth_id, sizeof(synth_id), "call_%d", call_idx);
+                            real_id = synth_id;
+                        }
+                        call_idx++;
 
                         cJSON *tu = cJSON_CreateObject();
                         cJSON_AddStringToObject(tu, "type", "tool_use");
-                        cJSON_AddStringToObject(tu, "id", tool_id);
+                        cJSON_AddStringToObject(tu, "id", real_id);
 
                         cJSON *name = cJSON_GetObjectItem(fn, "name");
                         cJSON_AddStringToObject(tu, "name",
@@ -245,7 +255,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
 
                         cJSON_AddItemToArray(blocks, tu);
                         free(pending_tool_id);
-                        pending_tool_id = strdup(tool_id);
+                        pending_tool_id = strdup(real_id);
                     }
                 }
                 cJSON_Delete(tc_arr);
