@@ -739,7 +739,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 }
             }
         }
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -747,6 +749,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->scroll_y = link_line;
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
+    }
     }
         break;
     }
@@ -761,7 +764,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
             ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -770,13 +775,16 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
     }
+    }
         }
         break;
 
     case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
         ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -784,6 +792,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->scroll_y = link_line;
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
+    }
     }
         break;
 
@@ -807,7 +816,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 }
             }
         }
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -816,12 +827,15 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
     }
+    }
         break;
 
     case REACT_EVENT_ERROR:
     case REACT_EVENT_WARNING:
         ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -829,6 +843,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->scroll_y = link_line;
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
+    }
     }
         break;
     }
@@ -849,7 +864,9 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
     free(ui->banner);
     ui->banner = banner ? strdup(banner) : NULL;
     ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -857,6 +874,7 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
             ui->scroll_y = link_line;
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
+    }
     }
 }
 
@@ -875,7 +893,9 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
     ui->link_states_count = new_idx + 1;
     ui->cursor_link = new_idx;
     ui_state_rebuild_md(ui);
-    /* Auto-scroll to keep cursor visible after expansion change */
+    /* Auto-scroll to keep cursor visible — but NOT during streaming,
+     * where ui_state_rebuild_md() already scrolls to bottom */
+    if (ui->status != STATUS_RUNNING) {
     if (ui->doc && ui->cursor_link >= 0 && ui->cursor_link < ui->doc->link_count) {
         int link_line = md_link_line(ui->doc, ui->cursor_link);
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
@@ -883,6 +903,7 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
             ui->scroll_y = link_line;
         else if (link_line >= ui->scroll_y + vis)
             ui->scroll_y = link_line - vis + 1;
+    }
     }
 }
 
