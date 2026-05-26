@@ -10,6 +10,7 @@
 
 #include "config.h"
 #include "llm.h"
+#include "provider.h"
 #include "tools.h"
 #include "react.h"
 #include "store.h"
@@ -38,11 +39,11 @@ static char *create_session_dir(const char *nash_dir) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
 
-    char sessions_base[512];
+    char sessions_base[1024];
     snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", nash_dir);
     mkdir(sessions_base, 0755);
 
-    char path[512];
+    char path[1088];  /* sessions_base (1024) + "/" + epoch.nanos (~30) */
     snprintf(path, sizeof(path), "%s/%ld.%05ld",
              sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(path, 0755);
@@ -76,8 +77,27 @@ static void print_banner(const config_t *cfg, const char *props_json,
     printf("  \033[38;2;70;200;90m--------- * New Agentic Shell * ---------\033[0m\n");
     printf("\n");
 
-    /* 1. Server props */
-    if (!props_json) {
+    /* 1. Provider / server info */
+    const char *ptype = cfg->provider.type;
+    int is_api = ptype && (strcmp(ptype, "vertex") == 0 ||
+                           strcmp(ptype, "anthropic") == 0 ||
+                           strcmp(ptype, "openai") == 0);
+
+    if (is_api) {
+        /* API provider: show provider type, model, and relevant details */
+        printf("provider: %s\n", ptype);
+        printf("  model:    %s\n",
+               cfg->provider.model_id ? cfg->provider.model_id : "(not set)");
+        if (cfg->provider.project_id)
+            printf("  project:  %s\n", cfg->provider.project_id);
+        if (cfg->provider.region)
+            printf("  region:   %s\n", cfg->provider.region);
+        if (cfg->provider.context_size > 0)
+            printf("  ctx:      %d tok (%dk)\n",
+                   cfg->provider.context_size,
+                   cfg->provider.context_size / 1024);
+        printf("\n");
+    } else if (!props_json) {
         printf("server: %s (props unavailable)\n\n",
                cfg->api_base ? cfg->api_base : "(none)");
     } else {
@@ -145,7 +165,25 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
     str_append_cstr(&s, "  --------- * New Agentic Shell * ---------\n");
     str_append_cstr(&s, "\n");
 
-    if (!props_json) {
+    const char *bptype = cfg->provider.type;
+    int bis_api = bptype && (strcmp(bptype, "vertex") == 0 ||
+                             strcmp(bptype, "anthropic") == 0 ||
+                             strcmp(bptype, "openai") == 0);
+
+    if (bis_api) {
+        str_appendf(&s, "provider: %s\n", bptype);
+        str_appendf(&s, "  model:    %s\n",
+                    cfg->provider.model_id ? cfg->provider.model_id : "(not set)");
+        if (cfg->provider.project_id)
+            str_appendf(&s, "  project:  %s\n", cfg->provider.project_id);
+        if (cfg->provider.region)
+            str_appendf(&s, "  region:   %s\n", cfg->provider.region);
+        if (cfg->provider.context_size > 0)
+            str_appendf(&s, "  ctx:      %d tok (%dk)\n",
+                        cfg->provider.context_size,
+                        cfg->provider.context_size / 1024);
+        str_append_cstr(&s, "\n");
+    } else if (!props_json) {
         str_appendf(&s, "server: %s (props unavailable)\n\n",
                     cfg->api_base ? cfg->api_base : "(none)");
     } else {
@@ -263,12 +301,51 @@ int main(int argc, char **argv) {
     /* Write default config if it doesn't exist */
     config_write_default(config_path);
 
-    /* Fetch model info from server */
-    int context_size = llm_fetch_context_size(cfg->api_base);
-    char *server_model = llm_fetch_model_name(cfg->api_base);
-    char *props_json = llm_fetch_props_json(cfg->api_base);
+    /* ── Create provider from config ── */
+    provider_config_t pcfg = {
+        .type           = provider_type_from_str(cfg->provider.type),
+        .model_id       = cfg->provider.model_id,
+        .api_base       = cfg->api_base,
+        .api_key_env    = cfg->provider.api_key_env,
+        .project_id     = cfg->provider.project_id,
+        .region         = cfg->provider.region,
+        .context_size   = cfg->provider.context_size,
+        .chars_per_token = cfg->provider.chars_per_token,
+        .caching        = cfg->provider.caching,
+        .max_tokens     = cfg->max_tokens,
+        .temperature    = cfg->temperature,
+        .enable_thinking = 0,
+        .thinking_budget = -1,
+    };
+    provider_t *provider = provider_create(&pcfg);
 
-    /* Build LLM config from TOML config */
+    /* Fetch model info (local server: /props + /v1/models) */
+    int context_size = 0;
+    char *server_model = NULL;
+    char *props_json = NULL;
+
+    if (provider && provider->fetch_model_info) {
+        provider->fetch_model_info(provider, &context_size, &server_model, &props_json);
+    } else if (pcfg.type == PROVIDER_LOCAL) {
+        /* Fallback for local without provider vtable */
+        context_size = llm_fetch_context_size(cfg->api_base);
+        server_model = llm_fetch_model_name(cfg->api_base);
+        props_json = llm_fetch_props_json(cfg->api_base);
+    } else {
+        /* API providers: use config values */
+        context_size = cfg->provider.context_size;
+        server_model = cfg->provider.model_id ? strdup(cfg->provider.model_id) : NULL;
+    }
+
+    /* Update provider with fetched context size */
+    if (provider && context_size > 0) {
+        provider->cfg.context_size = context_size;
+    }
+    if (provider && server_model) {
+        provider->cfg.model_id = server_model;
+    }
+
+    /* Build LLM config (kept for backward compat: EDRM probe, etc.) */
     llm_config_t llm_cfg = {
         .api_base     = cfg->api_base,
         .model        = server_model,
@@ -295,7 +372,7 @@ int main(int argc, char **argv) {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */
         char *session_dir = NULL;
         if (session_dir_arg) {
-            char jpath[4096];
+            char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
             if (access(jpath, F_OK) == 0) {
                 session_dir = strdup(session_dir_arg);
@@ -306,7 +383,7 @@ int main(int argc, char **argv) {
         if (!session_dir) {
             char cwd[4096];
             if (getcwd(cwd, sizeof(cwd))) {
-                char jpath[4096];
+                char jpath[4112];
                 snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
                 if (access(jpath, F_OK) == 0) {
                     session_dir = strdup(cwd);
@@ -346,7 +423,7 @@ int main(int argc, char **argv) {
             }
         }
         react_ctx_t react = {
-            .llm = &llm_cfg, .tools = &tools,
+            .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
         char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
@@ -372,7 +449,7 @@ int main(int argc, char **argv) {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */
         char *session_dir = NULL;
         if (session_dir_arg) {
-            char jpath[4096];
+            char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
             if (access(jpath, F_OK) == 0) {
                 session_dir = strdup(session_dir_arg);
@@ -383,7 +460,7 @@ int main(int argc, char **argv) {
         if (!session_dir) {
             char cwd[4096];
             if (getcwd(cwd, sizeof(cwd))) {
-                char jpath[4096];
+                char jpath[4112];
                 snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
                 if (access(jpath, F_OK) == 0) {
                     session_dir = strdup(cwd);
@@ -424,7 +501,7 @@ int main(int argc, char **argv) {
             }
         }
         react_ctx_t react = {
-            .llm = &llm_cfg, .tools = &tools,
+            .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
 
@@ -600,6 +677,7 @@ int main(int argc, char **argv) {
                         .aliases = alias_map_new(),
                     };
                     react_ctx_t dream_react = {
+                        .provider = provider,
                         .llm = &llm_cfg,
                         .tools = &dream_tools,
                         .max_steps = cfg->max_react_steps,

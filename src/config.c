@@ -73,6 +73,41 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->thinking.budget == 0)           cfg->thinking.budget = -1; /* -1 = unrestricted */
     if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
+
+    /* [provider] env var fallbacks for Vertex AI / Anthropic.
+     * When provider type is "vertex" or "anthropic" and a config field is
+     * unset, fall back to well-known environment variables (same ones used
+     * by Claude Code / Anthropic SDK). Config always takes priority. */
+    if (cfg->provider.type &&
+        (strcmp(cfg->provider.type, "vertex") == 0 ||
+         strcmp(cfg->provider.type, "anthropic") == 0)) {
+        const char *env;
+        if (!cfg->provider.region) {
+            env = getenv("CLOUD_ML_REGION");
+            if (env) cfg->provider.region = strdup(env);
+        }
+        if (!cfg->provider.project_id) {
+            env = getenv("ANTHROPIC_VERTEX_PROJECT_ID");
+            if (env) cfg->provider.project_id = strdup(env);
+        }
+        if (!cfg->provider.model_id) {
+            env = getenv("ANTHROPIC_MODEL");
+            if (env) cfg->provider.model_id = strdup(env);
+        }
+    }
+
+    /* [provider] env var fallbacks for OpenAI.
+     * OPENAI_API_KEY → api_key_env default, OPENAI_MODEL → model_id. */
+    if (cfg->provider.type &&
+        strcmp(cfg->provider.type, "openai") == 0) {
+        if (!cfg->provider.api_key_env) {
+            cfg->provider.api_key_env = strdup("OPENAI_API_KEY");
+        }
+        if (!cfg->provider.model_id) {
+            const char *env = getenv("OPENAI_MODEL");
+            if (env) cfg->provider.model_id = strdup(env);
+        }
+    }
 }
 
 config_t *config_load(const char *path) {
@@ -100,6 +135,19 @@ config_t *config_load(const char *path) {
     toml_table_t *server = toml_table_in(root, "server");
     if (server) {
         cfg->api_base = toml_str(server, "api_base");
+    }
+
+    /* [provider] — multi-provider configuration (mirrors nashell config.yaml) */
+    toml_table_t *provider = toml_table_in(root, "provider");
+    if (provider) {
+        cfg->provider.type           = toml_str(provider, "type");
+        cfg->provider.model_id       = toml_str(provider, "model_id");
+        cfg->provider.api_key_env    = toml_str(provider, "api_key_env");
+        cfg->provider.project_id     = toml_str(provider, "project_id");
+        cfg->provider.region         = toml_str(provider, "region");
+        cfg->provider.context_size   = toml_int(provider, "context_size", 0);
+        cfg->provider.chars_per_token = (float)toml_dbl(provider, "chars_per_token", 0);
+        cfg->provider.caching        = toml_bl(provider, "caching", 0);
     }
 
     /* [client] */
@@ -185,6 +233,11 @@ config_t *config_load(const char *path) {
 void config_free(config_t *cfg) {
     if (!cfg) return;
     free(cfg->api_base);
+    free(cfg->provider.type);
+    free(cfg->provider.model_id);
+    free(cfg->provider.api_key_env);
+    free(cfg->provider.project_id);
+    free(cfg->provider.region);
     free(cfg->data_dir);
     free(cfg->search_engine);
     free(cfg->searxng_url);
@@ -205,6 +258,22 @@ int config_write_default(const char *path) {
         "\n"
         "[server]\n"
         "api_base = \"http://192.168.1.18:8080\"\n"
+        "\n"
+        "# Provider configuration — choose one:\n"
+        "#   local    = llama.cpp or any OpenAI-compatible server (default)\n"
+        "#   openai   = OpenAI API (GPT-4o, GPT-5, etc.)\n"
+        "#   anthropic = Anthropic API (Claude)\n"
+        "#   vertex   = Anthropic via Google Vertex AI\n"
+        "# If [provider] is absent, defaults to local using [server].api_base\n"
+        "[provider]\n"
+        "type = \"local\"\n"
+        "# model_id = \"claude-opus-4-6\"       # model identifier for API\n"
+        "# api_key_env = \"OPENAI_API_KEY\"     # env var with API key\n"
+        "# project_id = \"my-gcp-project\"      # Vertex AI project\n"
+        "# region = \"us-east5\"                # Vertex AI region\n"
+        "# context_size = 200000              # context window (0 = auto-detect)\n"
+        "# chars_per_token = 3.5              # chars per token ratio\n"
+        "# caching = false                    # prompt caching (Anthropic)\n"
         "\n"
         "[client]\n"
         "temperature = 0.7\n"

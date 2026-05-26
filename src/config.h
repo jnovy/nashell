@@ -30,9 +30,24 @@ typedef struct {
                                * early truncation of the <think> block. */
 } thinking_config_t;
 
+/* Provider configuration — mirrors nashell's config.yaml model entries */
 typedef struct {
-    /* [server] */
+    char  *type;             /* "local", "openai", "anthropic", "vertex" */
+    char  *model_id;         /* model identifier for API calls */
+    char  *api_key_env;      /* env var name for API key */
+    char  *project_id;       /* Vertex AI project ID */
+    char  *region;           /* Vertex AI region (e.g. "us-east5") */
+    int    context_size;     /* context window size (0 = auto-detect) */
+    float  chars_per_token;  /* chars per token ratio (default 3.5) */
+    int    caching;          /* enable prompt caching (Anthropic) */
+} provider_config_toml_t;
+
+typedef struct {
+    /* [server] — kept for backward compatibility */
     char  *api_base;
+
+    /* [provider] — new multi-provider config */
+    provider_config_toml_t provider;
 
     /* [client] */
     float  temperature;

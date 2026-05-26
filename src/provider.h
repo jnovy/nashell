@@ -1,0 +1,117 @@
+#ifndef PROVIDER_H
+#define PROVIDER_H
+
+#include "llm.h"
+#include "cJSON.h"
+
+/* ── Provider types ─────────────────────────────────────────────── */
+
+typedef enum {
+    PROVIDER_LOCAL,      /* llama.cpp / OpenAI-compatible local server */
+    PROVIDER_OPENAI,     /* OpenAI API (GPT-4o, GPT-5, etc.) */
+    PROVIDER_ANTHROPIC,  /* Anthropic API (direct) */
+    PROVIDER_VERTEX,     /* Anthropic via Google Vertex AI */
+} provider_type_t;
+
+/* ── Provider configuration ─────────────────────────────────────── */
+
+typedef struct {
+    provider_type_t type;
+    const char *model_id;       /* model identifier for API calls */
+    const char *api_base;       /* base URL (local server or API endpoint) */
+    const char *api_key_env;    /* env var name for API key (e.g. "OPENAI_API_KEY") */
+    const char *project_id;     /* Vertex AI project ID */
+    const char *region;         /* Vertex AI region (e.g. "us-east5") */
+    int         context_size;   /* context window size */
+    float       chars_per_token;/* chars per token ratio (default 3.5) */
+    int         caching;        /* enable prompt caching (Anthropic) */
+    int         max_tokens;     /* max completion tokens */
+    float       temperature;    /* sampling temperature */
+    int         enable_thinking;/* 0=off, 1=on */
+    int         thinking_budget;/* -1=unrestricted, 0=none, N>0=max */
+} provider_config_t;
+
+/* ── Provider vtable ────────────────────────────────────────────── */
+
+/* Forward declaration */
+typedef struct provider provider_t;
+
+/* Token callback for streaming */
+typedef void (*provider_token_fn)(const char *token, void *userdata);
+
+/* Provider function pointers — mirrors nashell's Provider base class */
+struct provider {
+    provider_type_t type;
+    provider_config_t cfg;
+
+    /* Build HTTP headers (adds auth). Returns curl_slist* (caller frees).
+     * For local: just Content-Type. For OpenAI: + Authorization Bearer.
+     * For Vertex: + Authorization Bearer <gcloud token>. */
+    struct curl_slist *(*build_headers)(provider_t *p);
+
+    /* Build request JSON body for chat completion.
+     * Handles provider-specific fields and message format conversion.
+     * Returns malloc'd JSON string (caller frees). */
+    char *(*build_request)(provider_t *p, llm_chat_t *chat, int stream);
+
+    /* Parse a non-streaming response JSON into unified format.
+     * Returns malloc'd JSON string: {"thought":"...", "action":"name", ...}
+     * Sets chat->last_tool_call_id and chat->last_tool_calls_json.
+     * Returns NULL on parse failure. */
+    char *(*parse_response)(provider_t *p, const char *response_json,
+                            llm_chat_t *chat, llm_stats_t *stats);
+
+    /* Parse one SSE data line during streaming.
+     * Extracts content deltas and tool_call chunks.
+     * Called by the shared SSE line processor. */
+    void (*parse_sse_event)(provider_t *p, cJSON *data, void *sse_state);
+
+    /* Get the API endpoint URL for chat completions.
+     * Returns static string (do NOT free). */
+    const char *(*get_endpoint)(provider_t *p);
+
+    /* Build the tools array for the request.
+     * Returns cJSON array (caller manages via request object). */
+    cJSON *(*build_tools)(provider_t *p);
+
+    /* Fetch server/model info (optional — local only).
+     * Returns 0 on success, -1 on failure. */
+    int (*fetch_model_info)(provider_t *p, int *context_size, char **model_name,
+                            char **props_json);
+
+    /* Provider-specific cleanup */
+    void (*destroy)(provider_t *p);
+
+    /* ── Provider-specific state ── */
+    char *_cached_endpoint;     /* cached endpoint URL string */
+    char *_cached_auth_token;   /* cached OAuth2 token (Vertex) */
+    long  _auth_token_expiry;   /* token expiry time (Vertex) */
+};
+
+/* ── Provider lifecycle ─────────────────────────────────────────── */
+
+/* Create a provider from configuration.
+ * Returns NULL on invalid config. Caller must call provider_free(). */
+provider_t *provider_create(const provider_config_t *cfg);
+
+/* Free provider and all resources */
+void provider_free(provider_t *p);
+
+/* ── High-level API (uses vtable internally) ────────────────────── */
+
+/* Non-streaming chat completion. Returns response string (caller frees). */
+char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats);
+
+/* Streaming chat completion with token callback.
+ * Returns unified JSON response string (caller frees). */
+char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
+                               llm_stats_t *stats, provider_token_fn on_token,
+                               void *userdata, int max_response_bytes,
+                               int repeat_threshold);
+
+/* ── Convenience: provider type from string ─────────────────────── */
+
+provider_type_t provider_type_from_str(const char *s);
+const char *provider_type_to_str(provider_type_t t);
+
+#endif

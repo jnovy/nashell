@@ -622,9 +622,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         stream_ctx_t sctx = { on_event, userdata, step + 1 };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-        char *response = llm_complete_stream(ctx->llm, chat, &stats,
-            on_event ? stream_token_cb : NULL, &sctx,
-            max_resp, rep_thresh);
+        char *response = ctx->provider ?
+            provider_complete_stream(ctx->provider, chat, &stats,
+                on_event ? stream_token_cb : NULL, &sctx,
+                max_resp, rep_thresh) :
+            llm_complete_stream(ctx->llm, chat, &stats,
+                on_event ? stream_token_cb : NULL, &sctx,
+                max_resp, rep_thresh);
         if (!response) {
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;
@@ -1077,8 +1081,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_stats_t rstats = {0};
             int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
             int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-            char *rresp = llm_complete_stream(ctx->llm, reflect, &rstats,
-                NULL, NULL, max_resp, rep_thresh);
+            char *rresp = ctx->provider ?
+                provider_complete_stream(ctx->provider, reflect, &rstats,
+                    NULL, NULL, max_resp, rep_thresh) :
+                llm_complete_stream(ctx->llm, reflect, &rstats,
+                    NULL, NULL, max_resp, rep_thresh);
             if (!rresp) break;
 
             cJSON *raction = llm_parse_action(rresp);

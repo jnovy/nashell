@@ -2,11 +2,13 @@
 #define REACT_H
 
 #include "llm.h"
+#include "provider.h"
 #include "tools.h"
 #include "react_event.h"
 
 typedef struct {
-    llm_config_t *llm;
+    provider_t   *provider;  /* provider abstraction (replaces llm_config_t) */
+    llm_config_t *llm;       /* kept for backward compat (EDRM probe, etc.) */
     tool_ctx_t   *tools;
     int           max_steps;
     int           verbose;
