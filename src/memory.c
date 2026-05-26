@@ -8,7 +8,9 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <strings.h>  /* strcasestr */
-#include <unistd.h>   /* unlink */
+#include <unistd.h>   /* unlink, fork, execvp, dup2, chdir, _exit */
+#include <sys/wait.h> /* waitpid */
+#include <fcntl.h>    /* open, O_WRONLY */
 #include <math.h>     /* exp, log */
 
 /* ── helpers ─────────────────────────────────────────── */
@@ -26,6 +28,67 @@ static double epoch_now(void) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
     return (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
+}
+
+/* ── git version control for memory store ──────────────────────── */
+
+/* Run a git command in the memory directory. Returns 0 on success. */
+static int memory_git_run(memory_t *m, const char *const argv[]) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        /* Child: chdir to memory dir, suppress output */
+        if (chdir(m->dir) != 0) _exit(1);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+        execvp(argv[0], (char *const *)argv);
+        _exit(127);
+    }
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+/* Initialize git repo in .memory/ if not already initialized.
+ * Called on first memory_store — lazy init. */
+static void memory_git_init(memory_t *m) {
+    if (!m) return;
+    char git_path[4096];
+    snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
+    struct stat st;
+    if (stat(git_path, &st) == 0) return;  /* already initialized */
+
+    const char *init_argv[] = {"git", "init", "-q", NULL};
+    if (memory_git_run(m, init_argv) != 0) return;
+
+    /* Configure user for commits (required by git) */
+    const char *name_argv[] = {"git", "config", "user.name", "nash", NULL};
+    memory_git_run(m, name_argv);
+    const char *email_argv[] = {"git", "config", "user.email", "nash@localhost", NULL};
+    memory_git_run(m, email_argv);
+
+    /* Initial commit with any existing files */
+    const char *add_argv[] = {"git", "add", "-A", NULL};
+    memory_git_run(m, add_argv);
+    const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty",
+                                  "-m", "memory: initialize memory store", NULL};
+    memory_git_run(m, commit_argv);
+}
+
+/* Stage all changes and commit with a descriptive message.
+ * No-op if nothing changed (git commit will exit 1, which we ignore). */
+static void memory_git_commit(memory_t *m, const char *msg) {
+    if (!m || !msg) return;
+    char git_path[4096];
+    snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
+    struct stat st;
+    if (stat(git_path, &st) != 0) return;  /* no git repo */
+
+    const char *add_argv[] = {"git", "add", "-A", NULL};
+    memory_git_run(m, add_argv);
+    const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty-message",
+                                  "-m", msg, NULL};
+    memory_git_run(m, commit_argv);
 }
 
 /* ── create/free ─────────────────────────────────────── */
@@ -52,6 +115,9 @@ int memory_store(memory_t *m, const char *key, const char *value,
                  const char **tags, int n_tags, int pinned,
                  const char *journal_ref) {
     if (!m || !key || !value) return -1;
+
+    /* Initialize git repo on first store */
+    memory_git_init(m);
 
     char fname[512];
     key_to_filename(key, fname, sizeof(fname));
@@ -127,6 +193,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
     /* Auto-update MEMORY.md index file */
     memory_write_index_file(m);
 
+    /* Git commit: track memory creation/update */
+    char commit_msg[256];
+    snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
+    memory_git_commit(m, commit_msg);
+
     return 0;
 }
 
@@ -180,6 +251,12 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
 
     /* Update MEMORY.md index */
     memory_write_index_file(m);
+
+    /* Git: commit pin/unpin change */
+    char msg[600];
+    snprintf(msg, sizeof(msg), "memory: %s %s",
+             pinned ? "pin" : "unpin", key);
+    memory_git_commit(m, msg);
 
     return 0;
 }
@@ -622,6 +699,14 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         cJSON_Delete(entry);
     }
     closedir(dir);
+
+    /* Git: commit pruning results */
+    if (pruned > 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", pruned);
+        memory_git_commit(m, msg);
+    }
+
     return pruned;
 }
 
@@ -671,6 +756,12 @@ static int memory_increment_field(memory_t *m, const char *key,
     }
     free(json);
     cJSON_Delete(entry);
+
+    /* Git: commit validation score update */
+    char cmsg[256];
+    snprintf(cmsg, sizeof(cmsg), "memory: update %s for %s", field, key);
+    memory_git_commit(m, cmsg);
+
     return 0;
 }
 
