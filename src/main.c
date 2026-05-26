@@ -572,6 +572,38 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                /* Handle /dream command — memory consolidation via regular react loop */
+                if (strcmp(submitted_query, "/dream") == 0) {
+                    free(submitted_query);
+                    char dream_prompt[4096];
+                    snprintf(dream_prompt, sizeof(dream_prompt),
+                        "You are performing MEMORY CONSOLIDATION (dreaming). "
+                        "Review all stored memories and optimize the memory store.\n\n"
+                        "Steps:\n"
+                        "1. Use memory_recall with broad queries (e.g. 'lesson:', 'strategy:', "
+                        "'skill:', 'task:') to load ALL memories\n"
+                        "2. Identify: near-duplicates, contradictions, overly-specific entries "
+                        "that can be generalized, superseded entries\n"
+                        "3. For each consolidation action:\n"
+                        "   - MERGE duplicates: memory_store the merged entry, then "
+                        "shell_exec to delete the old files from the memory directory\n"
+                        "   - GENERALIZE: memory_store with improved value text\n"
+                        "   - DELETE superseded: shell_exec to remove the file\n"
+                        "4. After all changes, run: shell_exec \"cd %s && git add -A && "
+                        "git commit -m 'dream: consolidated by %s'\"\n"
+                        "5. Call done with a summary of what was consolidated\n\n"
+                        "The memory directory is: %s\n"
+                        "Memory files are named like: lesson_short-name.json\n"
+                        "IMPORTANT: Be conservative. Only merge/delete when clearly redundant. "
+                        "Preserve validation scores (recall_hits/recall_misses) from the "
+                        "highest-scored entry when merging.",
+                        memory->dir,
+                        server_model ? server_model : "unknown-model",
+                        memory->dir);
+                    submitted_query = strdup(dream_prompt);
+                    /* Fall through to regular query handling below */
+                }
+
                 /* Regular query — spawn inference in background thread */
                 if (inferring) {
                     /* Previous inference still running — reject new query.
