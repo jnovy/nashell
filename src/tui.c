@@ -313,10 +313,14 @@ int tui_input(ui_state_t *ui, char **out_query) {
             int crow, ccol;
             input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
             if (crow > 0) {
-                /* Move up one wrapped line */
-                int prev_w = (crow == 1) ? fw : cw;
-                int new_pos = ui->cursor_pos - prev_w;
+                /* Move up one wrapped line.
+                 * When moving to row 0, clamp to first-line width (fw)
+                 * since row 0 is shorter due to "nash> " prompt (6 chars). */
+                int cur_w = (crow == 0) ? fw : cw;  /* width of current row */
+                int new_pos = ui->cursor_pos - cur_w;
                 if (new_pos < 0) new_pos = 0;
+                /* Clamp to target row's width when landing on row 0 */
+                if (crow == 1 && new_pos > fw) new_pos = fw;
                 ui->cursor_pos = new_pos;
                 ui->dirty = 1;
             } else {
