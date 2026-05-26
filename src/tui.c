@@ -368,13 +368,8 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     ui->input_len = hlen;
                     ui->cursor_pos = hlen;
                     ui->dirty = 1;
-                } else if (ui->history_idx >= ui->history_count - 1) {
-                    /* Past end of history — clear input */
-                    ui->history_idx = ui->history_count;
-                    ui->input_len = 0;
-                    ui->cursor_pos = 0;
-                    ui->dirty = 1;
                 }
+                /* On last line with no more history — do nothing */
             }
         } else {
             ui_state_down(ui);
