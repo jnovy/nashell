@@ -10,7 +10,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/file.h>  /* flock — for journal reading in eviction summary */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -24,87 +23,6 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
     return NULL;
-}
-
-/* Build a compact summary of journal entries that are about to be evicted.
- * Reads journal.jsonl for the current react_loop, summarizes steps that
- * will be lost during context compaction. Returns allocated string or NULL. */
-static char *build_eviction_summary(journal_t *j, int react_loop,
-                                     int current_step, int keep_tail_steps) {
-    if (!j || !j->path) return NULL;
-
-    FILE *f = fopen(j->path, "r");
-    if (!f) return NULL;
-    flock(fileno(f), LOCK_SH);
-
-    int max_kept_step = current_step - keep_tail_steps;
-    if (max_kept_step < 0) { fclose(f); return NULL; }
-
-    str_t out = str_new(1024);
-    str_append_cstr(&out, "\n## Compacted Steps\n");
-    int found = 0;
-
-    char line[65536];
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-
-        int loop = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "react_loop"));
-        int entry_step = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "step"));
-
-        /* Only summarize entries from this react loop that are being evicted */
-        if (loop != react_loop || entry_step >= max_kept_step) {
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        const char *tool = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "tool"));
-        /* Skip system/query meta-entries */
-        if (tool && (strcmp(tool, "system") == 0 ||
-                     strcmp(tool, "query") == 0)) {
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        double sz = cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "size"));
-        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-        int failed = (failed_j && cJSON_IsTrue(failed_j));
-
-        /* Extract key parameter for context */
-        const char *kp = "";
-        cJSON *params = cJSON_GetObjectItem(entry, "params");
-        if (params) {
-            cJSON *c = cJSON_GetObjectItem(params, "command");
-            cJSON *p = cJSON_GetObjectItem(params, "path");
-            cJSON *q = cJSON_GetObjectItem(params, "pattern");
-            cJSON *r = cJSON_GetObjectItem(params, "result");
-            if (c && c->valuestring) kp = c->valuestring;
-            else if (p && p->valuestring) kp = p->valuestring;
-            else if (q && q->valuestring) kp = q->valuestring;
-            else if (r && r->valuestring) kp = r->valuestring;
-        }
-
-        /* Truncate key param */
-        char kp_buf[81];
-        utf8_truncate(kp_buf, kp, 80);
-
-        if (failed)
-            str_appendf(&out, "- S%d %s FAILED: \"%s\"\n",
-                        entry_step, tool ? tool : "?", kp_buf);
-        else
-            str_appendf(&out, "- S%d %s: \"%s\" -> %d chars\n",
-                        entry_step, tool ? tool : "?", kp_buf, (int)sz);
-        found++;
-        cJSON_Delete(entry);
-    }
-    fclose(f);
-
-    if (!found) { str_free(&out); return NULL; }
-    return str_steal(&out);
 }
 
 /* Streaming token callback context — bridges llm_token_fn to react_event_fn */
@@ -1003,53 +921,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 int evict_start = keep_head;
                 int evict_end = chat->n_msgs - keep_tail;
                 if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
-                    /* Pre-eviction: summarize about-to-be-lost steps into scratchpad */
-                    int keep_tail_steps = keep_tail / 2;  /* ~2 steps in tail */
-                    char *summary = build_eviction_summary(
-                        ctx->tools->journal, ctx->tools->react_loop,
-                        step, keep_tail_steps);
-                    if (summary) {
-                        if (ctx->tools->scratchpad) {
-                            /* Cap scratchpad at 8KB — drop oldest summary if over */
-                            size_t sp_len = strlen(ctx->tools->scratchpad);
-                            if (sp_len + strlen(summary) > 8192) {
-                                /* Find second "## Compacted Steps" header and trim before it */
-                                char *second = strstr(ctx->tools->scratchpad + 1,
-                                                      "\n## Compacted Steps\n");
-                                if (second) {
-                                    char *trimmed = malloc(strlen(second) +
-                                                           strlen(summary) + 1);
-                                    if (trimmed) {
-                                        sprintf(trimmed, "%s%s", second, summary);
-                                        free(ctx->tools->scratchpad);
-                                        ctx->tools->scratchpad = trimmed;
-                                    }
-                                } else {
-                                    /* No old summary to trim — just append */
-                                    char *new_sp = malloc(sp_len + strlen(summary) + 1);
-                                    if (new_sp) {
-                                        sprintf(new_sp, "%s%s",
-                                                ctx->tools->scratchpad, summary);
-                                        free(ctx->tools->scratchpad);
-                                        ctx->tools->scratchpad = new_sp;
-                                    }
-                                }
-                            } else {
-                                size_t sum_len = strlen(summary);
-                                char *new_sp = malloc(sp_len + sum_len + 1);
-                                if (new_sp) {
-                                    memcpy(new_sp, ctx->tools->scratchpad, sp_len);
-                                    memcpy(new_sp + sp_len, summary, sum_len + 1);
-                                    free(ctx->tools->scratchpad);
-                                    ctx->tools->scratchpad = new_sp;
-                                }
-                            }
-                        } else {
-                            ctx->tools->scratchpad = strdup(summary);
-                        }
-                        free(summary);
-                    }
-
                     /* Free evicted messages */
                     for (int i = evict_start; i < evict_end; i++) {
                         free(chat->msgs[i].role);
