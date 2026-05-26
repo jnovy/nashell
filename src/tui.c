@@ -106,7 +106,7 @@ static void input_pos_to_rowcol(int pos, int first_w, int cont_w,
     if (cont_w <= 0) cont_w = 1;
     if (pos <= first_w) {
         *out_row = 0;
-        *out_col = 6 + pos;
+        *out_col = pos;  /* 0-based within content area; caller adds prompt offset */
     } else {
         int remaining = pos - first_w;
         *out_row = 1 + remaining / cont_w;
@@ -124,10 +124,6 @@ static int input_wrapped_lines(int input_len, int first_w, int cont_w) {
 }
 
 static void resize_panes_with_input(int input_len, int input_cursor);
-
-static void resize_panes(void) {
-    resize_panes_with_input(0, 0);
-}
 
 static void resize_panes_with_input(int input_len, int input_cursor) {
     int rows, cols;
@@ -261,7 +257,7 @@ void tui_render(ui_state_t *ui) {
         return;
     }
 
-    resize_panes();
+    resize_panes_with_input(ui->input_len, ui->cursor_pos);
 
     /* Clear stdscr to prevent stale background content showing through */
     werase(stdscr);
