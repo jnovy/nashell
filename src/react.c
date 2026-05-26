@@ -1001,13 +1001,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         llm_chat_t *reflect = llm_chat_new();
         if (task_succeeded) {
             llm_chat_add(reflect, "system",
-                "You just completed a task successfully. Review what happened and extract "
-                "0-3 reusable lessons, strategies, or reusable skills. For each, call "
-                "memory_store with:\n"
+                "You just completed a task successfully. Perform CAUSAL ANALYSIS "
+                "(not narrative summary) by answering these questions:\n"
+                "1. What assumptions held or almost failed?\n"
+                "2. What hidden variables or context mattered most?\n"
+                "3. What observations were initially ignored or underweighted?\n"
+                "4. What search branches were pruned — correctly or incorrectly?\n"
+                "5. What representation or mental model was key to success?\n"
+                "6. What reusable invariant or principle generalizes beyond this task?\n\n"
+                "Extract 0-3 reusable lessons, strategies, or skills. Each MUST identify "
+                "a causal mechanism (X because Y), not just a narrative (I learned X).\n"
+                "For each, call memory_store with:\n"
                 "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
-                "- value: the reusable knowledge (for skills: include approach, pitfalls, "
-                "verification)\n"
-                "- tags: comma-separated relevant tags\n"
+                "- value: the causal insight — state the assumption/variable/invariant "
+                "explicitly (for skills: include approach, pitfalls, verification)\n"
+                "- tags: include 'lesson' or 'strategy' or 'skill' tag plus domain tags\n"
                 "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
                 "If nothing worth storing, call done immediately.\n"
                 "Respond with ONE JSON object per turn: "
@@ -1015,15 +1023,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         } else {
             llm_chat_add(reflect, "system",
                 "The task FAILED or was not completed (hit max steps, error, or timeout). "
-                "Review the step history and extract 1-3 lessons about what went wrong. "
-                "Focus on:\n"
-                "- What caused the failure (wrong approach, missing tool, bad assumption)\n"
-                "- What to do differently next time\n"
-                "- Any pitfalls or gotchas to remember\n"
+                "Perform CAUSAL ANALYSIS (not narrative) by answering:\n"
+                "1. What assumption failed? (the root cause, not the symptom)\n"
+                "2. What hidden variable mattered that was not accounted for?\n"
+                "3. What observation was available but ignored or misinterpreted?\n"
+                "4. What search branch was pruned incorrectly? (wrong tool, wrong approach)\n"
+                "5. What representation or mental model was insufficient?\n"
+                "6. What reusable invariant would prevent this class of failure?\n\n"
+                "Extract 1-3 lessons with CAUSAL attribution. Each lesson MUST state: "
+                "\"X failed because Y, and the invariant is Z.\"\n"
                 "For each lesson, call memory_store with:\n"
                 "- key: lesson:short-name (e.g. lesson:avoid-recursive-grep-on-large-dirs)\n"
-                "- value: what went wrong and how to avoid it\n"
-                "- tags: comma-separated relevant tags\n"
+                "- value: the causal chain — root assumption, what broke it, the fix\n"
+                "- tags: include 'lesson' tag plus domain tags\n"
                 "If nothing worth storing, call done immediately.\n"
                 "Respond with ONE JSON object per turn: "
                 "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
@@ -1037,11 +1049,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
         llm_chat_add(reflect, "user",
             task_succeeded
-                ? "What lessons or strategies should be stored from this task? "
-                  "Call memory_store for each, or done if none."
-                : "This task failed. What went wrong? What lessons should be stored "
-                  "to avoid this failure next time? Call memory_store for each, or "
-                  "done if none.");
+                ? "Analyze the causal chain of this task. What assumptions held? "
+                  "What hidden variables mattered? What invariant generalizes? "
+                  "Store 0-3 causal lessons via memory_store, or call done if none."
+                : "Trace the causal chain of this failure. What root assumption broke? "
+                  "What was the hidden variable? What invariant would prevent this "
+                  "class of failure? Store 1-3 causal lessons via memory_store, or "
+                  "call done if none.");
 
         /* Mini react loop for reflection (max 4 steps) */
         for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
@@ -1078,7 +1092,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             llm_chat_add(reflect, "assistant", rresp);
             llm_chat_add(reflect, "user",
-                "Stored. Any more lessons? Call memory_store or done.");
+                "Stored. Any more causal insights? What other assumptions, "
+                "hidden variables, or invariants should be captured? "
+                "Call memory_store or done.");
             cJSON_Delete(raction);
             free(rresp);
         }
