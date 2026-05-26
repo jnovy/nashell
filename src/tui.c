@@ -70,11 +70,82 @@ void tui_shutdown(void) {
 
 /* ── Resize handling ─────────────────────────────────── */
 
+/* Calculate number of wrapped display lines for input text.
+ * First line has prompt "nash> " (6 chars), continuation lines use full width. */
+static int calc_input_lines(int input_len, int cols) {
+    if (input_len <= 0) return 1;
+    int first_w = cols - 6;  /* first line width (after prompt) */
+    if (first_w <= 0) first_w = 1;
+    if (input_len <= first_w) return 1;
+    int remaining = input_len - first_w;
+    int cont_w = cols > 0 ? cols : 1;
+    return 1 + (remaining + cont_w - 1) / cont_w;
+}
+
+/* Convert linear cursor_pos to (row, col) in the wrapped display.
+ * Row 0 starts at col 6 (after prompt), subsequent rows at col 0. */
+static void cursor_to_rowcol(int cursor_pos, int cols,
+                              int *out_row, int *out_col) {
+    int first_w = cols - 6;
+    if (first_w <= 0) first_w = 1;
+    if (cursor_pos <= first_w) {
+        *out_row = 0;
+        *out_col = 6 + cursor_pos;
+    } else {
+        int remaining = cursor_pos - first_w;
+        int cont_w = cols > 0 ? cols : 1;
+        *out_row = 1 + remaining / cont_w;
+        *out_col = remaining % cont_w;
+    }
+}
+
+/* Convert cursor position to row/col given first-line and continuation widths */
+static void input_pos_to_rowcol(int pos, int first_w, int cont_w,
+                                 int *out_row, int *out_col) {
+    if (first_w <= 0) first_w = 1;
+    if (cont_w <= 0) cont_w = 1;
+    if (pos <= first_w) {
+        *out_row = 0;
+        *out_col = 6 + pos;
+    } else {
+        int remaining = pos - first_w;
+        *out_row = 1 + remaining / cont_w;
+        *out_col = remaining % cont_w;
+    }
+}
+
+/* Count total wrapped lines for input of given length */
+static int input_wrapped_lines(int input_len, int first_w, int cont_w) {
+    if (first_w <= 0) first_w = 1;
+    if (cont_w <= 0) cont_w = 1;
+    if (input_len <= first_w) return 1;
+    int remaining = input_len - first_w;
+    return 1 + (remaining + cont_w - 1) / cont_w;
+}
+
+static void resize_panes_with_input(int input_len, int input_cursor);
+
 static void resize_panes(void) {
+    resize_panes_with_input(0, 0);
+}
+
+static void resize_panes_with_input(int input_len, int input_cursor) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
-    bottom_height = 2;
+    /* Dynamic bottom height: 1 (status) + wrapped input lines */
+    int input_lines = calc_input_lines(input_len, cols);
+    /* Also ensure cursor row is visible */
+    int cursor_row, cursor_col;
+    cursor_to_rowcol(input_cursor, cols, &cursor_row, &cursor_col);
+    if (cursor_row + 1 > input_lines) input_lines = cursor_row + 1;
+    /* Cap at 50% of screen */
+    int max_bottom = rows / 2;
+    if (max_bottom < 2) max_bottom = 2;
+    bottom_height = 1 + input_lines;
+    if (bottom_height > max_bottom) bottom_height = max_bottom;
+    if (bottom_height < 2) bottom_height = 2;
+
     main_height = rows - bottom_height;
 
     wresize(win_main, main_height, cols);
@@ -139,22 +210,41 @@ static void render_bottom(ui_state_t *ui) {
     wattroff(win_bottom, COLOR_PAIR(C_SELECTED) | A_BOLD);
 
     if (ui->input_buffer && ui->input_len > 0) {
-        int maxw = cols - 6;
-        int start = 0;
-        if (ui->cursor_pos > maxw)
-            start = ui->cursor_pos - maxw;
-        int show = ui->input_len - start;
-        if (show > maxw) show = maxw;
-        waddnstr(win_bottom, ui->input_buffer + start, show);
+        int first_w = cols - 6;  /* first line width (after "nash> ") */
+        if (first_w < 1) first_w = 1;
+        int cont_w = cols;       /* continuation line width */
+        if (cont_w < 1) cont_w = 1;
+
+        /* Render text across wrapped lines */
+        int pos = 0;
+        int row = 1;  /* first input row */
+        int bh = getmaxy(win_bottom);
+        while (pos < ui->input_len && row < bh) {
+            int line_w = (row == 1) ? first_w : cont_w;
+            int remain = ui->input_len - pos;
+            int show = remain < line_w ? remain : line_w;
+            int col_start = (row == 1) ? 6 : 0;
+            mvwaddnstr(win_bottom, row, col_start,
+                       ui->input_buffer + pos, show);
+            pos += show;
+            row++;
+        }
     }
 
-    /* Position cursor */
+    /* Position cursor in wrapped multi-line input */
     if (ui->focus == FOCUS_QUERY) {
-        int cx = 6 + ui->cursor_pos;
-        int maxw = cols - 6;
-        if (ui->cursor_pos > maxw)
-            cx = 6 + maxw;
-        wmove(win_bottom, 1, cx < cols ? cx : cols - 1);
+        int first_w = cols - 6;
+        if (first_w < 1) first_w = 1;
+        int cont_w = cols;
+        if (cont_w < 1) cont_w = 1;
+        int crow, ccol;
+        input_pos_to_rowcol(ui->cursor_pos, first_w, cont_w, &crow, &ccol);
+        int abs_row = 1 + crow;  /* row 0 is status bar */
+        int abs_col = (crow == 0) ? 6 + ccol : ccol;
+        int bh = getmaxy(win_bottom);
+        if (abs_row >= bh) abs_row = bh - 1;
+        if (abs_col >= cols) abs_col = cols - 1;
+        wmove(win_bottom, abs_row, abs_col);
     }
 
     wnoutrefresh(win_bottom);
@@ -219,11 +309,80 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
 
     case KEY_UP:
-        ui_state_up(ui);
+        if (ui->focus == FOCUS_QUERY) {
+            /* Navigate up within wrapped input lines */
+            int cols_now = getmaxx(stdscr);
+            int fw = cols_now - 6; if (fw < 1) fw = 1;
+            int cw = cols_now;     if (cw < 1) cw = 1;
+            int crow, ccol;
+            input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
+            if (crow > 0) {
+                /* Move up one wrapped line */
+                int prev_w = (crow == 1) ? fw : cw;
+                int new_pos = ui->cursor_pos - prev_w;
+                if (new_pos < 0) new_pos = 0;
+                ui->cursor_pos = new_pos;
+                ui->dirty = 1;
+            } else {
+                /* On first line — load previous history */
+                if (ui->history_count > 0 && ui->history_idx > 0) {
+                    ui->history_idx--;
+                    int hlen = (int)strlen(ui->history[ui->history_idx]);
+                    if (hlen >= ui->input_cap) {
+                        ui->input_cap = hlen + 64;
+                        ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                    }
+                    memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
+                    ui->input_len = hlen;
+                    ui->cursor_pos = hlen;
+                    ui->dirty = 1;
+                }
+            }
+        } else {
+            ui_state_up(ui);
+        }
         break;
 
     case KEY_DOWN:
-        ui_state_down(ui);
+        if (ui->focus == FOCUS_QUERY) {
+            /* Navigate down within wrapped input lines */
+            int cols_now = getmaxx(stdscr);
+            int fw = cols_now - 6; if (fw < 1) fw = 1;
+            int cw = cols_now;     if (cw < 1) cw = 1;
+            int crow, ccol;
+            input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
+            int total_rows = input_wrapped_lines(ui->input_len, fw, cw);
+            if (crow < total_rows - 1) {
+                /* Move down one wrapped line */
+                int cur_w = (crow == 0) ? fw : cw;
+                int new_pos = ui->cursor_pos + cur_w;
+                if (new_pos > ui->input_len) new_pos = ui->input_len;
+                ui->cursor_pos = new_pos;
+                ui->dirty = 1;
+            } else {
+                /* On last line — load next history or clear */
+                if (ui->history_count > 0 && ui->history_idx < ui->history_count - 1) {
+                    ui->history_idx++;
+                    int hlen = (int)strlen(ui->history[ui->history_idx]);
+                    if (hlen >= ui->input_cap) {
+                        ui->input_cap = hlen + 64;
+                        ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                    }
+                    memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
+                    ui->input_len = hlen;
+                    ui->cursor_pos = hlen;
+                    ui->dirty = 1;
+                } else if (ui->history_idx >= ui->history_count - 1) {
+                    /* Past end of history — clear input */
+                    ui->history_idx = ui->history_count;
+                    ui->input_len = 0;
+                    ui->cursor_pos = 0;
+                    ui->dirty = 1;
+                }
+            }
+        } else {
+            ui_state_down(ui);
+        }
         break;
 
     case KEY_PPAGE:
@@ -239,8 +398,22 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_JOURNAL) {
             ui_state_enter(ui);
         } else if (ui->focus == FOCUS_QUERY && ui->input_len > 0) {
-            /* Submit query */
+            /* Submit query — save to history first */
             *out_query = strndup(ui->input_buffer, ui->input_len);
+            /* Add to history (grow array if needed) */
+            if (ui->history_count >= ui->history_cap) {
+                int new_cap = ui->history_cap ? ui->history_cap * 2 : 32;
+                char **new_hist = realloc(ui->history,
+                                          (size_t)new_cap * sizeof(char *));
+                if (new_hist) {
+                    ui->history = new_hist;
+                    ui->history_cap = new_cap;
+                }
+            }
+            if (ui->history_count < ui->history_cap) {
+                ui->history[ui->history_count++] = strdup(*out_query);
+            }
+            ui->history_idx = ui->history_count;  /* past end = fresh input */
             ui->input_buffer[0] = '\0';
             ui->input_len = 0;
             ui->cursor_pos = 0;

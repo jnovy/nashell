@@ -64,6 +64,10 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->status_text);
     free(ui->input_buffer);
     free(ui->stream_tokens);
+    /* Free query history */
+    for (int i = 0; i < ui->history_count; i++)
+        free(ui->history[i]);
+    free(ui->history);
     pthread_mutex_destroy(&ui->mtx);
     free(ui);
 }

@@ -64,6 +64,12 @@ typedef struct {
     int            input_cap;
     int            cursor_pos;
 
+    /* Query history (arrow up/down on first/last wrapped line) */
+    char         **history;
+    int            history_count;
+    int            history_cap;
+    int            history_idx;   /* current position in history navigation */
+
     /* ── Streaming state ── */
     char          *stream_tokens;
     int            stream_len;
