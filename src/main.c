@@ -141,8 +141,13 @@ static void print_banner(const config_t *cfg, const char *props_json,
     }
 
     /* 2. Client config */
-    const char *think_str = cfg->thinking.mode == THINKING_ON ? "yes" :
-                            cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
+    const char *think_str;
+    if (cfg->thinking.mode == THINKING_ON)
+        think_str = "yes";
+    else if (cfg->thinking.mode == THINKING_EDRM)
+        think_str = is_api ? "off (edrm n/a)" : "edrm";
+    else
+        think_str = "no";
     printf("client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
            cfg->temperature, cfg->max_tokens,
            cfg->json_mode ? "on" : "off",
@@ -158,8 +163,8 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
     str_t s = str_new(2048);
 
     str_append_cstr(&s, "\n");
-    str_append_cstr(&s, "   _  _    __   ____  _  _  ____  __    __   \n");
-    str_append_cstr(&s, "  ( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \n");
+    str_append_cstr(&s, "   _   _   __   ____  _  _  ____  __    __   \n");
+    str_append_cstr(&s, "  ( \\ | | / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \n");
     str_append_cstr(&s, "   ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \n");
     str_append_cstr(&s, "  (___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \n");
     str_append_cstr(&s, "\n");
@@ -222,8 +227,13 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
         }
     }
 
-    const char *ts = cfg->thinking.mode == THINKING_ON ? "yes" :
-                     cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
+    const char *ts;
+    if (cfg->thinking.mode == THINKING_ON)
+        ts = "yes";
+    else if (cfg->thinking.mode == THINKING_EDRM)
+        ts = bis_api ? "off (edrm n/a)" : "edrm";
+    else
+        ts = "no";
     str_appendf(&s, "client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
                 cfg->temperature, cfg->max_tokens,
                 cfg->json_mode ? "on" : "off",

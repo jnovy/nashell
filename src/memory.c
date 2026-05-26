@@ -166,7 +166,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
                 cJSON *ac = cJSON_GetObjectItem(old, "access_count");
                 if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
                 cJSON *ca = cJSON_GetObjectItem(old, "created_at");
-                if (ca) created_at = cJSON_GetNumberValue(ca);
+                if (ca && ca->valuestring) created_at = atof(ca->valuestring);
+                else if (ca) created_at = cJSON_GetNumberValue(ca);
                 cJSON *rh = cJSON_GetObjectItem(old, "recall_hits");
                 if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
                 cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
@@ -507,8 +508,9 @@ char *memory_build_index(memory_t *m, int max_entries) {
             else if (strncmp(k->valuestring, "skill:", 6) == 0) n_skills++;
             else n_other++;
 
-            /* Progressive disclosure: only show first N entries inline */
-            if (total < 50) {
+            /* Progressive disclosure: only show first N entries inline.
+             * max_entries=0 means show all (used for MEMORY.md). */
+            if (max_entries == 0 || total < max_entries) {
                 str_appendf(&out, "  %s", k->valuestring);
                 if (tags && cJSON_GetArraySize(tags) > 0) {
                     str_append_cstr(&out, " [");
