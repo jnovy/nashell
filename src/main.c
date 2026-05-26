@@ -285,7 +285,7 @@ int main(int argc, char **argv) {
     memory_t *memory = memory_new(nash_dir);
 
     /* Prune stale memories at startup (90 days, access_count < 2) */
-    int pruned = memory_prune(memory, 90, 2);
+    int pruned = memory_prune(memory);
     if (pruned > 0)
         fprintf(stderr, "[info] pruned %d stale memories\n", pruned);
 

@@ -22,6 +22,7 @@ typedef struct {
     int    access_count;
     int    recall_hits;   /* recalled during tasks that SUCCEEDED */
     int    recall_misses; /* recalled during tasks that FAILED */
+    char  *journal_ref;   /* provenance: "session/journal.jsonl:R5" */
 } memory_entry_t;
 
 typedef struct {
@@ -33,9 +34,13 @@ typedef struct {
 memory_t *memory_new(const char *project_root);
 void      memory_free(memory_t *m);
 
-/* Store a memory entry (creates/overwrites .memory/<key>.json) */
+/* Store a memory entry (creates/overwrites .memory/<key>.json).
+ * journal_ref: provenance pointer to the session journal where this memory
+ * was created (e.g. "/path/to/session/journal.jsonl:R5"). NULL = no ref.
+ * The dreaming LLM can read this journal to understand the original context. */
 int memory_store(memory_t *m, const char *key, const char *value,
-                 const char **tags, int n_tags, int pinned);
+                 const char **tags, int n_tags, int pinned,
+                 const char *journal_ref);
 
 /* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
 int memory_pin(memory_t *m, const char *key);
@@ -61,12 +66,13 @@ char *memory_load_pinned(memory_t *m);
 /* Free a memory_results_t */
 void memory_results_free(memory_results_t *r);
 
-/* Prune stale, low-value memories.
- * Deletes entries older than max_age_days with access_count < min_access_count.
- * Lessons/strategies with validation score < 0.35 and sufficient evidence (≥3
- * recalls) are also prunable when stale. Pinned memories are never pruned.
+/* Prune low-value memories based on Bayesian validation scoring.
+ * Deletes entries with validation score < 0.35 and sufficient evidence (≥3
+ * recalls). Age is NOT a pruning criterion — a year-old lesson with no
+ * evidence is unknown (score 0.50), not worthless.
+ * Pinned memories are never pruned.
  * Returns number of entries pruned. */
-int memory_prune(memory_t *m, int max_age_days, int min_access_count);
+int memory_prune(memory_t *m);
 
 /* Increment recall_hits (task succeeded) or recall_misses (task failed)
  * for a memory entry identified by key. Returns 0 on success, -1 if not found.

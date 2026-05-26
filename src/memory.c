@@ -49,7 +49,8 @@ void memory_free(memory_t *m) {
 /* ── store ───────────────────────────────────────────── */
 
 int memory_store(memory_t *m, const char *key, const char *value,
-                 const char **tags, int n_tags, int pinned) {
+                 const char **tags, int n_tags, int pinned,
+                 const char *journal_ref) {
     if (!m || !key || !value) return -1;
 
     char fname[512];
@@ -108,6 +109,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddNumberToObject(entry, "access_count", access_count);
     cJSON_AddNumberToObject(entry, "recall_hits", recall_hits);
     cJSON_AddNumberToObject(entry, "recall_misses", recall_misses);
+
+    /* Provenance: link to the session journal where this memory was created.
+     * The dreaming LLM can read this journal to understand original context. */
+    if (journal_ref)
+        cJSON_AddStringToObject(entry, "journal_ref", journal_ref);
 
     char *json = cJSON_Print(entry);
     FILE *f = fopen(path, "w");
@@ -336,6 +342,10 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         e->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
         e->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
 
+        /* Copy journal provenance reference */
+        cJSON *jr = cJSON_GetObjectItem(entry, "journal_ref");
+        e->journal_ref = (jr && jr->valuestring) ? strdup(jr->valuestring) : NULL;
+
         /* Update access_count and last_accessed */
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
         if (ac) {
@@ -544,6 +554,7 @@ void memory_results_free(memory_results_t *r) {
     for (int i = 0; i < r->count; i++) {
         free(r->entries[i].key);
         free(r->entries[i].value);
+        free(r->entries[i].journal_ref);
         for (int t = 0; t < r->entries[i].n_tags; t++)
             free(r->entries[i].tags[t]);
         free(r->entries[i].tags);
@@ -555,14 +566,12 @@ void memory_results_free(memory_results_t *r) {
 
 /* ── prune (forgetting/decay) ─────────────────────────────── */
 
-int memory_prune(memory_t *m, int max_age_days, int min_access_count) {
+int memory_prune(memory_t *m) {
     if (!m) return 0;
 
     DIR *dir = opendir(m->dir);
     if (!dir) return 0;
 
-    double now = epoch_now();
-    double max_age_sec = (double)max_age_days * 86400.0;
     int pruned = 0;
 
     struct dirent *de;
@@ -593,40 +602,19 @@ int memory_prune(memory_t *m, int max_age_days, int min_access_count) {
         cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
         if (pin && cJSON_IsTrue(pin)) { cJSON_Delete(entry); continue; }
 
-        /* Lessons/strategies: validation-score-based pruning.
-         * Only prune if stale AND low validation score AND enough evidence. */
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        if (k && k->valuestring) {
-            if (strncmp(k->valuestring, "strategy:", 9) == 0 ||
-                strncmp(k->valuestring, "lesson:", 7) == 0 ||
-                strncmp(k->valuestring, "skill:", 6) == 0) {
-                cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
-                double last_acc = la && la->valuestring ? atof(la->valuestring) : now;
-                double age = now - last_acc;
-                cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-                cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-                int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-                int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-                int evidence = hits + misses;
-                double vscore = (hits + 1.0) / (hits + misses + 2.0);
-                /* Prune only if: stale + low score + enough evidence */
-                if (age > max_age_sec && vscore < 0.35 && evidence >= 3) {
-                    unlink(path);
-                    pruned++;
-                }
-                cJSON_Delete(entry);
-                continue;
-            }
-        }
+        /* Bayesian validation scoring — prune only with sufficient evidence.
+         * Age is NOT a criterion: a year-old lesson with no evidence is
+         * unknown (score 0.50), not worthless. Only prune when the data
+         * shows the memory is actively harmful (recalled in failed tasks).
+         * score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
+        cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+        cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+        int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+        int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+        int evidence = hits + misses;
+        double vscore = (hits + 1.0) / (hits + misses + 2.0);
 
-        /* Generic entries: check age and access count */
-        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
-        cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-        double last_acc = la && la->valuestring ? atof(la->valuestring) : now;
-        int acc_count = ac ? (int)cJSON_GetNumberValue(ac) : 0;
-
-        double age = now - last_acc;
-        if (age > max_age_sec && acc_count < min_access_count) {
+        if (vscore < 0.35 && evidence >= 3) {
             unlink(path);
             pruned++;
         }

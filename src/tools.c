@@ -812,7 +812,17 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     cJSON *pin_j = cJSON_GetObjectItem(params, "pinned");
     if (pin_j && cJSON_IsTrue(pin_j)) pinned = 1;
 
-    int rc = memory_store(ctx->memory, key, value, tags_arr, n_tags, pinned);
+    /* Build journal provenance reference: "session_dir/journal.jsonl:R<loop>" */
+    char jref[4096];
+    if (ctx->session_dir && ctx->journal) {
+        snprintf(jref, sizeof(jref), "%s/journal.jsonl:R%d",
+                 ctx->session_dir, ctx->react_loop);
+    } else {
+        jref[0] = '\0';
+    }
+
+    int rc = memory_store(ctx->memory, key, value, tags_arr, n_tags, pinned,
+                          jref[0] ? jref : NULL);
     free(tags_copy);
 
     if (rc != 0) return make_error("failed to store memory");
