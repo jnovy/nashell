@@ -514,10 +514,14 @@ int main(int argc, char **argv) {
         ui_state_set_banner(ui, banner);
         free(banner);
 
+        /* Initialize TUI BEFORE loading journal, so visible_rows is set
+         * correctly for autoscroll calculations in rebuild_md(). */
+        tui_init();
+        ui->visible_rows = LINES - 4;  /* terminal height minus chrome (top/bottom bars) */
+
         /* Load existing journal entries into UI state */
         ui_state_load_journal(ui, journal);
 
-        tui_init();
         tui_render(ui);
 
         /* Wrapper event callback: updates ViewModel + redraws TUI */

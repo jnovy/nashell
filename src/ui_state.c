@@ -725,20 +725,24 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         /* Clear streaming tokens for new step */
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
-        ui_state_rebuild_md(ui);
-        /* Auto-expand current query to show steps during inference */
+        /* Auto-expand current query to show steps during inference.
+         * Do this BEFORE rebuild_md to avoid double-rebuild flicker. */
         if (ui->doc) {
+            int need_rebuild = 0;
             for (int i = ui->doc->link_count - 1; i >= 0; i--) {
                 if (ui->doc->links[i].uri && strstr(ui->doc->links[i].uri, "file://session/R") &&
                     !strstr(ui->doc->links[i].uri, "/S")) {
                     if (i < ui->link_states_count && ui->link_states[i] != LINK_SHOW_STEPS) {
                         ui->link_states[i] = LINK_SHOW_STEPS;
-                        ui_state_rebuild_md(ui);
+                        need_rebuild = 1;
                     }
                     break;
                 }
             }
+            (void)need_rebuild;
         }
+        /* Single rebuild after all state changes */
+        ui_state_rebuild_md(ui);
     /* Auto-scroll to keep cursor visible — but NOT during streaming,
      * where ui_state_rebuild_md() already scrolls to bottom */
     if (ui->status != STATUS_RUNNING) {
