@@ -558,14 +558,30 @@ static const char *anthropic_get_endpoint(provider_t *p) {
              * https://{region}-aiplatform.googleapis.com/v1/projects/{project}/
              *   locations/{region}/publishers/anthropic/models/{model}:streamRawPredict
              * or :rawPredict for non-streaming */
+            const char *region = p->cfg.region ? p->cfg.region : "us-east5";
+            int is_global = (strcmp(region, "global") == 0);
+
+            /* For region="global", the Anthropic SDK uses:
+             *   https://aiplatform.googleapis.com/v1/  (no region prefix)
+             * For specific regions (us-east5, europe-west1, etc.):
+             *   https://{region}-aiplatform.googleapis.com/v1/
+             */
             char url[1024];
-            snprintf(url, sizeof(url),
-                     "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
-                     "locations/%s/publishers/anthropic/models/%s:streamRawPredict",
-                     p->cfg.region ? p->cfg.region : "us-east5",
-                     p->cfg.project_id ? p->cfg.project_id : "",
-                     p->cfg.region ? p->cfg.region : "us-east5",
-                     p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+            if (is_global) {
+                snprintf(url, sizeof(url),
+                         "https://aiplatform.googleapis.com/v1/projects/%s/"
+                         "locations/global/publishers/anthropic/models/%s:streamRawPredict",
+                         p->cfg.project_id ? p->cfg.project_id : "",
+                         p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+            } else {
+                snprintf(url, sizeof(url),
+                         "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
+                         "locations/%s/publishers/anthropic/models/%s:streamRawPredict",
+                         region,
+                         p->cfg.project_id ? p->cfg.project_id : "",
+                         region,
+                         p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+            }
             p->_cached_endpoint = strdup(url);
         } else {
             const char *base = p->cfg.api_base;

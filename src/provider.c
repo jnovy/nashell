@@ -525,8 +525,6 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     char *req_body = p->build_request(p, chat, 1);
     if (!req_body) return NULL;
 
-    /* Debug: dump request body to file for troubleshooting */
-
     /* Set up SSE state */
     provider_sse_state_t st = {
         .line_buf         = str_new(256),
