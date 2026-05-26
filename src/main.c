@@ -572,9 +572,40 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                /* Handle /dream command — memory consolidation via regular react loop */
+                /* Handle /dream command — memory consolidation in a NEW session */
                 if (strcmp(submitted_query, "/dream") == 0) {
                     free(submitted_query);
+                    submitted_query = NULL;
+
+                    if (inferring) {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                                            "Wait for inference to finish");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        continue;
+                    }
+
+                    /* Create a dedicated dream session */
+                    char *dream_dir = create_session_dir(nash_dir);
+                    journal_t *dream_journal = journal_new(dream_dir);
+                    tool_ctx_t dream_tools = {
+                        .store = shared_store,
+                        .journal = dream_journal,
+                        .memory = memory,
+                        .session_dir = dream_dir,
+                        .scratchpad = NULL,
+                        .cfg = cfg,
+                        .react_loop = 0,
+                        .aliases = alias_map_new(),
+                    };
+                    react_ctx_t dream_react = {
+                        .llm = &llm_cfg,
+                        .tools = &dream_tools,
+                        .max_steps = cfg->max_react_steps,
+                        .verbose = 1,
+                    };
+
                     char dream_prompt[4096];
                     snprintf(dream_prompt, sizeof(dream_prompt),
                         "You are performing MEMORY CONSOLIDATION (dreaming). "
@@ -600,8 +631,37 @@ int main(int argc, char **argv) {
                         memory->dir,
                         server_model ? server_model : "unknown-model",
                         memory->dir);
-                    submitted_query = strdup(dream_prompt);
-                    /* Fall through to regular query handling below */
+
+                    /* Run dreaming in the new session (blocking — TUI shows progress) */
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_RUNNING, "Dreaming...");
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+
+                    char *dream_result = react_run(&dream_react, dream_prompt,
+                                                    threaded_event_cb,
+                                                    &(infer_args_t){.ui = ui});
+
+                    pthread_mutex_lock(&ui->mtx);
+                    if (dream_result) {
+                        ui_state_set_status(ui, STATUS_DONE, "Dream complete");
+                    } else {
+                        ui_state_set_status(ui, STATUS_ERROR, "Dream failed");
+                    }
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+
+                    /* Cleanup dream session */
+                    free(dream_result);
+                    if (dream_tools.scratchpad) free(dream_tools.scratchpad);
+                    alias_map_free(dream_tools.aliases);
+                    journal_free(dream_journal);
+                    free(dream_dir);
+
+                    /* Post-dream: prune with fresh validation scores */
+                    memory_prune(memory,
+                                 cfg->prune_min_score, cfg->prune_min_evidence);
+                    continue;
                 }
 
                 /* Regular query — spawn inference in background thread */
