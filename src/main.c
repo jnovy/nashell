@@ -606,34 +606,51 @@ int main(int argc, char **argv) {
                         .verbose = 1,
                     };
 
-                    char dream_prompt[4096];
+                    char dream_prompt[8192];
                     snprintf(dream_prompt, sizeof(dream_prompt),
-                        "You are performing MEMORY CONSOLIDATION (dreaming). "
-                        "Review all stored memories and optimize the memory store.\n\n"
-                        "Steps:\n"
-                        "1. Use memory_recall with broad queries (e.g. 'lesson:', 'strategy:', "
-                        "'skill:', 'task:') to load ALL memories\n"
-                        "2. Identify: near-duplicates, contradictions, overly-specific entries "
-                        "that can be generalized, superseded entries\n"
-                        "3. For each consolidation action:\n"
-                        "   - MERGE duplicates: memory_store the merged entry, then "
-                        "shell_exec to delete the old files from the memory directory\n"
-                        "   - GENERALIZE: memory_store with improved value text\n"
-                        "   - DELETE superseded: shell_exec to remove the file\n"
-                        "4. Compose a detailed summary of ALL changes you made "
-                        "(merges, deletions, generalizations, with specific keys).\\n"
-                        "5. Run: shell_exec with a git commit in the memory directory %s "
-                        "using your FULL summary as the commit message, followed by a "
-                        "signoff line: 'Consolidated-by: %s'. Use git add -A first.\\n"
-                        "6. Call done with the SAME summary text you used as commit message\\n\\n"
-                        "The memory directory is: %s\n"
-                        "Memory files are named like: lesson_short-name.json\n"
-                        "IMPORTANT: Be conservative. Only merge/delete when clearly redundant. "
-                        "Preserve validation scores (recall_hits/recall_misses) from the "
-                        "highest-scored entry when merging.",
-                        memory->dir,
-                        server_model ? server_model : "unknown-model",
-                        memory->dir);
+                        "You are performing MEMORY CONSOLIDATION for a persistent knowledge store.\n\n"
+                        "GOAL: Review, optimize, and consolidate the memory store at: %s\n"
+                        "Each memory is a JSON file with fields: key, value, tags, pinned, "
+                        "created_at, last_accessed, access_count, recall_hits, recall_misses, "
+                        "journal_ref.\n\n"
+                        "CAPABILITIES:\n"
+                        "- List all memories: shell_exec \"ls %s/\"\n"
+                        "- Read any memory: file_read on the JSON file path\n"
+                        "- Read git history: shell_exec \"git -C %s log --oneline\" "
+                        "to see how memories evolved\n"
+                        "- Read original context: file_read on journal_ref path to understand "
+                        "WHY a memory was created\n"
+                        "- Create/update memories: memory_store (preserves validation scores "
+                        "on update)\n"
+                        "- Delete files: shell_exec \"rm %s/<filename>\"\n"
+                        "- Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) "
+                        "-- Beta posterior mean\n\n"
+                        "CONSOLIDATION CRITERIA:\n"
+                        "- MERGE near-duplicates: combine entries covering the same concept "
+                        "into one stronger entry\n"
+                        "- RESOLVE contradictions: when two memories conflict, keep the one "
+                        "with higher validation score\n"
+                        "- GENERALIZE: promote task-specific observations into reusable "
+                        "principles\n"
+                        "- PRESERVE: never touch pinned memories, keep high-scoring entries "
+                        "(score > 0.7) as-is\n"
+                        "- When merging, preserve recall_hits/recall_misses from the "
+                        "highest-scored source entry\n\n"
+                        "CONSTRAINTS:\n"
+                        "- Be conservative -- only change what is clearly redundant or "
+                        "contradictory\n"
+                        "- Read ALL memories before making any changes\n"
+                        "- Check git history to understand memory evolution before modifying\n"
+                        "- If journal_ref exists, read it to understand the original context\n\n"
+                        "WHEN DONE:\n"
+                        "- Compose a detailed summary of all changes (merges, deletions, "
+                        "generalizations with specific keys)\n"
+                        "- Run: shell_exec \"cd %s && git add -A && git commit -m "
+                        "'<your full summary here>\n\nConsolidated-by: %s'\"\n"
+                        "- Call done with the SAME summary text",
+                        memory->dir, memory->dir, memory->dir,
+                        memory->dir, memory->dir,
+                        server_model ? server_model : "unknown-model");
 
                     /* Run dreaming in the new session (blocking — TUI shows progress) */
                     pthread_mutex_lock(&ui->mtx);
