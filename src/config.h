@@ -61,6 +61,10 @@ typedef struct {
     int    max_reflection_steps; /* max steps in post-task reflection */
     int    file_read_max_inline; /* max chars for file_read content inline */
 
+    /* Memory pruning (Bayesian validation scoring) */
+    double prune_min_score;      /* validation score threshold (default 0.35) */
+    int    prune_min_evidence;   /* minimum recalls before pruning (default 3) */
+
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
 

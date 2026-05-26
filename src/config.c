@@ -51,6 +51,8 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
     if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
+    if (cfg->prune_min_score <= 0)      cfg->prune_min_score = 0.35;
+    if (cfg->prune_min_evidence <= 0)   cfg->prune_min_evidence = 3;
     cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
 
@@ -136,6 +138,8 @@ config_t *config_load(const char *path) {
         cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
         cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", -1);
         cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
+        cfg->prune_min_score    = toml_dbl(limits, "prune_min_score", 0);
+        cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
     }
 
     /* [paths] */
@@ -251,6 +255,8 @@ int config_write_default(const char *path) {
         "memory_index_max = 50        # max entries shown in memory index injection\n"
         "max_skills_per_query = 3     # max skill memories loaded per query\n"
         "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
+        "prune_min_score = 0.35       # Bayesian validation score below which memories are prunable\n"
+        "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "\n"
         "[paths]\n"
         "data_dir = \"\"                # data directory (empty = ~/.nash/)\n"

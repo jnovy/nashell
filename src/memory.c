@@ -566,7 +566,7 @@ void memory_results_free(memory_results_t *r) {
 
 /* ── prune (forgetting/decay) ─────────────────────────────── */
 
-int memory_prune(memory_t *m) {
+int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (!m) return 0;
 
     DIR *dir = opendir(m->dir);
@@ -614,7 +614,7 @@ int memory_prune(memory_t *m) {
         int evidence = hits + misses;
         double vscore = (hits + 1.0) / (hits + misses + 2.0);
 
-        if (vscore < 0.35 && evidence >= 3) {
+        if (vscore < min_score && evidence >= min_evidence) {
             unlink(path);
             pruned++;
         }

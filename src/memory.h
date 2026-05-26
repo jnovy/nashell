@@ -72,7 +72,7 @@ void memory_results_free(memory_results_t *r);
  * evidence is unknown (score 0.50), not worthless.
  * Pinned memories are never pruned.
  * Returns number of entries pruned. */
-int memory_prune(memory_t *m);
+int memory_prune(memory_t *m, double min_score, int min_evidence);
 
 /* Increment recall_hits (task succeeded) or recall_misses (task failed)
  * for a memory entry identified by key. Returns 0 on success, -1 if not found.
