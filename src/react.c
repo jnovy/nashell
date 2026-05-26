@@ -71,6 +71,12 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         ctx->tools->scratchpad = strdup(sp->valuestring);
     }
 
+    /* Restore last_tc_id for tool_calls threading */
+    char *restored_tc_id = NULL;
+    cJSON *tc_id_j = cJSON_GetObjectItem(cp, "last_tc_id");
+    if (tc_id_j && tc_id_j->valuestring)
+        restored_tc_id = strdup(tc_id_j->valuestring);
+
     /* Restore aliases from journal symlinks */
     /* (aliases are re-derived from journal refs below) */
 
@@ -132,7 +138,14 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
              ctx->tools->session_dir);
     f = fopen(jpath, "r");
-    if (!f) return saved_step;
+    if (!f) {
+        /* Restore last_tc_id even without journal replay */
+        if (restored_tc_id) {
+            free(chat->last_tool_call_id);
+            chat->last_tool_call_id = restored_tc_id;
+        }
+        return saved_step;
+    }
 
     char line[65536];
     while (fgets(line, sizeof(line), f)) {
@@ -325,6 +338,12 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     fprintf(stderr, "[checkpoint] Restored from step %d (react loop %d)\n",
             saved_step, saved_loop);
+
+    /* Restore last_tc_id for tool_calls threading after crash */
+    if (restored_tc_id) {
+        free(chat->last_tool_call_id);
+        chat->last_tool_call_id = restored_tc_id;
+    }
 
     return saved_step;
 }

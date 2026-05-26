@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -242,7 +243,7 @@ typedef struct {
     char        *query;
     ui_state_t  *ui;
     char        *result;
-    volatile int done;
+    atomic_int done;
 } infer_args_t;
 
 static void threaded_event_cb(const react_event_t *ev, void *userdata) {
@@ -604,17 +605,19 @@ int main(int argc, char **argv) {
                         }
                         if (sf) fclose(sf);
                         if (df) fclose(df);
-                        /* Copy symlinks */
-                        for (int i = 0; i <= fork_step + 5; i++) {
-                            char ref[32], sl[4096], tgt[4096], dl[4096];
-                            snprintf(ref, sizeof(ref), "R%dS%d",
-                                     tools.react_loop, i);
-                            snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
-                            ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
-                            if (n > 0) {
-                                tgt[n] = '\0';
-                                snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
-                                symlink(tgt, dl);
+                        /* Copy symlinks from all react loops */
+                        for (int loop = 0; loop <= tools.react_loop; loop++) {
+                            for (int i = 0; i <= fork_step + 5; i++) {
+                                char ref[32], sl[4096], tgt[4096], dl[4096];
+                                snprintf(ref, sizeof(ref), "R%dS%d",
+                                         loop, i);
+                                snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
+                                ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
+                                if (n > 0) {
+                                    tgt[n] = '\0';
+                                    snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
+                                    symlink(tgt, dl);
+                                }
                             }
                         }
                         /* Write checkpoint */

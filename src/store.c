@@ -49,7 +49,13 @@ char *store_save(store_t *s, const char *content) {
     /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
     if (fd >= 0) {
-        write(fd, content, clen);
+        ssize_t written = write(fd, content, clen);
+        if (written < 0 || (size_t)written != clen) {
+            close(fd);
+            unlink(path);   /* remove partial file */
+            free(hex);
+            return NULL;
+        }
         close(fd);
     }
 

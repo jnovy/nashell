@@ -9,7 +9,7 @@ static void test_store_and_recall(void) {
     ASSERT_NOT_NULL(m);
 
     const char *tags[] = {"math", "basics"};
-    int rc = memory_store(m, "lesson:addition", "2+2=4", tags, 2, 0);
+    int rc = memory_store(m, "lesson:addition", "2+2=4", tags, 2, 0, NULL);
     ASSERT_EQ(rc, 0);
 
     memory_results_t results = memory_recall(m, "addition", 5);
@@ -29,7 +29,7 @@ static void test_tags(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"redis", "migration"};
-    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", tags, 2, 0);
+    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", tags, 2, 0, NULL);
 
     memory_results_t results = memory_recall(m, "redis", 5);
     ASSERT_GT(results.count, 0);
@@ -47,7 +47,7 @@ static void test_pinned(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"critical"};
-    memory_store(m, "fact:api-key", "always use HTTPS", tags, 1, 1);
+    memory_store(m, "fact:api-key", "always use HTTPS", tags, 1, 1, NULL);
 
     char *pinned = memory_load_pinned(m);
     ASSERT_NOT_NULL(pinned);
@@ -65,9 +65,9 @@ static void test_build_index(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "lesson:a", "value a", NULL, 0, 0);
-    memory_store(m, "strategy:b", "value b", NULL, 0, 0);
-    memory_store(m, "fact:c", "value c", NULL, 0, 0);
+    memory_store(m, "lesson:a", "value a", NULL, 0, 0, NULL);
+    memory_store(m, "strategy:b", "value b", NULL, 0, 0, NULL);
+    memory_store(m, "fact:c", "value c", NULL, 0, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -87,9 +87,9 @@ static void test_prune(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"test"};
-    memory_store(m, "fact:stale", "old data", tags, 1, 0);
-    memory_store(m, "strategy:keep", "important", tags, 1, 0);
-    memory_store(m, "lesson:keep2", "also important", tags, 1, 0);
+    memory_store(m, "fact:stale", "old data", tags, 1, 0, NULL);
+    memory_store(m, "strategy:keep", "important", tags, 1, 0, NULL);
+    memory_store(m, "lesson:keep2", "also important", tags, 1, 0, NULL);
 
     memory_prune(m, 0, 999);
 
@@ -111,8 +111,8 @@ static void test_overwrite(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:pi", "3.14", NULL, 0, 0);
-    memory_store(m, "fact:pi", "3.14159", NULL, 0, 0);
+    memory_store(m, "fact:pi", "3.14", NULL, 0, 0, NULL);
+    memory_store(m, "fact:pi", "3.14159", NULL, 0, 0, NULL);
 
     memory_results_t results = memory_recall(m, "pi", 5);
     ASSERT_GT(results.count, 0);
@@ -129,7 +129,7 @@ static void test_no_match(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:pi", "3.14", NULL, 0, 0);
+    memory_store(m, "fact:pi", "3.14", NULL, 0, 0, NULL);
 
     memory_results_t results = memory_recall(m, "nonexistent_xyz", 5);
     ASSERT_EQ(results.count, 0);
@@ -145,7 +145,7 @@ static void test_write_index_file(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "lesson:test", "test value", NULL, 0, 0);
+    memory_store(m, "lesson:test", "test value", NULL, 0, 0, NULL);
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/MEMORY.md", dir);
@@ -168,11 +168,11 @@ static void test_index_type_grouping(void) {
     memory_t *m = memory_new(dir);
 
     /* Store one of each type */
-    memory_store(m, "lesson:l1", "lesson value", NULL, 0, 0);
-    memory_store(m, "strategy:s1", "strategy value", NULL, 0, 0);
-    memory_store(m, "fact:f1", "fact value", NULL, 0, 0);
-    memory_store(m, "task:t1", "task value", NULL, 0, 0);
-    memory_store(m, "skill:sk1", "skill value", NULL, 0, 0);
+    memory_store(m, "lesson:l1", "lesson value", NULL, 0, 0, NULL);
+    memory_store(m, "strategy:s1", "strategy value", NULL, 0, 0, NULL);
+    memory_store(m, "fact:f1", "fact value", NULL, 0, 0, NULL);
+    memory_store(m, "task:t1", "task value", NULL, 0, 0, NULL);
+    memory_store(m, "skill:sk1", "skill value", NULL, 0, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -199,13 +199,13 @@ static void test_index_topic_counts(void) {
     memory_t *m = memory_new(dir);
 
     /* Store multiple of each type */
-    memory_store(m, "lesson:l1", "v1", NULL, 0, 0);
-    memory_store(m, "lesson:l2", "v2", NULL, 0, 0);
-    memory_store(m, "lesson:l3", "v3", NULL, 0, 0);
-    memory_store(m, "strategy:s1", "v1", NULL, 0, 0);
-    memory_store(m, "strategy:s2", "v2", NULL, 0, 0);
-    memory_store(m, "fact:f1", "v1", NULL, 0, 0);
-    memory_store(m, "skill:sk1", "v1", NULL, 0, 0);
+    memory_store(m, "lesson:l1", "v1", NULL, 0, 0, NULL);
+    memory_store(m, "lesson:l2", "v2", NULL, 0, 0, NULL);
+    memory_store(m, "lesson:l3", "v3", NULL, 0, 0, NULL);
+    memory_store(m, "strategy:s1", "v1", NULL, 0, 0, NULL);
+    memory_store(m, "strategy:s2", "v2", NULL, 0, 0, NULL);
+    memory_store(m, "fact:f1", "v1", NULL, 0, 0, NULL);
+    memory_store(m, "skill:sk1", "v1", NULL, 0, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -232,7 +232,7 @@ static void test_index_cap(void) {
     for (int i = 0; i < 10; i++) {
         char key[64];
         snprintf(key, sizeof(key), "fact:item-%d", i);
-        memory_store(m, key, "some value", NULL, 0, 0);
+        memory_store(m, key, "some value", NULL, 0, 0, NULL);
     }
 
     char *index = memory_build_index(m, 3);
@@ -256,8 +256,8 @@ static void test_index_no_cap_when_under_limit(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:a", "v1", NULL, 0, 0);
-    memory_store(m, "fact:b", "v2", NULL, 0, 0);
+    memory_store(m, "fact:a", "v1", NULL, 0, 0, NULL);
+    memory_store(m, "fact:b", "v2", NULL, 0, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -277,7 +277,7 @@ static void test_index_with_tags_display(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"redis", "migration"};
-    memory_store(m, "lesson:redis-upgrade", "upgrade guide", tags, 2, 0);
+    memory_store(m, "lesson:redis-upgrade", "upgrade guide", tags, 2, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -305,7 +305,7 @@ static void test_skill_store_and_recall(void) {
     const char *tags[] = {"c", "compilation"};
     memory_store(m, "skill:compile-and-test-c",
                  "1. Write .c file\n2. gcc -Wall -Wextra\n3. Run and verify output",
-                 tags, 2, 0);
+                 tags, 2, 0, NULL);
 
     /* Recall by skill name */
     memory_results_t results = memory_recall(m, "compile", 5);
@@ -324,8 +324,8 @@ static void test_skill_in_index(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "skill:deploy-app", "deploy steps", NULL, 0, 0);
-    memory_store(m, "lesson:l1", "lesson", NULL, 0, 0);
+    memory_store(m, "skill:deploy-app", "deploy steps", NULL, 0, 0, NULL);
+    memory_store(m, "lesson:l1", "lesson", NULL, 0, 0, NULL);
 
     char *index = memory_build_index(m, 50);
     ASSERT_NOT_NULL(index);
@@ -346,7 +346,7 @@ static void test_skill_recall_by_tag(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"docker", "deployment"};
-    memory_store(m, "skill:docker-deploy", "docker compose up -d", tags, 2, 0);
+    memory_store(m, "skill:docker-deploy", "docker compose up -d", tags, 2, 0, NULL);
 
     /* Recall by tag */
     memory_results_t results = memory_recall(m, "docker", 5);
@@ -365,8 +365,8 @@ static void test_skill_not_pruned(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"test"};
-    memory_store(m, "skill:important-skill", "reusable procedure", tags, 1, 0);
-    memory_store(m, "fact:expendable", "can be pruned", tags, 1, 0);
+    memory_store(m, "skill:important-skill", "reusable procedure", tags, 1, 0, NULL);
+    memory_store(m, "fact:expendable", "can be pruned", tags, 1, 0, NULL);
 
     /* Prune aggressively */
     memory_prune(m, 0, 999);
@@ -411,7 +411,7 @@ static void test_index_unlimited_with_zero(void) {
     for (int i = 0; i < 5; i++) {
         char key[64];
         snprintf(key, sizeof(key), "fact:item-%d", i);
-        memory_store(m, key, "value", NULL, 0, 0);
+        memory_store(m, key, "value", NULL, 0, 0, NULL);
     }
 
     /* max_entries=0 should show all (used for MEMORY.md) */
@@ -436,7 +436,7 @@ static void test_pin_unpinned_entry(void) {
     memory_t *m = memory_new(dir);
 
     /* Store unpinned */
-    memory_store(m, "fact:server-ip", "192.168.1.1", NULL, 0, 0);
+    memory_store(m, "fact:server-ip", "192.168.1.1", NULL, 0, 0, NULL);
 
     /* Verify not pinned initially */
     char *pinned = memory_load_pinned(m);
@@ -465,7 +465,7 @@ static void test_unpin_pinned_entry(void) {
     memory_t *m = memory_new(dir);
 
     /* Store pinned */
-    memory_store(m, "fact:api-url", "https://api.example.com", NULL, 0, 1);
+    memory_store(m, "fact:api-url", "https://api.example.com", NULL, 0, 1, NULL);
 
     /* Verify pinned initially */
     char *pinned = memory_load_pinned(m);
@@ -518,7 +518,7 @@ static void test_pin_already_pinned(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "lesson:important", "critical knowledge", NULL, 0, 1);
+    memory_store(m, "lesson:important", "critical knowledge", NULL, 0, 1, NULL);
 
     /* Pin again — should succeed (idempotent) */
     int rc = memory_pin(m, "lesson:important");
@@ -541,7 +541,7 @@ static void test_pin_preserves_value(void) {
     memory_t *m = memory_new(dir);
 
     const char *tags[] = {"redis", "migration"};
-    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", tags, 2, 0);
+    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", tags, 2, 0, NULL);
 
     /* Pin it */
     memory_pin(m, "lesson:redis-v7");

@@ -800,11 +800,12 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     char *tags_copy = NULL;
     if (tags_j && tags_j->valuestring) {
         tags_copy = strdup(tags_j->valuestring);
-        char *tok = strtok(tags_copy, ",");
+        char *saveptr = NULL;
+        char *tok = strtok_r(tags_copy, ",", &saveptr);
         while (tok && n_tags < 32) {
             while (*tok == ' ') tok++;  /* trim leading space */
             tags_arr[n_tags++] = tok;
-            tok = strtok(NULL, ",");
+            tok = strtok_r(NULL, ",", &saveptr);
         }
     }
 
@@ -957,6 +958,8 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
@@ -1029,6 +1032,8 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
