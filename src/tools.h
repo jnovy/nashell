@@ -48,7 +48,14 @@ typedef struct {
     int            react_loop;    /* react loop counter (0-based, increments per query) */
     /* Step alias tracking — dynamic hash map, no size limit */
     alias_map_t   *aliases;
+    /* Validation scoring: track which memory keys were recalled this task */
+    char         **recalled_keys;
+    int            n_recalled_keys;
+    int            recalled_keys_cap;
 } tool_ctx_t;
+
+/* Track a recalled memory key for post-task validation scoring */
+void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
 
 /* Register a store hash as a step alias, returns alias string like "R1S0" */
 const char *tool_register_alias(tool_ctx_t *ctx, const char *hash);

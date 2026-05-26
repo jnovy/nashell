@@ -69,9 +69,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
 
     cJSON_AddBoolToObject(entry, "pinned", pinned);
 
-    /* Check if entry already exists (read access_count, then increment) */
+    /* Check if entry already exists (preserve counters) */
     FILE *existing = fopen(path, "r");
     int access_count = 1;  /* store itself counts as one access */
+    int recall_hits = 0;
+    int recall_misses = 0;
     double created_at = epoch_now();
     if (existing) {
         fseek(existing, 0, SEEK_END);
@@ -87,6 +89,10 @@ int memory_store(memory_t *m, const char *key, const char *value,
                 if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
                 cJSON *ca = cJSON_GetObjectItem(old, "created_at");
                 if (ca) created_at = cJSON_GetNumberValue(ca);
+                cJSON *rh = cJSON_GetObjectItem(old, "recall_hits");
+                if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
+                cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
+                if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
                 cJSON_Delete(old);
             }
             free(buf);
@@ -100,6 +106,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     snprintf(ts, sizeof(ts), "%.5f", epoch_now());
     cJSON_AddStringToObject(entry, "last_accessed", ts);
     cJSON_AddNumberToObject(entry, "access_count", access_count);
+    cJSON_AddNumberToObject(entry, "recall_hits", recall_hits);
+    cJSON_AddNumberToObject(entry, "recall_misses", recall_misses);
 
     char *json = cJSON_Print(entry);
     FILE *f = fopen(path, "w");
@@ -321,6 +329,12 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 e->tags[t] = tag && tag->valuestring ? strdup(tag->valuestring) : strdup("");
             }
         }
+
+        /* Copy validation counters */
+        cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+        cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+        e->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+        e->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
 
         /* Update access_count and last_accessed */
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
@@ -579,17 +593,33 @@ int memory_prune(memory_t *m, int max_age_days, int min_access_count) {
         cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
         if (pin && cJSON_IsTrue(pin)) { cJSON_Delete(entry); continue; }
 
-        /* Never prune strategies or lessons (high-value) */
+        /* Lessons/strategies: validation-score-based pruning.
+         * Only prune if stale AND low validation score AND enough evidence. */
         cJSON *k = cJSON_GetObjectItem(entry, "key");
         if (k && k->valuestring) {
             if (strncmp(k->valuestring, "strategy:", 9) == 0 ||
-                strncmp(k->valuestring, "lesson:", 7) == 0) {
+                strncmp(k->valuestring, "lesson:", 7) == 0 ||
+                strncmp(k->valuestring, "skill:", 6) == 0) {
+                cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
+                double last_acc = la && la->valuestring ? atof(la->valuestring) : now;
+                double age = now - last_acc;
+                cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+                cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+                int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+                int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+                int evidence = hits + misses;
+                double vscore = (hits + 1.0) / (hits + misses + 2.0);
+                /* Prune only if: stale + low score + enough evidence */
+                if (age > max_age_sec && vscore < 0.35 && evidence >= 3) {
+                    unlink(path);
+                    pruned++;
+                }
                 cJSON_Delete(entry);
                 continue;
             }
         }
 
-        /* Check age and access count */
+        /* Generic entries: check age and access count */
         cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
         double last_acc = la && la->valuestring ? atof(la->valuestring) : now;
@@ -605,4 +635,61 @@ int memory_prune(memory_t *m, int max_age_days, int min_access_count) {
     }
     closedir(dir);
     return pruned;
+}
+
+/* ── validation scoring ─────────────────────────────────────── */
+
+/* Internal: increment a numeric field in a memory entry's JSON file */
+static int memory_increment_field(memory_t *m, const char *key,
+                                   const char *field) {
+    if (!m || !key || !field) return -1;
+
+    char fname[512];
+    key_to_filename(key, fname, sizeof(fname));
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;  /* entry not found */
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return -1; }
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    if (!entry) return -1;
+
+    /* Increment the field (create if missing) */
+    cJSON *fld = cJSON_GetObjectItem(entry, field);
+    if (fld) {
+        cJSON_SetNumberValue(fld, cJSON_GetNumberValue(fld) + 1);
+    } else {
+        cJSON_AddNumberToObject(entry, field, 1);
+    }
+
+    /* Write back */
+    char *json = cJSON_Print(entry);
+    f = fopen(path, "w");
+    if (f) {
+        fputs(json, f);
+        fclose(f);
+    }
+    free(json);
+    cJSON_Delete(entry);
+    return 0;
+}
+
+int memory_increment_hits(memory_t *m, const char *key) {
+    return memory_increment_field(m, key, "recall_hits");
+}
+
+int memory_increment_misses(memory_t *m, const char *key) {
+    return memory_increment_field(m, key, "recall_misses");
 }

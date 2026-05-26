@@ -20,6 +20,8 @@ typedef struct {
     double created_at;    /* unix epoch */
     double last_accessed; /* unix epoch */
     int    access_count;
+    int    recall_hits;   /* recalled during tasks that SUCCEEDED */
+    int    recall_misses; /* recalled during tasks that FAILED */
 } memory_entry_t;
 
 typedef struct {
@@ -61,9 +63,16 @@ void memory_results_free(memory_results_t *r);
 
 /* Prune stale, low-value memories.
  * Deletes entries older than max_age_days with access_count < min_access_count.
- * Never prunes pinned memories, strategies, or lessons.
+ * Lessons/strategies with validation score < 0.35 and sufficient evidence (≥3
+ * recalls) are also prunable when stale. Pinned memories are never pruned.
  * Returns number of entries pruned. */
 int memory_prune(memory_t *m, int max_age_days, int min_access_count);
+
+/* Increment recall_hits (task succeeded) or recall_misses (task failed)
+ * for a memory entry identified by key. Returns 0 on success, -1 if not found.
+ * Validation score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
+int memory_increment_hits(memory_t *m, const char *key);
+int memory_increment_misses(memory_t *m, const char *key);
 
 /* Write MEMORY.md index file (auto-generated, human-readable).
  * Called automatically after memory_store. */

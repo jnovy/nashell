@@ -223,6 +223,25 @@ const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
 
 /* ── run_command: fork/execve helper ─────────────────── */
 
+/* ── recalled key tracking (validation scoring) ──────────────── */
+
+void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
+    if (!ctx || !key) return;
+    /* Deduplicate: don't track the same key twice */
+    for (int i = 0; i < ctx->n_recalled_keys; i++)
+        if (strcmp(ctx->recalled_keys[i], key) == 0) return;
+    /* Grow if needed */
+    if (ctx->n_recalled_keys >= ctx->recalled_keys_cap) {
+        int new_cap = ctx->recalled_keys_cap ? ctx->recalled_keys_cap * 2 : 16;
+        char **new_keys = realloc(ctx->recalled_keys,
+                                   (size_t)new_cap * sizeof(char *));
+        if (!new_keys) return;
+        ctx->recalled_keys = new_keys;
+        ctx->recalled_keys_cap = new_cap;
+    }
+    ctx->recalled_keys[ctx->n_recalled_keys++] = strdup(key);
+}
+
 /* Run a command with timeout and output cap.
  * timeout_sec: max wall-clock seconds (0 = no limit)
  * max_output:  max bytes to capture (0 = no limit)
@@ -824,11 +843,12 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     const char *query = query_j->valuestring;
     memory_results_t results = memory_recall(ctx->memory, query, 5);
 
-    /* Build result string */
+    /* Build result string + track recalled keys for validation scoring */
     str_t out = str_new(1024);
     for (int i = 0; i < results.count; i++) {
         memory_entry_t *e = &results.entries[i];
         str_appendf(&out, "--- %s ---\n%s\n\n", e->key, e->value);
+        tool_track_recalled_key(ctx, e->key);
     }
 
     char *hash = NULL;

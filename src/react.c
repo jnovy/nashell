@@ -470,6 +470,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     str_appendf(&skill_msg, "\n--- %s ---\n%s\n",
                                 skills.entries[i].key,
                                 skills.entries[i].value ? skills.entries[i].value : "");
+                    /* Track for validation scoring */
+                    tool_track_recalled_key(ctx->tools, skills.entries[i].key);
                 }
             }
             if (skill_msg.len > 20) {  /* more than just the header */
@@ -997,6 +999,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * Fires for BOTH successful and failed tasks — failures are often more
      * valuable for learning (what went wrong, what to avoid next time). */
     int task_succeeded = (final_result != NULL);
+
+    /* Validation scoring: update recall_hits/misses for all recalled memories */
+    if (ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
+        for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
+            if (task_succeeded)
+                memory_increment_hits(ctx->tools->memory,
+                                      ctx->tools->recalled_keys[i]);
+            else
+                memory_increment_misses(ctx->tools->memory,
+                                        ctx->tools->recalled_keys[i]);
+        }
+    }
+
     if (ctx->tools->step > 2 && ctx->tools->memory) {
         llm_chat_t *reflect = llm_chat_new();
         if (task_succeeded) {
@@ -1106,6 +1121,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (ctx->last_result) free(ctx->last_result);
     ctx->last_query = strdup(user_query);
     ctx->last_result = final_result ? strdup(final_result) : NULL;
+
+    /* Reset recalled keys for next query (each task is independent) */
+    for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
+        free(ctx->tools->recalled_keys[i]);
+    ctx->tools->n_recalled_keys = 0;
 
     /* Increment react loop counter for next query */
 
