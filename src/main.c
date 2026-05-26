@@ -350,6 +350,8 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
         char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
+        /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
+        memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
         if (result) { printf("%s\n", result); free(result); }
         tools.react_loop++;  /* increment for next query */
         if (tools.scratchpad) free(tools.scratchpad);
@@ -454,6 +456,8 @@ int main(int argc, char **argv) {
                 pthread_join(infer_tid, NULL);
                 inferring = 0;
                 tools.react_loop++;  /* increment for next query */
+                /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
+                memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
                 char *result = iargs.result;
                 pthread_mutex_lock(&ui->mtx);
                 if (result) {
