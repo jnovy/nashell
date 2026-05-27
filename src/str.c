@@ -118,6 +118,34 @@ int utf8_truncate(char *dst, const char *src, int max_bytes) {
     return cut;
 }
 
+/* ── file I/O ───────────────────────────────────────────────────── */
+
+char *slurp_file(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    buf[n] = '\0';
+    fclose(f);
+    if (out_len) *out_len = n;
+    return buf;
+}
+
+/* ── counting ───────────────────────────────────────────────────── */
+
+int count_lines(const char *s) {
+    int n = 0;
+    for (; *s; s++) if (*s == '\n') n++;
+    return n;
+}
+
+/* ── duration formatting ────────────────────────────────────────── */
+
 const char *fmt_duration(double seconds, char *buf, size_t sz) {
     int s = (int)seconds;
     if (s < 60) {

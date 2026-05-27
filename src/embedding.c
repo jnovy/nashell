@@ -540,21 +540,23 @@ void embed_vec_free(embed_vec_t *v) {
 
 /* ── vector operations ───────────────────────────────── */
 
+/* Core cosine similarity between two raw float vectors of same dimension */
+static float cosine_sim_raw(const float *a, const float *b, int dim) {
+    double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
+    for (int i = 0; i < dim; i++) {
+        dot    += (double)a[i] * (double)b[i];
+        norm_a += (double)a[i] * (double)a[i];
+        norm_b += (double)b[i] * (double)b[i];
+    }
+    double denom = sqrt(norm_a) * sqrt(norm_b);
+    if (denom < 1e-12) return 0.0f;
+    return (float)(dot / denom);
+}
+
 float embed_cosine_sim(const embed_vec_t *a, const embed_vec_t *b) {
     if (!a || !b || !a->data || !b->data) return 0.0f;
     if (a->dim != b->dim || a->dim == 0) return 0.0f;
-
-    double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
-    for (int i = 0; i < a->dim; i++) {
-        dot    += (double)a->data[i] * (double)b->data[i];
-        norm_a += (double)a->data[i] * (double)a->data[i];
-        norm_b += (double)b->data[i] * (double)b->data[i];
-    }
-
-    double denom = sqrt(norm_a) * sqrt(norm_b);
-    if (denom < 1e-12) return 0.0f;
-
-    return (float)(dot / denom);
+    return cosine_sim_raw(a->data, b->data, a->dim);
 }
 
 /* ── persistence ─────────────────────────────────────── */
@@ -930,19 +932,6 @@ void embed_multi_vec_free(embed_multi_vec_t *mv) {
 }
 
 /* ── multi-vector similarity ─────────────────────────── */
-
-/* Helper: cosine similarity between two raw float vectors of same dim */
-static float cosine_sim_raw(const float *a, const float *b, int dim) {
-    double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
-    for (int i = 0; i < dim; i++) {
-        dot    += (double)a[i] * (double)b[i];
-        norm_a += (double)a[i] * (double)a[i];
-        norm_b += (double)b[i] * (double)b[i];
-    }
-    double denom = sqrt(norm_a) * sqrt(norm_b);
-    if (denom < 1e-12) return 0.0f;
-    return (float)(dot / denom);
-}
 
 float embed_cosine_sim_multi(const embed_vec_t *query,
                              const embed_multi_vec_t *stored) {

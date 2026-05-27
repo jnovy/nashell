@@ -14,12 +14,6 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
-static int count_lines(const char *s) {
-    int n = 0;
-    for (; *s; s++) if (*s == '\n') n++;
-    return n;
-}
-
 static const char *json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
@@ -43,18 +37,8 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     snprintf(path, sizeof(path), "%s/checkpoint.json",
              ctx->tools->session_dir);
 
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;  /* no checkpoint — start fresh */
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return -1; }  /* #3: ftell failure */
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return -1; }
-    size_t nread = fread(buf, 1, (size_t)sz, f);  /* #2: check fread */
-    buf[nread] = '\0';
-    fclose(f);
+    char *buf = slurp_file(path, NULL);
+    if (!buf) return -1;  /* no checkpoint — start fresh */
 
     cJSON *cp = cJSON_Parse(buf);
     free(buf);
@@ -154,7 +138,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     char jpath[4096];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
              ctx->tools->session_dir);
-    f = fopen(jpath, "r");
+    FILE *f = fopen(jpath, "r");
     if (!f) {
         /* Restore last_tc_id even without journal replay */
         if (restored_tc_id) {
@@ -229,21 +213,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                     char *store_path = store_resolve(ctx->tools->store,
                         entry_hash);
                     if (store_path) {
-                        size_t content_len = 0; (void)content_len;
-                        char *content = NULL;
-                        FILE *sf = fopen(store_path, "r");
-                        if (sf) {
-                            fseek(sf, 0, SEEK_END);
-                            long csz = ftell(sf);
-                            fseek(sf, 0, SEEK_SET);
-                            content = malloc((size_t)csz + 1);
-                            if (content) {
-                                fread(content, 1, (size_t)csz, sf);
-                                content[csz] = '\0';
-                                content_len = (size_t)csz;
-                            }
-                            fclose(sf);
-                        }
+                        char *content = slurp_file(store_path, NULL);
                         if (content) {
                             llm_chat_add(chat, "assistant", content);
                             free(content);

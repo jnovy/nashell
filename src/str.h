@@ -23,6 +23,14 @@ const char *str_cstr(const str_t *s);
  * Writes into buf and returns buf for convenience. */
 const char *fmt_duration(double seconds, char *buf, size_t sz);
 
+/* Read entire file into NUL-terminated buffer.
+ * Returns NULL on failure. Caller must free.
+ * If out_len is non-NULL, stores the number of bytes read. */
+char *slurp_file(const char *path, size_t *out_len);
+
+/* Count newline characters in a string. */
+int count_lines(const char *s);
+
 /* UTF-8 safe truncation: copy at most max_bytes from src into dst,
  * ensuring the result never cuts in the middle of a multi-byte UTF-8
  * sequence. dst must have room for max_bytes+1 (NUL terminator).

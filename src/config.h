@@ -12,8 +12,6 @@
 #define THINKING_OFF   0
 #define THINKING_ON    1
 #define THINKING_EDRM  2
-#define THINKING_UNSET -1  /* before config_set_defaults runs */
-#define THINKING_UNSET -1  /* before config_set_defaults runs */
 
 typedef struct {
     int    mode;              /* THINKING_OFF / THINKING_ON / THINKING_EDRM */

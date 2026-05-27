@@ -17,27 +17,7 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
-static char *read_file_contents(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    buf[n] = '\0';
-    fclose(f);
-    if (out_len) *out_len = n;
-    return buf;
-}
 
-static int count_lines(const char *s) {
-    int n = 0;
-    for (; *s; s++) if (*s == '\n') n++;
-    return n;
-}
 
 static tool_result_t make_result(int success, cJSON *meta, char *ref) {
     return (tool_result_t){ .meta = meta, .store_ref = ref, .success = success };
@@ -468,7 +448,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     size_t len = 0;
-    char *content = read_file_contents(path, &len);
+    char *content = slurp_file(path, &len);
     if (!content) {
         char msg[4224];
         snprintf(msg, sizeof(msg), "cannot read '%.4095s': %s", path, strerror(errno));
@@ -564,7 +544,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     const char *new_text = new_text_j->valuestring;
 
     size_t flen = 0;
-    char *content = read_file_contents(path, &flen);
+    char *content = slurp_file(path, &flen);
     if (!content) {
         char msg[512];
         snprintf(msg, sizeof(msg), "cannot read '%s': %s", path, strerror(errno));
@@ -887,19 +867,9 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
     char path[512];
     snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
 
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { fclose(f); return 0; }
-
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return -1; }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
+    char *buf = slurp_file(path, NULL);
+    if (!buf) return -1;
+    if (buf[0] == '\0') { free(buf); return 0; }
 
     /* Parse sections from the file format:
      * <!-- priority:N -->
@@ -954,7 +924,7 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
             }
             scan++;
         }
-        if (!content_end) content_end = buf + sz;
+        if (!content_end) content_end = buf + strlen(buf);
 
         /* Trim trailing whitespace from content */
         while (content_end > content_start &&
@@ -1303,17 +1273,9 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (best_key[0] == '\0') return;  /* no similar memory found */
 
     /* Load the similar memory's value */
-    FILE *f = fopen(best_path, "r");
-    if (!f) return;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (sz <= 0 || sz > 65536) { fclose(f); return; }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return; }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
+    size_t buf_len = 0;
+    char *buf = slurp_file(best_path, &buf_len);
+    if (!buf || buf_len == 0 || buf_len > 65536) { free(buf); return; }
 
     cJSON *old_entry = cJSON_Parse(buf);
     free(buf);
@@ -1407,22 +1369,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         cJSON *new_tags = NULL;
         int n_new_tags = 0;
         {
-            FILE *nf = fopen(new_json_path, "r");
-            if (nf) {
-                fseek(nf, 0, SEEK_END);
-                long nsz = ftell(nf);
-                fseek(nf, 0, SEEK_SET);
-                if (nsz > 0 && nsz < 65536) {
-                    char *nbuf = malloc((size_t)nsz + 1);
-                    if (nbuf) {
-                        fread(nbuf, 1, (size_t)nsz, nf);
-                        nbuf[nsz] = '\0';
-                        new_entry_json = cJSON_Parse(nbuf);
-                        free(nbuf);
-                    }
-                }
-                fclose(nf);
+            size_t nbuf_len = 0;
+            char *nbuf = slurp_file(new_json_path, &nbuf_len);
+            if (nbuf && nbuf_len > 0 && nbuf_len < 65536) {
+                new_entry_json = cJSON_Parse(nbuf);
             }
+            free(nbuf);
             if (new_entry_json) {
                 new_tags = cJSON_GetObjectItem(new_entry_json, "tags");
                 n_new_tags = new_tags ? cJSON_GetArraySize(new_tags) : 0;

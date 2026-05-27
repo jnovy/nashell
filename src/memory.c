@@ -15,16 +15,18 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
-/* Sanitize key for filename: replace : with _ */
-static void key_to_filename(const char *key, char *out, size_t out_sz) {
-    /* FIX B5: Guard against small out_sz — if out_sz < 6, the subtraction
-     * out_sz - 6 wraps around (size_t is unsigned), causing a massive loop. */
-    if (out_sz < 8) { if (out_sz > 0) out[0] = '\0'; return; }
+/* Sanitize key for filename: replace : and / with _, append extension.
+ * ext should include the dot, e.g. ".json" or ".emb". */
+static void key_to_path(const char *key, const char *ext, char *out, size_t out_sz) {
+    size_t ext_len = strlen(ext);
+    /* FIX B5: Guard against small out_sz — if out_sz < ext_len+2, the
+     * subtraction wraps around (size_t is unsigned), causing a massive loop. */
+    if (out_sz < ext_len + 2) { if (out_sz > 0) out[0] = '\0'; return; }
     size_t i = 0;
-    for (; key[i] && i < out_sz - 6; i++)
+    for (; key[i] && i < out_sz - ext_len - 1; i++)
         out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
     out[i] = '\0';
-    strcat(out, ".json");
+    strcat(out, ext);
 }
 
 static double epoch_now(void) {
@@ -135,16 +137,18 @@ static void json_to_emb_path(const char *json_path, char *emb_path, size_t sz) {
     }
 }
 
-/* Convert a key to .emb filename */
-static void key_to_emb_filename(const char *key, char *out, size_t out_sz) {
-    /* FIX B5: Guard against small out_sz — same unsigned underflow issue
-     * as key_to_filename(). */
-    if (out_sz < 7) { if (out_sz > 0) out[0] = '\0'; return; }
-    size_t i = 0;
-    for (; key[i] && i < out_sz - 5; i++)
-        out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
-    out[i] = '\0';
-    strcat(out, ".emb");
+/* Load a memory entry JSON by key. Returns parsed cJSON or NULL.
+ * Caller must cJSON_Delete() the result. */
+static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
+    char fname[512];
+    key_to_path(key, ".json", fname, sizeof(fname));
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    char *buf = slurp_file(path, NULL);
+    if (!buf) return NULL;
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    return entry;
 }
 
 /* ── store ───────────────────────────────────────────── */
@@ -158,7 +162,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     memory_git_init(m);
 
     char fname[512];
-    key_to_filename(key, fname, sizeof(fname));
+    key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
@@ -175,19 +179,13 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddBoolToObject(entry, "pinned", pinned);
 
     /* Check if entry already exists (preserve counters) */
-    FILE *existing = fopen(path, "r");
     int access_count = 1;  /* store itself counts as one access */
     int recall_hits = 0;
     int recall_misses = 0;
     double created_at = epoch_now();
-    if (existing) {
-        fseek(existing, 0, SEEK_END);
-        long sz = ftell(existing);
-        fseek(existing, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
+    {
+        char *buf = slurp_file(path, NULL);
         if (buf) {
-            fread(buf, 1, (size_t)sz, existing);
-            buf[sz] = '\0';
             cJSON *old = cJSON_Parse(buf);
             if (old) {
                 cJSON *ac = cJSON_GetObjectItem(old, "access_count");
@@ -203,7 +201,6 @@ int memory_store(memory_t *m, const char *key, const char *value,
             }
             free(buf);
         }
-        fclose(existing);
     }
 
     char ts[32];
@@ -250,25 +247,12 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     if (!m || !key) return -1;
 
     char fname[512];
-    key_to_filename(key, fname, sizeof(fname));
+    key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;  /* entry not found */
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return -1; }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
-
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *entry = memory_load_entry_json(m, key);
     if (!entry) return -1;
 
     /* Replace or add the pinned field */
@@ -282,7 +266,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
 
     /* Write back */
     char *json = cJSON_Print(entry);
-    f = fopen(path, "w");
+    FILE *f = fopen(path, "w");
     if (f) {
         fputs(json, f);
         fclose(f);
@@ -450,16 +434,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
+        char *buf = slurp_file(path, NULL);
+        if (!buf) continue;
 
         cJSON *entry = cJSON_Parse(buf);
         free(buf);
@@ -662,16 +638,8 @@ char *memory_build_index(memory_t *m, int max_entries) {
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
+        char *buf = slurp_file(path, NULL);
+        if (!buf) continue;
 
         cJSON *entry = cJSON_Parse(buf);
         free(buf);
@@ -779,16 +747,8 @@ char *memory_load_pinned(memory_t *m) {
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
+        char *buf = slurp_file(path, NULL);
+        if (!buf) continue;
 
         cJSON *entry = cJSON_Parse(buf);
         free(buf);
@@ -821,7 +781,7 @@ int memory_delete(memory_t *m, const char *key) {
     if (!m || !key) return -1;
 
     char fname[512];
-    key_to_filename(key, fname, sizeof(fname));
+    key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
@@ -835,7 +795,7 @@ int memory_delete(memory_t *m, const char *key) {
 
     /* Remove embedding file if it exists */
     char emb_fname[512];
-    key_to_emb_filename(key, emb_fname, sizeof(emb_fname));
+    key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
     char emb_path[4096];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
     unlink(emb_path);  /* ignore error if not exists */
@@ -884,16 +844,8 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
 
-        FILE *f = fopen(path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
+        char *buf = slurp_file(path, NULL);
+        if (!buf) continue;
 
         cJSON *entry = cJSON_Parse(buf);
         free(buf);
@@ -946,25 +898,12 @@ static int memory_increment_field(memory_t *m, const char *key,
     if (!m || !key || !field) return -1;
 
     char fname[512];
-    key_to_filename(key, fname, sizeof(fname));
+    key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[4096];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
-    FILE *f = fopen(path, "r");
-    if (!f) return -1;  /* entry not found */
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return -1; }
-    fread(buf, 1, (size_t)sz, f);
-    buf[sz] = '\0';
-    fclose(f);
-
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *entry = memory_load_entry_json(m, key);
     if (!entry) return -1;
 
     /* Increment the field (create if missing) */
@@ -977,7 +916,7 @@ static int memory_increment_field(memory_t *m, const char *key,
 
     /* Write back */
     char *json = cJSON_Print(entry);
-    f = fopen(path, "w");
+    FILE *f = fopen(path, "w");
     if (f) {
         fputs(json, f);
         fclose(f);
@@ -1147,7 +1086,7 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value,
 
     /* Save to .emb file (auto-detects single vs multi format) */
     char emb_fname[512];
-    key_to_emb_filename(key, emb_fname, sizeof(emb_fname));
+    key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
 
     char emb_path[4096];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
@@ -1217,16 +1156,8 @@ int memory_embed_all(memory_t *m) {
         }
 
         /* Load JSON entry to get key/value/tags for chunked embedding */
-        FILE *f = fopen(json_path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
+        char *buf = slurp_file(json_path, NULL);
+        if (!buf) continue;
 
         cJSON *entry = cJSON_Parse(buf);
         free(buf);
