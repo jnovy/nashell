@@ -699,100 +699,201 @@ int main(int argc, char **argv) {
                         continue;
                     }
 
-                    /* Create a dedicated dream session */
-                    char *dream_dir = create_session_dir(nash_dir);
-                    journal_t *dream_journal = journal_new(dream_dir);
-                    tool_ctx_t dream_tools = {
-                        .store = shared_store,
-                        .journal = dream_journal,
-                        .memory = memory,
-                        .session_dir = dream_dir,
-                        .scratchpad = NULL,
-                        .cfg = cfg, .llm = &llm_cfg, .provider = provider,
-                        .react_loop = 0,
-                        .aliases = alias_map_new(),
-                    };
-                    scratchpad_init(&dream_tools.scratch);
-                    react_ctx_t dream_react = {
-                        .provider = provider,
-                        .llm = &llm_cfg,
-                        .tools = &dream_tools,
-                        .max_steps = cfg->max_react_steps,
-                        .verbose = 1,
-                    };
+                    /* ---- Multi-pass dreaming (N=4) ----
+                     * Paper: "Language Models Need Sleep" (arXiv 2605.26099)
+                     * Increasing N (passes per consolidation) improves quality
+                     * more than increasing frequency. Each pass sees the memory
+                     * store AS MODIFIED by previous passes. */
 
-                    char dream_prompt[8192];
-                    snprintf(dream_prompt, sizeof(dream_prompt),
-                        "You are performing MEMORY CONSOLIDATION for a persistent knowledge store.\n\n"
-                        "GOAL: Review, optimize, and consolidate the memory store at: %s\n"
-                        "Each memory is a JSON file with fields: key, value, tags, pinned, "
-                        "created_at, last_accessed, access_count, recall_hits, recall_misses, "
-                        "journal_ref.\n\n"
-                        "CAPABILITIES:\n"
-                        "- List all memories: shell_exec \"ls %s/\"\n"
-                        "- Read any memory: file_read on the JSON file path\n"
-                        "- Read git history: shell_exec \"git -C %s log --oneline\" "
-                        "to see how memories evolved\n"
-                        "- Read original context: file_read on journal_ref path to understand "
-                        "WHY a memory was created\n"
-                        "- Create/update memories: memory_store (preserves validation scores "
-                        "on update)\n"
-                        "- Delete files: shell_exec \"rm %s/<filename>\"\n"
-                        "- Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) "
-                        "-- Beta posterior mean\n\n"
-                        "CONSOLIDATION CRITERIA:\n"
-                        "- MERGE near-duplicates: combine entries covering the same concept "
-                        "into one stronger entry\n"
-                        "- RESOLVE contradictions: when two memories conflict, keep the one "
-                        "with higher validation score\n"
-                        "- GENERALIZE: promote task-specific observations into reusable "
-                        "principles\n"
-                        "- PRESERVE: never touch pinned memories, keep high-scoring entries "
-                        "(score > 0.7) as-is\n"
-                        "- When merging, preserve recall_hits/recall_misses from the "
-                        "highest-scored source entry\n\n"
-                        "CONSTRAINTS:\n"
-                        "- Be conservative -- only change what is clearly redundant or "
-                        "contradictory\n"
-                        "- Read ALL memories before making any changes\n"
-                        "- Check git history to understand memory evolution before modifying\n"
-                        "- If journal_ref exists, read it to understand the original context\n\n"
-                        "WHEN DONE:\n"
-                        "- Compose a detailed summary of all changes (merges, deletions, "
-                        "generalizations with specific keys)\n"
-                        "- Run: shell_exec \"cd %s && git add -A && git commit -m "
-                        "'<your full summary here>\n\nConsolidated-by: %s'\"\n"
-                        "- Call done with the SAME summary text",
-                        memory->dir, memory->dir, memory->dir,
-                        memory->dir, memory->dir,
-                        server_model ? server_model : "unknown-model");
+                    /* Shared scratchpad persists across all passes so each pass
+                     * can read findings from previous passes. */
+                    scratchpad_t shared_scratch;
+                    scratchpad_init(&shared_scratch);
 
-                    /* Run dreaming in the new session (blocking — TUI shows progress) */
+                    const int n_dream_passes = 4;
+                    int dream_ok = 1;
+
+                    for (int pass = 0; pass < n_dream_passes; pass++) {
+                        /* Status update */
+                        const char *pass_labels[] = {
+                            "Dream 1/4: Inventory & scan",
+                            "Dream 2/4: Merge duplicates",
+                            "Dream 3/4: Resolve contradictions",
+                            "Dream 4/4: Synthesize & cross-link",
+                        };
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_RUNNING, pass_labels[pass]);
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+
+                        /* Fresh session per pass */
+                        char *pass_dir = create_session_dir(nash_dir);
+                        journal_t *pass_journal = journal_new(pass_dir);
+                        tool_ctx_t pass_tools = {
+                            .store = shared_store,
+                            .journal = pass_journal,
+                            .memory = memory,
+                            .session_dir = pass_dir,
+                            .scratchpad = NULL,
+                            .cfg = cfg, .llm = &llm_cfg, .provider = provider,
+                            .react_loop = 0,
+                            .aliases = alias_map_new(),
+                        };
+                        /* Copy shared scratchpad INTO this pass's embedded struct.
+                         * After the pass, we copy it back out. */
+                        pass_tools.scratch = shared_scratch;
+                        /* Zero out shared_scratch so it doesn't double-own the pointers */
+                        memset(&shared_scratch, 0, sizeof(shared_scratch));
+
+                        react_ctx_t pass_react = {
+                            .provider = provider,
+                            .llm = &llm_cfg,
+                            .tools = &pass_tools,
+                            .max_steps = cfg->max_react_steps,
+                            .verbose = 1,
+                        };
+
+                        /* Build per-pass prompt */
+                        char dream_prompt[8192];
+                        const char *mdir = memory->dir;
+                        const char *model = server_model ? server_model : "unknown-model";
+
+                        switch (pass) {
+                        case 0: /* Inventory & scan — read-only */
+                            snprintf(dream_prompt, sizeof(dream_prompt),
+                                "You are performing MEMORY INVENTORY for a persistent knowledge store.\n\n"
+                                "GOAL: Read and catalog ALL memories at: %s\n"
+                                "Each memory is a JSON file with fields: key, value, tags, pinned, "
+                                "created_at, last_accessed, access_count, recall_hits, recall_misses, journal_ref.\n"
+                                "Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) -- Beta posterior mean.\n\n"
+                                "TASK: List all memory files, read each one, and produce a structured report:\n"
+                                "1. Total memory count\n"
+                                "2. Groups of near-duplicate entries (same concept, different wording) -- list their keys\n"
+                                "3. Pairs of contradictory entries -- list their keys and the contradiction\n"
+                                "4. Task-specific entries that could be generalized -- list their keys\n"
+                                "5. Low-evidence entries (access_count=0, score=0.50) -- list their keys\n\n"
+                                "DO NOT make any changes. Only read and report.\n"
+                                "Store your full report in the scratchpad (notes tool) so the next pass can use it.\n"
+                                "Call done with a summary of what you found.",
+                                mdir);
+                            break;
+
+                        case 1: /* Merge duplicates */
+                            snprintf(dream_prompt, sizeof(dream_prompt),
+                                "You are performing DEDUPLICATION for a persistent knowledge store at: %s\n\n"
+                                "Read the scratchpad -- it contains an inventory from the previous pass listing "
+                                "near-duplicate memory groups.\n\n"
+                                "CAPABILITIES:\n"
+                                "- Read any memory: file_read on the JSON file path\n"
+                                "- Create/update memories: memory_store (preserves validation scores on update)\n"
+                                "- Delete files: shell_exec \"rm %s/<filename>\"\n\n"
+                                "TASK: For each group of near-duplicates identified in the scratchpad:\n"
+                                "1. Read all entries in the group\n"
+                                "2. Create ONE merged entry combining the best content from all\n"
+                                "3. Preserve recall_hits/recall_misses from the highest-scored source\n"
+                                "4. Delete the redundant entries\n\n"
+                                "CONSTRAINTS:\n"
+                                "- Never touch pinned memories\n"
+                                "- Keep high-scoring entries (score > 0.7) -- merge INTO them, don't delete them\n"
+                                "- Be conservative -- only merge entries that truly cover the same concept\n\n"
+                                "Update the scratchpad with what you merged.\n"
+                                "Call done with a list of merges performed (old keys -> new key).",
+                                mdir, mdir);
+                            break;
+
+                        case 2: /* Resolve contradictions */
+                            snprintf(dream_prompt, sizeof(dream_prompt),
+                                "You are performing CONTRADICTION RESOLUTION for a persistent knowledge store at: %s\n\n"
+                                "Read the scratchpad -- it contains an inventory identifying contradictory memory pairs, "
+                                "plus a log of merges already performed in the previous pass.\n\n"
+                                "CAPABILITIES:\n"
+                                "- Read any memory: file_read on the JSON file path\n"
+                                "- Read original context: file_read on journal_ref path\n"
+                                "- Read git history: shell_exec \"git -C %s log --oneline\"\n"
+                                "- Create/update memories: memory_store\n"
+                                "- Delete files: shell_exec \"rm %s/<filename>\"\n\n"
+                                "TASK: For each contradictory pair:\n"
+                                "1. Read both entries fully\n"
+                                "2. If journal_ref exists, read the original context to understand WHY each was created\n"
+                                "3. Keep the one with higher validation score, or reconcile into a single entry\n"
+                                "4. Delete the superseded entry\n\n"
+                                "CONSTRAINTS:\n"
+                                "- Never touch pinned memories\n"
+                                "- If both have high scores, reconcile rather than delete\n"
+                                "- Check if previous pass already merged/deleted any of these entries\n\n"
+                                "Update the scratchpad with resolutions.\n"
+                                "Call done with a list of contradictions resolved.",
+                                mdir, mdir, mdir);
+                            break;
+
+                        case 3: /* Synthesize & cross-link + git commit */
+                            snprintf(dream_prompt, sizeof(dream_prompt),
+                                "You are performing KNOWLEDGE SYNTHESIS for a persistent knowledge store at: %s\n\n"
+                                "Read the scratchpad -- it contains the full history of previous passes "
+                                "(inventory, merges, contradiction resolutions).\n\n"
+                                "CAPABILITIES:\n"
+                                "- List memories: shell_exec \"ls %s/\"\n"
+                                "- Read any memory: file_read on the JSON file path\n"
+                                "- Create/update memories: memory_store\n\n"
+                                "TASK (two parts):\n\n"
+                                "A. GENERALIZE: Find clusters of task-specific lessons that share a common pattern. "
+                                "Create a new 'strategy:' entry that captures the general principle, referencing "
+                                "the source lessons. Do NOT delete the source lessons.\n\n"
+                                "B. CROSS-LINK: Find memories that should reference each other but don't. "
+                                "Update their tags or values to include cross-references.\n\n"
+                                "CONSTRAINTS:\n"
+                                "- Only create strategies when 3+ lessons share a clear pattern\n"
+                                "- Don't create strategies that already exist\n"
+                                "- Be conservative with cross-links -- only add genuinely useful connections\n\n"
+                                "WHEN DONE:\n"
+                                "- Compose a FULL summary of ALL changes across ALL 4 passes "
+                                "(read the scratchpad for passes 1-3)\n"
+                                "- Run: shell_exec \"cd %s && git add -A && git commit -m "
+                                "'Dream consolidation (4-pass)\\n\\n<your full summary here>"
+                                "\\n\\nConsolidated-by: %s'\"\n"
+                                "- Call done with the SAME summary text",
+                                mdir, mdir, mdir, model);
+                            break;
+                        }
+
+                        /* Run this pass */
+                        char *pass_result = react_run(&pass_react, dream_prompt,
+                                                      threaded_event_cb,
+                                                      &(infer_args_t){.ui = ui});
+
+                        /* Harvest the scratchpad back from this pass for the next one */
+                        shared_scratch = pass_tools.scratch;
+                        /* Zero out pass_tools.scratch so cleanup doesn't free the sections
+                         * we just moved to shared_scratch */
+                        memset(&pass_tools.scratch, 0, sizeof(pass_tools.scratch));
+
+                        /* Check for failure before cleanup */
+                        int pass_failed = (pass_result == NULL);
+
+                        /* Cleanup per-pass resources */
+                        free(pass_result);
+                        if (pass_tools.scratchpad) free(pass_tools.scratchpad);
+                        alias_map_free(pass_tools.aliases);
+                        journal_free(pass_journal);
+                        free(pass_dir);
+
+                        if (pass_failed) {
+                            dream_ok = 0;
+                            break;  /* Stop on failure */
+                        }
+                    }
+
+                    /* Final cleanup of shared scratchpad */
+                    scratchpad_free(&shared_scratch);
+
                     pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_RUNNING, "Dreaming...");
-                    pthread_mutex_unlock(&ui->mtx);
-                    tui_render(ui);
-
-                    char *dream_result = react_run(&dream_react, dream_prompt,
-                                                    threaded_event_cb,
-                                                    &(infer_args_t){.ui = ui});
-
-                    pthread_mutex_lock(&ui->mtx);
-                    if (dream_result) {
-                        ui_state_set_status(ui, STATUS_DONE, "Dream complete");
+                    if (dream_ok) {
+                        ui_state_set_status(ui, STATUS_DONE, "Dream complete (4 passes)");
                     } else {
                         ui_state_set_status(ui, STATUS_ERROR, "Dream failed");
                     }
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
-
-                    /* Cleanup dream session */
-                    free(dream_result);
-                    if (dream_tools.scratchpad) free(dream_tools.scratchpad);
-                    scratchpad_free(&dream_tools.scratch);
-                    alias_map_free(dream_tools.aliases);
-                    journal_free(dream_journal);
-                    free(dream_dir);
 
                     /* Post-dream: prune with fresh validation scores */
                     memory_prune(memory,
