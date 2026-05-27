@@ -2,14 +2,16 @@
 #define MEMORY_H
 
 #include "cJSON.h"
+#include "embedding.h"
 
 /* Long-term memory: persistent knowledge across sessions.
  * Stored as individual JSON files in .memory/ directory.
  * Types: lesson:*, strategy:*, task:*, fact:* */
 
 typedef struct {
-    char *dir;   /* .memory/ directory path */
-    char *model; /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
+    char *dir;          /* .memory/ directory path */
+    char *model;        /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
+    embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
 } memory_t;
 
 typedef struct {
@@ -84,5 +86,25 @@ int memory_increment_misses(memory_t *m, const char *key);
 /* Write MEMORY.md index file (auto-generated, human-readable).
  * Called automatically after memory_store. */
 int memory_write_index_file(memory_t *m);
+
+/* Initialize embedding context for semantic memory matching.
+ * Call after memory_new(). Probes the embedding service and sets
+ * m->embed if available. No-op if cfg->type is "none" or NULL.
+ * Returns 1 if embeddings are available, 0 otherwise. */
+int memory_init_embeddings(memory_t *m, const char *type,
+                           const char *model, const char *api_base,
+                           int dimension);
+
+/* Generate and save embedding for a memory entry.
+ * Called automatically by memory_store when embeddings are enabled.
+ * Saves to .memory/<key>.emb alongside the .json file.
+ * Returns 0 on success, -1 on failure. */
+int memory_embed_entry(memory_t *m, const char *key, const char *value,
+                       const char **tags, int n_tags);
+
+/* Re-embed all memory entries that don't have .emb files.
+ * Useful after enabling embeddings on an existing memory store.
+ * Returns number of entries embedded. */
+int memory_embed_all(memory_t *m);
 
 #endif

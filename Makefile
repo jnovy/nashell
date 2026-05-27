@@ -9,7 +9,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/provider_openai.c src/provider_anthropic.c \
           src/frontend_tui.c \
           src/ui_state.c src/tui.c src/md_render.c \
-          src/memory.c
+          src/memory.c \
+          src/embedding.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -31,7 +32,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/llm.c src/tools.c src/react.c src/config.c src/toml.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
-          src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c
+          src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c \
+          src/embedding.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

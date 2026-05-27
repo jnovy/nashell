@@ -150,6 +150,15 @@ config_t *config_load(const char *path) {
         cfg->provider.caching        = toml_bl(provider, "caching", 0);
     }
 
+    /* [embedding] — semantic memory matching via vector embeddings */
+    toml_table_t *embedding = toml_table_in(root, "embedding");
+    if (embedding) {
+        cfg->embedding.type      = toml_str(embedding, "type");
+        cfg->embedding.model     = toml_str(embedding, "model");
+        cfg->embedding.api_base  = toml_str(embedding, "api_base");
+        cfg->embedding.dimension = toml_int(embedding, "dimension", 0);
+    }
+
     /* [client] */
     toml_table_t *client = toml_table_in(root, "client");
     if (client) {
@@ -238,6 +247,9 @@ void config_free(config_t *cfg) {
     free(cfg->provider.api_key_env);
     free(cfg->provider.project_id);
     free(cfg->provider.region);
+    free(cfg->embedding.type);
+    free(cfg->embedding.model);
+    free(cfg->embedding.api_base);
     free(cfg->data_dir);
     free(cfg->search_engine);
     free(cfg->searxng_url);
@@ -293,6 +305,15 @@ int config_write_default(const char *path) {
         "# tau_vnr = 1.5              # von Neumann ratio threshold\n"
         "# tau_h = 4.0                # mean entropy threshold\n"
         "# budget = -1                # thinking token budget: -1=unrestricted, 0=none, N>0=max tokens\n"
+        "\n"
+        "# Semantic embedding for memory matching (GDN-2 inspired)\n"
+        "# Enables cosine-similarity scoring instead of substring matching.\n"
+        "# Graceful fallback: if service unavailable, uses substring matching.\n"
+        "# [embedding]\n"
+        "# type = \"ollama\"                        # \"ollama\", \"openai\", \"none\"\n"
+        "# model = \"nomic-embed-text\"             # embedding model name\n"
+        "# api_base = \"http://localhost:11434\"    # ollama default\n"
+        "# dimension = 0                          # 0 = auto-detect\n"
         "\n"
         "[limits]\n"
         "# Shell command execution\n"

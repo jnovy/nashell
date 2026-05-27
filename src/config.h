@@ -42,12 +42,26 @@ typedef struct {
     int    caching;          /* enable prompt caching (Anthropic) */
 } provider_config_toml_t;
 
+/* Embedding configuration — semantic memory matching via vector embeddings.
+ * Inspired by GDN-2's "short convolution on gates": instead of independent
+ * substring scoring per memory, use dense semantic vectors for context-aware
+ * similarity matching. */
+typedef struct {
+    char  *type;             /* "ollama", "openai", "none" (default: "none") */
+    char  *model;            /* embedding model name (e.g. "nomic-embed-text") */
+    char  *api_base;         /* API base URL (e.g. "http://localhost:11434") */
+    int    dimension;        /* expected embedding dimension (0 = auto-detect) */
+} embedding_config_t;
+
 typedef struct {
     /* [server] — kept for backward compatibility */
     char  *api_base;
 
     /* [provider] — new multi-provider config */
     provider_config_toml_t provider;
+
+    /* [embedding] — semantic memory matching */
+    embedding_config_t embedding;
 
     /* [client] */
     float  temperature;

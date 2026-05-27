@@ -380,6 +380,13 @@ int main(int argc, char **argv) {
     if (pruned > 0)
         fprintf(stderr, "[info] pruned %d stale memories\n", pruned);
 
+    /* Initialize semantic embeddings for memory matching (if configured) */
+    if (cfg->embedding.type && strcmp(cfg->embedding.type, "none") != 0) {
+        memory_init_embeddings(memory, cfg->embedding.type,
+                               cfg->embedding.model, cfg->embedding.api_base,
+                               cfg->embedding.dimension);
+    }
+
     /* One-shot headless mode */
     if (query) {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */

@@ -115,9 +115,30 @@ memory_t *memory_new(const char *project_root) {
 
 void memory_free(memory_t *m) {
     if (!m) return;
+    embed_free(m->embed);
     free(m->dir);
     free(m->model);
     free(m);
+}
+
+/* ── embedding helpers ───────────────────────────────── */
+
+/* Convert a .json path to .emb path for embedding storage */
+static void json_to_emb_path(const char *json_path, char *emb_path, size_t sz) {
+    snprintf(emb_path, sz, "%s", json_path);
+    size_t len = strlen(emb_path);
+    if (len >= 5 && strcmp(emb_path + len - 5, ".json") == 0) {
+        strcpy(emb_path + len - 5, ".emb");
+    }
+}
+
+/* Convert a key to .emb filename */
+static void key_to_emb_filename(const char *key, char *out, size_t out_sz) {
+    size_t i = 0;
+    for (; key[i] && i < out_sz - 5; i++)
+        out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
+    out[i] = '\0';
+    strcat(out, ".emb");
 }
 
 /* ── store ───────────────────────────────────────────── */
@@ -202,6 +223,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
     free(json);
     cJSON_Delete(entry);
 
+    /* Generate embedding for semantic matching (if enabled) */
+    if (m->embed && m->embed->available) {
+        memory_embed_entry(m, key, value, tags, n_tags);
+    }
+
     /* Auto-update MEMORY.md index file */
     memory_write_index_file(m);
 
@@ -283,11 +309,9 @@ int memory_unpin(memory_t *m, const char *key) {
 
 /* ── recall (search) ─────────────────────────────────── */
 
-/* Composite scoring: relevance × recency × importance (research-backed) */
-static double score_entry_composite(const char *key, const char *value,
-                                     cJSON *tags, const char *query,
-                                     double last_accessed, int access_count) {
-    /* Relevance: substring match on key, tags, value */
+/* Substring-based relevance scoring (fallback when embeddings unavailable) */
+static double score_entry_substring(const char *key, const char *value,
+                                     cJSON *tags, const char *query) {
     double relevance = 0;
     if (strcasestr(key, query)) relevance += 3.0;
     if (tags) {
@@ -299,7 +323,42 @@ static double score_entry_composite(const char *key, const char *value,
         }
     }
     if (strcasestr(value, query)) relevance += 1.0;
-    if (relevance == 0) return 0;  /* no match at all */
+    return relevance;
+}
+
+/* Composite scoring: semantic + substring + recency + importance.
+ * When embeddings are available, semantic similarity is the primary signal.
+ * Substring matching provides a safety net for exact keyword matches that
+ * embeddings might underweight (e.g., function names, error codes).
+ *
+ * Inspired by GDN-2's "short convolution on gates": instead of scoring
+ * each memory independently via substring, we use dense vector embeddings
+ * that capture the full semantic context of the query — a continuous,
+ * context-aware relevance signal. */
+static double score_entry_hybrid(const char *key, const char *value,
+                                  cJSON *tags, const char *query,
+                                  double last_accessed, int access_count,
+                                  float semantic_sim, int has_semantic) {
+    double relevance;
+
+    if (has_semantic) {
+        /* Semantic mode: cosine similarity is primary signal.
+         * Scale from [-1,1] to [0,6] range to match substring score scale.
+         * Add substring bonus for exact keyword matches. */
+        double semantic = (double)(semantic_sim + 1.0f) * 3.0;  /* [0, 6] */
+        double substring = score_entry_substring(key, value, tags, query);
+
+        /* Blend: 70% semantic + 30% substring.
+         * This ensures exact keyword matches still surface even if
+         * the embedding model doesn't capture them well. */
+        relevance = semantic * 0.7 + substring * 0.3;
+    } else {
+        /* Fallback: pure substring matching (original behavior) */
+        relevance = score_entry_substring(key, value, tags, query);
+        if (relevance == 0) return 0;  /* no match at all */
+    }
+
+    if (relevance < 0.01) return 0;
 
     /* Recency: exponential decay — recent memories score higher */
     double age_days = (epoch_now() - last_accessed) / 86400.0;
@@ -319,6 +378,14 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
     DIR *dir = opendir(m->dir);
     if (!dir) return results;
+
+    /* Generate query embedding once (if embeddings are available) */
+    embed_vec_t query_emb = {0};
+    int has_semantic = 0;
+    if (m->embed && m->embed->available) {
+        query_emb = embed_text(m->embed, query);
+        has_semantic = (query_emb.data != NULL && query_emb.dim > 0);
+    }
 
     /* Temporary storage for scored results */
     typedef struct { char path[4096]; double score; } scored_t;
@@ -365,7 +432,24 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (la && la->valuestring) last_acc = atof(la->valuestring);
         if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
 
-        double s = score_entry_composite(key, value, tags, query, last_acc, acc_count);
+        /* Compute semantic similarity if embeddings available */
+        float semantic_sim = 0.0f;
+        int entry_has_semantic = 0;
+        if (has_semantic) {
+            /* Try to load cached embedding for this entry */
+            char emb_path[4096];
+            json_to_emb_path(path, emb_path, sizeof(emb_path));
+            embed_vec_t entry_emb = embed_vec_load(emb_path);
+            if (entry_emb.data && entry_emb.dim > 0) {
+                semantic_sim = embed_cosine_sim(&query_emb, &entry_emb);
+                entry_has_semantic = 1;
+            }
+            embed_vec_free(&entry_emb);
+        }
+
+        double s = score_entry_hybrid(key, value, tags, query,
+                                       last_acc, acc_count,
+                                       semantic_sim, entry_has_semantic);
         if (s > 0.01) {
             snprintf(scored[n_scored].path, sizeof(scored[n_scored].path), "%s", path);
             scored[n_scored].score = s;
@@ -374,6 +458,9 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         cJSON_Delete(entry);
     }
     closedir(dir);
+
+    /* Free query embedding */
+    embed_vec_free(&query_emb);
 
     /* Sort by score descending (simple bubble sort, n is small) */
     for (int i = 0; i < n_scored - 1; i++)
@@ -784,4 +871,148 @@ int memory_increment_hits(memory_t *m, const char *key) {
 
 int memory_increment_misses(memory_t *m, const char *key) {
     return memory_increment_field(m, key, "recall_misses");
+}
+
+/* ── embedding integration ──────────────────────────────────── */
+
+int memory_init_embeddings(memory_t *m, const char *type,
+                           const char *model, const char *api_base,
+                           int dimension) {
+    if (!m || !type) return 0;
+
+    /* Parse embedding type */
+    embed_config_t cfg = {0};
+    if (strcmp(type, "ollama") == 0) {
+        cfg.type = EMBED_OLLAMA;
+        cfg.api_base = (char *)(api_base ? api_base : "http://localhost:11434");
+        cfg.model = (char *)(model ? model : "nomic-embed-text");
+    } else if (strcmp(type, "openai") == 0) {
+        cfg.type = EMBED_OPENAI;
+        cfg.api_base = (char *)(api_base ? api_base : "http://localhost:8080");
+        cfg.model = (char *)(model ? model : "text-embedding-3-small");
+    } else {
+        /* "none" or unknown — embeddings disabled */
+        return 0;
+    }
+    cfg.dimension = dimension;
+
+    /* Create embedding context */
+    m->embed = embed_new(&cfg);
+    if (!m->embed) return 0;
+
+    /* Probe the service — if it's not running, gracefully disable */
+    if (!embed_probe(m->embed)) {
+        fprintf(stderr, "[memory] embedding service at %s not available, "
+                "falling back to substring matching\n", cfg.api_base);
+        embed_free(m->embed);
+        m->embed = NULL;
+        return 0;
+    }
+
+    fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d)\n",
+            cfg.api_base, cfg.model, m->embed->detected_dim);
+
+    /* On first enable, embed any existing memories that lack .emb files */
+    int embedded = memory_embed_all(m);
+    if (embedded > 0) {
+        fprintf(stderr, "[memory] generated embeddings for %d existing memories\n",
+                embedded);
+    }
+
+    return 1;
+}
+
+int memory_embed_entry(memory_t *m, const char *key, const char *value,
+                       const char **tags, int n_tags) {
+    if (!m || !m->embed || !m->embed->available || !key) return -1;
+
+    /* Prepare text for embedding */
+    char *text = embed_prepare_text(key, value, tags, n_tags, 2000);
+    if (!text) return -1;
+
+    /* Generate embedding */
+    embed_vec_t vec = embed_text(m->embed, text);
+    free(text);
+
+    if (!vec.data || vec.dim <= 0) {
+        embed_vec_free(&vec);
+        return -1;
+    }
+
+    /* Save to .emb file */
+    char emb_fname[512];
+    key_to_emb_filename(key, emb_fname, sizeof(emb_fname));
+
+    char emb_path[4096];
+    snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+
+    int rc = embed_vec_save(&vec, emb_path);
+    embed_vec_free(&vec);
+    return rc;
+}
+
+int memory_embed_all(memory_t *m) {
+    if (!m || !m->embed || !m->embed->available) return 0;
+
+    DIR *dir = opendir(m->dir);
+    if (!dir) return 0;
+
+    int embedded = 0;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+
+        /* Check if .emb file already exists */
+        char json_path[4096], emb_path[4096];
+        snprintf(json_path, sizeof(json_path), "%s/%s", m->dir, de->d_name);
+        json_to_emb_path(json_path, emb_path, sizeof(emb_path));
+
+        struct stat st;
+        if (stat(emb_path, &st) == 0) continue;  /* already has embedding */
+
+        /* Load JSON entry */
+        FILE *f = fopen(json_path, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *buf = malloc((size_t)sz + 1);
+        if (!buf) { fclose(f); continue; }
+        fread(buf, 1, (size_t)sz, f);
+        buf[sz] = '\0';
+        fclose(f);
+
+        cJSON *entry = cJSON_Parse(buf);
+        free(buf);
+        if (!entry) continue;
+
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        cJSON *v = cJSON_GetObjectItem(entry, "value");
+        cJSON *t = cJSON_GetObjectItem(entry, "tags");
+
+        const char *ekey = (k && k->valuestring) ? k->valuestring : "";
+        const char *eval = (v && v->valuestring) ? v->valuestring : "";
+
+        /* Extract tags as string array */
+        int nt = t ? cJSON_GetArraySize(t) : 0;
+        const char **tag_strs = NULL;
+        if (nt > 0) {
+            tag_strs = malloc(sizeof(char *) * (size_t)nt);
+            for (int i = 0; i < nt; i++) {
+                cJSON *ti = cJSON_GetArrayItem(t, i);
+                tag_strs[i] = (ti && ti->valuestring) ? ti->valuestring : "";
+            }
+        }
+
+        if (memory_embed_entry(m, ekey, eval, tag_strs, nt) == 0)
+            embedded++;
+
+        free(tag_strs);
+        cJSON_Delete(entry);
+    }
+    closedir(dir);
+
+    return embedded;
 }
