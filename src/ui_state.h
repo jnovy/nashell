@@ -77,6 +77,12 @@ typedef struct {
     int            current_step;
     int            max_steps;
 
+    /* ── Model / context info (for nashell-style status bar) ── */
+    char          *model_name;    /* e.g. "claude-sonnet-4-20250514" */
+    int            context_size;  /* server n_ctx (for ctx % calculation) */
+    int            context_used;  /* current prompt tokens in context */
+    int            bg_jobs;       /* number of background jobs */
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;

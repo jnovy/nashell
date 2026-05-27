@@ -64,6 +64,7 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->status_text);
     free(ui->input_buffer);
     free(ui->stream_tokens);
+    free(ui->model_name);
     /* Free query history */
     for (int i = 0; i < ui->history_count; i++)
         free(ui->history[i]);
@@ -716,6 +717,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->status_text = strdup(buf);
         ui->current_step = ev->step;
         ui->max_steps = ev->max_steps;
+        /* Update context size from event if available */
+        if (ev->context_size > 0)
+            ui->context_size = ev->context_size;
         /* Clear streaming tokens for new step */
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
@@ -779,6 +783,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
+        /* Update context usage tracking from step stats */
+        if (ev->stats.prompt_tokens > 0) {
+            ui->context_used = ev->stats.prompt_tokens;
+            if (ev->context_size > 0)
+                ui->context_size = ev->context_size;
+        }
         ui_state_rebuild_md(ui);
     /* Auto-scroll to keep cursor visible — but NOT during streaming,
      * where ui_state_rebuild_md() already scrolls to bottom */
@@ -800,6 +810,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->status_text = strdup("Done");
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
+        /* Update context usage from final stats */
+        if (ev->stats.prompt_tokens > 0) {
+            ui->context_used = ev->stats.prompt_tokens;
+            if (ev->context_size > 0)
+                ui->context_size = ev->context_size;
+        }
         ui_state_rebuild_md(ui);
         /* Auto-collapse to show result when done */
         if (ui->doc) {

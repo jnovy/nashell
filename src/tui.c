@@ -270,27 +270,29 @@ static void render_main(ui_state_t *ui) {
 static void render_ncurses_row(WINDOW *win, int row, int cols,
                                 int pair_num,
                                 const char *content) {
-    /* Build a line padded to full width */
-    char line[2048];
-    int max_content = (int)sizeof(line) - 1;
-
-    if (content && content[0]) {
-        int clen = (int)strlen(content);
-        int show = clen < max_content ? clen : max_content;
-        memcpy(line, content, (size_t)show);
-        for (int c = show; c < cols && c < max_content; c++) {
-            line[c] = ' ';
-        }
-        line[cols < max_content ? cols : max_content] = '\0';
-    } else {
-        int limit = cols < max_content ? cols : max_content;
-        memset(line, ' ', (size_t)limit);
-        line[limit] = '\0';
-    }
-
+    /* Write content then pad to end of row with mvwaddch using the correct
+     * color pair. wclrtoeol() fills with win->_nc_bkgd (window background
+     * from wbkgdset), NOT the current attribute from wattron — so the
+     * status bar color would be lost after the text.
+     *
+     * Using explicit mvwaddch padding also handles UTF-8 correctly:
+     * mvwaddnstr advances the cursor by display columns (not bytes), so
+     * getyx() returns the correct column after multi-byte chars.
+     * E.g. "⟳" is 3 bytes but 1 column — byte-based padding would
+     * start 2 columns too late. */
     attr_t attr = COLOR_PAIR(pair_num);
     wattron(win, attr);
-    mvwaddnstr(win, row, 0, line, -1);
+    if (content && content[0]) {
+        mvwaddnstr(win, row, 0, content, -1);
+    }
+    /* Pad from current cursor position to end of row */
+    {
+        int cur_x = getcurx(win);
+        
+        for (int c = cur_x; c < cols; c++) {
+            mvwaddch(win, row, c, ' ' | attr);
+        }
+    }
     wattroff(win, attr);
 }
 
@@ -584,6 +586,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
             ui->input_buffer[0] = '\0';
             ui->input_len = 0;
             ui->cursor_pos = 0;
+            ui->focus = FOCUS_JOURNAL;  /* switch focus to main pane */
             ui->dirty = 1;
         }
         break;

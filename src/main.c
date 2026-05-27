@@ -542,6 +542,12 @@ int main(int argc, char **argv) {
 
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
+        /* Pass model name + context info for nashell-style status bar */
+        if (server_model)
+            ui->model_name = strdup(server_model);
+        ui->context_size = context_size;
+        ui->context_used = 0;
+        ui->bg_jobs = 0;
         ui_state_set_status(ui, STATUS_READY, "Ready");
         /* Set banner text for main pane */
         char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir);
