@@ -1005,7 +1005,8 @@ int memory_increment_misses(memory_t *m, const char *key) {
 
 int memory_init_embeddings(memory_t *m, const char *type,
                            const char *model, const char *api_base,
-                           const char *model_path, int dimension) {
+                           const char *model_path, int dimension,
+                           int max_input_chars) {
     if (!m || !type) return 0;
 
     /* Expand ~ in model_path */
@@ -1037,6 +1038,7 @@ int memory_init_embeddings(memory_t *m, const char *type,
         return 0;
     }
     cfg.dimension = dimension;
+    cfg.max_input_chars = max_input_chars;
 
     /* Create embedding context */
     m->embed = embed_new(&cfg);
@@ -1058,11 +1060,13 @@ int memory_init_embeddings(memory_t *m, const char *type,
     }
 
     if (cfg.type == EMBED_ONNX) {
-        fprintf(stderr, "[memory] ONNX embeddings enabled: %s (dim=%d)\n",
-                model_path, m->embed->detected_dim);
+        fprintf(stderr, "[memory] ONNX embeddings enabled: %s (dim=%d, max_chars=%d)\n",
+                model_path, m->embed->detected_dim,
+                embed_max_input_chars(m->embed));
     } else {
-        fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d)\n",
-                cfg.api_base, cfg.model, m->embed->detected_dim);
+        fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d, max_chars=%d)\n",
+                cfg.api_base, cfg.model, m->embed->detected_dim,
+                embed_max_input_chars(m->embed));
     }
 
     /* On first enable, embed any existing memories that lack .emb files */
@@ -1080,12 +1084,15 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value,
     if (!m || !m->embed || !m->embed->available || !key) return -1;
 
     /* Prepare text as chunks for embedding.
-     * Short entries (≤2000 chars) produce 1 chunk (same as before).
-     * Long entries are split into overlapping chunks, each prefixed
-     * with key+tags for context anchoring. */
+     * Short entries produce 1 chunk; long entries are split into
+     * overlapping chunks, each prefixed with key+tags for context
+     * anchoring. Chunk size adapts to model's context window. */
+    int max_chars = embed_max_input_chars(m->embed);
+    int overlap = max_chars / 10;  /* 10% overlap, min 200 */
+    if (overlap < 200) overlap = 200;
     int n_chunks = 0;
     char **chunks = embed_prepare_text_chunked(key, value, tags, n_tags,
-                                               2000, 200, &n_chunks);
+                                               max_chars, overlap, &n_chunks);
     if (!chunks || n_chunks <= 0) return -1;
 
     /* Generate embeddings for all chunks */

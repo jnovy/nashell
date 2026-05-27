@@ -1204,6 +1204,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(sp_text);
         }
 
+        /* FIX B3: Inject final_result into reflection context.
+         * Without this, the reflection LLM doesn't know what the task
+         * actually produced - it can only infer from tool call sequences.
+         * This degrades reflection quality significantly. */
+        if (final_result) {
+            size_t fr_len = strlen(final_result);
+            size_t show_len = fr_len > 2000 ? 2000 : fr_len;
+            char *fr_msg = malloc(show_len + 64);
+            if (fr_msg) {
+                snprintf(fr_msg, show_len + 64, "[TASK RESULT]\n%.*s%s",
+                         (int)show_len, final_result,
+                         fr_len > 2000 ? "\n[truncated]" : "");
+                llm_chat_add(reflect, "user", fr_msg);
+                free(fr_msg);
+            }
+        }
+
         llm_chat_add(reflect, "user",
             task_succeeded
                 ? "Analyze the causal chain of this task. What assumptions held? "
@@ -1252,10 +1269,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
                     ctx->tools->memory && ctx->tools->memory->embed &&
                     ctx->tools->memory->embed->available) {
-                    /* Generate embedding for the new entry */
+                    /* Generate embedding for the new entry.
+                     * Use model-aware max_input_chars for full fidelity. */
+                    int mic = embed_max_input_chars(
+                                  ctx->tools->memory->embed);
                     char *prep = embed_prepare_text(rkey_j->valuestring,
                                                      rval_j->valuestring,
-                                                     NULL, 0, 512);
+                                                     NULL, 0, mic);
                     if (prep) {
                         embed_vec_t new_emb = embed_text(
                             ctx->tools->memory->embed, prep);

@@ -52,6 +52,7 @@ typedef struct {
     char  *api_base;         /* API base URL (e.g. "http://localhost:11434") */
     char  *model_path;       /* ONNX: directory with onnx/model.onnx + vocab.txt */
     int    dimension;        /* expected embedding dimension (0 = auto-detect) */
+    int    max_input_chars;  /* max chars for text preparation (0 = auto from model) */
 } embedding_config_t;
 
 typedef struct {

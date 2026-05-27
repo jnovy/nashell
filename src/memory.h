@@ -95,7 +95,8 @@ int memory_increment_misses(memory_t *m, const char *key);
  * Returns 1 if embeddings are available, 0 otherwise. */
 int memory_init_embeddings(memory_t *m, const char *type,
                            const char *model, const char *api_base,
-                           const char *model_path, int dimension);
+                           const char *model_path, int dimension,
+                           int max_input_chars);
 
 /* Generate and save embedding for a memory entry.
  * Called automatically by memory_store when embeddings are enabled.

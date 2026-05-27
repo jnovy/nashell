@@ -37,6 +37,7 @@ typedef struct {
     char *api_base;    /* e.g. "http://localhost:11434" */
     char *model_path;  /* ONNX: directory containing onnx/model.onnx + vocab.txt */
     int   dimension;   /* expected embedding dimension (0 = auto-detect) */
+    int   max_input_chars; /* max input chars for text preparation (0 = auto from model) */
 } embed_config_t;
 
 /* ── Embedding context ───────────────────────────────── */
@@ -67,6 +68,13 @@ int embed_probe(embed_ctx_t *ctx);
 
 /* Free embedding context */
 void embed_free(embed_ctx_t *ctx);
+
+/* Return the effective max input chars for text preparation.
+ * If cfg.max_input_chars is set (>0), uses that.
+ * Otherwise, auto-detects from model name using a built-in table of
+ * known embedding models and their context windows.
+ * Fallback: 2000 chars (~500 tokens) for unknown models. */
+int embed_max_input_chars(const embed_ctx_t *ctx);
 
 /* ── Embedding generation ────────────────────────────── */
 

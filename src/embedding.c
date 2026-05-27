@@ -40,6 +40,7 @@ embed_ctx_t *embed_new(const embed_config_t *cfg) {
     ctx->cfg.api_base = cfg->api_base ? strdup(cfg->api_base) : NULL;
     ctx->cfg.model_path = cfg->model_path ? strdup(cfg->model_path) : NULL;
     ctx->cfg.dimension = cfg->dimension;
+    ctx->cfg.max_input_chars = cfg->max_input_chars;
     ctx->available = 0;
     ctx->detected_dim = 0;
     ctx->onnx = NULL;
@@ -54,6 +55,73 @@ void embed_free(embed_ctx_t *ctx) {
     free(ctx->cfg.api_base);
     free(ctx->cfg.model_path);
     free(ctx);
+}
+
+/* ── Model context window lookup ─────────────────────── */
+
+/* Known embedding models and their max input tokens.
+ * Tokens are converted to chars using ~4 chars/token.
+ * Table is searched by substring match on model name so that
+ * versioned names (e.g. "nomic-embed-text:v1.5") still match. */
+static const struct {
+    const char *pattern;   /* substring to match in model name */
+    int         max_tokens;
+} embed_model_limits[] = {
+    /* Large context models (8K tokens) */
+    { "nomic-embed",             8192 },
+    { "text-embedding-3",        8191 },
+    { "text-embedding-ada",      8191 },
+    { "jina-embeddings-v3",      8192 },
+    { "jina-embeddings-v2",      8192 },
+    /* Medium context models (2K tokens) */
+    { "snowflake-arctic-embed",  2048 },
+    { "mxbai-embed",              512 },
+    { "bge-large",                512 },
+    { "bge-base",                 512 },
+    { "bge-small",                512 },
+    { "bge-m3",                  8192 },
+    { "e5-large",                 512 },
+    { "e5-base",                  512 },
+    { "e5-small",                 512 },
+    { "e5-mistral",              4096 },
+    { "gte-large",                512 },
+    { "gte-base",                 512 },
+    { "gte-small",                512 },
+    { "gte-Qwen",                8192 },
+    /* Small context models (256 tokens) */
+    { "all-MiniLM",               256 },
+    { "all-minilm",               256 },
+    { "all-mpnet",                384 },
+    { "paraphrase-",              128 },
+    { NULL, 0 }
+};
+
+#define EMBED_DEFAULT_CHARS_PER_TOKEN 4
+#define EMBED_DEFAULT_MAX_CHARS       2000  /* ~500 tokens, safe for most models */
+
+int embed_max_input_chars(const embed_ctx_t *ctx) {
+    if (!ctx) return EMBED_DEFAULT_MAX_CHARS;
+
+    /* Explicit override from config takes priority */
+    if (ctx->cfg.max_input_chars > 0)
+        return ctx->cfg.max_input_chars;
+
+    /* ONNX backend: typically all-MiniLM-L6-v2 with 256 tokens */
+    if (ctx->cfg.type == EMBED_ONNX)
+        return 256 * EMBED_DEFAULT_CHARS_PER_TOKEN;  /* 1024 chars */
+
+    /* Look up model name in known models table */
+    const char *model = ctx->cfg.model;
+    if (model) {
+        for (int i = 0; embed_model_limits[i].pattern; i++) {
+            if (strstr(model, embed_model_limits[i].pattern)) {
+                return embed_model_limits[i].max_tokens
+                     * EMBED_DEFAULT_CHARS_PER_TOKEN;
+            }
+        }
+    }
+
+    return EMBED_DEFAULT_MAX_CHARS;
 }
 
 /* ── API calls ───────────────────────────────────────── */

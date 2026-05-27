@@ -157,6 +157,7 @@ config_t *config_load(const char *path) {
         cfg->embedding.api_base   = toml_str(embedding, "api_base");
         cfg->embedding.model_path = toml_str(embedding, "model_path");
         cfg->embedding.dimension  = toml_int(embedding, "dimension", 0);
+        cfg->embedding.max_input_chars = toml_int(embedding, "max_input_chars", 0);
     }
 
     /* [client] */
@@ -314,6 +315,7 @@ int config_write_default(const char *path) {
         "# model = \"nomic-embed-text\"             # embedding model name (ollama/openai)\n"
         "# api_base = \"http://localhost:11434\"    # API base (ollama/openai)\n"
         "# dimension = 0                          # 0 = auto-detect\n"
+        "# max_input_chars = 0                    # 0 = auto from model (e.g. nomic-embed→32K, MiniLM→1K)\n"
         "\n"
         "[limits]\n"
         "# Shell command execution\n"

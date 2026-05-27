@@ -383,7 +383,8 @@ int main(int argc, char **argv) {
         memory_init_embeddings(memory, cfg->embedding.type,
                                cfg->embedding.model, cfg->embedding.api_base,
                                cfg->embedding.model_path,
-                               cfg->embedding.dimension);
+                               cfg->embedding.dimension,
+                               cfg->embedding.max_input_chars);
     }
 
     /* One-shot headless mode */
