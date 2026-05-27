@@ -4,8 +4,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <time.h>
 #include <sys/file.h>  /* flock */
+
+/* Unwrap nested JSON in a thought string.
+ * Returns a heap-allocated clean thought, or the original if no unwrapping needed.
+ * Caller must free() the result if it differs from the input. */
+static char *unwrap_thought(const char *thought) {
+    if (!thought || thought[0] != '{') return NULL;  /* nothing to unwrap */
+    cJSON *nested = cJSON_Parse(thought);
+    if (!nested) return NULL;
+    cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
+    char *result = NULL;
+    if (inner && cJSON_IsString(inner) && inner->valuestring && inner->valuestring[0]) {
+        result = strdup(inner->valuestring);
+    }
+    cJSON_Delete(nested);
+    return result;
+}
 
 journal_t *journal_new(const char *session_dir) {
     journal_t *j = calloc(1, sizeof(*j));
@@ -15,7 +33,18 @@ journal_t *journal_new(const char *session_dir) {
     char path[4096];
     snprintf(path, sizeof(path), "%s/journal.jsonl", session_dir);
     j->path = strdup(path);
+    j->lazy_created = 1;
     if (!j->path) { free(j->session_dir); free(j); return NULL; }
+    return j;
+}
+
+/* Lazy journal: session directory is not created until first journal_append().
+ * If program exits without any append, no session directory exists. */
+journal_t *journal_new_lazy(const char *nash_dir) {
+    journal_t *j = calloc(1, sizeof(*j));
+    if (!j) return NULL;
+    j->nash_dir = strdup(nash_dir);
+    j->lazy_created = 0;
     return j;
 }
 
@@ -23,13 +52,48 @@ void journal_free(journal_t *j) {
     if (!j) return;
     free(j->path);
     free(j->session_dir);
+    free(j->nash_dir);
     free(j);
+}
+
+const char *journal_session_dir(journal_t *j) {
+    if (!j) return NULL;
+    return j->session_dir;
+}
+
+/* Create the session directory lazily. Called from journal_append on first write. */
+static int journal_create_lazy_session(journal_t *j) {
+    if (!j || !j->nash_dir || j->lazy_created) return 0;
+
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
+
+    char sessions_base[1024];
+    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", j->nash_dir);
+    mkdir(sessions_base, 0755);
+
+    char path[1088];
+    snprintf(path, sizeof(path), "%s/%ld.%05ld",
+             sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+    mkdir(path, 0755);
+
+    j->session_dir = strdup(path);
+    char jpath[4096];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", path);
+    j->path = strdup(jpath);
+    j->lazy_created = 1;
+    return 0;
 }
 
 int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error,
                    const char *tool_call_id) {
+    /* Lazy session creation: create directory on first write */
+    if (j->nash_dir && !j->lazy_created) {
+        journal_create_lazy_session(j);
+    }
+    if (!j->path) return -1;
     FILE *f = fopen(j->path, "a");
     if (!f) return -1;
 
@@ -114,10 +178,13 @@ char *journal_manifest(journal_t *j, int max_steps) {
         /* Extract thought and key param for display */
         const char *key_param = "";
         const char *thought = NULL;
+        char *unwrapped = NULL;
         if (params) {
             cJSON *th = cJSON_GetObjectItem(params, "thought");
-            if (th && th->valuestring && th->valuestring[0])
-                thought = th->valuestring;
+            if (th && th->valuestring && th->valuestring[0]) {
+                unwrapped = unwrap_thought(th->valuestring);
+                thought = unwrapped ? unwrapped : th->valuestring;
+            }
             cJSON *cmd = cJSON_GetObjectItem(params, "command");
             cJSON *p = cJSON_GetObjectItem(params, "path");
             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -163,6 +230,8 @@ char *journal_manifest(journal_t *j, int max_steps) {
         str_append_cstr(&out, buf);
         str_append_cstr(&out, "\n");
 
+        free(unwrapped);
+        unwrapped = NULL;
         cJSON_Delete(entry);
         count++;
     }
@@ -242,10 +311,13 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         /* Extract thought and key param for display */
         const char *key_param = "";
         const char *thought = NULL;
+        char *unwrapped2 = NULL;
         if (params) {
             cJSON *th = cJSON_GetObjectItem(params, "thought");
-            if (th && th->valuestring && th->valuestring[0])
-                thought = th->valuestring;
+            if (th && th->valuestring && th->valuestring[0]) {
+                unwrapped2 = unwrap_thought(th->valuestring);
+                thought = unwrapped2 ? unwrapped2 : th->valuestring;
+            }
             cJSON *cmd = cJSON_GetObjectItem(params, "command");
             cJSON *p = cJSON_GetObjectItem(params, "path");
             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -286,6 +358,8 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         str_append_cstr(&out, buf);
         str_append_cstr(&out, "\n");
 
+        free(unwrapped2);
+        unwrapped2 = NULL;
         cJSON_Delete(entry);
         count++;
     }

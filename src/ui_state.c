@@ -218,6 +218,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                         cJSON_GetObjectItem(e, "tool"));
                     if (loop == qi->react_loop && t &&
                         strcmp(t, "query") != 0) {
+                        char *unwrapped_thought = NULL;
 
                         const char *ref = cJSON_GetStringValue(
                             cJSON_GetObjectItem(e, "ref"));
@@ -232,7 +233,21 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                         const char *thought = "";
                         if (params) {
                             cJSON *th = cJSON_GetObjectItem(params, "thought");
-                            if (th && th->valuestring) thought = th->valuestring;
+                            if (th && th->valuestring) {
+                                /* Unwrap nested JSON: sometimes thought contains
+                                 * the entire action JSON instead of clean text. */
+                                if (th->valuestring[0] == '{') {
+                                    cJSON *nested = cJSON_Parse(th->valuestring);
+                                    if (nested) {
+                                        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
+                                        if (inner && cJSON_IsString(inner) && inner->valuestring && inner->valuestring[0]) {
+                                            unwrapped_thought = strdup(inner->valuestring);
+                                        }
+                                        cJSON_Delete(nested);
+                                    }
+                                }
+                                thought = unwrapped_thought ? unwrapped_thought : th->valuestring;
+                            }
                             cJSON *cmd = cJSON_GetObjectItem(params, "command");
                             cJSON *path = cJSON_GetObjectItem(params, "path");
                             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -306,6 +321,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 }
                             }
                         }
+                    free(unwrapped_thought);
                     }
                     cJSON_Delete(e);
                 }

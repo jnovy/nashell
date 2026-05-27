@@ -397,6 +397,7 @@ int main(int argc, char **argv) {
     if (query) {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */
         char *session_dir = NULL;
+        int lazy_session = 0;
         if (session_dir_arg) {
             char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
@@ -416,57 +417,73 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        journal_t *journal;
         if (!session_dir) {
-            session_dir = create_session_dir(nash_dir);
+            /* Lazy session: directory created on first journal_append */
+            journal = journal_new_lazy(nash_dir);
+            lazy_session = 1;
+        } else {
+            journal = journal_new(session_dir);
         }
-        journal_t *journal = journal_new(session_dir);
         int start_loop = journal_max_react_loop(journal) + 1;
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
-            .session_dir = session_dir, .scratchpad = NULL,
+            .session_dir = NULL, .scratchpad = NULL,
             .cfg = cfg, .llm = &llm_cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
         scratchpad_init(&tools.scratch);
-        /* Load scratchpad from previous session if it exists */
-        if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
-            /* Section-based scratchpad loaded — generate legacy string */
-            tools.scratchpad = scratchpad_serialize(&tools.scratch);
-        } else {
-            /* Try legacy format */
-            char sp_path[4096];
-            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-            FILE *spf = fopen(sp_path, "r");
-            if (spf) {
-                fseek(spf, 0, SEEK_END);
-                long spsz = ftell(spf);
-                if (spsz > 0 && spsz < 32768) {
-                    fseek(spf, 0, SEEK_SET);
-                    tools.scratchpad = malloc((size_t)spsz + 1);
-                    if (tools.scratchpad) {
-                        size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
-                        tools.scratchpad[n] = '\0';
+        /* Load scratchpad from previous session if it exists (session_dir may be NULL for lazy sessions) */
+        if (session_dir) {
+            if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
+                /* Section-based scratchpad loaded — generate legacy string */
+                tools.scratchpad = scratchpad_serialize(&tools.scratch);
+            } else {
+                /* Try legacy format */
+                char sp_path[4096];
+                snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+                FILE *spf = fopen(sp_path, "r");
+                if (spf) {
+                    fseek(spf, 0, SEEK_END);
+                    long spsz = ftell(spf);
+                    if (spsz > 0 && spsz < 32768) {
+                        fseek(spf, 0, SEEK_SET);
+                        tools.scratchpad = malloc((size_t)spsz + 1);
+                        if (tools.scratchpad) {
+                            size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
+                            tools.scratchpad[n] = '\0';
+                        }
                     }
+                    fclose(spf);
                 }
-                fclose(spf);
             }
         }
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
-        char *result = react_run(&react, query, tui_on_event, (void *)session_dir);
+        char *result = react_run(&react, query, tui_on_event, NULL);
+        /* Resolve session_dir from journal for lazy sessions */
+        if (lazy_session) {
+            session_dir = (char *)journal_session_dir(journal);
+        }
         /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
         memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
         if (result) { printf("%s\n", result); free(result); }
+        /* Save scratchpad if session was created */
+        if (session_dir && tools.scratch.count > 0) {
+            char sp_path[4096];
+            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+            scratchpad_save(&tools.scratch, sp_path);
+        }
         tools.react_loop++;  /* increment for next query */
         if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
-        free(session_dir);
+        if (session_dir) free(session_dir);
         store_free(shared_store);
         memory_free(memory);
         free(nash_dir);
@@ -480,6 +497,7 @@ int main(int argc, char **argv) {
     {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */
         char *session_dir = NULL;
+        int lazy_session = 0;
         if (session_dir_arg) {
             char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
@@ -499,40 +517,46 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (!session_dir) {
-            session_dir = create_session_dir(nash_dir);
-        }
 
-        journal_t *journal = journal_new(session_dir);
+        journal_t *journal;
+        if (!session_dir) {
+            /* Lazy session: directory created on first journal_append */
+            journal = journal_new_lazy(nash_dir);
+            lazy_session = 1;
+        } else {
+            journal = journal_new(session_dir);
+        }
         int start_loop = journal_max_react_loop(journal) + 1;
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
-            .session_dir = session_dir, .scratchpad = NULL,
+            .session_dir = NULL, .scratchpad = NULL,
             .cfg = cfg, .llm = &llm_cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
         scratchpad_init(&tools.scratch);
-        /* Load scratchpad from previous session if it exists */
-        if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
-            tools.scratchpad = scratchpad_serialize(&tools.scratch);
-        } else {
-            char sp_path[4096];
-            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-            FILE *spf = fopen(sp_path, "r");
-            if (spf) {
-                fseek(spf, 0, SEEK_END);
-                long spsz = ftell(spf);
-                if (spsz > 0 && spsz < 32768) {
-                    fseek(spf, 0, SEEK_SET);
-                    tools.scratchpad = malloc((size_t)spsz + 1);
-                    if (tools.scratchpad) {
-                        size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
-                        tools.scratchpad[n] = '\0';
+        /* Load scratchpad from previous session if it exists (session_dir may be NULL for lazy) */
+        if (session_dir) {
+            if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
+                tools.scratchpad = scratchpad_serialize(&tools.scratch);
+            } else {
+                char sp_path[4096];
+                snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+                FILE *spf = fopen(sp_path, "r");
+                if (spf) {
+                    fseek(spf, 0, SEEK_END);
+                    long spsz = ftell(spf);
+                    if (spsz > 0 && spsz < 32768) {
+                        fseek(spf, 0, SEEK_SET);
+                        tools.scratchpad = malloc((size_t)spsz + 1);
+                        if (tools.scratchpad) {
+                            size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
+                            tools.scratchpad[n] = '\0';
+                        }
                     }
+                    fclose(spf);
                 }
-                fclose(spf);
             }
         }
         react_ctx_t react = {
@@ -541,7 +565,7 @@ int main(int argc, char **argv) {
         };
 
         /* Create UI state and initialize TUI */
-        ui_state_t *ui = ui_state_new(session_dir, shared_store);
+        ui_state_t *ui = ui_state_new(NULL, shared_store);
         /* Pass model name + context info for nashell-style status bar */
         if (server_model)
             ui->model_name = strdup(server_model);
@@ -550,7 +574,7 @@ int main(int argc, char **argv) {
         ui->bg_jobs = 0;
         ui_state_set_status(ui, STATUS_READY, "Ready");
         /* Set banner text for main pane */
-        char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir);
+        char *banner = build_banner_string(cfg, props_json, nash_dir, NULL);
         ui_state_set_banner(ui, banner);
         free(banner);
 
@@ -628,6 +652,10 @@ int main(int argc, char **argv) {
                 if (strncmp(submitted_query, "/fork ", 6) == 0) {
                     int fork_step = atoi(submitted_query + 6);
                     if (fork_step > 0) {
+                        /* Ensure session is created (lazy sessions) */
+                        if (lazy_session && !session_dir) {
+                            session_dir = (char *)journal_session_dir(journal);
+                        }
                         char *new_dir = create_session_dir(nash_dir);
                         /* Copy journal lines where step <= fork_step */
                         char src_j[4096], dst_j[4096];
@@ -684,6 +712,7 @@ int main(int argc, char **argv) {
                         journal_free(journal);
                         free(session_dir);
                         session_dir = new_dir;
+                        lazy_session = 0;
                         journal = journal_new(session_dir);
                         tools.journal = journal;
                         tools.session_dir = session_dir;
@@ -961,11 +990,21 @@ int main(int argc, char **argv) {
         tui_shutdown();
         ui_state_free(ui);
 
+        /* Resolve session_dir from journal for lazy sessions */
+        if (lazy_session && !session_dir) {
+            session_dir = (char *)journal_session_dir(journal);
+        }
+        /* Save scratchpad if session was created */
+        if (session_dir && tools.scratch.count > 0) {
+            char sp_path[4096];
+            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+            scratchpad_save(&tools.scratch, sp_path);
+        }
         if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
-        free(session_dir);
+        if (session_dir) free(session_dir);
     }
     printf("Bye.\n");
     store_free(shared_store);

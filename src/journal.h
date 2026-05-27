@@ -6,12 +6,19 @@
 
 /* Journal handle — wraps the path to journal.jsonl */
 typedef struct {
-    char *path;       /* full path to journal.jsonl */
-    char *session_dir;
+    char *path;       /* full path to journal.jsonl (NULL until created) */
+    char *session_dir;/* resolved session directory (NULL until created) */
+    char *nash_dir;   /* base dir for lazy session creation (NULL if not lazy) */
+    int   lazy_created;/* 0=directory not yet created, 1=created */
 } journal_t;
 
 journal_t *journal_new(const char *session_dir);
+/* Lazy: directory is not created until the first journal_append().
+ * If the program exits without any append, no session directory exists. */
+journal_t *journal_new_lazy(const char *nash_dir);
 void       journal_free(journal_t *j);
+/* Returns session_dir once created, NULL if not yet created */
+const char *journal_session_dir(journal_t *j);
 
 /* Append a step entry to journal.jsonl
  * params: cJSON object of tool parameters (borrowed, not consumed)
