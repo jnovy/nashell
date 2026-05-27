@@ -430,6 +430,26 @@ static void checkpoint_remove(react_ctx_t *ctx) {
     unlink(path);
 }
 
+/* Read the original user_query from a checkpoint without restoring full state.
+ * Used by /continue to resume with the original query instead of "continue".
+ * Returns heap-allocated string or NULL if no checkpoint. Caller frees. */
+char *checkpoint_read_query(const char *session_dir) {
+    if (!session_dir) return NULL;
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/checkpoint.json", session_dir);
+    char *buf = slurp_file(path, NULL);
+    if (!buf) return NULL;
+    cJSON *cp = cJSON_Parse(buf);
+    free(buf);
+    if (!cp) return NULL;
+    cJSON *q = cJSON_GetObjectItem(cp, "user_query");
+    char *result = NULL;
+    if (q && q->valuestring && q->valuestring[0])
+        result = strdup(q->valuestring);
+    cJSON_Delete(cp);
+    return result;
+}
+
 /* ── main react loop ─────────────────────────────────── */
 
 char *react_run(react_ctx_t *ctx, const char *user_query,

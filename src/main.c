@@ -970,6 +970,24 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                /* Handle /continue: resume from checkpoint with original query.
+                 * If user types "continue" or "/continue", read the original
+                 * user_query from checkpoint.json and use that instead.
+                 * If user types anything else, it passes through as-is —
+                 * checkpoint_restore will inject it into the restored context,
+                 * effectively saying "resume but with this new instruction." */
+                if (strcmp(submitted_query, "continue") == 0 ||
+                    strcmp(submitted_query, "/continue") == 0) {
+                    char *orig = checkpoint_read_query(session_dir);
+                    if (orig) {
+                        free(submitted_query);
+                        submitted_query = orig;
+                    }
+                    /* If no checkpoint exists, "continue" falls through as a
+                     * regular query — the LLM will see "continue" and can
+                     * interpret it in context (e.g., continue a conversation). */
+                }
+
                 /* Regular query — spawn inference in background thread */
                 if (inferring) {
                     /* Previous inference still running — reject new query.

@@ -27,4 +27,9 @@ typedef struct {
 char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata);
 
+/* Read the original user_query from a checkpoint without restoring full state.
+ * Used by /continue to resume with the original query instead of "continue".
+ * Returns heap-allocated string or NULL if no checkpoint exists. Caller frees. */
+char *checkpoint_read_query(const char *session_dir);
+
 #endif
