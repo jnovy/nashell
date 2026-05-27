@@ -96,6 +96,17 @@ int embed_vec_save(const embed_vec_t *v, const char *path);
  * Caller must free with embed_vec_free(). */
 embed_vec_t embed_vec_load(const char *path);
 
+/* ── Batch embedding ─────────────────────────────────── */
+
+/* Generate embeddings for multiple texts at once.
+ * Returns array of embed_vec_t (caller must free each with embed_vec_free,
+ * then free the array itself).
+ * FIX #15: Currently calls embed_text in a loop; backends can optimize
+ * with batched API calls in the future.
+ * Returns NULL on failure. Sets *out_count to number of results. */
+embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
+                              int n_texts, int *out_count);
+
 /* ── Text preparation ────────────────────────────────── */
 
 /* Prepare memory content for embedding: concatenates key + tags + value,

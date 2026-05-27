@@ -372,6 +372,17 @@ static double score_entry_hybrid(const char *key, const char *value,
     return relevance * 0.6 + recency * 0.2 + importance * 0.2;
 }
 
+/* qsort comparator for scored entries (descending by score) */
+typedef struct { char path[4096]; double score; cJSON *cached_entry; } scored_t;
+
+static int scored_cmp_desc(const void *a, const void *b) {
+    double sa = ((const scored_t *)a)->score;
+    double sb = ((const scored_t *)b)->score;
+    if (sb > sa) return 1;
+    if (sb < sa) return -1;
+    return 0;
+}
+
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
     memory_results_t results = {0};
     if (!m || !query) return results;
@@ -387,13 +398,13 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         has_semantic = (query_emb.data != NULL && query_emb.dim > 0);
     }
 
-    /* Temporary storage for scored results */
-    typedef struct { char path[4096]; double score; } scored_t;
-    scored_t *scored = calloc(1024, sizeof(scored_t));
+    /* Dynamic scored array — grows as needed (FIX #5: no fixed 1024 limit) */
+    int scored_cap = 256;
+    scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
     int n_scored = 0;
 
     struct dirent *de;
-    while ((de = readdir(dir)) != NULL && n_scored < 1024) {
+    while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
         size_t len = strlen(de->d_name);
         if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
@@ -441,8 +452,18 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             json_to_emb_path(path, emb_path, sizeof(emb_path));
             embed_vec_t entry_emb = embed_vec_load(emb_path);
             if (entry_emb.data && entry_emb.dim > 0) {
-                semantic_sim = embed_cosine_sim(&query_emb, &entry_emb);
-                entry_has_semantic = 1;
+                /* FIX #9: Dimension check — skip stale embeddings from a
+                 * different model (e.g., switched from MiniLM-384d to
+                 * nomic-embed-768d). Mismatched dims would give 0.0 from
+                 * cosine_sim anyway, but this makes the intent explicit. */
+                if (entry_emb.dim == query_emb.dim) {
+                    semantic_sim = embed_cosine_sim(&query_emb, &entry_emb);
+                    entry_has_semantic = 1;
+                } else {
+                    /* Stale embedding — delete it so memory_embed_all can
+                     * regenerate it with the current model on next startup */
+                    unlink(emb_path);
+                }
             }
             embed_vec_free(&entry_emb);
         }
@@ -450,46 +471,57 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         double s = score_entry_hybrid(key, value, tags, query,
                                        last_acc, acc_count,
                                        semantic_sim, entry_has_semantic);
+
+        /* FIX #13: Type-aware filtering — if query starts with a type prefix
+         * (e.g., "skill:", "lesson:", "strategy:"), only return entries of
+         * that type. This replaces the previous hack of searching for "skill:"
+         * as a substring query. */
         if (s > 0.01) {
+            static const char *type_prefixes[] = {
+                "skill:", "lesson:", "strategy:", "fact:", "task:", NULL
+            };
+            for (const char **pfx = type_prefixes; *pfx; pfx++) {
+                size_t plen = strlen(*pfx);
+                if (strncmp(query, *pfx, plen) == 0) {
+                    /* Query has type prefix — only match entries of same type */
+                    if (strncmp(key, *pfx, plen) != 0) {
+                        s = 0;  /* wrong type — exclude */
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (s > 0.01) {
+            /* Grow scored array if needed (FIX #5) */
+            if (n_scored >= scored_cap) {
+                scored_cap *= 2;
+                scored = realloc(scored, (size_t)scored_cap * sizeof(scored_t));
+            }
             snprintf(scored[n_scored].path, sizeof(scored[n_scored].path), "%s", path);
             scored[n_scored].score = s;
+            /* FIX #2/#8: Cache the parsed cJSON entry to avoid re-reading top results */
+            scored[n_scored].cached_entry = entry;
             n_scored++;
+        } else {
+            cJSON_Delete(entry);
         }
-        cJSON_Delete(entry);
     }
     closedir(dir);
 
     /* Free query embedding */
     embed_vec_free(&query_emb);
 
-    /* Sort by score descending (simple bubble sort, n is small) */
-    for (int i = 0; i < n_scored - 1; i++)
-        for (int j = i + 1; j < n_scored; j++)
-            if (scored[j].score > scored[i].score) {
-                scored_t tmp = scored[i];
-                scored[i] = scored[j];
-                scored[j] = tmp;
-            }
+    /* FIX #14: Use qsort instead of O(n²) bubble sort */
+    qsort(scored, (size_t)n_scored, sizeof(scored_t), scored_cmp_desc);
 
-    /* Load top results */
+    /* Load top results from cached entries (FIX #2/#8: no second file read) */
     int n = n_scored < max_results ? n_scored : max_results;
     results.entries = calloc((size_t)n, sizeof(memory_entry_t));
     results.count = 0;
 
     for (int i = 0; i < n; i++) {
-        FILE *f = fopen(scored[i].path, "r");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long sz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *buf = malloc((size_t)sz + 1);
-        if (!buf) { fclose(f); continue; }
-        fread(buf, 1, (size_t)sz, f);
-        buf[sz] = '\0';
-        fclose(f);
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
+        cJSON *entry = scored[i].cached_entry;
         if (!entry) continue;
 
         memory_entry_t *e = &results.entries[results.count];
@@ -537,15 +569,29 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (wf) { fputs(json, wf); fclose(wf); }
         free(json);
 
-        cJSON_Delete(entry);
         results.count++;
     }
 
+    /* Free all cached entries (including non-top ones) */
+    for (int i = 0; i < n_scored; i++) {
+        cJSON_Delete(scored[i].cached_entry);
+    }
     free(scored);
     return results;
 }
 
 /* ── build_index ─────────────────────────────────────── */
+
+/* FIX #11: Sorted memory index — entries sorted alphabetically by key */
+typedef struct {
+    char *line;   /* formatted line: "  key [tags]\n" */
+    char *key;    /* key for sorting */
+} index_entry_t;
+
+static int index_entry_cmp(const void *a, const void *b) {
+    return strcmp(((const index_entry_t *)a)->key,
+                 ((const index_entry_t *)b)->key);
+}
 
 char *memory_build_index(memory_t *m, int max_entries) {
     if (!m) return NULL;
@@ -557,7 +603,9 @@ char *memory_build_index(memory_t *m, int max_entries) {
     int n_lessons = 0, n_strategies = 0, n_facts = 0, n_tasks = 0, n_skills = 0, n_other = 0;
     int total = 0;
 
-    str_t out = str_new(2048);
+    /* Collect all entries for sorting (FIX #11) */
+    int entries_cap = 64;
+    index_entry_t *entries = calloc((size_t)entries_cap, sizeof(index_entry_t));
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
@@ -595,22 +643,28 @@ char *memory_build_index(memory_t *m, int max_entries) {
             else if (strncmp(k->valuestring, "skill:", 6) == 0) n_skills++;
             else n_other++;
 
-            /* Progressive disclosure: only show first N entries inline.
-             * max_entries=0 means show all (used for MEMORY.md). */
-            if (max_entries == 0 || total < max_entries) {
-                str_appendf(&out, "  %s", k->valuestring);
-                if (tags && cJSON_GetArraySize(tags) > 0) {
-                    str_append_cstr(&out, " [");
-                    int n = cJSON_GetArraySize(tags);
-                    for (int i = 0; i < n; i++) {
-                        cJSON *t = cJSON_GetArrayItem(tags, i);
-                        if (i > 0) str_append_cstr(&out, ", ");
-                        if (t && t->valuestring) str_append_cstr(&out, t->valuestring);
-                    }
-                    str_append_cstr(&out, "]");
+            /* Build formatted line */
+            str_t line = str_new(256);
+            str_appendf(&line, "  %s", k->valuestring);
+            if (tags && cJSON_GetArraySize(tags) > 0) {
+                str_append_cstr(&line, " [");
+                int n = cJSON_GetArraySize(tags);
+                for (int i = 0; i < n; i++) {
+                    cJSON *t = cJSON_GetArrayItem(tags, i);
+                    if (i > 0) str_append_cstr(&line, ", ");
+                    if (t && t->valuestring) str_append_cstr(&line, t->valuestring);
                 }
-                str_append_cstr(&out, "\n");
+                str_append_cstr(&line, "]");
             }
+            str_append_cstr(&line, "\n");
+
+            /* Grow entries array if needed */
+            if (total >= entries_cap) {
+                entries_cap *= 2;
+                entries = realloc(entries, (size_t)entries_cap * sizeof(index_entry_t));
+            }
+            entries[total].line = str_steal(&line);
+            entries[total].key = strdup(k->valuestring);
             total++;
         }
         cJSON_Delete(entry);
@@ -618,8 +672,18 @@ char *memory_build_index(memory_t *m, int max_entries) {
     closedir(dir);
 
     if (total == 0) {
-        str_free(&out);
+        free(entries);
         return NULL;
+    }
+
+    /* Sort entries alphabetically by key (FIX #11) */
+    qsort(entries, (size_t)total, sizeof(index_entry_t), index_entry_cmp);
+
+    /* Build output string */
+    str_t out = str_new(2048);
+    int show = (max_entries == 0) ? total : (total < max_entries ? total : max_entries);
+    for (int i = 0; i < show; i++) {
+        str_append_cstr(&out, entries[i].line);
     }
 
     /* Build header with topic summary */
@@ -638,6 +702,13 @@ char *memory_build_index(memory_t *m, int max_entries) {
     }
     str_append_cstr(&result, str_cstr(&out));
     str_free(&out);
+
+    /* Free entries */
+    for (int i = 0; i < total; i++) {
+        free(entries[i].line);
+        free(entries[i].key);
+    }
+    free(entries);
 
     return str_steal(&result);
 }
@@ -722,6 +793,42 @@ char *memory_load_pinned(memory_t *m) {
         return NULL;
     }
     return str_steal(&out);
+}
+
+/* ── delete ──────────────────────────────────────────── */
+
+int memory_delete(memory_t *m, const char *key) {
+    if (!m || !key) return -1;
+
+    char fname[512];
+    key_to_filename(key, fname, sizeof(fname));
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    /* Check if entry exists */
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;  /* not found */
+
+    /* Remove JSON file */
+    unlink(path);
+
+    /* Remove embedding file if it exists */
+    char emb_fname[512];
+    key_to_emb_filename(key, emb_fname, sizeof(emb_fname));
+    char emb_path[4096];
+    snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+    unlink(emb_path);  /* ignore error if not exists */
+
+    /* Update MEMORY.md index */
+    memory_write_index_file(m);
+
+    /* Git commit */
+    char msg[256];
+    snprintf(msg, sizeof(msg), "memory: delete %s", key);
+    memory_git_commit(m, msg);
+
+    return 0;
 }
 
 /* ── free results ────────────────────────────────────── */

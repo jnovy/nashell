@@ -1242,7 +1242,10 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     char best_key[256] = "";
     char best_path[4096] = "";
     float best_sim = 0.0f;
-    const float CONSOLIDATION_THRESHOLD = 0.82f;
+    /* FIX #12: Lowered from 0.82 to 0.72 — the old threshold was too high,
+     * allowing many near-duplicate entries (e.g., 6 variants of "use raw
+     * github URLs") to accumulate without triggering consolidation. */
+    const float CONSOLIDATION_THRESHOLD = 0.72f;
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
@@ -1255,14 +1258,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), de->d_name);
 
         /* Skip self — the entry we just stored */
-        /* The filename is the sanitized key; compare with sanitized new_key */
+        /* The filename is the sanitized key; compare with sanitized new_key.
+         * Must match key_to_filename() which replaces ':' and '/' with '_'. */
         char new_fname[512];
-        /* Simple key-to-filename: replace ':' with '-', spaces with '_' */
         snprintf(new_fname, sizeof(new_fname), "%s", new_key);
         for (char *p = new_fname; *p; p++) {
-            if (*p == ':') *p = '-';
-            else if (*p == ' ') *p = '_';
-            else if (*p == '/') *p = '_';
+            if (*p == ':' || *p == '/' || *p == ' ') *p = '_';
         }
         if (strcmp(emb_base, new_fname) == 0) continue;
 
@@ -1334,13 +1335,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         "Consolidated entry:",
         new_key, new_value, old_key, old_value);
 
-    /* Call LLM for consolidation (non-streaming, simple call) */
-    llm_config_t consolidation_cfg = *ctx->llm;
-    consolidation_cfg.max_tokens = 2048;
-    consolidation_cfg.temperature = 0.1f;
-    consolidation_cfg.enable_thinking = 0;
-    consolidation_cfg.thinking_budget = 0;
-
+    /* Call LLM for consolidation via provider when available (FIX #3) */
     llm_chat_t *chat = llm_chat_new();
     llm_chat_add(chat, "system",
         "You are a memory consolidation assistant. Merge the two entries "
@@ -1349,7 +1344,20 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     free(prompt);
 
     llm_stats_t stats = {0};
-    char *consolidated = llm_complete(&consolidation_cfg, chat, &stats);
+    char *consolidated = NULL;
+
+    if (ctx->provider) {
+        /* Use provider abstraction (works with Vertex, Anthropic, OpenAI, local) */
+        consolidated = provider_complete(ctx->provider, chat, &stats);
+    } else if (ctx->llm) {
+        /* Fallback to direct llm_complete for local-only setups */
+        llm_config_t consolidation_cfg = *ctx->llm;
+        consolidation_cfg.max_tokens = 2048;
+        consolidation_cfg.temperature = 0.1f;
+        consolidation_cfg.enable_thinking = 0;
+        consolidation_cfg.thinking_budget = 0;
+        consolidated = llm_complete(&consolidation_cfg, chat, &stats);
+    }
     llm_chat_free(chat);
 
     if (!consolidated || strlen(consolidated) < 20) {
@@ -1523,6 +1531,26 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
+                   params, NULL, 0, 0, NULL, NULL);
+
+    return make_result(1, meta, NULL);
+}
+
+/* ── memory_delete ──────────────────────────────────────── */
+
+static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    if (!key_j || !key_j->valuestring)
+        return make_error("missing 'key' parameter");
+
+    int rc = memory_delete(ctx->memory, key_j->valuestring);
+    if (rc != 0) return make_error("memory entry not found");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "deleted");
+    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_delete",
                    params, NULL, 0, 0, NULL, NULL);
 
     return make_result(1, meta, NULL);
@@ -1750,6 +1778,7 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "memory_recall")== 0) return tool_memory_recall(ctx, params);
     if (strcmp(action, "memory_pin")  == 0) return tool_memory_pin(ctx, params);
     if (strcmp(action, "memory_unpin")== 0) return tool_memory_unpin(ctx, params);
+    if (strcmp(action, "memory_delete")==0) return tool_memory_delete(ctx, params);
 
     char msg[256];
     snprintf(msg, sizeof(msg), "unknown tool: %s", action);

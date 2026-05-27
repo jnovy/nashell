@@ -420,7 +420,7 @@ int main(int argc, char **argv) {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .cfg = cfg, .llm = &llm_cfg,
+            .cfg = cfg, .llm = &llm_cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
@@ -504,7 +504,7 @@ int main(int argc, char **argv) {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .cfg = cfg, .llm = &llm_cfg,
+            .cfg = cfg, .llm = &llm_cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
@@ -708,7 +708,7 @@ int main(int argc, char **argv) {
                         .memory = memory,
                         .session_dir = dream_dir,
                         .scratchpad = NULL,
-                        .cfg = cfg, .llm = &llm_cfg,
+                        .cfg = cfg, .llm = &llm_cfg, .provider = provider,
                         .react_loop = 0,
                         .aliases = alias_map_new(),
                     };

@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "config.h"
 #include "llm.h"
+#include "provider.h"
 
 /* Tool result: metadata JSON + optional stored content hash */
 typedef struct {
@@ -97,6 +98,7 @@ typedef struct {
     char          *scratchpad;    /* legacy: serialized scratchpad (owned, auto-generated) */
     scratchpad_t   scratch;       /* section-based scratchpad (GDN-2 inspired) */
     llm_config_t  *llm;          /* LLM config for inline consolidation (P2) */
+    provider_t    *provider;     /* provider abstraction (FIX #3: for consolidation) */
     int            step;          /* current step number (within react loop) */
     int            react_loop;    /* react loop counter (0-based, increments per query) */
     /* Step alias tracking — dynamic hash map, no size limit */

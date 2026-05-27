@@ -66,6 +66,10 @@ char *memory_build_index(memory_t *m, int max_entries);
  * Caller must free. Returns NULL if no pinned memories. */
 char *memory_load_pinned(memory_t *m);
 
+/* Delete a memory entry by key. Removes .json and .emb files.
+ * Returns 0 on success, -1 if not found. */
+int memory_delete(memory_t *m, const char *key);
+
 /* Free a memory_results_t */
 void memory_results_free(memory_results_t *r);
 

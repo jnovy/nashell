@@ -371,6 +371,30 @@ embed_vec_t embed_vec_load(const char *path) {
     return result;
 }
 
+/* ── batch embedding ─────────────────────────────────── */
+
+embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
+                              int n_texts, int *out_count) {
+    if (!ctx || !texts || n_texts <= 0 || !out_count) return NULL;
+    *out_count = 0;
+
+    embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
+    if (!results) return NULL;
+
+    /* FIX #15: Sequential fallback — each backend can optimize with batch
+     * API calls in the future (e.g., Ollama supports batch input arrays,
+     * OpenAI supports array inputs in /v1/embeddings). */
+    int count = 0;
+    for (int i = 0; i < n_texts; i++) {
+        results[i] = embed_text(ctx, texts[i]);
+        if (results[i].data && results[i].dim > 0) {
+            count++;
+        }
+    }
+    *out_count = n_texts;  /* all slots populated (some may have data=NULL) */
+    return results;
+}
+
 /* ── text preparation ────────────────────────────────── */
 
 char *embed_prepare_text(const char *key, const char *value,

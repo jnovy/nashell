@@ -408,6 +408,11 @@ static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
     snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
     snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
 
+    /* FIX #7: Persist section-based scratchpad alongside checkpoint */
+    if (ctx->tools->scratch.count > 0) {
+        scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+    }
+
     cJSON *cp = cJSON_CreateObject();
     cJSON_AddNumberToObject(cp, "version", 1);
     cJSON_AddNumberToObject(cp, "step", step);
@@ -1125,6 +1130,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_chat_add(reflect, "user", manifest);
             free(manifest);
         }
+
+        /* FIX #10: Include scratchpad in reflection context — it often
+         * contains the most important findings from the task */
+        {
+            char *sp_text = NULL;
+            if (ctx->tools->scratch.count > 0) {
+                sp_text = scratchpad_serialize(&ctx->tools->scratch);
+            } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
+                sp_text = strdup(ctx->tools->scratchpad);
+            }
+            if (sp_text && sp_text[0]) {
+                size_t slen = strlen(sp_text);
+                char *sp_msg = malloc(slen + 32);
+                if (sp_msg) {
+                    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
+                    llm_chat_add(reflect, "user", sp_msg);
+                    free(sp_msg);
+                }
+            }
+            free(sp_text);
+        }
+
         llm_chat_add(reflect, "user",
             task_succeeded
                 ? "Analyze the causal chain of this task. What assumptions held? "
@@ -1161,14 +1188,65 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             if (strcmp(ract, "memory_store") == 0) {
-                tool_result_t tr = tool_execute(ctx->tools, "memory_store", raction);
-                /* Emit event so frontend can show it */
-                react_event_t ev = {0};
-                ev.type = REACT_EVENT_STEP_COMPLETE;
-                ev.action = "memory_store";
-                ev.description = "[reflection]";
-                emit(on_event, userdata, &ev);
-                tool_result_free(&tr);
+                /* FIX #4: Deduplication guard — check if a very similar memory
+                 * already exists before storing. This prevents reflection from
+                 * creating near-duplicate entries on every task. */
+                int should_store = 1;
+                cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
+                cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
+                if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
+                    ctx->tools->memory && ctx->tools->memory->embed &&
+                    ctx->tools->memory->embed->available) {
+                    /* Check semantic similarity with existing memories */
+                    char *prep = embed_prepare_text(rkey_j->valuestring,
+                                                     rval_j->valuestring,
+                                                     NULL, 0, 512);
+                    if (prep) {
+                        embed_vec_t new_emb = embed_text(
+                            ctx->tools->memory->embed, prep);
+                        free(prep);
+                        if (new_emb.data) {
+                            memory_results_t existing = memory_recall(
+                                ctx->tools->memory, rkey_j->valuestring, 1);
+                            if (existing.count > 0 && existing.entries[0].value) {
+                                char *eprep = embed_prepare_text(
+                                    existing.entries[0].key,
+                                    existing.entries[0].value,
+                                    NULL, 0, 512);
+                                if (eprep) {
+                                    embed_vec_t exist_emb = embed_text(
+                                        ctx->tools->memory->embed, eprep);
+                                    free(eprep);
+                                    if (exist_emb.data) {
+                                        float sim = embed_cosine_sim(
+                                            &new_emb, &exist_emb);
+                                        if (sim > 0.90f) {
+                                            should_store = 0;  /* too similar */
+                                            fprintf(stderr,
+                                                "[reflection] skipping near-duplicate "
+                                                "memory (sim=%.2f): %s\n",
+                                                sim, rkey_j->valuestring);
+                                        }
+                                        embed_vec_free(&exist_emb);
+                                    }
+                                }
+                            }
+                            memory_results_free(&existing);
+                            embed_vec_free(&new_emb);
+                        }
+                    }
+                }
+
+                if (should_store) {
+                    tool_result_t tr = tool_execute(ctx->tools, "memory_store", raction);
+                    /* Emit event so frontend can show it */
+                    react_event_t ev = {0};
+                    ev.type = REACT_EVENT_STEP_COMPLETE;
+                    ev.action = "memory_store";
+                    ev.description = "[reflection]";
+                    emit(on_event, userdata, &ev);
+                    tool_result_free(&tr);
+                }
             }
 
             llm_chat_add(reflect, "assistant", rresp);
