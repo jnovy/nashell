@@ -148,9 +148,8 @@ static void print_banner(const config_t *cfg, const char *props_json,
         think_str = is_api ? "off (edrm n/a)" : "edrm";
     else
         think_str = "no";
-    printf("client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
+    printf("client: temp=%.1f max_tokens=%d thinking=%s stream=%s\n",
            cfg->temperature, cfg->max_tokens,
-           cfg->json_mode ? "on" : "off",
            think_str,
            cfg->stream ? "on" : "off");
     printf("data:   %s\n", nash_dir);
@@ -234,9 +233,8 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
         ts = bis_api ? "off (edrm n/a)" : "edrm";
     else
         ts = "no";
-    str_appendf(&s, "client: temp=%.1f max_tokens=%d json_mode=%s thinking=%s stream=%s\n",
+    str_appendf(&s, "client: temp=%.1f max_tokens=%d thinking=%s stream=%s\n",
                 cfg->temperature, cfg->max_tokens,
-                cfg->json_mode ? "on" : "off",
                 ts,
                 cfg->stream ? "on" : "off");
     str_appendf(&s, "data:   %s\n", nash_dir);

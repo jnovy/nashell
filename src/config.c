@@ -53,7 +53,6 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
     if (cfg->prune_min_score <= 0)      cfg->prune_min_score = 0.35;
     if (cfg->prune_min_evidence <= 0)   cfg->prune_min_evidence = 3;
-    cfg->json_mode = 1;  /* always on for now */
     cfg->stream = 1;     /* always on for now */
 
     /* [thinking] defaults — EDRM is the default mode.
@@ -165,7 +164,6 @@ config_t *config_load(const char *path) {
     if (client) {
         cfg->temperature = (float)toml_dbl(client, "temperature", 0);
         cfg->max_tokens  = toml_int(client, "max_tokens", 0);
-        cfg->json_mode   = toml_bl(client, "json_mode", 1);
         cfg->stream      = toml_bl(client, "stream", 1);
 
         /* Backward compat: old "thinking = true/false" in [client] */
@@ -292,7 +290,6 @@ int config_write_default(const char *path) {
         "[client]\n"
         "temperature = 0.7\n"
         "max_tokens = 16384\n"
-        "json_mode = true\n"
         "stream = true\n"
         "\n"
         "# Thinking mode: \"yes\" = always, \"no\" = never, \"edrm\" = adaptive (default)\n"

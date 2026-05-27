@@ -67,7 +67,6 @@ typedef struct {
     /* [client] */
     float  temperature;
     int    max_tokens;
-    int    json_mode;
     int    stream;
 
     /* [thinking] */
