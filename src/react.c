@@ -1115,7 +1115,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int task_succeeded = (final_result != NULL);
 
     /* Validation scoring: update recall_hits/misses for all recalled memories.
-     * Uses batch git commit to avoid O(n) commit storm. */
+     * Counter bumps are written to JSON files but NOT git-committed —
+     * these are high-frequency, low-value changes that pollute the git log
+     * (access_count, recall_hits, recall_misses). Git history is reserved
+     * for meaningful content changes (store, delete, prune, consolidate). */
     if (ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
             if (task_succeeded)
@@ -1125,9 +1128,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 memory_increment_misses(ctx->tools->memory,
                                         ctx->tools->recalled_keys[i]);
         }
-        /* Single git commit for all validation updates (was N commits before) */
-        memory_commit_validation(ctx->tools->memory,
-                                 ctx->tools->n_recalled_keys, task_succeeded);
     }
 
     /* FIX D2: Skip reflection when max_reflection_steps == 0 */

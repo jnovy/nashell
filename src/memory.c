@@ -552,14 +552,24 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         cJSON *jr = cJSON_GetObjectItem(entry, "journal_ref");
         e->journal_ref = (jr && jr->valuestring) ? strdup(jr->valuestring) : NULL;
 
-        /* Update access_count and last_accessed */
+        /* Update access_count and last_accessed.
+         * FIX B8: Create fields if missing (old entries pre-dating these
+         * fields would silently skip tracking otherwise). */
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
         if (ac) {
             cJSON_SetNumberValue(ac, cJSON_GetNumberValue(ac) + 1);
+        } else {
+            cJSON_AddNumberToObject(entry, "access_count", 1);
         }
         char ts[32];
         snprintf(ts, sizeof(ts), "%.5f", epoch_now());
-        cJSON_ReplaceItemInObject(entry, "last_accessed", cJSON_CreateString(ts));
+        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
+        if (la) {
+            cJSON_ReplaceItemInObject(entry, "last_accessed",
+                                      cJSON_CreateString(ts));
+        } else {
+            cJSON_AddStringToObject(entry, "last_accessed", ts);
+        }
 
         /* Write back updated entry */
         char *json = cJSON_Print(entry);
@@ -967,9 +977,10 @@ static int memory_increment_field(memory_t *m, const char *key,
     free(json);
     cJSON_Delete(entry);
 
-    /* NOTE: No individual git commit here — callers should use
-     * memory_commit_validation() after batching all updates.
-     * This fixes the O(n) git commit storm when scoring N recalled keys. */
+    /* No git commit for counter bumps — these are high-frequency,
+     * low-value changes (access_count, recall_hits, recall_misses)
+     * that pollute the git log. The JSON files are updated on disk
+     * but git history is reserved for content changes. */
 
     return 0;
 }
@@ -980,18 +991,6 @@ int memory_increment_hits(memory_t *m, const char *key) {
 
 int memory_increment_misses(memory_t *m, const char *key) {
     return memory_increment_field(m, key, "recall_misses");
-}
-
-/* Commit all pending validation score updates in a single git commit.
- * Call after a batch of memory_increment_hits/misses calls.
- * This replaces the previous per-entry commit pattern that caused
- * O(n) git commits per recall (the "git storm" bug). */
-void memory_commit_validation(memory_t *m, int n_updated, int hits) {
-    if (!m || n_updated <= 0) return;
-    char msg[256];
-    snprintf(msg, sizeof(msg), "memory: update %s for %d entries",
-             hits ? "recall_hits" : "recall_misses", n_updated);
-    memory_git_commit(m, msg);
 }
 
 /* ── embedding integration ──────────────────────────────────── */
