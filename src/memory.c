@@ -11,7 +11,7 @@
 #include <unistd.h>   /* unlink, fork, execvp, dup2, chdir, _exit */
 #include <sys/wait.h> /* waitpid */
 #include <fcntl.h>    /* open, O_WRONLY */
-#include <math.h>     /* exp, log */
+#include <math.h>     /* log */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -326,10 +326,16 @@ static double score_entry_substring(const char *key, const char *value,
     return relevance;
 }
 
-/* Composite scoring: semantic + substring + recency + importance.
+/* Composite scoring: semantic + substring + importance.
  * When embeddings are available, semantic similarity is the primary signal.
  * Substring matching provides a safety net for exact keyword matches that
  * embeddings might underweight (e.g., function names, error codes).
+ *
+ * No recency decay: knowledge doesn't expire on a calendar. A lesson
+ * learned 6 months ago is just as valid as one learned today. Usage gaps
+ * (not using nash for weeks) shouldn't degrade recall quality. Quality
+ * control is handled by Bayesian validation scoring (hits/misses) and
+ * pruning, not by wall-clock time.
  *
  * Inspired by GDN-2's "short convolution on gates": instead of scoring
  * each memory independently via substring, we use dense vector embeddings
@@ -337,7 +343,7 @@ static double score_entry_substring(const char *key, const char *value,
  * context-aware relevance signal. */
 static double score_entry_hybrid(const char *key, const char *value,
                                   cJSON *tags, const char *query,
-                                  double last_accessed, int access_count,
+                                  int access_count,
                                   float semantic_sim, int has_semantic) {
     double relevance;
 
@@ -360,16 +366,11 @@ static double score_entry_hybrid(const char *key, const char *value,
 
     if (relevance < 0.01) return 0;
 
-    /* Recency: exponential decay — recent memories score higher */
-    double age_days = (epoch_now() - last_accessed) / 86400.0;
-    if (age_days < 0) age_days = 0;
-    double recency = exp(-age_days / 30.0);  /* half-life ~30 days */
-
     /* Importance: logarithmic access frequency */
     double importance = 1.0 + log(1.0 + (double)access_count);
 
-    /* Composite: weighted combination */
-    return relevance * 0.6 + recency * 0.2 + importance * 0.2;
+    /* Composite: relevance-dominant with importance boost */
+    return relevance * 0.8 + importance * 0.2;
 }
 
 /* qsort comparator for scored entries (descending by score) */
@@ -435,12 +436,9 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (k && k->valuestring) key = k->valuestring;
         if (v && v->valuestring) value = v->valuestring;
 
-        /* Get recency/importance data for composite scoring */
-        double last_acc = 0;
+        /* Get importance data for composite scoring */
         int acc_count = 0;
-        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-        if (la && la->valuestring) last_acc = atof(la->valuestring);
         if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
 
         /* Compute semantic similarity if embeddings available */
@@ -469,7 +467,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
 
         double s = score_entry_hybrid(key, value, tags, query,
-                                       last_acc, acc_count,
+                                       acc_count,
                                        semantic_sim, entry_has_semantic);
 
         /* FIX #13: Type-aware filtering — if query starts with a type prefix
@@ -900,6 +898,11 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
 
         if (vscore < min_score && evidence >= min_evidence) {
             unlink(path);
+            /* FIX B9: Also delete the .emb file to prevent orphaned
+             * embedding files from accumulating over time. */
+            char emb_path[4096];
+            json_to_emb_path(path, emb_path, sizeof(emb_path));
+            unlink(emb_path);  /* ignore error if not exists */
             pruned++;
         }
 

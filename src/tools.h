@@ -107,6 +107,8 @@ typedef struct {
     char         **recalled_keys;
     int            n_recalled_keys;
     int            recalled_keys_cap;
+    /* FIX B2: Guard flag to prevent recursive consolidation */
+    int            consolidating;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -498,13 +499,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
         free(pinned);
 
-        /* Inject relevant skills (procedural memory — loaded on-demand based on query) */
+        /* Inject relevant skills (procedural memory — loaded on-demand based on query).
+         * FIX B1/D1: Use user_query for semantic recall, then filter by skill: prefix.
+         * Previously used "skill:" as the query, which matched ALL skills by type
+         * prefix rather than finding skills semantically relevant to the task. */
         int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
-        memory_results_t skills = memory_recall(ctx->tools->memory, "skill:", max_skills);
+        memory_results_t skills = memory_recall(ctx->tools->memory, user_query, max_skills * 3);
         if (skills.count > 0) {
             str_t skill_msg = str_new(4096);
             str_append_cstr(&skill_msg, "[RELEVANT SKILLS]\n");
-            for (int i = 0; i < skills.count; i++) {
+            int skill_count = 0;
+            for (int i = 0; i < skills.count && skill_count < max_skills; i++) {
                 if (skills.entries[i].key &&
                     strncmp(skills.entries[i].key, "skill:", 6) == 0) {
                     str_appendf(&skill_msg, "\n--- %s ---\n%s\n",
@@ -512,6 +517,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 skills.entries[i].value ? skills.entries[i].value : "");
                     /* Track for validation scoring */
                     tool_track_recalled_key(ctx->tools, skills.entries[i].key);
+                    skill_count++;
                 }
             }
             if (skill_msg.len > 20) {  /* more than just the header */
@@ -988,6 +994,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 int keep_tail = 4;
                 int evict_start = keep_head;
                 int evict_end = chat->n_msgs - keep_tail;
+
+                /* FIX B5: Adjust eviction boundary to not split tool_call/tool_result pairs.
+                 * If evict_end lands on a tool_result message (has tool_call_id),
+                 * include it in the eviction (move boundary forward).
+                 * If evict_end lands on an assistant with tool_calls_json,
+                 * include the next tool_result too. */
+                if (evict_end > evict_start && evict_end < chat->n_msgs) {
+                    /* If boundary splits a pair: assistant(tool_calls) at evict_end-1,
+                     * tool_result at evict_end → evict both */
+                    if (evict_end - 1 >= evict_start &&
+                        chat->msgs[evict_end - 1].tool_calls_json &&
+                        evict_end < chat->n_msgs &&
+                        chat->msgs[evict_end].tool_call_id) {
+                        /* The tool_result at evict_end would be orphaned — skip back */
+                        evict_end--;  /* don't evict the assistant, keep the pair in tail */
+                    }
+                    /* If evict_end lands on a tool_result (orphaned from its assistant
+                     * which is being evicted), include it in eviction */
+                    if (evict_end < chat->n_msgs && chat->msgs[evict_end].tool_call_id &&
+                        (evict_end == 0 || !chat->msgs[evict_end - 1].tool_calls_json)) {
+                        evict_end++;  /* evict the orphaned tool_result too */
+                    }
+                }
+
                 if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
                     /* Free evicted messages */
                     for (int i = evict_start; i < evict_end; i++) {
@@ -1030,8 +1060,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                         memmove(&chat->msgs[evict_start + 1], &chat->msgs[evict_start],
                                 (chat->n_msgs - evict_start) * sizeof(llm_msg_t));
+                        /* FIX B6: Initialize all fields of the new manifest message.
+                         * The memmove shifted existing messages but the slot at
+                         * evict_start now contains stale data from the shift. */
                         chat->msgs[evict_start].role = strdup("user");
                         chat->msgs[evict_start].content = fresh_manifest;
+                        chat->msgs[evict_start].tool_call_id = NULL;
+                        chat->msgs[evict_start].tool_calls_json = NULL;
                         chat->n_msgs++;
                     }
 
@@ -1084,7 +1119,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                  ctx->tools->n_recalled_keys, task_succeeded);
     }
 
-    if (ctx->tools->step > 2 && ctx->tools->memory) {
+    /* FIX D2: Skip reflection when max_reflection_steps == 0 */
+    int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
+    if (ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {
         llm_chat_t *reflect = llm_chat_new();
         if (task_succeeded) {
             llm_chat_add(reflect, "system",
@@ -1192,16 +1229,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             if (strcmp(ract, "memory_store") == 0) {
-                /* FIX #4: Deduplication guard — check if a very similar memory
+                /* FIX #4+B4: Deduplication guard — check if a very similar memory
                  * already exists before storing. This prevents reflection from
-                 * creating near-duplicate entries on every task. */
+                 * creating near-duplicate entries on every task.
+                 * B4 fix: Load existing entry's cached .emb file directly instead
+                 * of calling memory_recall() (which generates a query embedding)
+                 * and then re-embedding the existing entry. Saves 2 API calls. */
                 int should_store = 1;
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
                     ctx->tools->memory && ctx->tools->memory->embed &&
                     ctx->tools->memory->embed->available) {
-                    /* Check semantic similarity with existing memories */
+                    /* Generate embedding for the new entry */
                     char *prep = embed_prepare_text(rkey_j->valuestring,
                                                      rval_j->valuestring,
                                                      NULL, 0, 512);
@@ -1210,32 +1250,38 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             ctx->tools->memory->embed, prep);
                         free(prep);
                         if (new_emb.data) {
-                            memory_results_t existing = memory_recall(
-                                ctx->tools->memory, rkey_j->valuestring, 1);
-                            if (existing.count > 0 && existing.entries[0].value) {
-                                char *eprep = embed_prepare_text(
-                                    existing.entries[0].key,
-                                    existing.entries[0].value,
-                                    NULL, 0, 512);
-                                if (eprep) {
-                                    embed_vec_t exist_emb = embed_text(
-                                        ctx->tools->memory->embed, eprep);
-                                    free(eprep);
-                                    if (exist_emb.data) {
-                                        float sim = embed_cosine_sim(
-                                            &new_emb, &exist_emb);
-                                        if (sim > 0.90f) {
-                                            should_store = 0;  /* too similar */
-                                            fprintf(stderr,
-                                                "[reflection] skipping near-duplicate "
-                                                "memory (sim=%.2f): %s\n",
-                                                sim, rkey_j->valuestring);
-                                        }
+                            /* Scan existing .emb files for high similarity
+                             * instead of calling memory_recall + re-embedding */
+                            DIR *rdir = opendir(ctx->tools->memory->dir);
+                            if (rdir) {
+                                struct dirent *rde;
+                                while ((rde = readdir(rdir)) != NULL) {
+                                    if (rde->d_name[0] == '.') continue;
+                                    size_t dlen = strlen(rde->d_name);
+                                    if (dlen < 4 || strcmp(rde->d_name + dlen - 4, ".emb") != 0)
+                                        continue;
+                                    char emb_path[4096];
+                                    snprintf(emb_path, sizeof(emb_path), "%s/%s",
+                                             ctx->tools->memory->dir, rde->d_name);
+                                    embed_vec_t exist_emb = embed_vec_load(emb_path);
+                                    if (!exist_emb.data) continue;
+                                    if (exist_emb.dim != new_emb.dim) {
                                         embed_vec_free(&exist_emb);
+                                        continue;
+                                    }
+                                    float sim = embed_cosine_sim(&new_emb, &exist_emb);
+                                    embed_vec_free(&exist_emb);
+                                    if (sim > 0.90f) {
+                                        should_store = 0;
+                                        fprintf(stderr,
+                                            "[reflection] skipping near-duplicate "
+                                            "memory (sim=%.2f): %s\n",
+                                            sim, rkey_j->valuestring);
+                                        break;
                                     }
                                 }
+                                closedir(rdir);
                             }
-                            memory_results_free(&existing);
                             embed_vec_free(&new_emb);
                         }
                     }
