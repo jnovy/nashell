@@ -1232,16 +1232,22 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (!ctx->llm || !ctx->memory) return;
     if (!ctx->memory->embed || !ctx->memory->embed->available) return;
 
-    /* Generate embedding for the new entry */
-    char *prep = embed_prepare_text(new_key, new_value, NULL, 0, 512);
-    if (!prep) return;
-    embed_vec_t new_emb = embed_text(ctx->memory->embed, prep);
-    free(prep);
+    /* Load the multi-vec embedding for the new entry (just stored by
+     * memory_embed_entry, which already produced chunked embeddings). */
+    char new_emb_fname[512];
+    snprintf(new_emb_fname, sizeof(new_emb_fname), "%s", new_key);
+    for (char *p = new_emb_fname; *p; p++) {
+        if (*p == ':' || *p == '/') *p = '_';
+    }
+    char new_emb_path[4096];
+    snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
+             ctx->memory->dir, new_emb_fname);
+    embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return;
 
     /* Scan all memory .emb files for high similarity */
     DIR *dir = opendir(ctx->memory->dir);
-    if (!dir) { embed_vec_free(&new_emb); return; }
+    if (!dir) { embed_multi_vec_free(&new_emb); return; }
 
     char best_key[256] = "";
     char best_path[4096] = "";
@@ -1262,20 +1268,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         char emb_base[256];
         snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), de->d_name);
 
-        /* Skip self — the entry we just stored.
-         * Sanitize new_key the same way key_to_emb_filename() does:
-         * replace ':' and '/' with '_' (NOT spaces — that was a bug
-         * causing self-skip to fail for keys without those chars). */
-        char new_fname[512];
-        snprintf(new_fname, sizeof(new_fname), "%s", new_key);
-        for (char *p = new_fname; *p; p++) {
-            if (*p == ':' || *p == '/') *p = '_';
-        }
-        if (strcmp(emb_base, new_fname) == 0) continue;
+        /* Skip self — the entry we just stored. */
+        if (strcmp(emb_base, new_emb_fname) == 0) continue;
 
         char emb_path[4096];
         snprintf(emb_path, sizeof(emb_path), "%s/%s", ctx->memory->dir, de->d_name);
-        embed_vec_t other_emb = embed_vec_load(emb_path);
+        embed_multi_vec_t other_emb = embed_multi_vec_load(emb_path);
         if (!other_emb.data) continue;
 
         /* Dimension check: skip stale embeddings from a different model.
@@ -1283,12 +1281,13 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
          * the stale file lets memory_embed_all() regenerate it. */
         if (other_emb.dim != new_emb.dim) {
             unlink(emb_path);
-            embed_vec_free(&other_emb);
+            embed_multi_vec_free(&other_emb);
             continue;
         }
 
-        float sim = embed_cosine_sim(&new_emb, &other_emb);
-        embed_vec_free(&other_emb);
+        /* MaxSim across all chunk pairs */
+        float sim = embed_cosine_sim_multi_multi(&new_emb, &other_emb);
+        embed_multi_vec_free(&other_emb);
 
         if (sim > best_sim && sim > CONSOLIDATION_THRESHOLD) {
             best_sim = sim;
@@ -1299,7 +1298,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         }
     }
     closedir(dir);
-    embed_vec_free(&new_emb);
+    embed_multi_vec_free(&new_emb);
 
     if (best_key[0] == '\0') return;  /* no similar memory found */
 

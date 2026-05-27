@@ -114,4 +114,59 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
 char *embed_prepare_text(const char *key, const char *value,
                          const char **tags, int n_tags, int max_chars);
 
+/* ── Chunked (multi-vector) embeddings ───────────────── */
+
+/* Multi-vector embedding: one memory entry → N chunk vectors.
+ * Solves the truncation asymmetry: long values (skills, strategies) are
+ * split into overlapping chunks, each prefixed with key+tags for context.
+ * At recall time, similarity = max over all chunks (MaxSim). */
+
+typedef struct {
+    float *data;      /* float32 array: dim × n_chunks contiguous */
+    int    dim;       /* dimension of each chunk vector */
+    int    n_chunks;  /* number of chunk vectors (≥1) */
+} embed_multi_vec_t;
+
+/* Prepare memory content as overlapping chunks for embedding.
+ * Each chunk = key + tags + value_slice (with overlap between slices).
+ * If content fits in one chunk, returns array of 1.
+ * chunk_max_chars: max chars per chunk (default 2000 if ≤0).
+ * overlap_chars: overlap between consecutive value slices (default 200 if ≤0).
+ * Sets *out_n_chunks to number of chunks returned.
+ * Caller must free each string and the array itself. */
+char **embed_prepare_text_chunked(const char *key, const char *value,
+                                  const char **tags, int n_tags,
+                                  int chunk_max_chars, int overlap_chars,
+                                  int *out_n_chunks);
+
+/* Save multi-vector embedding to a binary file.
+ * Format: [int32 -n_chunks][int32 dim][float32 × dim × n_chunks]
+ * Negative first int32 distinguishes from single-vec format (positive dim).
+ * Returns 0 on success, -1 on failure. */
+int embed_multi_vec_save(const embed_multi_vec_t *mv, const char *path);
+
+/* Load multi-vector embedding from a binary file.
+ * Auto-detects single-vec (old) vs multi-vec (new) format:
+ *   - first int32 > 0 → old format, returns n_chunks=1
+ *   - first int32 < 0 → new format, returns n_chunks=abs(first)
+ * Returns embed_multi_vec_t with data=NULL on failure.
+ * Caller must free with embed_multi_vec_free(). */
+embed_multi_vec_t embed_multi_vec_load(const char *path);
+
+/* Free a multi-vector embedding */
+void embed_multi_vec_free(embed_multi_vec_t *mv);
+
+/* MaxSim: max cosine similarity of a single query vector against
+ * all chunks of a stored multi-vector.
+ * sim = max_i cosine(query, stored_chunk_i)
+ * Returns 0.0 if either is NULL or dimensions mismatch. */
+float embed_cosine_sim_multi(const embed_vec_t *query,
+                             const embed_multi_vec_t *stored);
+
+/* MaxSim between two multi-vectors (for consolidation):
+ * sim = max_{i,j} cosine(a_chunk_i, b_chunk_j)
+ * Returns 0.0 if either is NULL or dimensions mismatch. */
+float embed_cosine_sim_multi_multi(const embed_multi_vec_t *a,
+                                   const embed_multi_vec_t *b);
+
 #endif

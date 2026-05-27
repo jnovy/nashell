@@ -485,21 +485,24 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (rh_score) entry_hits = (int)cJSON_GetNumberValue(rh_score);
         if (rm_score) entry_misses = (int)cJSON_GetNumberValue(rm_score);
 
-        /* Compute semantic similarity if embeddings available */
+        /* Compute semantic similarity if embeddings available.
+         * Uses multi-vector (chunked) embeddings: MaxSim over all chunks
+         * of the stored entry against the query vector. Single-chunk
+         * entries (old format) are loaded transparently. */
         float semantic_sim = 0.0f;
         int entry_has_semantic = 0;
         if (has_semantic) {
             /* Try to load cached embedding for this entry */
             char emb_path[4096];
             json_to_emb_path(path, emb_path, sizeof(emb_path));
-            embed_vec_t entry_emb = embed_vec_load(emb_path);
+            embed_multi_vec_t entry_emb = embed_multi_vec_load(emb_path);
             if (entry_emb.data && entry_emb.dim > 0) {
                 /* FIX #9: Dimension check — skip stale embeddings from a
                  * different model (e.g., switched from MiniLM-384d to
                  * nomic-embed-768d). Mismatched dims would give 0.0 from
                  * cosine_sim anyway, but this makes the intent explicit. */
                 if (entry_emb.dim == query_emb.dim) {
-                    semantic_sim = embed_cosine_sim(&query_emb, &entry_emb);
+                    semantic_sim = embed_cosine_sim_multi(&query_emb, &entry_emb);
                     entry_has_semantic = 1;
                 } else {
                     /* Stale embedding — delete it so memory_embed_all can
@@ -507,7 +510,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                     unlink(emb_path);
                 }
             }
-            embed_vec_free(&entry_emb);
+            embed_multi_vec_free(&entry_emb);
         }
 
         /* FIX B1: Use score_query (type-prefix stripped) for scoring.
@@ -1076,28 +1079,74 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value,
                        const char **tags, int n_tags) {
     if (!m || !m->embed || !m->embed->available || !key) return -1;
 
-    /* Prepare text for embedding */
-    char *text = embed_prepare_text(key, value, tags, n_tags, 2000);
-    if (!text) return -1;
+    /* Prepare text as chunks for embedding.
+     * Short entries (≤2000 chars) produce 1 chunk (same as before).
+     * Long entries are split into overlapping chunks, each prefixed
+     * with key+tags for context anchoring. */
+    int n_chunks = 0;
+    char **chunks = embed_prepare_text_chunked(key, value, tags, n_tags,
+                                               2000, 200, &n_chunks);
+    if (!chunks || n_chunks <= 0) return -1;
 
-    /* Generate embedding */
-    embed_vec_t vec = embed_text(m->embed, text);
-    free(text);
+    /* Generate embeddings for all chunks */
+    int out_count = 0;
+    embed_vec_t *vecs = embed_text_batch(m->embed, (const char **)chunks,
+                                          n_chunks, &out_count);
 
-    if (!vec.data || vec.dim <= 0) {
-        embed_vec_free(&vec);
+    /* Free chunk strings */
+    for (int i = 0; i < n_chunks; i++) free(chunks[i]);
+    free(chunks);
+
+    if (!vecs || out_count <= 0) {
+        free(vecs);
         return -1;
     }
 
-    /* Save to .emb file */
+    /* Build multi-vector from results */
+    int dim = 0;
+    int valid_count = 0;
+    for (int i = 0; i < out_count; i++) {
+        if (vecs[i].data && vecs[i].dim > 0) {
+            if (dim == 0) dim = vecs[i].dim;
+            if (vecs[i].dim == dim) valid_count++;
+        }
+    }
+
+    if (valid_count == 0 || dim == 0) {
+        for (int i = 0; i < out_count; i++) embed_vec_free(&vecs[i]);
+        free(vecs);
+        return -1;
+    }
+
+    embed_multi_vec_t mv;
+    mv.dim = dim;
+    mv.n_chunks = valid_count;
+    mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
+    if (!mv.data) {
+        for (int i = 0; i < out_count; i++) embed_vec_free(&vecs[i]);
+        free(vecs);
+        return -1;
+    }
+
+    int idx = 0;
+    for (int i = 0; i < out_count; i++) {
+        if (vecs[i].data && vecs[i].dim == dim) {
+            memcpy(mv.data + idx * dim, vecs[i].data, sizeof(float) * (size_t)dim);
+            idx++;
+        }
+        embed_vec_free(&vecs[i]);
+    }
+    free(vecs);
+
+    /* Save to .emb file (auto-detects single vs multi format) */
     char emb_fname[512];
     key_to_emb_filename(key, emb_fname, sizeof(emb_fname));
 
     char emb_path[4096];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
 
-    int rc = embed_vec_save(&vec, emb_path);
-    embed_vec_free(&vec);
+    int rc = embed_multi_vec_save(&mv, emb_path);
+    embed_multi_vec_free(&mv);
     return rc;
 }
 
@@ -1112,8 +1161,10 @@ int memory_embed_all(memory_t *m) {
 
     /* Phase 1: Scan for entries needing (re)embedding */
     typedef struct {
-        char *prepared_text;   /* text ready for embedding */
-        char *emb_path;        /* destination .emb file path */
+        char *key;             /* memory key (strdup'd) */
+        char *value;           /* memory value (strdup'd) */
+        const char **tags;     /* tag array (malloc'd, strings are transient) */
+        int n_tags;            /* number of tags */
     } pending_embed_t;
 
     int pending_cap = 64;
@@ -1136,12 +1187,13 @@ int memory_embed_all(memory_t *m) {
 
         struct stat st;
         if (stat(emb_path, &st) == 0) {
-            /* .emb exists — check dimension matches current model */
+            /* .emb exists — check dimension matches current model.
+             * Uses multi-vec loader which auto-detects old/new format. */
             if (m->embed->detected_dim > 0) {
-                embed_vec_t existing = embed_vec_load(emb_path);
+                embed_multi_vec_t existing = embed_multi_vec_load(emb_path);
                 if (existing.data) {
                     int stale = (existing.dim != m->embed->detected_dim);
-                    embed_vec_free(&existing);
+                    embed_multi_vec_free(&existing);
                     if (stale) {
                         /* Wrong dimension — delete and re-embed below */
                         unlink(emb_path);
@@ -1157,7 +1209,7 @@ int memory_embed_all(memory_t *m) {
             }
         }
 
-        /* Load JSON entry */
+        /* Load JSON entry to get key/value/tags for chunked embedding */
         FILE *f = fopen(json_path, "r");
         if (!f) continue;
         fseek(f, 0, SEEK_END);
@@ -1180,36 +1232,32 @@ int memory_embed_all(memory_t *m) {
         const char *ekey = (k && k->valuestring) ? k->valuestring : "";
         const char *eval = (v && v->valuestring) ? v->valuestring : "";
 
-        /* Extract tags as string array */
+        /* Extract tags as string array (strdup'd — cJSON entry freed below) */
         int nt = t ? cJSON_GetArraySize(t) : 0;
         const char **tag_strs = NULL;
         if (nt > 0) {
             tag_strs = malloc(sizeof(char *) * (size_t)nt);
             for (int i = 0; i < nt; i++) {
                 cJSON *ti = cJSON_GetArrayItem(t, i);
-                tag_strs[i] = (ti && ti->valuestring) ? ti->valuestring : "";
+                tag_strs[i] = (ti && ti->valuestring) ? strdup(ti->valuestring) : strdup("");
             }
         }
-
-        /* Prepare text for embedding */
-        char *prep = embed_prepare_text(ekey, eval, tag_strs, nt, 2000);
-        free(tag_strs);
-        cJSON_Delete(entry);
-
-        if (!prep) continue;
 
         /* Grow pending array if needed */
         if (pending_count >= pending_cap) {
             pending_cap *= 2;
             pending_embed_t *tmp = realloc(pending,
                 sizeof(pending_embed_t) * (size_t)pending_cap);
-            if (!tmp) { free(prep); break; }
+            if (!tmp) { free(tag_strs); cJSON_Delete(entry); break; }
             pending = tmp;
         }
 
-        pending[pending_count].prepared_text = prep;
-        pending[pending_count].emb_path = strdup(emb_path);
+        pending[pending_count].key = strdup(ekey);
+        pending[pending_count].value = strdup(eval);
+        pending[pending_count].tags = tag_strs;
+        pending[pending_count].n_tags = nt;
         pending_count++;
+        cJSON_Delete(entry);
     }
     closedir(dir);
 
@@ -1218,42 +1266,27 @@ int memory_embed_all(memory_t *m) {
         return 0;
     }
 
-    /* Phase 2: Batch embed all pending texts */
-    const char **texts = malloc(sizeof(char *) * (size_t)pending_count);
-    if (!texts) {
-        for (int i = 0; i < pending_count; i++) {
-            free(pending[i].prepared_text);
-            free(pending[i].emb_path);
-        }
-        free(pending);
-        return 0;
-    }
-    for (int i = 0; i < pending_count; i++) {
-        texts[i] = pending[i].prepared_text;
-    }
-
-    int out_count = 0;
-    embed_vec_t *results = embed_text_batch(m->embed, texts, pending_count,
-                                             &out_count);
-    free(texts);
-
-    /* Phase 3: Save results to .emb files */
+    /* Phase 2: Embed each entry using chunked embedding.
+     * Each entry may produce 1-8 chunks; memory_embed_entry handles
+     * the chunking, batch embedding, and multi-vec persistence. */
     int embedded = 0;
-    if (results) {
-        for (int i = 0; i < pending_count && i < out_count; i++) {
-            if (results[i].data && results[i].dim > 0) {
-                if (embed_vec_save(&results[i], pending[i].emb_path) == 0)
-                    embedded++;
-            }
-            embed_vec_free(&results[i]);
+    for (int i = 0; i < pending_count; i++) {
+        if (memory_embed_entry(m, pending[i].key, pending[i].value,
+                               pending[i].tags, pending[i].n_tags) == 0) {
+            embedded++;
         }
-        free(results);
     }
 
     /* Cleanup */
     for (int i = 0; i < pending_count; i++) {
-        free(pending[i].prepared_text);
-        free(pending[i].emb_path);
+        free(pending[i].key);
+        free(pending[i].value);
+        /* Free strdup'd tag strings and the array itself */
+        if (pending[i].tags) {
+            for (int t = 0; t < pending[i].n_tags; t++)
+                free((char *)pending[i].tags[t]);
+            free(pending[i].tags);
+        }
     }
     free(pending);
 

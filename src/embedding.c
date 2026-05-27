@@ -656,3 +656,254 @@ char *embed_prepare_text(const char *key, const char *value,
 
     return str_steal(&out);
 }
+
+/* ── chunked (multi-vector) embeddings ───────────────── */
+
+/* Build the key+tags prefix that starts every chunk.
+ * Returns a malloc'd string. Caller must free. */
+static char *build_chunk_prefix(const char *key, const char **tags, int n_tags) {
+    str_t pfx = str_new(256);
+    if (key) {
+        str_append_cstr(&pfx, key);
+        str_append_cstr(&pfx, "\n");
+    }
+    if (tags && n_tags > 0) {
+        str_append_cstr(&pfx, "Tags: ");
+        for (int i = 0; i < n_tags; i++) {
+            if (i > 0) str_append_cstr(&pfx, ", ");
+            if (tags[i]) str_append_cstr(&pfx, tags[i]);
+        }
+        str_append_cstr(&pfx, "\n");
+    }
+    return str_steal(&pfx);
+}
+
+char **embed_prepare_text_chunked(const char *key, const char *value,
+                                  const char **tags, int n_tags,
+                                  int chunk_max_chars, int overlap_chars,
+                                  int *out_n_chunks) {
+    if (!out_n_chunks) return NULL;
+    *out_n_chunks = 0;
+    if (!key && !value) return NULL;
+    if (chunk_max_chars <= 0) chunk_max_chars = 2000;
+    if (overlap_chars <= 0) overlap_chars = 200;
+
+    /* Build the prefix (key + tags) that anchors every chunk */
+    char *prefix = build_chunk_prefix(key, tags, n_tags);
+    if (!prefix) return NULL;
+    size_t prefix_len = strlen(prefix);
+
+    /* How much value fits per chunk after the prefix */
+    size_t value_budget = (size_t)chunk_max_chars > prefix_len + 20
+                        ? (size_t)chunk_max_chars - prefix_len - 4 /* "..." + NUL */
+                        : 100;  /* pathological: very long key, still embed something */
+
+    size_t vlen = value ? strlen(value) : 0;
+
+    /* If everything fits in one chunk, use the original single-text path */
+    if (prefix_len + vlen <= (size_t)chunk_max_chars) {
+        char **result = malloc(sizeof(char *));
+        if (!result) { free(prefix); return NULL; }
+        result[0] = embed_prepare_text(key, value, tags, n_tags, chunk_max_chars);
+        if (!result[0]) { free(result); free(prefix); return NULL; }
+        *out_n_chunks = 1;
+        free(prefix);
+        return result;
+    }
+
+    /* Split value into overlapping windows */
+    size_t step = value_budget > (size_t)overlap_chars
+                ? value_budget - (size_t)overlap_chars
+                : value_budget / 2;  /* safety: at least half-step */
+    if (step == 0) step = 1;
+
+    /* Count chunks needed */
+    int n_chunks = 0;
+    for (size_t pos = 0; pos < vlen; pos += step) {
+        n_chunks++;
+    }
+    if (n_chunks == 0) n_chunks = 1;
+
+    /* Cap at a reasonable maximum to avoid embedding explosion */
+    const int MAX_CHUNKS = 8;
+    if (n_chunks > MAX_CHUNKS) {
+        /* Recalculate step to fit within MAX_CHUNKS */
+        step = (vlen + (size_t)MAX_CHUNKS - 1) / (size_t)MAX_CHUNKS;
+        n_chunks = MAX_CHUNKS;
+    }
+
+    char **result = malloc(sizeof(char *) * (size_t)n_chunks);
+    if (!result) { free(prefix); return NULL; }
+
+    int actual = 0;
+    for (size_t pos = 0; pos < vlen && actual < n_chunks; pos += step) {
+        str_t chunk = str_new((size_t)chunk_max_chars + 64);
+        str_append_cstr(&chunk, prefix);
+
+        /* Add chunk position indicator for multi-chunk entries */
+        if (n_chunks > 1) {
+            str_appendf(&chunk, "[%d/%d] ", actual + 1, n_chunks);
+        }
+
+        /* Slice value with word-boundary awareness */
+        size_t slice_end = pos + value_budget;
+        if (slice_end >= vlen) {
+            /* Last chunk: take everything remaining */
+            str_append(&chunk, value + pos, vlen - pos);
+        } else {
+            /* Try to break at a word boundary (look back up to 100 chars) */
+            size_t cut = slice_end;
+            if (cut > pos + 100) {
+                while (cut > slice_end - 100 && cut > pos && value[cut] != ' ')
+                    cut--;
+            }
+            if (cut <= pos) cut = slice_end;  /* no space found, hard cut */
+            str_append(&chunk, value + pos, cut - pos);
+            if (cut < vlen) str_append_cstr(&chunk, "...");
+        }
+
+        result[actual] = str_steal(&chunk);
+        actual++;
+    }
+
+    free(prefix);
+    *out_n_chunks = actual;
+    return result;
+}
+
+/* ── multi-vector persistence ────────────────────────── */
+
+int embed_multi_vec_save(const embed_multi_vec_t *mv, const char *path) {
+    if (!mv || !mv->data || mv->dim <= 0 || mv->n_chunks <= 0 || !path)
+        return -1;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+
+    if (mv->n_chunks == 1) {
+        /* Single chunk: write in old format for backward compatibility.
+         * [int32 dim][float32 × dim] */
+        int32_t dim = (int32_t)mv->dim;
+        if (fwrite(&dim, sizeof(dim), 1, f) != 1) { fclose(f); return -1; }
+        if (fwrite(mv->data, sizeof(float), (size_t)mv->dim, f)
+            != (size_t)mv->dim) { fclose(f); return -1; }
+    } else {
+        /* Multi-chunk: new format.
+         * [int32 -n_chunks][int32 dim][float32 × dim × n_chunks] */
+        int32_t neg_chunks = -(int32_t)mv->n_chunks;
+        int32_t dim = (int32_t)mv->dim;
+        if (fwrite(&neg_chunks, sizeof(neg_chunks), 1, f) != 1) { fclose(f); return -1; }
+        if (fwrite(&dim, sizeof(dim), 1, f) != 1) { fclose(f); return -1; }
+        size_t total_floats = (size_t)mv->dim * (size_t)mv->n_chunks;
+        if (fwrite(mv->data, sizeof(float), total_floats, f) != total_floats) {
+            fclose(f); return -1;
+        }
+    }
+
+    fclose(f);
+    return 0;
+}
+
+embed_multi_vec_t embed_multi_vec_load(const char *path) {
+    embed_multi_vec_t result = {0};
+    if (!path) return result;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return result;
+
+    /* Read first int32 to determine format */
+    int32_t first = 0;
+    if (fread(&first, sizeof(first), 1, f) != 1) { fclose(f); return result; }
+
+    int32_t dim;
+    int n_chunks;
+
+    if (first > 0 && first <= 65536) {
+        /* Old format: first int32 is the dimension, single chunk */
+        dim = first;
+        n_chunks = 1;
+    } else if (first < 0 && first >= -256) {
+        /* New format: first int32 is -n_chunks */
+        n_chunks = -first;
+        if (fread(&dim, sizeof(dim), 1, f) != 1 || dim <= 0 || dim > 65536) {
+            fclose(f);
+            return result;
+        }
+    } else {
+        /* Invalid or corrupt file */
+        fclose(f);
+        return result;
+    }
+
+    /* Read all float data */
+    size_t total_floats = (size_t)dim * (size_t)n_chunks;
+    result.data = malloc(sizeof(float) * total_floats);
+    if (!result.data) { fclose(f); return result; }
+
+    if (fread(result.data, sizeof(float), total_floats, f) != total_floats) {
+        free(result.data);
+        result.data = NULL;
+        fclose(f);
+        return result;
+    }
+
+    result.dim = (int)dim;
+    result.n_chunks = n_chunks;
+    fclose(f);
+    return result;
+}
+
+void embed_multi_vec_free(embed_multi_vec_t *mv) {
+    if (!mv) return;
+    free(mv->data);
+    mv->data = NULL;
+    mv->dim = 0;
+    mv->n_chunks = 0;
+}
+
+/* ── multi-vector similarity ─────────────────────────── */
+
+/* Helper: cosine similarity between two raw float vectors of same dim */
+static float cosine_sim_raw(const float *a, const float *b, int dim) {
+    double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
+    for (int i = 0; i < dim; i++) {
+        dot    += (double)a[i] * (double)b[i];
+        norm_a += (double)a[i] * (double)a[i];
+        norm_b += (double)b[i] * (double)b[i];
+    }
+    double denom = sqrt(norm_a) * sqrt(norm_b);
+    if (denom < 1e-12) return 0.0f;
+    return (float)(dot / denom);
+}
+
+float embed_cosine_sim_multi(const embed_vec_t *query,
+                             const embed_multi_vec_t *stored) {
+    if (!query || !stored || !query->data || !stored->data) return 0.0f;
+    if (query->dim != stored->dim || query->dim == 0) return 0.0f;
+
+    float max_sim = -2.0f;
+    for (int c = 0; c < stored->n_chunks; c++) {
+        float sim = cosine_sim_raw(query->data,
+                                   stored->data + c * stored->dim,
+                                   stored->dim);
+        if (sim > max_sim) max_sim = sim;
+    }
+    return max_sim;
+}
+
+float embed_cosine_sim_multi_multi(const embed_multi_vec_t *a,
+                                   const embed_multi_vec_t *b) {
+    if (!a || !b || !a->data || !b->data) return 0.0f;
+    if (a->dim != b->dim || a->dim == 0) return 0.0f;
+
+    float max_sim = -2.0f;
+    for (int i = 0; i < a->n_chunks; i++) {
+        for (int j = 0; j < b->n_chunks; j++) {
+            float sim = cosine_sim_raw(a->data + i * a->dim,
+                                       b->data + j * b->dim,
+                                       a->dim);
+            if (sim > max_sim) max_sim = sim;
+        }
+    }
+    return max_sim;
+}
