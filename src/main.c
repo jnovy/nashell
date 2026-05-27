@@ -97,6 +97,8 @@ static void print_banner(const config_t *cfg, const char *props_json,
             printf("  ctx:      %d tok (%dk)\n",
                    cfg->provider.context_size,
                    cfg->provider.context_size / 1024);
+        else
+            printf("  ctx:      unknown\n");
         printf("\n");
     } else if (!props_json) {
         printf("server: %s (props unavailable)\n\n",
@@ -187,6 +189,8 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
             str_appendf(&s, "  ctx:      %d tok (%dk)\n",
                         cfg->provider.context_size,
                         cfg->provider.context_size / 1024);
+        else
+            str_append_cstr(&s, "  ctx:      unknown\n");
         str_append_cstr(&s, "\n");
     } else if (!props_json) {
         str_appendf(&s, "server: %s (props unavailable)\n\n",
@@ -346,9 +350,11 @@ int main(int argc, char **argv) {
         server_model = cfg->provider.model_id ? strdup(cfg->provider.model_id) : NULL;
     }
 
-    /* Update provider with fetched context size */
-    if (provider && context_size > 0) {
-        provider->cfg.context_size = context_size;
+    /* Update provider and config with fetched context size */
+    if (context_size > 0) {
+        if (provider) provider->cfg.context_size = context_size;
+        if (cfg->provider.context_size == 0)
+            cfg->provider.context_size = context_size;
     }
     if (provider && server_model) {
         provider->cfg.model_id = server_model;

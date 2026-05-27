@@ -735,6 +735,58 @@ static cJSON *anthropic_build_tools_vtable(provider_t *p) {
     return build_tools_anthropic();
 }
 
+/* ── Model info (context size lookup) ──────────────────────────── */
+
+/* Known context window sizes for Anthropic models (in tokens).
+ * Used when context_size is not explicitly set in config. */
+static int anthropic_lookup_context_size(const char *model_id) {
+    if (!model_id) return 0;
+
+    /* Claude 4 family */
+    if (strstr(model_id, "claude-4") ||
+        strstr(model_id, "claude-opus-4") ||
+        strstr(model_id, "claude-sonnet-4"))
+        return 200000;
+
+    /* Claude 3.7 family */
+    if (strstr(model_id, "claude-3-7") ||
+        strstr(model_id, "claude-3.7"))
+        return 200000;
+
+    /* Claude 3.5 family */
+    if (strstr(model_id, "claude-3-5") ||
+        strstr(model_id, "claude-3.5"))
+        return 200000;
+
+    /* Claude 3 family (opus, sonnet, haiku) */
+    if (strstr(model_id, "claude-3"))
+        return 200000;
+
+    /* Claude 2.x */
+    if (strstr(model_id, "claude-2"))
+        return 100000;
+
+    return 0;
+}
+
+static int anthropic_fetch_model_info(provider_t *p, int *context_size,
+                                      char **model_name, char **props_json) {
+    if (props_json) *props_json = NULL;  /* no /props for API providers */
+
+    if (model_name && p->cfg.model_id)
+        *model_name = strdup(p->cfg.model_id);
+
+    if (context_size) {
+        /* Use config value if explicitly set, otherwise look up by model */
+        if (p->cfg.context_size > 0)
+            *context_size = p->cfg.context_size;
+        else
+            *context_size = anthropic_lookup_context_size(p->cfg.model_id);
+    }
+
+    return 0;
+}
+
 /* ── Init ───────────────────────────────────────────────────────── */
 
 void provider_anthropic_init(provider_t *p) {
@@ -744,6 +796,6 @@ void provider_anthropic_init(provider_t *p) {
     p->parse_sse_event  = NULL;  /* uses shared Anthropic SSE parser in provider.c */
     p->get_endpoint     = anthropic_get_endpoint;
     p->build_tools      = anthropic_build_tools_vtable;
-    p->fetch_model_info = NULL;  /* no /props for Anthropic */
+    p->fetch_model_info = anthropic_fetch_model_info;
     p->destroy          = NULL;
 }

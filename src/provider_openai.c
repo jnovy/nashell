@@ -321,6 +321,59 @@ static cJSON *openai_build_tools_vtable(provider_t *p) {
     return build_tools_openai();
 }
 
+/* ── Model info (context size lookup) ──────────────────────────── */
+
+/* Known context window sizes for OpenAI models (in tokens).
+ * Used when context_size is not explicitly set in config. */
+static int openai_lookup_context_size(const char *model_id) {
+    if (!model_id) return 0;
+
+    /* o-series reasoning models */
+    if (strstr(model_id, "o4-mini"))  return 200000;
+    if (strstr(model_id, "o3-mini"))  return 200000;
+    if (strstr(model_id, "o3"))       return 200000;
+    if (strstr(model_id, "o1-pro"))   return 200000;
+    if (strstr(model_id, "o1-mini"))  return 128000;
+    if (strstr(model_id, "o1"))       return 200000;
+
+    /* GPT-4.1 family */
+    if (strstr(model_id, "gpt-4.1"))  return 1047576;
+
+    /* GPT-4o family */
+    if (strstr(model_id, "gpt-4o"))   return 128000;
+
+    /* GPT-4 turbo */
+    if (strstr(model_id, "gpt-4-turbo")) return 128000;
+
+    /* GPT-4 (original) */
+    if (strstr(model_id, "gpt-4-32k"))   return 32768;
+    if (strstr(model_id, "gpt-4"))       return 8192;
+
+    /* GPT-3.5 */
+    if (strstr(model_id, "gpt-3.5-turbo-16k")) return 16384;
+    if (strstr(model_id, "gpt-3.5"))            return 16384;
+
+    return 0;
+}
+
+static int openai_fetch_model_info(provider_t *p, int *context_size,
+                                   char **model_name, char **props_json) {
+    if (props_json) *props_json = NULL;  /* no /props for API providers */
+
+    if (model_name && p->cfg.model_id)
+        *model_name = strdup(p->cfg.model_id);
+
+    if (context_size) {
+        /* Use config value if explicitly set, otherwise look up by model */
+        if (p->cfg.context_size > 0)
+            *context_size = p->cfg.context_size;
+        else
+            *context_size = openai_lookup_context_size(p->cfg.model_id);
+    }
+
+    return 0;
+}
+
 /* ── Init ───────────────────────────────────────────────────────── */
 
 void provider_openai_init(provider_t *p) {
@@ -330,6 +383,6 @@ void provider_openai_init(provider_t *p) {
     p->parse_sse_event  = NULL;  /* uses shared OpenAI SSE parser */
     p->get_endpoint     = openai_get_endpoint;
     p->build_tools      = openai_build_tools_vtable;
-    p->fetch_model_info = NULL;  /* no /props endpoint for OpenAI */
+    p->fetch_model_info = openai_fetch_model_info;
     p->destroy          = NULL;
 }
