@@ -111,9 +111,13 @@ char *journal_manifest(journal_t *j, int max_steps) {
             continue;
         }
 
-        /* Extract key param for display */
+        /* Extract thought and key param for display */
         const char *key_param = "";
+        const char *thought = NULL;
         if (params) {
+            cJSON *th = cJSON_GetObjectItem(params, "thought");
+            if (th && th->valuestring && th->valuestring[0])
+                thought = th->valuestring;
             cJSON *cmd = cJSON_GetObjectItem(params, "command");
             cJSON *p = cJSON_GetObjectItem(params, "path");
             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -122,6 +126,13 @@ char *journal_manifest(journal_t *j, int max_steps) {
             else if (p && p->valuestring) key_param = p->valuestring;
             else if (pat && pat->valuestring) key_param = pat->valuestring;
             else if (res && res->valuestring) key_param = res->valuestring;
+        }
+
+        /* Show thought above the step line (truncated for manifest) */
+        if (thought) {
+            char th_trunc[121];
+            utf8_truncate(th_trunc, thought, 120);
+            str_appendf(&out, "  \xf0\x9f\x92\xad %s\n", th_trunc);
         }
 
         /* Format: "    ✓ R0S1: shell_exec "ls -la" -> 473 chars"
@@ -228,9 +239,13 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             continue;
         }
 
-        /* Extract key param for display */
+        /* Extract thought and key param for display */
         const char *key_param = "";
+        const char *thought = NULL;
         if (params) {
+            cJSON *th = cJSON_GetObjectItem(params, "thought");
+            if (th && th->valuestring && th->valuestring[0])
+                thought = th->valuestring;
             cJSON *cmd = cJSON_GetObjectItem(params, "command");
             cJSON *p = cJSON_GetObjectItem(params, "path");
             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
@@ -239,6 +254,13 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             else if (p && p->valuestring) key_param = p->valuestring;
             else if (pat && pat->valuestring) key_param = pat->valuestring;
             else if (res && res->valuestring) key_param = res->valuestring;
+        }
+
+        /* Show thought above the step line (truncated for manifest) */
+        if (thought) {
+            char th_trunc[121];
+            utf8_truncate(th_trunc, thought, 120);
+            str_appendf(&out, "  \xf0\x9f\x92\xad %s\n", th_trunc);
         }
 
         char buf[512];

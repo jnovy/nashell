@@ -761,6 +761,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                             think_hash ? think_hash : "");
                 cJSON *think_p = cJSON_CreateObject();
                 cJSON_AddStringToObject(think_p, "type", "thinking");
+                cJSON_AddStringToObject(think_p, "thought", thought);
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "thinking", think_p, think_alias,
                                strlen(thought), 0, NULL, NULL);
