@@ -73,6 +73,28 @@ const char *str_cstr(const str_t *s) {
 }
 
 /* Format seconds into human-readable duration */
+/* ── UTF-8 helpers ──────────────────────────────────────────────── */
+
+int utf8_char_len(const char *p) {
+    unsigned char c = (unsigned char)p[0];
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;  /* invalid: treat as single byte */
+}
+
+const char *utf8_next(const char *p) {
+    return p + utf8_char_len(p);
+}
+
+const char *utf8_prev(const char *begin, const char *p) {
+    if (p <= begin) return begin;
+    p--;
+    while (p > begin && ((unsigned char)*p & 0xC0) == 0x80) p--;
+    return p;
+}
+
 /* ── UTF-8 safe truncation ──────────────────────────────────────── */
 
 int utf8_truncate(char *dst, const char *src, int max_bytes) {
@@ -92,25 +114,37 @@ int utf8_truncate(char *dst, const char *src, int max_bytes) {
         return len;
     }
 
-    /* We hit max_bytes — back up past any incomplete UTF-8 sequence.
-     * UTF-8 continuation bytes have the form 10xxxxxx (0x80..0xBF).
-     * Walk backwards past continuation bytes, then check if the
-     * leading byte expects more bytes than we have. */
+    /* We hit max_bytes — need to find the last complete UTF-8 character
+     * entirely within [0, len). Walk backwards from len, skipping
+     * continuation bytes (10xxxxxx). After the loop, cut points to
+     * the position just after the leader/ASCII byte that starts the
+     * last character sequence in [0, len). */
     int cut = len;
-    while (cut > 0 && ((unsigned char)src[cut] & 0xC0) == 0x80)
+    while (cut > 0 && ((unsigned char)src[cut - 1] & 0xC0) == 0x80)
         cut--;
 
-    /* If we backed up to a multi-byte leader, check if the full
-     * sequence fits. If not, drop the incomplete leader too. */
+    /* Now src[cut-1] is the leader (or ASCII) of the last character
+     * included in [0, len). Check if it's a multi-byte leader whose
+     * continuations extend beyond len. */
     if (cut > 0) {
         unsigned char lead = (unsigned char)src[cut - 1];
         int expected = 1;
         if ((lead & 0xE0) == 0xC0) expected = 2;       /* 110xxxxx */
         else if ((lead & 0xF0) == 0xE0) expected = 3;  /* 1110xxxx */
         else if ((lead & 0xF8) == 0xF0) expected = 4;  /* 11110xxx */
-        int have = len - (cut - 1);
-        if (have < expected)
-            cut--;  /* drop the incomplete leader */
+        /* The character spans [cut-1, cut-1+expected).
+         * If complete within [0, len), include it by advancing cut.
+         * If incomplete, drop the partial bytes we included. */
+        if (cut - 1 + expected <= len) {
+            /* Complete character — advance cut to include it */
+            cut = cut - 1 + expected;
+        } else {
+            /* Incomplete — drop the partial character */
+            int included = 1;
+            cut--;
+        }
+        /* If cut went negative, clamp to 0 */
+        if (cut < 0) cut = 0;
     }
 
     memcpy(dst, src, cut);

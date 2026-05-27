@@ -712,13 +712,20 @@ char *embed_prepare_text(const char *key, const char *value,
                  * FIX B9: Guard against remaining < 100 — the subtraction
                  * remaining - 100 wraps around (size_t is unsigned),
                  * making the condition always false and disabling the
-                 * word-boundary search. */
+                 * word-boundary search.
+                 * FIX UTF8: Use UTF-8 safe truncation so we never split
+                 * a multi-byte character. First find the byte-level
+                 * word-boundary cut, then clamp it to a valid UTF-8
+                 * boundary. */
                 size_t cut = remaining;
                 if (remaining > 100) {
                     while (cut > remaining - 100 && cut > 0 && value[cut] != ' ')
                         cut--;
                 }
                 if (cut == 0) cut = remaining;
+                /* Clamp cut to a valid UTF-8 character boundary */
+                while (cut > 0 && ((unsigned char)value[cut] & 0xC0) == 0x80)
+                    cut--;
                 str_appendf(&out, "%.*s...", (int)cut, value);
             }
         }
@@ -807,6 +814,16 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
 
     int actual = 0;
     for (size_t pos = 0; pos < vlen && actual < n_chunks; pos += step) {
+        /* FIX UTF8: Clamp pos to a valid UTF-8 character boundary.
+         * If pos lands inside a multi-byte sequence, advance to the
+         * start of the next complete character. */
+        while (pos < vlen && value[pos] &&
+               (unsigned char)value[pos] < 0xC0 &&
+               (unsigned char)value[pos] >= 0x80) {
+            /* pos is a continuation byte — skip to next leader */
+            pos++;
+        }
+
         str_t chunk = str_new((size_t)chunk_max_chars + 64);
         str_append_cstr(&chunk, prefix);
 
@@ -828,6 +845,11 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
                     cut--;
             }
             if (cut <= pos) cut = slice_end;  /* no space found, hard cut */
+            /* FIX UTF8: Clamp cut to a valid UTF-8 character boundary.
+             * Back up past any continuation bytes so we don't split
+             * a multi-byte character. */
+            while (cut > pos && ((unsigned char)value[cut] & 0xC0) == 0x80)
+                cut--;
             str_append(&chunk, value + pos, cut - pos);
             if (cut < vlen) str_append_cstr(&chunk, "...");
         }
