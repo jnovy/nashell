@@ -349,13 +349,7 @@ done:;
     ui->doc = md_parse(md_source);
     free(md_source);
 
-    /* Auto-scroll to bottom when actively streaming */
-    if (ui->status == STATUS_RUNNING && ui->doc) {
-        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
-        int bottom = ui->doc->total_lines - vis;
-        if (bottom < 0) bottom = 0;
-        ui->scroll_y = bottom;
-    }
+    /* No auto-scroll during streaming — preserve user's scroll position */
 
     /* Resize link_states to cover ALL links (queries + steps).
      * The initial sizing (qcount) only covers query links.
@@ -589,7 +583,7 @@ void ui_state_back(ui_state_t *ui) {
 
 void ui_state_page_up(ui_state_t *ui) {
     if (!ui) return;
-    int page = ui->visible_rows > 2 ? ui->visible_rows - 2 : 10;
+    int page = (ui->visible_rows > 3) ? (ui->visible_rows / 3) : 3;
     ui->scroll_y -= page;
     if (ui->scroll_y < 0) ui->scroll_y = 0;
 
@@ -622,7 +616,7 @@ void ui_state_page_up(ui_state_t *ui) {
 
 void ui_state_page_down(ui_state_t *ui) {
     if (!ui) return;
-    int page = ui->visible_rows > 2 ? ui->visible_rows - 2 : 10;
+    int page = (ui->visible_rows > 3) ? (ui->visible_rows / 3) : 3;
     ui->scroll_y += page;
 
     /* Snap cursor to nearest visible link at top of viewport */
