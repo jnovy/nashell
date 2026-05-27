@@ -1294,14 +1294,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                     char emb_path[4096];
                                     snprintf(emb_path, sizeof(emb_path), "%s/%s",
                                              ctx->tools->memory->dir, rde->d_name);
-                                    embed_vec_t exist_emb = embed_vec_load(emb_path);
+                                    /* FIX B1+B2: Use multi-vec loader (auto-detects
+                                     * old single-vec and new multi-vec formats) and
+                                     * MaxSim similarity for consistent cross-subsystem
+                                     * comparison with consolidation code path. */
+                                    embed_multi_vec_t exist_emb = embed_multi_vec_load(emb_path);
                                     if (!exist_emb.data) continue;
                                     if (exist_emb.dim != new_emb.dim) {
-                                        embed_vec_free(&exist_emb);
+                                        embed_multi_vec_free(&exist_emb);
                                         continue;
                                     }
-                                    float sim = embed_cosine_sim(&new_emb, &exist_emb);
-                                    embed_vec_free(&exist_emb);
+                                    float sim = embed_cosine_sim_multi(&new_emb, &exist_emb);
+                                    embed_multi_vec_free(&exist_emb);
                                     if (sim > 0.90f) {
                                         should_store = 0;
                                         fprintf(stderr,
