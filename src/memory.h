@@ -87,6 +87,11 @@ int memory_prune(memory_t *m, double min_score, int min_evidence);
 int memory_increment_hits(memory_t *m, const char *key);
 int memory_increment_misses(memory_t *m, const char *key);
 
+/* Commit all pending validation score updates in a single git commit.
+ * Call after a batch of memory_increment_hits/misses calls to avoid
+ * the O(n) git commit storm. */
+void memory_commit_validation(memory_t *m, int n_updated, int hits);
+
 /* Write MEMORY.md index file (auto-generated, human-readable).
  * Called automatically after memory_store. */
 int memory_write_index_file(memory_t *m);

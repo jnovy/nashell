@@ -1257,13 +1257,14 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         char emb_base[256];
         snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), de->d_name);
 
-        /* Skip self — the entry we just stored */
-        /* The filename is the sanitized key; compare with sanitized new_key.
-         * Must match key_to_filename() which replaces ':' and '/' with '_'. */
+        /* Skip self — the entry we just stored.
+         * Sanitize new_key the same way key_to_emb_filename() does:
+         * replace ':' and '/' with '_' (NOT spaces — that was a bug
+         * causing self-skip to fail for keys without those chars). */
         char new_fname[512];
         snprintf(new_fname, sizeof(new_fname), "%s", new_key);
         for (char *p = new_fname; *p; p++) {
-            if (*p == ':' || *p == '/' || *p == ' ') *p = '_';
+            if (*p == ':' || *p == '/') *p = '_';
         }
         if (strcmp(emb_base, new_fname) == 0) continue;
 
@@ -1271,6 +1272,15 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         snprintf(emb_path, sizeof(emb_path), "%s/%s", ctx->memory->dir, de->d_name);
         embed_vec_t other_emb = embed_vec_load(emb_path);
         if (!other_emb.data) continue;
+
+        /* Dimension check: skip stale embeddings from a different model.
+         * Mismatched dims give 0.0 from cosine_sim anyway, but deleting
+         * the stale file lets memory_embed_all() regenerate it. */
+        if (other_emb.dim != new_emb.dim) {
+            unlink(emb_path);
+            embed_vec_free(&other_emb);
+            continue;
+        }
 
         float sim = embed_cosine_sim(&new_emb, &other_emb);
         embed_vec_free(&other_emb);

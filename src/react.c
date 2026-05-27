@@ -1068,7 +1068,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * valuable for learning (what went wrong, what to avoid next time). */
     int task_succeeded = (final_result != NULL);
 
-    /* Validation scoring: update recall_hits/misses for all recalled memories */
+    /* Validation scoring: update recall_hits/misses for all recalled memories.
+     * Uses batch git commit to avoid O(n) commit storm. */
     if (ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
             if (task_succeeded)
@@ -1078,6 +1079,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 memory_increment_misses(ctx->tools->memory,
                                         ctx->tools->recalled_keys[i]);
         }
+        /* Single git commit for all validation updates (was N commits before) */
+        memory_commit_validation(ctx->tools->memory,
+                                 ctx->tools->n_recalled_keys, task_succeeded);
     }
 
     if (ctx->tools->step > 2 && ctx->tools->memory) {

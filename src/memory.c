@@ -964,10 +964,9 @@ static int memory_increment_field(memory_t *m, const char *key,
     free(json);
     cJSON_Delete(entry);
 
-    /* Git: commit validation score update */
-    char cmsg[256];
-    snprintf(cmsg, sizeof(cmsg), "memory: update %s for %s", field, key);
-    memory_git_commit(m, cmsg);
+    /* NOTE: No individual git commit here — callers should use
+     * memory_commit_validation() after batching all updates.
+     * This fixes the O(n) git commit storm when scoring N recalled keys. */
 
     return 0;
 }
@@ -978,6 +977,18 @@ int memory_increment_hits(memory_t *m, const char *key) {
 
 int memory_increment_misses(memory_t *m, const char *key) {
     return memory_increment_field(m, key, "recall_misses");
+}
+
+/* Commit all pending validation score updates in a single git commit.
+ * Call after a batch of memory_increment_hits/misses calls.
+ * This replaces the previous per-entry commit pattern that caused
+ * O(n) git commits per recall (the "git storm" bug). */
+void memory_commit_validation(memory_t *m, int n_updated, int hits) {
+    if (!m || n_updated <= 0) return;
+    char msg[256];
+    snprintf(msg, sizeof(msg), "memory: update %s for %d entries",
+             hits ? "recall_hits" : "recall_misses", n_updated);
+    memory_git_commit(m, msg);
 }
 
 /* ── embedding integration ──────────────────────────────────── */
@@ -1096,13 +1107,35 @@ int memory_embed_all(memory_t *m) {
         size_t len = strlen(de->d_name);
         if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
 
-        /* Check if .emb file already exists */
+        /* Check if .emb file already exists AND has correct dimension.
+         * Stale embeddings from a previous model (e.g., switched from
+         * MiniLM-384d to nomic-embed-768d) must be regenerated. */
         char json_path[4096], emb_path[4096];
         snprintf(json_path, sizeof(json_path), "%s/%s", m->dir, de->d_name);
         json_to_emb_path(json_path, emb_path, sizeof(emb_path));
 
         struct stat st;
-        if (stat(emb_path, &st) == 0) continue;  /* already has embedding */
+        if (stat(emb_path, &st) == 0) {
+            /* .emb exists — check dimension matches current model */
+            if (m->embed->detected_dim > 0) {
+                embed_vec_t existing = embed_vec_load(emb_path);
+                if (existing.data) {
+                    int stale = (existing.dim != m->embed->detected_dim);
+                    embed_vec_free(&existing);
+                    if (stale) {
+                        /* Wrong dimension — delete and re-embed below */
+                        unlink(emb_path);
+                    } else {
+                        continue;  /* correct dimension, skip */
+                    }
+                } else {
+                    /* Corrupt .emb file — delete and re-embed */
+                    unlink(emb_path);
+                }
+            } else {
+                continue;  /* can't check dimension, assume ok */
+            }
+        }
 
         /* Load JSON entry */
         FILE *f = fopen(json_path, "r");
