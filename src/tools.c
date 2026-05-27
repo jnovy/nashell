@@ -1342,10 +1342,11 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * FIX B10: Include key lengths in allocation — the format string
      * interpolates new_key and old_key too, which could be up to 256
      * chars each. The previous 1024-byte slack was insufficient. */
-    char *prompt = malloc(strlen(new_value) + strlen(old_value) +
-                          strlen(new_key) + strlen(old_key) + 1024);
+    size_t prompt_sz = strlen(new_value) + strlen(old_value) +
+                     strlen(new_key) + strlen(old_key) + 1024;
+    char *prompt = malloc(prompt_sz);
     if (!prompt) { cJSON_Delete(old_entry); return; }
-    sprintf(prompt,
+    snprintf(prompt, prompt_sz,
         "Consolidate these two related memory entries into ONE concise entry.\n"
         "Preserve all unique information. Remove redundancy. Keep the same style.\n"
         "Output ONLY the consolidated text, no preamble.\n\n"
@@ -1457,9 +1458,19 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             }
         }
 
+        /* FIX B1: Preserve journal_ref provenance from the new entry.
+         * Previously passed NULL, breaking the provenance chain for
+         * consolidated memories — the dreaming system couldn't trace
+         * them back to their originating session journal. */
+        const char *new_jref = NULL;
+        if (new_entry_json) {
+            cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
+            if (jr && jr->valuestring) new_jref = jr->valuestring;
+        }
+
         /* Store consolidated version under the new key with merged tags */
         memory_store(ctx->memory, new_key, consolidated,
-                     merged_tags, n_merged, 0, NULL);
+                     merged_tags, n_merged, 0, new_jref);
 
         free(merged_tags);
         cJSON_Delete(new_entry_json);
@@ -1467,8 +1478,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
     /* Delete the old entry if it has a different key.
      * FIX B3: Use memory_delete() instead of raw unlink() — this properly
-     * removes .json + .emb files, updates MEMORY.md, and git commits
-     * the deletion (previously the deletion was untracked in git). */
+     * removes .json + .emb files and git commits the deletion. */
     if (strcmp(old_key, new_key) != 0) {
         memory_delete(ctx->memory, old_key);
     }

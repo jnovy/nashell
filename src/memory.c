@@ -234,9 +234,6 @@ int memory_store(memory_t *m, const char *key, const char *value,
         memory_embed_entry(m, key, value, tags, n_tags);
     }
 
-    /* Auto-update MEMORY.md index file */
-    memory_write_index_file(m);
-
     /* Git commit: track memory creation/update */
     char commit_msg[256];
     snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
@@ -293,9 +290,6 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     free(json);
     cJSON_Delete(entry);
 
-    /* Update MEMORY.md index */
-    memory_write_index_file(m);
-
     /* Git: commit pin/unpin change */
     char msg[600];
     snprintf(msg, sizeof(msg), "memory: %s %s",
@@ -350,6 +344,7 @@ static double score_entry_substring(const char *key, const char *value,
 static double score_entry_hybrid(const char *key, const char *value,
                                   cJSON *tags, const char *query,
                                   int access_count,
+                                  int recall_hits, int recall_misses,
                                   float semantic_sim, int has_semantic) {
     double relevance;
 
@@ -376,7 +371,16 @@ static double score_entry_hybrid(const char *key, const char *value,
     double importance = 1.0 + log(1.0 + (double)access_count);
 
     /* Composite: relevance-dominant with importance boost */
-    return relevance * 0.8 + importance * 0.2;
+    double composite = relevance * 0.8 + importance * 0.2;
+
+    /* FIX B4: Factor in Bayesian validation score.
+     * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean.
+     * New memories with no evidence get vscore=0.5, which is neutral.
+     * Memories that consistently correlate with failures get demoted
+     * before they accumulate enough evidence for pruning (min_evidence=3).
+     * This closes the gap between validation and recall ranking. */
+    double vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
+    return composite * vscore;
 }
 
 /* qsort comparator for scored entries (descending by score) */
@@ -469,10 +473,17 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (k && k->valuestring) key = k->valuestring;
         if (v && v->valuestring) value = v->valuestring;
 
-        /* Get importance data for composite scoring */
+        /* Get importance + validation data for composite scoring */
         int acc_count = 0;
         cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
         if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
+
+        /* FIX B4: Get validation counters for recall ranking */
+        int entry_hits = 0, entry_misses = 0;
+        cJSON *rh_score = cJSON_GetObjectItem(entry, "recall_hits");
+        cJSON *rm_score = cJSON_GetObjectItem(entry, "recall_misses");
+        if (rh_score) entry_hits = (int)cJSON_GetNumberValue(rh_score);
+        if (rm_score) entry_misses = (int)cJSON_GetNumberValue(rm_score);
 
         /* Compute semantic similarity if embeddings available */
         float semantic_sim = 0.0f;
@@ -503,7 +514,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
          * This prevents "skill:" from inflating every skill entry's
          * substring score uniformly, and removes noise from embeddings. */
         double s = score_entry_hybrid(key, value, tags, score_query,
-                                       acc_count,
+                                       acc_count, entry_hits, entry_misses,
                                        semantic_sim, entry_has_semantic);
 
         /* FIX #13 + B1: Type-aware filtering using pre-extracted type_filter.
@@ -745,32 +756,6 @@ char *memory_build_index(memory_t *m, int max_entries) {
     return str_steal(&result);
 }
 
-/* — write MEMORY.md index file ——————————————————————— */
-
-int memory_write_index_file(memory_t *m) {
-    if (!m) return -1;
-
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/../MEMORY.md", m->dir);
-
-    char *index = memory_build_index(m, 0);  /* 0 = show all for MEMORY.md */
-
-    FILE *f = fopen(path, "w");
-    if (!f) { free(index); return -1; }
-
-    fprintf(f, "# Nash Memory Index\n\n");
-    fprintf(f, "Auto-generated — do not edit manually.\n");
-    fprintf(f, "Use `memory_store` and `memory_recall` to manage.\n\n");
-    if (index) {
-        fprintf(f, "%s", index);
-        free(index);
-    } else {
-        fprintf(f, "(empty)\n");
-    }
-    fclose(f);
-    return 0;
-}
-
 /* ── load_pinned ─────────────────────────────────────── */
 
 char *memory_load_pinned(memory_t *m) {
@@ -851,9 +836,6 @@ int memory_delete(memory_t *m, const char *key) {
     char emb_path[4096];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
     unlink(emb_path);  /* ignore error if not exists */
-
-    /* Update MEMORY.md index */
-    memory_write_index_file(m);
 
     /* Git commit */
     char msg[256];
@@ -944,11 +926,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
     }
     closedir(dir);
 
-    /* FIX B12: Update MEMORY.md index after pruning, then git commit.
-     * Previously, pruned entries remained in MEMORY.md until the next
-     * memory_store() call regenerated it. */
     if (pruned > 0) {
-        memory_write_index_file(m);
         char msg[128];
         snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", pruned);
         memory_git_commit(m, msg);

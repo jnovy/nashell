@@ -87,10 +87,6 @@ int memory_prune(memory_t *m, double min_score, int min_evidence);
 int memory_increment_hits(memory_t *m, const char *key);
 int memory_increment_misses(memory_t *m, const char *key);
 
-/* Write MEMORY.md index file (auto-generated, human-readable).
- * Called automatically after memory_store. */
-int memory_write_index_file(memory_t *m);
-
 /* Initialize embedding context for semantic memory matching.
  * Call after memory_new(). Probes the embedding backend and sets
  * m->embed if available. No-op if cfg->type is "none" or NULL.

@@ -140,23 +140,6 @@ static void test_no_match(void) {
     free(dir);
 }
 
-/* ── test_write_index_file ── */
-static void test_write_index_file(void) {
-    char *dir = make_test_dir();
-    memory_t *m = memory_new(dir);
-
-    memory_store(m, "lesson:test", "test value", NULL, 0, 0, NULL);
-
-    char path[4096];
-    snprintf(path, sizeof(path), "%s/MEMORY.md", dir);
-    struct stat st;
-    ASSERT_EQ(stat(path, &st), 0);
-    ASSERT_GT(st.st_size, 0);
-
-    memory_free(m);
-    rm_rf(dir);
-    free(dir);
-}
 
 /* ═══════════════════════════════════════════════════════════════
  * Priority 1: Progressive Disclosure Tests
@@ -569,7 +552,6 @@ int main(void) {
     RUN_TEST(test_prune);
     RUN_TEST(test_overwrite);
     RUN_TEST(test_no_match);
-    RUN_TEST(test_write_index_file);
 
     /* Priority 1: Progressive Disclosure */
     printf("\n  --- Progressive Disclosure ---\n");
