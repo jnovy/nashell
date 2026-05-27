@@ -25,6 +25,92 @@ static int bottom_height = 0;
 #define C_FOCUS     6
 #define C_STREAM    7
 
+/* ncurses color indices for our registered RGB colors.
+ * We use indices 16..34 in the 256-color palette. */
+#define NC_STATUS_BG    16  /* #232637 (35,38,55) */
+#define NC_INPUT_BG     17  /* #191E2D (25,30,45) */
+#define NC_STATUS_READY 18  /* #B4B9C8 (180,185,200) */
+#define NC_STATUS_RUN   19  /* #DCC85A (220,200,90) */
+#define NC_STATUS_AWAIT 20  /* #64C8DC (100,200,220) */
+#define NC_STATUS_DONE  21  /* #64DC96 (100,220,150) */
+#define NC_STATUS_ERR   22  /* #DC5050 (220,80,80) */
+#define NC_INPUT_FG     23  /* #DCE5F0 (220,225,240) */
+#define NC_INPUT_DIM    24  /* #646982 (100,105,130) */
+/* Content colors (match nashell true-color palette) */
+#define NC_CT_GREEN     25  /* #A6E3A1 (166,227,161) — headings, success */
+#define NC_CT_CYAN      26  /* #89DCEB (137,220,235) — code blocks */
+#define NC_CT_YELLOW    27  /* #F9E2AF (249,226,175) — focus, blockquotes */
+#define NC_CT_BLUE      28  /* #89B4FA (137,180,250) — links */
+#define NC_CT_RED       29  /* #F38BA8 (243,139,168) — errors */
+#define NC_CT_WHITE     30  /* #DCE1F0 (220,225,240) — primary text */
+#define NC_CT_DIM       31  /* #646982 (100,105,130) — dim text */
+#define NC_CT_BG        32  /* #1E2030 (30,32,48) — content background */
+#define NC_CT_SELECTED  33  /* #3D4160 (61,65,96) — selection bg */
+#define NC_CT_NORMAL    34  /* #DCE1F0 (220,225,240) — normal text */
+
+/* Color pair numbers for status/input rows */
+#define CP_STATUS_READY  8   /* status bar: bg=#232637, fg=#B4B9C8 */
+#define CP_STATUS_RUNNING 9  /* status bar: bg=#232637, fg=#DCC85A */
+#define CP_STATUS_AWAIT  10  /* status bar: bg=#232637, fg=#64C8DC */
+#define CP_STATUS_DONE   11  /* status bar: bg=#232637, fg=#64DC96 */
+#define CP_STATUS_ERROR  12  /* status bar: bg=#232637, fg=#DC5050 */
+#define CP_INPUT_ACTIVE  13  /* input bar: bg=#191E2D, fg=#DCE5F0 */
+#define CP_INPUT_DIM     14  /* input bar: bg=#191E2D, fg=#646982 */
+
+/* ── True-color registration ─────────────────────────── */
+
+static int true_color_available = 0;
+
+static void init_true_colors(void) {
+    if (!can_change_color() || COLORS < 256) {
+        true_color_available = 0;
+        return;
+    }
+
+    /* Register each RGB color into the ncurses palette.
+     * init_color uses 0-1000 scale for each component. */
+    init_color(NC_STATUS_BG,    35*1000/255,  38*1000/255,  55*1000/255);
+    init_color(NC_INPUT_BG,     25*1000/255,  30*1000/255,  45*1000/255);
+    init_color(NC_STATUS_READY, 180*1000/255, 185*1000/255, 200*1000/255);
+    init_color(NC_STATUS_RUN,   220*1000/255, 200*1000/255,  90*1000/255);
+    init_color(NC_STATUS_AWAIT, 100*1000/255, 200*1000/255, 220*1000/255);
+    init_color(NC_STATUS_DONE,  100*1000/255, 220*1000/255, 150*1000/255);
+    init_color(NC_STATUS_ERR,   220*1000/255,  80*1000/255,  80*1000/255);
+    init_color(NC_INPUT_FG,     220*1000/255, 225*1000/255, 240*1000/255);
+    init_color(NC_INPUT_DIM,    100*1000/255, 105*1000/255, 130*1000/255);
+    /* Content colors — match nashell's true-color palette */
+    init_color(NC_CT_GREEN,    166*1000/255, 227*1000/255, 161*1000/255);
+    init_color(NC_CT_CYAN,     137*1000/255, 220*1000/255, 235*1000/255);
+    init_color(NC_CT_YELLOW,   249*1000/255, 226*1000/255, 175*1000/255);
+    init_color(NC_CT_BLUE,     137*1000/255, 180*1000/255, 250*1000/255);
+    init_color(NC_CT_RED,      243*1000/255, 139*1000/255, 168*1000/255);
+    init_color(NC_CT_WHITE,    220*1000/255, 225*1000/255, 240*1000/255);
+    init_color(NC_CT_DIM,      100*1000/255, 105*1000/255, 130*1000/255);
+    init_color(NC_CT_BG,        30*1000/255,  32*1000/255,  48*1000/255);
+    init_color(NC_CT_SELECTED,  61*1000/255,  65*1000/255,  96*1000/255);
+    init_color(NC_CT_NORMAL,   220*1000/255, 225*1000/255, 240*1000/255);
+
+    /* Create color pairs combining bg + fg */
+    init_pair(CP_STATUS_READY,  NC_STATUS_BG, NC_STATUS_READY);
+    init_pair(CP_STATUS_RUNNING, NC_STATUS_BG, NC_STATUS_RUN);
+    init_pair(CP_STATUS_AWAIT,  NC_STATUS_BG, NC_STATUS_AWAIT);
+    init_pair(CP_STATUS_DONE,   NC_STATUS_BG, NC_STATUS_DONE);
+    init_pair(CP_STATUS_ERROR,  NC_STATUS_BG, NC_STATUS_ERR);
+    init_pair(CP_INPUT_ACTIVE,  NC_INPUT_BG,  NC_INPUT_FG);
+    init_pair(CP_INPUT_DIM,     NC_INPUT_BG,  NC_INPUT_DIM);
+    /* Content pairs: fg on transparent/default bg */
+    init_pair(C_NORMAL,   NC_CT_NORMAL, -1);
+    init_pair(C_SUCCESS,  NC_CT_GREEN,  -1);
+    init_pair(C_FAILED,   NC_CT_RED,    -1);
+    init_pair(C_STREAM,   NC_CT_CYAN,   -1);
+    init_pair(C_STATUS,   NC_CT_WHITE,  -1);
+    init_pair(C_DIM,      NC_CT_DIM,    -1);
+    init_pair(C_FOCUS,    NC_CT_YELLOW, -1);
+    init_pair(C_SELECTED, NC_CT_SELECTED, NC_CT_WHITE);
+
+    true_color_available = 1;
+}
+
 /* ── Init / Shutdown ─────────────────────────────────── */
 
 void tui_init(void) {
@@ -46,6 +132,9 @@ void tui_init(void) {
         init_pair(C_DIM,      COLOR_WHITE,  -1);
         init_pair(C_FOCUS,    COLOR_YELLOW, -1);
         init_pair(C_STREAM,   COLOR_CYAN,   -1);
+
+        /* Initialize true-color palette and pairs */
+        init_true_colors();
     }
 
     /* Layout: main pane gets most of the screen, bottom gets 2 lines */
@@ -174,73 +263,156 @@ static void render_main(ui_state_t *ui) {
     (void)cols;
 }
 
-/* ── Render bottom pane (status + input) ─────────────── */
+/* ── Render bottom pane (nashell-style status + input) ─ */
+
+/* Render a full-width row using ncurses attributes (not ANSI escapes).
+ * pair_num selects the bg/fg combination from the registered color pairs. */
+static void render_ncurses_row(WINDOW *win, int row, int cols,
+                                int pair_num,
+                                const char *content) {
+    /* Build a line padded to full width */
+    char line[2048];
+    int max_content = (int)sizeof(line) - 1;
+
+    if (content && content[0]) {
+        int clen = (int)strlen(content);
+        int show = clen < max_content ? clen : max_content;
+        memcpy(line, content, (size_t)show);
+        for (int c = show; c < cols && c < max_content; c++) {
+            line[c] = ' ';
+        }
+        line[cols < max_content ? cols : max_content] = '\0';
+    } else {
+        int limit = cols < max_content ? cols : max_content;
+        memset(line, ' ', (size_t)limit);
+        line[limit] = '\0';
+    }
+
+    attr_t attr = COLOR_PAIR(pair_num);
+    wattron(win, attr);
+    mvwaddnstr(win, row, 0, line, -1);
+    wattroff(win, attr);
+}
 
 static void render_bottom(ui_state_t *ui) {
     int cols = getmaxx(win_bottom);
+    int bh   = getmaxy(win_bottom);
 
     werase(win_bottom);
 
-    /* Row 0: separator + status */
-    mvwhline(win_bottom, 0, 0, ACS_HLINE, cols);
+    /* ── Row 0: Status bar (nashell-style) ──
+     * Layout: [icon][status_text] [model_name │ ctx XX% │ 📡 bg:N]
+     * Colors: dark blue bg (#232637), light text (#DCE5F0) */
 
-    if (ui->status_text) {
-        const char *indicator;
-        int pair;
-        switch (ui->status) {
-            case STATUS_RUNNING:        indicator = "* "; pair = C_FOCUS; break;
-            case STATUS_AWAITING_INPUT: indicator = "? "; pair = C_FOCUS; break;
-            case STATUS_DONE:           indicator = "  "; pair = C_SELECTED; break;
-            case STATUS_ERROR:          indicator = "! "; pair = C_FAILED; break;
-            default:                    indicator = "  "; pair = C_DIM; break;
-        }
-        (void)cols;  /* status is now left-aligned */
-        wattron(win_bottom, COLOR_PAIR(pair));
-        mvwprintw(win_bottom, 0, 1, " %s%s ", indicator, ui->status_text);
-        wattroff(win_bottom, COLOR_PAIR(pair));
+    /* Build status line content */
+    char status_line[1024];
+    int slen = 0;
+
+    /* Status icon + text + select color pair */
+    const char *icon;
+    int status_pair;
+    switch (ui->status) {
+        case STATUS_RUNNING:
+            icon = "⟳";
+            status_pair = CP_STATUS_RUNNING;
+            break;
+        case STATUS_AWAITING_INPUT:
+            icon = "?";
+            status_pair = CP_STATUS_AWAIT;
+            break;
+        case STATUS_DONE:
+            icon = "✓";
+            status_pair = CP_STATUS_DONE;
+            break;
+        case STATUS_ERROR:
+            icon = "✗";
+            status_pair = CP_STATUS_ERROR;
+            break;
+        default:
+            icon = " ";
+            status_pair = CP_STATUS_READY;
+            break;
     }
 
-    /* Row 1: input prompt */
-    wattron(win_bottom, COLOR_PAIR(C_SELECTED) | A_BOLD);
-    mvwaddstr(win_bottom, 1, 0, "nash> ");
-    wattroff(win_bottom, COLOR_PAIR(C_SELECTED) | A_BOLD);
-
-    if (ui->input_buffer && ui->input_len > 0) {
-        int first_w = cols - 6;  /* first line width (after "nash> ") */
-        if (first_w < 1) first_w = 1;
-        int cont_w = cols;       /* continuation line width */
-        if (cont_w < 1) cont_w = 1;
-
-        /* Render text across wrapped lines */
-        int pos = 0;
-        int row = 1;  /* first input row */
-        int bh = getmaxy(win_bottom);
-        while (pos < ui->input_len && row < bh) {
-            int line_w = (row == 1) ? first_w : cont_w;
-            int remain = ui->input_len - pos;
-            int show = remain < line_w ? remain : line_w;
-            int col_start = (row == 1) ? 6 : 0;
-            mvwaddnstr(win_bottom, row, col_start,
-                       ui->input_buffer + pos, show);
-            pos += show;
-            row++;
-        }
+    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                     "%s ", icon);
+    if (ui->status_text && ui->status_text[0]) {
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         "%s", ui->status_text);
     }
 
-    /* Position cursor in wrapped multi-line input */
+    /* Right side: model │ ctx │ bg */
+    if (ui->model_name && ui->model_name[0]) {
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " │");
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " %s", ui->model_name);
+    }
+    if (ui->context_size > 0 && ui->context_used > 0) {
+        int ctx_pct = (int)(100.0 * ui->context_used / ui->context_size);
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " │ ctx %d%%", ctx_pct);
+    } else if (ui->context_size > 0) {
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " │ ctx 0%%");
+    }
+    if (ui->bg_jobs > 0) {
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " │ bg:%d", ui->bg_jobs);
+    }
+
+    /* Status bar: dark blue bg (#232637), light text (#DCE5F0) */
+    render_ncurses_row(win_bottom, 0, cols, status_pair, status_line);
+
+    /* ── Row 1+: Input prompt (nashell-style) ──
+     * Layout: [>][▌cursor or input text]
+     * Colors: slightly lighter dark blue bg (#191E2D), light text (#DCE5F0) */
+    int input_start_row = 1;
+
     if (ui->focus == FOCUS_QUERY) {
-        int first_w = cols - 6;
-        if (first_w < 1) first_w = 1;
-        int cont_w = cols;
-        if (cont_w < 1) cont_w = 1;
-        int crow, ccol;
-        input_pos_to_rowcol(ui->cursor_pos, first_w, cont_w, &crow, &ccol);
-        int abs_row = 1 + crow;  /* row 0 is status bar */
-        int abs_col = (crow == 0) ? 6 + ccol : ccol;
-        int bh = getmaxy(win_bottom);
-        if (abs_row >= bh) abs_row = bh - 1;
-        if (abs_col >= cols) abs_col = cols - 1;
-        wmove(win_bottom, abs_row, abs_col);
+        /* Build input line */
+        char input_line[1024];
+        int ilen = 0;
+        ilen += snprintf(input_line + ilen, sizeof(input_line) - ilen,
+                         "> ");
+
+        if (ui->input_buffer && ui->input_len > 0) {
+            int copy_len = ui->input_len;
+            if (copy_len > (int)sizeof(input_line) - ilen - 2)
+                copy_len = (int)sizeof(input_line) - ilen - 2;
+            ilen += snprintf(input_line + ilen, sizeof(input_line) - ilen,
+                             "%.*s", copy_len, ui->input_buffer);
+        }
+
+        /* Input bar: lighter dark blue bg (#191E2D), light text (#DCE5F0) */
+        render_ncurses_row(win_bottom, input_start_row, cols,
+                            CP_INPUT_ACTIVE, input_line);
+
+        /* Position cursor at the right spot */
+        int cursor_col = 2 + ui->cursor_pos;  /* "> " prefix = 2 chars */
+        int cursor_row = input_start_row;
+        if (cursor_col >= cols) {
+            /* Multi-line: wrap */
+            int cont_w = cols;
+            if (cont_w < 1) cont_w = 1;
+            cursor_row = input_start_row + 1 + (cursor_col - cols) / cont_w;
+            cursor_col = (cursor_col - cols) % cont_w;
+        }
+        if (cursor_row >= bh) cursor_row = bh - 1;
+        if (cursor_col >= cols) cursor_col = cols - 1;
+        wmove(win_bottom, cursor_row, cursor_col);
+    } else {
+        /* Not focused: show a dim prompt */
+        char dim_prompt[1024];
+        snprintf(dim_prompt, sizeof(dim_prompt), "> ");
+        render_ncurses_row(win_bottom, input_start_row, cols,
+                            CP_INPUT_DIM, dim_prompt);
+    }
+
+    /* Fill any remaining rows (for multi-line input expansion) */
+    for (int r = bh - 1; r > input_start_row; r--) {
+        render_ncurses_row(win_bottom, r, cols,
+                            CP_INPUT_ACTIVE, "");
     }
 
     wnoutrefresh(win_bottom);
