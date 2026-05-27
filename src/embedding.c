@@ -225,6 +225,182 @@ static embed_vec_t call_api(embed_ctx_t *ctx, const char *text) {
     return result;
 }
 
+/* ── Batch API support (FIX D7) ──────────────────────── */
+/* Both Ollama and OpenAI support array inputs in a single API call,
+ * reducing N HTTP round-trips to 1 for memory_embed_all(). */
+
+/* Build batch request JSON body with array input */
+static char *build_request_json_batch(embed_ctx_t *ctx, const char **texts,
+                                       int n_texts) {
+    if (!ctx || !texts || n_texts <= 0) return NULL;
+
+    cJSON *req = cJSON_CreateObject();
+    if (!req) return NULL;
+
+    const char *model_name = NULL;
+    switch (ctx->cfg.type) {
+    case EMBED_OLLAMA:
+        model_name = ctx->cfg.model ? ctx->cfg.model : "nomic-embed-text";
+        break;
+    case EMBED_OPENAI:
+        model_name = ctx->cfg.model ? ctx->cfg.model : "text-embedding-3-small";
+        break;
+    default:
+        cJSON_Delete(req);
+        return NULL;
+    }
+    cJSON_AddStringToObject(req, "model", model_name);
+
+    /* Both APIs accept "input" as an array of strings */
+    cJSON *arr = cJSON_CreateArray();
+    for (int i = 0; i < n_texts; i++) {
+        cJSON_AddItemToArray(arr, cJSON_CreateString(texts[i] ? texts[i] : ""));
+    }
+    cJSON_AddItemToObject(req, "input", arr);
+
+    char *json = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    return json;
+}
+
+/* Parse batch response — returns array of embed_vec_t (caller frees each + array) */
+static embed_vec_t *parse_response_batch(embed_ctx_t *ctx, const char *response,
+                                          int n_expected, int *out_count) {
+    *out_count = 0;
+    if (!ctx || !response) return NULL;
+
+    cJSON *root = cJSON_Parse(response);
+    if (!root) return NULL;
+
+    embed_vec_t *results = calloc((size_t)n_expected, sizeof(embed_vec_t));
+    if (!results) { cJSON_Delete(root); return NULL; }
+
+    switch (ctx->cfg.type) {
+    case EMBED_OLLAMA: {
+        /* Ollama batch response: {"embeddings": [[...], [...], ...]} */
+        cJSON *embeddings = cJSON_GetObjectItem(root, "embeddings");
+        if (embeddings && cJSON_IsArray(embeddings)) {
+            int n = cJSON_GetArraySize(embeddings);
+            if (n > n_expected) n = n_expected;
+            for (int i = 0; i < n; i++) {
+                cJSON *vec = cJSON_GetArrayItem(embeddings, i);
+                if (vec && cJSON_IsArray(vec)) {
+                    int dim = cJSON_GetArraySize(vec);
+                    if (dim > 0) {
+                        results[i].data = malloc(sizeof(float) * (size_t)dim);
+                        results[i].dim = dim;
+                        if (results[i].data) {
+                            for (int j = 0; j < dim; j++) {
+                                cJSON *v = cJSON_GetArrayItem(vec, j);
+                                results[i].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
+                            }
+                        }
+                    }
+                }
+            }
+            *out_count = n;
+        }
+        break;
+    }
+    case EMBED_OPENAI: {
+        /* OpenAI batch response: {"data": [{"embedding": [...], "index": 0}, ...]}
+         * Note: OpenAI may return results out of order — use "index" field. */
+        cJSON *data = cJSON_GetObjectItem(root, "data");
+        if (data && cJSON_IsArray(data)) {
+            int n = cJSON_GetArraySize(data);
+            if (n > n_expected) n = n_expected;
+            for (int i = 0; i < n; i++) {
+                cJSON *item = cJSON_GetArrayItem(data, i);
+                if (!item) continue;
+                /* Use "index" field for correct ordering */
+                int idx = i;
+                cJSON *idx_j = cJSON_GetObjectItem(item, "index");
+                if (idx_j) idx = (int)cJSON_GetNumberValue(idx_j);
+                if (idx < 0 || idx >= n_expected) continue;
+
+                cJSON *emb = cJSON_GetObjectItem(item, "embedding");
+                if (emb && cJSON_IsArray(emb)) {
+                    int dim = cJSON_GetArraySize(emb);
+                    if (dim > 0) {
+                        results[idx].data = malloc(sizeof(float) * (size_t)dim);
+                        results[idx].dim = dim;
+                        if (results[idx].data) {
+                            for (int j = 0; j < dim; j++) {
+                                cJSON *v = cJSON_GetArrayItem(emb, j);
+                                results[idx].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
+                            }
+                        }
+                    }
+                }
+            }
+            *out_count = n;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    cJSON_Delete(root);
+    return results;
+}
+
+/* Make batch HTTP POST request to embedding API.
+ * Sends all texts in a single API call. Returns array of embed_vec_t.
+ * Caller must free each vec with embed_vec_free() and the array with free(). */
+static embed_vec_t *call_api_batch(embed_ctx_t *ctx, const char **texts,
+                                    int n_texts, int *out_count) {
+    *out_count = 0;
+    if (!ctx || !texts || n_texts <= 0 || ctx->cfg.type == EMBED_NONE) return NULL;
+
+    char *url = build_url(ctx);
+    char *body = build_request_json_batch(ctx, texts, n_texts);
+    if (!url || !body) {
+        free(url);
+        free(body);
+        return NULL;
+    }
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        free(url);
+        free(body);
+        return NULL;
+    }
+
+    curl_buf_t response = {0};
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    /* Longer timeout for batch requests — may have many texts */
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    embed_vec_t *results = NULL;
+    if (res == CURLE_OK && response.data) {
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        if (http_code == 200) {
+            results = parse_response_batch(ctx, response.data, n_texts, out_count);
+        }
+    }
+
+    free(response.data);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(url);
+    free(body);
+
+    return results;
+}
+
 /* ── public API ──────────────────────────────────────── */
 
 int embed_probe(embed_ctx_t *ctx) {
@@ -378,20 +554,53 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
     if (!ctx || !texts || n_texts <= 0 || !out_count) return NULL;
     *out_count = 0;
 
+    /* FIX D7: Use native batch API for Ollama/OpenAI backends.
+     * Both support array inputs in a single HTTP call, reducing
+     * N round-trips to 1 (or ceil(N/BATCH_SIZE) for large sets).
+     * ONNX backend falls through to sequential (no batch API). */
+    if ((ctx->cfg.type == EMBED_OLLAMA || ctx->cfg.type == EMBED_OPENAI)
+        && ctx->available) {
+        /* Process in chunks of up to 64 texts to avoid oversized requests */
+        const int BATCH_SIZE = 64;
+        embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
+        if (!results) return NULL;
+
+        int total_received = 0;
+        for (int offset = 0; offset < n_texts; offset += BATCH_SIZE) {
+            int chunk = n_texts - offset;
+            if (chunk > BATCH_SIZE) chunk = BATCH_SIZE;
+
+            int chunk_count = 0;
+            embed_vec_t *chunk_results = call_api_batch(ctx, texts + offset,
+                                                        chunk, &chunk_count);
+            if (chunk_results) {
+                for (int i = 0; i < chunk && i < chunk_count; i++) {
+                    results[offset + i] = chunk_results[i];
+                    if (chunk_results[i].data) total_received++;
+                }
+                free(chunk_results);  /* array only — vecs moved to results */
+            } else {
+                /* Batch call failed — fall back to sequential for this chunk */
+                fprintf(stderr, "[embed] batch API failed for chunk %d-%d, "
+                        "falling back to sequential\n", offset, offset + chunk);
+                for (int i = 0; i < chunk; i++) {
+                    results[offset + i] = embed_text(ctx, texts[offset + i]);
+                    if (results[offset + i].data) total_received++;
+                }
+            }
+        }
+        *out_count = n_texts;
+        return results;
+    }
+
+    /* Sequential fallback for ONNX and other backends */
     embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
     if (!results) return NULL;
 
-    /* FIX #15: Sequential fallback — each backend can optimize with batch
-     * API calls in the future (e.g., Ollama supports batch input arrays,
-     * OpenAI supports array inputs in /v1/embeddings). */
-    int count = 0;
     for (int i = 0; i < n_texts; i++) {
         results[i] = embed_text(ctx, texts[i]);
-        if (results[i].data && results[i].dim > 0) {
-            count++;
-        }
     }
-    *out_count = n_texts;  /* all slots populated (some may have data=NULL) */
+    *out_count = n_texts;
     return results;
 }
 

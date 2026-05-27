@@ -30,6 +30,14 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
  * Caller must free returned string. */
 char *journal_manifest(journal_t *j, int max_steps);
 
+/* FIX D8: Build a manifest filtered to only show steps from `min_step` onwards
+ * within the current react loop `react_loop`. Earlier steps get a compact
+ * summary line instead of full entries. This prevents the model from seeing
+ * detailed references to evicted context it can no longer access.
+ * Caller must free returned string. */
+char *journal_manifest_filtered(journal_t *j, int max_steps,
+                                 int react_loop, int min_step);
+
 /* Scan journal.jsonl and return the highest react_loop value found.
  * Returns -1 if the journal is empty or doesn't exist.
  * Used to continue react_loop numbering when reopening an existing session. */

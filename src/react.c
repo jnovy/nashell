@@ -1050,8 +1050,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                     }
 
-                    /* Re-inject fresh manifest at position keep_head */
-                    char *fresh_manifest = journal_manifest(ctx->tools->journal, 50);
+                    /* FIX D8: Re-inject manifest filtered to exclude evicted steps.
+                     * Evicted steps' refs are still resolvable via file_read, but
+                     * showing them in the manifest confuses the model since it can't
+                     * relate them to any context. Use journal_manifest_filtered()
+                     * to collapse evicted steps into "[N earlier steps evicted]". */
+                    int evicted_steps = (evict_end - evict_start) / 2;  /* ~2 msgs per step */
+                    int min_step_for_manifest = step + 1 - keep_tail / 2;
+                    if (min_step_for_manifest < 1) min_step_for_manifest = 1;
+                    char *fresh_manifest = journal_manifest_filtered(
+                        ctx->tools->journal, 50,
+                        ctx->tools->react_loop, min_step_for_manifest);
+                    (void)evicted_steps;  /* used for documentation clarity */
                     if (fresh_manifest) {
                         /* Insert manifest as a new message at keep_head */
                         if (chat->n_msgs >= chat->cap_msgs) {

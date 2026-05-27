@@ -160,6 +160,124 @@ char *journal_manifest(journal_t *j, int max_steps) {
     return str_steal(&out);
 }
 
+/* FIX D8: Build a manifest that collapses evicted steps into a summary.
+ * Steps in the target react_loop with step < min_step are shown as a
+ * single "[N earlier steps evicted from context]" line. This prevents
+ * the model from trying to reference detailed step info that was evicted. */
+char *journal_manifest_filtered(journal_t *j, int max_steps,
+                                 int target_loop, int min_step) {
+    FILE *f = fopen(j->path, "r");
+    if (!f) return strdup("Session history: (empty — new session)");
+    flock(fileno(f), LOCK_SH);
+
+    str_t out = str_new(2048);
+    str_append_cstr(&out, "Session history:\n");
+
+    char line[65536];
+    int count = 0;
+    int current_loop = -1;
+    int evicted_count = 0;  /* count of evicted steps in target_loop */
+
+    while (fgets(line, sizeof(line), f) && count < max_steps) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+
+        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
+        int step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
+        const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+        const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
+        double sz = cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+
+        /* New react loop — show header with query text */
+        if (loop != current_loop) {
+            /* Flush evicted count from previous loop */
+            if (evicted_count > 0) {
+                str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
+                            evicted_count);
+                evicted_count = 0;
+            }
+            current_loop = loop;
+            if (loop > 0) str_append_cstr(&out, "\n");
+            str_appendf(&out, "  [Query R%d]", loop);
+
+            if (tool && strcmp(tool, "query") == 0 && params) {
+                cJSON *text = cJSON_GetObjectItem(params, "text");
+                if (text && text->valuestring) {
+                    char truncated[101];
+                    utf8_truncate(truncated, text->valuestring, 100);
+                    str_appendf(&out, " \"%s\"", truncated);
+                }
+            }
+            str_append_cstr(&out, "\n");
+        }
+
+        /* Skip system and query entries (already shown in header) */
+        if (tool && (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0)) {
+            cJSON_Delete(entry);
+            count++;
+            continue;
+        }
+
+        /* FIX D8: For steps in the target loop that are below min_step,
+         * just count them — they were evicted from context */
+        if (loop == target_loop && step > 0 && step < min_step) {
+            evicted_count++;
+            cJSON_Delete(entry);
+            count++;
+            continue;
+        }
+
+        /* Extract key param for display */
+        const char *key_param = "";
+        if (params) {
+            cJSON *cmd = cJSON_GetObjectItem(params, "command");
+            cJSON *p = cJSON_GetObjectItem(params, "path");
+            cJSON *pat = cJSON_GetObjectItem(params, "pattern");
+            cJSON *res = cJSON_GetObjectItem(params, "result");
+            if (cmd && cmd->valuestring) key_param = cmd->valuestring;
+            else if (p && p->valuestring) key_param = p->valuestring;
+            else if (pat && pat->valuestring) key_param = pat->valuestring;
+            else if (res && res->valuestring) key_param = res->valuestring;
+        }
+
+        char buf[512];
+        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
+        int failed = (failed_j && cJSON_IsTrue(failed_j));
+        const char *mark = failed ? "x" : "+";
+
+        char kp[101];
+        utf8_truncate(kp, key_param, 80);
+
+        if (tool && strcmp(tool, "done") == 0) {
+            char kp_done[101];
+            utf8_truncate(kp_done, key_param, 100);
+            snprintf(buf, sizeof(buf), "    %s %s: -> \"%s\"",
+                     mark, ref ? ref : "?", kp_done);
+        } else if (failed) {
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\"",
+                     mark, ref ? ref : "?", tool ? tool : "?", kp);
+        } else {
+            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\" -> %d chars",
+                     mark, ref ? ref : "?", tool ? tool : "?", kp, (int)sz);
+        }
+        str_append_cstr(&out, buf);
+        str_append_cstr(&out, "\n");
+
+        cJSON_Delete(entry);
+        count++;
+    }
+
+    /* Flush final evicted count */
+    if (evicted_count > 0) {
+        str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
+                    evicted_count);
+    }
+
+    fclose(f);
+    return str_steal(&out);
+}
+
 /* Scan journal.jsonl and return the highest react_loop value found.
  * Returns -1 if the journal is empty or doesn't exist. */
 int journal_max_react_loop(journal_t *j) {

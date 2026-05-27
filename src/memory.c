@@ -1103,7 +1103,20 @@ int memory_embed_all(memory_t *m) {
     DIR *dir = opendir(m->dir);
     if (!dir) return 0;
 
-    int embedded = 0;
+    /* FIX D7: Collect all entries needing embedding, then use batch API.
+     * This reduces N HTTP round-trips to ceil(N/64) for Ollama/OpenAI. */
+
+    /* Phase 1: Scan for entries needing (re)embedding */
+    typedef struct {
+        char *prepared_text;   /* text ready for embedding */
+        char *emb_path;        /* destination .emb file path */
+    } pending_embed_t;
+
+    int pending_cap = 64;
+    int pending_count = 0;
+    pending_embed_t *pending = malloc(sizeof(pending_embed_t) * (size_t)pending_cap);
+    if (!pending) { closedir(dir); return 0; }
+
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
@@ -1174,13 +1187,71 @@ int memory_embed_all(memory_t *m) {
             }
         }
 
-        if (memory_embed_entry(m, ekey, eval, tag_strs, nt) == 0)
-            embedded++;
-
+        /* Prepare text for embedding */
+        char *prep = embed_prepare_text(ekey, eval, tag_strs, nt, 2000);
         free(tag_strs);
         cJSON_Delete(entry);
+
+        if (!prep) continue;
+
+        /* Grow pending array if needed */
+        if (pending_count >= pending_cap) {
+            pending_cap *= 2;
+            pending_embed_t *tmp = realloc(pending,
+                sizeof(pending_embed_t) * (size_t)pending_cap);
+            if (!tmp) { free(prep); break; }
+            pending = tmp;
+        }
+
+        pending[pending_count].prepared_text = prep;
+        pending[pending_count].emb_path = strdup(emb_path);
+        pending_count++;
     }
     closedir(dir);
+
+    if (pending_count == 0) {
+        free(pending);
+        return 0;
+    }
+
+    /* Phase 2: Batch embed all pending texts */
+    const char **texts = malloc(sizeof(char *) * (size_t)pending_count);
+    if (!texts) {
+        for (int i = 0; i < pending_count; i++) {
+            free(pending[i].prepared_text);
+            free(pending[i].emb_path);
+        }
+        free(pending);
+        return 0;
+    }
+    for (int i = 0; i < pending_count; i++) {
+        texts[i] = pending[i].prepared_text;
+    }
+
+    int out_count = 0;
+    embed_vec_t *results = embed_text_batch(m->embed, texts, pending_count,
+                                             &out_count);
+    free(texts);
+
+    /* Phase 3: Save results to .emb files */
+    int embedded = 0;
+    if (results) {
+        for (int i = 0; i < pending_count && i < out_count; i++) {
+            if (results[i].data && results[i].dim > 0) {
+                if (embed_vec_save(&results[i], pending[i].emb_path) == 0)
+                    embedded++;
+            }
+            embed_vec_free(&results[i]);
+        }
+        free(results);
+    }
+
+    /* Cleanup */
+    for (int i = 0; i < pending_count; i++) {
+        free(pending[i].prepared_text);
+        free(pending[i].emb_path);
+    }
+    free(pending);
 
     return embedded;
 }
