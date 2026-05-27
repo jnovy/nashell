@@ -92,6 +92,9 @@ typedef struct {
     /* Memory pruning (Bayesian validation scoring) */
     double prune_min_score;      /* validation score threshold (default 0.35) */
     int    prune_min_evidence;   /* minimum recalls before pruning (default 3) */
+    float  consolidation_threshold; /* MaxSim cosine threshold for near-duplicate
+                                     * consolidation (default 0.82). Range 0.80-0.90
+                                     * in IR literature; model-specific. */
 
     /* P0: Memory recall quality gate — score threshold for injection.
      * Memories scoring below this threshold are NOT injected, implementing

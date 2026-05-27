@@ -53,6 +53,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
     if (cfg->prune_min_score <= 0)      cfg->prune_min_score = 0.35;
     if (cfg->prune_min_evidence <= 0)   cfg->prune_min_evidence = 3;
+    if (cfg->consolidation_threshold <= 0) cfg->consolidation_threshold = 0.82f;
     /* P0: recall_min_score default 0.15 — memories below this composite
      * score are not injected. See config.h for research basis. */
     if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
@@ -202,6 +203,7 @@ config_t *config_load(const char *path) {
         cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
         cfg->prune_min_score    = toml_dbl(limits, "prune_min_score", 0);
         cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
+        cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);
         cfg->recall_min_score   = toml_dbl(limits, "recall_min_score", 0);
         cfg->memory_synthesis   = toml_bl(limits, "memory_synthesis", 0);
     }
@@ -356,6 +358,7 @@ int config_write_default(const char *path) {
         "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
         "prune_min_score = 0.35       # Bayesian validation score below which memories are prunable\n"
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
+        "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
         "memory_synthesis = false     # P2: query-time memory synthesis via extra LLM call\n"
         "\n"

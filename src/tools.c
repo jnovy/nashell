@@ -1222,11 +1222,16 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     char best_key[256] = "";
     char best_path[4096] = "";
     float best_sim = 0.0f;
-    /* D3: Restore threshold to 0.82 — the 0.72 value was too aggressive,
-     * merging entries that are related but semantically distinct (e.g.,
-     * "strategy:github-raw-urls" vs "strategy:curl-raw-github" — one is
-     * about URL construction, the other about tool choice). */
-    const float CONSOLIDATION_THRESHOLD = 0.82f;
+    /* Consolidation threshold: cosine similarity above which two memories
+     * are considered near-duplicates and merged. 0.82 is conservative —
+     * only genuinely redundant entries trigger consolidation.
+     * Configurable via config.toml [limits] consolidation_threshold.
+     *
+     * Research basis: IR literature places "semantically equivalent"
+     * text at cosine similarity 0.80-0.90 depending on embedding model.
+     * See also: MemForest [arXiv:2605.23986] for temporal dedup. */
+    const float consolidation_threshold =
+        ctx->cfg ? ctx->cfg->consolidation_threshold : 0.82f;
 
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
@@ -1259,7 +1264,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         float sim = embed_cosine_sim_multi_multi(&new_emb, &other_emb);
         embed_multi_vec_free(&other_emb);
 
-        if (sim > best_sim && sim > CONSOLIDATION_THRESHOLD) {
+        if (sim > best_sim && sim > consolidation_threshold) {
             best_sim = sim;
             snprintf(best_key, sizeof(best_key), "%s", emb_base);
             /* Derive JSON path from emb path */
