@@ -79,8 +79,12 @@ static cJSON *build_tools_local(void) {
         "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Numbered plan\"}},\"required\":[\"result\"]}");
 
     ADD_TOOL("notes",
-        "Persistent scratchpad that survives context compaction.",
-        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content\"}},\"required\":[\"content\"]}");
+        "Persistent scratchpad that survives context compaction. "
+        "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N), "
+        "notes(op=\"append\", section=\"name\", content=\"...\"), "
+        "notes(op=\"clear\", section=\"name\"), notes(op=\"list\"). "
+        "Legacy: notes(content=\"...\") still works. Priority 1=highest, 9=lowest (default 5).",
+        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Scratchpad content\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name\"},\"priority\":{\"type\":\"integer\",\"description\":\"Priority 1-9 (default 5)\"}}}");
 
     #undef ADD_TOOL
     return tools;

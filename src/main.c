@@ -420,12 +420,17 @@ int main(int argc, char **argv) {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .cfg = cfg,
+            .cfg = cfg, .llm = &llm_cfg,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
+        scratchpad_init(&tools.scratch);
         /* Load scratchpad from previous session if it exists */
-        {
+        if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
+            /* Section-based scratchpad loaded — generate legacy string */
+            tools.scratchpad = scratchpad_serialize(&tools.scratch);
+        } else {
+            /* Try legacy format */
             char sp_path[4096];
             snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
             FILE *spf = fopen(sp_path, "r");
@@ -453,6 +458,7 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         tools.react_loop++;  /* increment for next query */
         if (tools.scratchpad) free(tools.scratchpad);
+        scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
         free(session_dir);
@@ -498,12 +504,15 @@ int main(int argc, char **argv) {
             .store = shared_store, .journal = journal,
             .memory = memory,
             .session_dir = session_dir, .scratchpad = NULL,
-            .cfg = cfg,
+            .cfg = cfg, .llm = &llm_cfg,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
+        scratchpad_init(&tools.scratch);
         /* Load scratchpad from previous session if it exists */
-        {
+        if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
+            tools.scratchpad = scratchpad_serialize(&tools.scratch);
+        } else {
             char sp_path[4096];
             snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
             FILE *spf = fopen(sp_path, "r");
@@ -699,10 +708,11 @@ int main(int argc, char **argv) {
                         .memory = memory,
                         .session_dir = dream_dir,
                         .scratchpad = NULL,
-                        .cfg = cfg,
+                        .cfg = cfg, .llm = &llm_cfg,
                         .react_loop = 0,
                         .aliases = alias_map_new(),
                     };
+                    scratchpad_init(&dream_tools.scratch);
                     react_ctx_t dream_react = {
                         .provider = provider,
                         .llm = &llm_cfg,
@@ -779,6 +789,7 @@ int main(int argc, char **argv) {
                     /* Cleanup dream session */
                     free(dream_result);
                     if (dream_tools.scratchpad) free(dream_tools.scratchpad);
+                    scratchpad_free(&dream_tools.scratch);
                     alias_map_free(dream_tools.aliases);
                     journal_free(dream_journal);
                     free(dream_dir);
@@ -839,6 +850,7 @@ int main(int argc, char **argv) {
         ui_state_free(ui);
 
         if (tools.scratchpad) free(tools.scratchpad);
+        scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
         free(session_dir);

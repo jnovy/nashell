@@ -721,40 +721,474 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     return make_result(1, meta, ref_copy);
 }
 
-/* ── notes (scratchpad) ──────────────────────────────── */
+/* ── scratchpad section operations (GDN-2 inspired) ─── */
+
+void scratchpad_init(scratchpad_t *sp) {
+    memset(sp, 0, sizeof(*sp));
+}
+
+void scratchpad_free(scratchpad_t *sp) {
+    for (int i = 0; i < sp->count; i++) {
+        free(sp->sections[i].name);
+        free(sp->sections[i].content);
+    }
+    sp->count = 0;
+}
+
+int scratchpad_find(scratchpad_t *sp, const char *name) {
+    for (int i = 0; i < sp->count; i++) {
+        if (strcmp(sp->sections[i].name, name) == 0)
+            return i;
+    }
+    return -1;
+}
+
+int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, int priority) {
+    if (priority < 1) priority = 1;
+    if (priority > 9) priority = 9;
+
+    int idx = scratchpad_find(sp, name);
+    if (idx >= 0) {
+        /* Overwrite existing section */
+        free(sp->sections[idx].content);
+        sp->sections[idx].content = strdup(content);
+        sp->sections[idx].priority = priority;
+        return 0;
+    }
+    if (sp->count >= SCRATCHPAD_MAX_SECTIONS)
+        return -1;  /* full */
+
+    sp->sections[sp->count].name = strdup(name);
+    sp->sections[sp->count].content = strdup(content);
+    sp->sections[sp->count].priority = priority;
+    sp->count++;
+    return 0;
+}
+
+int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, int priority) {
+    int idx = scratchpad_find(sp, name);
+    if (idx >= 0) {
+        /* Append to existing */
+        size_t old_len = strlen(sp->sections[idx].content);
+        size_t add_len = strlen(content);
+        char *combined = malloc(old_len + add_len + 2);  /* +newline+nul */
+        if (!combined) return -1;
+        memcpy(combined, sp->sections[idx].content, old_len);
+        combined[old_len] = '\n';
+        memcpy(combined + old_len + 1, content, add_len);
+        combined[old_len + 1 + add_len] = '\0';
+        free(sp->sections[idx].content);
+        sp->sections[idx].content = combined;
+        return 0;
+    }
+    /* Create new section */
+    return scratchpad_write(sp, name, content, priority);
+}
+
+int scratchpad_clear(scratchpad_t *sp, const char *name) {
+    int idx = scratchpad_find(sp, name);
+    if (idx < 0) return -1;
+
+    free(sp->sections[idx].name);
+    free(sp->sections[idx].content);
+
+    /* Shift remaining sections down */
+    for (int i = idx; i < sp->count - 1; i++)
+        sp->sections[i] = sp->sections[i + 1];
+    sp->count--;
+    return 0;
+}
+
+/* Compare sections by priority for qsort (lower priority number = first) */
+static int section_cmp(const void *a, const void *b) {
+    const scratchpad_section_t *sa = a;
+    const scratchpad_section_t *sb = b;
+    return sa->priority - sb->priority;
+}
+
+char *scratchpad_serialize(scratchpad_t *sp) {
+    if (sp->count == 0) return NULL;
+
+    /* Sort by priority */
+    scratchpad_section_t sorted[SCRATCHPAD_MAX_SECTIONS];
+    memcpy(sorted, sp->sections, sp->count * sizeof(scratchpad_section_t));
+    qsort(sorted, sp->count, sizeof(scratchpad_section_t), section_cmp);
+
+    str_t out = str_new(2048);
+    for (int i = 0; i < sp->count; i++) {
+        str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
+    }
+    return str_steal(&out);
+}
+
+char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
+    if (sp->count == 0) return NULL;
+
+    /* Sort by priority (ascending = highest priority first) */
+    scratchpad_section_t sorted[SCRATCHPAD_MAX_SECTIONS];
+    memcpy(sorted, sp->sections, sp->count * sizeof(scratchpad_section_t));
+    qsort(sorted, sp->count, sizeof(scratchpad_section_t), section_cmp);
+
+    str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
+    for (int i = 0; i < sp->count; i++) {
+        /* Calculate how much space this section needs */
+        size_t header_len = strlen(sorted[i].name) + 6;  /* "## " + name + "\n" + trailing "\n\n" */
+        size_t content_len = strlen(sorted[i].content);
+        size_t section_total = header_len + content_len;
+        size_t remaining = (max_chars > out.len) ? (max_chars - out.len) : 0;
+
+        if (remaining < header_len + 20) {
+            /* Not enough room even for a header + minimal content — drop this and all lower-priority */
+            break;
+        }
+
+        str_appendf(&out, "## %s\n", sorted[i].name);
+
+        if (section_total <= remaining) {
+            /* Fits fully */
+            str_append_cstr(&out, sorted[i].content);
+        } else {
+            /* Truncate content to fit budget */
+            size_t avail = remaining - header_len - 15;  /* room for "\n[truncated]" */
+            str_append(&out, sorted[i].content, avail);
+            str_append_cstr(&out, "\n[truncated]");
+        }
+        str_append_cstr(&out, "\n\n");
+    }
+
+    if (out.len == 0) {
+        str_free(&out);
+        return NULL;
+    }
+    return str_steal(&out);
+}
+
+int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
+    if (!session_dir) return -1;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
+
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+
+    for (int i = 0; i < sp->count; i++) {
+        fprintf(f, "<!-- priority:%d -->\n## %s\n%s\n\n",
+                sp->sections[i].priority, sp->sections[i].name,
+                sp->sections[i].content);
+    }
+    fclose(f);
+    return 0;
+}
+
+int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
+    if (!session_dir) return -1;
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return 0; }
+
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return -1; }
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+
+    /* Parse sections from the file format:
+     * <!-- priority:N -->
+     * ## section_name
+     * content...
+     */
+    scratchpad_free(sp);  /* clear any existing sections */
+
+    char *pos = buf;
+    while (pos && *pos) {
+        int priority = 5;  /* default */
+
+        /* Look for priority comment */
+        if (strncmp(pos, "<!-- priority:", 14) == 0) {
+            priority = atoi(pos + 14);
+            if (priority < 1) priority = 1;
+            if (priority > 9) priority = 9;
+            pos = strchr(pos, '\n');
+            if (pos) pos++;
+        }
+
+        /* Look for ## header */
+        if (!pos || strncmp(pos, "## ", 3) != 0) {
+            /* Skip to next line */
+            pos = strchr(pos, '\n');
+            if (pos) pos++;
+            continue;
+        }
+
+        /* Extract section name */
+        const char *name_start = pos + 3;
+        const char *name_end = strchr(name_start, '\n');
+        if (!name_end) break;
+
+        char name[256];
+        size_t nlen = (size_t)(name_end - name_start);
+        if (nlen >= sizeof(name)) nlen = sizeof(name) - 1;
+        memcpy(name, name_start, nlen);
+        name[nlen] = '\0';
+
+        /* Extract content until next "<!-- priority:" or "## " or EOF */
+        const char *content_start = name_end + 1;
+        const char *content_end = NULL;
+
+        /* Scan forward for next section marker */
+        const char *scan = content_start;
+        while (*scan) {
+            if (strncmp(scan, "<!-- priority:", 14) == 0 ||
+                (strncmp(scan, "## ", 3) == 0 && (scan == buf || *(scan-1) == '\n'))) {
+                content_end = scan;
+                break;
+            }
+            scan++;
+        }
+        if (!content_end) content_end = buf + sz;
+
+        /* Trim trailing whitespace from content */
+        while (content_end > content_start &&
+               (*(content_end-1) == '\n' || *(content_end-1) == ' '))
+            content_end--;
+
+        size_t clen = (size_t)(content_end - content_start);
+        char *content = malloc(clen + 1);
+        if (content) {
+            memcpy(content, content_start, clen);
+            content[clen] = '\0';
+            scratchpad_write(sp, name, content, priority);
+            free(content);
+        }
+
+        pos = (char *)content_end;
+        /* Skip whitespace between sections */
+        while (*pos == '\n' || *pos == ' ') pos++;
+    }
+
+    free(buf);
+    return 0;
+}
+
+/* ── notes (section-based scratchpad) ────────────────── */
+
+static void scratchpad_sync_legacy(tool_ctx_t *ctx) {
+    /* Update legacy scratchpad string from sections */
+    if (ctx->scratchpad) { free(ctx->scratchpad); ctx->scratchpad = NULL; }
+    ctx->scratchpad = scratchpad_serialize(&ctx->scratch);
+    /* Persist to disk */
+    scratchpad_save(&ctx->scratch, ctx->session_dir);
+}
 
 static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     cJSON *content_j = cJSON_GetObjectItem(params, "content");
-    if (!content_j || !content_j->valuestring)
-        return make_error("missing 'content' parameter");
 
-    /* Update scratchpad */
-    if (ctx->scratchpad) free(ctx->scratchpad);
-    ctx->scratchpad = strdup(content_j->valuestring);
+    /* ── Legacy mode: notes(content="...") ── */
+    /* If only 'content' is provided (no 'op'), treat as legacy full-replacement.
+     * This maintains backward compatibility with existing prompts/models. */
+    cJSON *op_j = cJSON_GetObjectItem(params, "op");
+    if (!op_j && content_j && content_j->valuestring) {
+        /* Parse content for section headers (## name) and split into sections */
+        const char *text = content_j->valuestring;
+        const char *p = text;
+        int found_sections = 0;
 
-    /* Persist to disk */
-    char scratch_path[512];
-    snprintf(scratch_path, sizeof(scratch_path), "%s/scratchpad.md", ctx->session_dir);
-    FILE *f = fopen(scratch_path, "w");
-    if (f) {
-        fputs(ctx->scratchpad, f);
-        fclose(f);
+        /* Quick scan: does the content contain "## " section headers? */
+        if (strstr(text, "\n## ") || strncmp(text, "## ", 3) == 0) {
+            /* Parse structured content into sections */
+            scratchpad_free(&ctx->scratch);
+
+            while (p && *p) {
+                if (strncmp(p, "## ", 3) == 0 || (p > text && strncmp(p, "\n## ", 4) == 0)) {
+                    if (*p == '\n') p++;
+                    const char *hdr = p + 3;
+                    const char *hdr_end = strchr(hdr, '\n');
+                    if (!hdr_end) hdr_end = hdr + strlen(hdr);
+
+                    char sec_name[256];
+                    size_t nlen = (size_t)(hdr_end - hdr);
+                    if (nlen >= sizeof(sec_name)) nlen = sizeof(sec_name) - 1;
+                    memcpy(sec_name, hdr, nlen);
+                    sec_name[nlen] = '\0';
+
+                    const char *body = (*hdr_end) ? hdr_end + 1 : hdr_end;
+                    /* Find end of section (next ## or end) */
+                    const char *body_end = strstr(body, "\n## ");
+                    if (!body_end) body_end = body + strlen(body);
+
+                    /* Trim trailing whitespace */
+                    while (body_end > body && (*(body_end-1) == '\n' || *(body_end-1) == ' '))
+                        body_end--;
+
+                    size_t blen = (size_t)(body_end - body);
+                    char *sec_content = malloc(blen + 1);
+                    if (sec_content) {
+                        memcpy(sec_content, body, blen);
+                        sec_content[blen] = '\0';
+                        scratchpad_write(&ctx->scratch, sec_name, sec_content, 5);
+                        free(sec_content);
+                        found_sections++;
+                    }
+
+                    p = (body_end < body + strlen(body)) ? strstr(body, "\n## ") : NULL;
+                    if (!p) break;
+                } else {
+                    p = strstr(p, "\n## ");
+                }
+            }
+        }
+
+        if (!found_sections) {
+            /* No section headers — store as single "default" section */
+            scratchpad_free(&ctx->scratch);
+            scratchpad_write(&ctx->scratch, "default", text, 5);
+        }
+
+        scratchpad_sync_legacy(ctx);
+
+        char *full = scratchpad_serialize(&ctx->scratch);
+        char *hash = store_save(ctx->store, full ? full : "");
+        const char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "status", "ok");
+        cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
+        cJSON_AddStringToObject(meta, "ref", alias);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
+                       full ? strlen(full) : 0, 0, NULL, NULL);
+
+        char *ref_copy = strdup(alias);
+        free(hash);
+        free(full);
+        return make_result(1, meta, ref_copy);
     }
 
-    /* Store for audit */
-    char *hash = store_save(ctx->store, ctx->scratchpad);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    /* ── Section-based mode: notes(op, section, content, priority) ── */
+    if (!op_j || !op_j->valuestring)
+        return make_error("missing 'op' parameter (write|append|read|clear|list) or 'content' for legacy mode");
 
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "ok");
-    cJSON_AddStringToObject(meta, "ref", alias);
+    const char *op = op_j->valuestring;
+    cJSON *section_j = cJSON_GetObjectItem(params, "section");
+    const char *section = section_j && section_j->valuestring ? section_j->valuestring : NULL;
+    const char *content = content_j && content_j->valuestring ? content_j->valuestring : NULL;
+    cJSON *priority_j = cJSON_GetObjectItem(params, "priority");
+    int priority = priority_j ? (int)cJSON_GetNumberValue(priority_j) : 5;
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
-                   strlen(ctx->scratchpad), 0, NULL, NULL);
+    if (strcmp(op, "write") == 0) {
+        if (!section) return make_error("'write' requires 'section' parameter");
+        if (!content) return make_error("'write' requires 'content' parameter");
 
-    char *ref_copy = strdup(alias);
-    free(hash);
-    return make_result(1, meta, ref_copy);
+        int rc = scratchpad_write(&ctx->scratch, section, content, priority);
+        if (rc != 0) return make_error("scratchpad full (max 32 sections)");
+
+        scratchpad_sync_legacy(ctx);
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "status", "ok");
+        cJSON_AddStringToObject(meta, "op", "write");
+        cJSON_AddStringToObject(meta, "section", section);
+        cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+                       strlen(content), 0, NULL, NULL);
+        return make_result(1, meta, NULL);
+
+    } else if (strcmp(op, "append") == 0) {
+        if (!section) return make_error("'append' requires 'section' parameter");
+        if (!content) return make_error("'append' requires 'content' parameter");
+
+        int rc = scratchpad_append(&ctx->scratch, section, content, priority);
+        if (rc != 0) return make_error("scratchpad full");
+
+        scratchpad_sync_legacy(ctx);
+
+        int idx = scratchpad_find(&ctx->scratch, section);
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "status", "ok");
+        cJSON_AddStringToObject(meta, "op", "append");
+        cJSON_AddStringToObject(meta, "section", section);
+        cJSON_AddNumberToObject(meta, "total_chars",
+                                idx >= 0 ? (double)strlen(ctx->scratch.sections[idx].content) : 0);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+                       strlen(content), 0, NULL, NULL);
+        return make_result(1, meta, NULL);
+
+    } else if (strcmp(op, "read") == 0) {
+        if (!section) return make_error("'read' requires 'section' parameter");
+
+        int idx = scratchpad_find(&ctx->scratch, section);
+        if (idx < 0) return make_error("section not found");
+
+        const char *sec_content = ctx->scratch.sections[idx].content;
+        char *hash = store_save(ctx->store, sec_content);
+        const char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "section", section);
+        cJSON_AddNumberToObject(meta, "chars", (double)strlen(sec_content));
+        cJSON_AddNumberToObject(meta, "priority", ctx->scratch.sections[idx].priority);
+        cJSON_AddStringToObject(meta, "ref", alias);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
+                       strlen(sec_content), 0, NULL, NULL);
+
+        char *ref_copy = strdup(alias);
+        free(hash);
+        return make_result(1, meta, ref_copy);
+
+    } else if (strcmp(op, "clear") == 0) {
+        if (!section) return make_error("'clear' requires 'section' parameter");
+
+        int rc = scratchpad_clear(&ctx->scratch, section);
+        if (rc != 0) return make_error("section not found");
+
+        scratchpad_sync_legacy(ctx);
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "status", "ok");
+        cJSON_AddStringToObject(meta, "op", "clear");
+        cJSON_AddStringToObject(meta, "section", section);
+        cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+                       0, 0, NULL, NULL);
+        return make_result(1, meta, NULL);
+
+    } else if (strcmp(op, "list") == 0) {
+        str_t out = str_new(512);
+        for (int i = 0; i < ctx->scratch.count; i++) {
+            str_appendf(&out, "  %s (priority:%d, %zu chars)\n",
+                        ctx->scratch.sections[i].name,
+                        ctx->scratch.sections[i].priority,
+                        strlen(ctx->scratch.sections[i].content));
+        }
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "op", "list");
+        cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
+        if (out.len > 0)
+            cJSON_AddStringToObject(meta, "listing", out.data);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+                       out.len, ctx->scratch.count, NULL, NULL);
+
+        str_free(&out);
+        return make_result(1, meta, NULL);
+
+    } else {
+        return make_error("unknown op (use: write, append, read, clear, list)");
+    }
 }
 
 /* ── done ────────────────────────────────────────────── */
@@ -783,6 +1217,169 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
 /* ── dispatcher ──────────────────────────────────────── */
 
 /* ── memory_store ──────────────────────────────────────── */
+
+/* ── LLM-based memory consolidation (GDN-2 P2) ──────── */
+/* After storing a memory, check for semantically similar existing memories.
+ * If found, concatenate both and call the LLM to produce a consolidated
+ * version. This implements the "subtract-before-write" principle from GDN-2:
+ * related content is merged rather than duplicated. */
+static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
+                                    const char *new_value) {
+    if (!ctx->llm || !ctx->memory) return;
+    if (!ctx->memory->embed || !ctx->memory->embed->available) return;
+
+    /* Generate embedding for the new entry */
+    char *prep = embed_prepare_text(new_key, new_value, NULL, 0, 512);
+    if (!prep) return;
+    embed_vec_t new_emb = embed_text(ctx->memory->embed, prep);
+    free(prep);
+    if (!new_emb.data) return;
+
+    /* Scan all memory .emb files for high similarity */
+    DIR *dir = opendir(ctx->memory->dir);
+    if (!dir) { embed_vec_free(&new_emb); return; }
+
+    char best_key[256] = "";
+    char best_path[4096] = "";
+    float best_sim = 0.0f;
+    const float CONSOLIDATION_THRESHOLD = 0.82f;
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len < 4 || strcmp(de->d_name + len - 4, ".emb") != 0) continue;
+
+        /* Derive key from filename: strip .emb suffix */
+        char emb_base[256];
+        snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), de->d_name);
+
+        /* Skip self — the entry we just stored */
+        /* The filename is the sanitized key; compare with sanitized new_key */
+        char new_fname[512];
+        /* Simple key-to-filename: replace ':' with '-', spaces with '_' */
+        snprintf(new_fname, sizeof(new_fname), "%s", new_key);
+        for (char *p = new_fname; *p; p++) {
+            if (*p == ':') *p = '-';
+            else if (*p == ' ') *p = '_';
+            else if (*p == '/') *p = '_';
+        }
+        if (strcmp(emb_base, new_fname) == 0) continue;
+
+        char emb_path[4096];
+        snprintf(emb_path, sizeof(emb_path), "%s/%s", ctx->memory->dir, de->d_name);
+        embed_vec_t other_emb = embed_vec_load(emb_path);
+        if (!other_emb.data) continue;
+
+        float sim = embed_cosine_sim(&new_emb, &other_emb);
+        embed_vec_free(&other_emb);
+
+        if (sim > best_sim && sim > CONSOLIDATION_THRESHOLD) {
+            best_sim = sim;
+            snprintf(best_key, sizeof(best_key), "%s", emb_base);
+            /* Derive JSON path from emb path */
+            snprintf(best_path, sizeof(best_path), "%s/%s.json",
+                     ctx->memory->dir, emb_base);
+        }
+    }
+    closedir(dir);
+    embed_vec_free(&new_emb);
+
+    if (best_key[0] == '\0') return;  /* no similar memory found */
+
+    /* Load the similar memory's value */
+    FILE *f = fopen(best_path, "r");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0 || sz > 65536) { fclose(f); return; }
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return; }
+    fread(buf, 1, (size_t)sz, f);
+    buf[sz] = '\0';
+    fclose(f);
+
+    cJSON *old_entry = cJSON_Parse(buf);
+    free(buf);
+    if (!old_entry) return;
+
+    cJSON *old_key_j = cJSON_GetObjectItem(old_entry, "key");
+    cJSON *old_val_j = cJSON_GetObjectItem(old_entry, "value");
+    if (!old_key_j || !old_val_j ||
+        !old_key_j->valuestring || !old_val_j->valuestring) {
+        cJSON_Delete(old_entry);
+        return;
+    }
+
+    const char *old_key = old_key_j->valuestring;
+    const char *old_value = old_val_j->valuestring;
+
+    /* Don't consolidate pinned memories */
+    cJSON *pinned_j = cJSON_GetObjectItem(old_entry, "pinned");
+    if (pinned_j && cJSON_IsTrue(pinned_j)) {
+        cJSON_Delete(old_entry);
+        return;
+    }
+
+    /* Build consolidation prompt */
+    char *prompt = malloc(strlen(new_value) + strlen(old_value) + 1024);
+    if (!prompt) { cJSON_Delete(old_entry); return; }
+    sprintf(prompt,
+        "Consolidate these two related memory entries into ONE concise entry.\n"
+        "Preserve all unique information. Remove redundancy. Keep the same style.\n"
+        "Output ONLY the consolidated text, no preamble.\n\n"
+        "--- Entry 1 (key: %s) ---\n%s\n\n"
+        "--- Entry 2 (key: %s) ---\n%s\n\n"
+        "Consolidated entry:",
+        new_key, new_value, old_key, old_value);
+
+    /* Call LLM for consolidation (non-streaming, simple call) */
+    llm_config_t consolidation_cfg = *ctx->llm;
+    consolidation_cfg.max_tokens = 2048;
+    consolidation_cfg.temperature = 0.1f;
+    consolidation_cfg.enable_thinking = 0;
+    consolidation_cfg.thinking_budget = 0;
+
+    llm_chat_t *chat = llm_chat_new();
+    llm_chat_add(chat, "system",
+        "You are a memory consolidation assistant. Merge the two entries "
+        "into one clear, concise entry preserving all unique information.");
+    llm_chat_add(chat, "user", prompt);
+    free(prompt);
+
+    llm_stats_t stats = {0};
+    char *consolidated = llm_complete(&consolidation_cfg, chat, &stats);
+    llm_chat_free(chat);
+
+    if (!consolidated || strlen(consolidated) < 20) {
+        /* Consolidation failed or too short — skip */
+        free(consolidated);
+        cJSON_Delete(old_entry);
+        return;
+    }
+
+    /* Store consolidated version under the new key */
+    memory_store(ctx->memory, new_key, consolidated, NULL, 0, 0, NULL);
+
+    /* Delete the old entry if it has a different key */
+    if (strcmp(old_key, new_key) != 0) {
+        /* Remove old JSON and embedding files */
+        char del_path[4096];
+        snprintf(del_path, sizeof(del_path), "%s", best_path);
+        unlink(del_path);
+        /* Also remove .emb file */
+        char emb_del[4096];
+        snprintf(emb_del, sizeof(emb_del), "%s/%s.emb",
+                 ctx->memory->dir, best_key);
+        unlink(emb_del);
+        /* Update MEMORY.md index */
+        memory_write_index_file(ctx->memory);
+    }
+
+    free(consolidated);
+    cJSON_Delete(old_entry);
+}
 
 static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     cJSON *key_j = cJSON_GetObjectItem(params, "key");
@@ -827,6 +1424,11 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     free(tags_copy);
 
     if (rc != 0) return make_error("failed to store memory");
+
+    /* GDN-2 P2: Try to consolidate with similar existing memories */
+    if (!pinned) {
+        memory_try_consolidate(ctx, key, value);
+    }
 
     /* Store for audit */
     char *hash = store_save(ctx->store, value);

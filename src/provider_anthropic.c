@@ -139,8 +139,13 @@ static cJSON *build_tools_anthropic(void) {
         "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Numbered plan: 1. step (tool)\\n2. ...\"}},\"required\":[\"result\"]}");
 
     ADD_TOOL_ANTH("notes",
-        "Persistent scratchpad that survives context compaction.",
-        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content (replaces previous notes). Use structured text with headers.\"}},\"required\":[\"content\"]}");
+        "Persistent scratchpad that survives context compaction. "
+        "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, "
+        "notes(op=\"append\", section=\"name\", content=\"...\") to append, "
+        "notes(op=\"clear\", section=\"name\") to delete a section, "
+        "notes(op=\"list\") to list all sections. "
+        "Legacy: notes(content=\"...\") still works (replaces all). Priority 1=highest, 9=lowest (default 5).",
+        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content (legacy mode) or section content (with op).\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name for write/append/read/clear\"},\"priority\":{\"type\":\"integer\",\"description\":\"Section priority 1-9 (1=highest, default 5)\"}}}");
 
     #undef ADD_TOOL_ANTH
     return tools;

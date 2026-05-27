@@ -64,11 +64,19 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     int saved_loop = (int)cJSON_GetNumberValue(
         cJSON_GetObjectItem(cp, "react_loop"));
 
-    /* Restore scratchpad */
-    cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
-    if (sp && sp->valuestring && sp->valuestring[0]) {
+    /* Restore scratchpad — try section-based first, fall back to legacy string */
+    scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
+    if (ctx->tools->scratch.count > 0) {
+        /* Sections loaded from disk — regenerate legacy string */
         free(ctx->tools->scratchpad);
-        ctx->tools->scratchpad = strdup(sp->valuestring);
+        ctx->tools->scratchpad = scratchpad_serialize(&ctx->tools->scratch);
+    } else {
+        /* Fall back to checkpoint string (legacy format) */
+        cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
+        if (sp && sp->valuestring && sp->valuestring[0]) {
+            free(ctx->tools->scratchpad);
+            ctx->tools->scratchpad = strdup(sp->valuestring);
+        }
     }
 
     /* Restore last_tc_id for tool_calls threading */
@@ -118,16 +126,24 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         free(pinned);
     }
 
-    /* Step 4: Add scratchpad if exists */
-    if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
-        size_t slen = strlen(ctx->tools->scratchpad);
-        char *scratch_msg = malloc(slen + 32);
-        if (scratch_msg) {
-            snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%.*s",
-                     (int)slen, ctx->tools->scratchpad);
-            llm_chat_add(chat, "user", scratch_msg);
-            free(scratch_msg);
+    /* Step 4: Add scratchpad if exists (section-based or legacy) */
+    {
+        char *sp_text = NULL;
+        if (ctx->tools->scratch.count > 0) {
+            sp_text = scratchpad_serialize(&ctx->tools->scratch);
+        } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
+            sp_text = strdup(ctx->tools->scratchpad);
         }
+        if (sp_text && sp_text[0]) {
+            size_t slen = strlen(sp_text);
+            char *scratch_msg = malloc(slen + 32);
+            if (scratch_msg) {
+                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
+                llm_chat_add(chat, "user", scratch_msg);
+                free(scratch_msg);
+            }
+        }
+        free(sp_text);
     }
 
     /* Step 5: Add user query */
@@ -509,16 +525,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (max_scratchpad > 32768) max_scratchpad = 32768;
     }
 
-    /* Inject scratchpad if exists (capped at computed limit) */
-    if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
-        size_t slen = strlen(ctx->tools->scratchpad);
-        if (slen > max_scratchpad) slen = max_scratchpad;
-        char *scratch_msg = malloc(slen + 32);
-        if (scratch_msg) {
-            snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%.*s",
-                     (int)slen, ctx->tools->scratchpad);
-            llm_chat_add(chat, "user", scratch_msg);
-            free(scratch_msg);
+    /* Inject scratchpad if exists (budget-aware, priority-ordered) */
+    {
+        char *serialized = NULL;
+        if (ctx->tools->scratch.count > 0) {
+            /* Use budget-aware serialization: high-priority sections first */
+            serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
+        } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
+            /* Legacy fallback */
+            size_t slen = strlen(ctx->tools->scratchpad);
+            if (slen > max_scratchpad) slen = max_scratchpad;
+            serialized = malloc(slen + 1);
+            if (serialized) { memcpy(serialized, ctx->tools->scratchpad, slen); serialized[slen] = '\0'; }
+        }
+        if (serialized && serialized[0]) {
+            size_t slen = strlen(serialized);
+            char *scratch_msg = malloc(slen + 32);
+            if (scratch_msg) {
+                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", serialized);
+                llm_chat_add(chat, "user", scratch_msg);
+                free(scratch_msg);
+            }
+            free(serialized);
+        } else {
+            free(serialized);
         }
     }
 

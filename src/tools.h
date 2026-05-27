@@ -6,6 +6,7 @@
 #include "journal.h"
 #include "memory.h"
 #include "config.h"
+#include "llm.h"
 
 /* Tool result: metadata JSON + optional stored content hash */
 typedef struct {
@@ -36,6 +37,56 @@ void         alias_map_clear(alias_map_t *map);  /* keep allocated buckets */
 void        *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
 const char  *alias_map_lookup(alias_map_t *map, const char *alias);
 
+/* ── Section-based scratchpad (GDN-2 inspired) ──────────── */
+/* Each section has independent name, content, and priority.
+ * Operations: write, append, read, clear, list.
+ * Priority determines compression/eviction order under context pressure. */
+
+#define SCRATCHPAD_MAX_SECTIONS 32
+
+typedef struct {
+    char *name;       /* section name (e.g. "findings", "plan", "status") */
+    char *content;    /* section content (owned) */
+    int   priority;   /* 1 = highest priority, 9 = lowest. Default: 5 */
+} scratchpad_section_t;
+
+typedef struct {
+    scratchpad_section_t sections[SCRATCHPAD_MAX_SECTIONS];
+    int count;
+} scratchpad_t;
+
+/* Scratchpad lifecycle */
+void scratchpad_init(scratchpad_t *sp);
+void scratchpad_free(scratchpad_t *sp);
+
+/* Find section by name. Returns index or -1. */
+int scratchpad_find(scratchpad_t *sp, const char *name);
+
+/* Write (create/overwrite) a section. Returns 0 on success. */
+int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, int priority);
+
+/* Append to a section (creates if not exists). Returns 0 on success. */
+int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, int priority);
+
+/* Clear (delete) a section. Returns 0 on success, -1 if not found. */
+int scratchpad_clear(scratchpad_t *sp, const char *name);
+
+/* Serialize all sections to a single string for context injection.
+ * Format: "## section_name\ncontent\n\n## section2\ncontent2\n"
+ * Sections are ordered by priority (1 first, 9 last).
+ * Caller must free. Returns NULL if empty. */
+char *scratchpad_serialize(scratchpad_t *sp);
+
+/* Serialize with a max_chars budget. Low-priority sections are truncated/dropped first.
+ * Caller must free. Returns NULL if empty. */
+char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars);
+
+/* Persist scratchpad to disk (session_dir/scratchpad.md). */
+int scratchpad_save(scratchpad_t *sp, const char *session_dir);
+
+/* Load scratchpad from disk. Returns 0 on success. */
+int scratchpad_load(scratchpad_t *sp, const char *session_dir);
+
 /* Session context passed to all tools */
 typedef struct {
     store_t       *store;
@@ -43,7 +94,9 @@ typedef struct {
     memory_t      *memory;        /* long-term memory store (.memory/) */
     config_t      *cfg;           /* configuration (tool limits, etc.) */
     char          *session_dir;   /* .sessions/<id>/ */
-    char          *scratchpad;    /* current scratchpad content (owned) */
+    char          *scratchpad;    /* legacy: serialized scratchpad (owned, auto-generated) */
+    scratchpad_t   scratch;       /* section-based scratchpad (GDN-2 inspired) */
+    llm_config_t  *llm;          /* LLM config for inline consolidation (P2) */
     int            step;          /* current step number (within react loop) */
     int            react_loop;    /* react loop counter (0-based, increments per query) */
     /* Step alias tracking — dynamic hash map, no size limit */
