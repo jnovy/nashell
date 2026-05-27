@@ -638,10 +638,16 @@ char *embed_prepare_text(const char *key, const char *value,
             if (vlen <= remaining) {
                 str_append_cstr(&out, value);
             } else {
-                /* Truncate at word boundary if possible */
+                /* Truncate at word boundary if possible.
+                 * FIX B9: Guard against remaining < 100 — the subtraction
+                 * remaining - 100 wraps around (size_t is unsigned),
+                 * making the condition always false and disabling the
+                 * word-boundary search. */
                 size_t cut = remaining;
-                while (cut > remaining - 100 && cut > 0 && value[cut] != ' ')
-                    cut--;
+                if (remaining > 100) {
+                    while (cut > remaining - 100 && cut > 0 && value[cut] != ' ')
+                        cut--;
+                }
                 if (cut == 0) cut = remaining;
                 str_appendf(&out, "%.*s...", (int)cut, value);
             }

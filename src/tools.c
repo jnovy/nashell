@@ -1338,8 +1338,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         return;
     }
 
-    /* Build consolidation prompt */
-    char *prompt = malloc(strlen(new_value) + strlen(old_value) + 1024);
+    /* Build consolidation prompt.
+     * FIX B10: Include key lengths in allocation — the format string
+     * interpolates new_key and old_key too, which could be up to 256
+     * chars each. The previous 1024-byte slack was insufficient. */
+    char *prompt = malloc(strlen(new_value) + strlen(old_value) +
+                          strlen(new_key) + strlen(old_key) + 1024);
     if (!prompt) { cJSON_Delete(old_entry); return; }
     sprintf(prompt,
         "Consolidate these two related memory entries into ONE concise entry.\n"
@@ -1382,8 +1386,84 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         return;
     }
 
-    /* Store consolidated version under the new key */
-    memory_store(ctx->memory, new_key, consolidated, NULL, 0, 0, NULL);
+    /* FIX B13: Merge tags from both entries before storing consolidated version.
+     * Previously, consolidation called memory_store with NULL tags, losing
+     * all tags from both the old and new entries. */
+    {
+        /* Collect tags from old entry */
+        cJSON *old_tags = cJSON_GetObjectItem(old_entry, "tags");
+        int n_old_tags = old_tags ? cJSON_GetArraySize(old_tags) : 0;
+
+        /* Load new entry's tags from its stored JSON file */
+        char new_fname[512];
+        snprintf(new_fname, sizeof(new_fname), "%s", new_key);
+        for (char *p = new_fname; *p; p++)
+            if (*p == ':' || *p == '/') *p = '_';
+        char new_json_path[4096];
+        snprintf(new_json_path, sizeof(new_json_path), "%s/%s.json",
+                 ctx->memory->dir, new_fname);
+
+        cJSON *new_entry_json = NULL;
+        cJSON *new_tags = NULL;
+        int n_new_tags = 0;
+        {
+            FILE *nf = fopen(new_json_path, "r");
+            if (nf) {
+                fseek(nf, 0, SEEK_END);
+                long nsz = ftell(nf);
+                fseek(nf, 0, SEEK_SET);
+                if (nsz > 0 && nsz < 65536) {
+                    char *nbuf = malloc((size_t)nsz + 1);
+                    if (nbuf) {
+                        fread(nbuf, 1, (size_t)nsz, nf);
+                        nbuf[nsz] = '\0';
+                        new_entry_json = cJSON_Parse(nbuf);
+                        free(nbuf);
+                    }
+                }
+                fclose(nf);
+            }
+            if (new_entry_json) {
+                new_tags = cJSON_GetObjectItem(new_entry_json, "tags");
+                n_new_tags = new_tags ? cJSON_GetArraySize(new_tags) : 0;
+            }
+        }
+
+        /* Merge: collect unique tags from both entries */
+        int max_merged = n_old_tags + n_new_tags;
+        const char **merged_tags = NULL;
+        int n_merged = 0;
+        if (max_merged > 0) {
+            merged_tags = malloc(sizeof(char *) * (size_t)max_merged);
+            if (merged_tags) {
+                /* Add new entry's tags first */
+                for (int i = 0; i < n_new_tags; i++) {
+                    cJSON *t = cJSON_GetArrayItem(new_tags, i);
+                    if (t && t->valuestring)
+                        merged_tags[n_merged++] = t->valuestring;
+                }
+                /* Add old entry's tags (skip duplicates) */
+                for (int i = 0; i < n_old_tags; i++) {
+                    cJSON *t = cJSON_GetArrayItem(old_tags, i);
+                    if (!t || !t->valuestring) continue;
+                    int dup = 0;
+                    for (int j = 0; j < n_merged; j++) {
+                        if (strcmp(merged_tags[j], t->valuestring) == 0) {
+                            dup = 1; break;
+                        }
+                    }
+                    if (!dup) merged_tags[n_merged++] = t->valuestring;
+                }
+            }
+        }
+
+        /* Store consolidated version under the new key with merged tags */
+        memory_store(ctx->memory, new_key, consolidated,
+                     merged_tags, n_merged, 0, NULL);
+
+        free(merged_tags);
+        cJSON_Delete(new_entry_json);
+    }
 
     /* Delete the old entry if it has a different key.
      * FIX B3: Use memory_delete() instead of raw unlink() — this properly

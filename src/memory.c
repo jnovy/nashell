@@ -17,6 +17,9 @@
 
 /* Sanitize key for filename: replace : with _ */
 static void key_to_filename(const char *key, char *out, size_t out_sz) {
+    /* FIX B5: Guard against small out_sz — if out_sz < 6, the subtraction
+     * out_sz - 6 wraps around (size_t is unsigned), causing a massive loop. */
+    if (out_sz < 8) { if (out_sz > 0) out[0] = '\0'; return; }
     size_t i = 0;
     for (; key[i] && i < out_sz - 6; i++)
         out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
@@ -134,6 +137,9 @@ static void json_to_emb_path(const char *json_path, char *emb_path, size_t sz) {
 
 /* Convert a key to .emb filename */
 static void key_to_emb_filename(const char *key, char *out, size_t out_sz) {
+    /* FIX B5: Guard against small out_sz — same unsigned underflow issue
+     * as key_to_filename(). */
+    if (out_sz < 7) { if (out_sz > 0) out[0] = '\0'; return; }
     size_t i = 0;
     for (; key[i] && i < out_sz - 5; i++)
         out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
@@ -391,11 +397,38 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     DIR *dir = opendir(m->dir);
     if (!dir) return results;
 
+    /* FIX B1: If query starts with a type prefix (e.g., "skill:", "lesson:"),
+     * extract the prefix for type filtering but use the stripped query for
+     * scoring. This prevents the prefix from inflating substring scores
+     * (every "skill:" key matches "skill:") and from adding noise to
+     * semantic embeddings. */
+    const char *type_filter = NULL;  /* e.g., "skill:" */
+    size_t type_filter_len = 0;
+    const char *score_query = query;  /* query used for scoring (stripped) */
+    {
+        static const char *type_prefixes[] = {
+            "skill:", "lesson:", "strategy:", "fact:", "task:", NULL
+        };
+        for (const char **pfx = type_prefixes; *pfx; pfx++) {
+            size_t plen = strlen(*pfx);
+            if (strncmp(query, *pfx, plen) == 0) {
+                type_filter = *pfx;
+                type_filter_len = plen;
+                score_query = query + plen;
+                /* Skip leading whitespace after prefix */
+                while (*score_query == ' ') score_query++;
+                /* If nothing left after prefix, use full query */
+                if (*score_query == '\0') score_query = query;
+                break;
+            }
+        }
+    }
+
     /* Generate query embedding once (if embeddings are available) */
     embed_vec_t query_emb = {0};
     int has_semantic = 0;
     if (m->embed && m->embed->available) {
-        query_emb = embed_text(m->embed, query);
+        query_emb = embed_text(m->embed, score_query);
         has_semantic = (query_emb.data != NULL && query_emb.dim > 0);
     }
 
@@ -466,27 +499,18 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             embed_vec_free(&entry_emb);
         }
 
-        double s = score_entry_hybrid(key, value, tags, query,
+        /* FIX B1: Use score_query (type-prefix stripped) for scoring.
+         * This prevents "skill:" from inflating every skill entry's
+         * substring score uniformly, and removes noise from embeddings. */
+        double s = score_entry_hybrid(key, value, tags, score_query,
                                        acc_count,
                                        semantic_sim, entry_has_semantic);
 
-        /* FIX #13: Type-aware filtering — if query starts with a type prefix
-         * (e.g., "skill:", "lesson:", "strategy:"), only return entries of
-         * that type. This replaces the previous hack of searching for "skill:"
-         * as a substring query. */
-        if (s > 0.01) {
-            static const char *type_prefixes[] = {
-                "skill:", "lesson:", "strategy:", "fact:", "task:", NULL
-            };
-            for (const char **pfx = type_prefixes; *pfx; pfx++) {
-                size_t plen = strlen(*pfx);
-                if (strncmp(query, *pfx, plen) == 0) {
-                    /* Query has type prefix — only match entries of same type */
-                    if (strncmp(key, *pfx, plen) != 0) {
-                        s = 0;  /* wrong type — exclude */
-                    }
-                    break;
-                }
+        /* FIX #13 + B1: Type-aware filtering using pre-extracted type_filter.
+         * If query had a type prefix, only return entries of that type. */
+        if (s > 0.01 && type_filter) {
+            if (strncmp(key, type_filter, type_filter_len) != 0) {
+                s = 0;  /* wrong type — exclude */
             }
         }
 
@@ -920,8 +944,11 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
     }
     closedir(dir);
 
-    /* Git: commit pruning results */
+    /* FIX B12: Update MEMORY.md index after pruning, then git commit.
+     * Previously, pruned entries remained in MEMORY.md until the next
+     * memory_store() call regenerated it. */
     if (pruned > 0) {
+        memory_write_index_file(m);
         char msg[128];
         snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", pruned);
         memory_git_commit(m, msg);
