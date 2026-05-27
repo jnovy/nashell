@@ -12,6 +12,14 @@ typedef struct {
     char *dir;          /* .memory/ directory path */
     char *model;        /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
     embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
+
+    /* P0: Score threshold for recall injection (abstention gate).
+     * Memories with composite score below this value are excluded from
+     * recall results, implementing the "abstention" pattern from:
+     *   Mem-π [arXiv:2605.21463] — learned abstention yields +22% avg
+     *   MemFail [arXiv:2605.26667] — weak injection hurts performance
+     * Default: 0.15 (set from config.recall_min_score) */
+    double recall_min_score;
 } memory_t;
 
 typedef struct {

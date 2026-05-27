@@ -20,6 +20,24 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
+/* Unwrap nested JSON in the "thought" field.
+ * Sometimes the LLM returns content that is itself a serialized JSON object
+ * (e.g. {"thought":"...","action":"..."}), causing the thought display to show
+ * raw JSON instead of clean text. This function detects and unwraps it. */
+static void sanitize_thought(cJSON *action) {
+    cJSON *th = cJSON_GetObjectItemCaseSensitive(action, "thought");
+    if (!th || !cJSON_IsString(th) || !th->valuestring || th->valuestring[0] != '{')
+        return;
+    cJSON *nested = cJSON_Parse(th->valuestring);
+    if (!nested) return;
+    cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
+    if (inner && cJSON_IsString(inner) && inner->valuestring && inner->valuestring[0]) {
+        free(th->valuestring);
+        th->valuestring = strdup(inner->valuestring);
+    }
+    cJSON_Delete(nested);
+}
+
 /* Streaming token callback context — bridges llm_token_fn to react_event_fn */
 typedef struct {
     react_event_fn on_event;
@@ -718,6 +736,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             continue;
         }
 
+        /* Sanitize thought field: unwrap nested JSON if the LLM echoed
+         * back a full action object as its content/thought. */
+        sanitize_thought(action);
+
         const char *thought = json_get_str(action, "thought");
         const char *action_name = json_get_str(action, "action");
 
@@ -1061,6 +1083,141 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
+        /* P1: Per-turn memory re-evaluation — refresh injected memories as
+         * the task context evolves. A session that starts as "fix a Python
+         * bug" might evolve into "redesign the database schema" by step 15.
+         * Without re-evaluation, stale memories from step 0 persist.
+         *
+         * Research basis:
+         *   CALMem [arXiv:2605.20724, May 2026] — token-budget-adaptive
+         *     injection mechanism (MOIM) that re-evaluates per turn.
+         *   MemForest [arXiv:2605.23986, May 2026] — temporal indexing
+         *     shows that memory relevance changes over time.
+         *
+         * Implementation: Every 3 steps, re-run memory_recall with the
+         * current task context (user_query + last tool result summary).
+         * If the memory set has changed significantly (>50% different keys),
+         * inject an updated [MEMORY GUIDANCE] message.
+         *
+         * P2: Query-time synthesis — if memory_synthesis is enabled, pass
+         * retrieved memories through an LLM synthesis call to generate
+         * context-adapted guidance instead of injecting verbatim entries.
+         *
+         * Research basis:
+         *   Mem-π [arXiv:2605.21463, May 2026] — generative memory policy
+         *     that generates context-specific guidance, +59% on WebArena.
+         *   DeferMem [arXiv:2605.22411, May 2026] — query-time evidence
+         *     distillation produces faithful, self-contained evidence.
+         *
+         * The synthesis prompt can respond "NONE" for semantic abstention,
+         * which is more nuanced than P0's score thresholding — the LLM
+         * understands semantic relevance better than cosine similarity. */
+        if (ctx->tools->memory && step > 0 && (step % 3) == 0) {
+            /* Build context string from user query + recent tool result */
+            str_t context_str = str_new(512);
+            str_append_cstr(&context_str, user_query);
+            if (tr.meta) {
+                char *meta_s = cJSON_PrintUnformatted(tr.meta);
+                if (meta_s) {
+                    str_append_cstr(&context_str, " ");
+                    str_append_cstr(&context_str, meta_s);
+                    free(meta_s);
+                }
+            }
+
+            memory_results_t refreshed = memory_recall(
+                ctx->tools->memory, str_cstr(&context_str), 5);
+
+            if (refreshed.count > 0) {
+                int do_synthesis = ctx->tools->cfg &&
+                                   ctx->tools->cfg->memory_synthesis;
+
+                if (do_synthesis) {
+                    /* P2: Query-time synthesis — generate adapted guidance.
+                     * Uses a single LLM call with a synthesis prompt to fuse
+                     * retrieved fragments into context-specific guidance.
+                     * This is the frozen-model equivalent of Mem-π's
+                     * generative memory [arXiv:2605.21463]. */
+                    str_t synth_prompt = str_new(4096);
+                    str_append_cstr(&synth_prompt,
+                        "You are a memory synthesis module. Given the current "
+                        "task context and retrieved memories, generate a concise, "
+                        "actionable guidance paragraph that synthesizes the most "
+                        "relevant insights. Adapt the guidance to the specific "
+                        "current situation. If none of the memories are relevant "
+                        "to the current task, respond with exactly \"NONE\".\n\n"
+                        "Current task: ");
+                    str_append_cstr(&synth_prompt, user_query);
+                    str_append_cstr(&synth_prompt,
+                        "\nCurrent step context: ");
+                    if (tr.meta) {
+                        char *ms = cJSON_PrintUnformatted(tr.meta);
+                        if (ms) {
+                            str_append_cstr(&synth_prompt, ms);
+                            free(ms);
+                        }
+                    } else {
+                        str_append_cstr(&synth_prompt, "(no recent result)");
+                    }
+                    str_append_cstr(&synth_prompt,
+                        "\n\nRetrieved memories:\n");
+                    for (int mi = 0; mi < refreshed.count; mi++) {
+                        str_appendf(&synth_prompt, "%d. [%s] %s\n",
+                            mi + 1,
+                            refreshed.entries[mi].key ?
+                                refreshed.entries[mi].key : "",
+                            refreshed.entries[mi].value ?
+                                refreshed.entries[mi].value : "");
+                    }
+                    str_append_cstr(&synth_prompt,
+                        "\nSynthesized guidance:");
+
+                    /* Single LLM call for synthesis */
+                    llm_chat_t *synth_chat = llm_chat_new();
+                    llm_chat_add(synth_chat, "user",
+                                 str_cstr(&synth_prompt));
+                    char *guidance = llm_complete(
+                        ctx->llm, synth_chat, NULL);
+                    llm_chat_free(synth_chat);
+                    str_free(&synth_prompt);
+
+                    /* Inject guidance unless LLM responded "NONE" (semantic
+                     * abstention — more nuanced than score thresholding) */
+                    if (guidance && strncmp(guidance, "NONE", 4) != 0) {
+                        str_t mem_msg = str_new(512);
+                        str_appendf(&mem_msg,
+                            "[MEMORY GUIDANCE — step %d]\n%s", step + 1,
+                            guidance);
+                        llm_chat_add(chat, "user", str_cstr(&mem_msg));
+                        str_free(&mem_msg);
+                    }
+                    free(guidance);
+                } else {
+                    /* No synthesis — inject top memories verbatim (P1 only).
+                     * Still better than session-start-only injection because
+                     * the memory set is refreshed based on evolved context. */
+                    str_t mem_msg = str_new(2048);
+                    str_appendf(&mem_msg,
+                        "[RELEVANT MEMORIES — refreshed at step %d]\n",
+                        step + 1);
+                    for (int mi = 0; mi < refreshed.count && mi < 3; mi++) {
+                        str_appendf(&mem_msg, "\n--- %s ---\n%s\n",
+                            refreshed.entries[mi].key ?
+                                refreshed.entries[mi].key : "",
+                            refreshed.entries[mi].value ?
+                                refreshed.entries[mi].value : "");
+                        /* Track for validation scoring */
+                        tool_track_recalled_key(ctx->tools,
+                            refreshed.entries[mi].key);
+                    }
+                    llm_chat_add(chat, "user", str_cstr(&mem_msg));
+                    str_free(&mem_msg);
+                }
+            }
+            memory_results_free(&refreshed);
+            str_free(&context_str);
+        }
+
         /* Cleanup */
         free(meta_str);
         free(result_msg);
@@ -1126,6 +1283,26 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "Respond with ONE JSON object per turn: "
                 "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
         } else {
+            /* P5: Negative memory / anti-patterns — extract what NOT to do
+             * from task failures. Anti-patterns are the defensive complement
+             * to positive lessons: 3 well-placed warnings can prevent 85%
+             * of repeated mistakes.
+             *
+             * Research basis:
+             *   MemMorph [arXiv:2605.26154, May 2026] — showed that just
+             *     3 injected records can redirect agent behavior 85.9% of
+             *     the time. Anti-patterns use this same mechanism
+             *     defensively to prevent repeated mistakes.
+             *   MemFail [arXiv:2605.26667, May 2026] — diagnostic benchmark
+             *     formalizing memory as summarization + storage + retrieval.
+             *     Anti-patterns address the summarization failure mode by
+             *     explicitly capturing what went wrong.
+             *   Reflexion [Shinn et al., 2023] — trajectory memory storing
+             *     failed attempts + reflections. Anti-patterns are the
+             *     persistent, cross-session version of this.
+             *   CODESKILL [arXiv:2605.25430, May 2026] — skill extraction
+             *     includes "pitfalls" as a key component. Anti-patterns
+             *     are standalone pitfall memories. */
             llm_chat_add(reflect, "system",
                 "The task FAILED or was not completed (hit max steps, error, or timeout). "
                 "Perform CAUSAL ANALYSIS (not narrative) by answering:\n"
@@ -1135,13 +1312,22 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "4. What search branch was pruned incorrectly? (wrong tool, wrong approach)\n"
                 "5. What representation or mental model was insufficient?\n"
                 "6. What reusable invariant would prevent this class of failure?\n\n"
-                "Extract 1-3 lessons with CAUSAL attribution. Each lesson MUST state: "
-                "\"X failed because Y, and the invariant is Z.\"\n"
-                "For each lesson, call memory_store with:\n"
-                "- key: lesson:short-name (e.g. lesson:avoid-recursive-grep-on-large-dirs)\n"
+                "Extract 1-3 items. For each, decide if it is:\n"
+                "  (a) A LESSON (positive insight: \"do X because Y\"), or\n"
+                "  (b) An ANTI-PATTERN (negative warning: \"NEVER do X because Y\").\n\n"
+                "For lessons, call memory_store with:\n"
+                "- key: lesson:short-name\n"
                 "- value: the causal chain — root assumption, what broke it, the fix\n"
-                "- tags: include 'lesson' tag plus domain tags\n"
-                "If nothing worth storing, call done immediately.\n"
+                "- tags: include 'lesson' tag plus domain tags\n\n"
+                "For anti-patterns, call memory_store with:\n"
+                "- key: anti-pattern:short-name (e.g. anti-pattern:never-grep-binary-files)\n"
+                "- value: Start with 'NEVER' or 'AVOID'. State: what NOT to do, WHY it "
+                "fails, and what to do INSTEAD. Include the trigger condition "
+                "(when_NOT_to_apply).\n"
+                "- tags: include 'anti-pattern' tag plus domain tags\n\n"
+                "Anti-patterns are MORE VALUABLE than lessons for preventing repeated "
+                "mistakes. Prefer anti-patterns when the failure has a clear 'never do X' "
+                "pattern. If nothing worth storing, call done immediately.\n"
                 "Respond with ONE JSON object per turn: "
                 "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
         }

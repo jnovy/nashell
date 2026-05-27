@@ -349,7 +349,7 @@ static double score_entry_hybrid(const char *key, const char *value,
         if (relevance == 0) return 0;  /* no match at all */
     }
 
-    if (relevance < 0.01) return 0;
+    if (relevance < 0.01) return 0;  /* hard floor: no match at all */
 
     /* Importance: logarithmic access frequency */
     double importance = 1.0 + log(1.0 + (double)access_count);
@@ -357,11 +357,28 @@ static double score_entry_hybrid(const char *key, const char *value,
     /* Composite: relevance-dominant with importance boost */
     double composite = relevance * 0.8 + importance * 0.2;
 
-    /* FIX B4: Factor in Bayesian validation score.
-     * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean.
-     * New memories with no evidence get vscore=0.5, which is neutral.
+    /* P3: Bayesian validation scoring — data-driven memory quality signal.
+     * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean with
+     * Laplace smoothing (conjugate prior for Bernoulli likelihood).
+     * New memories with no evidence get vscore=0.5 (maximum entropy).
      * Memories that consistently correlate with failures get demoted
      * before they accumulate enough evidence for pruning (min_evidence=3).
+     *
+     * Research basis:
+     *   MemFail [arXiv:2605.26667, May 2026] — diagnostic benchmark
+     *     showing that injecting weakly-relevant memories HURTS
+     *     performance. Bayesian scoring provides the data-driven signal
+     *     to identify which memories are genuinely useful.
+     *   MemForest [arXiv:2605.23986, May 2026] — temporal indexing
+     *     paper that validates importance-weighted scoring for memory
+     *     retrieval quality.
+     *   Memory Survey [arXiv:2404.13501, 2024] — comprehensive survey
+     *     identifying five critical memory operations, including
+     *     validation/reflection as essential for memory quality.
+     *   Generative Agents [Park et al., 2023] — composite scoring
+     *     (recency × importance × relevance) as the foundation for
+     *     memory retrieval ranking.
+     *
      * This closes the gap between validation and recall ranking. */
     double vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
     return composite * vscore;
@@ -504,7 +521,21 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             }
         }
 
-        if (s > 0.01) {
+        /* P0: Abstention gate — apply configurable score threshold.
+         * Memories below recall_min_score are excluded from results,
+         * preventing noise injection that hurts agent performance.
+         * Research: MemFail [arXiv:2605.26667] showed that injecting
+         * weakly-relevant memories degrades task accuracy. Mem-π
+         * [arXiv:2605.21463] showed that learned abstention (staying
+         * silent 30-40% of the time) yields +22% avg improvement.
+         * This threshold is the frozen-model equivalent of that
+         * learned abstention decision. */
+        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
+        if (s > 0.01 && s < min_score) {
+            s = 0;  /* below abstention threshold — exclude */
+        }
+
+        if (s >= min_score) {
             /* Grow scored array if needed (FIX #5) */
             if (n_scored >= scored_cap) {
                 scored_cap *= 2;

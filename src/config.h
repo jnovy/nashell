@@ -93,6 +93,40 @@ typedef struct {
     double prune_min_score;      /* validation score threshold (default 0.35) */
     int    prune_min_evidence;   /* minimum recalls before pruning (default 3) */
 
+    /* P0: Memory recall quality gate — score threshold for injection.
+     * Memories scoring below this threshold are NOT injected, implementing
+     * "abstention" — the system stays silent when no stored experience is
+     * relevant. Prevents noise injection that hurts performance.
+     *
+     * Research basis:
+     *   MemFail [arXiv:2605.26667, May 2026] — diagnostic benchmark showing
+     *     that injecting weakly-relevant memories HURTS agent performance.
+     *   Mem-π [arXiv:2605.21463, May 2026] — generative memory policy that
+     *     learns to abstain 30-40% of the time, yielding +22% avg improvement.
+     *
+     * This is the frozen-model equivalent of Mem-π's learned abstention:
+     * instead of training a model to decide when to inject, we use a score
+     * threshold on the composite relevance signal. */
+    double recall_min_score;     /* min composite score for injection (default 0.15) */
+
+    /* P2: Query-time memory synthesis — synthesize retrieved memories into
+     * context-specific guidance via an extra LLM call before injection.
+     * 0 = disabled (inject verbatim), 1 = enabled.
+     *
+     * Research basis:
+     *   Mem-π [arXiv:2605.21463, May 2026] — generative memory replaces
+     *     retrieval with generation, achieving +59% on WebArena.
+     *   DeferMem [arXiv:2605.22411, May 2026] — query-time evidence
+     *     distillation via RL for long-term memory QA.
+     *   CALMem [arXiv:2605.20724, May 2026] — token-budget-adaptive
+     *     injection mechanism (MOIM) that scales with context pressure.
+     *
+     * This is the frozen-model equivalent: instead of training a dedicated
+     * memory model, we use the same LLM with a synthesis prompt to fuse
+     * retrieved fragments into adapted guidance. The LLM can also respond
+     * "NONE" for semantic abstention (more nuanced than score thresholding). */
+    int    memory_synthesis;     /* enable query-time synthesis (default 0) */
+
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
 
