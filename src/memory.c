@@ -155,7 +155,8 @@ static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
 
 int memory_store(memory_t *m, const char *key, const char *value,
                  const char **tags, int n_tags, int pinned,
-                 const char *journal_ref) {
+                 const char *journal_ref,
+                 const char **refs, int n_refs) {
     if (!m || !key || !value) return -1;
 
     /* Initialize git repo on first store */
@@ -216,6 +217,27 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * The dreaming LLM can read this journal to understand original context. */
     if (journal_ref)
         cJSON_AddStringToObject(entry, "journal_ref", journal_ref);
+
+    /* Inter-memory references: "see also" links to related memory keys.
+     * Populated by dreaming's SYNTHESIZE pass to create a lightweight
+     * graph structure without a full graph database.
+     *
+     * Research basis:
+     *   MemForest [arXiv:2605.23986, May 2026] — hierarchical temporal
+     *     trees where parent nodes summarize children.
+     *   ActiveGraph [arXiv:2605.21997, May 2026] — typed edges between
+     *     nodes in a reactive graph.
+     *   MemIR [arXiv:2605.25869, May 2026] — provenance chains linking
+     *     raw evidence to claims.
+     *
+     * During recall, ref'd memories get a score boost (+0.5) when the
+     * referencing memory scores highly, creating implicit "see also"
+     * behavior without explicit graph traversal. */
+    if (refs && n_refs > 0) {
+        cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
+        for (int i = 0; i < n_refs; i++)
+            cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
+    }
 
     char *json = cJSON_Print(entry);
     FILE *f = fopen(path, "w");
@@ -555,6 +577,45 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     /* Free query embedding */
     embed_vec_free(&query_emb);
 
+    /* Ref-boost: if a high-scoring memory has refs pointing to other
+     * entries in the scored set, boost those ref'd entries' scores.
+     * This implements inter-memory relationships — "see also" links
+     * populated by dreaming's SYNTHESIZE pass.
+     *
+     * Research basis:
+     *   MemForest [arXiv:2605.23986, May 2026] — hierarchical temporal
+     *     trees where parent nodes boost children's retrieval priority.
+     *   MemIR [arXiv:2605.25869, May 2026] — typed memory with
+     *     provenance chains linking evidence to claims.
+     *   ActiveGraph [arXiv:2605.21997, May 2026] — reactive graphs
+     *     where relationships ARE the memory structure.
+     *
+     * Algorithm: For each scored entry with score > 0.5 (reasonably
+     * relevant), check its refs array. For each ref'd key found in
+     * the scored set, add a boost of 0.3 × referrer's score.
+     * This is O(n × r × n) where r = avg refs per entry (~3),
+     * so effectively O(n²) but n is small (<1000) and r is tiny. */
+    for (int i = 0; i < n_scored; i++) {
+        if (scored[i].score < 0.5) continue;  /* only boost from relevant entries */
+        cJSON *refs = cJSON_GetObjectItem(scored[i].cached_entry, "refs");
+        if (!refs || !cJSON_IsArray(refs)) continue;
+        int nr = cJSON_GetArraySize(refs);
+        for (int ri = 0; ri < nr; ri++) {
+            cJSON *ref = cJSON_GetArrayItem(refs, ri);
+            if (!ref || !ref->valuestring) continue;
+            /* Find ref'd entry in scored set and boost it */
+            for (int j = 0; j < n_scored; j++) {
+                if (j == i) continue;
+                cJSON *k = cJSON_GetObjectItem(scored[j].cached_entry, "key");
+                if (k && k->valuestring &&
+                    strcmp(k->valuestring, ref->valuestring) == 0) {
+                    scored[j].score += 0.3 * scored[i].score;
+                    break;
+                }
+            }
+        }
+    }
+
     /* FIX #14: Use qsort instead of O(n²) bubble sort */
     qsort(scored, (size_t)n_scored, sizeof(scored_t), scored_cmp_desc);
 
@@ -596,6 +657,24 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         /* Copy journal provenance reference */
         cJSON *jr = cJSON_GetObjectItem(entry, "journal_ref");
         e->journal_ref = (jr && jr->valuestring) ? strdup(jr->valuestring) : NULL;
+
+        /* Copy inter-memory refs (cross-links populated by dreaming SYNTHESIZE).
+         * Research basis:
+         *   MemForest [arXiv:2605.23986] — hierarchical temporal trees with
+         *     parent-child relationships between memory nodes.
+         *   ActiveGraph [arXiv:2605.21997] — typed edges between nodes in a
+         *     reactive graph; relationships ARE the memory structure.
+         *   MemIR [arXiv:2605.25869] — provenance chains linking raw evidence
+         *     to claims via typed atoms. */
+        cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
+        if (refs_arr && cJSON_IsArray(refs_arr)) {
+            e->n_refs = cJSON_GetArraySize(refs_arr);
+            e->refs = calloc((size_t)e->n_refs, sizeof(char *));
+            for (int ri = 0; ri < e->n_refs; ri++) {
+                cJSON *ref = cJSON_GetArrayItem(refs_arr, ri);
+                e->refs[ri] = (ref && ref->valuestring) ? strdup(ref->valuestring) : strdup("");
+            }
+        }
 
         /* Update access_count and last_accessed.
          * FIX B8: Create fields if missing (old entries pre-dating these
@@ -850,6 +929,10 @@ void memory_results_free(memory_results_t *r) {
         for (int t = 0; t < r->entries[i].n_tags; t++)
             free(r->entries[i].tags[t]);
         free(r->entries[i].tags);
+        /* Free refs (inter-memory relationship links) */
+        for (int ri = 0; ri < r->entries[i].n_refs; ri++)
+            free(r->entries[i].refs[ri]);
+        free(r->entries[i].refs);
     }
     free(r->entries);
     r->entries = NULL;

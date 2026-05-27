@@ -34,6 +34,23 @@ typedef struct {
     int    recall_hits;   /* recalled during tasks that SUCCEEDED */
     int    recall_misses; /* recalled during tasks that FAILED */
     char  *journal_ref;   /* provenance: "session/journal.jsonl:R5" */
+
+    /* Inter-memory relationships — "see also" links between related memories.
+     * Populated by dreaming's SYNTHESIZE pass to create a lightweight graph
+     * structure without requiring a full graph database.
+     *
+     * Research basis:
+     *   MemForest [arXiv:2605.23986, May 2026] — hierarchical temporal trees
+     *     with parent-child relationships between memory nodes.
+     *   ActiveGraph [arXiv:2605.21997, May 2026] — typed edges between nodes
+     *     in a reactive graph where relationships ARE the memory structure.
+     *   MemIR [arXiv:2605.25869, May 2026] — provenance chains linking raw
+     *     evidence to claims via typed intermediate representation.
+     *
+     * During recall, if a high-scoring memory has refs, the ref'd memories
+     * receive a score boost (+0.5), implementing associative retrieval. */
+    char **refs;          /* array of related memory keys */
+    int    n_refs;
 } memory_entry_t;
 
 typedef struct {
@@ -51,7 +68,8 @@ void      memory_free(memory_t *m);
  * The dreaming LLM can read this journal to understand the original context. */
 int memory_store(memory_t *m, const char *key, const char *value,
                  const char **tags, int n_tags, int pinned,
-                 const char *journal_ref);
+                 const char *journal_ref,
+                 const char **refs, int n_refs);
 
 /* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
 int memory_pin(memory_t *m, const char *key);

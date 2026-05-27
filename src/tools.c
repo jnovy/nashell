@@ -1421,7 +1421,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
         /* Store consolidated version under the new key with merged tags */
         memory_store(ctx->memory, new_key, consolidated,
-                     merged_tags, n_merged, 0, new_jref);
+                     merged_tags, n_merged, 0, new_jref, NULL, 0);
 
         free(merged_tags);
         cJSON_Delete(new_entry_json);
@@ -1476,9 +1476,30 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         jref[0] = '\0';
     }
 
+    /* Parse refs (comma-separated string of related memory keys).
+     * Inter-memory relationships for "see also" links.
+     * Research: MemForest [arXiv:2605.23986], ActiveGraph [arXiv:2605.21997],
+     * MemIR [arXiv:2605.25869] — all validate graph-structured memory. */
+    const char *refs_arr[32];
+    int n_refs = 0;
+    cJSON *refs_j = cJSON_GetObjectItem(params, "refs");
+    char *refs_copy = NULL;
+    if (refs_j && refs_j->valuestring) {
+        refs_copy = strdup(refs_j->valuestring);
+        char *saveptr = NULL;
+        char *tok = strtok_r(refs_copy, ",", &saveptr);
+        while (tok && n_refs < 32) {
+            while (*tok == ' ') tok++;  /* trim leading space */
+            refs_arr[n_refs++] = tok;
+            tok = strtok_r(NULL, ",", &saveptr);
+        }
+    }
+
     int rc = memory_store(ctx->memory, key, value, tags_arr, n_tags, pinned,
-                          jref[0] ? jref : NULL);
+                          jref[0] ? jref : NULL,
+                          n_refs > 0 ? refs_arr : NULL, n_refs);
     free(tags_copy);
+    free(refs_copy);
 
     if (rc != 0) return make_error("failed to store memory");
 
