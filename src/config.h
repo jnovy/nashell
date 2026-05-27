@@ -47,9 +47,10 @@ typedef struct {
  * substring scoring per memory, use dense semantic vectors for context-aware
  * similarity matching. */
 typedef struct {
-    char  *type;             /* "ollama", "openai", "none" (default: "none") */
+    char  *type;             /* "onnx", "ollama", "openai", "none" (default: "none") */
     char  *model;            /* embedding model name (e.g. "nomic-embed-text") */
     char  *api_base;         /* API base URL (e.g. "http://localhost:11434") */
+    char  *model_path;       /* ONNX: directory with onnx/model.onnx + vocab.txt */
     int    dimension;        /* expected embedding dimension (0 = auto-detect) */
 } embedding_config_t;
 

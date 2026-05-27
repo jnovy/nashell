@@ -88,12 +88,14 @@ int memory_increment_misses(memory_t *m, const char *key);
 int memory_write_index_file(memory_t *m);
 
 /* Initialize embedding context for semantic memory matching.
- * Call after memory_new(). Probes the embedding service and sets
+ * Call after memory_new(). Probes the embedding backend and sets
  * m->embed if available. No-op if cfg->type is "none" or NULL.
+ * For ONNX: model_path = directory with onnx/model.onnx + vocab.txt.
+ * For HTTP backends: model = model name, api_base = server URL.
  * Returns 1 if embeddings are available, 0 otherwise. */
 int memory_init_embeddings(memory_t *m, const char *type,
                            const char *model, const char *api_base,
-                           int dimension);
+                           const char *model_path, int dimension);
 
 /* Generate and save embedding for a memory entry.
  * Called automatically by memory_store when embeddings are enabled.

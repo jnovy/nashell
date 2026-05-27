@@ -3,18 +3,22 @@
 
 /* Semantic embedding support for memory recall.
  *
- * Generates vector embeddings via an external API (ollama, OpenAI-compatible,
- * or Vertex AI) and computes cosine similarity for semantic matching.
+ * Generates vector embeddings via:
+ *   - Local ONNX Runtime inference (preferred — no external service needed)
+ *   - External API (ollama, OpenAI-compatible)
  *
  * Design inspired by GDN-2's "short convolution on gates" principle:
  * instead of independent scoring per memory (substring match), we use
  * dense vector representations that capture semantic relationships —
  * a continuous, context-aware scoring mechanism.
  *
- * Graceful degradation: if no embedding service is available, memory_recall
+ * Graceful degradation: if no embedding backend is available, memory_recall
  * falls back to the existing substring-based scoring. */
 
 #include <stddef.h>
+
+/* Forward declaration for ONNX backend (opaque) */
+typedef struct onnx_embed_ctx onnx_embed_ctx_t;
 
 /* ── Embedding backend types ─────────────────────────── */
 
@@ -22,6 +26,7 @@ typedef enum {
     EMBED_NONE   = 0,  /* disabled — use substring matching */
     EMBED_OLLAMA = 1,  /* Ollama API (http://host:11434/api/embed) */
     EMBED_OPENAI = 2,  /* OpenAI-compatible (/v1/embeddings) */
+    EMBED_ONNX   = 3,  /* Local ONNX Runtime (all-MiniLM-L6-v2) */
 } embed_type_t;
 
 /* ── Embedding configuration ─────────────────────────── */
@@ -30,6 +35,7 @@ typedef struct {
     embed_type_t type;
     char *model;       /* e.g. "nomic-embed-text", "text-embedding-3-small" */
     char *api_base;    /* e.g. "http://localhost:11434" */
+    char *model_path;  /* ONNX: directory containing onnx/model.onnx + vocab.txt */
     int   dimension;   /* expected embedding dimension (0 = auto-detect) */
 } embed_config_t;
 
@@ -37,8 +43,9 @@ typedef struct {
 
 typedef struct {
     embed_config_t cfg;
-    int  available;     /* 1 if embedding service responded successfully */
+    int  available;     /* 1 if embedding backend is ready */
     int  detected_dim;  /* auto-detected dimension from first successful call */
+    onnx_embed_ctx_t *onnx;  /* ONNX backend context (NULL if not using ONNX) */
 } embed_ctx_t;
 
 /* ── Embedding vector ────────────────────────────────── */

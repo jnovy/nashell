@@ -1,6 +1,14 @@
 CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm
+# ONNX Runtime: use pip-installed libonnxruntime if no system package
+ORT_LIB := $(shell python3 -c "import onnxruntime; import os; print(os.path.dirname(onnxruntime.__file__) + '/capi')" 2>/dev/null)
+ifneq ($(ORT_LIB),)
+  ORT_LDFLAGS = -L$(ORT_LIB) -Wl,-rpath,$(ORT_LIB) -lonnxruntime
+else
+  ORT_LDFLAGS = -lonnxruntime
+endif
+
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm $(ORT_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -10,7 +18,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/frontend_tui.c \
           src/ui_state.c src/tui.c src/md_render.c \
           src/memory.c \
-          src/embedding.c
+          src/embedding.c \
+          src/embedding_onnx.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -33,7 +42,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
           src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c \
-          src/embedding.c
+          src/embedding.c src/embedding_onnx.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

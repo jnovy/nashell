@@ -877,12 +877,26 @@ int memory_increment_misses(memory_t *m, const char *key) {
 
 int memory_init_embeddings(memory_t *m, const char *type,
                            const char *model, const char *api_base,
-                           int dimension) {
+                           const char *model_path, int dimension) {
     if (!m || !type) return 0;
+
+    /* Expand ~ in model_path */
+    char expanded_path[4096];
+    const char *resolved_model_path = model_path;
+    if (model_path && model_path[0] == '~' && (model_path[1] == '/' || model_path[1] == '\0')) {
+        const char *home = getenv("HOME");
+        if (home) {
+            snprintf(expanded_path, sizeof(expanded_path), "%s%s", home, model_path + 1);
+            resolved_model_path = expanded_path;
+        }
+    }
 
     /* Parse embedding type */
     embed_config_t cfg = {0};
-    if (strcmp(type, "ollama") == 0) {
+    if (strcmp(type, "onnx") == 0) {
+        cfg.type = EMBED_ONNX;
+        cfg.model_path = (char *)(resolved_model_path ? resolved_model_path : NULL);
+    } else if (strcmp(type, "ollama") == 0) {
         cfg.type = EMBED_OLLAMA;
         cfg.api_base = (char *)(api_base ? api_base : "http://localhost:11434");
         cfg.model = (char *)(model ? model : "nomic-embed-text");
@@ -900,17 +914,28 @@ int memory_init_embeddings(memory_t *m, const char *type,
     m->embed = embed_new(&cfg);
     if (!m->embed) return 0;
 
-    /* Probe the service — if it's not running, gracefully disable */
+    /* Probe the backend — if it's not available, gracefully disable */
     if (!embed_probe(m->embed)) {
-        fprintf(stderr, "[memory] embedding service at %s not available, "
-                "falling back to substring matching\n", cfg.api_base);
+        if (cfg.type == EMBED_ONNX) {
+            fprintf(stderr, "[memory] ONNX embedding at %s not available, "
+                    "falling back to substring matching\n",
+                    model_path ? model_path : "(no path)");
+        } else {
+            fprintf(stderr, "[memory] embedding service at %s not available, "
+                    "falling back to substring matching\n", cfg.api_base);
+        }
         embed_free(m->embed);
         m->embed = NULL;
         return 0;
     }
 
-    fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d)\n",
-            cfg.api_base, cfg.model, m->embed->detected_dim);
+    if (cfg.type == EMBED_ONNX) {
+        fprintf(stderr, "[memory] ONNX embeddings enabled: %s (dim=%d)\n",
+                model_path, m->embed->detected_dim);
+    } else {
+        fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d)\n",
+                cfg.api_base, cfg.model, m->embed->detected_dim);
+    }
 
     /* On first enable, embed any existing memories that lack .emb files */
     int embedded = memory_embed_all(m);

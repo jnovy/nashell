@@ -153,10 +153,11 @@ config_t *config_load(const char *path) {
     /* [embedding] — semantic memory matching via vector embeddings */
     toml_table_t *embedding = toml_table_in(root, "embedding");
     if (embedding) {
-        cfg->embedding.type      = toml_str(embedding, "type");
-        cfg->embedding.model     = toml_str(embedding, "model");
-        cfg->embedding.api_base  = toml_str(embedding, "api_base");
-        cfg->embedding.dimension = toml_int(embedding, "dimension", 0);
+        cfg->embedding.type       = toml_str(embedding, "type");
+        cfg->embedding.model      = toml_str(embedding, "model");
+        cfg->embedding.api_base   = toml_str(embedding, "api_base");
+        cfg->embedding.model_path = toml_str(embedding, "model_path");
+        cfg->embedding.dimension  = toml_int(embedding, "dimension", 0);
     }
 
     /* [client] */
@@ -250,6 +251,7 @@ void config_free(config_t *cfg) {
     free(cfg->embedding.type);
     free(cfg->embedding.model);
     free(cfg->embedding.api_base);
+    free(cfg->embedding.model_path);
     free(cfg->data_dir);
     free(cfg->search_engine);
     free(cfg->searxng_url);
@@ -308,11 +310,12 @@ int config_write_default(const char *path) {
         "\n"
         "# Semantic embedding for memory matching (GDN-2 inspired)\n"
         "# Enables cosine-similarity scoring instead of substring matching.\n"
-        "# Graceful fallback: if service unavailable, uses substring matching.\n"
-        "# [embedding]\n"
-        "# type = \"ollama\"                        # \"ollama\", \"openai\", \"none\"\n"
-        "# model = \"nomic-embed-text\"             # embedding model name\n"
-        "# api_base = \"http://localhost:11434\"    # ollama default\n"
+        "# Graceful fallback: if backend unavailable, uses substring matching.\n"
+        "[embedding]\n"
+        "type = \"onnx\"                            # \"onnx\" (local), \"ollama\", \"openai\", \"none\"\n"
+        "model_path = \"~/models/all-MiniLM-L6-v2\" # ONNX model directory\n"
+        "# model = \"nomic-embed-text\"             # embedding model name (ollama/openai)\n"
+        "# api_base = \"http://localhost:11434\"    # API base (ollama/openai)\n"
         "# dimension = 0                          # 0 = auto-detect\n"
         "\n"
         "[limits]\n"

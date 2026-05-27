@@ -384,6 +384,7 @@ int main(int argc, char **argv) {
     if (cfg->embedding.type && strcmp(cfg->embedding.type, "none") != 0) {
         memory_init_embeddings(memory, cfg->embedding.type,
                                cfg->embedding.model, cfg->embedding.api_base,
+                               cfg->embedding.model_path,
                                cfg->embedding.dimension);
     }
 

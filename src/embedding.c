@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "embedding.h"
+#include "embedding_onnx.h"
 #include "cJSON.h"
 #include "str.h"
 #include <stdio.h>
@@ -37,17 +38,21 @@ embed_ctx_t *embed_new(const embed_config_t *cfg) {
     ctx->cfg.type = cfg->type;
     ctx->cfg.model = cfg->model ? strdup(cfg->model) : NULL;
     ctx->cfg.api_base = cfg->api_base ? strdup(cfg->api_base) : NULL;
+    ctx->cfg.model_path = cfg->model_path ? strdup(cfg->model_path) : NULL;
     ctx->cfg.dimension = cfg->dimension;
     ctx->available = 0;
     ctx->detected_dim = 0;
+    ctx->onnx = NULL;
 
     return ctx;
 }
 
 void embed_free(embed_ctx_t *ctx) {
     if (!ctx) return;
+    if (ctx->onnx) onnx_embed_free(ctx->onnx);
     free(ctx->cfg.model);
     free(ctx->cfg.api_base);
+    free(ctx->cfg.model_path);
     free(ctx);
 }
 
@@ -228,7 +233,26 @@ int embed_probe(embed_ctx_t *ctx) {
         return 0;
     }
 
-    /* Send a minimal test embedding */
+    /* ONNX backend: initialize locally, no network probe needed */
+    if (ctx->cfg.type == EMBED_ONNX) {
+        if (!ctx->cfg.model_path) {
+            fprintf(stderr, "[embed] ONNX: no model_path configured\n");
+            ctx->available = 0;
+            return 0;
+        }
+        ctx->onnx = onnx_embed_init(ctx->cfg.model_path);
+        if (ctx->onnx) {
+            ctx->available = 1;
+            ctx->detected_dim = onnx_embed_dim(ctx->onnx);
+            if (ctx->cfg.dimension == 0)
+                ctx->cfg.dimension = ctx->detected_dim;
+            return 1;
+        }
+        ctx->available = 0;
+        return 0;
+    }
+
+    /* HTTP backends: send a minimal test embedding */
     embed_vec_t test = call_api(ctx, "test");
     if (test.data && test.dim > 0) {
         ctx->available = 1;
@@ -247,6 +271,19 @@ int embed_probe(embed_ctx_t *ctx) {
 embed_vec_t embed_text(embed_ctx_t *ctx, const char *text) {
     embed_vec_t result = {0};
     if (!ctx || !text || !ctx->available) return result;
+
+    /* ONNX backend: local inference */
+    if (ctx->cfg.type == EMBED_ONNX && ctx->onnx) {
+        int dim = 0;
+        float *data = onnx_embed_text(ctx->onnx, text, &dim);
+        if (data && dim > 0) {
+            result.data = data;
+            result.dim = dim;
+        }
+        return result;
+    }
+
+    /* HTTP backends */
     return call_api(ctx, text);
 }
 
