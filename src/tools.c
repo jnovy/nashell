@@ -462,8 +462,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     } else {
         char *trunc = malloc(50001);
         if (trunc) {
-            memcpy(trunc, content, 50000);
-            trunc[50000] = '\0';
+            utf8_truncate(trunc, content, 50000);
             cJSON_AddStringToObject(meta, "content", trunc);
             cJSON_AddBoolToObject(meta, "truncated", 1);
             free(trunc);
@@ -1075,8 +1074,12 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "section", section);
         cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
 
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+        /* Store content for full audit trail */
+        char *w_hash = store_save(ctx->store, content);
+        char *w_alias = tool_register_alias(ctx, w_hash ? w_hash : "");
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, w_alias,
                        strlen(content), 0, NULL, NULL);
+        free(w_alias); free(w_hash);
         return make_result(1, meta, NULL);
 
     } else if (strcmp(op, "append") == 0) {
@@ -1096,8 +1099,12 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddNumberToObject(meta, "total_chars",
                                 idx >= 0 ? (double)strlen(ctx->scratch.sections[idx].content) : 0);
 
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
+        /* Store content for full audit trail */
+        char *a_hash = store_save(ctx->store, content);
+        char *a_alias = tool_register_alias(ctx, a_hash ? a_hash : "");
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, a_alias,
                        strlen(content), 0, NULL, NULL);
+        free(a_alias); free(a_hash);
         return make_result(1, meta, NULL);
 
     } else if (strcmp(op, "read") == 0) {
@@ -1138,8 +1145,15 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "section", section);
         cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
 
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
-                       0, 0, NULL, NULL);
+        /* Store clear/delete status for audit trail */
+        {
+            char *c_str = cJSON_Print(meta);
+            char *c_hash = store_save(ctx->store, c_str ? c_str : "{}");
+            char *c_alias = tool_register_alias(ctx, c_hash ? c_hash : "");
+            journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, c_alias,
+                           0, 0, NULL, NULL);
+            free(c_alias); free(c_hash); free(c_str);
+        }
         return make_result(1, meta, NULL);
 
     } else if (strcmp(op, "list") == 0) {
@@ -1157,8 +1171,14 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         if (out.len > 0)
             cJSON_AddStringToObject(meta, "listing", out.data);
 
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, NULL,
-                       out.len, ctx->scratch.count, NULL, NULL);
+        /* Store listing for audit trail */
+        {
+            char *l_hash = store_save(ctx->store, out.len > 0 ? out.data : "{}");
+            char *l_alias = tool_register_alias(ctx, l_hash ? l_hash : "");
+            journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, l_alias,
+                           out.len, ctx->scratch.count, NULL, NULL);
+            free(l_alias); free(l_hash);
+        }
 
         str_free(&out);
         return make_result(1, meta, NULL);
@@ -1596,8 +1616,14 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", "pinned");
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
-                   params, NULL, 0, 0, NULL, NULL);
+    {
+        char *_p = cJSON_PrintUnformatted(params);
+        char *_h = store_save(ctx->store, _p ? _p : "{}");
+        char *_a = tool_register_alias(ctx, _h ? _h : "");
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
+                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
+        free(_a); free(_h); free(_p);
+    }
 
     return make_result(1, meta, NULL);
 }
@@ -1616,8 +1642,14 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", "unpinned");
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
-                   params, NULL, 0, 0, NULL, NULL);
+    {
+        char *_p = cJSON_PrintUnformatted(params);
+        char *_h = store_save(ctx->store, _p ? _p : "{}");
+        char *_a = tool_register_alias(ctx, _h ? _h : "");
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
+                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
+        free(_a); free(_h); free(_p);
+    }
 
     return make_result(1, meta, NULL);
 }
@@ -1636,8 +1668,14 @@ static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", "deleted");
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_delete",
-                   params, NULL, 0, 0, NULL, NULL);
+    {
+        char *_p = cJSON_PrintUnformatted(params);
+        char *_h = store_save(ctx->store, _p ? _p : "{}");
+        char *_a = tool_register_alias(ctx, _h ? _h : "");
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_delete",
+                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
+        free(_a); free(_h); free(_p);
+    }
 
     return make_result(1, meta, NULL);
 }

@@ -110,8 +110,22 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
         cJSON_AddStringToObject(params, "query", qtrunc);
     }
 
+    /* Store full memory context in store/ for audit trail */
+    char *mc_alias = NULL;
+    {
+        char *content = cJSON_Print(params);
+        if (content && tools->store && tools->aliases) {
+            char *hash = store_save(tools->store, content);
+            if (hash) {
+                mc_alias = tool_register_alias(tools, hash);
+                free(hash);
+            }
+        }
+        free(content);
+    }
     journal_append(tools->journal, react_loop, step, "memory_context",
-                   params, NULL, 0, 0, NULL, NULL);
+                   params, mc_alias, mc_alias ? strlen(mc_alias) : 0, 0, NULL, NULL);
+    free(mc_alias);
 }
 
 /* Unwrap nested JSON in the "thought" field.
@@ -744,9 +758,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
-        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, NULL,
+        char *q_hash = store_save(ctx->tools->store, user_query);
+        char *q_alias = q_hash ? tool_register_alias(ctx->tools, q_hash) : NULL;
+        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, q_alias,
                        strlen(user_query), 0, NULL, NULL);
         cJSON_Delete(q_p);
+        free(q_alias);
+        free(q_hash);
     }
 
     } /* end if (!restored) */
@@ -910,10 +928,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                 }
 
+                /* Store full error params in store/ for audit trail */
+                char *se_alias = NULL;
+                {
+                    char *content = cJSON_Print(err_params);
+                    if (content && ctx->tools->store && ctx->tools->aliases) {
+                        char *hash = store_save(ctx->tools->store, content);
+                        if (hash) {
+                            se_alias = tool_register_alias(ctx->tools, hash);
+                            free(hash);
+                        }
+                    }
+                    free(content);
+                }
+
                 journal_append(ctx->tools->journal,
                     ctx->tools->react_loop, step, "server_error",
-                    err_params, NULL, 0, 0,
+                    err_params, se_alias, se_alias ? strlen(se_alias) : 0, 0,
                     "LLM server error", NULL);
+                free(se_alias);
                 cJSON_Delete(err_params);
             }
 
@@ -1207,9 +1240,26 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "Read previous results with file_read(ref) instead.");
             tr = (tool_result_t){ .meta = err_meta, .store_ref = NULL, .success = 0 };
 
-            journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step + 1, "cycling_refused", NULL, NULL,
-                           0, 0, "same action repeated 4+ times", NULL);
+            /* Store cycling_refused details for audit trail */
+            {
+                cJSON *cr_params = cJSON_CreateObject();
+                cJSON_AddStringToObject(cr_params, "error",
+                    "same action repeated 4+ times");
+                cJSON_AddStringToObject(cr_params, "action", action_name);
+                char *cr_json = cJSON_PrintUnformatted(cr_params);
+                char *cr_ref = (cr_json && ctx->tools->store)
+                    ? store_save(ctx->tools->store, cr_json) : NULL;
+                char *cr_alias = (cr_ref && ctx->tools->aliases)
+                    ? tool_register_alias(ctx->tools, cr_ref) : NULL;
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "cycling_refused", cr_params, cr_alias,
+                               cr_json ? strlen(cr_json) : 0, 0,
+                               "same action repeated 4+ times", NULL);
+                free(cr_json);
+                free(cr_ref);
+                free(cr_alias);
+                cJSON_Delete(cr_params);
+            }
         } else {
             /* Normal execution */
             tr = tool_execute(ctx->tools, action_name, action);
