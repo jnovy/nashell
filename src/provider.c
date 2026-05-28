@@ -601,23 +601,19 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             fprintf(stderr, "[provider] HTTP %ld error: %.2000s\n",
                     http_code,
                     st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
-            if (http_code >= 500 && attempt < PROVIDER_MAX_RETRIES) {
-                /* Only retry on transient server errors (502/503/504).
-                 * 500 with "parse" in the body = deterministic model output
-                 * error — retrying is pointless. */
-                const char *body = st.full_content.len > 0 ?
-                                   str_cstr(&st.full_content) : "";
-                if (http_code == 500 && strstr(body, "parse")) {
-                    fprintf(stderr, "[provider] deterministic parse error — "
-                            "not retrying (let react handle recovery)\n");
-                } else {
-                    int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-                    fprintf(stderr, "[provider] server error (attempt %d/%d, "
-                            "retry in %ds)\n",
-                            attempt, PROVIDER_MAX_RETRIES, delay);
-                    sleep(delay);
-                    continue;
-                }
+            if (http_code > 500 && attempt < PROVIDER_MAX_RETRIES) {
+                /* Only retry on transient gateway/overload errors (502/503/504).
+                 * HTTP 500 from llama.cpp is almost always deterministic —
+                 * the same request body produces the same malformed output.
+                 * Retrying wastes up to 550 seconds (10 retries × linear backoff)
+                 * while the user sees a "stuck" process. Let react.c handle
+                 * recovery by reformulating the scratchpad/context. */
+                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+                fprintf(stderr, "[provider] transient %ld error (attempt %d/%d, "
+                        "retry in %ds)\n",
+                        http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+                sleep(delay);
+                continue;
             }
             /* 4xx, deterministic 500, or final attempt: return NULL */
             /* Populate error diagnostics for react.c journal entry */
