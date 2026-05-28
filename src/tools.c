@@ -157,8 +157,8 @@ const char *alias_map_lookup(alias_map_t *map, const char *alias) {
 
 /* ── public alias API (thin wrappers over hash map) ───── */
 
-const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
-    if (!ctx || !ctx->aliases) return "R?S?";
+char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
+    if (!ctx || !ctx->aliases) return strdup("R?S?");
 
     char alias_buf[32];
     snprintf(alias_buf, sizeof(alias_buf), "R%dS%d", ctx->react_loop, ctx->aliases->next_seq);
@@ -175,19 +175,9 @@ const char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
         symlink(target, link_path);  /* ignore EEXIST */
     }
 
-    /* Return the alias NAME (e.g., "R0S1"), not the hash value.
-     * alias_map_lookup returns the hash, but callers need the alias.
-     * Walk the bucket to find the node we just inserted. */
-    {
-        unsigned int h = alias_hash(alias_buf) % (unsigned int)ctx->aliases->capacity;
-        alias_node_t *node = ctx->aliases->buckets[h];
-        while (node) {
-            if (strcmp(node->alias, alias_buf) == 0)
-                return node->alias;  /* persistent pointer into hash map */
-            node = node->next;
-        }
-    }
-    return "R?S?";  /* shouldn't happen — we just inserted */
+    /* Return a copy of the alias string. Caller must free.
+     * Previously returned node->alias which dangled after alias_map_free/clear. */
+    return strdup(alias_buf);
 }
 
 const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
@@ -366,7 +356,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     char *hash = store_save(ctx->store, out.data);
 
     /* Register alias */
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "exit_code", exit_code);
@@ -405,6 +395,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
 
     char *ref_copy = strdup(alias);
+    free(alias);
     str_free(&out);
     free(hash);
     return make_result(exit_code == 0, meta, ref_copy);
@@ -457,7 +448,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
 
     int lines = count_lines(content);
     char *hash = store_save(ctx->store, content);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "path", path_j->valuestring);
@@ -483,6 +474,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
                    len, lines, NULL, NULL);
 
     char *ref_copy = strdup(alias);
+    free(alias);
     free(content);
     free(hash);
     return make_result(1, meta, ref_copy);
@@ -512,7 +504,7 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store written content for full audit trail */
     char *hash = store_save(ctx->store, content);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -524,6 +516,7 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
                    len, count_lines(content), NULL, NULL);
 
     char *ref_copy = strdup(alias);
+    free(alias);
     free(hash);
     return make_result(1, meta, ref_copy);
 }
@@ -553,7 +546,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store pre-edit content */
     char *pre_hash = store_save(ctx->store, content);
-    const char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "");
+    char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "");
 
     char *pos = strstr(content, old_text);
     if (!pos) {
@@ -582,7 +575,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store post-edit content */
     char *post_hash = store_save(ctx->store, result);
-    const char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");
+    char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -595,6 +588,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 
     free(content);
     free(result);
+    free(pre_alias);
     free(pre_hash);
     free(post_hash);
     return make_result(1, meta, post_alias);
@@ -689,7 +683,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
 
     int matches = count_lines(out.data);
     char *hash = store_save(ctx->store, out.data);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "pattern", pattern);
@@ -702,6 +696,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
                    out.len, matches, NULL, NULL);
 
     char *ref_copy = strdup(alias);
+    free(alias);
     str_free(&out);
     free(hash);
     return make_result(1, meta, ref_copy);
@@ -1037,7 +1032,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
 
         char *full = scratchpad_serialize(&ctx->scratch);
         char *hash = store_save(ctx->store, full ? full : "");
-        const char *alias = tool_register_alias(ctx, hash ? hash : "");
+        char *alias = tool_register_alias(ctx, hash ? hash : "");
 
         cJSON *meta = cJSON_CreateObject();
         cJSON_AddStringToObject(meta, "status", "ok");
@@ -1048,6 +1043,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
                        full ? strlen(full) : 0, 0, NULL, NULL);
 
         char *ref_copy = strdup(alias);
+        free(alias);
         free(hash);
         free(full);
         return make_result(1, meta, ref_copy);
@@ -1112,7 +1108,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
 
         const char *sec_content = ctx->scratch.sections[idx].content;
         char *hash = store_save(ctx->store, sec_content);
-        const char *alias = tool_register_alias(ctx, hash ? hash : "");
+        char *alias = tool_register_alias(ctx, hash ? hash : "");
 
         cJSON *meta = cJSON_CreateObject();
         cJSON_AddStringToObject(meta, "section", section);
@@ -1124,6 +1120,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
                        strlen(sec_content), 0, NULL, NULL);
 
         char *ref_copy = strdup(alias);
+        free(alias);
         free(hash);
         return make_result(1, meta, ref_copy);
 
@@ -1180,7 +1177,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store result for full audit */
     char *hash = store_save(ctx->store, result);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "result", result);
@@ -1190,6 +1187,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
                    strlen(result), 0, NULL, NULL);
 
     char *ref_copy = strdup(alias);
+    free(alias);
     free(hash);
     return make_result(1, meta, ref_copy);
 }
@@ -1525,7 +1523,7 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store for audit */
     char *hash = store_save(ctx->store, value);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -1535,8 +1533,10 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_store",
                    params, alias, strlen(value), 0, NULL, NULL);
 
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    free(alias);
     free(hash);
-    return make_result(1, meta, alias ? strdup(alias) : NULL);
+    return make_result(1, meta, ref_copy);
 }
 
 /* ── memory_recall ─────────────────────────────────────── */
@@ -1558,7 +1558,7 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     }
 
     char *hash = NULL;
-    const char *alias = NULL;
+    char *alias = NULL;
     if (out.len > 0) {
         hash = store_save(ctx->store, out.data);
         alias = tool_register_alias(ctx, hash ? hash : "");
@@ -1573,8 +1573,9 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
                    params, alias, out.len, results.count, NULL, NULL);
 
     memory_results_free(&results);
-    free(hash);
     char *ref_copy = alias ? strdup(alias) : NULL;
+    free(alias);
+    free(hash);
     str_free(&out);
     return make_result(1, meta, ref_copy);
 }
@@ -1650,7 +1651,7 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
     if (buf->len + total > 512000) {
         size_t remaining = 512000 - buf->len;
         if (remaining > 0) str_append(buf, ptr, remaining);
-        return remaining;  /* tell curl how much we actually consumed */
+        return total;  /* signal curl we're done; excess data is silently dropped */
     }
     str_append(buf, ptr, total);
     return total;
@@ -1699,7 +1700,7 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store to shared store */
     char *hash = store_save(ctx->store, body.data);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     /* Build metadata */
     cJSON *meta = cJSON_CreateObject();
@@ -1715,9 +1716,10 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
                    params, alias, body.len, count_lines(body.data), NULL, NULL);
 
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    free(alias);
     free(hash);
     free(content_type);
-    char *ref_copy = alias ? strdup(alias) : NULL;
     str_free(&body);
     return make_result(http_code >= 200 && http_code < 400, meta, ref_copy);
 }
@@ -1828,7 +1830,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
 
     /* Store results */
     char *hash = store_save(ctx->store, results.data);
-    const char *alias = tool_register_alias(ctx, hash ? hash : "");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "query", query);
@@ -1841,8 +1843,9 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
                    params, alias, results.len, result_count, NULL, NULL);
 
-    free(hash);
     char *ref_copy = alias ? strdup(alias) : NULL;
+    free(alias);
+    free(hash);
     str_free(&results);
     str_free(&body);
     return make_result(1, meta, ref_copy);

@@ -114,8 +114,9 @@ typedef struct {
 /* Track a recalled memory key for post-task validation scoring */
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
 
-/* Register a store hash as a step alias, returns alias string like "R1S0" */
-const char *tool_register_alias(tool_ctx_t *ctx, const char *hash);
+/* Register a store hash as a step alias, returns alias string like "R1S0".
+ * Caller must free the returned string. */
+char *tool_register_alias(tool_ctx_t *ctx, const char *hash);
 
 /* Resolve a step alias (e.g. "R1S1") to the full store path. Returns NULL if not found.
  * Returned string must be freed by caller. */

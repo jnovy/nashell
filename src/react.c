@@ -685,12 +685,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *sys_prompt = tools_system_prompt();
         char *sys_hash = store_save(ctx->tools->store, sys_prompt);
         /* Register alias for system prompt (function auto-generates S0, S1, ...) */
-        const char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
+        char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
         cJSON *sys_p = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_p, "type", "system_prompt");
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
                        strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL);
         cJSON_Delete(sys_p);
+        free(sys_alias);
         free(sys_hash);
 
         cJSON *q_p = cJSON_CreateObject();
@@ -919,7 +920,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             /* Log the invalid response to journal for analysis */
             char *err_hash = store_save(ctx->tools->store, response);
-            const char *err_alias = tool_register_alias(ctx->tools,
+            char *err_alias = tool_register_alias(ctx->tools,
                                         err_hash ? err_hash : "");
             cJSON *err_p = cJSON_CreateObject();
             cJSON_AddStringToObject(err_p, "type", "parse_error");
@@ -930,6 +931,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                            strlen(response), 0,
                            "LLM response was not valid JSON", NULL);
             cJSON_Delete(err_p);
+            free(err_alias);
             free(err_hash);
 
             /* Retry — tell model to use tool_calls */
@@ -955,7 +957,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * This is valid (e.g., deep code analysis, planning).
                  * Log as "thinking" step (not an error), preserve in context. */
                 char *think_hash = store_save(ctx->tools->store, response);
-                const char *think_alias = tool_register_alias(ctx->tools,
+                char *think_alias = tool_register_alias(ctx->tools,
                                             think_hash ? think_hash : "");
                 cJSON *think_p = cJSON_CreateObject();
                 cJSON_AddStringToObject(think_p, "type", "thinking");
@@ -964,6 +966,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                step + 1, "thinking", think_p, think_alias,
                                strlen(thought), 0, NULL, NULL);
                 cJSON_Delete(think_p);
+                free(think_alias);
                 free(think_hash);
 
                 /* Emit as a step complete (not error) so TUI shows it */
@@ -995,7 +998,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 emit(on_event, userdata, &ev);
 
                 char *err_hash = store_save(ctx->tools->store, response);
-                const char *err_alias = tool_register_alias(ctx->tools,
+                char *err_alias = tool_register_alias(ctx->tools,
                                             err_hash ? err_hash : "");
                 cJSON *err_p = cJSON_CreateObject();
                 cJSON_AddStringToObject(err_p, "type", "missing_action");
@@ -1006,6 +1009,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                strlen(response), 0,
                                "LLM response missing 'action' field", NULL);
                 cJSON_Delete(err_p);
+                free(err_alias);
                 free(err_hash);
 
                 /* Retry — tell model to use tool_calls */
