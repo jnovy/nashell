@@ -870,6 +870,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddNumberToObject(err_params, "context_chars", total_chars);
                 cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
+                /* Include the actual server error message if available.
+                 * This is populated by llm.c error paths (curl error, API error,
+                 * JSON parse failure, empty response). */
+                if (ctx->llm->last_error) {
+                    cJSON_AddStringToObject(err_params, "server_message",
+                                            ctx->llm->last_error);
+                }
+
                 journal_append(ctx->tools->journal,
                     ctx->tools->react_loop, step, "server_error",
                     err_params, NULL, 0, 0,

@@ -1055,6 +1055,7 @@ int main(int argc, char **argv) {
     free(nash_dir);
     free(props_json);
     free(server_model);
+    free(llm_cfg.last_error);
     config_free(cfg);
     return 0;
 }
