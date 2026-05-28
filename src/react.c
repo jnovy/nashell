@@ -1194,6 +1194,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
             const char *result = json_get_str(action, "result");
+            /* Fallback: if result is empty but thought has content, use thought.
+             * Local models sometimes put the summary in "thought" and leave
+             * "result" empty — the thought IS the answer for done calls. */
+            if ((!result || !result[0]) && thought && thought[0]) {
+                result = thought;
+            }
             final_result = result ? strdup(result) : strdup("(no result)");
             checkpoint_remove(ctx);
 
