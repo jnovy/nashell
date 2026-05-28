@@ -954,71 +954,106 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
 
-            if (consecutive_null_responses >= 2) {
-                ev.message = "LLM server error after scratchpad reformulation — giving up";
+            /* 3-tier retry strategy for HTTP 500 / NULL responses.
+             * Each tier addresses a different root cause:
+             *   Tier 1: Remove last assistant+tool_result pair (model confusion)
+             *   Tier 2: Reformulate scratchpad (context pollution)
+             *   Tier 3: Strip scratchpad entirely (nuclear option)
+             *   Tier 4+: Give up */
+            if (consecutive_null_responses >= 4) {
+                ev.message = "LLM server error — all recovery tiers exhausted, giving up";
                 emit(on_event, userdata, &ev);
                 break;
             }
 
-            /* HTTP 500 from the server typically means the model produced
-             * malformed tool-call JSON.  The scratchpad often contains
-             * code blocks and deeply-nested JSON escaping that confuse
-             * the model's JSON generation.  Instead of blindly retrying
-             * (same prompt → same malformed output), we ask the LLM to
-             * reformulate the scratchpad into plain prose, then retry
-             * once with the sanitised version. */
-
-            /* Find the [SCRATCHPAD] message in the chat */
-            int sp_idx = -1;
-            for (int i = 0; i < chat->n_msgs; i++) {
-                if (chat->msgs[i].content &&
-                    strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
-                    sp_idx = i;
-                    break;
-                }
-            }
-
-            if (sp_idx >= 0) {
-                ev.message = "LLM server error — reformulating scratchpad and retrying";
+            if (consecutive_null_responses == 1) {
+                /* Tier 1: Remove the last assistant+tool_result pair.
+                 * The model's previous output was likely malformed (e.g.,
+                 * "shell_execshell_exec"). Removing it gives the model a
+                 * clean slate to regenerate from the previous context. */
+                ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
                 emit(on_event, userdata, &ev);
 
-                /* Build a one-shot reformulation request */
-                llm_chat_t *rewrite = llm_chat_new();
-                llm_chat_add(rewrite, "system",
-                    "You are a text sanitiser. Rewrite the user's notes "
-                    "into plain prose. Remove ALL code blocks, JSON "
-                    "snippets, backtick-fenced sections, and deeply "
-                    "escaped strings. Keep the semantic meaning and key "
-                    "facts but express everything in simple sentences. "
-                    "Output ONLY the rewritten text, nothing else.");
-                llm_chat_add(rewrite, "user", chat->msgs[sp_idx].content + 13);
-
-                char *reformulated = ctx->provider ?
-                    provider_complete(ctx->provider, rewrite, NULL) :
-                    llm_complete(ctx->llm, rewrite, NULL);
-                llm_chat_free(rewrite);
-
-                if (reformulated && strlen(reformulated) > 0) {
-                    /* Replace the scratchpad message in-place */
-                    size_t rlen = strlen(reformulated);
-                    char *new_sp = malloc(rlen + 32);
-                    if (new_sp) {
-                        snprintf(new_sp, rlen + 32, "[SCRATCHPAD]\n%s",
-                                 reformulated);
-                        free(chat->msgs[sp_idx].content);
-                        chat->msgs[sp_idx].content = new_sp;
+                /* Remove last 2 messages (assistant + tool_result) if they exist */
+                if (chat->n_msgs >= 2) {
+                    for (int r = 0; r < 2 && chat->n_msgs > 3; r++) {
+                        int last = chat->n_msgs - 1;
+                        free(chat->msgs[last].role);
+                        free(chat->msgs[last].content);
+                        free(chat->msgs[last].tool_call_id);
+                        free(chat->msgs[last].tool_calls_json);
+                        chat->n_msgs--;
                     }
-                    free(reformulated);
-                } else {
-                    /* Reformulation failed — strip scratchpad entirely */
-                    free(reformulated);
-                    llm_chat_remove_by_prefix(chat, "[SCRATCHPAD]");
                 }
-            } else {
-                /* No scratchpad to reformulate — nothing we can do */
-                ev.message = "LLM server error — no scratchpad to reformulate, giving up";
+            } else if (consecutive_null_responses == 2) {
+                /* Tier 2: Reformulate scratchpad into plain prose.
+                 * Code blocks and JSON in the scratchpad can confuse
+                 * the model's JSON generation. */
+                int sp_idx = -1;
+                for (int i = 0; i < chat->n_msgs; i++) {
+                    if (chat->msgs[i].content &&
+                        strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
+                        sp_idx = i;
+                        break;
+                    }
+                }
+
+                if (sp_idx >= 0) {
+                    ev.message = "LLM server error — reformulating scratchpad (tier 2)";
+                    emit(on_event, userdata, &ev);
+
+                    llm_chat_t *rewrite = llm_chat_new();
+                    llm_chat_add(rewrite, "system",
+                        "You are a text sanitiser. Rewrite the user's notes "
+                        "into plain prose. Remove ALL code blocks, JSON "
+                        "snippets, backtick-fenced sections, and deeply "
+                        "escaped strings. Keep the semantic meaning and key "
+                        "facts but express everything in simple sentences. "
+                        "Output ONLY the rewritten text, nothing else.");
+                    llm_chat_add(rewrite, "user", chat->msgs[sp_idx].content + 13);
+
+                    char *reformulated = ctx->provider ?
+                        provider_complete(ctx->provider, rewrite, NULL) :
+                        llm_complete(ctx->llm, rewrite, NULL);
+                    llm_chat_free(rewrite);
+
+                    if (reformulated && strlen(reformulated) > 0) {
+                        size_t rlen = strlen(reformulated);
+                        char *new_sp = malloc(rlen + 32);
+                        if (new_sp) {
+                            snprintf(new_sp, rlen + 32, "[SCRATCHPAD]\n%s",
+                                     reformulated);
+                            free(chat->msgs[sp_idx].content);
+                            chat->msgs[sp_idx].content = new_sp;
+                        }
+                        free(reformulated);
+                    } else {
+                        free(reformulated);
+                    }
+                } else {
+                    ev.message = "LLM server error — no scratchpad, skipping tier 2";
+                    emit(on_event, userdata, &ev);
+                }
+            } else if (consecutive_null_responses == 3) {
+                /* Tier 3: Strip scratchpad entirely (nuclear option).
+                 * If reformulation didn't help, the scratchpad itself
+                 * may be the problem. Remove it completely. */
+                ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
                 emit(on_event, userdata, &ev);
-                break;
+
+                for (int i = 0; i < chat->n_msgs; i++) {
+                    if (chat->msgs[i].content &&
+                        strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
+                        free(chat->msgs[i].role);
+                        free(chat->msgs[i].content);
+                        free(chat->msgs[i].tool_call_id);
+                        free(chat->msgs[i].tool_calls_json);
+                        memmove(&chat->msgs[i], &chat->msgs[i + 1],
+                                (chat->n_msgs - i - 1) * sizeof(llm_msg_t));
+                        chat->n_msgs--;
+                        break;
+                    }
+                }
             }
             continue;
         }
@@ -1263,6 +1298,45 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         } else {
             /* Normal execution */
             tr = tool_execute(ctx->tools, action_name, action);
+
+            /* Unknown tool recovery: if the model generated a garbled tool name
+             * (e.g., "shell_execshell_exec"), don't send the raw error back —
+             * instead inject a corrective message and let the model retry.
+             * This prevents the "garbled name → error → model confusion → 500" cascade. */
+            if (!tr.success && tr.meta) {
+                cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
+                if (err_j && err_j->valuestring &&
+                    strstr(err_j->valuestring, "unknown tool")) {
+                    /* Log the error for audit trail */
+                    journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                                   step + 1, "unknown_tool", tr.meta, NULL,
+                                   0, 0, err_j->valuestring, NULL);
+
+                    /* Inject corrective message into chat */
+                    char correction[512];
+                    snprintf(correction, sizeof(correction),
+                        "ERROR: '%s' is not a valid tool. "
+                        "Available tools: shell_exec, file_read, file_write, "
+                        "file_edit, grep_search, web_fetch, web_search, notes, "
+                        "done, memory_store, memory_recall, memory_pin, "
+                        "memory_unpin, memory_delete. "
+                        "Please retry with the correct tool name.",
+                        action_name);
+
+                    if (chat->last_tool_call_id) {
+                        /* Tool calls API: send error as tool result */
+                        llm_chat_add_tool_result(chat, chat->last_tool_call_id,
+                                                  correction);
+                    } else {
+                        llm_chat_add(chat, "user", correction);
+                    }
+
+                    tool_result_free(&tr);
+                    cJSON_Delete(action);
+                    free(response);
+                    continue;  /* retry — model gets another chance */
+                }
+            }
         }
 
         struct timespec now;
