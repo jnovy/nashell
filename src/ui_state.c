@@ -295,7 +295,10 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             }
                             /* Tool name in backticks → rendered with C_STREAM color
                              * by md_render.c's render_inline() */
-                            str_appendf(&md, "[  %s %s: `%s` \"%s\"",
+                            /* Both tool name and description in backticks so that
+                             * special chars in commands (*.c, *.h) aren't interpreted
+                             * as markdown formatting (italic/underline). */
+                            str_appendf(&md, "[  %s %s: `%s` `%s`",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
                                         t, desc_safe);
