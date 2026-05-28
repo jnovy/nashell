@@ -12,8 +12,12 @@ typedef struct {
     int   context_size;   /* server's n_ctx (0 = unknown, fetched via /props) */
     int   enable_thinking; /* 0=off, 1=on — set per-request by EDRM routing */
     int   thinking_budget; /* -1=unrestricted, 0=none, N>0=max thinking tokens */
-    char *last_error;      /* populated on LLM error — server message, curl error, etc.
-                            * Caller should free after reading. Set by llm_complete/stream. */
+    char *last_error;          /* populated on LLM error — server message, curl error, etc.
+                                * Caller should free after reading. Set by llm_complete/stream. */
+    char *last_error_response; /* raw server response body on error (for post-mortem).
+                                * Contains the full JSON with error details + offset info. */
+    char *last_error_request;  /* raw request body that triggered the error.
+                                * The JSON we sent — shows exactly what was malformed. */
 } llm_config_t;
 
 /* EDRM entropy probe result — see [arXiv:2605.22873] */

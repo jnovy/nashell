@@ -1056,6 +1056,8 @@ int main(int argc, char **argv) {
     free(props_json);
     free(server_model);
     free(llm_cfg.last_error);
+    free(llm_cfg.last_error_response);
+    free(llm_cfg.last_error_request);
     config_free(cfg);
     return 0;
 }

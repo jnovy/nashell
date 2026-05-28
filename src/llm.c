@@ -352,19 +352,31 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
             /* Populate last_error for caller diagnostics */
             free(((llm_config_t *)cfg)->last_error);
             ((llm_config_t *)cfg)->last_error = strdup(curl_easy_strerror(res));
+            /* Save raw request for post-mortem (no response on curl error) */
+            free(((llm_config_t *)cfg)->last_error_request);
+            ((llm_config_t *)cfg)->last_error_request = strdup(req_body);
+            free(((llm_config_t *)cfg)->last_error_response);
+            ((llm_config_t *)cfg)->last_error_response = NULL;
             free(req_body); str_free(&response);
             return NULL;
         }
 
         resp = cJSON_Parse(response.data);
+        /* Save raw response BEFORE freeing — needed for post-mortem if error */
+        char *raw_response_copy = response.data ? strdup(response.data) : NULL;
         str_free(&response);
         if (!resp) {
             int delay = attempt * LLM_RETRY_BASE_SEC;
             fprintf(stderr, "[llm] failed to parse response JSON (attempt %d/%d, retry in %ds)\n",
                     attempt, LLM_MAX_RETRIES, delay);
-            if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
+            if (attempt < LLM_MAX_RETRIES) { free(raw_response_copy); sleep(delay); continue; }
             free(((llm_config_t *)cfg)->last_error);
             ((llm_config_t *)cfg)->last_error = strdup("Failed to parse response JSON");
+            /* Save raw request + response for post-mortem diagnosis */
+            free(((llm_config_t *)cfg)->last_error_request);
+            ((llm_config_t *)cfg)->last_error_request = strdup(req_body);
+            free(((llm_config_t *)cfg)->last_error_response);
+            ((llm_config_t *)cfg)->last_error_response = raw_response_copy;
             free(req_body);
             return NULL;
         }
@@ -380,6 +392,11 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
                 free(((llm_config_t *)cfg)->last_error);
                 ((llm_config_t *)cfg)->last_error = strdup(
                     msg ? msg->valuestring : "API error (no message)");
+                /* Save raw request + response for post-mortem diagnosis */
+                free(((llm_config_t *)cfg)->last_error_request);
+                ((llm_config_t *)cfg)->last_error_request = strdup(req_body);
+                free(((llm_config_t *)cfg)->last_error_response);
+                ((llm_config_t *)cfg)->last_error_response = raw_response_copy;
                 cJSON_Delete(resp); resp = NULL;
                 if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
                 free(req_body);
@@ -387,11 +404,17 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
             }
             free(((llm_config_t *)cfg)->last_error);
             ((llm_config_t *)cfg)->last_error = strdup("No choices in response");
+            free(((llm_config_t *)cfg)->last_error_request);
+            ((llm_config_t *)cfg)->last_error_request = strdup(req_body);
+            free(((llm_config_t *)cfg)->last_error_response);
+            ((llm_config_t *)cfg)->last_error_response = raw_response_copy;
             cJSON_Delete(resp);
             free(req_body);
             return NULL;
         }
 
+        /* Success — discard the raw response copy */
+        free(raw_response_copy);
         break;
     }
     free(req_body);
@@ -813,14 +836,18 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
             fprintf(stderr, "[llm] curl error: %s (attempt %d/%d, retry in %ds)\n",
                     curl_easy_strerror(res), attempt, LLM_MAX_RETRIES, delay);
             if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
-            /* Populate last_error for journal diagnostics */
+            /* Populate last_error + request/response for journal diagnostics */
             free(((llm_config_t *)cfg)->last_error);
-            ((llm_config_t *)cfg)->last_error = NULL;
             {
                 char ebuf[512];
                 snprintf(ebuf, sizeof(ebuf), "curl error: %s", curl_easy_strerror(res));
                 ((llm_config_t *)cfg)->last_error = strdup(ebuf);
             }
+            free(((llm_config_t *)cfg)->last_error_request);
+            ((llm_config_t *)cfg)->last_error_request = req_body;  /* transfer ownership */
+            req_body = NULL;  /* prevent double-free */
+            free(((llm_config_t *)cfg)->last_error_response);
+            ((llm_config_t *)cfg)->last_error_response = NULL;  /* no response on curl error */
             str_free(&st.full_content);
             str_free(&st.tool_call_name);
             str_free(&st.tool_call_args);
@@ -864,9 +891,14 @@ char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
         fprintf(stderr, "[llm] empty response (attempt %d/%d, retry in %ds)\n",
                 attempt, LLM_MAX_RETRIES, delay);
         if (attempt < LLM_MAX_RETRIES) { sleep(delay); continue; }
-        /* Last attempt failed — populate last_error */
+        /* Last attempt failed — populate last_error + request for diagnostics */
         free(((llm_config_t *)cfg)->last_error);
         ((llm_config_t *)cfg)->last_error = strdup("empty response from server (all retries exhausted)");
+        free(((llm_config_t *)cfg)->last_error_request);
+        ((llm_config_t *)cfg)->last_error_request = req_body;  /* transfer ownership */
+        req_body = NULL;
+        free(((llm_config_t *)cfg)->last_error_response);
+        ((llm_config_t *)cfg)->last_error_response = NULL;
     }
 
     str_free(&st.full_content);

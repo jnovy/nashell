@@ -878,6 +878,27 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                             ctx->llm->last_error);
                 }
 
+                /* Save raw request and response bodies to store/ for
+                 * post-mortem analysis. These contain the exact JSON that
+                 * caused the server error, including the offset information
+                 * the server reports in its error message. */
+                if (ctx->llm->last_error_request && ctx->tools->store) {
+                    char *req_ref = store_save(ctx->tools->store,
+                        ctx->llm->last_error_request);
+                    if (req_ref) {
+                        cJSON_AddStringToObject(err_params, "request_ref", req_ref);
+                        free(req_ref);
+                    }
+                }
+                if (ctx->llm->last_error_response && ctx->tools->store) {
+                    char *resp_ref = store_save(ctx->tools->store,
+                        ctx->llm->last_error_response);
+                    if (resp_ref) {
+                        cJSON_AddStringToObject(err_params, "response_ref", resp_ref);
+                        free(resp_ref);
+                    }
+                }
+
                 journal_append(ctx->tools->journal,
                     ctx->tools->react_loop, step, "server_error",
                     err_params, NULL, 0, 0,
