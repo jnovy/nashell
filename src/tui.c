@@ -592,7 +592,13 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
 
     case 27:  /* Escape */
-        if (ui->focus == FOCUS_JOURNAL) {
+        if (ui->status == STATUS_RUNNING && ui->pause_flag) {
+            /* Pause the react loop — signal it to stop after current step
+             * and save a checkpoint for later resumption. */
+            *ui->pause_flag = 1;
+            ui_state_set_status(ui, STATUS_READY, "Pausing after current step...");
+            ui->dirty = 1;
+        } else if (ui->focus == FOCUS_JOURNAL) {
             ui_state_back(ui);
         }
         break;

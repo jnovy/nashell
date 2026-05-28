@@ -82,6 +82,7 @@ typedef struct {
     int            context_size;  /* server n_ctx (for ctx % calculation) */
     int            context_used;  /* current prompt tokens in context */
     int            bg_jobs;       /* number of background jobs */
+    volatile int  *pause_flag;    /* pointer to react.pause_requested (set by main.c) */
 
     /* ── Dirty flag + mutex ── */
     int            dirty;

@@ -568,6 +568,7 @@ int main(int argc, char **argv) {
             ui->model_name = strdup(server_model);
         ui->context_size = context_size;
         ui->context_used = 0;
+        ui->pause_flag = &react.pause_requested;  /* ESC → pause react loop */
         ui->bg_jobs = 0;
         ui_state_set_status(ui, STATUS_READY, "Ready");
         /* Set banner text for main pane */
@@ -607,6 +608,11 @@ int main(int argc, char **argv) {
                     ui_state_set_status(ui, STATUS_DONE, "Done");
                     /* Refresh journal view to show completed query */
                     ui_state_load_journal(ui, journal);
+                } else if (react.pause_requested) {
+                    /* User pressed ESC — paused with checkpoint saved */
+                    ui_state_set_status(ui, STATUS_READY,
+                        "Paused (checkpoint saved — submit query to resume)");
+                    react.pause_requested = 0;  /* reset for next run */
                 } else {
                     ui_state_set_status(ui, STATUS_ERROR, "No result");
                 }

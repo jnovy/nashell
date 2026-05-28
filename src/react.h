@@ -12,6 +12,7 @@ typedef struct {
     tool_ctx_t   *tools;
     int           max_steps;
     int           verbose;
+    volatile int  pause_requested;  /* set by TUI (ESC key) to pause after current step */
 
     /* Cross-query context inheritance (set by caller between react_run calls) */
     char         *last_query;    /* previous query text (NULL for first query) */
