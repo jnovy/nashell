@@ -264,6 +264,33 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                     grep_desc[sizeof(grep_desc) - 1] = '\0';
                                 }
                                 desc = grep_desc;
+                            } else if (strcmp(t, "file_read") == 0 && path && path->valuestring) {
+                                /* Show line range if start_line/end_line specified */
+                                cJSON *sl = cJSON_GetObjectItem(params, "start_line");
+                                cJSON *el = cJSON_GetObjectItem(params, "end_line");
+                                if (sl || el) {
+                                    static char fr_desc[256];
+                                    int s = sl ? (int)cJSON_GetNumberValue(sl) : 0;
+                                    int e = el ? (int)cJSON_GetNumberValue(el) : 0;
+                                    if (s < 0) {
+                                        snprintf(fr_desc, sizeof(fr_desc), "%s (last %d lines)",
+                                                 path->valuestring, -s);
+                                    } else if (s > 0 && e > 0) {
+                                        snprintf(fr_desc, sizeof(fr_desc), "%s:%d-%d",
+                                                 path->valuestring, s, e);
+                                    } else if (s > 0) {
+                                        snprintf(fr_desc, sizeof(fr_desc), "%s:%d-EOF",
+                                                 path->valuestring, s);
+                                    } else if (e > 0) {
+                                        snprintf(fr_desc, sizeof(fr_desc), "%s:1-%d",
+                                                 path->valuestring, e);
+                                    } else {
+                                        snprintf(fr_desc, sizeof(fr_desc), "%s", path->valuestring);
+                                    }
+                                    desc = fr_desc;
+                                } else {
+                                    desc = path->valuestring;
+                                }
                             } else if (cmd && cmd->valuestring) desc = cmd->valuestring;
                             else if (path && path->valuestring) desc = path->valuestring;
                             else if (pat && pat->valuestring) desc = pat->valuestring;
