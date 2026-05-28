@@ -1264,11 +1264,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *cmd = json_get_str(action, "command");
         const char *path = json_get_str(action, "path");
         const char *pattern = json_get_str(action, "pattern");
-        snprintf(sig, sizeof(sig), "%s:%s:%s:%s",
+        /* Include start_line/end_line in signature so that reading different
+         * line ranges of the same file is NOT detected as cycling.
+         * file_read("react.c", 1, 50) and file_read("react.c", 50, 100)
+         * are different actions, not repetitions. */
+        cJSON *sl = cJSON_GetObjectItem(action, "start_line");
+        cJSON *el = cJSON_GetObjectItem(action, "end_line");
+        int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
+        int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
+        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d",
                  action_name,
                  cmd ? cmd : "",
                  path ? path : "",
-                 pattern ? pattern : "");
+                 pattern ? pattern : "",
+                 start_line, end_line);
 
         int repeated = 0;
         for (int i = 0; i < sig_count && i < 8; i++) {
