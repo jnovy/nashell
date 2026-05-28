@@ -1,4 +1,5 @@
 #include "provider.h"
+#include "tools_registry.h"
 #include "str.h"
 #include <curl/curl.h>
 #include <stdio.h>
@@ -79,6 +80,62 @@ void provider_free(provider_t *p) {
     free(p->_cached_endpoint);
     free(p->_cached_auth_token);
     free(p);
+}
+
+/* ── Shared tool registry → provider-specific JSON ──────────────── */
+
+#include "tools_registry.h"
+
+/* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */
+static void strict_object(cJSON *schema) {
+    if (!schema || !cJSON_IsObject(schema)) return;
+    cJSON *type = cJSON_GetObjectItem(schema, "type");
+    if (type && cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0) {
+        cJSON *props = cJSON_GetObjectItem(schema, "properties");
+        if (props) {
+            cJSON *child = props->child;
+            while (child) {
+                strict_object(child);
+                child = child->next;
+            }
+            if (!cJSON_GetObjectItem(schema, "additionalProperties"))
+                cJSON_AddBoolToObject(schema, "additionalProperties", 0);
+        }
+    }
+}
+
+cJSON *build_tools_from_registry(provider_type_t type) {
+    cJSON *tools = cJSON_CreateArray();
+
+    for (int i = 0; TOOL_REGISTRY[i].name; i++) {
+        const tool_def_t *td = &TOOL_REGISTRY[i];
+        cJSON *params = cJSON_Parse(td->params_json);
+
+        if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
+            /* Anthropic format: {"name":"X","description":"Y","input_schema":{...}} */
+            cJSON *t = cJSON_CreateObject();
+            cJSON_AddStringToObject(t, "name", td->name);
+            cJSON_AddStringToObject(t, "description", td->description);
+            if (params) cJSON_AddItemToObject(t, "input_schema", params);
+            cJSON_AddItemToArray(tools, t);
+        } else {
+            /* OpenAI / Local format: {"type":"function","function":{"name":"X",...}} */
+            cJSON *t = cJSON_CreateObject();
+            cJSON_AddStringToObject(t, "type", "function");
+            cJSON *fn = cJSON_CreateObject();
+            cJSON_AddStringToObject(fn, "name", td->name);
+            cJSON_AddStringToObject(fn, "description", td->description);
+            if (params) {
+                if (type == PROVIDER_OPENAI) strict_object(params);
+                cJSON_AddItemToObject(fn, "parameters", params);
+            }
+            if (type == PROVIDER_OPENAI)
+                cJSON_AddBoolToObject(fn, "strict", 1);
+            cJSON_AddItemToObject(t, "function", fn);
+            cJSON_AddItemToArray(tools, t);
+        }
+    }
+    return tools;
 }
 
 /* ── Shared curl write callback ─────────────────────────────────── */

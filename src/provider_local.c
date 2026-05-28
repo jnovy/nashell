@@ -13,82 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ── Tool schemas (OpenAI function calling format) ──────────────── */
-
-static cJSON *build_tools_local(void) {
-    cJSON *tools = cJSON_CreateArray();
-
-    #define ADD_TOOL(name, desc, params_json) do { \
-        cJSON *t = cJSON_CreateObject(); \
-        cJSON_AddStringToObject(t, "type", "function"); \
-        cJSON *fn = cJSON_CreateObject(); \
-        cJSON_AddStringToObject(fn, "name", name); \
-        cJSON_AddStringToObject(fn, "description", desc); \
-        cJSON *p = cJSON_Parse(params_json); \
-        if (p) cJSON_AddItemToObject(fn, "parameters", p); \
-        cJSON_AddItemToObject(t, "function", fn); \
-        cJSON_AddItemToArray(tools, t); \
-    } while(0)
-
-    ADD_TOOL("shell_exec",
-        "Execute a shell command. Output is stored; you see metadata.",
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command to execute\"},\"background\":{\"type\":\"boolean\",\"description\":\"Start as background process\",\"default\":false}},\"required\":[\"command\"]}");
-
-    ADD_TOOL("file_read",
-        "Read a file. Use step aliases (R0S1, R1S2...) to read stored tool outputs.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path or step alias\"}},\"required\":[\"path\"]}");
-
-    ADD_TOOL("file_write",
-        "Write content to a file.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}");
-
-    ADD_TOOL("file_edit",
-        "Replace exact text in a file. Always file_read first to get exact text.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_text\",\"new_text\"]}");
-
-    ADD_TOOL("grep_search",
-        "Search files with regex. Results stored.",
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"description\":\"Directory or file to search (default: .)\"}},\"required\":[\"pattern\"]}");
-
-    ADD_TOOL("web_fetch",
-        "Fetch a URL. Content stored; you see metadata.",
-        "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}},\"required\":[\"url\"]}");
-
-    ADD_TOOL("web_search",
-        "Search the web for information.",
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}");
-
-    ADD_TOOL("glob_search",
-        "Search for files matching a glob pattern.",
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern\"}},\"required\":[\"pattern\"]}");
-
-    ADD_TOOL("memory_store",
-        "Store reusable knowledge in long-term memory.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"key\",\"value\"]}");
-
-    ADD_TOOL("memory_recall",
-        "Recall information from long-term memory.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"}}}");
-
-    ADD_TOOL("done",
-        "Signal task completion. Include all concrete data in result.",
-        "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Complete answer with details\"}},\"required\":[\"result\"]}");
-
-    ADD_TOOL("plan",
-        "Outline a numbered execution plan (3-8 steps) before starting work.",
-        "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Numbered plan\"}},\"required\":[\"result\"]}");
-
-    ADD_TOOL("notes",
-        "Persistent scratchpad that survives context compaction. "
-        "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N), "
-        "notes(op=\"append\", section=\"name\", content=\"...\"), "
-        "notes(op=\"clear\", section=\"name\"), notes(op=\"list\"). "
-        "Legacy: notes(content=\"...\") still works. Priority 1=highest, 9=lowest (default 5).",
-        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Scratchpad content\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name\"},\"priority\":{\"type\":\"integer\",\"description\":\"Priority 1-9 (default 5)\"}}}");
-
-    #undef ADD_TOOL
-    return tools;
-}
 
 /* ── Build request ──────────────────────────────────────────────── */
 
@@ -100,7 +24,7 @@ static char *local_build_request(provider_t *p, llm_chat_t *chat, int stream) {
     cJSON_AddBoolToObject(req, "stream", stream);
 
     /* Tools */
-    cJSON *tools = build_tools_local();
+    cJSON *tools = build_tools_from_registry(PROVIDER_LOCAL);
     cJSON_AddItemToObject(req, "tools", tools);
 
     /* llama.cpp-specific: chat_template_kwargs for thinking mode */
@@ -263,7 +187,7 @@ static char *local_parse_response(provider_t *p, const char *response_json,
 
 static cJSON *local_build_tools(provider_t *p) {
     (void)p;
-    return build_tools_local();
+    return build_tools_from_registry(PROVIDER_LOCAL);
 }
 
 /* ── Fetch model info (local server only) ───────────────────────── */

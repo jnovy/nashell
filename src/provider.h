@@ -102,6 +102,10 @@ provider_t *provider_create(const provider_config_t *cfg);
 /* Free provider and all resources */
 void provider_free(provider_t *p);
 
+/* Build tool definitions from the shared registry for a given provider type.
+ * Returns a cJSON array formatted for the provider's API. Caller owns result. */
+cJSON *build_tools_from_registry(provider_type_t type);
+
 /* ── High-level API (uses vtable internally) ────────────────────── */
 
 /* Non-streaming chat completion. Returns response string (caller frees). */

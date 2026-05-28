@@ -72,84 +72,6 @@ static const char *get_vertex_token(provider_t *p) {
     return p->_cached_auth_token;
 }
 
-/* ── Tool schemas (Anthropic format) ────────────────────────────── */
-
-static cJSON *build_tools_anthropic(void) {
-    cJSON *tools = cJSON_CreateArray();
-
-    #define ADD_TOOL_ANTH(name, desc, schema_json) do { \
-        cJSON *t = cJSON_CreateObject(); \
-        cJSON_AddStringToObject(t, "name", name); \
-        cJSON_AddStringToObject(t, "description", desc); \
-        cJSON *s = cJSON_Parse(schema_json); \
-        if (s) cJSON_AddItemToObject(t, "input_schema", s); \
-        cJSON_AddItemToArray(tools, t); \
-    } while(0)
-
-    ADD_TOOL_ANTH("shell_exec",
-        "Execute a shell command (git, make, docker, gh, npm, etc.). "
-        "For file reading use file_read, for content search use grep_search, "
-        "for file search use glob_search, for URL fetching use web_fetch. "
-        "Limit output: pipe through head -50, tail, jq, grep. "
-        "For servers/daemons, set background=true.",
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"},\"background\":{\"type\":\"boolean\",\"description\":\"Start as background process (for servers/daemons). Returns immediately with PID.\",\"default\":false}},\"required\":[\"command\"]}");
-
-    ADD_TOOL_ANTH("file_read",
-        "Read contents of a file.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path\"}},\"required\":[\"path\"]}");
-
-    ADD_TOOL_ANTH("file_write",
-        "Write content to a file (under workspace dir).",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path\"},\"content\":{\"type\":\"string\",\"description\":\"File content\"}},\"required\":[\"path\",\"content\"]}");
-
-    ADD_TOOL_ANTH("file_edit",
-        "Edit a file by replacing exact text. Always file_read first to copy exact text.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path\"},\"old_text\":{\"type\":\"string\",\"description\":\"Exact text to find (must match)\"},\"new_text\":{\"type\":\"string\",\"description\":\"Replacement text\"}},\"required\":[\"path\",\"old_text\",\"new_text\"]}");
-
-    ADD_TOOL_ANTH("grep_search",
-        "Search file contents with a regex pattern.",
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Regex pattern\"},\"path\":{\"type\":\"string\",\"description\":\"Directory or file to search in\"}},\"required\":[\"pattern\"]}");
-
-    ADD_TOOL_ANTH("web_fetch",
-        "Fetch content from a URL.",
-        "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"description\":\"URL to fetch\"}},\"required\":[\"url\"]}");
-
-    ADD_TOOL_ANTH("web_search",
-        "Search the web for information.",
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}");
-
-    ADD_TOOL_ANTH("glob_search",
-        "Search for files matching a glob pattern.",
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern (e.g. **/*.py)\"}},\"required\":[\"pattern\"]}");
-
-    ADD_TOOL_ANTH("memory_store",
-        "Store reusable knowledge in long-term memory.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Tags for search\"}},\"required\":[\"key\",\"value\"]}");
-
-    ADD_TOOL_ANTH("memory_recall",
-        "Recall information from long-term memory.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Exact key to recall\"},\"query\":{\"type\":\"string\",\"description\":\"Search query\"}}}");
-
-    ADD_TOOL_ANTH("done",
-        "Signal task completion. Include all concrete data (paths, numbers, URLs) in result.",
-        "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Complete answer with details\"}},\"required\":[\"result\"]}");
-
-    ADD_TOOL_ANTH("plan",
-        "Outline a numbered execution plan (3-8 steps) before starting work.",
-        "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Numbered plan: 1. step (tool)\\n2. ...\"}},\"required\":[\"result\"]}");
-
-    ADD_TOOL_ANTH("notes",
-        "Persistent scratchpad that survives context compaction. "
-        "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, "
-        "notes(op=\"append\", section=\"name\", content=\"...\") to append, "
-        "notes(op=\"clear\", section=\"name\") to delete a section, "
-        "notes(op=\"list\") to list all sections. "
-        "Legacy: notes(content=\"...\") still works (replaces all). Priority 1=highest, 9=lowest (default 5).",
-        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content (legacy mode) or section content (with op).\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name for write/append/read/clear\"},\"priority\":{\"type\":\"integer\",\"description\":\"Section priority 1-9 (1=highest, default 5)\"}}}");
-
-    #undef ADD_TOOL_ANTH
-    return tools;
-}
 
 /* ── Message format conversion: internal → Anthropic ────────────── */
 
@@ -506,7 +428,7 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
     cJSON_Delete(converted);
 
     /* Tools */
-    cJSON *tools = build_tools_anthropic();
+    cJSON *tools = build_tools_from_registry(PROVIDER_ANTHROPIC);
     cJSON_AddItemToObject(req, "tools", tools);
 
     char *json = cJSON_PrintUnformatted(req);
@@ -732,7 +654,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
 
 static cJSON *anthropic_build_tools_vtable(provider_t *p) {
     (void)p;
-    return build_tools_anthropic();
+    return build_tools_from_registry(PROVIDER_ANTHROPIC);
 }
 
 /* ── Model info (context size lookup) ──────────────────────────── */
