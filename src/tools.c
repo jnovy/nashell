@@ -1216,6 +1216,51 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     return make_result(1, meta, ref_copy);
 }
 
+
+/* ── plan ──────────────────────────────────────────────── */
+
+static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
+    const char *result = NULL;
+    cJSON *r = cJSON_GetObjectItem(params, "result");
+    if (r && r->valuestring) result = r->valuestring;
+    if (!result || !result[0])
+        return make_error("missing 'result' parameter with the plan text");
+
+    /* Write plan to scratchpad as a high-priority section.
+     * The plan survives context eviction and is visible to the model
+     * throughout the react loop via the scratchpad injection. */
+    scratchpad_write(&ctx->scratch, "plan", result, 1);  /* priority 1 = high */
+    scratchpad_sync_legacy(ctx);
+    scratchpad_save(&ctx->scratch, ctx->session_dir);
+
+    /* Store in content-addressed store for audit trail */
+    char *hash = store_save(ctx->store, result);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    /* Count plan steps (lines starting with a digit) */
+    int steps = 0;
+    const char *p = result;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p >= '1' && *p <= '9') steps++;
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "plan saved to scratchpad");
+    cJSON_AddNumberToObject(meta, "steps", steps);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "plan",
+                   params, alias, strlen(result), steps, NULL, NULL);
+
+    char *ref_copy = alias ? strdup(alias) : NULL;
+    free(alias);
+    free(hash);
+    return make_result(1, meta, ref_copy);
+}
+
 /* ── dispatcher ──────────────────────────────────────── */
 
 /* ── memory_store ──────────────────────────────────────── */
@@ -1914,6 +1959,7 @@ static const struct {
     {"web_search",    tool_web_search},
     {"notes",         tool_notes},
     {"done",          tool_done},
+    {"plan",          tool_plan},
     {"memory_store",  tool_memory_store},
     {"memory_recall", tool_memory_recall},
     {"memory_pin",    tool_memory_pin},
