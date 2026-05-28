@@ -356,9 +356,13 @@ static double score_entry_hybrid(const char *key, const char *value,
 
     if (has_semantic) {
         /* Semantic mode: cosine similarity is primary signal.
-         * Scale from [-1,1] to [0,6] range to match substring score scale.
-         * Add substring bonus for exact keyword matches. */
-        double semantic = (double)(semantic_sim + 1.0f) * 3.0;  /* [0, 6] */
+         * Clamp negative similarities to 0 (semantically opposite = no match),
+         * then scale from [0,1] to [0,6] to match substring score scale.
+         * Without clamping, cosine=-0.5 would yield semantic=1.5, producing
+         * a final score of ~0.52 — well above the 0.15 threshold. */
+        double clamped = (double)semantic_sim;
+        if (clamped < 0.0) clamped = 0.0;
+        double semantic = clamped * 6.0;  /* [0, 6] */
         double substring = score_entry_substring(key, value, tags, query);
 
         /* Blend: 70% semantic + 30% substring.

@@ -120,7 +120,9 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash);
 
 /* Resolve a step alias (e.g. "R1S1") to the full store path. Returns NULL if not found.
  * Returned string must be freed by caller. */
-const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias);
+/* Resolve a step alias (R0S1, R1S2, ...) to a full store path.
+ * Returns heap-allocated string (caller must free), or NULL if not an alias. */
+char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias);
 
 /* Execute a tool by name, returns result (caller frees) */
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params);

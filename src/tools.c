@@ -180,13 +180,15 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     return strdup(alias_buf);
 }
 
-const char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
+/* Returns heap-allocated path string — caller MUST free.
+ * Returns NULL if alias doesn't resolve. */
+char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
     /* Check if it looks like an alias: R1S1, R1S2, R2S1, ... */
     if (!ctx || !alias || alias[0] != 'R')
         return NULL;
     const char *h = alias_map_lookup(ctx->aliases, alias);
     if (h) {
-        return store_resolve(ctx->store, h);
+        return store_resolve(ctx->store, h);  /* heap-allocated, caller frees */
     }
     return NULL;
 }
@@ -411,7 +413,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     const char *path = path_j->valuestring;
 
     /* Resolve step aliases (S0, S1, S2...) */
-    const char *resolved = tool_resolve_alias(ctx, path);
+    char *resolved = tool_resolve_alias(ctx, path);  /* heap-allocated, must free */
     if (resolved) path = resolved;
 
     /* Resolve store/ paths relative to session directory (legacy) */
@@ -476,6 +478,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     free(alias);
     free(content);
     free(hash);
+    free(resolved);  /* BUG 2 fix: free heap-allocated alias resolution */
     return make_result(1, meta, ref_copy);
 }
 
@@ -604,8 +607,8 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     const char *pattern = pattern_j->valuestring;
     const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
 
-    /* Resolve step aliases */
-    const char *resolved = tool_resolve_alias(ctx, path);
+    /* Resolve step aliases (returns heap-allocated string, caller must free) */
+    char *resolved = tool_resolve_alias(ctx, path);
     if (resolved) path = resolved;
 
     /* Resolve store/ paths (legacy) */
@@ -698,6 +701,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     free(alias);
     str_free(&out);
     free(hash);
+    free(resolved);  /* BUG 2 fix: free heap-allocated resolved path */
     return make_result(1, meta, ref_copy);
 }
 
