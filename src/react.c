@@ -20,6 +20,100 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
+/* Log memory context injection to the journal for debugging.
+ * Captures: index summary (total + type counts), pinned keys, skills recalled.
+ * Called at both the checkpoint-restore path and the main react_run path. */
+static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
+                               const char *mem_index,
+                               const char *pinned,
+                               memory_results_t *skills,
+                               const char *query)
+{
+    if (!tools->memory || !tools->journal) return;
+
+    cJSON *params = cJSON_CreateObject();
+
+    /* Index summary — extract from the mem_index header line
+     * Format: "Memory: N entries, X lessons, Y strategies, Z skills, ..." */
+    if (mem_index && strlen(mem_index) > 0) {
+        cJSON_AddStringToObject(params, "index_summary", mem_index);
+    } else {
+        cJSON_AddStringToObject(params, "index_summary", "no entries");
+    }
+
+    /* Pinned memory keys — extract from pinned output
+     * Format: "[PINNED: key1]\nvalue1\n\n[PINNED: key2]\nvalue2" */
+    if (pinned && strlen(pinned) > 0) {
+        cJSON *pinned_keys = cJSON_CreateArray();
+        const char *p = pinned;
+        while (*p) {
+            /* Find "[PINNED: key]" pattern */
+            if (strncmp(p, "[PINNED: ", 10) == 0) {
+                const char *end = strchr(p + 10, ']');
+                if (end) {
+                    char key[256];
+                    int klen = (int)(end - (p + 10));
+                    if (klen >= (int)sizeof(key)) klen = (int)sizeof(key) - 1;
+                    memcpy(key, p + 10, (size_t)klen);
+                    key[klen] = '\0';
+                    cJSON_AddItemToArray(pinned_keys, cJSON_CreateString(key));
+                    p = end + 1;
+                    /* Skip to next line after value */
+                    while (*p && *p != '\n') p++;
+                    if (*p == '\n') p++;
+                    /* Skip blank line separator */
+                    if (*p == '\n') p++;
+                } else {
+                    break;
+                }
+            } else {
+                /* Skip to next line */
+                while (*p && *p != '\n') p++;
+                if (*p == '\n') p++;
+            }
+        }
+        cJSON_AddItemToObject(params, "pinned_keys", pinned_keys);
+    } else {
+        cJSON_AddItemToObject(params, "pinned_keys", cJSON_CreateArray());
+    }
+
+    /* Skills recalled — keys + brief info */
+    if (skills && skills->count > 0) {
+        cJSON *skill_arr = cJSON_CreateArray();
+        int skill_injected = 0;
+        for (int i = 0; i < skills->count; i++) {
+            if (skills->entries[i].key &&
+                strncmp(skills->entries[i].key, "skill:", 6) == 0) {
+                cJSON *s = cJSON_CreateObject();
+                cJSON_AddStringToObject(s, "key", skills->entries[i].key);
+                cJSON_AddNumberToObject(s, "hits", skills->entries[i].recall_hits);
+                cJSON_AddNumberToObject(s, "misses", skills->entries[i].recall_misses);
+                cJSON_AddItemToArray(skill_arr, s);
+                skill_injected++;
+            }
+        }
+        cJSON_AddItemToObject(params, "skills_matched", skill_arr);
+    } else {
+        cJSON_AddItemToObject(params, "skills_matched", cJSON_CreateArray());
+    }
+
+    /* Query that triggered the recall */
+    if (query) {
+        /* Truncate query to 200 chars for compactness */
+        char qtrunc[201];
+        strncpy(qtrunc, query, 200);
+        qtrunc[200] = '\0';
+        /* Strip newlines for single-line log */
+        for (int i = 0; qtrunc[i]; i++) {
+            if (qtrunc[i] == '\n' || qtrunc[i] == '\r') qtrunc[i] = ' ';
+        }
+        cJSON_AddStringToObject(params, "query", qtrunc);
+    }
+
+    journal_append(tools->journal, react_loop, step, "memory_context",
+                   params, NULL, 0, 0, NULL, NULL);
+}
+
 /* Unwrap nested JSON in the "thought" field.
  * Sometimes the LLM returns content that is itself a serialized JSON object
  * (e.g. {"thought":"...","action":"..."}), causing the thought display to show
@@ -115,7 +209,6 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                 free(mem_msg);
             }
         }
-        free(mem_index);
 
         char *pinned = memory_load_pinned(ctx->tools->memory);
         if (pinned && strlen(pinned) > 0) {
@@ -126,6 +219,13 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                 free(pin_msg);
             }
         }
+
+        /* Log memory context for debugging (checkpoint restore path) */
+        log_memory_context(ctx->tools, ctx->tools->react_loop,
+                           ctx->tools->step, mem_index, pinned,
+                           NULL, user_query);
+
+        free(mem_index);
         free(pinned);
     }
 
@@ -493,7 +593,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 free(mem_msg);
             }
         }
-        free(mem_index);
 
         /* Inject pinned memories (always-active knowledge) */
         char *pinned = memory_load_pinned(ctx->tools->memory);
@@ -505,7 +604,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 free(pin_msg);
             }
         }
-        free(pinned);
 
         /* Inject relevant skills (procedural memory — loaded on-demand based on query).
          * FIX B1/D1: Use user_query for semantic recall, then filter by skill: prefix.
@@ -533,6 +631,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
             str_free(&skill_msg);
         }
+
+        /* Log memory context for debugging — before freeing mem_index/pinned */
+        log_memory_context(ctx->tools, ctx->tools->react_loop,
+                           ctx->tools->step, mem_index, pinned,
+                           &skills, user_query);
+
+        free(mem_index);
+        free(pinned);
         memory_results_free(&skills);
     }
 
@@ -617,6 +723,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* Action signature tracking for cycling detection */
     char last_sigs[8][256];
     int sig_count = 0;
+    int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
         ctx->tools->step = step + 1;
@@ -708,13 +815,80 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 on_event ? stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh);
         if (!response) {
+            consecutive_null_responses++;
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
-            ev.message = "LLM call failed (returned NULL)";
-            emit(on_event, userdata, &ev);
-            break;
+
+            if (consecutive_null_responses >= 2) {
+                ev.message = "LLM server error after scratchpad reformulation — giving up";
+                emit(on_event, userdata, &ev);
+                break;
+            }
+
+            /* HTTP 500 from the server typically means the model produced
+             * malformed tool-call JSON.  The scratchpad often contains
+             * code blocks and deeply-nested JSON escaping that confuse
+             * the model's JSON generation.  Instead of blindly retrying
+             * (same prompt → same malformed output), we ask the LLM to
+             * reformulate the scratchpad into plain prose, then retry
+             * once with the sanitised version. */
+
+            /* Find the [SCRATCHPAD] message in the chat */
+            int sp_idx = -1;
+            for (int i = 0; i < chat->n_msgs; i++) {
+                if (chat->msgs[i].content &&
+                    strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
+                    sp_idx = i;
+                    break;
+                }
+            }
+
+            if (sp_idx >= 0) {
+                ev.message = "LLM server error — reformulating scratchpad and retrying";
+                emit(on_event, userdata, &ev);
+
+                /* Build a one-shot reformulation request */
+                llm_chat_t *rewrite = llm_chat_new();
+                llm_chat_add(rewrite, "system",
+                    "You are a text sanitiser. Rewrite the user's notes "
+                    "into plain prose. Remove ALL code blocks, JSON "
+                    "snippets, backtick-fenced sections, and deeply "
+                    "escaped strings. Keep the semantic meaning and key "
+                    "facts but express everything in simple sentences. "
+                    "Output ONLY the rewritten text, nothing else.");
+                llm_chat_add(rewrite, "user", chat->msgs[sp_idx].content + 13);
+
+                char *reformulated = ctx->provider ?
+                    provider_complete(ctx->provider, rewrite, NULL) :
+                    llm_complete(ctx->llm, rewrite, NULL);
+                llm_chat_free(rewrite);
+
+                if (reformulated && strlen(reformulated) > 0) {
+                    /* Replace the scratchpad message in-place */
+                    size_t rlen = strlen(reformulated);
+                    char *new_sp = malloc(rlen + 32);
+                    if (new_sp) {
+                        snprintf(new_sp, rlen + 32, "[SCRATCHPAD]\n%s",
+                                 reformulated);
+                        free(chat->msgs[sp_idx].content);
+                        chat->msgs[sp_idx].content = new_sp;
+                    }
+                    free(reformulated);
+                } else {
+                    /* Reformulation failed — strip scratchpad entirely */
+                    free(reformulated);
+                    llm_chat_remove_by_prefix(chat, "[SCRATCHPAD]");
+                }
+            } else {
+                /* No scratchpad to reformulate — nothing we can do */
+                ev.message = "LLM server error — no scratchpad to reformulate, giving up";
+                emit(on_event, userdata, &ev);
+                break;
+            }
+            continue;
         }
+        consecutive_null_responses = 0;  /* Reset on successful LLM response */
 
         struct timespec step_end;
         clock_gettime(CLOCK_MONOTONIC, &step_end);

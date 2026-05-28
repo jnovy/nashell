@@ -55,6 +55,10 @@ llm_chat_t *llm_chat_new(void);
 void        llm_chat_free(llm_chat_t *chat);
 void        llm_chat_add(llm_chat_t *chat, const char *role, const char *content);
 
+/* Remove all messages whose content starts with the given prefix.
+ * Used for progressive context stripping on LLM failures. */
+int         llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix);
+
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content);

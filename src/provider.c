@@ -592,19 +592,34 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             }
         }
 
-        /* Handle HTTP errors: 4xx = fatal (bad request), 5xx = retryable */
+        /* Handle HTTP errors: 4xx = fatal, 5xx = return NULL immediately.
+         * Don't retry 500s at the provider level — the same request body
+         * produces the same malformed output (near-deterministic with
+         * grammar-constrained generation). Let react.c handle recovery
+         * by stripping context and retrying with a modified prompt. */
         if (http_code >= 400) {
             fprintf(stderr, "[provider] HTTP %ld error: %.2000s\n",
                     http_code,
                     st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
             if (http_code >= 500 && attempt < PROVIDER_MAX_RETRIES) {
-                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-                fprintf(stderr, "[provider] server error (attempt %d/%d, retry in %ds)\n",
-                        attempt, PROVIDER_MAX_RETRIES, delay);
-                sleep(delay);
-                continue;
+                /* Only retry on transient server errors (502/503/504).
+                 * 500 with "parse" in the body = deterministic model output
+                 * error — retrying is pointless. */
+                const char *body = st.full_content.len > 0 ?
+                                   str_cstr(&st.full_content) : "";
+                if (http_code == 500 && strstr(body, "parse")) {
+                    fprintf(stderr, "[provider] deterministic parse error — "
+                            "not retrying (let react handle recovery)\n");
+                } else {
+                    int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+                    fprintf(stderr, "[provider] server error (attempt %d/%d, "
+                            "retry in %ds)\n",
+                            attempt, PROVIDER_MAX_RETRIES, delay);
+                    sleep(delay);
+                    continue;
+                }
             }
-            /* 4xx or final 5xx attempt: fatal — don't parse garbage SSE */
+            /* 4xx, deterministic 500, or final attempt: return NULL */
             free(req_body);
             goto cleanup;
         }

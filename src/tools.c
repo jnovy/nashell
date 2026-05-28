@@ -580,18 +580,24 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     fwrite(result, 1, result_len, f);
     fclose(f);
 
+    /* Store post-edit content */
+    char *post_hash = store_save(ctx->store, result);
+    const char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "ok");
     cJSON_AddStringToObject(meta, "path", path);
     cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
+    cJSON_AddStringToObject(meta, "ref", post_alias);
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, pre_alias,
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, post_alias,
                    result_len, count_lines(result), NULL, NULL);
 
     free(content);
     free(result);
     free(pre_hash);
-    return make_result(1, meta, NULL);
+    free(post_hash);
+    return make_result(1, meta, post_alias);
 }
 
 /* ── grep_search ─────────────────────────────────────── */
@@ -829,7 +835,7 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
             str_append_cstr(&out, sorted[i].content);
         } else {
             /* Truncate content to fit budget */
-            size_t avail = remaining - header_len - 15;  /* room for "\n[truncated]" */
+            size_t avail = remaining - header_len - 12;  /* room for "\n[truncated]" */
             str_append(&out, sorted[i].content, avail);
             str_append_cstr(&out, "\n[truncated]");
         }
