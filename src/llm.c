@@ -194,6 +194,14 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
     cJSON_AddNumberToObject(req, "max_tokens", cfg->max_tokens);
     cJSON_AddNumberToObject(req, "temperature", cfg->temperature);
     cJSON_AddBoolToObject(req, "stream", stream);
+    if (stream) {
+        /* Request usage stats in streaming responses (prompt_tokens, etc.).
+         * Without this, llama.cpp/OpenAI don't include usage in SSE chunks,
+         * causing the TUI "ctx N%" display to always show 0%. */
+        cJSON *so = cJSON_CreateObject();
+        cJSON_AddBoolToObject(so, "include_usage", 1);
+        cJSON_AddItemToObject(req, "stream_options", so);
+    }
 
     /* Native tool calling — each tool has its own parameter schema */
     cJSON *tools = build_tools_array();

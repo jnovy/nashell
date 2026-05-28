@@ -23,6 +23,15 @@ static char *local_build_request(provider_t *p, llm_chat_t *chat, int stream) {
     cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
     cJSON_AddBoolToObject(req, "stream", stream);
 
+    /* Request usage stats in streaming responses (prompt_tokens, completion_tokens).
+     * Without this, llama.cpp/OpenAI don't include usage in SSE chunks,
+     * so the TUI's "ctx N%" display stays at 0%. */
+    if (stream) {
+        cJSON *so = cJSON_CreateObject();
+        cJSON_AddBoolToObject(so, "include_usage", 1);
+        cJSON_AddItemToObject(req, "stream_options", so);
+    }
+
     /* Tools */
     cJSON *tools = build_tools_from_registry(PROVIDER_LOCAL);
     cJSON_AddItemToObject(req, "tools", tools);
