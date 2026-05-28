@@ -409,16 +409,12 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
             }
         }
-        if (!session_dir) {
-            char cwd[4096];
-            if (getcwd(cwd, sizeof(cwd))) {
-                char jpath[4112];
-                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
-                if (access(jpath, F_OK) == 0) {
-                    session_dir = strdup(cwd);
-                }
-            }
-        }
+        /* NOTE: Do NOT auto-detect session from CWD in headless mode.
+         * When a parent nash spawns a child via shell_exec("nash -p ..."),
+         * the child inherits the parent's CWD (which IS a session dir with
+         * journal.jsonl), causing the child to hijack the parent's session:
+         * loading its checkpoint, writing to its journal, and corrupting
+         * the parent's state.  Only explicit --session should be honored. */
         journal_t *journal;
         if (!session_dir) {
             /* Lazy session: directory created on first journal_append */
@@ -467,9 +463,12 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
         char *result = react_run(&react, query, tui_on_event, NULL);
-        /* Resolve session_dir from journal for lazy sessions */
+        /* Resolve session_dir from journal for lazy sessions.
+         * journal_session_dir returns internal pointer — must strdup
+         * because journal_free() will free the original. */
         if (lazy_session) {
-            session_dir = (char *)journal_session_dir(journal);
+            const char *jsd = journal_session_dir(journal);
+            session_dir = jsd ? strdup(jsd) : NULL;
         }
         /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
         memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
@@ -488,6 +487,7 @@ int main(int argc, char **argv) {
         if (session_dir) free(session_dir);
         store_free(shared_store);
         memory_free(memory);
+        provider_free(provider);
         free(nash_dir);
         free(props_json);
         free(server_model);
@@ -1058,6 +1058,7 @@ int main(int argc, char **argv) {
     printf("Bye.\n");
     store_free(shared_store);
     memory_free(memory);
+    provider_free(provider);
     free(nash_dir);
     free(props_json);
     free(server_model);
