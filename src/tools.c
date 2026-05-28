@@ -448,23 +448,91 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         return make_error(msg);
     }
 
-    int lines = count_lines(content);
-    char *hash = store_save(ctx->store, content);
+    int total_lines = count_lines(content);
+
+    /* Line range support: start_line and end_line parameters.
+     * - start_line: 1-based (default: 1). Negative = from end (tail).
+     * - end_line: 1-based inclusive (default: EOF).
+     * - No params = full file (backward compatible).
+     * Eliminates the need for shell_exec sed/head/tail hacks. */
+    cJSON *sl_j = cJSON_GetObjectItem(params, "start_line");
+    cJSON *el_j = cJSON_GetObjectItem(params, "end_line");
+    int start_line = sl_j ? (int)cJSON_GetNumberValue(sl_j) : 0;
+    int end_line = el_j ? (int)cJSON_GetNumberValue(el_j) : 0;
+
+    char *display_content = NULL;  /* content to show (with line numbers if range) */
+    int display_lines = total_lines;
+    size_t display_len = len;
+    int range_start = 1, range_end = total_lines;
+
+    if (start_line != 0 || end_line != 0) {
+        /* Resolve line range */
+        if (start_line < 0) {
+            /* Negative = from end: start_line=-20 means last 20 lines */
+            range_start = total_lines + start_line + 1;
+            if (range_start < 1) range_start = 1;
+            range_end = total_lines;
+        } else {
+            range_start = start_line > 0 ? start_line : 1;
+            range_end = end_line > 0 ? end_line : total_lines;
+        }
+        if (range_start > total_lines) range_start = total_lines;
+        if (range_end > total_lines) range_end = total_lines;
+        if (range_end < range_start) range_end = range_start;
+
+        /* Extract lines and prepend line numbers */
+        str_t out = str_new(4096);
+        const char *p = content;
+        int line_num = 1;
+        while (*p) {
+            const char *eol = strchr(p, '\n');
+            int line_len = eol ? (int)(eol - p) : (int)strlen(p);
+
+            if (line_num >= range_start && line_num <= range_end) {
+                /* Prepend line number for precise file_edit targeting */
+                str_appendf(&out, "%4d: ", line_num);
+                str_append(&out, p, line_len);
+                str_append_cstr(&out, "\n");
+            }
+
+            if (!eol) break;
+            p = eol + 1;
+            line_num++;
+            if (line_num > range_end) break;  /* early exit */
+        }
+
+        display_content = str_steal(&out);
+        display_len = strlen(display_content);
+        display_lines = range_end - range_start + 1;
+    }
+
+    const char *store_content = display_content ? display_content : content;
+    char *hash = store_save(ctx->store, store_content);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "path", path_j->valuestring);
-    cJSON_AddNumberToObject(meta, "lines", lines);
-    cJSON_AddNumberToObject(meta, "chars", (double)len);
+    cJSON_AddNumberToObject(meta, "total_lines", total_lines);
+    if (display_content) {
+        /* Range mode: show which lines */
+        char showing[64];
+        snprintf(showing, sizeof(showing), "%d-%d of %d",
+                 range_start, range_end, total_lines);
+        cJSON_AddStringToObject(meta, "showing", showing);
+        cJSON_AddNumberToObject(meta, "lines", display_lines);
+    } else {
+        cJSON_AddNumberToObject(meta, "lines", total_lines);
+    }
+    cJSON_AddNumberToObject(meta, "chars", (double)display_len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
     /* file_read MUST return content — that's its purpose */
-    if (len <= 50000) {
-        cJSON_AddStringToObject(meta, "content", content);
+    if (display_len <= 50000) {
+        cJSON_AddStringToObject(meta, "content", store_content);
     } else {
         char *trunc = malloc(50001);
         if (trunc) {
-            utf8_truncate(trunc, content, 50000);
+            utf8_truncate(trunc, store_content, 50000);
             cJSON_AddStringToObject(meta, "content", trunc);
             cJSON_AddBoolToObject(meta, "truncated", 1);
             free(trunc);
@@ -472,11 +540,12 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_read", params, alias,
-                   len, lines, NULL, NULL);
+                   display_len, display_lines, NULL, NULL);
 
     char *ref_copy = strdup(alias);
     free(alias);
     free(content);
+    free(display_content);  /* NULL-safe: free line-range extracted content */
     free(hash);
     free(resolved);  /* BUG 2 fix: free heap-allocated alias resolution */
     return make_result(1, meta, ref_copy);

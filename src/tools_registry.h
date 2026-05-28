@@ -26,8 +26,10 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"},\"background\":{\"type\":\"boolean\",\"description\":\"Start as background process (for servers/daemons). Returns immediately with PID.\",\"default\":false}},\"required\":[\"command\"]}"},
 
     {"file_read",
-     "Read contents of a file.",
-     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path\"}},\"required\":[\"path\"]}"},
+     "Read contents of a file. Supports line ranges to avoid reading entire large files. "
+     "Use start_line/end_line for specific sections (1-based). "
+     "Negative start_line reads from end (e.g., -20 = last 20 lines).",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path\"},\"start_line\":{\"type\":\"integer\",\"description\":\"First line to read (1-based, default: 1). Negative = from end (-20 = last 20 lines)\"},\"end_line\":{\"type\":\"integer\",\"description\":\"Last line to read (1-based inclusive, default: EOF)\"}},\"required\":[\"path\"]}"},
 
     {"file_write",
      "Write content to a file (under workspace dir).",
