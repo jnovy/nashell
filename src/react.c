@@ -820,8 +820,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             if (mode == THINKING_ON) {
                 ctx->llm->enable_thinking = 1;
+                ctx->provider->cfg.enable_thinking = 1;
             } else if (mode == THINKING_OFF) {
                 ctx->llm->enable_thinking = 0;
+                ctx->provider->cfg.enable_thinking = 0;
             } else if (mode == THINKING_EDRM) {
                 /* Build probe prompt from user query.
                  * #7: Use /apply-template for correct template, fallback to ChatML. */
@@ -845,6 +847,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 str_free(&probe);
 
                 ctx->llm->enable_thinking = edrm.route;
+                ctx->provider->cfg.enable_thinking = edrm.route;
 
                 /* Log the routing decision */
                 {
@@ -862,17 +865,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
             /* Propagate thinking budget from config */
             ctx->llm->thinking_budget = ctx->tools->cfg->thinking.budget;
+            ctx->provider->cfg.thinking_budget = ctx->tools->cfg->thinking.budget;
         }
 
         llm_stats_t stats = {0};
         stream_ctx_t sctx = { on_event, userdata, step + 1 };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-        char *response = ctx->provider ?
-            provider_complete_stream(ctx->provider, chat, &stats,
-                on_event ? stream_token_cb : NULL, &sctx,
-                max_resp, rep_thresh) :
-            llm_complete_stream(ctx->llm, chat, &stats,
+        char *response = provider_complete_stream(ctx->provider, chat, &stats,
                 on_event ? stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh);
         if (!response) {
@@ -1021,9 +1021,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         "Output ONLY the rewritten text, nothing else.");
                     llm_chat_add(rewrite, "user", chat->msgs[sp_idx].content + 13);
 
-                    char *reformulated = ctx->provider ?
-                        provider_complete(ctx->provider, rewrite, NULL) :
-                        llm_complete(ctx->llm, rewrite, NULL);
+                    char *reformulated = provider_complete(ctx->provider, rewrite, NULL);
                     llm_chat_free(rewrite);
 
                     if (reformulated && strlen(reformulated) > 0) {
@@ -1511,7 +1509,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                         llm_chat_t *summ_chat = llm_chat_new();
                         llm_chat_add(summ_chat, "user", str_cstr(&summ_prompt));
-                        char *raw_summary = llm_complete(ctx->llm, summ_chat, NULL);
+                        char *raw_summary = provider_complete(ctx->provider, summ_chat, NULL);
                         llm_chat_free(summ_chat);
                         str_free(&summ_prompt);
 
@@ -1688,8 +1686,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     llm_chat_t *synth_chat = llm_chat_new();
                     llm_chat_add(synth_chat, "user",
                                  str_cstr(&synth_prompt));
-                    char *guidance = llm_complete(
-                        ctx->llm, synth_chat, NULL);
+                    char *guidance = provider_complete(ctx->provider, synth_chat, NULL);
                     llm_chat_free(synth_chat);
                     str_free(&synth_prompt);
 
@@ -1904,10 +1901,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_stats_t rstats = {0};
             int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
             int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-            char *rresp = ctx->provider ?
-                provider_complete_stream(ctx->provider, reflect, &rstats,
-                    NULL, NULL, max_resp, rep_thresh) :
-                llm_complete_stream(ctx->llm, reflect, &rstats,
+            char *rresp = provider_complete_stream(ctx->provider, reflect, &rstats,
                     NULL, NULL, max_resp, rep_thresh);
             if (!rresp) break;
 
@@ -2034,7 +2028,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             llm_chat_t *prune_chat = llm_chat_new();
             llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
-            char *raw_cleaned = llm_complete(ctx->llm, prune_chat, NULL);
+            char *raw_cleaned = provider_complete(ctx->provider, prune_chat, NULL);
             llm_chat_free(prune_chat);
             str_free(&prune_prompt);
 

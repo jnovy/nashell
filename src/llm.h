@@ -13,7 +13,7 @@ typedef struct {
     int   enable_thinking; /* 0=off, 1=on — set per-request by EDRM routing */
     int   thinking_budget; /* -1=unrestricted, 0=none, N>0=max thinking tokens */
     char *last_error;          /* populated on LLM error — server message, curl error, etc.
-                                * Caller should free after reading. Set by llm_complete/stream. */
+                                * Caller should free after reading. Set by provider_complete/stream. */
     char *last_error_response; /* raw server response body on error (for post-mortem).
                                 * Contains the full JSON with error details + offset info. */
     char *last_error_request;  /* raw request body that triggered the error.
@@ -51,7 +51,7 @@ typedef struct {
     llm_msg_t *msgs;
     int        n_msgs;
     int        cap_msgs;
-    /* Last tool call info (set by llm_complete/llm_complete_stream for react.c) */
+    /* Last tool call info (set by provider_complete/provider_complete_stream for react.c) */
     char      *last_tool_call_id;    /* tool_call_id from last response (caller frees) */
     char      *last_tool_calls_json; /* raw tool_calls JSON from last response (caller frees) */
 } llm_chat_t;
@@ -82,20 +82,6 @@ typedef struct {
     int    draft_n;
     int    draft_accepted;
 } llm_stats_t;
-
-/* Send chat completion request (non-streaming). Returns response (caller frees). */
-char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats);
-
-/* Token callback for streaming */
-typedef void (*llm_token_fn)(const char *token, void *userdata);
-
-/* Streaming chat completion with native tool calling support.
- * Returns the response as a JSON string: {"thought":"...", "action":"name", ...params}
- * For tool calls, the response is assembled from streaming tool_calls chunks.
- * For plain text, the response is the raw content. */
-char *llm_complete_stream(const llm_config_t *cfg, llm_chat_t *chat,
-                          llm_stats_t *stats, llm_token_fn on_token, void *userdata,
-                          int max_response_bytes, int repeat_threshold);
 
 /* Parse the assistant's JSON response into action fields. */
 cJSON *llm_parse_action(const char *response);

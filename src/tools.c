@@ -1405,18 +1405,20 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     llm_stats_t stats = {0};
     char *consolidated = NULL;
 
-    if (ctx->provider) {
-        /* Use provider abstraction (works with Vertex, Anthropic, OpenAI, local) */
-        consolidated = provider_complete(ctx->provider, chat, &stats);
-    } else if (ctx->llm) {
-        /* Fallback to direct llm_complete for local-only setups */
-        llm_config_t consolidation_cfg = *ctx->llm;
-        consolidation_cfg.max_tokens = 2048;
-        consolidation_cfg.temperature = 0.1f;
-        consolidation_cfg.enable_thinking = 0;
-        consolidation_cfg.thinking_budget = 0;
-        consolidated = llm_complete(&consolidation_cfg, chat, &stats);
-    }
+    /* Temporarily override provider config for consolidation (low temp, short output) */
+    int saved_max_tokens = ctx->provider->cfg.max_tokens;
+    float saved_temp = ctx->provider->cfg.temperature;
+    int saved_thinking = ctx->provider->cfg.enable_thinking;
+    int saved_budget = ctx->provider->cfg.thinking_budget;
+    ctx->provider->cfg.max_tokens = 2048;
+    ctx->provider->cfg.temperature = 0.1f;
+    ctx->provider->cfg.enable_thinking = 0;
+    ctx->provider->cfg.thinking_budget = 0;
+    consolidated = provider_complete(ctx->provider, chat, &stats);
+    ctx->provider->cfg.max_tokens = saved_max_tokens;
+    ctx->provider->cfg.temperature = saved_temp;
+    ctx->provider->cfg.enable_thinking = saved_thinking;
+    ctx->provider->cfg.thinking_budget = saved_budget;
     llm_chat_free(chat);
 
     if (!consolidated || strlen(consolidated) < 20) {
