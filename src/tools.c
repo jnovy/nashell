@@ -1894,31 +1894,50 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
 }
 
 
-tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
-    if (strcmp(action, "shell_exec")  == 0) return tool_shell_exec(ctx, params);
-    if (strcmp(action, "file_read")   == 0) return tool_file_read(ctx, params);
-    if (strcmp(action, "file_write")  == 0) return tool_file_write(ctx, params);
-    if (strcmp(action, "file_edit")   == 0) return tool_file_edit(ctx, params);
-    if (strcmp(action, "grep_search") == 0) return tool_grep_search(ctx, params);
-    if (strcmp(action, "web_fetch")   == 0) return tool_web_fetch(ctx, params);
-    if (strcmp(action, "web_search")  == 0) return tool_web_search(ctx, params);
-    if (strcmp(action, "notes")       == 0) return tool_notes(ctx, params);
-    if (strcmp(action, "done")        == 0) return tool_done(ctx, params);
-    if (strcmp(action, "memory_store") == 0) return tool_memory_store(ctx, params);
-    if (strcmp(action, "memory_recall")== 0) return tool_memory_recall(ctx, params);
-    if (strcmp(action, "memory_pin")  == 0) return tool_memory_pin(ctx, params);
-    if (strcmp(action, "memory_unpin")== 0) return tool_memory_unpin(ctx, params);
-    if (strcmp(action, "memory_delete")==0) return tool_memory_delete(ctx, params);
+/* Tool dispatch table — maps tool names to handler functions.
+ * Adding a new tool requires: (1) add handler function above,
+ * (2) add entry here, (3) add to TOOL_REGISTRY in tools_registry.h.
+ * The dispatch table is separate from TOOL_REGISTRY because handler
+ * functions are static to this file and can't be in a shared header. */
+typedef tool_result_t (*tool_handler_fn)(tool_ctx_t *, cJSON *);
 
-    /* Unknown tool — return error with available tool list so the model
-     * can self-correct. react.c handles this by injecting a corrective
-     * message and letting the model retry (no fuzzy matching hacks). */
-    char msg[512];
-    snprintf(msg, sizeof(msg),
-        "unknown tool: '%.100s'. Available tools: shell_exec, file_read, "
-        "file_write, file_edit, grep_search, web_fetch, web_search, "
-        "notes, done, memory_store, memory_recall, memory_pin, "
-        "memory_unpin, memory_delete", action);
+static const struct {
+    const char *name;
+    tool_handler_fn handler;
+} TOOL_DISPATCH[] = {
+    {"shell_exec",    tool_shell_exec},
+    {"file_read",     tool_file_read},
+    {"file_write",    tool_file_write},
+    {"file_edit",     tool_file_edit},
+    {"grep_search",   tool_grep_search},
+    {"web_fetch",     tool_web_fetch},
+    {"web_search",    tool_web_search},
+    {"notes",         tool_notes},
+    {"done",          tool_done},
+    {"memory_store",  tool_memory_store},
+    {"memory_recall", tool_memory_recall},
+    {"memory_pin",    tool_memory_pin},
+    {"memory_unpin",  tool_memory_unpin},
+    {"memory_delete", tool_memory_delete},
+    {NULL, NULL}  /* sentinel */
+};
+
+tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
+    /* Dispatch via table lookup */
+    for (int i = 0; TOOL_DISPATCH[i].name; i++) {
+        if (strcmp(action, TOOL_DISPATCH[i].name) == 0)
+            return TOOL_DISPATCH[i].handler(ctx, params);
+    }
+
+    /* Unknown tool — build available tools list dynamically from the
+     * dispatch table (no hardcoded list to keep in sync). react.c handles
+     * this by injecting a corrective message and letting the model retry. */
+    char msg[1024];
+    int pos = snprintf(msg, sizeof(msg), "unknown tool: '%.100s'. Available: ", action);
+    for (int i = 0; TOOL_DISPATCH[i].name && pos < (int)sizeof(msg) - 32; i++) {
+        if (i > 0) pos += snprintf(msg + pos, sizeof(msg) - pos, ", ");
+        pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_DISPATCH[i].name);
+    }
     return make_error(msg);
 }
 
