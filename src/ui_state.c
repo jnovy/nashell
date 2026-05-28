@@ -281,12 +281,10 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             char step_uri[256];
                             snprintf(step_uri, sizeof(step_uri),
                                      "file://session/%s", ref ? ref : "?");
-                            char desc_trunc[61];
-                            utf8_truncate(desc_trunc, sanitize_md_link(desc), 60);
-                            /* Show thought as a line ABOVE the step entry,
-                             * aligned with "  + R0S6:" step lines. */
+                            /* No truncation — show full command/path/description */
+                            const char *desc_safe = sanitize_md_link(desc);
+                            /* Show thought as a line ABOVE the step entry */
                             if (thought[0]) {
-                                /* Trim trailing whitespace/newlines from thought */
                                 int tlen = (int)strlen(thought);
                                 while (tlen > 0 && (thought[tlen-1] == '\n' ||
                                        thought[tlen-1] == '\r' ||
@@ -295,10 +293,12 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 if (tlen > 0)
                                     str_appendf(&md, "  💭 %.*s\n", tlen, thought);
                             }
-                            str_appendf(&md, "[  %s %s: %s \"%s\"",
+                            /* Tool name in backticks → rendered with C_STREAM color
+                             * by md_render.c's render_inline() */
+                            str_appendf(&md, "[  %s %s: `%s` \"%s\"",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
-                                        t, desc_trunc);
+                                        t, desc_safe);
                             if (!failed && sz > 0)
                                 str_appendf(&md, " -> %d chars", sz);
                             str_appendf(&md, "](%s)\n", step_uri);
