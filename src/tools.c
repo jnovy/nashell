@@ -2099,6 +2099,9 @@ const char *tools_system_prompt(void) {
         "and you MUST read the result (file_read the ref) before proceeding.\n"
         "- Never guess tool results. Wait for actual output.\n"
         "- file_edit: old_text must match exactly. Always file_read first.\n"
+        "- Use dedicated tools (file_read, grep_search, glob_search) instead of "
+        "shell_exec equivalents (cat, grep, find, sed, head, tail). "
+        "file_read supports start_line/end_line for reading specific line ranges.\n"
         "- Record key findings in notes — they survive context eviction.\n"
         "- Call done with the final answer when finished.\n",
         timebuf, cwdbuf);
