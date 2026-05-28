@@ -269,6 +269,11 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             else if (pat && pat->valuestring) desc = pat->valuestring;
                             else if (qry && qry->valuestring) desc = qry->valuestring;
                             else if (res && res->valuestring) desc = res->valuestring;
+                            else {
+                                /* server_error and other tools: show "error" field */
+                                cJSON *err = cJSON_GetObjectItem(params, "error");
+                                if (err && err->valuestring) desc = err->valuestring;
+                            }
                         }
 
                         /* Render step as a hyperlink so cursor can land on it */

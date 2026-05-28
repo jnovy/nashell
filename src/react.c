@@ -801,6 +801,33 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 max_resp, rep_thresh);
         if (!response) {
             consecutive_null_responses++;
+
+            /* Write server error to journal so it's visible in TUI and
+             * preserved for post-mortem analysis. The journal entry uses
+             * tool="server_error" with failed=true, which the TUI renders
+             * with an "x" marker instead of "+". */
+            {
+                cJSON *err_params = cJSON_CreateObject();
+                cJSON_AddStringToObject(err_params, "error",
+                    consecutive_null_responses >= 2
+                        ? "LLM server error after scratchpad reformulation — giving up"
+                        : "LLM server returned NULL response (HTTP 500 or malformed output)");
+                cJSON_AddNumberToObject(err_params, "attempt", consecutive_null_responses);
+
+                /* Capture context size for diagnostics */
+                int total_chars = 0;
+                for (int ci = 0; ci < chat->n_msgs; ci++)
+                    total_chars += (int)strlen(chat->msgs[ci].content);
+                cJSON_AddNumberToObject(err_params, "context_chars", total_chars);
+                cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
+
+                journal_append(ctx->tools->journal,
+                    ctx->tools->react_loop, step, "server_error",
+                    err_params, NULL, 0, 0,
+                    "LLM server error", NULL);
+                cJSON_Delete(err_params);
+            }
+
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
