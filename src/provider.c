@@ -620,7 +620,21 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 }
             }
             /* 4xx, deterministic 500, or final attempt: return NULL */
-            free(req_body);
+            /* Populate error diagnostics for react.c journal entry */
+            free(p->last_error);
+            {
+                char ebuf[512];
+                const char *body = st.full_content.len > 0 ?
+                                   str_cstr(&st.full_content) : "(empty)";
+                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, body);
+                p->last_error = strdup(ebuf);
+            }
+            free(p->last_error_request);
+            p->last_error_request = req_body;  /* transfer ownership */
+            req_body = NULL;
+            free(p->last_error_response);
+            p->last_error_response = (st.full_content.len > 0)
+                ? strdup(str_cstr(&st.full_content)) : NULL;
             goto cleanup;
         }
 
@@ -629,7 +643,18 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             fprintf(stderr, "[provider] curl error: %s (attempt %d/%d, retry in %ds)\n",
                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
-            free(req_body);
+            /* Populate error diagnostics for react.c journal entry */
+            free(p->last_error);
+            {
+                char ebuf[512];
+                snprintf(ebuf, sizeof(ebuf), "curl error: %s", curl_easy_strerror(res));
+                p->last_error = strdup(ebuf);
+            }
+            free(p->last_error_request);
+            p->last_error_request = req_body;  /* transfer ownership */
+            req_body = NULL;
+            free(p->last_error_response);
+            p->last_error_response = NULL;
             goto cleanup;
         }
 

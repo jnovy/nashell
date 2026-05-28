@@ -871,28 +871,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
                 /* Include the actual server error message if available.
-                 * This is populated by llm.c error paths (curl error, API error,
-                 * JSON parse failure, empty response). */
-                if (ctx->llm->last_error) {
-                    cJSON_AddStringToObject(err_params, "server_message",
-                                            ctx->llm->last_error);
+                 * Check both llm_config_t (direct llm path) and provider_t
+                 * (provider path) for error details. */
+                const char *err_msg = ctx->llm->last_error;
+                const char *err_req = ctx->llm->last_error_request;
+                const char *err_resp = ctx->llm->last_error_response;
+
+                /* Provider path: if provider was used, check its error fields */
+                if (ctx->provider) {
+                    if (!err_msg && ctx->provider->last_error)
+                        err_msg = ctx->provider->last_error;
+                    if (!err_req && ctx->provider->last_error_request)
+                        err_req = ctx->provider->last_error_request;
+                    if (!err_resp && ctx->provider->last_error_response)
+                        err_resp = ctx->provider->last_error_response;
+                }
+
+                if (err_msg) {
+                    cJSON_AddStringToObject(err_params, "server_message", err_msg);
                 }
 
                 /* Save raw request and response bodies to store/ for
                  * post-mortem analysis. These contain the exact JSON that
                  * caused the server error, including the offset information
                  * the server reports in its error message. */
-                if (ctx->llm->last_error_request && ctx->tools->store) {
-                    char *req_ref = store_save(ctx->tools->store,
-                        ctx->llm->last_error_request);
+                if (err_req && ctx->tools->store) {
+                    char *req_ref = store_save(ctx->tools->store, err_req);
                     if (req_ref) {
                         cJSON_AddStringToObject(err_params, "request_ref", req_ref);
                         free(req_ref);
                     }
                 }
-                if (ctx->llm->last_error_response && ctx->tools->store) {
-                    char *resp_ref = store_save(ctx->tools->store,
-                        ctx->llm->last_error_response);
+                if (err_resp && ctx->tools->store) {
+                    char *resp_ref = store_save(ctx->tools->store, err_resp);
                     if (resp_ref) {
                         cJSON_AddStringToObject(err_params, "response_ref", resp_ref);
                         free(resp_ref);
@@ -1927,6 +1938,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->tools->n_recalled_keys = 0;
 
     /* Increment react loop counter for next query */
+    ctx->tools->react_loop++;
 
     return final_result;
 }
