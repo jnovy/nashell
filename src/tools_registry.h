@@ -88,10 +88,16 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "Legacy: notes(content=\"...\") still works (replaces all). Priority 1=highest, 9=lowest (default 5).",
      "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content (legacy mode) or section content (with op).\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name for write/append/read/clear\"},\"priority\":{\"type\":\"integer\",\"description\":\"Section priority 1-9 (1=highest, default 5)\"}}}"},
 
+    {"user_ask",
+     "Ask the user a clarifying question. Use when you need information "
+     "that cannot be determined from the codebase or context. The react loop "
+     "pauses until the user responds.",
+     "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\",\"description\":\"Question to ask the user\"}},\"required\":[\"question\"]}"},
+
     {NULL, NULL, NULL}  /* sentinel */
 };
 
-#define TOOL_REGISTRY_COUNT 15
+#define TOOL_REGISTRY_COUNT 16
 
 /* Build a cJSON tools array from the registry, formatted for the given provider type.
  * Handles the structural differences between Local/OpenAI/Anthropic APIs.

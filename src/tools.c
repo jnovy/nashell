@@ -2085,6 +2085,7 @@ static const struct {
     {"notes",         tool_notes},
     {"done",          tool_done},
     {"plan",          tool_plan},
+    {"user_ask",      tool_plan},  /* stub — actual logic is in react.c (special-cased before tool_execute) */
     {"memory_store",  tool_memory_store},
     {"memory_recall", tool_memory_recall},
     {"memory_pin",    tool_memory_pin},

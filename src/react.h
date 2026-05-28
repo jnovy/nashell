@@ -14,6 +14,13 @@ typedef struct {
     int           verbose;
     volatile int  pause_requested;  /* set by TUI (ESC key) to pause after current step */
 
+    /* user_ask: model asks user a question during the react loop.
+     * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
+     * then polls user_ask_pending until the TUI thread sets the answer. */
+    volatile int  user_ask_pending;   /* 1 = waiting for answer, 0 = idle */
+    char         *user_ask_question;  /* question text (set by inference thread) */
+    char         *user_ask_answer;    /* answer text (set by TUI thread, freed by inference) */
+
     /* Cross-query context inheritance (set by caller between react_run calls) */
     char         *last_query;    /* previous query text (NULL for first query) */
     char         *last_result;   /* previous result text (NULL for first query) */

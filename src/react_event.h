@@ -13,6 +13,10 @@ typedef enum {
     REACT_EVENT_ERROR,           /* recoverable error (parse failure, missing action) */
     REACT_EVENT_WARNING,         /* cycling detected, context pressure */
     REACT_EVENT_DONE,            /* task complete, final result */
+    REACT_EVENT_USER_ASK,        /* model wants to ask user a question — TUI should
+                                  * show the question and collect user's answer.
+                                  * question is in event->message, answer goes to
+                                  * react_ctx_t->user_ask_answer */
 } react_event_type_t;
 
 /* Event data — all fields set to 0/NULL by default, only relevant ones populated */

@@ -902,6 +902,21 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     }
         break;
 
+    case REACT_EVENT_USER_ASK:
+        /* Show the question in the status bar and switch to AWAITING_INPUT.
+         * The TUI input handler will set the answer on the react context. */
+        ui->status = STATUS_AWAITING_INPUT;
+        free(ui->status_text);
+        if (ev->message) {
+            char ask_buf[512];
+            snprintf(ask_buf, sizeof(ask_buf), "Agent asks: %s", ev->message);
+            ui->status_text = strdup(ask_buf);
+        } else {
+            ui->status_text = strdup("Agent is asking a question...");
+        }
+        ui_state_rebuild_md(ui);
+        break;
+
     case REACT_EVENT_ERROR:
     case REACT_EVENT_WARNING:
         ui_state_rebuild_md(ui);

@@ -1209,6 +1209,71 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         const char *desc = get_action_desc(action, action_name, thought);
 
+        /* Check for user_ask — pause react loop and wait for user input */
+        if (strcmp(action_name, "user_ask") == 0) {
+            const char *question = json_get_str(action, "question");
+            if (!question || !question[0]) question = "(no question specified)";
+
+            /* Store question in shared state for TUI to read */
+            free(ctx->user_ask_question);
+            ctx->user_ask_question = strdup(question);
+            free(ctx->user_ask_answer);
+            ctx->user_ask_answer = NULL;
+            ctx->user_ask_pending = 1;
+
+            /* Emit event so TUI shows the question */
+            react_event_t ev = {0};
+            ev.type = REACT_EVENT_USER_ASK;
+            ev.step = step + 1;
+            ev.message = question;
+            emit(on_event, userdata, &ev);
+
+            /* Poll until TUI provides the answer (set by main.c) */
+            while (ctx->user_ask_pending) {
+                { struct timespec ts = {0, 100000000}; nanosleep(&ts, NULL); }  /* 100ms */
+            }
+
+            /* Build tool result from user's answer */
+            const char *answer = ctx->user_ask_answer;
+            if (!answer) answer = "(no answer)";
+
+            /* Log to journal */
+            cJSON *ua_params = cJSON_CreateObject();
+            cJSON_AddStringToObject(ua_params, "question", question);
+            cJSON_AddStringToObject(ua_params, "answer", answer);
+            char *ua_json = cJSON_PrintUnformatted(ua_params);
+            char *ua_hash = store_save(ctx->tools->store, ua_json ? ua_json : "{}");
+            char *ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step, "user_ask", ua_params, ua_alias,
+                           strlen(answer), 0, NULL, NULL);
+            free(ua_json);
+            free(ua_hash);
+
+            /* Build result message for the model */
+            size_t ans_len = strlen(answer) + 64;
+            char *result_msg = malloc(ans_len);
+            snprintf(result_msg, ans_len, "{\"answer\":\"%s\"}\n[step %d | user_ask]",
+                     answer, step + 1);
+
+            /* Add to chat as tool result */
+            if (chat->last_tool_call_id) {
+                llm_chat_add_assistant_tool_call(chat, response,
+                    chat->last_tool_calls_json);
+                llm_chat_add_tool_result(chat, chat->last_tool_call_id, result_msg);
+            } else {
+                llm_chat_add(chat, "assistant", response);
+                llm_chat_add(chat, "user", result_msg);
+            }
+
+            free(result_msg);
+            free(ua_alias);
+            cJSON_Delete(ua_params);
+            cJSON_Delete(action);
+            free(response);
+            continue;
+        }
+
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
             const char *result = json_get_str(action, "result");

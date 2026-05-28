@@ -646,6 +646,20 @@ int main(int argc, char **argv) {
             }
 
             if (submitted_query) {
+                /* Check if inference thread is waiting for user_ask answer */
+                if (inferring && react.user_ask_pending) {
+                    /* Pass the user's answer to the waiting react loop */
+                    free(react.user_ask_answer);
+                    react.user_ask_answer = submitted_query;
+                    submitted_query = NULL;  /* ownership transferred */
+                    react.user_ask_pending = 0;  /* unblock the react loop */
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+                    continue;
+                }
+
                 /* Handle exit/quit commands */
                 if (strcmp(submitted_query, "quit") == 0 ||
                     strcmp(submitted_query, "exit") == 0 ||

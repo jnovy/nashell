@@ -111,6 +111,13 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
         fprintf(stderr, "\n[warning] %s\n", ev->message ? ev->message : "unknown");
         break;
 
+    case REACT_EVENT_USER_ASK:
+        /* In headless mode, user_ask can't work — print question and provide empty answer.
+         * The react loop will receive "" as the answer and continue. */
+        fprintf(stderr, "\n[user_ask] %s\n", ev->message ? ev->message : "?");
+        fprintf(stderr, "[user_ask] headless mode — cannot prompt user, returning empty answer\n");
+        break;
+
     case REACT_EVENT_DONE: {
         { char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
         fprintf(stderr, "\r\033[K[step %d] done (%s)\n", ev->step, _dur); }
