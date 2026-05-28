@@ -479,46 +479,29 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
 /* ── Get endpoint ───────────────────────────────────────────────── */
 
 static const char *anthropic_get_endpoint(provider_t *p) {
-    if (!p->_cached_endpoint) {
-        if (p->type == PROVIDER_VERTEX) {
-            /* Vertex AI endpoint:
-             * https://{region}-aiplatform.googleapis.com/v1/projects/{project}/
-             *   locations/{region}/publishers/anthropic/models/{model}:streamRawPredict
-             * or :rawPredict for non-streaming */
-            const char *region = p->cfg.region ? p->cfg.region : "us-east5";
-            int is_global = (strcmp(region, "global") == 0);
-
-            /* For region="global", the Anthropic SDK uses:
-             *   https://aiplatform.googleapis.com/v1/  (no region prefix)
-             * For specific regions (us-east5, europe-west1, etc.):
-             *   https://{region}-aiplatform.googleapis.com/v1/
-             */
-            char url[1024];
-            if (is_global) {
-                snprintf(url, sizeof(url),
-                         "https://aiplatform.googleapis.com/v1/projects/%s/"
-                         "locations/global/publishers/anthropic/models/%s:streamRawPredict",
-                         p->cfg.project_id ? p->cfg.project_id : "",
-                         p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
-            } else {
-                snprintf(url, sizeof(url),
-                         "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
-                         "locations/%s/publishers/anthropic/models/%s:streamRawPredict",
-                         region,
-                         p->cfg.project_id ? p->cfg.project_id : "",
-                         region,
-                         p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
-            }
-            p->_cached_endpoint = strdup(url);
+    if (p->type == PROVIDER_VERTEX) {
+        const char *region = p->cfg.region ? p->cfg.region : "us-east5";
+        int is_global = (strcmp(region, "global") == 0);
+        if (is_global) {
+            return provider_cache_endpoint(p,
+                "https://aiplatform.googleapis.com/v1/projects/%s/"
+                "locations/global/publishers/anthropic/models/%s:streamRawPredict",
+                p->cfg.project_id ? p->cfg.project_id : "",
+                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
         } else {
-            const char *base = p->cfg.api_base;
-            if (!base || !base[0]) base = "https://api.anthropic.com/v1";
-            char url[1024];
-            snprintf(url, sizeof(url), "%s/messages", base);
-            p->_cached_endpoint = strdup(url);
+            return provider_cache_endpoint(p,
+                "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
+                "locations/%s/publishers/anthropic/models/%s:streamRawPredict",
+                region,
+                p->cfg.project_id ? p->cfg.project_id : "",
+                region,
+                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
         }
+    } else {
+        const char *base = p->cfg.api_base;
+        if (!base || !base[0]) base = "https://api.anthropic.com/v1";
+        return provider_cache_endpoint(p, "%s/messages", base);
     }
-    return p->_cached_endpoint;
 }
 
 /* ── Parse response ─────────────────────────────────────────────── */
@@ -657,56 +640,11 @@ static cJSON *anthropic_build_tools_vtable(provider_t *p) {
     return build_tools_from_registry(PROVIDER_ANTHROPIC);
 }
 
-/* ── Model info (context size lookup) ──────────────────────────── */
-
-/* Known context window sizes for Anthropic models (in tokens).
- * Used when context_size is not explicitly set in config. */
-static int anthropic_lookup_context_size(const char *model_id) {
-    if (!model_id) return 0;
-
-    /* Claude 4 family */
-    if (strstr(model_id, "claude-4") ||
-        strstr(model_id, "claude-opus-4") ||
-        strstr(model_id, "claude-sonnet-4"))
-        return 200000;
-
-    /* Claude 3.7 family */
-    if (strstr(model_id, "claude-3-7") ||
-        strstr(model_id, "claude-3.7"))
-        return 200000;
-
-    /* Claude 3.5 family */
-    if (strstr(model_id, "claude-3-5") ||
-        strstr(model_id, "claude-3.5"))
-        return 200000;
-
-    /* Claude 3 family (opus, sonnet, haiku) */
-    if (strstr(model_id, "claude-3"))
-        return 200000;
-
-    /* Claude 2.x */
-    if (strstr(model_id, "claude-2"))
-        return 100000;
-
-    return 0;
-}
+/* ── Model info ─────────────────────────────────────────────────── */
 
 static int anthropic_fetch_model_info(provider_t *p, int *context_size,
                                       char **model_name, char **props_json) {
-    if (props_json) *props_json = NULL;  /* no /props for API providers */
-
-    if (model_name && p->cfg.model_id)
-        *model_name = strdup(p->cfg.model_id);
-
-    if (context_size) {
-        /* Use config value if explicitly set, otherwise look up by model */
-        if (p->cfg.context_size > 0)
-            *context_size = p->cfg.context_size;
-        else
-            *context_size = anthropic_lookup_context_size(p->cfg.model_id);
-    }
-
-    return 0;
+    return provider_api_fetch_model_info(p, context_size, model_name, props_json);
 }
 
 /* ── Init ───────────────────────────────────────────────────────── */

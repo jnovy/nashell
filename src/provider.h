@@ -112,6 +112,14 @@ cJSON *build_tools_from_registry(provider_type_t type);
  * Returns cJSON array (caller owns). */
 cJSON *build_messages_json(llm_chat_t *chat);
 
+/* Build the common part of an OpenAI-compatible request body.
+ * Returns cJSON object (caller owns, can add extra fields).
+ * Shared by local and openai providers. */
+cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
+                                 int stream, const char *model_id,
+                                 const char *max_token_field,
+                                 provider_type_t provider_type);
+
 /* Parse an OpenAI-compatible response JSON.
  * Returns unified JSON for tool calls or plain content string.
  * Shared by local and openai providers. */
@@ -120,6 +128,23 @@ char *parse_openai_response(provider_t *p, const char *response_json,
 
 /* Extract prompt/completion token stats from OpenAI-format response. */
 void extract_openai_stats(cJSON *resp, llm_stats_t *stats);
+
+/* Shared curl write callback: append received data to a str_t.
+ * Returns size*nmemb (curl callback convention). */
+size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
+
+/* Look up context window size by model ID prefix (unified table).
+ * Returns 0 if no match found. */
+int provider_lookup_context_size(const char *model_id);
+
+/* Shared fetch_model_info for API providers (OpenAI, Anthropic, Vertex).
+ * Uses static lookup table. Sets model_name, context_size, props_json=NULL. */
+int provider_api_fetch_model_info(provider_t *p, int *context_size,
+                                  char **model_name, char **props_json);
+
+/* Cache an endpoint URL in provider->_cached_endpoint.
+ * Returns the cached string (do NOT free). */
+const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...);
 
 /* ── High-level API (uses vtable internally) ────────────────────── */
 

@@ -96,15 +96,6 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     chat->n_msgs++;
 }
 
-/* ── CURL callback (for fetch/apply-template/EDRM helpers) ─────── */
-
-static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    str_t *buf = userdata;
-    size_t total = size * nmemb;
-    str_append(buf, ptr, total);
-    return total;
-}
-
 /* ── Parse action from assistant response ────────────────────── */
 
 /* Attempt to repair common JSON errors produced by models:

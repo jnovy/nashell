@@ -7,9 +7,102 @@
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
+#include <stdarg.h>
 
 #define PROVIDER_MAX_RETRIES    10
 #define PROVIDER_RETRY_BASE_SEC 10
+
+/* ── Shared model context size table ────────────────────────────── */
+
+/* Unified context size lookup for all API providers (OpenAI + Anthropic).
+ * Replaces separate openai_lookup_context_size() and anthropic_lookup_context_size()
+ * functions. Linear search over prefix → size mappings. */
+static const struct {
+    const char *prefix;
+    int        size;
+} MODEL_CONTEXT_SIZES[] = {
+    /* OpenAI o-series */
+    { "o4-mini",     200000 },
+    { "o3-mini",     200000 },
+    { "o3",          200000 },
+    { "o1-pro",      200000 },
+    { "o1-mini",     128000 },
+    { "o1",          200000 },
+    /* OpenAI GPT-4.1 */
+    { "gpt-4.1",    1047576 },
+    /* OpenAI GPT-4o */
+    { "gpt-4o",      128000 },
+    /* OpenAI GPT-4 turbo */
+    { "gpt-4-turbo", 128000 },
+    /* OpenAI GPT-4 */
+    { "gpt-4-32k",    32768 },
+    { "gpt-4",         8192 },
+    /* OpenAI GPT-3.5 */
+    { "gpt-3.5-turbo-16k", 16384 },
+    { "gpt-3.5",        16384 },
+    /* Anthropic Claude 4 */
+    { "claude-opus-4", 200000 },
+    { "claude-sonnet-4", 200000 },
+    { "claude-4",      200000 },
+    /* Anthropic Claude 3.7 */
+    { "claude-3-7",    200000 },
+    { "claude-3.7",    200000 },
+    /* Anthropic Claude 3.5 */
+    { "claude-3-5",    200000 },
+    { "claude-3.5",    200000 },
+    /* Anthropic Claude 3 */
+    { "claude-3",      200000 },
+    /* Anthropic Claude 2.x */
+    { "claude-2",     100000 },
+    { NULL, 0 }  /* sentinel */
+};
+
+/* Look up context window size by model ID prefix.
+ * Returns 0 if no match found. */
+int provider_lookup_context_size(const char *model_id) {
+    if (!model_id) return 0;
+    for (int i = 0; MODEL_CONTEXT_SIZES[i].prefix; i++) {
+        if (strstr(model_id, MODEL_CONTEXT_SIZES[i].prefix))
+            return MODEL_CONTEXT_SIZES[i].size;
+    }
+    return 0;
+}
+
+/* Shared fetch_model_info for API providers (OpenAI, Anthropic, Vertex).
+ * These don't have /props endpoints — they use static lookup tables.
+ * Sets model_name = strdup(cfg.model_id), context_size from config or lookup,
+ * props_json = NULL. */
+int provider_api_fetch_model_info(provider_t *p, int *context_size,
+                                  char **model_name, char **props_json) {
+    if (props_json) *props_json = NULL;
+
+    if (model_name && p->cfg.model_id)
+        *model_name = strdup(p->cfg.model_id);
+
+    if (context_size) {
+        if (p->cfg.context_size > 0)
+            *context_size = p->cfg.context_size;
+        else
+            *context_size = provider_lookup_context_size(p->cfg.model_id);
+    }
+
+    return 0;
+}
+
+/* ── Shared endpoint caching helper ─────────────────────────────── */
+
+/* Cache an endpoint URL in provider->_cached_endpoint.
+ * Returns the cached string (do NOT free). */
+const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...) {
+    if (p->_cached_endpoint) return p->_cached_endpoint;
+    char url[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(url, sizeof(url), fmt, ap);
+    va_end(ap);
+    p->_cached_endpoint = strdup(url);
+    return p->_cached_endpoint;
+}
 
 /* ── Forward declarations for provider constructors ─────────────── */
 
@@ -140,10 +233,55 @@ cJSON *build_tools_from_registry(provider_type_t type) {
 
 /* ── Shared curl write callback ─────────────────────────────────── */
 
-static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+/* Append received data to a str_t. Used by curl_easy_setopt(..., CURLOPT_WRITEFUNCTION).
+ * Exported so provider_local.c can use it for local_fetch_model_info HTTP calls. */
+size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     str_t *s = userdata;
     str_append(s, ptr, size * nmemb);
     return size * nmemb;
+}
+
+/* ── Shared: build OpenAI-compatible base request ───────────────── */
+
+/* Build the common part of an OpenAI-compatible request body.
+ * Handles: model, max_tokens (or max_completion_tokens), temperature,
+ * stream, stream_options (include_usage), tools, messages.
+ *
+ * Parameters:
+ *   p          — provider config
+ *   chat       — chat history
+ *   stream     — whether to stream
+ *   model_id   — model identifier (passed through)
+ *   max_token_field — "max_tokens" or "max_completion_tokens"
+ *   provider_type — for build_tools_from_registry()
+ *
+ * Returns a cJSON object (caller owns, caller adds extra fields if needed).
+ * Shared by local and openai providers. */
+cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
+                                 int stream, const char *model_id,
+                                 const char *max_token_field,
+                                 provider_type_t provider_type) {
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "model", model_id ? model_id : "gpt-4o");
+    cJSON_AddNumberToObject(req, max_token_field, p->cfg.max_tokens);
+    cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
+    cJSON_AddBoolToObject(req, "stream", stream);
+
+    if (stream) {
+        cJSON *so = cJSON_CreateObject();
+        cJSON_AddBoolToObject(so, "include_usage", 1);
+        cJSON_AddItemToObject(req, "stream_options", so);
+    }
+
+    /* Tools */
+    cJSON *tools = build_tools_from_registry(provider_type);
+    cJSON_AddItemToObject(req, "tools", tools);
+
+    /* Messages — use shared helper */
+    cJSON *msgs = build_messages_json(chat);
+    cJSON_AddItemToObject(req, "messages", msgs);
+
+    return req;
 }
 
 /* ── Shared: extract stats from OpenAI-format response ──────────── */

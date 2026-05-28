@@ -17,24 +17,9 @@
 /* ── Build request ──────────────────────────────────────────────── */
 
 static char *local_build_request(provider_t *p, llm_chat_t *chat, int stream) {
-    cJSON *req = cJSON_CreateObject();
-    if (p->cfg.model_id) cJSON_AddStringToObject(req, "model", p->cfg.model_id);
-    cJSON_AddNumberToObject(req, "max_tokens", p->cfg.max_tokens);
-    cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
-    cJSON_AddBoolToObject(req, "stream", stream);
-
-    /* Request usage stats in streaming responses (prompt_tokens, completion_tokens).
-     * Without this, llama.cpp/OpenAI don't include usage in SSE chunks,
-     * so the TUI's "ctx N%" display stays at 0%. */
-    if (stream) {
-        cJSON *so = cJSON_CreateObject();
-        cJSON_AddBoolToObject(so, "include_usage", 1);
-        cJSON_AddItemToObject(req, "stream_options", so);
-    }
-
-    /* Tools */
-    cJSON *tools = build_tools_from_registry(PROVIDER_LOCAL);
-    cJSON_AddItemToObject(req, "tools", tools);
+    /* Use shared OpenAI-compatible base request builder */
+    cJSON *req = build_openai_base_request(p, chat, stream, p->cfg.model_id,
+                                           "max_tokens", PROVIDER_LOCAL);
 
     /* llama.cpp-specific: chat_template_kwargs for thinking mode */
     cJSON *tmpl_kwargs = cJSON_CreateObject();
@@ -45,10 +30,6 @@ static char *local_build_request(provider_t *p, llm_chat_t *chat, int stream) {
     if (p->cfg.thinking_budget >= 0) {
         cJSON_AddNumberToObject(req, "reasoning_budget", p->cfg.thinking_budget);
     }
-
-    /* Build messages array — use shared helper */
-    cJSON *msgs = build_messages_json(chat);
-    cJSON_AddItemToObject(req, "messages", msgs);
 
     char *json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
@@ -67,13 +48,8 @@ static struct curl_slist *local_build_headers(provider_t *p) {
 /* ── Get endpoint ───────────────────────────────────────────────── */
 
 static const char *local_get_endpoint(provider_t *p) {
-    if (!p->_cached_endpoint) {
-        char url[1024];
-        snprintf(url, sizeof(url), "%s/v1/chat/completions",
-                 p->cfg.api_base ? p->cfg.api_base : "http://localhost:8080");
-        p->_cached_endpoint = strdup(url);
-    }
-    return p->_cached_endpoint;
+    return provider_cache_endpoint(p, "%s/v1/chat/completions",
+                                   p->cfg.api_base ? p->cfg.api_base : "http://localhost:8080");
 }
 
 /* ── Build tools ────────────────────────────────────────────────── */
@@ -85,12 +61,8 @@ static cJSON *local_build_tools(provider_t *p) {
 
 /* ── Fetch model info (local server only) ───────────────────────── */
 
-static size_t local_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    str_t *s = userdata;
-    str_append(s, ptr, size * nmemb);
-    return size * nmemb;
-}
-
+/* Local servers have /props and /v1/models endpoints — cannot use
+ * the shared API provider fetch_model_info. Uses shared write_cb. */
 static int local_fetch_model_info(provider_t *p, int *context_size,
                                   char **model_name, char **props_json) {
     const char *base = p->cfg.api_base ? p->cfg.api_base : "http://localhost:8080";
@@ -104,7 +76,7 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
         CURL *curl = curl_easy_init();
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, local_write_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
 
@@ -139,7 +111,7 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
         CURL *curl = curl_easy_init();
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, local_write_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
 
