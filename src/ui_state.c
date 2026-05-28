@@ -293,12 +293,10 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 if (tlen > 0)
                                     str_appendf(&md, "  💭 %.*s\n", tlen, thought);
                             }
-                            /* Tool name in backticks → rendered with C_STREAM color
-                             * by md_render.c's render_inline() */
-                            /* Both tool name and description in backticks so that
-                             * special chars in commands (*.c, *.h) aren't interpreted
-                             * as markdown formatting (italic/underline). */
-                            str_appendf(&md, "[  %s %s: `%s` `%s`",
+                            /* Tool name in bold (**tool**) for distinct color.
+                             * Description in backticks (`cmd`) to prevent markdown
+                             * interpretation of special chars (*.c, *.h). */
+                            str_appendf(&md, "[  %s %s: **%s** `%s`",
                                         failed ? "x" : "+",
                                         ref ? ref : "?",
                                         t, desc_safe);
