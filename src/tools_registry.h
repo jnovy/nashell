@@ -6,7 +6,8 @@
 
 /* Shared tool definition — defined once, formatted per-provider.
  * Eliminates the 3x duplication of tool definitions across
- * provider_local.c, provider_openai.c, and provider_anthropic.c. */
+ * provider_local.c, provider_openai.c, and provider_anthropic.c.
+ * Also replaces llm.c:build_tools_array() — single source of truth. */
 
 typedef struct {
     const char *name;
@@ -60,6 +61,14 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "Recall information from long-term memory.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Exact key to recall\"},\"query\":{\"type\":\"string\",\"description\":\"Search query\"}}}"},
 
+    {"memory_pin",
+     "Pin an existing memory so it is always injected into the system prompt.",
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to pin\"}},\"required\":[\"key\"]}"},
+
+    {"memory_unpin",
+     "Unpin a memory so it is no longer always injected into the system prompt.",
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to unpin\"}},\"required\":[\"key\"]}"},
+
     {"done",
      "Signal task completion. Include all concrete data (paths, numbers, URLs) in result.",
      "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Complete answer with details\"}},\"required\":[\"result\"]}"},
@@ -80,7 +89,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
     {NULL, NULL, NULL}  /* sentinel */
 };
 
-#define TOOL_REGISTRY_COUNT 13
+#define TOOL_REGISTRY_COUNT 15
 
 /* Build a cJSON tools array from the registry, formatted for the given provider type.
  * Handles the structural differences between Local/OpenAI/Anthropic APIs.

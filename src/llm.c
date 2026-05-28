@@ -1,4 +1,5 @@
 #include "llm.h"
+#include "provider.h"
 #include "str.h"
 #include <curl/curl.h>
 #include <stdio.h>
@@ -108,84 +109,6 @@ static size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     return total;
 }
 
-/* ── Build tools array (shared between streaming and non-streaming) ── */
-
-static cJSON *build_tools_array(void) {
-    cJSON *tools = cJSON_CreateArray();
-
-    /* Helper macro to add a tool */
-    #define ADD_TOOL(name, desc, params_json) do { \
-        cJSON *t = cJSON_CreateObject(); \
-        cJSON_AddStringToObject(t, "type", "function"); \
-        cJSON *fn = cJSON_CreateObject(); \
-        cJSON_AddStringToObject(fn, "name", name); \
-        cJSON_AddStringToObject(fn, "description", desc); \
-        cJSON *p = cJSON_Parse(params_json); \
-        if (p) cJSON_AddItemToObject(fn, "parameters", p); \
-        cJSON_AddItemToObject(t, "function", fn); \
-        cJSON_AddItemToArray(tools, t); \
-    } while(0)
-
-    ADD_TOOL("shell_exec",
-        "Execute a shell command. Output is stored; you see metadata.",
-        "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command to execute\"}},\"required\":[\"command\"]}");
-
-    ADD_TOOL("file_read",
-        "Read a file. Use step aliases (R0S1, R1S2...) to read stored tool outputs.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"File path or step alias\"}},\"required\":[\"path\"]}");
-
-    ADD_TOOL("file_write",
-        "Write content to a file.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}");
-
-    ADD_TOOL("file_edit",
-        "Replace exact text in a file. Always file_read first to get exact text.",
-        "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"old_text\":{\"type\":\"string\"},\"new_text\":{\"type\":\"string\"}},\"required\":[\"path\",\"old_text\",\"new_text\"]}");
-
-    ADD_TOOL("grep_search",
-        "Search files with regex. Results stored.",
-        "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\"},\"path\":{\"type\":\"string\",\"description\":\"Directory or file to search (default: .)\"}},\"required\":[\"pattern\"]}");
-
-    ADD_TOOL("web_fetch",
-        "Fetch a URL. Content stored; you see metadata.",
-        "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"description\":\"URL to fetch\"}},\"required\":[\"url\"]}");
-
-    ADD_TOOL("web_search",
-        "Search the web. Results stored.",
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}");
-
-    ADD_TOOL("memory_store",
-        "Save knowledge for future sessions. Key format: lesson:name, strategy:name, fact:name, skill:name, task:name.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key (e.g. lesson:redis-v7)\"},\"value\":{\"type\":\"string\",\"description\":\"The knowledge to store\"},\"tags\":{\"type\":\"string\",\"description\":\"Comma-separated tags\"}},\"required\":[\"key\",\"value\"]}");
-
-    ADD_TOOL("memory_recall",
-        "Search saved knowledge by keyword.",
-        "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"}},\"required\":[\"query\"]}");
-
-    ADD_TOOL("memory_pin",
-        "Pin an existing memory so it is always injected into the system prompt.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to pin\"}},\"required\":[\"key\"]}");
-
-    ADD_TOOL("memory_unpin",
-        "Unpin a memory so it is no longer always injected into the system prompt.",
-        "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to unpin\"}},\"required\":[\"key\"]}");
-
-    ADD_TOOL("notes",
-        "Persistent scratchpad that survives context compaction. "
-        "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N), "
-        "notes(op=\"append\", section=\"name\", content=\"...\"), "
-        "notes(op=\"clear\", section=\"name\"), notes(op=\"list\"). "
-        "Legacy: notes(content=\"...\") still works. Priority 1=highest, 9=lowest (default 5).",
-        "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Scratchpad content\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name\"},\"priority\":{\"type\":\"integer\",\"description\":\"Priority 1-9 (default 5)\"}}}");
-
-    ADD_TOOL("done",
-        "Signal task completion with final answer.",
-        "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Final answer\"}},\"required\":[\"result\"]}");
-
-    #undef ADD_TOOL
-    return tools;
-}
-
 /* ── Build request JSON ──────────────────────────────────────── */
 
 static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream) {
@@ -203,8 +126,8 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
         cJSON_AddItemToObject(req, "stream_options", so);
     }
 
-    /* Native tool calling — each tool has its own parameter schema */
-    cJSON *tools = build_tools_array();
+    /* Native tool calling — use shared tool registry */
+    cJSON *tools = build_tools_from_registry(PROVIDER_LOCAL);
     cJSON_AddItemToObject(req, "tools", tools);
 
     /* Set thinking mode — controlled by EDRM routing or config */
@@ -219,30 +142,8 @@ static char *build_request(const llm_config_t *cfg, llm_chat_t *chat, int stream
         cJSON_AddNumberToObject(req, "reasoning_budget", cfg->thinking_budget);
     }
 
-    /* Build messages array — handle tool_calls and tool results */
-    cJSON *msgs = cJSON_CreateArray();
-    for (int i = 0; i < chat->n_msgs; i++) {
-        cJSON *m = cJSON_CreateObject();
-        cJSON_AddStringToObject(m, "role", chat->msgs[i].role);
-
-        /* For tool results, include tool_call_id */
-        if (strcmp(chat->msgs[i].role, "tool") == 0 && chat->msgs[i].tool_call_id) {
-            cJSON_AddStringToObject(m, "tool_call_id", chat->msgs[i].tool_call_id);
-        }
-
-        /* For assistant messages with tool_calls, include them */
-        if (strcmp(chat->msgs[i].role, "assistant") == 0 && chat->msgs[i].tool_calls_json) {
-            cJSON *tc = cJSON_Parse(chat->msgs[i].tool_calls_json);
-            if (tc) cJSON_AddItemToObject(m, "tool_calls", tc);
-            /* Content may be empty for tool-call-only messages */
-            if (chat->msgs[i].content && chat->msgs[i].content[0])
-                cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
-        } else {
-            cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
-        }
-
-        cJSON_AddItemToArray(msgs, m);
-    }
+    /* Build messages array — use shared helper */
+    cJSON *msgs = build_messages_json(chat);
     cJSON_AddItemToObject(req, "messages", msgs);
 
     char *json = cJSON_PrintUnformatted(req);
@@ -468,16 +369,11 @@ char *llm_complete(const llm_config_t *cfg, llm_chat_t *chat, llm_stats_t *stats
         }
     }
 
-    /* Parse stats */
+    /* Parse stats — use shared helper for OpenAI-format stats */
     if (stats) {
         memset(stats, 0, sizeof(*stats));
-        cJSON *usage = cJSON_GetObjectItem(resp, "usage");
-        if (usage) {
-            cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
-            cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
-            if (pt) stats->prompt_tokens = (int)cJSON_GetNumberValue(pt);
-            if (ct) stats->completion_tokens = (int)cJSON_GetNumberValue(ct);
-        }
+        extract_openai_stats(resp, stats);
+        /* llama.cpp-specific timing stats */
         cJSON *timings = cJSON_GetObjectItem(resp, "timings");
         if (timings) {
             cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");

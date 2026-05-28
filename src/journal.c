@@ -111,7 +111,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     cJSON_AddNumberToObject(entry, "step", step);
     cJSON_AddStringToObject(entry, "ts", ts);
     cJSON_AddStringToObject(entry, "tool", tool);
-    if (params) cJSON_AddItemReferenceToObject(entry, "params", params);
+    if (params) cJSON_AddItemToObject(entry, "params", cJSON_Duplicate(params, 1));
     if (ref) cJSON_AddStringToObject(entry, "ref", ref);
     cJSON_AddNumberToObject(entry, "size", (double)size);
     cJSON_AddNumberToObject(entry, "lines", lines);

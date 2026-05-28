@@ -106,6 +106,21 @@ void provider_free(provider_t *p);
  * Returns a cJSON array formatted for the provider's API. Caller owns result. */
 cJSON *build_tools_from_registry(provider_type_t type);
 
+/* Shared utilities (used by local/openai providers) */
+
+/* Build the "messages" JSON array from a chat history.
+ * Returns cJSON array (caller owns). */
+cJSON *build_messages_json(llm_chat_t *chat);
+
+/* Parse an OpenAI-compatible response JSON.
+ * Returns unified JSON for tool calls or plain content string.
+ * Shared by local and openai providers. */
+char *parse_openai_response(provider_t *p, const char *response_json,
+                            llm_chat_t *chat, llm_stats_t *stats);
+
+/* Extract prompt/completion token stats from OpenAI-format response. */
+void extract_openai_stats(cJSON *resp, llm_stats_t *stats);
+
 /* ── High-level API (uses vtable internally) ────────────────────── */
 
 /* Non-streaming chat completion. Returns response string (caller frees). */

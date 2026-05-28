@@ -45,27 +45,8 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
     cJSON *tools = build_tools_from_registry(PROVIDER_OPENAI);
     cJSON_AddItemToObject(req, "tools", tools);
 
-    /* Build messages array — same format as OpenAI expects */
-    cJSON *msgs = cJSON_CreateArray();
-    for (int i = 0; i < chat->n_msgs; i++) {
-        cJSON *m = cJSON_CreateObject();
-        cJSON_AddStringToObject(m, "role", chat->msgs[i].role);
-
-        if (strcmp(chat->msgs[i].role, "tool") == 0 && chat->msgs[i].tool_call_id) {
-            cJSON_AddStringToObject(m, "tool_call_id", chat->msgs[i].tool_call_id);
-        }
-
-        if (strcmp(chat->msgs[i].role, "assistant") == 0 && chat->msgs[i].tool_calls_json) {
-            cJSON *tc = cJSON_Parse(chat->msgs[i].tool_calls_json);
-            if (tc) cJSON_AddItemToObject(m, "tool_calls", tc);
-            if (chat->msgs[i].content && chat->msgs[i].content[0])
-                cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
-        } else {
-            cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
-        }
-
-        cJSON_AddItemToArray(msgs, m);
-    }
+    /* Build messages array — use shared helper */
+    cJSON *msgs = build_messages_json(chat);
     cJSON_AddItemToObject(req, "messages", msgs);
 
     char *json = cJSON_PrintUnformatted(req);
@@ -103,104 +84,6 @@ static const char *openai_get_endpoint(provider_t *p) {
         p->_cached_endpoint = strdup(url);
     }
     return p->_cached_endpoint;
-}
-
-/* ── Parse response (same as local — OpenAI format) ─────────────── */
-
-/* Reuse local provider's parse_response — same wire format */
-extern char *local_parse_response(provider_t *p, const char *response_json,
-                                  llm_chat_t *chat, llm_stats_t *stats);
-
-/* Actually, we need our own since local_parse_response is static.
- * The logic is identical, so we duplicate it here. */
-static char *openai_parse_response(provider_t *p, const char *response_json,
-                                   llm_chat_t *chat, llm_stats_t *stats) {
-    (void)p;
-    cJSON *resp = cJSON_Parse(response_json);
-    if (!resp) return NULL;
-
-    if (stats) {
-        cJSON *usage = cJSON_GetObjectItem(resp, "usage");
-        if (usage) {
-            cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
-            cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
-            if (pt) stats->prompt_tokens = pt->valueint;
-            if (ct) stats->completion_tokens = ct->valueint;
-        }
-    }
-
-    cJSON *choices = cJSON_GetObjectItem(resp, "choices");
-    if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
-        cJSON_Delete(resp);
-        return NULL;
-    }
-
-    cJSON *choice = cJSON_GetArrayItem(choices, 0);
-    cJSON *message = cJSON_GetObjectItem(choice, "message");
-    if (!message) { cJSON_Delete(resp); return NULL; }
-
-    cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
-    if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
-        cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
-        cJSON *fn = cJSON_GetObjectItem(tc, "function");
-        if (fn) {
-            cJSON *name = cJSON_GetObjectItem(fn, "name");
-            cJSON *args_str = cJSON_GetObjectItem(fn, "arguments");
-            cJSON *id = cJSON_GetObjectItem(tc, "id");
-
-            cJSON *unified = cJSON_CreateObject();
-            cJSON *content = cJSON_GetObjectItem(message, "content");
-            cJSON_AddStringToObject(unified, "thought",
-                                    (content && cJSON_IsString(content)) ?
-                                    content->valuestring : "");
-            cJSON_AddStringToObject(unified, "action",
-                                    name ? name->valuestring : "");
-
-            if (args_str && cJSON_IsString(args_str)) {
-                cJSON *args = cJSON_Parse(args_str->valuestring);
-                if (args) {
-                    cJSON *child = args->child;
-                    while (child) {
-                        cJSON *next = child->next;
-                        cJSON_DetachItemViaPointer(args, child);
-                        cJSON_AddItemToObject(unified, child->string, child);
-                        child = next;
-                    }
-                    cJSON_Delete(args);
-                }
-            }
-
-            char *result = cJSON_PrintUnformatted(unified);
-            cJSON_Delete(unified);
-
-            if (chat) {
-                free(chat->last_tool_call_id);
-                chat->last_tool_call_id = (id && cJSON_IsString(id)) ?
-                                          strdup(id->valuestring) : NULL;
-                free(chat->last_tool_calls_json);
-                chat->last_tool_calls_json = cJSON_PrintUnformatted(tool_calls);
-            }
-
-            cJSON_Delete(resp);
-            return result;
-        }
-    }
-
-    cJSON *content = cJSON_GetObjectItem(message, "content");
-    char *result = NULL;
-    if (content && cJSON_IsString(content)) {
-        result = strdup(content->valuestring);
-    }
-
-    if (chat) {
-        free(chat->last_tool_call_id);
-        chat->last_tool_call_id = NULL;
-        free(chat->last_tool_calls_json);
-        chat->last_tool_calls_json = NULL;
-    }
-
-    cJSON_Delete(resp);
-    return result;
 }
 
 /* ── Build tools ────────────────────────────────────────────────── */
@@ -268,7 +151,7 @@ static int openai_fetch_model_info(provider_t *p, int *context_size,
 void provider_openai_init(provider_t *p) {
     p->build_headers    = openai_build_headers;
     p->build_request    = openai_build_request;
-    p->parse_response   = openai_parse_response;
+    p->parse_response   = parse_openai_response;  /* shared OpenAI-format parser */
     p->parse_sse_event  = NULL;  /* uses shared OpenAI SSE parser */
     p->get_endpoint     = openai_get_endpoint;
     p->build_tools      = openai_build_tools_vtable;
