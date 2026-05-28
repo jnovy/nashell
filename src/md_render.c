@@ -272,8 +272,10 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     wattron(win, COLOR_PAIR(C_FOCUS));
                 }
 
-                /* Render the link text (not the URI) */
-                mvwaddnstr(win, vis_line, 0, lk->text, cols);
+                /* Render the link text with inline formatting (bold, code, italic).
+                 * This allows backtick-wrapped tool names like `shell_exec` to
+                 * render with color instead of showing literal backticks. */
+                render_inline(win, vis_line, 0, lk->text, cols, 0);
 
                 /* Pad for reverse video */
                 if (is_cursor) {
