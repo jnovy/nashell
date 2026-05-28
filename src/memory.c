@@ -356,55 +356,35 @@ static double score_entry_hybrid(const char *key, const char *value,
 
     if (has_semantic) {
         /* Semantic mode: cosine similarity is primary signal.
-         * Clamp negative similarities to 0 (semantically opposite = no match),
-         * then scale from [0,1] to [0,6] to match substring score scale.
-         * Without clamping, cosine=-0.5 would yield semantic=1.5, producing
-         * a final score of ~0.52 — well above the 0.15 threshold. */
+         * Clamp negative similarities to 0 (semantically opposite = no match).
+         * Both semantic and substring scores are in [0, 6] raw range.
+         * After blending, normalize to [0, 1] for consistent thresholding. */
         double clamped = (double)semantic_sim;
         if (clamped < 0.0) clamped = 0.0;
         double semantic = clamped * 6.0;  /* [0, 6] */
         double substring = score_entry_substring(key, value, tags, query);
 
-        /* Blend: 70% semantic + 30% substring.
-         * This ensures exact keyword matches still surface even if
-         * the embedding model doesn't capture them well. */
-        relevance = semantic * 0.7 + substring * 0.3;
+        /* Blend: 70% semantic + 30% substring, then normalize to [0, 1].
+         * Max raw blended = 6.0*0.7 + 6.0*0.3 = 6.0. */
+        relevance = (semantic * 0.7 + substring * 0.3) / 6.0;  /* [0, 1] */
     } else {
         /* Fallback: pure substring matching (no embeddings available).
-         * Scale the substring score to produce comparable final scores
-         * to the embedding path. Without this, a key-only match (3.0)
-         * produces final score ~1.3, while the same match WITH embeddings
-         * (cosine=0.8 + key match) produces ~2.14. The min_score threshold
-         * (default 0.15) is calibrated for the embedding range, so the
-         * non-embedding path would be proportionally more restrictive.
-         *
-         * The embedding path blends: semantic*0.7 + substring*0.3.
-         * For a good match, semantic ≈ substring (both reflect relevance).
-         * So we treat the substring score as if it were BOTH signals:
-         * relevance = substring*0.7 + substring*0.3 = substring*1.0.
-         * This is identity — but the key insight is that the embedding
-         * path's blending REDUCES the substring contribution to 30%.
-         * Without embeddings, substring IS the full signal, so we should
-         * NOT reduce it. The scores are already comparable at max (both
-         * paths can reach 6.0), but typical scores differ because the
-         * embedding path amplifies weak matches via continuous cosine.
-         *
-         * The real fix: boost the non-embedding score by the ratio of
-         * typical embedding-path score to typical substring-path score
-         * for equivalent matches. A key match (3.0) should score like
-         * a good semantic match (cosine≈0.8 → 4.8) blended with the
-         * same key match: 4.8*0.7 + 3.0*0.3 = 4.26. Scale factor: 4.26/3.0 ≈ 1.4 */
-        relevance = score_entry_substring(key, value, tags, query);
+         * Normalize to [0, 1] — same range as the embedding path.
+         * Max raw substring = 3.0 (key) + 2.0 (tag) + 1.0 (value) = 6.0. */
+        relevance = score_entry_substring(key, value, tags, query) / 6.0;  /* [0, 1] */
         if (relevance == 0) return 0;  /* no match at all */
-        relevance *= 1.4;  /* normalize to embedding-path score range */
     }
 
-    if (relevance < 0.01) return 0;  /* hard floor: no match at all */
+    if (relevance < 0.001) return 0;  /* hard floor: no match at all */
 
-    /* Importance: logarithmic access frequency */
-    double importance = 1.0 + log(1.0 + (double)access_count);
+    /* Importance: logarithmic access frequency, normalized to [0, 1].
+     * log(1 + access_count) grows slowly: 0→0, 10→0.48, 100→0.92, 1000→1.0.
+     * Cap at 5.0 (≈148 accesses) to keep the range bounded. */
+    double importance = log(1.0 + (double)access_count) / 5.0;
+    if (importance > 1.0) importance = 1.0;
 
-    /* Composite: relevance-dominant with importance boost */
+    /* Composite: relevance-dominant with importance boost.
+     * Both relevance and importance are now [0, 1], so composite ∈ [0, 1]. */
     double composite = relevance * 0.8 + importance * 0.2;
 
     /* P3: Bayesian validation scoring — data-driven memory quality signal.
@@ -580,7 +560,9 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
          * silent 30-40% of the time) yields +22% avg improvement.
          * This threshold is the frozen-model equivalent of that
          * learned abstention decision. */
-        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
+        /* All scores are now normalized to [0, 1]. Default threshold 0.05
+         * = 5% of max, equivalent to old 0.15 on the [0, ~2.8] scale. */
+        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.05;
         if (s > 0.01 && s < min_score) {
             s = 0;  /* below abstention threshold — exclude */
         }
