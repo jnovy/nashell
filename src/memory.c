@@ -370,9 +370,33 @@ static double score_entry_hybrid(const char *key, const char *value,
          * the embedding model doesn't capture them well. */
         relevance = semantic * 0.7 + substring * 0.3;
     } else {
-        /* Fallback: pure substring matching (original behavior) */
+        /* Fallback: pure substring matching (no embeddings available).
+         * Scale the substring score to produce comparable final scores
+         * to the embedding path. Without this, a key-only match (3.0)
+         * produces final score ~1.3, while the same match WITH embeddings
+         * (cosine=0.8 + key match) produces ~2.14. The min_score threshold
+         * (default 0.15) is calibrated for the embedding range, so the
+         * non-embedding path would be proportionally more restrictive.
+         *
+         * The embedding path blends: semantic*0.7 + substring*0.3.
+         * For a good match, semantic ≈ substring (both reflect relevance).
+         * So we treat the substring score as if it were BOTH signals:
+         * relevance = substring*0.7 + substring*0.3 = substring*1.0.
+         * This is identity — but the key insight is that the embedding
+         * path's blending REDUCES the substring contribution to 30%.
+         * Without embeddings, substring IS the full signal, so we should
+         * NOT reduce it. The scores are already comparable at max (both
+         * paths can reach 6.0), but typical scores differ because the
+         * embedding path amplifies weak matches via continuous cosine.
+         *
+         * The real fix: boost the non-embedding score by the ratio of
+         * typical embedding-path score to typical substring-path score
+         * for equivalent matches. A key match (3.0) should score like
+         * a good semantic match (cosine≈0.8 → 4.8) blended with the
+         * same key match: 4.8*0.7 + 3.0*0.3 = 4.26. Scale factor: 4.26/3.0 ≈ 1.4 */
         relevance = score_entry_substring(key, value, tags, query);
         if (relevance == 0) return 0;  /* no match at all */
+        relevance *= 1.4;  /* normalize to embedding-path score range */
     }
 
     if (relevance < 0.01) return 0;  /* hard floor: no match at all */
