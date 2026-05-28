@@ -545,6 +545,54 @@ char *checkpoint_read_query(const char *session_dir) {
     return result;
 }
 
+/* Extract usable text from LLM output that may be plain markdown OR a tool-call
+ * JSON object (e.g. {"thought":"...","action":"notes","content":"..."}).
+ * Works WITH the model's training instead of fighting it:
+ *   - If output is JSON with a "content" field → extract and return that
+ *   - If output is wrapped in ```markdown code fences → strip them
+ *   - Otherwise → return as-is
+ * Returns a new allocation (caller must free). Returns NULL on empty/NULL input. */
+static char *extract_llm_text_output(const char *raw) {
+    if (!raw || !raw[0]) return NULL;
+
+    /* Skip leading whitespace */
+    while (*raw == ' ' || *raw == '\n' || *raw == '\r' || *raw == '\t') raw++;
+    if (!*raw) return NULL;
+
+    /* Case 1: JSON tool call — extract "content" field */
+    if (raw[0] == '{') {
+        cJSON *j = cJSON_Parse(raw);
+        if (j) {
+            cJSON *c = cJSON_GetObjectItem(j, "content");
+            if (c && cJSON_IsString(c) && c->valuestring && c->valuestring[0]) {
+                char *result = strdup(c->valuestring);
+                cJSON_Delete(j);
+                return result;
+            }
+            cJSON_Delete(j);
+        }
+        /* JSON but no content field — fall through to return as-is */
+    }
+
+    /* Case 2: Code-fenced output — strip ``` wrapper */
+    if (strncmp(raw, "```", 3) == 0) {
+        const char *start = raw + 3;
+        /* Skip optional language tag (e.g. ```markdown) */
+        while (*start && *start != '\n') start++;
+        if (*start == '\n') start++;
+        /* Find closing ``` */
+        const char *end = strstr(start, "\n```");
+        if (end) {
+            return strndup(start, end - start);
+        }
+        /* No closing fence — return everything after opening */
+        return strdup(start);
+    }
+
+    /* Case 3: Plain text — return as-is */
+    return strdup(raw);
+}
+
 /* ── main react loop ─────────────────────────────────── */
 
 char *react_run(react_ctx_t *ctx, const char *user_query,
@@ -1266,8 +1314,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                         str_t summ_prompt = str_new(evicted_text.len + 2048);
                         str_appendf(&summ_prompt,
-                            "You are a text summarizer (NOT an agent — do NOT output JSON, "
-                            "tool calls, or code blocks).\n"
                             "Summarize a portion of an agentic work session being "
                             "evicted from context to free space.\n"
                             "Extract ALL key findings, decisions, file paths, code changes, "
@@ -1280,21 +1326,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             "Write a MERGED scratchpad combining existing content with key "
                             "findings from evicted messages.\n"
                             "Use structured sections with ## headers.\n"
-                            "Keep under %d characters.\n"
-                            "Output ONLY plain markdown text. Do NOT wrap in code fences.\n",
+                            "Keep under %d characters.\n",
                             str_cstr(&evicted_text), current_sp, (int)sp_budget);
                         free(current_sp);
 
                         llm_chat_t *summ_chat = llm_chat_new();
                         llm_chat_add(summ_chat, "user", str_cstr(&summ_prompt));
-                        summary = llm_complete(ctx->llm, summ_chat, NULL);
+                        char *raw_summary = llm_complete(ctx->llm, summ_chat, NULL);
                         llm_chat_free(summ_chat);
                         str_free(&summ_prompt);
 
-                        /* Merge summary into scratchpad — validate output first */
-                        if (summary && strlen(summary) > 0 &&
-                            summary[0] != '{' && strncmp(summary, "```", 3) != 0) {
-                            /* Reject if LLM output looks like tool call JSON or code fence */
+                        /* Extract text from LLM output — accepts both plain markdown
+                         * and JSON tool-call format (extracts "content" field). */
+                        summary = extract_llm_text_output(raw_summary);
+                        free(raw_summary);
+                        if (summary) {
                             scratchpad_write(&ctx->tools->scratch, "context_summary",
                                              summary, 0);  /* priority 0 = highest */
                             scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
@@ -1798,8 +1844,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (full_sp && strlen(full_sp) > 0) {
             str_t prune_prompt = str_new(strlen(full_sp) + strlen(final_result) + 2048);
             str_appendf(&prune_prompt,
-                "You are a text editor (NOT an agent — do NOT output JSON, "
-                "tool calls, function calls, or code blocks).\n"
                 "Clean up a persistent scratchpad after completing a task.\n\n"
                 "The task just completed with this result:\n"
                 "---\n%s\n---\n\n"
@@ -1811,23 +1855,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "3. KEEPS only forward-looking information relevant to potential follow-up tasks\n"
                 "4. PRESERVES a brief summary of what was accomplished (not the full verbose result)\n"
                 "5. Uses ## section headers with <!-- priority:N --> markers (1=highest, 9=lowest)\n\n"
-                "Output ONLY plain markdown text. Do NOT wrap in code fences. "
                 "Keep under %d characters.\n",
                 final_result, full_sp, (int)sp_budget);
 
             llm_chat_t *prune_chat = llm_chat_new();
             llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
-            char *cleaned = llm_complete(ctx->llm, prune_chat, NULL);
+            char *raw_cleaned = llm_complete(ctx->llm, prune_chat, NULL);
             llm_chat_free(prune_chat);
             str_free(&prune_prompt);
 
-            if (cleaned && strlen(cleaned) > 0 &&
-                cleaned[0] != '{' && strncmp(cleaned, "```", 3) != 0) {
-                /* Validate: reject if LLM output looks like a tool call JSON
-                 * or code-fenced block instead of plain markdown text.
-                 * This happens when the model treats the pruning prompt as an
-                 * agentic task and generates a tool call response. */
+            /* Extract text from LLM output — accepts both plain markdown
+             * and JSON tool-call format (extracts "content" field). */
+            char *cleaned = extract_llm_text_output(raw_cleaned);
+            free(raw_cleaned);
 
+            if (cleaned) {
                 /* Replace scratchpad with cleaned version */
                 scratchpad_write(&ctx->tools->scratch, "pruned", cleaned, 1);
                 /* Remove old sections that were merged into "pruned" */
