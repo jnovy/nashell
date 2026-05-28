@@ -1910,8 +1910,38 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (strcmp(action, "memory_unpin")== 0) return tool_memory_unpin(ctx, params);
     if (strcmp(action, "memory_delete")==0) return tool_memory_delete(ctx, params);
 
+    /* Fuzzy tool name recovery: if the model generated a garbled tool name
+     * (e.g., "shell_execshell_exec", "file_readfile_read"), try to extract
+     * the intended tool name by finding the longest known tool name that
+     * appears as a substring. This prevents the react loop from failing
+     * when the model concatenates or duplicates tool names. */
+    {
+        static const char *known_tools[] = {
+            "memory_store", "memory_recall", "memory_delete",
+            "memory_unpin", "memory_pin",
+            "shell_exec", "file_read", "file_write", "file_edit",
+            "grep_search", "web_search", "web_fetch",
+            "notes", "done", NULL
+        };
+        /* Sorted by length descending so longest match wins */
+        const char *best_match = NULL;
+        size_t best_len = 0;
+        for (int i = 0; known_tools[i]; i++) {
+            size_t tlen = strlen(known_tools[i]);
+            if (tlen > best_len && strstr(action, known_tools[i])) {
+                best_match = known_tools[i];
+                best_len = tlen;
+            }
+        }
+        if (best_match) {
+            fprintf(stderr, "[tools] fuzzy match: '%s' → '%s'\n",
+                    action, best_match);
+            return tool_execute(ctx, best_match, params);
+        }
+    }
+
     char msg[256];
-    snprintf(msg, sizeof(msg), "unknown tool: %s", action);
+    snprintf(msg, sizeof(msg), "unknown tool: %.200s", action);
     return make_error(msg);
 }
 
