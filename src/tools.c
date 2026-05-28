@@ -1650,7 +1650,7 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
     if (buf->len + total > 512000) {
         size_t remaining = 512000 - buf->len;
         if (remaining > 0) str_append(buf, ptr, remaining);
-        return total;  /* tell curl we consumed it all */
+        return remaining;  /* tell curl how much we actually consumed */
     }
     str_append(buf, ptr, total);
     return total;
