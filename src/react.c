@@ -190,14 +190,9 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     /* Step 1: Add system prompt (fresh — may have changed) */
     llm_chat_add(chat, "system", tools_system_prompt());
 
-    /* Step 2: Add fresh manifest (shows full history including pre-crash steps) */
-    char *manifest = journal_manifest(ctx->tools->journal, 50);
-    if (manifest) {
-        llm_chat_add(chat, "user", manifest);
-        free(manifest);
-    }
+    /* v5: No manifest injection — scratchpad carries all cross-loop state. */
 
-    /* Step 3: Add memory context (fresh) */
+    /* Step 2: Add memory context (fresh) */
     if (ctx->tools->memory) {
         int mem_max = ctx->tools->cfg ? ctx->tools->cfg->memory_index_max : 50;
         char *mem_index = memory_build_index(ctx->tools->memory, mem_max);
@@ -574,12 +569,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* System message */
     llm_chat_add(chat, "system", tools_system_prompt());
 
-    /* Inject journal manifest (shows what previous steps produced) */
-    char *manifest = journal_manifest(ctx->tools->journal, 50);
-    if (manifest) {
-        llm_chat_add(chat, "user", manifest);
-        free(manifest);
-    }
+    /* v5: No manifest injection — scratchpad is the sole persistence mechanism.
+     * Cross-loop state is carried via scratchpad (auto-saved done results +
+     * LLM-pruned summaries). Within-loop recovery uses LLM summarization
+     * instead of manifest re-injection. */
 
     /* Inject memory index (list of available memories for the LLM to know about) */
     if (ctx->tools->memory) {
@@ -642,12 +635,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         memory_results_free(&skills);
     }
 
-    /* Compute scratchpad limit from context size (5% of context, min 2K, max 32K) */
+    /* v5: Scratchpad budget = 15% of context size, no min/max caps.
+     * The scratchpad is the SOLE cross-loop persistence mechanism, so it
+     * gets a generous budget. All limits scale linearly with context_size. */
     size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
     if (ctx->llm->context_size > 0) {
-        max_scratchpad = (size_t)ctx->llm->context_size * 4 / 20;  /* ~5% in chars (~4 chars/tok) */
-        if (max_scratchpad < 2048)  max_scratchpad = 2048;
-        if (max_scratchpad > 32768) max_scratchpad = 32768;
+        max_scratchpad = (size_t)ctx->llm->context_size * 4 * 15 / 100;  /* 15% in chars (~4 chars/tok) */
     }
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered) */
@@ -677,17 +670,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
     }
 
-    /* Inject last exchange summary for cross-query context (handles "do the same..." references) */
-    if (ctx->last_query && ctx->last_result) {
-        char lq[201], lr[501];
-        utf8_truncate(lq, ctx->last_query, 200);
-        utf8_truncate(lr, ctx->last_result, 500);
-        char last_ex[1024];
-        snprintf(last_ex, sizeof(last_ex),
-                 "[Previous query: \"%s\" → \"%s\"]",
-                 lq, lr);
-        llm_chat_add(chat, "user", last_ex);
-    }
+    /* v5: No last_exchange injection — cross-loop state is carried via scratchpad.
+     * The scratchpad auto-saves done results and LLM-prunes stale data,
+     * providing full semantic context instead of truncated 500-char snippets. */
 
     /* User query */
     llm_chat_add(chat, "user", user_query);
@@ -1016,6 +1001,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             final_result = result ? strdup(result) : strdup("(no result)");
             checkpoint_remove(ctx);
 
+            /* v5: Auto-save done result to scratchpad for cross-loop inheritance.
+             * The scratchpad is the SOLE mechanism for passing results between
+             * react loops. Section name includes loop number for traceability. */
+            {
+                char sec_name[32];
+                snprintf(sec_name, sizeof(sec_name), "R%d_result",
+                         ctx->tools->react_loop);
+                scratchpad_write(&ctx->tools->scratch, sec_name,
+                                 final_result, 1);  /* priority 1 = high */
+                scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+            }
+
             /* Store result for full audit trail (journal + store/) */
             tool_result_t tr = tool_execute(ctx->tools, action_name, action);
             tool_result_free(&tr);
@@ -1183,35 +1180,100 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 int evict_end = chat->n_msgs - keep_tail;
 
                 /* FIX B5: Adjust eviction boundary to not split tool_call/tool_result pairs.
-                 * If evict_end lands on a tool_result message (has tool_call_id),
-                 * include it in the eviction (move boundary forward).
-                 * If evict_end lands on an assistant with tool_calls_json,
-                 * include the next tool_result too. */
+                 * A pair is: assistant(tool_calls_json) immediately followed by
+                 * tool_result(tool_call_id). Never evict one without the other. */
                 if (evict_end > evict_start && evict_end < chat->n_msgs) {
-                    /* If boundary splits a pair: assistant(tool_calls) at evict_end-1,
-                     * tool_result at evict_end → evict both */
+                    /* Case 1: Boundary lands between assistant and its tool_result.
+                     * assistant(tool_calls) at evict_end-1, tool_result at evict_end.
+                     * Keep both by moving boundary back one. */
                     if (evict_end - 1 >= evict_start &&
                         chat->msgs[evict_end - 1].tool_calls_json &&
                         evict_end < chat->n_msgs &&
                         chat->msgs[evict_end].tool_call_id) {
-                        /* The tool_result at evict_end would be orphaned — skip back */
-                        evict_end--;  /* don't evict the assistant, keep the pair in tail */
+                        evict_end--;  /* keep the pair in tail */
                     }
-                    /* If evict_end lands on a tool_result (orphaned from its assistant
-                     * which is being evicted), include it in eviction */
+                    /* Case 2: Boundary lands on assistant with tool_calls_json, and
+                     * the next message is its tool_result. Move boundary forward to
+                     * evict both, keeping the pair together. */
+                    if (evict_end < chat->n_msgs &&
+                        chat->msgs[evict_end].tool_calls_json &&
+                        evict_end + 1 < chat->n_msgs &&
+                        chat->msgs[evict_end + 1].tool_call_id) {
+                        evict_end++;  /* evict both assistant and its tool_result */
+                    }
+                    /* Case 3: Boundary lands on a tool_result whose assistant was
+                     * already evicted (or is before evict_start). Include this
+                     * orphaned tool_result in the eviction. */
                     if (evict_end < chat->n_msgs && chat->msgs[evict_end].tool_call_id &&
-                        (evict_end == 0 || !chat->msgs[evict_end - 1].tool_calls_json)) {
-                        evict_end++;  /* evict the orphaned tool_result too */
+                        (evict_end <= evict_start || !chat->msgs[evict_end - 1].tool_calls_json)) {
+                        evict_end++;  /* evict the orphaned tool_result */
                     }
                 }
 
                 if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
-                    /* Free evicted messages */
+                    /* v5: LLM-based semantic summarization replaces destructive eviction.
+                     * Instead of deleting messages and re-injecting a navigation manifest,
+                     * we ask the LLM to summarize the evicted messages and merge the
+                     * summary into the scratchpad — preserving semantic knowledge. */
+
+                    /* Step 1: Collect evicted messages into a single string for summarization */
+                    str_t evicted_text = str_new(4096);
+                    for (int i = evict_start; i < evict_end; i++) {
+                        if (chat->msgs[i].content && chat->msgs[i].content[0]) {
+                            str_appendf(&evicted_text, "[%s]: %s\n\n",
+                                        chat->msgs[i].role ? chat->msgs[i].role : "?",
+                                        chat->msgs[i].content);
+                        }
+                    }
+
+                    /* Step 2: LLM summarization call */
+                    char *summary = NULL;
+                    if (evicted_text.len > 0) {
+                        size_t sp_budget = (size_t)ctx->llm->context_size * 4 * 15 / 100;
+                        char *current_sp = (ctx->tools->scratch.count > 0)
+                            ? scratchpad_serialize(&ctx->tools->scratch) : strdup("");
+
+                        str_t summ_prompt = str_new(evicted_text.len + 2048);
+                        str_appendf(&summ_prompt,
+                            "You are summarizing a portion of an agentic work session being "
+                            "evicted from context to free space.\n"
+                            "Extract ALL key findings, decisions, file paths, code changes, "
+                            "errors, and conclusions.\n"
+                            "Preserve specific details (line numbers, variable names, exact "
+                            "error messages).\n"
+                            "Omit tool call mechanics and navigation steps.\n\n"
+                            "Messages being evicted:\n---\n%s\n---\n\n"
+                            "Current scratchpad:\n---\n%s\n---\n\n"
+                            "Write a MERGED scratchpad combining existing content with key "
+                            "findings from evicted messages.\n"
+                            "Use structured sections with ## headers.\n"
+                            "Keep under %d characters.\n"
+                            "Output ONLY the scratchpad content, nothing else.\n",
+                            str_cstr(&evicted_text), current_sp, (int)sp_budget);
+                        free(current_sp);
+
+                        llm_chat_t *summ_chat = llm_chat_new();
+                        llm_chat_add(summ_chat, "user", str_cstr(&summ_prompt));
+                        summary = llm_complete(ctx->llm, summ_chat, NULL);
+                        llm_chat_free(summ_chat);
+                        str_free(&summ_prompt);
+
+                        /* Merge summary into scratchpad */
+                        if (summary && strlen(summary) > 0) {
+                            scratchpad_write(&ctx->tools->scratch, "context_summary",
+                                             summary, 0);  /* priority 0 = highest */
+                            scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+                        }
+                        free(summary);
+                    }
+                    str_free(&evicted_text);
+
+                    /* Step 3: Free evicted messages */
                     for (int i = evict_start; i < evict_end; i++) {
                         free(chat->msgs[i].role);
                         free(chat->msgs[i].content);
-                        free(chat->msgs[i].tool_call_id);    /* #8 */
-                        free(chat->msgs[i].tool_calls_json); /* #8 */
+                        free(chat->msgs[i].tool_call_id);
+                        free(chat->msgs[i].tool_calls_json);
                     }
                     /* Shift tail messages down */
                     int tail_count = chat->n_msgs - evict_end;
@@ -1219,10 +1281,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             tail_count * sizeof(llm_msg_t));
                     chat->n_msgs = evict_start + tail_count;
 
-                    /* #9: Recover tool_call threading from surviving messages.
-                     * Scan backwards for the most recent assistant message with
-                     * tool_calls_json — this preserves API threading after eviction
-                     * instead of falling back to legacy JSON-in-content format. */
+                    /* Recover tool_call threading from surviving messages */
                     free(chat->last_tool_call_id);
                     chat->last_tool_call_id = NULL;
                     free(chat->last_tool_calls_json);
@@ -1230,48 +1289,47 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     for (int ri = chat->n_msgs - 1; ri >= 0; ri--) {
                         if (chat->msgs[ri].tool_calls_json) {
                             chat->last_tool_calls_json = strdup(chat->msgs[ri].tool_calls_json);
-                            /* Find the corresponding tool result's tool_call_id */
                             if (ri + 1 < chat->n_msgs && chat->msgs[ri + 1].tool_call_id)
                                 chat->last_tool_call_id = strdup(chat->msgs[ri + 1].tool_call_id);
                             break;
                         }
                     }
 
-                    /* FIX D8: Re-inject manifest filtered to exclude evicted steps.
-                     * Evicted steps' refs are still resolvable via file_read, but
-                     * showing them in the manifest confuses the model since it can't
-                     * relate them to any context. Use journal_manifest_filtered()
-                     * to collapse evicted steps into "[N earlier steps evicted]". */
-                    int evicted_steps = (evict_end - evict_start) / 2;  /* ~2 msgs per step */
-                    int min_step_for_manifest = step + 1 - keep_tail / 2;
-                    if (min_step_for_manifest < 1) min_step_for_manifest = 1;
-                    char *fresh_manifest = journal_manifest_filtered(
-                        ctx->tools->journal, 50,
-                        ctx->tools->react_loop, min_step_for_manifest);
-                    (void)evicted_steps;  /* used for documentation clarity */
-                    if (fresh_manifest) {
-                        /* Insert manifest as a new message at keep_head */
-                        if (chat->n_msgs >= chat->cap_msgs) {
-                            chat->cap_msgs *= 2;
-                            chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+                    /* Step 4: Re-inject updated scratchpad at evict_start */
+                    {
+                        size_t sp_max = (ctx->llm->context_size > 0)
+                            ? (size_t)ctx->llm->context_size * 4 * 15 / 100 : 8192;
+                        char *fresh_sp = scratchpad_serialize_budget(
+                            &ctx->tools->scratch, sp_max);
+                        if (fresh_sp && fresh_sp[0]) {
+                            size_t slen = strlen(fresh_sp);
+                            char *sp_msg = malloc(slen + 32);
+                            if (sp_msg) {
+                                snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
+                                /* Insert scratchpad as a new message at evict_start */
+                                if (chat->n_msgs >= chat->cap_msgs) {
+                                    chat->cap_msgs *= 2;
+                                    chat->msgs = realloc(chat->msgs,
+                                        chat->cap_msgs * sizeof(llm_msg_t));
+                                }
+                                memmove(&chat->msgs[evict_start + 1],
+                                        &chat->msgs[evict_start],
+                                        (chat->n_msgs - evict_start) * sizeof(llm_msg_t));
+                                chat->msgs[evict_start].role = strdup("user");
+                                chat->msgs[evict_start].content = sp_msg;
+                                chat->msgs[evict_start].tool_call_id = NULL;
+                                chat->msgs[evict_start].tool_calls_json = NULL;
+                                chat->n_msgs++;
+                            }
                         }
-                        memmove(&chat->msgs[evict_start + 1], &chat->msgs[evict_start],
-                                (chat->n_msgs - evict_start) * sizeof(llm_msg_t));
-                        /* FIX B6: Initialize all fields of the new manifest message.
-                         * The memmove shifted existing messages but the slot at
-                         * evict_start now contains stale data from the shift. */
-                        chat->msgs[evict_start].role = strdup("user");
-                        chat->msgs[evict_start].content = fresh_manifest;
-                        chat->msgs[evict_start].tool_call_id = NULL;
-                        chat->msgs[evict_start].tool_calls_json = NULL;
-                        chat->n_msgs++;
+                        free(fresh_sp);
                     }
 
                     /* Emit warning */
                     react_event_t ev = {0};
                     ev.type = REACT_EVENT_WARNING;
                     ev.step = step + 1;
-                    ev.message = "Context compacted — old messages evicted, manifest refreshed";
+                    ev.message = "Context compacted — evicted messages summarized into scratchpad";
                     emit(on_event, userdata, &ev);
                 }
             }
@@ -1695,11 +1753,58 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         llm_chat_free(reflect);
     }
 
-    /* Save last query+result for next react loop's context injection */
+    /* v5: Post-reflection scratchpad pruning — remove solved/stale data so the
+     * next react loop starts with a clean, focused scratchpad. Uses an LLM call
+     * to intelligently merge and prune instead of blind accumulation. */
+    if (final_result && ctx->tools->scratch.count > 0 && ctx->llm->context_size > 0) {
+        size_t sp_budget = (size_t)ctx->llm->context_size * 4 * 15 / 100;
+        char *full_sp = scratchpad_serialize(&ctx->tools->scratch);
+
+        if (full_sp && strlen(full_sp) > 0) {
+            str_t prune_prompt = str_new(strlen(full_sp) + strlen(final_result) + 2048);
+            str_appendf(&prune_prompt,
+                "You are cleaning up a persistent scratchpad after completing a task.\n"
+                "The task just completed with this result:\n"
+                "---\n%s\n---\n\n"
+                "Current scratchpad sections:\n"
+                "---\n%s\n---\n\n"
+                "Produce a cleaned scratchpad that:\n"
+                "1. REMOVES information that was resolved/completed by this task\n"
+                "2. MERGES overlapping or redundant sections into coherent summaries\n"
+                "3. KEEPS only forward-looking information relevant to potential follow-up tasks\n"
+                "4. PRESERVES a brief summary of what was accomplished (not the full verbose result)\n"
+                "5. Uses ## section headers with <!-- priority:N --> markers (1=highest, 9=lowest)\n\n"
+                "Output ONLY the cleaned scratchpad content. Keep under %d characters.\n",
+                final_result, full_sp, (int)sp_budget);
+
+            llm_chat_t *prune_chat = llm_chat_new();
+            llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
+            char *cleaned = llm_complete(ctx->llm, prune_chat, NULL);
+            llm_chat_free(prune_chat);
+            str_free(&prune_prompt);
+
+            if (cleaned && strlen(cleaned) > 0) {
+                /* Replace scratchpad with cleaned version */
+                scratchpad_write(&ctx->tools->scratch, "pruned", cleaned, 1);
+                /* Remove old sections that were merged into "pruned" */
+                for (int i = ctx->tools->scratch.count - 1; i >= 0; i--) {
+                    if (strcmp(ctx->tools->scratch.sections[i].name, "pruned") != 0) {
+                        scratchpad_clear(&ctx->tools->scratch,
+                                         ctx->tools->scratch.sections[i].name);
+                    }
+                }
+                scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+            }
+            free(cleaned);
+        }
+        free(full_sp);
+    }
+
+    /* v5: No longer saving last_query/last_result — scratchpad carries all state */
     if (ctx->last_query) free(ctx->last_query);
     if (ctx->last_result) free(ctx->last_result);
-    ctx->last_query = strdup(user_query);
-    ctx->last_result = final_result ? strdup(final_result) : NULL;
+    ctx->last_query = NULL;
+    ctx->last_result = NULL;
 
     /* Reset recalled keys for next query (each task is independent) */
     for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
