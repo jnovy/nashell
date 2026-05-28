@@ -1751,6 +1751,41 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     llm_chat_add(chat, "user", str_cstr(&mem_msg));
                     str_free(&mem_msg);
                 }
+
+                /* Log memory refresh to journal for TUI visibility.
+                 * Without this, the refresh is invisible — memories are
+                 * injected into chat but not recorded in the journal. */
+                {
+                    cJSON *mr_params = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(mr_params, "step", step + 1);
+                    cJSON_AddNumberToObject(mr_params, "memories_injected",
+                        refreshed.count > 3 ? 3 : refreshed.count);
+                    cJSON *keys = cJSON_CreateArray();
+                    for (int mi = 0; mi < refreshed.count && mi < 3; mi++) {
+                        if (refreshed.entries[mi].key)
+                            cJSON_AddItemToArray(keys,
+                                cJSON_CreateString(refreshed.entries[mi].key));
+                    }
+                    cJSON_AddItemToObject(mr_params, "keys", keys);
+                    cJSON_AddBoolToObject(mr_params, "synthesis",
+                        ctx->tools->cfg && ctx->tools->cfg->memory_synthesis);
+
+                    /* Store the injected content for audit trail */
+                    char *mr_json = cJSON_PrintUnformatted(mr_params);
+                    char *mr_hash = store_save(ctx->tools->store,
+                        mr_json ? mr_json : "{}");
+                    char *mr_alias = mr_hash ?
+                        tool_register_alias(ctx->tools, mr_hash) : NULL;
+
+                    journal_append(ctx->tools->journal,
+                        ctx->tools->react_loop, step, "memory_refresh",
+                        mr_params, mr_alias, 0, refreshed.count, NULL, NULL);
+
+                    free(mr_json);
+                    free(mr_hash);
+                    free(mr_alias);
+                    cJSON_Delete(mr_params);
+                }
             }
             memory_results_free(&refreshed);
             str_free(&context_str);
