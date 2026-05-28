@@ -1266,7 +1266,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                         str_t summ_prompt = str_new(evicted_text.len + 2048);
                         str_appendf(&summ_prompt,
-                            "You are summarizing a portion of an agentic work session being "
+                            "You are a text summarizer (NOT an agent — do NOT output JSON, "
+                            "tool calls, or code blocks).\n"
+                            "Summarize a portion of an agentic work session being "
                             "evicted from context to free space.\n"
                             "Extract ALL key findings, decisions, file paths, code changes, "
                             "errors, and conclusions.\n"
@@ -1279,7 +1281,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             "findings from evicted messages.\n"
                             "Use structured sections with ## headers.\n"
                             "Keep under %d characters.\n"
-                            "Output ONLY the scratchpad content, nothing else.\n",
+                            "Output ONLY plain markdown text. Do NOT wrap in code fences.\n",
                             str_cstr(&evicted_text), current_sp, (int)sp_budget);
                         free(current_sp);
 
@@ -1289,8 +1291,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         llm_chat_free(summ_chat);
                         str_free(&summ_prompt);
 
-                        /* Merge summary into scratchpad */
-                        if (summary && strlen(summary) > 0) {
+                        /* Merge summary into scratchpad — validate output first */
+                        if (summary && strlen(summary) > 0 &&
+                            summary[0] != '{' && strncmp(summary, "```", 3) != 0) {
+                            /* Reject if LLM output looks like tool call JSON or code fence */
                             scratchpad_write(&ctx->tools->scratch, "context_summary",
                                              summary, 0);  /* priority 0 = highest */
                             scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
@@ -1794,7 +1798,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (full_sp && strlen(full_sp) > 0) {
             str_t prune_prompt = str_new(strlen(full_sp) + strlen(final_result) + 2048);
             str_appendf(&prune_prompt,
-                "You are cleaning up a persistent scratchpad after completing a task.\n"
+                "You are a text editor (NOT an agent — do NOT output JSON, "
+                "tool calls, function calls, or code blocks).\n"
+                "Clean up a persistent scratchpad after completing a task.\n\n"
                 "The task just completed with this result:\n"
                 "---\n%s\n---\n\n"
                 "Current scratchpad sections:\n"
@@ -1805,7 +1811,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "3. KEEPS only forward-looking information relevant to potential follow-up tasks\n"
                 "4. PRESERVES a brief summary of what was accomplished (not the full verbose result)\n"
                 "5. Uses ## section headers with <!-- priority:N --> markers (1=highest, 9=lowest)\n\n"
-                "Output ONLY the cleaned scratchpad content. Keep under %d characters.\n",
+                "Output ONLY plain markdown text. Do NOT wrap in code fences. "
+                "Keep under %d characters.\n",
                 final_result, full_sp, (int)sp_budget);
 
             llm_chat_t *prune_chat = llm_chat_new();
@@ -1814,7 +1821,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_chat_free(prune_chat);
             str_free(&prune_prompt);
 
-            if (cleaned && strlen(cleaned) > 0) {
+            if (cleaned && strlen(cleaned) > 0 &&
+                cleaned[0] != '{' && strncmp(cleaned, "```", 3) != 0) {
+                /* Validate: reject if LLM output looks like a tool call JSON
+                 * or code-fenced block instead of plain markdown text.
+                 * This happens when the model treats the pruning prompt as an
+                 * agentic task and generates a tool call response. */
+
                 /* Replace scratchpad with cleaned version */
                 scratchpad_write(&ctx->tools->scratch, "pruned", cleaned, 1);
                 /* Remove old sections that were merged into "pruned" */
