@@ -488,7 +488,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 }
                 int vl = render_line - scroll_y;
                 if (vl >= 0 && vl < rows)
-                    mvwaddnstr(win, vl, 0, wp, chunk);
+                    render_inline(win, vl, 0, wp, chunk, 0);
                 wp += chunk;
                 remaining -= chunk;
                 if (remaining > 0)
