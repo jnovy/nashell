@@ -1877,26 +1877,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* v5: Post-reflection scratchpad pruning — remove solved/stale data so the
      * next react loop starts with a clean, focused scratchpad. Uses an LLM call
      * to intelligently merge and prune instead of blind accumulation. */
-    if (final_result && ctx->tools->scratch.count > 0 && ctx->llm->context_size > 0) {
-        size_t sp_budget = (size_t)ctx->llm->context_size * 4 * 15 / 100;
+    if (final_result && ctx->tools->scratch.count > 0) {
         char *full_sp = scratchpad_serialize(&ctx->tools->scratch);
 
         if (full_sp && strlen(full_sp) > 0) {
             str_t prune_prompt = str_new(strlen(full_sp) + strlen(final_result) + 2048);
             str_appendf(&prune_prompt,
-                "Clean up a persistent scratchpad after completing a task.\n\n"
-                "The task just completed with this result:\n"
+                "A task just completed. Remove ONLY information from the scratchpad "
+                "that was resolved or completed by this task. Keep everything else "
+                "exactly as-is — do not rewrite, merge, summarize, or reformat.\n\n"
+                "Task result:\n"
                 "---\n%s\n---\n\n"
-                "Current scratchpad sections:\n"
+                "Current scratchpad:\n"
                 "---\n%s\n---\n\n"
-                "Produce a cleaned scratchpad that:\n"
-                "1. REMOVES information that was resolved/completed by this task\n"
-                "2. MERGES overlapping or redundant sections into coherent summaries\n"
-                "3. KEEPS only forward-looking information relevant to potential follow-up tasks\n"
-                "4. PRESERVES a brief summary of what was accomplished (not the full verbose result)\n"
-                "5. Uses ## section headers with <!-- priority:N --> markers (1=highest, 9=lowest)\n\n"
-                "Keep under %d characters.\n",
-                final_result, full_sp, (int)sp_budget);
+                "Output the scratchpad with resolved items removed, nothing else changed.\n",
+                final_result, full_sp);
 
             llm_chat_t *prune_chat = llm_chat_new();
             llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
