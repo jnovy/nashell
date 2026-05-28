@@ -288,6 +288,11 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
             cfg->api_base = strdup(argv[++i]);
+            /* --api forces local provider mode — override any [provider]
+             * section in config.toml. The user is pointing to a specific
+             * llama.cpp/OpenAI-compatible server, not a cloud API. */
+            free(cfg->provider.type);
+            cfg->provider.type = strdup("local");
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc) {
             query = argv[++i];
         } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
