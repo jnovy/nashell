@@ -774,6 +774,59 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     return make_result(1, meta, ref_copy);
 }
 
+/* ── glob_search ──────────────────────────────────────── */
+
+static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
+    if (!pattern_j || !pattern_j->valuestring)
+        return make_error("missing 'pattern' parameter");
+
+    const char *pattern = pattern_j->valuestring;
+    cJSON *path_j = cJSON_GetObjectItem(params, "path");
+    const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
+
+    /* Use find with -name for glob matching.
+     * Excludes .git, node_modules, __pycache__, .o files by default. */
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+        "find %s -type f -name '%s' "
+        "! -path '*/.git/*' "
+        "! -path '*/node_modules/*' "
+        "! -path '*/__pycache__/*' "
+        "! -name '*.o' "
+        "2>/dev/null | sort | head -200",
+        path, pattern);
+
+    str_t out = str_new(4096);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return make_error("failed to execute find");
+
+    char line[4096];
+    while (fgets(line, sizeof(line), fp))
+        str_append_cstr(&out, line);
+    pclose(fp);
+
+    int matches = count_lines(out.data);
+    char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(no matches)");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "pattern", pattern);
+    if (strcmp(path, ".") != 0)
+        cJSON_AddStringToObject(meta, "path", path);
+    cJSON_AddNumberToObject(meta, "matches", matches);
+    cJSON_AddStringToObject(meta, "ref", alias);
+
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "glob_search", params, alias,
+                   out.len, matches, NULL, NULL);
+
+    char *ref_copy = strdup(alias);
+    free(alias);
+    str_free(&out);
+    free(hash);
+    return make_result(1, meta, ref_copy);
+}
+
 /* ── scratchpad section operations (GDN-2 inspired) ─── */
 
 void scratchpad_init(scratchpad_t *sp) {
@@ -2026,6 +2079,7 @@ static const struct {
     {"file_write",    tool_file_write},
     {"file_edit",     tool_file_edit},
     {"grep_search",   tool_grep_search},
+    {"glob_search",   tool_glob_search},
     {"web_fetch",     tool_web_fetch},
     {"web_search",    tool_web_search},
     {"notes",         tool_notes},
