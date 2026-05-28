@@ -450,8 +450,23 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     ctx->tools->step = saved_step;
     ctx->tools->react_loop = saved_loop;
 
-    fprintf(stderr, "[checkpoint] Restored from step %d (react loop %d)\n",
-            saved_step, saved_loop);
+    /* Log checkpoint restore to journal (not stderr — corrupts TUI) */
+    {
+        cJSON *cp_params = cJSON_CreateObject();
+        cJSON_AddNumberToObject(cp_params, "restored_step", saved_step);
+        cJSON_AddNumberToObject(cp_params, "react_loop", saved_loop);
+        cJSON_AddStringToObject(cp_params, "status", "checkpoint restored");
+        char *cp_json = cJSON_PrintUnformatted(cp_params);
+        char *cp_hash = store_save(ctx->tools->store, cp_json ? cp_json : "{}");
+        char *cp_alias = cp_hash ? tool_register_alias(ctx->tools, cp_hash) : NULL;
+        journal_append(ctx->tools->journal, saved_loop, saved_step,
+                       "checkpoint_restore", cp_params, cp_alias,
+                       cp_json ? strlen(cp_json) : 0, 0, NULL, NULL);
+        free(cp_json);
+        free(cp_hash);
+        free(cp_alias);
+        cJSON_Delete(cp_params);
+    }
 
     /* Restore last_tc_id for tool_calls threading after crash */
     if (restored_tc_id) {
@@ -632,7 +647,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     resume_step = checkpoint_restore(ctx, chat, user_query);
     int restored = (resume_step >= 0);
     if (restored) {
-        fprintf(stderr, "[checkpoint] resuming from step %d\n", resume_step);
+        /* Emit event instead of fprintf — TUI will display it */
+        react_event_t ev = {0};
+        ev.type = REACT_EVENT_WARNING;
+        ev.step = resume_step;
+        ev.message = "Resuming from checkpoint";
+        emit(on_event, userdata, &ev);
     }
 
 
@@ -1984,10 +2004,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                     embed_multi_vec_free(&exist_emb);
                                     if (sim > 0.90f) {
                                         should_store = 0;
-                                        fprintf(stderr,
-                                            "[reflection] skipping near-duplicate "
-                                            "memory (sim=%.2f): %s\n",
-                                            sim, rkey_j->valuestring);
+                                        /* Log to journal instead of stderr (TUI mode) */
+                                        {
+                                            cJSON *dup_p = cJSON_CreateObject();
+                                            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
+                                            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
+                                            cJSON_AddStringToObject(dup_p, "action", "skipped");
+                                            journal_append(ctx->tools->journal,
+                                                ctx->tools->react_loop, ctx->tools->step,
+                                                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
+                                            cJSON_Delete(dup_p);
+                                        }
                                         break;
                                     }
                                 }
