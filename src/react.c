@@ -583,9 +583,18 @@ static char *extract_llm_text_output(const char *raw) {
                 cJSON_Delete(j);
                 return result;
             }
+            /* If JSON has an "action" field, it's a tool call without content
+             * (e.g. {"action":"notes","op":"list"} — model trying to call a tool
+             * instead of outputting text). Reject it — return NULL so the caller
+             * knows the LLM didn't produce usable text. */
+            cJSON *action = cJSON_GetObjectItem(j, "action");
+            if (action && cJSON_IsString(action)) {
+                cJSON_Delete(j);
+                return NULL;  /* tool call without content — reject */
+            }
             cJSON_Delete(j);
         }
-        /* JSON but no content field — fall through to return as-is */
+        /* JSON but not a tool call — fall through to return as-is */
     }
 
     /* Case 2: Code-fenced output — strip ``` wrapper */
