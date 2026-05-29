@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
 
     const char *query = NULL;
     const char *memory_dir = NULL;
-    double threshold = 0.05;
+    double threshold = 0.15;
     int max_results = 20;
     int no_embeddings = 0;
     int skills_only = 0;

@@ -580,9 +580,9 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
          * silent 30-40% of the time) yields +22% avg improvement.
          * This threshold is the frozen-model equivalent of that
          * learned abstention decision. */
-        /* All scores are now normalized to [0, 1]. Default threshold 0.05
-         * = 5% of max, equivalent to old 0.15 on the [0, ~2.8] scale. */
-        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.05;
+        /* All scores are now normalized to [0, 1]. Default threshold 0.15
+         * filters out weakly-relevant memories that would add noise. */
+        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
         if (s > 0.01 && s < min_score) {
             s = 0;  /* below abstention threshold — exclude */
         }
