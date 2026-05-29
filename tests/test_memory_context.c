@@ -113,7 +113,8 @@ int main(int argc, char *argv[]) {
             cfg->embedding.dimension,
             cfg->embedding.max_input_chars);
 
-        if (rc != 0) {
+        if (rc == 0) {
+            /* memory_init_embeddings returns 0 on failure, 1 on success */
             fprintf(stderr, "WARNING: Failed to initialize embeddings, "
                     "falling back to substring matching\n");
         } else {
