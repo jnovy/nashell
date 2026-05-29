@@ -47,7 +47,7 @@ LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries
 TEST_BIN = tests/test_memory tests/test_store tests/test_config \
-           tests/test_str tests/test_journal
+           tests/test_str tests/test_journal tests/test_memory_context
 
 tests/test_%: tests/test_%.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)

@@ -51,6 +51,7 @@ typedef struct {
      * receive a score boost (+0.5), implementing associative retrieval. */
     char **refs;          /* array of related memory keys */
     int    n_refs;
+    double relevance;     /* composite score from last memory_recall (0 if not recalled) */
 } memory_entry_t;
 
 typedef struct {

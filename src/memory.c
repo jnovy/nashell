@@ -725,6 +725,9 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         if (wf) { fputs(json, wf); fclose(wf); }
         free(json);
 
+        /* Store the composite score for callers that need it (e.g., test tools) */
+        e->relevance = scored[i].score;
+
         results.count++;
     }
 
