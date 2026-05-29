@@ -351,7 +351,9 @@ static double score_entry_hybrid(const char *key, const char *value,
                                   cJSON *tags, const char *query,
                                   int access_count,
                                   int recall_hits, int recall_misses,
-                                  float semantic_sim, int has_semantic) {
+                                  float semantic_sim, int has_semantic,
+                                  double *out_relevance,
+                                  double *out_importance) {
     double relevance;
 
     if (has_semantic) {
@@ -425,11 +427,13 @@ static double score_entry_hybrid(const char *key, const char *value,
      *
      * This closes the gap between validation and recall ranking. */
     double vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
+    if (out_relevance) *out_relevance = relevance;
+    if (out_importance) *out_importance = importance;
     return composite * vscore;
 }
 
 /* qsort comparator for scored entries (descending by score) */
-typedef struct { char path[4096]; double score; cJSON *cached_entry; } scored_t;
+typedef struct { char path[4096]; double score; double relevance; double importance; cJSON *cached_entry; } scored_t;
 
 static int scored_cmp_desc(const void *a, const void *b) {
     double sa = ((const scored_t *)a)->score;
@@ -553,9 +557,11 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         /* FIX B1: Use score_query (type-prefix stripped) for scoring.
          * This prevents "skill:" from inflating every skill entry's
          * substring score uniformly, and removes noise from embeddings. */
+        double out_rel = 0, out_imp = 0;
         double s = score_entry_hybrid(key, value, tags, score_query,
                                        acc_count, entry_hits, entry_misses,
-                                       semantic_sim, entry_has_semantic);
+                                       semantic_sim, entry_has_semantic,
+                                       &out_rel, &out_imp);
 
         /* FIX #13 + B1: Type-aware filtering using pre-extracted type_filter.
          * If query had a type prefix, only return entries of that type. */
@@ -589,6 +595,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             }
             snprintf(scored[n_scored].path, sizeof(scored[n_scored].path), "%s", path);
             scored[n_scored].score = s;
+            scored[n_scored].relevance = out_rel;
+            scored[n_scored].importance = out_imp;
             /* FIX #2/#8: Cache the parsed cJSON entry to avoid re-reading top results */
             scored[n_scored].cached_entry = entry;
             n_scored++;
@@ -727,6 +735,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
         /* Store the composite score for callers that need it (e.g., test tools) */
         e->relevance = scored[i].score;
+        e->raw_relevance = scored[i].relevance;
+        e->importance = scored[i].importance;
 
         results.count++;
     }

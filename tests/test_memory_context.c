@@ -161,8 +161,9 @@ int main(int argc, char *argv[]) {
                         (e->recall_hits + e->recall_misses + 2.0);
 
         printf("%2d. [%s] %s\n", shown, type, e->key ? e->key : "(no key)");
-        printf("    Score: %.4f  |  vscore: %.4f  |  hits/misses: %d/%d  |  access: %d\n",
-               e->relevance, vscore, e->recall_hits, e->recall_misses,
+        printf("    Score: %.4f  |  rel: %.4f  |  imp: %.4f  |  vscore: %.4f  |  hits/misses: %d/%d  |  access: %d\n",
+               e->relevance, e->raw_relevance, e->importance,
+               vscore, e->recall_hits, e->recall_misses,
                e->access_count);
 
         /* Show tags */
