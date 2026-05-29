@@ -1,6 +1,6 @@
 # nash — Autonomous Coding Agent in C
 
-**nash** is a fully autonomous coding agent implemented in ~32,000 lines of C. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+**nash** is a fully autonomous coding agent implemented in ~34,000 lines of C. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
 
 Unlike wrapper-based agents, nash is a single compiled binary with zero Python dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
@@ -17,7 +17,7 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 │  Plan → Tool Call → Observe → Reflect → Done            │
 ├──────────┬──────────┬───────────┬───────────────────────┤
 │ Provider │  Memory  │   Tools   │   Journal + Store     │
-│ local    │ semantic │ 15 tools  │ content-addressed     │
+│ local    │ semantic │ 16 tools  │ content-addressed     │
 │ openai   │ Bayesian │ registry  │ full audit trail      │
 │ anthropic│ pruning  │ dispatch  │ checkpoint/resume     │
 │ vertex   │ pinning  │           │                       │
@@ -39,7 +39,7 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 ```
 
 - **Native OpenAI tool_calls API** — uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
-- **15 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_recall, memory_pin, memory_unpin
+- **16 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_recall, memory_pin, memory_unpin, user_ask
 - **Shared tool registry** (`tools_registry.h`) — tool definitions defined once, formatted per-provider (local/OpenAI/Anthropic)
 - **Dispatch table** — tool execution via function pointer table, not strcmp chains
 - **Cycling detection** — detects repeated identical tool calls, injects corrective guidance, refuses after 4+ repetitions
@@ -60,7 +60,7 @@ All providers share the same tool registry and SSE streaming infrastructure. Pro
 
 ### 3. Persistent Memory System
 
-Nash maintains a persistent, git-backed memory system that survives across sessions. Memories are categorized as **lessons** (what went wrong/right), **strategies** (reusable procedures), **skills** (domain-specific knowledge), and **principles** (invariants).
+Nash maintains a persistent, git-backed memory system that survives across sessions. Memories are categorized as **lessons** (what went wrong/right), **strategies** (reusable procedures), **skills** (domain-specific knowledge), and **anti-patterns** (what not to do).
 
 #### Hybrid Scoring — Semantic + Substring + Bayesian Validation
 
@@ -192,6 +192,7 @@ Configuration:
 mode = "edrm"           # off | on | edrm
 probe_tokens = 30
 probe_n_probs = 10
+probe_temperature = 0.6  # probe sampling temperature
 tau_rho = -0.1           # Spearman correlation threshold
 tau_vnr = 1.5            # von Neumann ratio threshold
 tau_h = 4.0              # mean entropy threshold
@@ -325,6 +326,11 @@ api_base = "http://192.168.1.18:8080"    # llama.cpp server
 # type = "openai"                         # local | openai | anthropic | vertex
 # model_id = "gpt-4o"
 # api_key_env = "OPENAI_API_KEY"
+# project_id = "my-gcp-project"          # Vertex AI project
+# region = "us-east5"                     # Vertex AI region
+# context_size = 200000                   # context window (0 = auto)
+# chars_per_token = 3.5                   # chars per token ratio
+# caching = false                         # prompt caching (Anthropic)
 
 [thinking]
 mode = "edrm"                             # off | on | edrm
@@ -343,10 +349,20 @@ file_max_size = 52428800                  # 50MB
 recall_min_score = 0.05                   # normalized [0, 1] threshold
 memory_index_max = 50                     # max entries in memory index
 max_skills_per_query = 3                  # skills loaded per query
+max_lessons_per_query = 2                 # lessons loaded per query
+max_strategies_per_query = 2              # strategies loaded per query
+max_antipatterns_per_query = 1            # anti-patterns loaded per query
 memory_synthesis = true                   # enable query-time synthesis
+prune_min_score = 0.35                    # Bayesian pruning threshold
+prune_min_evidence = 3                    # min recalls before pruning
+consolidation_threshold = 0.82            # cosine threshold for dedup
 
 [context]
 context_eviction_pct = 70                 # evict when context > 70% full
+
+[search]
+engine = "duckduckgo"                     # duckduckgo | searxng
+# searxng_url = "http://localhost:8080"   # custom SearXNG instance
 ```
 
 ---
@@ -393,6 +409,7 @@ make
 │   ├── lesson:*.json        # Lessons learned
 │   ├── strategy:*.json      # Reusable procedures
 │   ├── skill:*.json         # Domain knowledge
+│   ├── anti-pattern:*.json  # What not to do
 │   └── .git/                # Full history
 ├── store/                   # Content-addressed artifacts (SHA-256)
 │   ├── a1b2c3d4...          # Tool outputs, errors, etc.
@@ -454,7 +471,7 @@ MIT
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~32K lines of C) and self-contained.
+Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~34K lines of C) and self-contained.
 
 Key design principles:
 - **No Python dependencies** — single compiled binary

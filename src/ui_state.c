@@ -237,13 +237,31 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 /* Unwrap nested JSON: sometimes thought contains
                                  * the entire action JSON instead of clean text. */
                                 if (th->valuestring[0] == '{') {
-                                    cJSON *nested = cJSON_Parse(th->valuestring);
-                                    if (nested) {
-                                        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-                                        if (inner && cJSON_IsString(inner) && inner->valuestring && inner->valuestring[0]) {
-                                            unwrapped_thought = strdup(inner->valuestring);
+                                    /* Recursively unwrap nested JSON thoughts
+                                     * (LLM echoes its own responses as thoughts). */
+                                    char *cur = strdup(th->valuestring);
+                                    if (cur) {
+                                        for (int d = 0; d < 5; d++) {
+                                            cJSON *nested = cJSON_Parse(cur);
+                                            if (!nested) break;
+                                            cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
+                                            if (!inner || !cJSON_IsString(inner) || !inner->valuestring || inner->valuestring[0] == '\0') {
+                                                cJSON_Delete(nested);
+                                                break;
+                                            }
+                                            char *next = strdup(inner->valuestring);
+                                            cJSON_Delete(nested);
+                                            free(cur);
+                                            if (next[0] != '{') {
+                                                unwrapped_thought = next;
+                                                goto done_unwrap;
+                                            }
+                                            cur = next;
                                         }
-                                        cJSON_Delete(nested);
+                                        done_unwrap:
+                                        if (!unwrapped_thought) {
+                                            unwrapped_thought = cur;
+                                        }
                                     }
                                 }
                                 thought = unwrapped_thought ? unwrapped_thought : th->valuestring;

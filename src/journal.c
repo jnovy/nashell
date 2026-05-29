@@ -9,20 +9,37 @@
 #include <time.h>
 #include <sys/file.h>  /* flock */
 
-/* Unwrap nested JSON in a thought string.
- * Returns a heap-allocated clean thought, or the original if no unwrapping needed.
- * Caller must free() the result if it differs from the input. */
+/* Recursively unwrap nested JSON in a thought string.
+ * The LLM sometimes echoes its own previous response as a thought,
+ * producing double- or triple-nested JSON like:
+ *   {"thought":"{\"thought\":\"{\"thought\":\"deep\"}\"}"}
+ * This function keeps unwrapping while the result is still JSON with a "thought" key.
+ * Returns a heap-allocated clean thought, or NULL if no unwrapping was needed.
+ * Caller must free() the result. */
 static char *unwrap_thought(const char *thought) {
     if (!thought || thought[0] != '{') return NULL;  /* nothing to unwrap */
-    cJSON *nested = cJSON_Parse(thought);
-    if (!nested) return NULL;
-    cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-    char *result = NULL;
-    if (inner && cJSON_IsString(inner) && inner->valuestring && inner->valuestring[0]) {
-        result = strdup(inner->valuestring);
+
+    char *current = strdup(thought);
+    if (!current) return NULL;
+
+    for (int depth = 0; depth < 5; depth++) {
+        cJSON *nested = cJSON_Parse(current);
+        if (!nested) break;
+        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
+        if (!inner || !cJSON_IsString(inner) || !inner->valuestring || inner->valuestring[0] == '\0') {
+            cJSON_Delete(nested);
+            break;
+        }
+        char *next = strdup(inner->valuestring);
+        cJSON_Delete(nested);
+        free(current);
+        if (next[0] != '{') return next;  /* fully unwrapped — plain text */
+        current = next;  /* still JSON, continue unwrapping */
     }
-    cJSON_Delete(nested);
-    return result;
+
+    /* If we exhausted depth limit or broke out, return the last unwrapped value
+     * (it may still be JSON, but we can't unwrap further). */
+    return current;
 }
 
 journal_t *journal_new(const char *session_dir) {
