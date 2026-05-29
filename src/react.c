@@ -1324,7 +1324,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             break;
         }
 
-        /* Cycling detection */
+        /* Cycling detection — disabled by default, enable via config:
+         *   [limits]
+         *   cycling_detection = true
+         * When disabled, the model can repeat the same action without
+         * warnings or refusal. This is useful for tasks that legitimately
+         * require repeated operations (e.g., reading multiple sections
+         * of the same file, running similar commands). */
+        int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
         char sig[256];
         const char *cmd = json_get_str(action, "command");
         const char *path = json_get_str(action, "path");
@@ -1356,7 +1363,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             snprintf(last_sigs[7], 256, "%s", sig);
         }
 
-        if (repeated >= 2) {
+        if (cycling_enabled && repeated >= 2) {
             char warn_msg[256];
             snprintf(warn_msg, sizeof(warn_msg),
                      "Cycling detected — same action repeated %d times", repeated + 1);
@@ -1375,7 +1382,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Fix 2: Refuse execution after 3+ consecutive identical actions */
         tool_result_t tr;
-        if (repeated >= 3) {
+        if (cycling_enabled && repeated >= 3) {
             cJSON *err_meta = cJSON_CreateObject();
             cJSON_AddStringToObject(err_meta, "error",
                 "Refused: same action repeated 4+ times. "
