@@ -185,19 +185,8 @@ int llm_fetch_context_size(const char *api_base) {
     char url[1024];
     snprintf(url, sizeof(url), "%s/props", api_base);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) return 0;
-
     str_t response = str_new(4096);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
+    if (http_get(url, 5L, &response) != 0) {
         str_free(&response);
         return 0;
     }
@@ -223,19 +212,8 @@ char *llm_fetch_model_name(const char *api_base) {
     char url[1024];
     snprintf(url, sizeof(url), "%s/v1/models", api_base);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
-
     str_t response = str_new(4096);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
+    if (http_get(url, 5L, &response) != 0) {
         str_free(&response);
         return NULL;
     }
@@ -276,19 +254,8 @@ char *llm_fetch_props_json(const char *api_base) {
     char url[1024];
     snprintf(url, sizeof(url), "%s/props", api_base);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
-
     str_t response = str_new(8192);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
+    if (http_get(url, 5L, &response) != 0) {
         str_free(&response);
         return NULL;
     }
@@ -315,29 +282,18 @@ char *llm_apply_template(const char *api_base, const char *user_query) {
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) { free(body); return NULL; }
-
-    str_t response = str_new(4096);
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    free(body);
-
-    if (res != CURLE_OK) {
+    str_t response = str_new(4096);
+    if (http_post(url, body, headers, 5L, &response) != 0) {
+        curl_slist_free_all(headers);
+        free(body);
         str_free(&response);
         return NULL;
     }
+    curl_slist_free_all(headers);
+    free(body);
 
     /* Parse response: {"prompt": "..."} */
     cJSON *resp = cJSON_Parse(response.data);
@@ -425,29 +381,18 @@ edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
     char url[1024];
     snprintf(url, sizeof(url), "%s/completion", api_base);
 
-    CURL *curl = curl_easy_init();
-    if (!curl) { free(body); return result; }
-
-    str_t response = str_new(16384);
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-    curl_slist_free_all(headers);
-    free(body);
-
-    if (res != CURLE_OK) {
+    str_t response = str_new(16384);
+    if (http_post(url, body, headers, 30L, &response) != 0) {
+        curl_slist_free_all(headers);
+        free(body);
         str_free(&response);
         return result;
     }
+    curl_slist_free_all(headers);
+    free(body);
 
     /* Parse response and extract entropy from completion_probabilities */
     cJSON *resp = cJSON_Parse(response.data);

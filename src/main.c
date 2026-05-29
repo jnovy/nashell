@@ -20,6 +20,20 @@
 #include "memory.h"
 #include "ui_state.h"
 #include "tui.h"
+#include "str.h"
+
+/* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
+ * Caps at 32KB to prevent memory explosion. */
+static char *load_legacy_scratchpad(const char *session_dir) {
+    char sp_path[4096];
+    snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
+    char *buf = slurp_file(sp_path, NULL);
+    if (!buf || strlen(buf) >= 32768) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
 
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
@@ -445,22 +459,7 @@ int main(int argc, char **argv) {
                 tools.scratchpad = scratchpad_serialize(&tools.scratch);
             } else {
                 /* Try legacy format */
-                char sp_path[4096];
-                snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-                FILE *spf = fopen(sp_path, "r");
-                if (spf) {
-                    fseek(spf, 0, SEEK_END);
-                    long spsz = ftell(spf);
-                    if (spsz > 0 && spsz < 32768) {
-                        fseek(spf, 0, SEEK_SET);
-                        tools.scratchpad = malloc((size_t)spsz + 1);
-                        if (tools.scratchpad) {
-                            size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
-                            tools.scratchpad[n] = '\0';
-                        }
-                    }
-                    fclose(spf);
-                }
+                tools.scratchpad = load_legacy_scratchpad(session_dir);
             }
         }
         react_ctx_t react = {
@@ -544,22 +543,7 @@ int main(int argc, char **argv) {
         if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
             tools.scratchpad = scratchpad_serialize(&tools.scratch);
         } else {
-            char sp_path[4096];
-            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-            FILE *spf = fopen(sp_path, "r");
-            if (spf) {
-                fseek(spf, 0, SEEK_END);
-                long spsz = ftell(spf);
-                if (spsz > 0 && spsz < 32768) {
-                    fseek(spf, 0, SEEK_SET);
-                    tools.scratchpad = malloc((size_t)spsz + 1);
-                    if (tools.scratchpad) {
-                        size_t n = fread(tools.scratchpad, 1, (size_t)spsz, spf);
-                        tools.scratchpad[n] = '\0';
-                    }
-                }
-                fclose(spf);
-            }
+            tools.scratchpad = load_legacy_scratchpad(session_dir);
         }
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,

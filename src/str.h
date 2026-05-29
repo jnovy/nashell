@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <curl/curl.h>
 
 typedef struct {
     char  *data;
@@ -27,6 +28,26 @@ const char *fmt_duration(double seconds, char *buf, size_t sz);
  * Returns NULL on failure. Caller must free.
  * If out_len is non-NULL, stores the number of bytes read. */
 char *slurp_file(const char *path, size_t *out_len);
+
+/* Write data to a file. Returns 0 on success, -1 on failure. */
+int write_file(const char *path, const char *data, size_t len);
+
+/* ── HTTP helpers (libcurl) ─────────────────────────────────────────
+ * Perform a simple HTTP GET.  Stores response body into *out (str_t).
+ * Caller must str_free(*out) on success.
+ * Returns 0 on success, -1 on failure. */
+int http_get(const char *url, long timeout_sec, str_t *out);
+
+/* Perform an HTTP POST with a JSON body.
+ * headers is a curl_slist (caller frees after call).
+ * Caller must str_free(*out) on success.
+ * Returns 0 on success, -1 on failure. */
+int http_post(const char *url, const char *body,
+              struct curl_slist *headers, long timeout_sec, str_t *out);
+
+/* Curl write callback that appends to a str_t.
+ * Exported so callers can use str_t with custom curl setups. */
+size_t str_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
 
 /* Count newline characters in a string. */
 int count_lines(const char *s);

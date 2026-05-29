@@ -10,23 +10,7 @@
 #include <curl/curl.h>
 
 /* ── curl write callback ─────────────────────────────── */
-
-typedef struct {
-    char  *data;
-    size_t size;
-} curl_buf_t;
-
-static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    curl_buf_t *buf = (curl_buf_t *)userdata;
-    size_t total = size * nmemb;
-    char *tmp = realloc(buf->data, buf->size + total + 1);
-    if (!tmp) return 0;
-    buf->data = tmp;
-    memcpy(buf->data + buf->size, ptr, total);
-    buf->size += total;
-    buf->data[buf->size] = '\0';
-    return total;
-}
+/* Now uses str_t from str.h — see str_write_cb in str.c */
 
 /* ── lifecycle ───────────────────────────────────────── */
 
@@ -255,28 +239,30 @@ static embed_vec_t call_api(embed_ctx_t *ctx, const char *text) {
         return result;
     }
 
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t response = str_new(8192);
     CURL *curl = curl_easy_init();
     if (!curl) {
+        str_free(&response);
+        curl_slist_free_all(headers);
         free(url);
         free(body);
         return result;
     }
 
-    curl_buf_t response = {0};
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
 
     CURLcode res = curl_easy_perform(curl);
 
-    if (res == CURLE_OK && response.data) {
+    if (res == CURLE_OK && response.len > 0) {
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         if (http_code == 200) {
@@ -284,7 +270,7 @@ static embed_vec_t call_api(embed_ctx_t *ctx, const char *text) {
         }
     }
 
-    free(response.data);
+    str_free(&response);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     free(url);
@@ -429,21 +415,23 @@ static embed_vec_t *call_api_batch(embed_ctx_t *ctx, const char **texts,
         return NULL;
     }
 
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t response = str_new(16384);
     CURL *curl = curl_easy_init();
     if (!curl) {
+        str_free(&response);
+        curl_slist_free_all(headers);
         free(url);
         free(body);
         return NULL;
     }
 
-    curl_buf_t response = {0};
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     /* Longer timeout for batch requests — may have many texts */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
@@ -452,7 +440,7 @@ static embed_vec_t *call_api_batch(embed_ctx_t *ctx, const char **texts,
     CURLcode res = curl_easy_perform(curl);
 
     embed_vec_t *results = NULL;
-    if (res == CURLE_OK && response.data) {
+    if (res == CURLE_OK && response.len > 0) {
         long http_code = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         if (http_code == 200) {
@@ -460,7 +448,7 @@ static embed_vec_t *call_api_batch(embed_ctx_t *ctx, const char **texts,
         }
     }
 
-    free(response.data);
+    str_free(&response);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     free(url);

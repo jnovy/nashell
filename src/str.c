@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <curl/curl.h>
 
 str_t str_new(size_t initial_cap) {
     str_t s;
@@ -168,6 +169,57 @@ char *slurp_file(const char *path, size_t *out_len) {
     fclose(f);
     if (out_len) *out_len = n;
     return buf;
+}
+
+/* ── HTTP helpers (libcurl) ──────────────────────────────────── */
+
+/* Curl write callback that appends to a str_t */
+size_t str_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    str_t *s = userdata;
+    str_append(s, ptr, size * nmemb);
+    return size * nmemb;
+}
+
+int http_get(const char *url, long timeout_sec, str_t *out) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK) ? 0 : -1;
+}
+
+int http_post(const char *url, const char *body,
+              struct curl_slist *headers, long timeout_sec, str_t *out) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    if (headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK) ? 0 : -1;
+}
+
+int write_file(const char *path, const char *data, size_t len) {
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    size_t n = fwrite(data, 1, len, f);
+    fclose(f);
+    return (n == len) ? 0 : -1;
 }
 
 /* ── counting ───────────────────────────────────────────────────── */

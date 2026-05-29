@@ -49,32 +49,60 @@ typedef int (*json_entry_cb)(const char *dirpath, cJSON *entry, void *user_data)
 #define JSON_CB_CONTINUE    0
 #define JSON_CB_KEEP_ENTRY -1
 
-static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
+/* ── Generalized directory iteration ────────────────────────────── */
+
+/* Callback for for_each_dir_entry: receives dirpath, filename, full path.
+ * Returns 0 to continue, non-zero to stop. */
+typedef int (*dir_entry_cb)(const char *dirpath, const char *filename,
+                            const char *fullpath, void *user_data);
+
+/* Iterate over files matching *suffix* in *dirpath*.
+ * Calls cb(dirpath, filename, fullpath, user_data) for each match.
+ * Stops when cb returns non-zero. */
+static void for_each_dir_entry(const char *dirpath, const char *suffix,
+                               dir_entry_cb cb, void *user_data) {
     DIR *dir = opendir(dirpath);
     if (!dir) return;
 
+    size_t sfx_len = strlen(suffix);
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
         size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+        if (len <= sfx_len) continue;
+        if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
 
         char path[4096];
         snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
 
-        char *buf = slurp_file(path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
-        if (!entry) continue;
-
-        int rc = cb(dirpath, entry, user_data);
-        if (rc != JSON_CB_KEEP_ENTRY)
-            cJSON_Delete(entry);
-        if (rc > 0) break;
+        int rc = cb(dirpath, de->d_name, path, user_data);
+        if (rc) break;
     }
     closedir(dir);
+}
+
+/* Wrapper to adapt json_entry_cb to dir_entry_cb signature. */
+static int json_entry_wrapper(const char *dirpath, const char *filename,
+                              const char *fullpath, void *user_data) {
+    json_entry_cb cb = (json_entry_cb)((void **)user_data)[0];
+    void *real_ud = ((void **)user_data)[1];
+
+    char *buf = slurp_file(fullpath, NULL);
+    if (!buf) return 0;
+
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    if (!entry) return 0;
+
+    int rc = cb(dirpath, entry, real_ud);
+    if (rc != JSON_CB_KEEP_ENTRY)
+        cJSON_Delete(entry);
+    return rc;
+}
+
+static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
+    void *wrapper_args[2] = { (void *)cb, user_data };
+    for_each_dir_entry(dirpath, ".json", json_entry_wrapper, wrapper_args);
 }
 
 /* Callback-based directory iteration over .emb entries.
@@ -82,20 +110,17 @@ static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *use
  * Returns 0 to continue iterating, non-zero to stop. */
 typedef int (*emb_entry_cb)(const char *dirpath, const char *emb_name, void *user_data);
 
+static int emb_entry_wrapper(const char *dirpath, const char *filename,
+                             const char *fullpath, void *user_data) {
+    emb_entry_cb cb = (emb_entry_cb)((void **)user_data)[0];
+    void *real_ud = ((void **)user_data)[1];
+    (void)fullpath;
+    return cb(dirpath, filename, real_ud);
+}
+
 static void for_each_emb_entry(const char *dirpath, emb_entry_cb cb, void *user_data) {
-    DIR *dir = opendir(dirpath);
-    if (!dir) return;
-
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 4 || strcmp(de->d_name + len - 4, ".emb") != 0) continue;
-
-        int rc = cb(dirpath, de->d_name, user_data);
-        if (rc) break;
-    }
-    closedir(dir);
+    void *wrapper_args[2] = { (void *)cb, user_data };
+    for_each_dir_entry(dirpath, ".emb", emb_entry_wrapper, wrapper_args);
 }
 
 /* ── git version control for memory store ──────────────────────── */
