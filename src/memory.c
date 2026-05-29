@@ -35,6 +35,69 @@ static double epoch_now(void) {
     return (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
 }
 
+/* ── directory traversal helpers ────────────────────────── */
+
+/* Callback-based directory iteration over .json entries.
+ * Callback receives the parsed cJSON entry and user_data.
+ * Return values:
+ *   0  = continue iterating, helper deletes entry
+ *  -1  = continue iterating, caller took ownership of entry (don't delete)
+ *  >0  = stop iterating, helper deletes entry
+ * This enables callers like memory_recall to cache high-scoring entries. */
+typedef int (*json_entry_cb)(const char *dirpath, cJSON *entry, void *user_data);
+
+#define JSON_CB_CONTINUE    0
+#define JSON_CB_KEEP_ENTRY -1
+
+static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
+    DIR *dir = opendir(dirpath);
+    if (!dir) return;
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
+
+        char *buf = slurp_file(path, NULL);
+        if (!buf) continue;
+
+        cJSON *entry = cJSON_Parse(buf);
+        free(buf);
+        if (!entry) continue;
+
+        int rc = cb(dirpath, entry, user_data);
+        if (rc != JSON_CB_KEEP_ENTRY)
+            cJSON_Delete(entry);
+        if (rc > 0) break;
+    }
+    closedir(dir);
+}
+
+/* Callback-based directory iteration over .emb entries.
+ * Callback receives the directory path and the .emb filename.
+ * Returns 0 to continue iterating, non-zero to stop. */
+typedef int (*emb_entry_cb)(const char *dirpath, const char *emb_name, void *user_data);
+
+static void for_each_emb_entry(const char *dirpath, emb_entry_cb cb, void *user_data) {
+    DIR *dir = opendir(dirpath);
+    if (!dir) return;
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len < 4 || strcmp(de->d_name + len - 4, ".emb") != 0) continue;
+
+        int rc = cb(dirpath, de->d_name, user_data);
+        if (rc) break;
+    }
+    closedir(dir);
+}
+
 /* ── git version control for memory store ──────────────────────── */
 
 /* Run a git command in the memory directory. Returns 0 on success. */
@@ -762,164 +825,145 @@ static int index_entry_cmp(const void *a, const void *b) {
                  ((const index_entry_t *)b)->key);
 }
 
+/* Context for build_index callback */
+typedef struct {
+    int n_lessons, n_strategies, n_facts, n_tasks, n_skills, n_other;
+    int total;
+    int entries_cap;
+    index_entry_t *entries;
+} build_index_ctx_t;
+
+static int build_index_cb(const char *dirpath __attribute__((unused)), cJSON *entry, void *user_data) {
+    build_index_ctx_t *ctx = (build_index_ctx_t *)user_data;
+
+    cJSON *k = cJSON_GetObjectItem(entry, "key");
+    cJSON *tags = cJSON_GetObjectItem(entry, "tags");
+
+    if (k && k->valuestring) {
+        /* Count by type */
+        if (strncmp(k->valuestring, "lesson:", 7) == 0) ctx->n_lessons++;
+        else if (strncmp(k->valuestring, "strategy:", 9) == 0) ctx->n_strategies++;
+        else if (strncmp(k->valuestring, "fact:", 5) == 0) ctx->n_facts++;
+        else if (strncmp(k->valuestring, "task:", 5) == 0) ctx->n_tasks++;
+        else if (strncmp(k->valuestring, "skill:", 6) == 0) ctx->n_skills++;
+        else ctx->n_other++;
+
+        /* Build formatted line */
+        str_t line = str_new(256);
+        str_appendf(&line, "  %s", k->valuestring);
+        if (tags && cJSON_GetArraySize(tags) > 0) {
+            str_append_cstr(&line, " [");
+            int n = cJSON_GetArraySize(tags);
+            for (int i = 0; i < n; i++) {
+                cJSON *t = cJSON_GetArrayItem(tags, i);
+                if (i > 0) str_append_cstr(&line, ", ");
+                if (t && t->valuestring) str_append_cstr(&line, t->valuestring);
+            }
+            str_append_cstr(&line, "]");
+        }
+        str_append_cstr(&line, "\n");
+
+        /* Grow entries array if needed */
+        if (ctx->total >= ctx->entries_cap) {
+            ctx->entries_cap *= 2;
+            ctx->entries = realloc(ctx->entries, (size_t)ctx->entries_cap * sizeof(index_entry_t));
+        }
+        ctx->entries[ctx->total].line = str_steal(&line);
+        ctx->entries[ctx->total].key = strdup(k->valuestring);
+        ctx->total++;
+    }
+    return JSON_CB_CONTINUE;
+}
+
 char *memory_build_index(memory_t *m, int max_entries) {
     if (!m) return NULL;
 
-    DIR *dir = opendir(m->dir);
-    if (!dir) return NULL;
-
     /* Count entries by type for progressive disclosure */
-    int n_lessons = 0, n_strategies = 0, n_facts = 0, n_tasks = 0, n_skills = 0, n_other = 0;
-    int total = 0;
+    build_index_ctx_t ctx = {0};
+    ctx.entries_cap = 64;
+    ctx.entries = calloc((size_t)ctx.entries_cap, sizeof(index_entry_t));
 
-    /* Collect all entries for sorting (FIX #11) */
-    int entries_cap = 64;
-    index_entry_t *entries = calloc((size_t)entries_cap, sizeof(index_entry_t));
+    for_each_json_entry(m->dir, build_index_cb, &ctx);
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
-
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
-
-        char *buf = slurp_file(path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
-        if (!entry) continue;
-
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        cJSON *tags = cJSON_GetObjectItem(entry, "tags");
-
-        if (k && k->valuestring) {
-            /* Count by type */
-            if (strncmp(k->valuestring, "lesson:", 7) == 0) n_lessons++;
-            else if (strncmp(k->valuestring, "strategy:", 9) == 0) n_strategies++;
-            else if (strncmp(k->valuestring, "fact:", 5) == 0) n_facts++;
-            else if (strncmp(k->valuestring, "task:", 5) == 0) n_tasks++;
-            else if (strncmp(k->valuestring, "skill:", 6) == 0) n_skills++;
-            else n_other++;
-
-            /* Build formatted line */
-            str_t line = str_new(256);
-            str_appendf(&line, "  %s", k->valuestring);
-            if (tags && cJSON_GetArraySize(tags) > 0) {
-                str_append_cstr(&line, " [");
-                int n = cJSON_GetArraySize(tags);
-                for (int i = 0; i < n; i++) {
-                    cJSON *t = cJSON_GetArrayItem(tags, i);
-                    if (i > 0) str_append_cstr(&line, ", ");
-                    if (t && t->valuestring) str_append_cstr(&line, t->valuestring);
-                }
-                str_append_cstr(&line, "]");
-            }
-            str_append_cstr(&line, "\n");
-
-            /* Grow entries array if needed */
-            if (total >= entries_cap) {
-                entries_cap *= 2;
-                entries = realloc(entries, (size_t)entries_cap * sizeof(index_entry_t));
-            }
-            entries[total].line = str_steal(&line);
-            entries[total].key = strdup(k->valuestring);
-            total++;
-        }
-        cJSON_Delete(entry);
-    }
-    closedir(dir);
-
-    if (total == 0) {
-        free(entries);
+    if (ctx.total == 0) {
+        free(ctx.entries);
         return NULL;
     }
 
     /* Sort entries alphabetically by key (FIX #11) */
-    qsort(entries, (size_t)total, sizeof(index_entry_t), index_entry_cmp);
+    qsort(ctx.entries, (size_t)ctx.total, sizeof(index_entry_t), index_entry_cmp);
 
     /* Build output string */
     str_t out = str_new(2048);
-    int show = (max_entries == 0) ? total : (total < max_entries ? total : max_entries);
+    int show = (max_entries == 0) ? ctx.total : (ctx.total < max_entries ? ctx.total : max_entries);
     for (int i = 0; i < show; i++) {
-        str_append_cstr(&out, entries[i].line);
+        str_append_cstr(&out, ctx.entries[i].line);
     }
 
     /* Build header with topic summary */
     str_t result = str_new(2048);
-    str_appendf(&result, "Memory: %d entries", total);
-    if (n_lessons > 0) str_appendf(&result, ", %d lessons", n_lessons);
-    if (n_strategies > 0) str_appendf(&result, ", %d strategies", n_strategies);
-    if (n_skills > 0) str_appendf(&result, ", %d skills", n_skills);
-    if (n_facts > 0) str_appendf(&result, ", %d facts", n_facts);
-    if (n_tasks > 0) str_appendf(&result, ", %d tasks", n_tasks);
-    if (n_other > 0) str_appendf(&result, ", %d other", n_other);
+    str_appendf(&result, "Memory: %d entries", ctx.total);
+    if (ctx.n_lessons > 0) str_appendf(&result, ", %d lessons", ctx.n_lessons);
+    if (ctx.n_strategies > 0) str_appendf(&result, ", %d strategies", ctx.n_strategies);
+    if (ctx.n_skills > 0) str_appendf(&result, ", %d skills", ctx.n_skills);
+    if (ctx.n_facts > 0) str_appendf(&result, ", %d facts", ctx.n_facts);
+    if (ctx.n_tasks > 0) str_appendf(&result, ", %d tasks", ctx.n_tasks);
+    if (ctx.n_other > 0) str_appendf(&result, ", %d other", ctx.n_other);
     str_append_cstr(&result, "\n");
 
-    if (total > max_entries && max_entries > 0) {
-        str_appendf(&result, "  (showing first %d of %d — use memory_recall to search)\n", max_entries, total);
+    if (ctx.total > max_entries && max_entries > 0) {
+        str_appendf(&result, "  (showing first %d of %d — use memory_recall to search)\n", max_entries, ctx.total);
     }
     str_append_cstr(&result, str_cstr(&out));
     str_free(&out);
 
     /* Free entries */
-    for (int i = 0; i < total; i++) {
-        free(entries[i].line);
-        free(entries[i].key);
+    for (int i = 0; i < ctx.total; i++) {
+        free(ctx.entries[i].line);
+        free(ctx.entries[i].key);
     }
-    free(entries);
+    free(ctx.entries);
 
     return str_steal(&result);
 }
 
 /* ── load_pinned ─────────────────────────────────────── */
 
+typedef struct {
+    str_t out;
+    int count;
+} load_pinned_ctx_t;
+
+static int load_pinned_cb(const char *dirpath __attribute__((unused)), cJSON *entry, void *user_data) {
+    load_pinned_ctx_t *ctx = (load_pinned_ctx_t *)user_data;
+
+    cJSON *p = cJSON_GetObjectItem(entry, "pinned");
+    if (p && cJSON_IsTrue(p)) {
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        cJSON *v = cJSON_GetObjectItem(entry, "value");
+        if (k && k->valuestring && v && v->valuestring) {
+            if (ctx->count > 0) str_append_cstr(&ctx->out, "\n");
+            str_appendf(&ctx->out, "[PINNED: %s]\n%s", k->valuestring, v->valuestring);
+            ctx->count++;
+        }
+    }
+    return JSON_CB_CONTINUE;
+}
+
 char *memory_load_pinned(memory_t *m) {
     if (!m) return NULL;
 
-    DIR *dir = opendir(m->dir);
-    if (!dir) return NULL;
+    load_pinned_ctx_t ctx;
+    ctx.out = str_new(1024);
+    ctx.count = 0;
 
-    str_t out = str_new(1024);
-    int count = 0;
+    for_each_json_entry(m->dir, load_pinned_cb, &ctx);
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
-
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
-
-        char *buf = slurp_file(path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
-        if (!entry) continue;
-
-        cJSON *p = cJSON_GetObjectItem(entry, "pinned");
-        if (p && cJSON_IsTrue(p)) {
-            cJSON *k = cJSON_GetObjectItem(entry, "key");
-            cJSON *v = cJSON_GetObjectItem(entry, "value");
-            if (k && k->valuestring && v && v->valuestring) {
-                if (count > 0) str_append_cstr(&out, "\n");
-                str_appendf(&out, "[PINNED: %s]\n%s", k->valuestring, v->valuestring);
-                count++;
-            }
-        }
-        cJSON_Delete(entry);
-    }
-    closedir(dir);
-
-    if (count == 0) {
-        str_free(&out);
+    if (ctx.count == 0) {
+        str_free(&ctx.out);
         return NULL;
     }
-    return str_steal(&out);
+    return str_steal(&ctx.out);
 }
 
 /* ── delete ──────────────────────────────────────────── */
@@ -978,67 +1022,69 @@ void memory_results_free(memory_results_t *r) {
 
 /* ── prune (forgetting/decay) ─────────────────────────────── */
 
-int memory_prune(memory_t *m, double min_score, int min_evidence) {
-    if (!m) return 0;
+typedef struct {
+    memory_t *m;
+    double min_score;
+    int min_evidence;
+    int pruned;
+} prune_ctx_t;
 
-    DIR *dir = opendir(m->dir);
-    if (!dir) return 0;
+static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
+    prune_ctx_t *ctx = (prune_ctx_t *)user_data;
 
-    int pruned = 0;
+    /* Never prune pinned memories */
+    cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
+    if (pin && cJSON_IsTrue(pin)) return JSON_CB_CONTINUE;
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+    /* Bayesian validation scoring — prune only with sufficient evidence.
+     * Age is NOT a criterion: a year-old lesson with no evidence is
+     * unknown (score 0.50), not worthless. Only prune when the data
+     * shows the memory is actively harmful (recalled in failed tasks).
+     * score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
+    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+    int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+    int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+    int evidence = hits + misses;
+    double vscore = (hits + 1.0) / (hits + misses + 2.0);
 
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
-
-        char *buf = slurp_file(path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
-        if (!entry) continue;
-
-        /* Never prune pinned memories */
-        cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
-        if (pin && cJSON_IsTrue(pin)) { cJSON_Delete(entry); continue; }
-
-        /* Bayesian validation scoring — prune only with sufficient evidence.
-         * Age is NOT a criterion: a year-old lesson with no evidence is
-         * unknown (score 0.50), not worthless. Only prune when the data
-         * shows the memory is actively harmful (recalled in failed tasks).
-         * score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
-        cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-        cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-        int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-        int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-        int evidence = hits + misses;
-        double vscore = (hits + 1.0) / (hits + misses + 2.0);
-
-        if (vscore < min_score && evidence >= min_evidence) {
+    if (vscore < ctx->min_score && evidence >= ctx->min_evidence) {
+        /* Derive path from dirpath + entry key */
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        if (k && k->valuestring) {
+            char json_fname[512];
+            key_to_path(k->valuestring, ".json", json_fname, sizeof(json_fname));
+            char path[4096];
+            snprintf(path, sizeof(path), "%s/%s", dirpath, json_fname);
             unlink(path);
             /* FIX B9: Also delete the .emb file to prevent orphaned
              * embedding files from accumulating over time. */
+            char emb_fname[512];
+            key_to_path(k->valuestring, ".emb", emb_fname, sizeof(emb_fname));
             char emb_path[4096];
-            json_to_emb_path(path, emb_path, sizeof(emb_path));
+            snprintf(emb_path, sizeof(emb_path), "%s/%s", dirpath, emb_fname);
             unlink(emb_path);  /* ignore error if not exists */
-            pruned++;
+            ctx->pruned++;
         }
-
-        cJSON_Delete(entry);
     }
-    closedir(dir);
+    return JSON_CB_CONTINUE;
+}
 
-    if (pruned > 0) {
+int memory_prune(memory_t *m, double min_score, int min_evidence) {
+    if (!m) return 0;
+
+    prune_ctx_t ctx = { .m = m, .min_score = min_score,
+                        .min_evidence = min_evidence, .pruned = 0 };
+
+    for_each_json_entry(m->dir, prune_cb, &ctx);
+
+    if (ctx.pruned > 0) {
         char msg[128];
-        snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", pruned);
+        snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", ctx.pruned);
         memory_git_commit(m, msg);
     }
 
-    return pruned;
+    return ctx.pruned;
 }
 
 /* ── validation scoring ─────────────────────────────────────── */
