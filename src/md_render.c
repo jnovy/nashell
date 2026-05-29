@@ -266,22 +266,25 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
 
         /* Render the fitting segments on current row */
         if (fit_count > 0 || partial_seg >= 0) {
-            /* If we have a partial segment, split it */
+            /* If we have a partial segment, split it.
+             * Use a flag to track whether the split happened — the condition
+             * `partial_byte < segs[partial_seg].len` is invalidated by split_segment()
+             * because it sets segs[partial_seg].len = partial_byte. */
+            int did_split = 0;
             if (partial_seg >= 0 && partial_byte > 0 && partial_byte < segs[partial_seg].len) {
                 split_segment(segs, &n_segs, 256, partial_seg, partial_byte);
-                /* fit_count now includes the first part of the split */
+                did_split = 1;
             }
-            /* Render fit_count segments (or all if everything fit) */
-            int render_count = (fit_count >= n_segs) ? n_segs : fit_count + (partial_seg >= 0 ? 1 : 0);
-            /* Actually, after split, the first part is at the same index */
-            if (partial_seg >= 0 && partial_byte > 0 && partial_byte < segs[partial_seg].len) {
-                /* After split, first part is at partial_seg, second at partial_seg+1 */
-                /* We render up to and including the first part */
+            /* After split, render up to and including the first part of the split.
+             * Without split, render only the segments that fully fit. */
+            int render_count;
+            if (did_split) {
                 render_count = partial_seg + 1;
             } else {
                 render_count = fit_count;
             }
             if (render_count > n_segs) render_count = n_segs;
+            if (render_count < 0) render_count = 0;
             render_segs_on_line(win, current_row, col, segs, render_count, usable_width);
         } else {
             /* Even a single character doesn't fit — render one char to avoid infinite loop */
@@ -297,9 +300,13 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
         }
 
         /* Advance: remove rendered segments */
-        int advance = (fit_count >= n_segs) ? n_segs : fit_count + (partial_seg >= 0 ? 1 : 0);
-        if (partial_seg >= 0 && partial_byte > 0 && partial_byte < segs[partial_seg].len) {
+        int advance;
+        if (partial_seg >= 0 && partial_byte > 0) {
+            /* If we identified a partial segment, advance past the first part
+             * (which was either split or already consumed). */
             advance = partial_seg + 1;
+        } else {
+            advance = (fit_count >= n_segs) ? n_segs : fit_count;
         }
         if (advance > n_segs) advance = n_segs;
         memmove(segs, segs + advance, (n_segs - advance) * sizeof(inline_seg_t));
