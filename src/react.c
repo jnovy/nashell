@@ -26,7 +26,7 @@ static const char *json_get_str(cJSON *obj, const char *key) {
 static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                                const char *mem_index,
                                const char *pinned,
-                               memory_results_t *skills,
+                               memory_results_t *all_memories,
                                const char *query)
 {
     if (!tools->memory || !tools->journal) return;
@@ -77,24 +77,28 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
         cJSON_AddItemToObject(params, "pinned_keys", cJSON_CreateArray());
     }
 
-    /* Skills recalled — keys + brief info */
-    if (skills && skills->count > 0) {
-        cJSON *skill_arr = cJSON_CreateArray();
-        int skill_injected = 0;
-        for (int i = 0; i < skills->count; i++) {
-            if (skills->entries[i].key &&
-                strncmp(skills->entries[i].key, "skill:", 6) == 0) {
-                cJSON *s = cJSON_CreateObject();
-                cJSON_AddStringToObject(s, "key", skills->entries[i].key);
-                cJSON_AddNumberToObject(s, "hits", skills->entries[i].recall_hits);
-                cJSON_AddNumberToObject(s, "misses", skills->entries[i].recall_misses);
-                cJSON_AddItemToArray(skill_arr, s);
-                skill_injected++;
+    /* Per-type memory recall logging — skills, lessons, strategies, anti-patterns */
+    static const char *type_prefixes[] = {
+        "skill:", "lesson:", "strategy:", "anti-pattern:", NULL
+    };
+    static const char *json_keys[] = {
+        "skills_matched", "lessons_matched", "strategies_matched", "antipatterns_matched"
+    };
+    for (int t = 0; type_prefixes[t] != NULL; t++) {
+        cJSON *arr = cJSON_CreateArray();
+        if (all_memories) {
+            for (int i = 0; i < all_memories->count; i++) {
+                if (all_memories->entries[i].key &&
+                    strncmp(all_memories->entries[i].key, type_prefixes[t], strlen(type_prefixes[t])) == 0) {
+                    cJSON *e = cJSON_CreateObject();
+                    cJSON_AddStringToObject(e, "key", all_memories->entries[i].key);
+                    cJSON_AddNumberToObject(e, "hits", all_memories->entries[i].recall_hits);
+                    cJSON_AddNumberToObject(e, "misses", all_memories->entries[i].recall_misses);
+                    cJSON_AddItemToArray(arr, e);
+                }
             }
         }
-        cJSON_AddItemToObject(params, "skills_matched", skill_arr);
-    } else {
-        cJSON_AddItemToObject(params, "skills_matched", cJSON_CreateArray());
+        cJSON_AddItemToObject(params, json_keys[t], arr);
     }
 
     /* Query that triggered the recall */
@@ -689,41 +693,60 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
-        /* Inject relevant skills (procedural memory — loaded on-demand based on query).
-         * FIX B1/D1: Use user_query for semantic recall, then filter by skill: prefix.
+        /* Inject relevant memories by type — semantic recall filtered by prefix.
+         * FIX B1/D1: Use user_query for semantic recall, then filter by type prefix.
          * Previously used "skill:" as the query, which matched ALL skills by type
-         * prefix rather than finding skills semantically relevant to the task. */
+         * prefix rather than finding skills semantically relevant to the task.
+         * Now recalls skills, lessons, strategies, and anti-patterns separately.
+         * Each type has its own limit to control context budget. */
         int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
-        memory_results_t skills = memory_recall(ctx->tools->memory, user_query, max_skills * 3);
-        if (skills.count > 0) {
-            str_t skill_msg = str_new(4096);
-            str_append_cstr(&skill_msg, "[RELEVANT SKILLS]\n");
-            int skill_count = 0;
-            for (int i = 0; i < skills.count && skill_count < max_skills; i++) {
-                if (skills.entries[i].key &&
-                    strncmp(skills.entries[i].key, "skill:", 6) == 0) {
-                    str_appendf(&skill_msg, "\n--- %s ---\n%s\n",
-                                skills.entries[i].key,
-                                skills.entries[i].value ? skills.entries[i].value : "");
-                    /* Track for validation scoring */
-                    tool_track_recalled_key(ctx->tools, skills.entries[i].key);
-                    skill_count++;
-                }
-            }
-            if (skill_msg.len > 20) {  /* more than just the header */
-                llm_chat_add(chat, "user", str_cstr(&skill_msg));
-            }
-            str_free(&skill_msg);
-        }
+        int max_lessons = ctx->tools->cfg ? ctx->tools->cfg->max_lessons_per_query : 2;
+        int max_strategies = ctx->tools->cfg ? ctx->tools->cfg->max_strategies_per_query : 2;
+        int max_antipatterns = ctx->tools->cfg ? ctx->tools->cfg->max_antipatterns_per_query : 1;
+        /* Request enough candidates to cover all types after filtering */
+        int max_candidates = (max_skills + max_lessons + max_strategies + max_antipatterns) * 3;
+        memory_results_t all_memories = memory_recall(ctx->tools->memory, user_query, max_candidates);
+
+        /* Helper macro: inject entries of a given type prefix */
+        // NOLINTNEXTLINE(bugprone-macro-parentheses)
+        #define INJECT_TYPE(label, prefix, plen, max_count, type_count) \
+            do { \
+                if (type_count > 0) { \
+                    str_t msg = str_new(4096); \
+                    str_appendf(&msg, "%s\n", label); \
+                    for (int j = 0; j < all_memories.count; j++) { \
+                        if (all_memories.entries[j].key && \
+                            strncmp(all_memories.entries[j].key, prefix, plen) == 0) { \
+                            str_appendf(&msg, "\n--- %s ---\n%s\n", \
+                                all_memories.entries[j].key, \
+                                all_memories.entries[j].value ? all_memories.entries[j].value : ""); \
+                            tool_track_recalled_key(ctx->tools, all_memories.entries[j].key); \
+                            type_count--; \
+                        } \
+                        if (type_count <= 0) break; \
+                    } \
+                    if (msg.len > strlen(label) + 5) { \
+                        llm_chat_add(chat, "user", str_cstr(&msg)); \
+                    } \
+                    str_free(&msg); \
+                } \
+            } while(0)
+
+        INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, max_skills);
+        INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, max_lessons);
+        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 10, max_strategies, max_strategies);
+        INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, max_antipatterns);
+
+        #undef INJECT_TYPE
 
         /* Log memory context for debugging — before freeing mem_index/pinned */
         log_memory_context(ctx->tools, ctx->tools->react_loop,
                            ctx->tools->step, mem_index, pinned,
-                           &skills, user_query);
+                           &all_memories, user_query);
 
         free(mem_index);
         free(pinned);
-        memory_results_free(&skills);
+        memory_results_free(&all_memories);
     }
 
     /* v5: Scratchpad budget = 15% of context size, no min/max caps.

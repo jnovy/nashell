@@ -48,6 +48,9 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->llm_repeat_threshold <= 0) cfg->llm_repeat_threshold = 100;
     if (cfg->memory_index_max <= 0)     cfg->memory_index_max = 50;
     if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 3;
+    if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
+    if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 2;
+    if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 1;
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
     if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
@@ -199,6 +202,9 @@ config_t *config_load(const char *path) {
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
         cfg->memory_index_max   = toml_int(limits, "memory_index_max", -1);
         cfg->max_skills_per_query = toml_int(limits, "max_skills_per_query", -1);
+        cfg->max_lessons_per_query = toml_int(limits, "max_lessons_per_query", -1);
+        cfg->max_strategies_per_query = toml_int(limits, "max_strategies_per_query", -1);
+        cfg->max_antipatterns_per_query = toml_int(limits, "max_antipatterns_per_query", -1);
         cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
         cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", -1);
         cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
@@ -357,6 +363,9 @@ int config_write_default(const char *path) {
         "# Memory\n"
         "memory_index_max = 50        # max entries shown in memory index injection\n"
         "max_skills_per_query = 3     # max skill memories loaded per query\n"
+        "max_lessons_per_query = 2    # max lesson memories loaded per query\n"
+        "max_strategies_per_query = 2 # max strategy memories loaded per query\n"
+        "max_antipatterns_per_query = 1 # max anti-pattern memories loaded per query\n"
         "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
         "prune_min_score = 0.35       # Bayesian validation score below which memories are prunable\n"
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"

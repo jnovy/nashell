@@ -85,7 +85,10 @@ typedef struct {
     int    scratchpad_max;       /* chars, 0 = auto */
     int    max_react_steps;      /* steps per react loop */
     int    memory_index_max;     /* max entries in memory index injection */
-    int    max_skills_per_query; /* max skills loaded per query */
+    int    max_skills_per_query;     /* max skills loaded per query */
+    int    max_lessons_per_query;    /* max lessons loaded per query */
+    int    max_strategies_per_query; /* max strategies loaded per query */
+    int    max_antipatterns_per_query; /* max anti-patterns loaded per query */
     int    context_eviction_pct; /* context usage % that triggers eviction */
     int    max_reflection_steps; /* max steps in post-task reflection */
     int    file_read_max_inline; /* max chars for file_read content inline */
