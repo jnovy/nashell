@@ -800,9 +800,33 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
     }
 
-    /* v5: No last_exchange injection — cross-loop state is carried via scratchpad.
-     * The scratchpad auto-saves done results and LLM-prunes stale data,
-     * providing full semantic context instead of truncated 500-char snippets. */
+    /* Inject previous result — loaded from session_dir/result.txt.
+     * This survives post-reflection scratchpad pruning (which removes
+     * resolved info including the R<N>_result section). Provides a
+     * reliable cross-loop fallback so user follow-ups can reference
+     * the previous task's output. */
+    {
+        char rpath[4096];
+        snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
+        char *prev_result = slurp_file(rpath, NULL);
+        if (prev_result && strlen(prev_result) > 0) {
+            /* Include the full previous result — no truncation.
+             * The LLM needs the complete output to make informed decisions
+             * about follow-up queries. */
+            size_t rlen = strlen(prev_result);
+            char *prev_msg = malloc(rlen + 128);
+            if (prev_msg) {
+                snprintf(prev_msg, rlen + 128,
+                    "[PREVIOUS RESULT]\n%s\n"
+                    "The above is the result of the previous task. "
+                    "You can reference it for follow-up queries.",
+                    prev_result);
+                llm_chat_add(chat, "user", prev_msg);
+                free(prev_msg);
+            }
+            free(prev_result);
+        }
+    }
 
     /* User query */
     llm_chat_add(chat, "user", user_query);
@@ -1325,9 +1349,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             final_result = result ? strdup(result) : strdup("(no result)");
             checkpoint_remove(ctx);
 
-            /* v5: Auto-save done result to scratchpad for cross-loop inheritance.
-             * The scratchpad is the SOLE mechanism for passing results between
-             * react loops. Section name includes loop number for traceability. */
+            /* Auto-save done result for cross-loop inheritance.
+             * Two mechanisms:
+             * 1. Scratchpad section (R<N>_result) — may be pruned by post-reflection
+             * 2. session_dir/result.txt — survives pruning, loaded as [PREVIOUS RESULT]
+             *    in the next react loop. Provides reliable fallback for user follow-ups. */
             {
                 char sec_name[32];
                 snprintf(sec_name, sizeof(sec_name), "R%d_result",
@@ -1335,6 +1361,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 scratchpad_write(&ctx->tools->scratch, sec_name,
                                  final_result, 1);  /* priority 1 = high */
                 scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+            }
+            {
+                char rpath[4096];
+                snprintf(rpath, sizeof(rpath), "%s/result.txt",
+                         ctx->tools->session_dir);
+                FILE *rf = fopen(rpath, "w");
+                if (rf) {
+                    fputs(final_result, rf);
+                    fclose(rf);
+                }
             }
 
             /* Store result for full audit trail (journal + store/) */
@@ -2203,10 +2239,26 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         llm_chat_free(reflect);
     }
 
-    /* v5: Post-reflection scratchpad pruning — remove solved/stale data so the
+    /* Post-reflection scratchpad pruning — remove solved/stale data so the
      * next react loop starts with a clean, focused scratchpad. Uses an LLM call
-     * to intelligently merge and prune instead of blind accumulation. */
+     * to intelligently merge and prune instead of blind accumulation.
+     *
+     * NOTE: The done result (R<N>_result section) is excluded from pruning.
+     * It is preserved for cross-loop follow-ups via result.txt. The LLM pruning
+     * should only remove task-specific working notes, not the final result. */
     if (final_result && ctx->tools->scratch.count > 0) {
+        /* Extract the R<N>_result section to preserve it across pruning */
+        char result_sec_name[32];
+        snprintf(result_sec_name, sizeof(result_sec_name), "R%d_result",
+                 ctx->tools->react_loop);
+        char *preserved_result = NULL;
+        for (int i = 0; i < ctx->tools->scratch.count; i++) {
+            if (strcmp(ctx->tools->scratch.sections[i].name, result_sec_name) == 0) {
+                preserved_result = strdup(ctx->tools->scratch.sections[i].content);
+                break;
+            }
+        }
+
         char *full_sp = scratchpad_serialize(&ctx->tools->scratch);
 
         if (full_sp && strlen(full_sp) > 0) {
@@ -2219,8 +2271,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "---\n%s\n---\n\n"
                 "Current scratchpad:\n"
                 "---\n%s\n---\n\n"
+                "IMPORTANT: Preserve the section named \"%s\" (the task result). "
+                "Do NOT remove or modify it.\n"
                 "Output the scratchpad with resolved items removed, nothing else changed.\n",
-                final_result, full_sp);
+                final_result, full_sp, result_sec_name);
 
             llm_chat_t *prune_chat = llm_chat_new();
             llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
@@ -2243,18 +2297,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                          ctx->tools->scratch.sections[i].name);
                     }
                 }
+                /* Re-add the preserved result section so it survives pruning */
+                if (preserved_result) {
+                    scratchpad_write(&ctx->tools->scratch, result_sec_name,
+                                     preserved_result, 1);
+                }
                 scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
             }
             free(cleaned);
         }
+        free(preserved_result);
         free(full_sp);
     }
 
-    /* v5: No longer saving last_query/last_result — scratchpad carries all state */
-    if (ctx->last_query) free(ctx->last_query);
-    if (ctx->last_result) free(ctx->last_result);
-    ctx->last_query = NULL;
-    ctx->last_result = NULL;
+    /* Don't free last_query/last_result here — the caller (main.c) manages them.
+     * They are set after each react_run() call and used to inject previous context. */
 
     /* Reset recalled keys for next query (each task is independent) */
     for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
