@@ -383,9 +383,23 @@ static double score_entry_hybrid(const char *key, const char *value,
     double importance = log(1.0 + (double)access_count) / 5.0;
     if (importance > 1.0) importance = 1.0;
 
-    /* Composite: relevance-dominant with importance boost.
-     * Both relevance and importance are now [0, 1], so composite ∈ [0, 1]. */
-    double composite = relevance * 0.8 + importance * 0.2;
+    /* Composite: importance AMPLIFIES relevance, doesn't replace it.
+     * Multiplicative formula ensures zero relevance → zero composite,
+     * regardless of how frequently the memory has been accessed.
+     *
+     * The old additive formula (relevance*0.8 + importance*0.2) created
+     * a floor of ~0.18 for all frequently-used memories, making the
+     * recall_min_score threshold useless — every well-used memory passed
+     * even with zero relevance to the current query.
+     *
+     * With multiplicative: composite = relevance * (1.0 + importance * 0.25)
+     *   - Zero relevance → 0 (regardless of importance)
+     *   - High relevance + high importance → boosted (up to 1.25×)
+     *   - High relevance + zero importance → unchanged
+     *
+     * Inspired by Generative Agents [Park et al., 2023] which uses
+     * recency × importance × relevance (all multiplicative). */
+    double composite = relevance * (1.0 + importance * 0.25);
 
     /* P3: Bayesian validation scoring — data-driven memory quality signal.
      * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean with
