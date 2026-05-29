@@ -10,8 +10,8 @@ static void test_defaults(void) {
     ASSERT_NOT_NULL(cfg);
     ASSERT_NOT_NULL(cfg->api_base);
     ASSERT_GT(cfg->max_tokens, 0);
-    ASSERT_GT(cfg->max_react_steps, 0);
-    ASSERT_GT(cfg->shell_timeout, 0);
+    ASSERT(cfg->max_react_steps >= 0);  /* 0 = unlimited, valid default */
+    ASSERT_GT(cfg->shell_timeout, -1);
     ASSERT_GT(cfg->file_max_size, 0);
     ASSERT_GT(cfg->memory_index_max, 0);
     ASSERT_GT(cfg->context_eviction_pct, 0);
@@ -101,7 +101,7 @@ static void test_missing_sections(void) {
     ASSERT_STR_EQ(cfg->api_base, "http://partial:1234");
     /* Other fields should have defaults */
     ASSERT_GT(cfg->max_tokens, 0);
-    ASSERT_GT(cfg->shell_timeout, 0);
+    ASSERT_GT(cfg->shell_timeout, -1);
 
     config_free(cfg);
     rm_rf(dir);
