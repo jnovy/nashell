@@ -516,17 +516,19 @@ void ui_state_down(ui_state_t *ui) {
     if (!ui) return;
     if (ui->focus == FOCUS_JOURNAL && ui->doc) {
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int max_scroll = ui->doc->total_lines - vis;
+        if (max_scroll < 0) max_scroll = 0;
         int first_vis, last_vis;
         int n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
                                         &first_vis, &last_vis);
 
         if (n_vis == 0) {
             /* No links on screen — pure scroll mode */
-            if (ui->scroll_y < ui->doc->total_lines - 1)
+            if (ui->scroll_y < max_scroll)
                 ui->scroll_y++;
         } else if (ui->cursor_link >= last_vis) {
             /* At or below bottommost visible link — scroll down */
-            if (ui->scroll_y < ui->doc->total_lines - 1)
+            if (ui->scroll_y < max_scroll)
                 ui->scroll_y++;
             /* Re-find visible links after scroll and snap cursor */
             n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
@@ -677,6 +679,14 @@ void ui_state_page_down(ui_state_t *ui) {
     if (!ui) return;
     int page = (ui->visible_rows > 3) ? (ui->visible_rows / 3) : 3;
     ui->scroll_y += page;
+
+    /* Clamp: don't scroll past the end of the rendered document */
+    if (ui->doc) {
+        int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+        int max_scroll = ui->doc->total_lines - vis;
+        if (max_scroll < 0) max_scroll = 0;
+        if (ui->scroll_y > max_scroll) ui->scroll_y = max_scroll;
+    }
 
     /* Snap cursor to nearest visible link at top of viewport */
     if (ui->doc && ui->doc->link_count > 0) {
