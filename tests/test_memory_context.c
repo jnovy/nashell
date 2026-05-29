@@ -33,15 +33,16 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
-    const char *query = argv[1];
+    const char *query = NULL;
     const char *memory_dir = NULL;
     double threshold = 0.05;
     int max_results = 20;
     int no_embeddings = 0;
     int skills_only = 0;
 
-    /* Parse optional arguments */
-    for (int i = 2; i < argc; i++) {
+    /* Parse ALL arguments — options can appear before or after the query.
+     * The query is the first non-option positional argument. */
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--memory-dir") == 0 && i + 1 < argc) {
             memory_dir = argv[++i];
         } else if (strcmp(argv[i], "--threshold") == 0 && i + 1 < argc) {
@@ -52,7 +53,17 @@ int main(int argc, char *argv[]) {
             no_embeddings = 1;
         } else if (strcmp(argv[i], "--skills-only") == 0) {
             skills_only = 1;
+        } else if (strcmp(argv[i], "--help") == 0) {
+            printf("Usage: test_memory_context [OPTIONS] \"query\"\n");
+            return 0;
+        } else if (!query) {
+            query = argv[i];  /* first non-option arg is the query */
         }
+    }
+
+    if (!query) {
+        printf("test_memory_context: no query specified (pass --help for usage)\n");
+        return 0;
     }
 
     /* Determine memory directory */
