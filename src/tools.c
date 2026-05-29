@@ -776,6 +776,79 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── glob_search ──────────────────────────────────────── */
 
+/* Parse glob pattern: extracts directory path and glob name.
+ * Patterns supported: bare globs, dir/glob, doublestar globs, exact paths
+ * Outputs: root (search directory), name (glob pattern), recursive/exact flags
+ */
+
+static void parse_glob_pattern(const char *pattern,
+                               char *root, size_t root_sz,
+                               char *name, size_t name_sz,
+                               int *recursive, int *exact,
+                               char *exact_path, size_t exact_path_sz) {
+    (void)root_sz;  /* used for bounds in strncpy calls */
+    const char *p = pattern;
+    int has_doublestar = 0;
+    *recursive = 0;
+    *exact = 0;
+    root[0] = '.';
+    root[1] = '\0';
+    name[0] = '\0';
+    exact_path[0] = '\0';
+
+    /* Strip leading ./ */
+    if (p[0] == '.' && p[1] == '/')
+        p += 2;
+
+    /* Handle doublestar/ prefix (recursive from root) */
+    if (p[0] == '*' && p[1] == '*' && p[2] == '/') {
+        has_doublestar = 1;
+        *recursive = 1;
+        p += 3;
+    }
+
+    /* Find the last '/' to separate directory from basename */
+    const char *last_slash = strrchr(p, '/');
+
+    if (last_slash != NULL) {
+        /* Check if the part after last slash contains glob chars */
+        const char *after_slash = last_slash + 1;
+        int glob_after = (strchr(after_slash, '*') != NULL
+                        || strchr(after_slash, '?') != NULL
+                        || strchr(after_slash, '[') != NULL);
+
+        if (glob_after) {
+            /* Directory prefix with glob basename */
+            size_t dir_len = (size_t)(last_slash - p);
+
+            /* Check if directory part ends with doublestar/ (recursive within dir) */
+            if (dir_len >= 3 && last_slash[-1] == '*'
+                && last_slash[-2] == '*' && last_slash[-3] == '/') {
+                dir_len -= 3;  /* strip the doublestar/ from directory part */
+                *recursive = 1;
+            }
+
+            if (dir_len > 0) {
+                strncpy(root, p, dir_len);
+                root[dir_len] = '\0';
+            }
+            strncpy(name, after_slash, name_sz - 1);
+            name[name_sz - 1] = '\0';
+        } else {
+            /* Exact file path, e.g. src/main.c */
+            *exact = 1;
+            strncpy(exact_path, p, exact_path_sz - 1);
+            exact_path[exact_path_sz - 1] = '\0';
+        }
+    } else {
+        /* No slash — bare glob pattern, search recursively from root */
+        *recursive = 1;
+        strncpy(name, p, name_sz - 1);
+        name[name_sz - 1] = '\0';
+    }
+    (void)has_doublestar;
+}
+
 static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
     if (!pattern_j || !pattern_j->valuestring)
@@ -783,19 +856,53 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
 
     const char *pattern = pattern_j->valuestring;
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
-    const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
+    const char *search_path = path_j && path_j->valuestring ? path_j->valuestring : ".";
 
-    /* Use find with -name for glob matching.
-     * Excludes .git, node_modules, __pycache__, .o files by default. */
+    /* Parse the glob pattern into components */
+    char root[1024], name[1024], exact_path[1024];
+    int recursive, exact;
+    parse_glob_pattern(pattern, root, sizeof(root), name, sizeof(name),
+                       &recursive, &exact, exact_path, sizeof(exact_path));
+
+    /* Build the find command based on parsed components */
     char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-        "find %s -type f -name '%s' "
-        "! -path '*/.git/*' "
-        "! -path '*/node_modules/*' "
-        "! -path '*/__pycache__/*' "
-        "! -name '*.o' "
-        "2>/dev/null | sort | head -200",
-        path, pattern);
+
+    if (exact) {
+        /* Exact file path — check if it exists */
+        snprintf(cmd, sizeof(cmd),
+            "test -f '%s/%s' && echo '%s/%s' || true",
+            search_path, exact_path, search_path, exact_path);
+    } else if (strcmp(root, ".") == 0 && recursive) {
+        /* Bare glob pattern — search recursively from search_path */
+        snprintf(cmd, sizeof(cmd),
+            "find '%s' -type f -name '%s' "
+            "! -path '*/.git/*' "
+            "! -path '*/node_modules/*' "
+            "! -path '*/__pycache__/*' "
+            "! -name '*.o' "
+            "2>/dev/null | sort | head -200",
+            search_path, name);
+    } else if (recursive) {
+        /* Directory prefix with recursive glob */
+        snprintf(cmd, sizeof(cmd),
+            "find '%s/%s' -type f -name '%s' "
+            "! -path '*/.git/*' "
+            "! -path '*/node_modules/*' "
+            "! -path '*/__pycache__/*' "
+            "! -name '*.o' "
+            "2>/dev/null | sort | head -200",
+            search_path, root, name);
+    } else {
+        /* Directory prefix with non-recursive glob */
+        snprintf(cmd, sizeof(cmd),
+            "find '%s/%s' -maxdepth 1 -type f -name '%s' "
+            "! -path '*/.git/*' "
+            "! -path '*/node_modules/*' "
+            "! -path '*/__pycache__/*' "
+            "! -name '*.o' "
+            "2>/dev/null | sort | head -200",
+            search_path, root, name);
+    }
 
     str_t out = str_new(4096);
     FILE *fp = popen(cmd, "r");
@@ -812,8 +919,8 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "pattern", pattern);
-    if (strcmp(path, ".") != 0)
-        cJSON_AddStringToObject(meta, "path", path);
+    if (strcmp(search_path, ".") != 0)
+        cJSON_AddStringToObject(meta, "path", search_path);
     cJSON_AddNumberToObject(meta, "matches", matches);
     cJSON_AddStringToObject(meta, "ref", alias);
 
