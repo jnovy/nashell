@@ -292,7 +292,7 @@ int config_write_default(const char *path) {
         "# model_id = \"claude-opus-4-6\"       # model identifier for API\n"
         "# api_key_env = \"OPENAI_API_KEY\"     # env var with API key\n"
         "# project_id = \"my-gcp-project\"      # Vertex AI project\n"
-        "# region = \"us-east5\"                # Vertex AI region\n"
+        "# region = \"global\"                # Vertex AI region\n"
         "# context_size = 200000              # context window (0 = auto-detect)\n"
         "# chars_per_token = 3.5              # chars per token ratio\n"
         "# caching = false                    # prompt caching (Anthropic)\n"

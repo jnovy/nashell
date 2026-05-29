@@ -480,7 +480,7 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
 
 static const char *anthropic_get_endpoint(provider_t *p) {
     if (p->type == PROVIDER_VERTEX) {
-        const char *region = p->cfg.region ? p->cfg.region : "us-east5";
+        const char *region = p->cfg.region ? p->cfg.region : "global";
         int is_global = (strcmp(region, "global") == 0);
         if (is_global) {
             return provider_cache_endpoint(p,
