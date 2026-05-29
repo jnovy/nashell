@@ -13,6 +13,9 @@
 #define C_FOCUS     6
 #define C_STREAM    7
 
+/* ── Buffer size for line copying ── */
+#define LINE_BUF_SIZE 4096
+
 /* ── Segment-based inline formatting ── */
 
 /* Maximum segments per line (generous limit for nested formatting) */
@@ -29,123 +32,15 @@ typedef struct {
 static int utf8_display_len(const char *s, int max_bytes);
 static int render_segment(WINDOW *win, int row, int col, const char *text,
                           int len, int max_cols);
+static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs);
 
-/* Parse inline formatting into segments.
- * Handles **bold**, *italic*, `code` markers.
- * Returns number of segments written (0 on error).
- * Segments are coalesced: consecutive segments with same attr are merged. */
-static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs) {
-    int n = 0;
-    const char *p = text;
-    const char *end = text + text_len;
+/* ── Helpers (Items 3-9) ── */
 
-    while (p < end && n < max_segs) {
-        int attr = 0;
-
-        if (p + 1 < end && p[0] == '*' && p[1] == '*') {
-            /* Bold */
-            attr = A_BOLD;
-            p += 2;
-            const char *start = p;
-            while (p + 1 < end && !(p[0] == '*' && p[1] == '*')) p++;
-            if (p + 1 < end && p[0] == '*' && p[1] == '*') {
-                segs[n].text = start;
-                segs[n].len = (int)(p - start);
-                segs[n].attr = attr;
-                n++;
-                p += 2;
-            } else {
-                /* No closing ** — render as literal */
-                if (n > 0 && segs[n-1].attr == 0) {
-                    segs[n-1].len += 2 + (int)(p - start);
-                } else {
-                    if (n < max_segs) {
-                        segs[n].text = start - 2;
-                        segs[n].len = 2 + (int)(p - start);
-                        segs[n].attr = 0;
-                        n++;
-                    }
-                }
-            }
-        } else if (p < end && *p == '*') {
-            /* Italic */
-            attr = A_UNDERLINE;
-            p++;
-            const char *start = p;
-            while (p < end && *p != '*') p++;
-            if (p < end && *p == '*') {
-                segs[n].text = start;
-                segs[n].len = (int)(p - start);
-                segs[n].attr = attr;
-                n++;
-                p++;
-            } else {
-                /* No closing * — render as literal */
-                if (n > 0 && segs[n-1].attr == 0) {
-                    segs[n-1].len += 1 + (int)(p - start);
-                } else {
-                    if (n < max_segs) {
-                        segs[n].text = start - 1;
-                        segs[n].len = 1 + (int)(p - start);
-                        segs[n].attr = 0;
-                        n++;
-                    }
-                }
-            }
-        } else if (p < end && *p == '`') {
-            /* Inline code */
-            attr = COLOR_PAIR(C_STREAM);
-            p++;
-            const char *start = p;
-            while (p < end && *p != '`') p++;
-            if (p < end && *p == '`') {
-                segs[n].text = start;
-                segs[n].len = (int)(p - start);
-                segs[n].attr = attr;
-                n++;
-                p++;
-            } else {
-                /* No closing ` — render as literal */
-                if (n > 0 && segs[n-1].attr == 0) {
-                    segs[n-1].len += 1 + (int)(p - start);
-                } else {
-                    if (n < max_segs) {
-                        segs[n].text = start - 1;
-                        segs[n].len = 1 + (int)(p - start);
-                        segs[n].attr = 0;
-                        n++;
-                    }
-                }
-            }
-        } else {
-            /* Regular text: collect until next formatting marker */
-            const char *start = p;
-            while (p < end) {
-                if (*p == '`') break;
-                if (*p == '*' && p + 1 < end && p[1] == '*') break;
-                if (*p == '*') break;
-                p++;
-            }
-            int seg_len = (int)(p - start);
-            if (seg_len > 0) {
-                segs[n].text = start;
-                segs[n].len = seg_len;
-                segs[n].attr = 0;
-                n++;
-            }
-        }
-    }
-    return n;
-}
-
-/* Count display columns for a segment (handles UTF-8) */
+/* Count display columns for a segment (delegates to utf8_display_len).
+ * Item 3: eliminated duplicate UTF-8 column counting — seg_display_cols
+ * and utf8_display_len were 100% identical. */
 static int seg_display_cols(const char *text, int len) {
-    int cols = 0;
-    for (int i = 0; i < len && text[i]; i++) {
-        if ((text[i] & 0xC0) != 0x80)
-            cols++;
-    }
-    return cols;
+    return utf8_display_len(text, len);
 }
 
 /* Get the byte offset within a segment that corresponds to a given column offset.
@@ -159,6 +54,163 @@ static int seg_col_to_byte(const char *text, int seg_len, int col_offset) {
         }
     }
     return seg_len;
+}
+
+/* Apply a new attribute to all segments: OR into existing, set on zero.
+ * Item 5: extracted from heading and react-step branches. */
+static void apply_attr_to_segs(inline_seg_t *segs, int n, int new_attr) {
+    for (int i = 0; i < n; i++) {
+        if (segs[i].attr) {
+            segs[i].attr |= new_attr;
+        } else {
+            segs[i].attr = new_attr;
+        }
+    }
+}
+
+/* Copy a source line to a fixed-size buffer (NUL-terminated).
+ * Item 6: extracted from main loop and table row loop.
+ * Item 8: uses LINE_BUF_SIZE constant. */
+static void copy_to_buf(char *buf, size_t buf_size, const char *src, int len) {
+    int copy_len = len < (int)buf_size - 1 ? len : (int)buf_size - 1;
+    memcpy(buf, src, copy_len);
+    buf[copy_len] = '\0';
+}
+
+/* Find the last space in [start, limit) that is at least min_pos.
+ * Returns the byte index of the space, or -1 if none found.
+ * Item 7: shared word-boundary helper for code block wrapping and render_segs_wrapped. */
+static int find_word_boundary(const char *text, int limit, int min_pos) {
+    for (int k = limit - 1; k > min_pos; k--) {
+        if (text[k] == ' ') return k;
+    }
+    return -1;
+}
+
+/* Count the number of wrapped lines a text block will consume.
+ * Item 4: extracted from blockquote and regular text off-screen counting. */
+static int count_wrapped_lines(const char *text, int text_len, int usable_width) {
+    if (text_len <= 0) return 1;
+    inline_seg_t segs[MAX_INLINE_SEGS];
+    int n = parse_inline(text, text_len, segs, MAX_INLINE_SEGS);
+    int total_cols = 0;
+    for (int i = 0; i < n; i++)
+        total_cols += seg_display_cols(segs[i].text, segs[i].len);
+    if (total_cols > usable_width) {
+        return (total_cols + usable_width - 1) / usable_width;
+    }
+    return 1;
+}
+
+/* Advance render_line by (lines_consumed - 1).
+ * Item 9: makes the scattered render_line++ pattern explicit.
+ * Each branch computes lines_consumed and calls this; the universal
+ * render_line++ at the bottom of the main loop adds the final +1. */
+static void advance_render_line(int *render_line, int lines_consumed) {
+    *render_line += lines_consumed - 1;
+}
+
+/* ── Inline formatting engine ── */
+
+/* Try to parse a formatted marker (**bold, *italic, `code`).
+ * Item 1: eliminates structural duplication in parse_inline().
+ *
+ * Parameters:
+ *   p, end: current parse position and end of text
+ *   marker, mlen: opening/closing marker string and its length
+ *   attr: attribute to apply if marker is found
+ *   segs, n: output segment array and count (passed by pointer for mutation)
+ *   max_segs: capacity of segs array
+ *
+ * Returns: 1 if marker was consumed (success or failure), 0 if not a marker.
+ * On success with closing marker: emits one formatted segment, advances p past closing.
+ * On success without closing marker: emits literal text (merged or new), advances p to end.
+ * On failure: p is unchanged, no segment emitted. */
+static int try_parse_marker(const char **pp, const char *end,
+                            const char *marker, int mlen, int attr,
+                            inline_seg_t *segs, int *n, int max_segs) {
+    const char *p = *pp;
+    /* Check for opening marker */
+    if (p + mlen > end) return 0;
+    int is_marker = 1;
+    for (int i = 0; i < mlen; i++) {
+        if (p[i] != marker[i]) { is_marker = 0; break; }
+    }
+    if (!is_marker) return 0;
+
+    /* Consume opening marker */
+    p += mlen;
+    const char *start = p;
+
+    /* Scan for closing marker */
+    while (p + mlen <= end) {
+        int found = 1;
+        for (int i = 0; i < mlen; i++) {
+            if (p[i] != marker[i]) { found = 0; break; }
+        }
+        if (found) break;
+        p++;
+    }
+
+    if (p + mlen <= end) {
+        /* Found closing marker — emit formatted segment */
+        segs[*n].text = start;
+        segs[*n].len = (int)(p - start);
+        segs[*n].attr = attr;
+        (*n)++;
+        p += mlen;
+    } else {
+        /* No closing marker — render as literal */
+        if (*n > 0 && segs[*n - 1].attr == 0) {
+            segs[*n - 1].len += mlen + (int)(p - start);
+        } else {
+            if (*n < max_segs) {
+                segs[*n].text = start - mlen;
+                segs[*n].len = mlen + (int)(p - start);
+                segs[*n].attr = 0;
+                (*n)++;
+            }
+        }
+    }
+    *pp = p;
+    return 1;
+}
+
+/* Parse inline formatting into segments.
+ * Handles **bold**, *italic*, `code` markers.
+ * Returns number of segments written (0 on error).
+ * Segments are coalesced: consecutive segments with same attr are merged. */
+static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs) {
+    int n = 0;
+    const char *p = text;
+    const char *end = text + text_len;
+
+    while (p < end && n < max_segs) {
+        /* Item 1: use try_parse_marker for all three formatting types */
+        if (try_parse_marker(&p, end, "**", 2, A_BOLD, segs, &n, max_segs))
+            continue;
+        if (try_parse_marker(&p, end, "*", 1, A_UNDERLINE, segs, &n, max_segs))
+            continue;
+        if (try_parse_marker(&p, end, "`", 1, COLOR_PAIR(C_STREAM), segs, &n, max_segs))
+            continue;
+
+        /* Regular text: collect until next formatting marker */
+        const char *start = p;
+        while (p < end) {
+            if (*p == '`') break;
+            if (*p == '*' && p + 1 < end && p[1] == '*') break;
+            if (*p == '*') break;
+            p++;
+        }
+        int seg_len = (int)(p - start);
+        if (seg_len > 0) {
+            segs[n].text = start;
+            segs[n].len = seg_len;
+            segs[n].attr = 0;
+            n++;
+        }
+    }
+    return n;
 }
 
 /* Render all segments on a single display line, starting at (row, col).
@@ -231,19 +283,9 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
                 if (remaining > 0 && segs[i].len > 0) {
                     /* Find last space within the segment that fits */
                     int split_at = seg_col_to_byte(segs[i].text, segs[i].len, remaining);
-                    /* Try to find a word boundary before split_at */
-                    int last_space = -1;
-                    int cur_col = 0;
-                    for (int b = 0; b < split_at && segs[i].text[b]; b++) {
-                        if ((segs[i].text[b] & 0xC0) != 0x80) {
-                            if (segs[i].text[b] == ' ') {
-                                last_space = b;
-                            }
-                            cur_col++;
-                        }
-                    }
-                    /* Use word boundary if found and it's not too early */
+                    /* Item 7: use shared word-boundary helper */
                     int min_split = (usable_width / 4 < split_at) ? usable_width / 4 : 1;
+                    int last_space = find_word_boundary(segs[i].text, split_at, min_split);
                     if (last_space >= min_split) {
                         partial_seg = i;
                         partial_byte = last_space + 1;
@@ -437,8 +479,177 @@ static int render_segment(WINDOW *win, int row, int col, const char *text,
     return display_cols;
 }
 
-/* ── Main render function ── */
+/* ── Table rendering (Item 2) ── */
 
+/* Render a block of consecutive table rows with consistent column widths.
+ * Item 2: extracted from md_render() to eliminate ~120 lines of inline code.
+ *
+ * Parameters:
+ *   win: ncurses window
+ *   src: pointer to first '|' line of the table
+ *   num_rows: number of table rows (pre-scanned)
+ *   scroll_y: vertical scroll offset
+ *   scroll_x: horizontal scroll offset (only used for tables)
+ *   rows: window height
+ *   cols: window width
+ *   render_line: in/out — starts at current render line, ends after last table row
+ *   src_line: in/out — source line tracking
+ *   out_src: output — updated to point past last table row (for main loop)
+ *
+ * Returns: number of render lines consumed by the table. */
+static int render_table(WINDOW *win, const char *src, int num_rows,
+                        int scroll_y, int scroll_x, int rows, int cols,
+                        int *render_line, int *src_line, const char **out_src) {
+    #define MAX_TABLE_COLS 20
+
+    /* Pass 1: scan ALL consecutive | lines to find max column widths */
+    int col_widths[MAX_TABLE_COLS] = {0};
+    int num_cols = 0;
+    {
+        const char *scan = src;
+        while (scan && *scan == '|') {
+            const char *sp = scan + 1;
+            int ci = 0;
+            while (*sp && *sp != '\n') {
+                if (*sp == '|') { ci++; sp++; continue; }
+                const char *cs = sp;
+                while (*sp && *sp != '|' && *sp != '\n') sp++;
+                const char *ts = cs, *te = sp;
+                while (ts < te && *ts == ' ') ts++;
+                while (te > ts && *(te-1) == ' ') te--;
+                int w = (int)(te - ts);
+                int is_dash = 1;
+                for (const char *dp = ts; dp < te; dp++)
+                    if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
+                if (!is_dash && ci < MAX_TABLE_COLS) {
+                    if (w > col_widths[ci]) col_widths[ci] = w;
+                    if (ci + 1 > num_cols) num_cols = ci + 1;
+                }
+                if (*sp == '|') { ci++; sp++; }
+            }
+            const char *nl = strchr(scan, '\n');
+            scan = nl ? nl + 1 : NULL;
+            if (!scan || *scan != '|') break;
+        }
+    }
+
+    /* Pass 2: render ALL table rows with consistent col_widths.
+     * Tables use horizontal scroll (scroll_x) instead of wrapping. */
+    int tbl_sx = scroll_x;
+    const char *trow = src;
+    for (int tr = 0; tr < num_rows && trow; tr++) {
+        const char *trow_eol = strchr(trow, '\n');
+        int trow_len = trow_eol ? (int)(trow_eol - trow) : (int)strlen(trow);
+
+        /* Item 6+8: use copy_to_buf with LINE_BUF_SIZE */
+        char tbuf[LINE_BUF_SIZE];
+        copy_to_buf(tbuf, sizeof(tbuf), trow, trow_len);
+
+        int vis_line = *render_line - scroll_y;
+        int visible = (vis_line >= 0 && vis_line < rows);
+
+        if (visible) {
+            /* Check if separator */
+            int is_sep = 1;
+            for (const char *sp = tbuf + 1; *sp; sp++)
+                if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
+                    { is_sep = 0; break; }
+
+            if (is_sep) {
+                int x = -tbl_sx;
+                wattron(win, COLOR_PAIR(C_DIM));
+                for (int ci = 0; ci < num_cols; ci++) {
+                    if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                    x++;
+                    int w = col_widths[ci] + 2;
+                    for (int k = 0; k < w; k++) {
+                        if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
+                        x++;
+                    }
+                }
+                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                wattroff(win, COLOR_PAIR(C_DIM));
+            } else {
+                /* Check if header (next row is separator) */
+                int is_header = 0;
+                const char *nxt = trow_eol ? trow_eol + 1 : NULL;
+                if (nxt && *nxt == '|') {
+                    int ns = 1;
+                    for (const char *np = nxt+1; *np && *np != '\n'; np++)
+                        if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
+                            { ns = 0; break; }
+                    if (ns) is_header = 1;
+                }
+
+                int x = -tbl_sx;
+                const char *cp = tbuf + 1;
+                int ci = 0;
+                while (*cp && *cp != '\n') {
+                    if (*cp == '|') { cp++; ci++; continue; }
+                    if (x >= 0 && x < cols) {
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        mvwaddch(win, vis_line, x, ACS_VLINE);
+                        wattroff(win, COLOR_PAIR(C_DIM));
+                    }
+                    x++;
+                    const char *cs = cp;
+                    while (*cp && *cp != '|' && *cp != '\n') cp++;
+                    const char *ts = cs, *te = cp;
+                    while (ts < te && *ts == ' ') ts++;
+                    while (te > ts && *(te-1) == ' ') te--;
+                    int tlen = (int)(te - ts);
+                    int pw = (ci < num_cols) ? col_widths[ci] : tlen;
+                    if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
+                    x++;
+                    if (is_header) wattron(win, A_BOLD);
+                    if (tlen > 0) {
+                        for (int ti = 0; ti < tlen; ti++) {
+                            if (x >= 0 && x < cols)
+                                mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
+                            x++;
+                        }
+                    }
+                    if (is_header) wattroff(win, A_BOLD);
+                    int tx = x + (pw - tlen) + 1;
+                    while (x < tx) {
+                        if (x >= 0 && x < cols)
+                            mvwaddch(win, vis_line, x, ' ');
+                        x++;
+                    }
+                    if (*cp == '|') { ci++; cp++; }
+                }
+                if (x >= 0 && x < cols) {
+                    wattron(win, COLOR_PAIR(C_DIM));
+                    mvwaddch(win, vis_line, x, ACS_VLINE);
+                    wattroff(win, COLOR_PAIR(C_DIM));
+                }
+            }
+        }
+
+        /* Advance to next table row */
+        if (tr < num_rows - 1) {
+            (*render_line)++;
+            (*src_line)++;
+            trow = trow_eol ? trow_eol + 1 : NULL;
+        } else {
+            /* Last row — let the main loop advance normally */
+            *out_src = trow;
+        }
+    }
+
+    return num_rows;
+}
+
+/* ── Main render function ── */
+/*
+ * Render document to an ncurses window.
+ * scroll_y: vertical scroll offset (in rendered lines)
+ * scroll_x: horizontal scroll offset (only used for table rendering;
+ *           all other line types ignore horizontal scroll)
+ * cursor_link: index into doc->links[] for the selected hyperlink (-1 = none)
+ * focus: 1 = this pane has focus (cursor visible), 0 = no focus
+ * Returns: total number of rendered lines
+ */
 int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int cursor_link, int focus) {
     if (!win || !doc || !doc->source) return 0;
@@ -459,11 +670,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         const char *eol = strchr(src, '\n');
         int line_len = eol ? (int)(eol - src) : (int)strlen(src);
 
-        /* Copy line to buffer for processing */
-        char line_buf[4096];
-        int copy_len = line_len < (int)sizeof(line_buf) - 1 ? line_len : (int)sizeof(line_buf) - 1;
-        memcpy(line_buf, src, copy_len);
-        line_buf[copy_len] = '\0';
+        /* Item 6+8: use copy_to_buf with LINE_BUF_SIZE */
+        char line_buf[LINE_BUF_SIZE];
+        copy_to_buf(line_buf, sizeof(line_buf), src, line_len);
 
         /* Code block fence toggle — handle BEFORE visibility check
          * so in_code_block state is always correct, and skip render_line++
@@ -490,16 +699,16 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             /* Code block content: wrap at cols-2, render in cyan */
             int usable = cols - 2;
             if (usable < 10) usable = 10;
-            int remaining = copy_len;
+            int remaining = (int)strlen(line_buf);
             const char *wp = line_buf;
             int first = 1;
+            int lines_consumed = 0;
             while (remaining > 0) {
                 int chunk = remaining > usable ? usable : remaining;
-                /* Word-boundary wrapping for code blocks */
+                /* Item 7: use shared word-boundary helper */
                 if (chunk < remaining) {
-                    int last_space = -1;
-                    for (int k = chunk - 1; k > usable / 4; k--)
-                        if (wp[k] == ' ') { last_space = k; break; }
+                    int min_pos = usable / 4;
+                    int last_space = find_word_boundary(wp, chunk, min_pos);
                     if (last_space > 0) chunk = last_space + 1;
                 }
                 int vl = render_line - scroll_y;
@@ -510,11 +719,11 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 }
                 wp += chunk;
                 remaining -= chunk;
-                if (remaining > 0) {
-                    render_line++;
-                    first = 0;
-                }
+                lines_consumed++;
             }
+            /* Item 9: explicit line advancement */
+            if (lines_consumed > 1)
+                advance_render_line(&render_line, lines_consumed);
 
         } else if (is_link_line) {
             /* Hyperlink line */
@@ -560,14 +769,8 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 inline_seg_t segs[MAX_INLINE_SEGS];
                 int n = parse_inline(htext, hlen, segs, MAX_INLINE_SEGS);
 
-                /* Apply heading attr to all segments */
-                for (int i = 0; i < n; i++) {
-                    if (segs[i].attr) {
-                        segs[i].attr |= COLOR_PAIR(pair) | A_BOLD;
-                    } else {
-                        segs[i].attr = COLOR_PAIR(pair) | A_BOLD;
-                    }
-                }
+                /* Item 5: use apply_attr_to_segs */
+                apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
                 render_segs_on_line(win, vis_line, 0, segs, n, cols);
             }
 
@@ -584,26 +787,20 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int usable = cols - 2;
             if (usable < 10) usable = 10;
             const char *bq_text = line_buf + 2;
-            int bq_len = copy_len - 2;
-            if (bq_len < 0) bq_len = 0;
+            int bq_len = (int)strlen(bq_text);
 
             int lines_consumed = 1;
-            if (visible && bq_len > 0) {
-                /* Draw the first │ */
-                wattron(win, COLOR_PAIR(C_DIM));
-                mvwaddch(win, vis_line, 0, ACS_VLINE);
-                wattroff(win, COLOR_PAIR(C_DIM));
+            if (bq_len > 0) {
+                if (visible) {
+                    /* Draw the first │ */
+                    wattron(win, COLOR_PAIR(C_DIM));
+                    mvwaddch(win, vis_line, 0, ACS_VLINE);
+                    wattroff(win, COLOR_PAIR(C_DIM));
 
-                lines_consumed = render_inline_wrapped(win, vis_line, 2, bq_text, bq_len, usable);
-            } else if (bq_len > 0) {
-                /* Off-screen: still compute wrapping for line counting */
-                inline_seg_t segs[MAX_INLINE_SEGS];
-                int n = parse_inline(bq_text, bq_len, segs, MAX_INLINE_SEGS);
-                int total_cols = 0;
-                for (int i = 0; i < n; i++)
-                    total_cols += seg_display_cols(segs[i].text, segs[i].len);
-                if (total_cols > usable) {
-                    lines_consumed = (total_cols + usable - 1) / usable;
+                    lines_consumed = render_inline_wrapped(win, vis_line, 2, bq_text, bq_len, usable);
+                } else {
+                    /* Item 4: use count_wrapped_lines for off-screen counting */
+                    lines_consumed = count_wrapped_lines(bq_text, bq_len, usable);
                 }
             }
 
@@ -617,8 +814,8 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 }
             }
 
-            /* Advance render_line for wrapped lines (but we already counted the first) */
-            render_line += lines_consumed - 1;
+            /* Item 9: explicit line advancement */
+            advance_render_line(&render_line, lines_consumed);
 
         } else if (strncmp(line_buf, "  + ", 4) == 0 ||
                    strncmp(line_buf, "  x ", 4) == 0) {
@@ -629,48 +826,19 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 
                 /* Parse inline formatting */
                 inline_seg_t segs[MAX_INLINE_SEGS];
-                int n = parse_inline(line_buf, copy_len, segs, MAX_INLINE_SEGS);
-                for (int i = 0; i < n; i++) {
-                    if (segs[i].attr) {
-                        segs[i].attr |= COLOR_PAIR(pair);
-                    } else {
-                        segs[i].attr = COLOR_PAIR(pair);
-                    }
-                }
+                int n = parse_inline(line_buf, (int)strlen(line_buf), segs, MAX_INLINE_SEGS);
+                /* Item 5: use apply_attr_to_segs */
+                apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
                 render_segs_on_line(win, vis_line, 0, segs, n, cols);
             }
 
         } else if (line_buf[0] == '|') {
-            /* Table block — render ALL consecutive | rows at once
-             * so column widths are consistent across the entire table. */
-            #define MAX_TABLE_COLS 20
-
-            /* Pass 1: scan ALL consecutive | lines to find max column widths */
-            int col_widths[MAX_TABLE_COLS] = {0};
-            int num_cols = 0;
+            /* Table block — Item 2: delegate to render_table() */
+            /* Pre-scan to count consecutive | rows */
             int table_rows = 0;
             {
                 const char *scan = src;
                 while (scan && *scan == '|') {
-                    const char *sp = scan + 1;
-                    int ci = 0;
-                    while (*sp && *sp != '\n') {
-                        if (*sp == '|') { ci++; sp++; continue; }
-                        const char *cs = sp;
-                        while (*sp && *sp != '|' && *sp != '\n') sp++;
-                        const char *ts = cs, *te = sp;
-                        while (ts < te && *ts == ' ') ts++;
-                        while (te > ts && *(te-1) == ' ') te--;
-                        int w = (int)(te - ts);
-                        int is_dash = 1;
-                        for (const char *dp = ts; dp < te; dp++)
-                            if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
-                        if (!is_dash && ci < MAX_TABLE_COLS) {
-                            if (w > col_widths[ci]) col_widths[ci] = w;
-                            if (ci + 1 > num_cols) num_cols = ci + 1;
-                        }
-                        if (*sp == '|') { ci++; sp++; }
-                    }
                     table_rows++;
                     const char *nl = strchr(scan, '\n');
                     scan = nl ? nl + 1 : NULL;
@@ -678,130 +846,33 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 }
             }
 
-            /* Pass 2: render ALL table rows with consistent col_widths.
-             * Tables use horizontal scroll (scroll_x) instead of wrapping. */
-            int tbl_sx = scroll_x;
-            const char *trow = src;
-            for (int tr = 0; tr < table_rows && trow; tr++) {
-                const char *trow_eol = strchr(trow, '\n');
-                int trow_len = trow_eol ? (int)(trow_eol - trow) : (int)strlen(trow);
-                char tbuf[4096];
-                int tcopy = trow_len < (int)sizeof(tbuf)-1 ? trow_len : (int)sizeof(tbuf)-1;
-                memcpy(tbuf, trow, tcopy);
-                tbuf[tcopy] = '\0';
-
-                vis_line = render_line - scroll_y;
-                visible = (vis_line >= 0 && vis_line < rows);
-
-                if (visible) {
-                    /* Check if separator */
-                    int is_sep = 1;
-                    for (const char *sp = tbuf + 1; *sp; sp++)
-                        if (*sp != '-' && *sp != '|' && *sp != ' ' && *sp != ':')
-                            { is_sep = 0; break; }
-
-                    if (is_sep) {
-                        int x = -tbl_sx;
-                        wattron(win, COLOR_PAIR(C_DIM));
-                        for (int ci = 0; ci < num_cols; ci++) {
-                            if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
-                            x++;
-                            int w = col_widths[ci] + 2;
-                            for (int k = 0; k < w; k++) {
-                                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
-                                x++;
-                            }
-                        }
-                        if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
-                        wattroff(win, COLOR_PAIR(C_DIM));
-                    } else {
-                        /* Check if header (next row is separator) */
-                        int is_header = 0;
-                        const char *nxt = trow_eol ? trow_eol + 1 : NULL;
-                        if (nxt && *nxt == '|') {
-                            int ns = 1;
-                            for (const char *np = nxt+1; *np && *np != '\n'; np++)
-                                if (*np != '-' && *np != '|' && *np != ' ' && *np != ':')
-                                    { ns = 0; break; }
-                            if (ns) is_header = 1;
-                        }
-
-                        int x = -tbl_sx;
-                        const char *cp = tbuf + 1;
-                        int ci = 0;
-                        while (*cp && *cp != '\n') {
-                            if (*cp == '|') { cp++; ci++; continue; }
-                            if (x >= 0 && x < cols) {
-                                wattron(win, COLOR_PAIR(C_DIM));
-                                mvwaddch(win, vis_line, x, ACS_VLINE);
-                                wattroff(win, COLOR_PAIR(C_DIM));
-                            }
-                            x++;
-                            const char *cs = cp;
-                            while (*cp && *cp != '|' && *cp != '\n') cp++;
-                            const char *ts = cs, *te = cp;
-                            while (ts < te && *ts == ' ') ts++;
-                            while (te > ts && *(te-1) == ' ') te--;
-                            int tlen = (int)(te - ts);
-                            int pw = (ci < num_cols) ? col_widths[ci] : tlen;
-                            if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
-                            x++;
-                            if (is_header) wattron(win, A_BOLD);
-                            if (tlen > 0) {
-                                for (int ti = 0; ti < tlen; ti++) {
-                                    if (x >= 0 && x < cols)
-                                        mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
-                                    x++;
-                                }
-                            }
-                            if (is_header) wattroff(win, A_BOLD);
-                            int tx = x + (pw - tlen) + 1;
-                            while (x < tx) {
-                                if (x >= 0 && x < cols)
-                                    mvwaddch(win, vis_line, x, ' ');
-                                x++;
-                            }
-                            if (*cp == '|') { ci++; cp++; }
-                        }
-                        if (x >= 0 && x < cols) {
-                            wattron(win, COLOR_PAIR(C_DIM));
-                            mvwaddch(win, vis_line, x, ACS_VLINE);
-                            wattroff(win, COLOR_PAIR(C_DIM));
-                        }
-                    }
-                }
-
-                /* Advance to next table row */
-                if (tr < table_rows - 1) {
-                    render_line++;
-                    src_line++;
-                    trow = trow_eol ? trow_eol + 1 : NULL;
-                } else {
-                    /* Last row — let the main loop advance normally */
-                    src = trow;
-                    eol = trow_eol;
-                }
+            const char *out_src = src;
+            (void)render_table(win, src, table_rows,
+                                scroll_y, scroll_x, rows, cols,
+                                &render_line, &src_line, &out_src);
+            /* render_table() sets out_src to the last row; skip the main
+             * loop's advance for all but the last row. */
+            if (out_src != src) {
+                /* render_table advanced render_line for all rows except the last.
+                 * The last row is left for the main loop's render_line++ below. */
+                src = out_src;
+                eol = strchr(src, '\n');
+                /* Don't re-copy line_buf — the last row was already handled. */
             }
 
         } else {
             /* Regular text — with inline formatting and word-wrapping */
             int lines_consumed = 1;
-            if (copy_len > 0) {
+            if (line_buf[0] != '\0') {
                 if (visible) {
-                    lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, copy_len, cols);
+                    lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
                 } else {
-                    /* Off-screen: compute line count for wrapping */
-                    inline_seg_t segs[MAX_INLINE_SEGS];
-                    int n = parse_inline(line_buf, copy_len, segs, MAX_INLINE_SEGS);
-                    int total_cols = 0;
-                    for (int i = 0; i < n; i++)
-                        total_cols += seg_display_cols(segs[i].text, segs[i].len);
-                    if (total_cols > cols) {
-                        lines_consumed = (total_cols + cols - 1) / cols;
-                    }
+                    /* Item 4: use count_wrapped_lines for off-screen counting */
+                    lines_consumed = count_wrapped_lines(line_buf, (int)strlen(line_buf), cols);
                 }
             }
-            render_line += lines_consumed - 1;
+            /* Item 9: explicit line advancement */
+            advance_render_line(&render_line, lines_consumed);
         }
 
         render_line++;
