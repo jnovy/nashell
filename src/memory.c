@@ -385,23 +385,23 @@ static double score_entry_hybrid(const char *key, const char *value,
     double importance = log(1.0 + (double)access_count) / 5.0;
     if (importance > 1.0) importance = 1.0;
 
-    /* Composite: importance AMPLIFIES relevance, doesn't replace it.
-     * Multiplicative formula ensures zero relevance → zero composite,
-     * regardless of how frequently the memory has been accessed.
+    /* Scoring: relevance only — importance removed from ranking.
      *
-     * The old additive formula (relevance*0.8 + importance*0.2) created
-     * a floor of ~0.18 for all frequently-used memories, making the
-     * recall_min_score threshold useless — every well-used memory passed
-     * even with zero relevance to the current query.
+     * Empirical analysis showed that importance (log access frequency)
+     * distorts ranking by boosting frequently-recalled but irrelevant
+     * memories above less-popular but more relevant ones. Example:
+     * "memory-deduplication-procedure" (rel=0.19, imp=1.0) ranked above
+     * "compare-interface-implementations" (rel=0.34, imp=0.5) for a
+     * query about code simplification — wrong.
      *
-     * With multiplicative: composite = relevance * (1.0 + importance * 0.25)
-     *   - Zero relevance → 0 (regardless of importance)
-     *   - High relevance + high importance → boosted (up to 1.25×)
-     *   - High relevance + zero importance → unchanged
+     * Importance is redundant with vscore: popular memories accumulate
+     * more recall_hits → higher vscore. The Bayesian validation score
+     * already captures "this memory is useful" without the distortion
+     * of "this memory is popular for OTHER queries."
      *
-     * Inspired by Generative Agents [Park et al., 2023] which uses
-     * recency × importance × relevance (all multiplicative). */
-    double composite = relevance * (1.0 + importance * 0.25);
+     * importance is still computed and exposed via memory_entry_t for
+     * diagnostics (test_memory_context) but doesn't affect ranking. */
+    double composite = relevance;
 
     /* P3: Bayesian validation scoring — data-driven memory quality signal.
      * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean with
