@@ -973,12 +973,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             /* Regular text — with inline formatting and word-wrapping */
             int lines_consumed = 1;
             if (line_buf[0] != '\0') {
-                int diff_type = is_diff_line(line_buf, line_len);
-                if (diff_type != 0 && visible) {
-                    /* Diff line: render with colored background */
-                    lines_consumed = render_diff_line(
-                        win, vis_line, 0, diff_type, line_buf, line_len, cols);
-                } else if (visible) {
+                if (visible) {
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
                 } else {
                     /* Item 4: use count_wrapped_lines for off-screen counting */
