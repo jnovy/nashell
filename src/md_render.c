@@ -12,6 +12,9 @@
 #define C_DIM       5
 #define C_FOCUS     6
 #define C_STREAM    7
+/* Diff color pairs (must match tui.c) */
+#define CP_DIFF_ADD 15
+#define CP_DIFF_DEL 16
 
 /* ── Buffer size for line copying ── */
 #define LINE_BUF_SIZE 4096
@@ -387,6 +390,101 @@ static int render_inline_wrapped(WINDOW *win, int start_row, int col,
     return render_segs_wrapped(win, start_row, col, segs, n, usable_width);
 }
 
+/* ── Diff line rendering ── */
+
+/* Check if a line is a diff add/remove line (starts with + or -).
+ * Returns: 1 = diff add (+), -1 = diff remove (-), 0 = not a diff line.
+ * Only treats it as diff if the character is followed by a space or end-of-line,
+ * to avoid false positives on lines like "-foo" that are just regular text. */
+static int is_diff_line(const char *line, int line_len) {
+    if (line_len < 1) return 0;
+    if (line[0] == '+' || line[0] == '-') {
+        /* Must be followed by space, tab, or end-of-line to be a diff line */
+        if (line_len == 1 || line[1] == ' ' || line[1] == '\t') {
+            return (line[0] == '+') ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+/* Render a diff line with colored background.
+ * diff_type: 1 = add (green bg), -1 = remove (red bg).
+ * text: the full line text (including + or - prefix).
+ * text_len: byte length of text.
+ * Returns number of display lines consumed. */
+static int render_diff_line(WINDOW *win, int row, int col,
+                             int diff_type, const char *text, int text_len,
+                             int cols) {
+    if (text_len <= 0) return 1;
+
+    int pair = (diff_type > 0) ? CP_DIFF_ADD : CP_DIFF_DEL;
+
+    /* Parse inline formatting, then apply diff background to all segments */
+    inline_seg_t segs[MAX_INLINE_SEGS];
+    int n = parse_inline(text, text_len, segs, MAX_INLINE_SEGS);
+    if (n <= 0) return 1;
+
+    /* Apply diff background color pair to all segments */
+    for (int i = 0; i < n; i++) {
+        if (segs[i].attr) {
+            segs[i].attr |= COLOR_PAIR(pair);
+        } else {
+            segs[i].attr = COLOR_PAIR(pair);
+        }
+    }
+
+    /* Check if segments fit on one line */
+    int total_cols = 0;
+    for (int i = 0; i < n; i++)
+        total_cols += seg_display_cols(segs[i].text, segs[i].len);
+
+    if (total_cols <= cols) {
+        render_segs_on_line(win, row, col, segs, n, cols);
+        /* Pad remaining columns with diff background */
+        int cur_x = col + total_cols;
+        for (int x = cur_x; x < cols; x++)
+            mvwaddch(win, row, x, ' ' | COLOR_PAIR(pair));
+        return 1;
+    }
+
+    /* Multi-line wrapping with diff background */
+    /* For simplicity, render each wrapped line with the diff bg */
+    int usable = cols;
+    int lines_used = 1;
+    const char *wp = text;
+    int remaining = text_len;
+    int cur_row = row;
+
+    while (remaining > 0) {
+        int chunk = remaining > usable ? usable : remaining;
+        if (chunk < remaining) {
+            int min_pos = usable / 4;
+            int last_space = find_word_boundary(wp, chunk, min_pos);
+            if (last_space > 0) chunk = last_space + 1;
+        }
+
+        /* Render chunk with diff color */
+        wattron(win, COLOR_PAIR(pair));
+        mvwaddnstr(win, cur_row, col, wp, chunk);
+        wattroff(win, COLOR_PAIR(pair));
+
+        /* Pad remainder of line with diff background */
+        int dc = utf8_display_len(wp, chunk);
+        int pad_x = col + dc;
+        wattron(win, COLOR_PAIR(pair));
+        for (int x = pad_x; x < cols; x++)
+            mvwaddch(win, cur_row, x, ' ');
+        wattroff(win, COLOR_PAIR(pair));
+
+        wp += chunk;
+        remaining -= chunk;
+        cur_row++;
+        lines_used++;
+    }
+
+    return lines_used;
+}
+
 /* ── Parse ── */
 
 md_doc_t *md_parse(const char *source) {
@@ -696,34 +794,45 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                             src_line == doc->links[link_idx].doc_line);
 
         if (in_code_block) {
-            /* Code block content: wrap at cols-2, render in cyan */
-            int usable = cols - 2;
-            if (usable < 10) usable = 10;
-            int remaining = (int)strlen(line_buf);
-            const char *wp = line_buf;
-            int first = 1;
-            int lines_consumed = 0;
-            while (remaining > 0) {
-                int chunk = remaining > usable ? usable : remaining;
-                /* Item 7: use shared word-boundary helper */
-                if (chunk < remaining) {
-                    int min_pos = usable / 4;
-                    int last_space = find_word_boundary(wp, chunk, min_pos);
-                    if (last_space > 0) chunk = last_space + 1;
+            /* Check if this is a diff line (+ or - prefix) */
+            int diff_type = is_diff_line(line_buf, line_len);
+
+            if (diff_type != 0 && visible) {
+                /* Diff line: render with colored background */
+                int lines_consumed = render_diff_line(
+                    win, vis_line, 0, diff_type, line_buf, line_len, cols);
+                if (lines_consumed > 1)
+                    advance_render_line(&render_line, lines_consumed);
+            } else {
+                /* Code block content: wrap at cols-2, render in cyan */
+                int usable = cols - 2;
+                if (usable < 10) usable = 10;
+                int remaining = (int)strlen(line_buf);
+                const char *wp = line_buf;
+                int first = 1;
+                int lines_consumed = 0;
+                while (remaining > 0) {
+                    int chunk = remaining > usable ? usable : remaining;
+                    /* Item 7: use shared word-boundary helper */
+                    if (chunk < remaining) {
+                        int min_pos = usable / 4;
+                        int last_space = find_word_boundary(wp, chunk, min_pos);
+                        if (last_space > 0) chunk = last_space + 1;
+                    }
+                    int vl = render_line - scroll_y;
+                    if (vl >= 0 && vl < rows) {
+                        wattron(win, COLOR_PAIR(C_STREAM));
+                        mvwaddnstr(win, vl, first ? 2 : 4, wp, chunk);
+                        wattroff(win, COLOR_PAIR(C_STREAM));
+                    }
+                    wp += chunk;
+                    remaining -= chunk;
+                    lines_consumed++;
                 }
-                int vl = render_line - scroll_y;
-                if (vl >= 0 && vl < rows) {
-                    wattron(win, COLOR_PAIR(C_STREAM));
-                    mvwaddnstr(win, vl, first ? 2 : 4, wp, chunk);
-                    wattroff(win, COLOR_PAIR(C_STREAM));
-                }
-                wp += chunk;
-                remaining -= chunk;
-                lines_consumed++;
+                /* Item 9: explicit line advancement */
+                if (lines_consumed > 1)
+                    advance_render_line(&render_line, lines_consumed);
             }
-            /* Item 9: explicit line advancement */
-            if (lines_consumed > 1)
-                advance_render_line(&render_line, lines_consumed);
 
         } else if (is_link_line) {
             /* Hyperlink line */
@@ -864,7 +973,12 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             /* Regular text — with inline formatting and word-wrapping */
             int lines_consumed = 1;
             if (line_buf[0] != '\0') {
-                if (visible) {
+                int diff_type = is_diff_line(line_buf, line_len);
+                if (diff_type != 0 && visible) {
+                    /* Diff line: render with colored background */
+                    lines_consumed = render_diff_line(
+                        win, vis_line, 0, diff_type, line_buf, line_len, cols);
+                } else if (visible) {
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
                 } else {
                     /* Item 4: use count_wrapped_lines for off-screen counting */

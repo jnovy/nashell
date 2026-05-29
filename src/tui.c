@@ -47,6 +47,8 @@ static int bottom_height = 0;
 #define NC_CT_BG        32  /* #1E2030 (30,32,48) — content background */
 #define NC_CT_SELECTED  33  /* #3D4160 (61,65,96) — selection bg */
 #define NC_CT_NORMAL    34  /* #DCE1F0 (220,225,240) — normal text */
+#define NC_CT_DIFF_ADD_BG 35  /* #1A2E1A (26,46,26) — diff add background */
+#define NC_CT_DIFF_DEL_BG 36  /* #2E1A1A (46,26,26) — diff del background */
 
 /* Color pair numbers for status/input rows */
 #define CP_STATUS_READY  8   /* status bar: bg=#232637, fg=#B4B9C8 */
@@ -56,6 +58,9 @@ static int bottom_height = 0;
 #define CP_STATUS_ERROR  12  /* status bar: bg=#232637, fg=#DC5050 */
 #define CP_INPUT_ACTIVE  13  /* input bar: bg=#191E2D, fg=#DCE5F0 */
 #define CP_INPUT_DIM     14  /* input bar: bg=#191E2D, fg=#646982 */
+/* Diff color pairs: colored background for +/- diff lines */
+#define CP_DIFF_ADD      15  /* diff add: bg=#1A2E1A, fg=#A6E3A1 */
+#define CP_DIFF_DEL      16  /* diff del: bg=#2E1A1A, fg=#F38BA8 */
 
 /* ── True-color registration ─────────────────────────── */
 
@@ -89,6 +94,9 @@ static void init_true_colors(void) {
     init_color(NC_CT_BG,        30*1000/255,  32*1000/255,  48*1000/255);
     init_color(NC_CT_SELECTED,  61*1000/255,  65*1000/255,  96*1000/255);
     init_color(NC_CT_NORMAL,   220*1000/255, 225*1000/255, 240*1000/255);
+    /* Diff backgrounds — subtle tinted backgrounds for +/- lines */
+    init_color(NC_CT_DIFF_ADD_BG, 26*1000/255, 46*1000/255, 26*1000/255);
+    init_color(NC_CT_DIFF_DEL_BG, 46*1000/255, 26*1000/255, 26*1000/255);
 
     /* Create color pairs combining bg + fg */
     init_pair(CP_STATUS_READY,  NC_STATUS_BG, NC_STATUS_READY);
@@ -107,6 +115,9 @@ static void init_true_colors(void) {
     init_pair(C_DIM,      NC_CT_DIM,    -1);
     init_pair(C_FOCUS,    NC_CT_YELLOW, -1);
     init_pair(C_SELECTED, NC_CT_SELECTED, NC_CT_WHITE);
+    /* Diff pairs: fg on colored background */
+    init_pair(CP_DIFF_ADD, NC_CT_GREEN,  NC_CT_DIFF_ADD_BG);
+    init_pair(CP_DIFF_DEL, NC_CT_RED,    NC_CT_DIFF_DEL_BG);
 
     true_color_available = 1;
 }
