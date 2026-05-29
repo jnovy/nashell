@@ -648,21 +648,137 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     char *post_hash = store_save(ctx->store, result);
     char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");
 
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "ok");
-    cJSON_AddStringToObject(meta, "path", path);
-    cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
-    cJSON_AddStringToObject(meta, "ref", post_alias);
+    /* Generate diff-like output for display (stored as the main ref).
+     * Shows context lines, removed lines ("- "), and added lines ("+ ").
+     * The TUI's md_render detects +/- prefixes and applies diff colors. */
+    {
+        /* Count lines before the edit for context — walk backward from pos */
+        /* First, find the start of the line containing pos */
+        char *line_start = pos;
+        {
+            char *scan = pos - 1;
+            while (scan >= content && *scan != '\n') scan--;
+            line_start = scan + 1;
+        }
 
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, post_alias,
-                   result_len, count_lines(result), NULL, NULL);
+        /* Walk backward from the byte before line_start, skipping the
+         * newline that terminates the line before the edit line. Then
+         * count ctx_before more newlines to find our context boundary. */
+        int ctx_before = 3;
+        char *ctx_start = line_start;
+        char *scan = line_start - 1;
 
-    free(content);
-    free(result);
-    free(pre_alias);
-    free(pre_hash);
-    free(post_hash);
-    return make_result(1, meta, post_alias);
+        /* Skip the newline immediately before line_start (it belongs to
+         * the previous line, not to our context count) */
+        if (scan >= content && *scan == '\n') scan--;
+
+        /* Now count ctx_before newlines walking backward */
+        int found = 0;
+        while (scan >= content && found < ctx_before) {
+            if (*scan == '\n') {
+                found++;
+                if (found == ctx_before) {
+                    ctx_start = scan + 1;
+                    break;
+                }
+            }
+            scan--;
+        }
+        if (scan < content && found < ctx_before) {
+            ctx_start = content;
+        }
+
+        /* Find context after the edit */
+        char *after_edit = result + (size_t)(pos - content) + new_len;
+        size_t after_len = (result + result_len) - after_edit;
+        char *ctx_end = after_edit;
+        for (int i = 0; i < ctx_before; i++) {
+            char *nl = memchr(ctx_end, '\n', after_len > (size_t)(ctx_end - after_edit) ? after_len - (size_t)(ctx_end - after_edit) : 0);
+            if (!nl) break;
+            ctx_end = nl + 1;
+        }
+        if (ctx_end > result + result_len) ctx_end = result + result_len;
+
+        /* Build diff output */
+        size_t diff_cap = 4096;
+        char *diff = malloc(diff_cap);
+        int diff_len = 0;
+
+        /* Context before — stop at line_start (start of edit line), not pos */
+        char *cl = ctx_start;
+        while (cl < line_start) {
+            char *nl = strchr(cl, '\n');
+            int llen = nl ? (int)(nl - cl) : (int)(line_start - cl);
+            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+                diff_cap *= 2;
+                diff = realloc(diff, diff_cap);
+            }
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, " %.*s\n", llen, cl);
+            cl = nl ? nl + 1 : cl + llen;
+        }
+
+        /* Removed lines (old_text) */
+        cl = pos;
+        while (cl < pos + old_len) {
+            char *nl = memchr(cl, '\n', old_len - (size_t)(cl - pos));
+            int llen = nl ? (int)(nl - cl) : (int)(pos + old_len - cl);
+            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+                diff_cap *= 2;
+                diff = realloc(diff, diff_cap);
+            }
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, "- %.*s\n", llen, cl);
+            cl = nl ? nl + 1 : cl + llen;
+        }
+
+        /* Added lines (new_text) */
+        cl = (char *)new_text;
+        while (cl < (char *)new_text + new_len) {
+            char *nl = memchr(cl, '\n', new_len - (size_t)(cl - (char *)new_text));
+            int llen = nl ? (int)(nl - cl) : (int)((char *)new_text + new_len - cl);
+            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+                diff_cap *= 2;
+                diff = realloc(diff, diff_cap);
+            }
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, "+ %.*s\n", llen, cl);
+            cl = nl ? nl + 1 : cl + llen;
+        }
+
+        /* Context after */
+        cl = after_edit;
+        while (cl < ctx_end) {
+            char *nl = strchr(cl, '\n');
+            int llen = nl ? (int)(nl - cl) : (int)(ctx_end - cl);
+            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+                diff_cap *= 2;
+                diff = realloc(diff, diff_cap);
+            }
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, " %.*s\n", llen, cl);
+            cl = nl ? nl + 1 : cl + llen;
+        }
+
+        /* Store diff as the display ref */
+        char *diff_hash = store_save(ctx->store, diff);
+        char *diff_alias = tool_register_alias(ctx, diff_hash ? diff_hash : "");
+        free(diff);
+        free(diff_hash);
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "status", "ok");
+        cJSON_AddStringToObject(meta, "path", path);
+        cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
+        cJSON_AddStringToObject(meta, "post_ref", post_alias);
+
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, diff_alias,
+                       diff_len, 0, NULL, NULL);
+
+        free(content);
+        free(result);
+        free(pre_alias);
+        free(pre_hash);
+        free(post_hash);
+        free(post_alias);
+        return make_result(1, meta, diff_alias);
+    }
 }
 
 /* ── grep_search ─────────────────────────────────────── */
