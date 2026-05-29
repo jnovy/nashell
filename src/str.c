@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <curl/curl.h>
+#include <dirent.h>
 
 str_t str_new(size_t initial_cap) {
     str_t s;
@@ -169,6 +170,30 @@ char *slurp_file(const char *path, size_t *out_len) {
     fclose(f);
     if (out_len) *out_len = n;
     return buf;
+}
+
+/* ── Directory iteration ─────────────────────────────────────────── */
+
+void for_each_dir_entry(const char *dirpath, const char *suffix,
+                        dir_entry_cb cb, void *user_data) {
+    DIR *dir = opendir(dirpath);
+    if (!dir) return;
+
+    size_t sfx_len = strlen(suffix);
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t len = strlen(de->d_name);
+        if (len <= sfx_len) continue;
+        if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
+
+        char path[4096];
+        snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
+
+        int rc = cb(dirpath, de->d_name, path, user_data);
+        if (rc) break;
+    }
+    closedir(dir);
 }
 
 /* ── HTTP helpers (libcurl) ──────────────────────────────────── */

@@ -20,6 +20,49 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
+/* ── reflection deduplication callback ───────────────── */
+
+typedef struct {
+    react_ctx_t *ctx;
+    cJSON *rkey_j;
+    embed_vec_t *new_emb;
+    int *should_store;
+} reflection_scan_t;
+
+static int reflection_dedup_cb(const char *dirpath, const char *filename,
+                               const char *fullpath, void *user_data) {
+    reflection_scan_t *s = (reflection_scan_t *)user_data;
+    (void)dirpath; (void)filename;
+
+    /* FIX B1+B2: Use multi-vec loader (auto-detects old single-vec and
+     * new multi-vec formats) and MaxSim similarity for consistent
+     * cross-subsystem comparison with consolidation code path. */
+    embed_multi_vec_t exist_emb = embed_multi_vec_load(fullpath);
+    if (!exist_emb.data) return 0;
+    if (exist_emb.dim != s->new_emb->dim) {
+        embed_multi_vec_free(&exist_emb);
+        return 0;
+    }
+    float sim = embed_cosine_sim_multi(s->new_emb, &exist_emb);
+    embed_multi_vec_free(&exist_emb);
+    if (sim > 0.90f) {
+        *s->should_store = 0;
+        /* Log to journal instead of stderr (TUI mode) */
+        {
+            cJSON *dup_p = cJSON_CreateObject();
+            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
+            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
+            cJSON_AddStringToObject(dup_p, "action", "skipped");
+            journal_append(s->ctx->tools->journal,
+                s->ctx->tools->react_loop, s->ctx->tools->step,
+                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
+            cJSON_Delete(dup_p);
+        }
+        return 1;  /* stop iterating */
+    }
+    return 0;
+}
+
 /* Log memory context injection to the journal for debugging.
  * Captures: index summary (total + type counts), pinned keys, skills recalled.
  * Called at both the checkpoint-restore path and the main react_run path. */
@@ -2170,47 +2213,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         if (new_emb.data) {
                             /* Scan existing .emb files for high similarity
                              * instead of calling memory_recall + re-embedding */
-                            DIR *rdir = opendir(ctx->tools->memory->dir);
-                            if (rdir) {
-                                struct dirent *rde;
-                                while ((rde = readdir(rdir)) != NULL) {
-                                    if (rde->d_name[0] == '.') continue;
-                                    size_t dlen = strlen(rde->d_name);
-                                    if (dlen < 4 || strcmp(rde->d_name + dlen - 4, ".emb") != 0)
-                                        continue;
-                                    char emb_path[4096];
-                                    snprintf(emb_path, sizeof(emb_path), "%s/%s",
-                                             ctx->tools->memory->dir, rde->d_name);
-                                    /* FIX B1+B2: Use multi-vec loader (auto-detects
-                                     * old single-vec and new multi-vec formats) and
-                                     * MaxSim similarity for consistent cross-subsystem
-                                     * comparison with consolidation code path. */
-                                    embed_multi_vec_t exist_emb = embed_multi_vec_load(emb_path);
-                                    if (!exist_emb.data) continue;
-                                    if (exist_emb.dim != new_emb.dim) {
-                                        embed_multi_vec_free(&exist_emb);
-                                        continue;
-                                    }
-                                    float sim = embed_cosine_sim_multi(&new_emb, &exist_emb);
-                                    embed_multi_vec_free(&exist_emb);
-                                    if (sim > 0.90f) {
-                                        should_store = 0;
-                                        /* Log to journal instead of stderr (TUI mode) */
-                                        {
-                                            cJSON *dup_p = cJSON_CreateObject();
-                                            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
-                                            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
-                                            cJSON_AddStringToObject(dup_p, "action", "skipped");
-                                            journal_append(ctx->tools->journal,
-                                                ctx->tools->react_loop, ctx->tools->step,
-                                                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
-                                            cJSON_Delete(dup_p);
-                                        }
-                                        break;
-                                    }
-                                }
-                                closedir(rdir);
-                            }
+                            reflection_scan_t rscan = {
+                                .ctx = ctx,
+                                .rkey_j = rkey_j,
+                                .new_emb = &new_emb,
+                                .should_store = &should_store,
+                            };
+                            for_each_dir_entry(ctx->tools->memory->dir, ".emb",
+                                              reflection_dedup_cb, &rscan);
                             embed_vec_free(&new_emb);
                         }
                     }

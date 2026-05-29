@@ -49,41 +49,12 @@ typedef int (*json_entry_cb)(const char *dirpath, cJSON *entry, void *user_data)
 #define JSON_CB_CONTINUE    0
 #define JSON_CB_KEEP_ENTRY -1
 
-/* ── Generalized directory iteration ────────────────────────────── */
-
-/* Callback for for_each_dir_entry: receives dirpath, filename, full path.
- * Returns 0 to continue, non-zero to stop. */
-typedef int (*dir_entry_cb)(const char *dirpath, const char *filename,
-                            const char *fullpath, void *user_data);
-
-/* Iterate over files matching *suffix* in *dirpath*.
- * Calls cb(dirpath, filename, fullpath, user_data) for each match.
- * Stops when cb returns non-zero. */
-static void for_each_dir_entry(const char *dirpath, const char *suffix,
-                               dir_entry_cb cb, void *user_data) {
-    DIR *dir = opendir(dirpath);
-    if (!dir) return;
-
-    size_t sfx_len = strlen(suffix);
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len <= sfx_len) continue;
-        if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
-
-        char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
-
-        int rc = cb(dirpath, de->d_name, path, user_data);
-        if (rc) break;
-    }
-    closedir(dir);
-}
+/* ── Directory iteration wrappers (use for_each_dir_entry from str.h) ── */
 
 /* Wrapper to adapt json_entry_cb to dir_entry_cb signature. */
 static int json_entry_wrapper(const char *dirpath, const char *filename,
                               const char *fullpath, void *user_data) {
+    (void)filename;
     json_entry_cb cb = (json_entry_cb)((void **)user_data)[0];
     void *real_ud = ((void **)user_data)[1];
 
@@ -328,11 +299,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     }
 
     char *json = cJSON_Print(entry);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fputs(json, f);
-        fclose(f);
-    }
+    write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
 
@@ -376,11 +343,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
 
     /* Write back */
     char *json = cJSON_Print(entry);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fputs(json, f);
-        fclose(f);
-    }
+    write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
 
@@ -1138,11 +1101,7 @@ static int memory_increment_field(memory_t *m, const char *key,
 
     /* Write back */
     char *json = cJSON_Print(entry);
-    FILE *f = fopen(path, "w");
-    if (f) {
-        fputs(json, f);
-        fclose(f);
-    }
+    write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
 

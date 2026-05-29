@@ -562,16 +562,12 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     const char *path = path_j->valuestring;
     const char *content = content_j->valuestring;
 
-    FILE *f = fopen(path, "w");
-    if (!f) {
+    size_t len = strlen(content);
+    if (write_file(path, content, len) != 0) {
         char msg[512];
         snprintf(msg, sizeof(msg), "cannot write '%s': %s", path, strerror(errno));
         return make_error(msg);
     }
-
-    size_t len = strlen(content);
-    fwrite(content, 1, len, f);
-    fclose(f);
 
     /* Store written content for full audit trail */
     char *hash = store_save(ctx->store, content);
@@ -1615,6 +1611,56 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
  * If found, concatenate both and call the LLM to produce a consolidated
  * version. This implements the "subtract-before-write" principle from GDN-2:
  * related content is merged rather than duplicated. */
+
+typedef struct {
+    embed_multi_vec_t *new_emb;
+    const char *new_emb_fname;
+    const char *dir;
+    float consolidation_threshold;
+    char best_key[256];
+    char best_path[4096];
+    float best_sim;
+} consolidation_scan_t;
+
+static int consolidation_cb(const char *dirpath, const char *filename,
+                             const char *fullpath, void *user_data) {
+    consolidation_scan_t *s = (consolidation_scan_t *)user_data;
+    (void)dirpath;
+
+    size_t len = strlen(filename);
+    /* Derive key from filename: strip .emb suffix */
+    char emb_base[256];
+    snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), filename);
+
+    /* Skip self — the entry we just stored. */
+    if (strcmp(emb_base, s->new_emb_fname) == 0) return 0;
+
+    embed_multi_vec_t other_emb = embed_multi_vec_load(fullpath);
+    if (!other_emb.data) return 0;
+
+    /* Dimension check: skip stale embeddings from a different model.
+     * Mismatched dims give 0.0 from cosine_sim anyway, but deleting
+     * the stale file lets memory_embed_all() regenerate it. */
+    if (other_emb.dim != s->new_emb->dim) {
+        unlink(fullpath);
+        embed_multi_vec_free(&other_emb);
+        return 0;
+    }
+
+    /* MaxSim across all chunk pairs */
+    float sim = embed_cosine_sim_multi_multi(s->new_emb, &other_emb);
+    embed_multi_vec_free(&other_emb);
+
+    if (sim > s->best_sim && sim > s->consolidation_threshold) {
+        s->best_sim = sim;
+        snprintf(s->best_key, sizeof(s->best_key), "%s", emb_base);
+        /* Derive JSON path from emb path */
+        snprintf(s->best_path, sizeof(s->best_path), "%s/%s.json",
+                 s->dir, emb_base);
+    }
+    return 0;
+}
+
 static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                     const char *new_value) {
     if (!ctx->llm || !ctx->memory) return;
@@ -1634,12 +1680,16 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (!new_emb.data) return;
 
     /* Scan all memory .emb files for high similarity */
-    DIR *dir = opendir(ctx->memory->dir);
-    if (!dir) { embed_multi_vec_free(&new_emb); return; }
-
-    char best_key[256] = "";
-    char best_path[4096] = "";
-    float best_sim = 0.0f;
+    consolidation_scan_t scan = {
+        .new_emb = &new_emb,
+        .new_emb_fname = new_emb_fname,
+        .dir = ctx->memory->dir,
+        .consolidation_threshold =
+            ctx->cfg ? ctx->cfg->consolidation_threshold : 0.82f,
+        .best_key = {0},
+        .best_path = {0},
+        .best_sim = 0.0f,
+    };
     /* Consolidation threshold: cosine similarity above which two memories
      * are considered near-duplicates and merged. 0.82 is conservative —
      * only genuinely redundant entries trigger consolidation.
@@ -1648,56 +1698,15 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * Research basis: IR literature places "semantically equivalent"
      * text at cosine similarity 0.80-0.90 depending on embedding model.
      * See also: MemForest [arXiv:2605.23986] for temporal dedup. */
-    const float consolidation_threshold =
-        ctx->cfg ? ctx->cfg->consolidation_threshold : 0.82f;
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 4 || strcmp(de->d_name + len - 4, ".emb") != 0) continue;
-
-        /* Derive key from filename: strip .emb suffix */
-        char emb_base[256];
-        snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), de->d_name);
-
-        /* Skip self — the entry we just stored. */
-        if (strcmp(emb_base, new_emb_fname) == 0) continue;
-
-        char emb_path[4096];
-        snprintf(emb_path, sizeof(emb_path), "%s/%s", ctx->memory->dir, de->d_name);
-        embed_multi_vec_t other_emb = embed_multi_vec_load(emb_path);
-        if (!other_emb.data) continue;
-
-        /* Dimension check: skip stale embeddings from a different model.
-         * Mismatched dims give 0.0 from cosine_sim anyway, but deleting
-         * the stale file lets memory_embed_all() regenerate it. */
-        if (other_emb.dim != new_emb.dim) {
-            unlink(emb_path);
-            embed_multi_vec_free(&other_emb);
-            continue;
-        }
-
-        /* MaxSim across all chunk pairs */
-        float sim = embed_cosine_sim_multi_multi(&new_emb, &other_emb);
-        embed_multi_vec_free(&other_emb);
-
-        if (sim > best_sim && sim > consolidation_threshold) {
-            best_sim = sim;
-            snprintf(best_key, sizeof(best_key), "%s", emb_base);
-            /* Derive JSON path from emb path */
-            snprintf(best_path, sizeof(best_path), "%s/%s.json",
-                     ctx->memory->dir, emb_base);
-        }
-    }
-    closedir(dir);
+    for_each_dir_entry(ctx->memory->dir, ".emb", consolidation_cb, &scan);
     embed_multi_vec_free(&new_emb);
 
-    if (best_key[0] == '\0') return;  /* no similar memory found */
+    if (scan.best_key[0] == '\0') return;  /* no similar memory found */
 
     /* Load the similar memory's value */
     size_t buf_len = 0;
-    char *buf = slurp_file(best_path, &buf_len);
+    char *buf = slurp_file(scan.best_path, &buf_len);
     if (!buf || buf_len == 0 || buf_len > 65536) { free(buf); return; }
 
     cJSON *old_entry = cJSON_Parse(buf);

@@ -70,4 +70,20 @@ const char *utf8_next(const char *p);
  * Walks backwards from p past any continuation bytes. */
 const char *utf8_prev(const char *begin, const char *p);
 
+/* ── Directory iteration helpers ──────────────────────────────────────
+ * Callback-based directory traversal.  Iterates over files matching
+ * *suffix* in *dirpath*, calling cb(dirpath, filename, fullpath, user_data)
+ * for each match.  Stops when cb returns non-zero.
+ *
+ * Callback return values:
+ *   0  = continue iterating
+ *  !=0 = stop iterating
+ *
+ * Entries starting with '.' are skipped. */
+typedef int (*dir_entry_cb)(const char *dirpath, const char *filename,
+                            const char *fullpath, void *user_data);
+
+void for_each_dir_entry(const char *dirpath, const char *suffix,
+                        dir_entry_cb cb, void *user_data);
+
 #endif
