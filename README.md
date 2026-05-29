@@ -26,30 +26,6 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Source Files
-
-| File | Lines | Purpose |
-|------|-------|---------|
-| `react.c` | ~2000 | ReAct loop, context management, eviction, reflection |
-| `tools.c` | ~2100 | 15 tool implementations + dispatch table |
-| `memory.c` | ~1100 | Persistent memory with semantic search |
-| `llm.c` | ~1000 | LLM client (streaming SSE, tool_calls API) |
-| `provider.c` | ~700 | Multi-provider HTTP layer |
-| `provider_local.c` | ~300 | llama.cpp-specific request building |
-| `provider_openai.c` | ~350 | OpenAI API provider |
-| `provider_anthropic.c` | ~800 | Anthropic/Vertex provider |
-| `md_render.c` | ~500 | Markdown → ncurses renderer |
-| `ui_state.c` | ~900 | TUI state management, journal display |
-| `tui.c` | ~400 | ncurses input/output, status bar |
-| `main.c` | ~1100 | Entry point, config, session management |
-| `config.c` | ~400 | TOML configuration parser |
-| `journal.c` | ~400 | Session journal (JSONL) |
-| `store.c` | ~100 | Content-addressed artifact storage |
-| `memory.h` | ~200 | Memory system API |
-| `embedding.c` | ~300 | Embedding client (ONNX, Ollama, OpenAI) |
-| `str.c` | ~200 | Dynamic string library |
-| `tools_registry.h` | ~100 | Shared tool definitions (single source of truth) |
-
 ---
 
 ## Features
