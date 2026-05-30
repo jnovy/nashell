@@ -337,9 +337,18 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
                     icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
 
-        /* Preview: only show for the ACTIVE react loop.
-         * All other react loops are collapsed (just the link line). */
-        if (is_active) {
+        /* Preview: show for the ACTIVE react loop, or if user toggled
+         * with 'c' key (URI in expanded_uris). */
+        char react_uri[64];
+        snprintf(react_uri, sizeof(react_uri), "reactR%d.md", qi->react_loop);
+        int is_expanded = 0;
+        for (int ei = 0; ei < ui->expanded_count; ei++) {
+            if (strcmp(ui->expanded_uris[ei], react_uri) == 0) {
+                is_expanded = 1;
+                break;
+            }
+        }
+        if (is_active || is_expanded) {
             char rpath[4096];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                      ui->session_dir, qi->react_loop);
