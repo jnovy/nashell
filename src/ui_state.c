@@ -429,13 +429,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
             /* Tool line */
             const char *desc = extract_desc(tool, params);
-            if (strcmp(tool, "done") == 0) {
-                /* Done result */
-                cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
-                str_append_cstr(&md, "## Result\n\n");
-                if (res && res->valuestring)
-                    str_appendf(&md, "%s\n", res->valuestring);
-            } else {
+            {
                 /* Tool line: make it a hyperlink if store ref exists */
                 if (ref) {
                     str_appendf(&md, "[**%s** `%s`", tool, sanitize_md_link(desc));
