@@ -393,24 +393,22 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     FILE *f = fopen(jpath, "r");
     if (!f) return;
 
+    /* Collect all entries for this react loop into an array */
+    typedef struct {
+        char *tool;
+        char *desc;
+        char *thought;
+        char *ref;
+        int   step;
+        int   size;
+        int   failed;
+        double ts;
+    } step_info_t;
+
+    step_info_t *steps = NULL;
+    int nsteps = 0, scap = 0;
     char *query_text = NULL;
     char line[65536];
-
-    /* First pass: count total steps for this react loop.
-     * Used to determine which step is "last" (only last step
-     * gets expanded preview; others are collapsed). */
-    int total_steps = 0;
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
-        const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
-        if (loop == react_loop && t && strcmp(t, "query") != 0 && strcmp(t, "system") != 0)
-            total_steps++;
-        cJSON_Delete(entry);
-    }
-    rewind(f);
-    int step_idx = 0;
 
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
@@ -431,112 +429,175 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 free(query_text);
                 query_text = strdup(text->valuestring);
             }
-            str_appendf(&md, "# Query: %s\n\n", query_text ? query_text : "?");
-        } else if (strcmp(tool, "system") != 0) {
-            cJSON *params = cJSON_GetObjectItem(entry, "params");
-            const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
-            int sz = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
-            cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-            int failed = (failed_j && cJSON_IsTrue(failed_j));
-            int step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
-
-            /* Thought */
-            char *thought = extract_thought(params);
-            if (thought && thought[0]) {
-                int tlen = (int)strlen(thought);
-                while (tlen > 0 && (thought[tlen-1] == '\n' ||
-                       thought[tlen-1] == '\r' || thought[tlen-1] == ' '))
-                    tlen--;
-                if (tlen > 0)
-                    str_appendf(&md, "💭 %.*s\n", tlen, thought);
-            }
-            free(thought);
-
-            /* Tool line */
-            const char *desc = extract_desc(tool, params);
-            {
-                /* Tool line: make it a hyperlink if store ref exists */
-                if (ref) {
-                    str_appendf(&md, "[**%s** `%s`", tool, sanitize_md_link(desc));
-                    if (!failed && sz > 0)
-                        str_appendf(&md, " → %d chars", sz);
-                    if (failed)
-                        str_append_cstr(&md, " ✗");
-                    str_appendf(&md, "](%s)\n", ref);
-
-                    /* Show preview if: last step OR explicitly toggled via 'c' key.
-                     * Earlier steps are collapsed unless user expands them. */
-                    int is_last_step = (step_idx == total_steps - 1);
-                    int is_expanded = 0;
-                    for (int ei = 0; ei < ui->expanded_count; ei++) {
-                        if (strcmp(ui->expanded_uris[ei], ref) == 0) {
-                            is_expanded = 1;
-                            break;
-                        }
-                    }
-                    if (!is_last_step && !is_expanded) goto skip_preview;
-                    char rpath[4096];
-                    snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, ref);
-                    FILE *cf = fopen(rpath, "r");
-                    if (cf) {
-                        if (strcmp(tool, "file_edit") == 0)
-                            str_append_cstr(&md, "```diff\n");
-                        else
-                            str_append_cstr(&md, "```\n");
-                        char cbuf[4096];
-                        int line_count = 0;
-                        size_t total = 0;
-                        size_t n;
-                        while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
-                               && total < 8000 && line_count < 5) {
-                            cbuf[n] = '\0';
-                            /* Count and truncate at 5 lines */
-                            for (size_t k = 0; k < n && line_count < 5; k++) {
-                                str_append(&md, &cbuf[k], 1);
-                                total++;
-                                if (cbuf[k] == '\n') line_count++;
-                            }
-                        }
-                        long file_sz = 0;
-                        fseek(cf, 0, SEEK_END);
-                        file_sz = ftell(cf);
-                        if (total < (size_t)file_sz)
-                            str_append_cstr(&md, "  ...\n");
-                        /* Ensure content ends with newline before closing fence.
-                         * Without this, the closing ``` lands on the same line as
-                         * the last content line, and md_parse() won't detect it
-                         * as a code fence toggle (it checks start-of-line). */
-                        if (md.len > 0 && md.data[md.len - 1] != '\n')
-                            str_append_cstr(&md, "\n");
-                        str_append_cstr(&md, "```\n");
-                        fclose(cf);
-                    }
-                skip_preview:;
-                } else {
-                    str_appendf(&md, "**%s** `%s`", tool, sanitize_md_link(desc));
-                    if (!failed && sz > 0)
-                        str_appendf(&md, " → %d chars", sz);
-                    if (failed)
-                        str_append_cstr(&md, " ✗");
-                    str_append_cstr(&md, "\n");
-                }
-            }
-            step_idx++;
-            (void)step;
+            cJSON_Delete(entry);
+            continue;
         }
+
+        if (strcmp(tool, "system") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Collect step info */
+        if (nsteps >= scap) {
+            scap = scap ? scap * 2 : 32;
+            steps = realloc(steps, (size_t)scap * sizeof(step_info_t));
+        }
+        step_info_t *si = &steps[nsteps++];
+        memset(si, 0, sizeof(*si));
+
+        si->tool = strdup(tool);
+        si->step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
+        cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
+        si->ts = (ts_j && ts_j->valuestring) ? atof(ts_j->valuestring) : 0;
+        const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
+        si->ref = ref ? strdup(ref) : NULL;
+        si->size = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
+        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
+        si->failed = (failed_j && cJSON_IsTrue(failed_j));
+
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+        char *thought = extract_thought(params);
+        si->thought = thought;
+        si->desc = strdup(extract_desc(tool, params));
+
         cJSON_Delete(entry);
     }
     fclose(f);
 
-    /* If actively running, append streaming indicator */
+    /* Header */
+    str_appendf(&md, "# Query: %s\n\n", query_text ? query_text : "?");
+
+    /* Render each step in nashell-style compact format */
+    for (int i = 0; i < nsteps; i++) {
+        step_info_t *si = &steps[i];
+        int is_last = (i == nsteps - 1);
+
+        /* Compute elapsed time from previous step */
+        double elapsed = 0;
+        if (i > 0 && si->ts > 0 && steps[i-1].ts > 0)
+            elapsed = si->ts - steps[i-1].ts;
+
+        /* Format timestamp HH:MM */
+        char ts_buf[8] = "";
+        if (si->ts > 0) {
+            time_t t = (time_t)si->ts;
+            struct tm *tm = localtime(&t);
+            if (tm) strftime(ts_buf, sizeof(ts_buf), "%H:%M", tm);
+        }
+
+        /* Status icon */
+        const char *icon = si->failed ? "\xe2\x9c\x97" : "\xe2\x9c\x93";
+
+        /* Format elapsed */
+        char elapsed_str[32] = "";
+        if (elapsed > 0) {
+            int es = (int)elapsed;
+            if (es > 0)
+                snprintf(elapsed_str, sizeof(elapsed_str), " (%ds)", es);
+        }
+
+        /* Truncate desc to ~60 chars */
+        char desc_trunc[80];
+        if (si->desc && si->desc[0]) {
+            /* Replace newlines with spaces */
+            int j = 0;
+            for (int k = 0; si->desc[k] && j < 60; k++) {
+                if (si->desc[k] == '\n' || si->desc[k] == '\r')
+                    desc_trunc[j++] = ' ';
+                else
+                    desc_trunc[j++] = si->desc[k];
+            }
+            desc_trunc[j] = '\0';
+            if ((int)strlen(si->desc) > 60)
+                strcat(desc_trunc, "...");
+        } else {
+            desc_trunc[0] = '\0';
+        }
+
+        /* Build the step line */
+        /* Format: [  icon  step HH:MM tool_name    desc (elapsed)](ref) */
+        if (si->ref) {
+            str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
+                        icon, si->step, ts_buf,
+                        si->tool, sanitize_md_link(desc_trunc),
+                        elapsed_str, si->ref);
+        } else {
+            str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
+                        icon, si->step, ts_buf,
+                        si->tool, desc_trunc, elapsed_str);
+        }
+
+        /* Thought on second line (indented, compact) */
+        if (si->thought && si->thought[0]) {
+            int tlen = (int)strlen(si->thought);
+            while (tlen > 0 && (si->thought[tlen-1] == '\n' ||
+                   si->thought[tlen-1] == '\r' || si->thought[tlen-1] == ' '))
+                tlen--;
+            if (tlen > 0 && tlen <= 120) {
+                /* Short thought: show inline */
+                str_appendf(&md, "                %.*s\n", tlen, si->thought);
+            } else if (tlen > 120) {
+                /* Long thought: truncate */
+                str_appendf(&md, "                %.117s...\n", si->thought);
+            }
+        }
+
+        /* Preview: show for last step or explicitly expanded steps */
+        int show_preview = is_last;
+        if (!show_preview && si->ref) {
+            for (int ei = 0; ei < ui->expanded_count; ei++) {
+                if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
+                    show_preview = 1;
+                    break;
+                }
+            }
+        }
+
+        if (show_preview && si->ref) {
+            char rpath[4096];
+            snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, si->ref);
+            FILE *cf = fopen(rpath, "r");
+            if (cf) {
+                if (strcmp(si->tool, "file_edit") == 0)
+                    str_append_cstr(&md, "```diff\n");
+                else
+                    str_append_cstr(&md, "```\n");
+                char cbuf[4096];
+                int line_count = 0;
+                size_t total = 0;
+                size_t n;
+                while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
+                       && total < 8000 && line_count < 5) {
+                    cbuf[n] = '\0';
+                    for (size_t k = 0; k < n && line_count < 5; k++) {
+                        str_append(&md, &cbuf[k], 1);
+                        total++;
+                        if (cbuf[k] == '\n') line_count++;
+                    }
+                }
+                long file_sz = 0;
+                fseek(cf, 0, SEEK_END);
+                file_sz = ftell(cf);
+                if (total < (size_t)file_sz)
+                    str_append_cstr(&md, "  ...\n");
+                if (md.len > 0 && md.data[md.len - 1] != '\n')
+                    str_append_cstr(&md, "\n");
+                str_append_cstr(&md, "```\n");
+                fclose(cf);
+            }
+        }
+    }
+
+    /* Streaming indicator if actively running */
     if (ui->status == STATUS_RUNNING &&
         ui->current_react_loop == react_loop) {
         if (ui->max_steps > 0)
-            str_appendf(&md, "⏳ Step %d/%d thinking...\n",
-                        ui->current_step, ui->max_steps);
+            str_appendf(&md, "  | %3d %s %-13s processing...\n",
+                        ui->current_step, "", "");
         else
-            str_appendf(&md, "⏳ Step %d thinking...\n",
-                        ui->current_step);
+            str_appendf(&md, "  | %3d        %-13s processing...\n",
+                        ui->current_step, "");
         if (ui->stream_tokens && ui->stream_len > 0) {
             str_append_cstr(&md, "```\n");
             str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
@@ -544,6 +605,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         }
     }
 
+    /* Free collected steps */
+    for (int i = 0; i < nsteps; i++) {
+        free(steps[i].tool);
+        free(steps[i].desc);
+        free(steps[i].thought);
+        free(steps[i].ref);
+    }
+    free(steps);
     free(query_text);
 
     char *md_str = str_steal(&md);
@@ -553,8 +622,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     write_md_file(rpath, md_str);
     free(md_str);
 }
-
-/* ── File loading ────────────────────────────────────────── */
 
 void ui_state_reload_file(ui_state_t *ui) {
     if (!ui || !ui->current_filepath) return;
