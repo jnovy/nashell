@@ -76,24 +76,6 @@ static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *use
     for_each_dir_entry(dirpath, ".json", json_entry_wrapper, wrapper_args);
 }
 
-/* Callback-based directory iteration over .emb entries.
- * Callback receives the directory path and the .emb filename.
- * Returns 0 to continue iterating, non-zero to stop. */
-typedef int (*emb_entry_cb)(const char *dirpath, const char *emb_name, void *user_data);
-
-static int emb_entry_wrapper(const char *dirpath, const char *filename,
-                             const char *fullpath, void *user_data) {
-    emb_entry_cb cb = (emb_entry_cb)((void **)user_data)[0];
-    void *real_ud = ((void **)user_data)[1];
-    (void)fullpath;
-    return cb(dirpath, filename, real_ud);
-}
-
-static void for_each_emb_entry(const char *dirpath, emb_entry_cb cb, void *user_data) {
-    void *wrapper_args[2] = { (void *)cb, user_data };
-    for_each_dir_entry(dirpath, ".emb", emb_entry_wrapper, wrapper_args);
-}
-
 /* ── git version control for memory store ──────────────────────── */
 
 /* Run a git command in the memory directory. Returns 0 on success. */

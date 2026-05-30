@@ -142,7 +142,6 @@ int utf8_truncate(char *dst, const char *src, int max_bytes) {
             cut = cut - 1 + expected;
         } else {
             /* Incomplete — drop the partial character */
-            int included = 1;
             cut--;
         }
         /* If cut went negative, clamp to 0 */

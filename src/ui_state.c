@@ -289,19 +289,19 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 if (sl || el) {
                                     static char fr_desc[256];
                                     int s = sl ? (int)cJSON_GetNumberValue(sl) : 0;
-                                    int e = el ? (int)cJSON_GetNumberValue(el) : 0;
+                                    int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
                                     if (s < 0) {
                                         snprintf(fr_desc, sizeof(fr_desc), "%s (last %d lines)",
                                                  path->valuestring, -s);
-                                    } else if (s > 0 && e > 0) {
+                                    } else if (s > 0 && end_line > 0) {
                                         snprintf(fr_desc, sizeof(fr_desc), "%s:%d-%d",
-                                                 path->valuestring, s, e);
+                                                 path->valuestring, s, end_line);
                                     } else if (s > 0) {
                                         snprintf(fr_desc, sizeof(fr_desc), "%s:%d-EOF",
                                                  path->valuestring, s);
-                                    } else if (e > 0) {
+                                    } else if (end_line > 0) {
                                         snprintf(fr_desc, sizeof(fr_desc), "%s:1-%d",
-                                                 path->valuestring, e);
+                                                 path->valuestring, end_line);
                                     } else {
                                         snprintf(fr_desc, sizeof(fr_desc), "%s", path->valuestring);
                                     }
