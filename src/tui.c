@@ -649,14 +649,6 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_QUERY) ui_state_input_delete(ui);
         break;
 
-    case 'q':
-        if (ui->focus == FOCUS_JOURNAL) {
-            pthread_mutex_unlock(&ui->mtx);
-            return -1;  /* quit */
-        }
-        /* fall through to typing */
-        /* FALLTHROUGH */
-
     default:
         if (ui->focus == FOCUS_QUERY && ch >= 32 && ch < 127) {
             ui_state_input_char(ui, ch);
