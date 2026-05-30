@@ -1021,6 +1021,90 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                /* Handle /memory_recall <query> — semantic memory search.
+                 * Usage: /memory_recall "what I know about X"
+                 * Searches the memory store using the same hybrid scoring
+                 * (embeddings + substring) that powers agent recall.
+                 * Displays results directly in the TUI main pane. */
+                if (strncmp(submitted_query, "/memory_recall ", 15) == 0) {
+                    const char *query = submitted_query + 15;
+                    /* Strip optional quotes */
+                    int n = strlen(query);
+                    const char *q_start = query;
+                    const char *q_end = query + n;
+                    if (n >= 2 && q_start[0] == '"' && q_end[-1] == '"') {
+                        q_start++; q_end--;
+                    } else if (n >= 2 && q_start[0] == '\'' && q_end[-1] == '\'') {
+                        q_start++; q_end--;
+                    }
+                    int q_len = q_end - q_start;
+                    if (q_len == 0) {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                            "/memory_recall: usage: /memory_recall \"query\"");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+                    char qbuf[4096];
+                    memcpy(qbuf, q_start, q_len);
+                    qbuf[q_len] = '\0';
+
+                    memory_results_t results = memory_recall(memory, qbuf, 10);
+                    if (results.count == 0) {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_READY,
+                            "No memories matched query");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+
+                    /* Format results as a readable display string */
+                    str_t display = str_new(4096);
+                    str_appendf(&display, "# Memory Recall: \"%.*s\"\n\n", q_len, q_start);
+                    str_appendf(&display, "Found %d matching entries:\n\n", results.count);
+                    for (int i = 0; i < results.count; i++) {
+                        memory_entry_t *e = &results.entries[i];
+                        str_appendf(&display,
+                            "### %d. %s  (score: %.3f)\n\n",
+                            i + 1, e->key, e->relevance);
+                        str_append_cstr(&display, e->value);
+                        str_append_cstr(&display, "\n\n");
+                        /* Tags */
+                        if (e->n_tags > 0) {
+                            str_append_cstr(&display, "tags: ");
+                            for (int t = 0; t < e->n_tags; t++) {
+                                if (t > 0) str_append_cstr(&display, ", ");
+                                str_append_cstr(&display, e->tags[t]);
+                            }
+                            str_append_cstr(&display, "\n\n");
+                        }
+                        /* Validation score */
+                        double vscore = (e->recall_hits + 1.0) /
+                                        (e->recall_hits + e->recall_misses + 2.0);
+                        str_appendf(&display,
+                            "hits: %d misses: %d vscore: %.2f pinned: %s\n\n",
+                            e->recall_hits, e->recall_misses,
+                            vscore, e->pinned ? "yes" : "no");
+                        str_append_cstr(&display, "---\n\n");
+                    }
+
+                    char *banner = str_steal(&display);
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_banner(ui, banner);
+                    ui_state_set_status(ui, STATUS_READY,
+                        "Memory recall complete");
+                    pthread_mutex_unlock(&ui->mtx);
+                    free(banner);
+                    memory_results_free(&results);
+                    tui_render(ui);
+                    free(submitted_query);
+                    continue;
+                }
+
                 /* Handle /continue: resume from checkpoint with original query.
                  * If user types "continue" or "/continue", read the original
                  * user_query from checkpoint.json and use that instead.
