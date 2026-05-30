@@ -414,15 +414,16 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 if (res && res->valuestring)
                     str_appendf(&md, "%s\n", res->valuestring);
             } else {
-                str_appendf(&md, "**%s** `%s`", tool, sanitize_md_link(desc));
-                if (!failed && sz > 0)
-                    str_appendf(&md, " → %d chars", sz);
-                if (failed)
-                    str_append_cstr(&md, " ✗");
-                str_append_cstr(&md, "\n");
-
-                /* Show content from store if available */
+                /* Tool line: make it a hyperlink if store ref exists */
                 if (ref) {
+                    str_appendf(&md, "[**%s** `%s`", tool, sanitize_md_link(desc));
+                    if (!failed && sz > 0)
+                        str_appendf(&md, " → %d chars", sz);
+                    if (failed)
+                        str_append_cstr(&md, " ✗");
+                    str_appendf(&md, "](%s)\n", ref);
+
+                    /* Show 5-line preview from store */
                     char rpath[4096];
                     snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, ref);
                     FILE *cf = fopen(rpath, "r");
@@ -432,19 +433,34 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         else
                             str_append_cstr(&md, "```\n");
                         char cbuf[4096];
+                        int line_count = 0;
                         size_t total = 0;
                         size_t n;
                         while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
-                               && total < 8000) {
+                               && total < 8000 && line_count < 5) {
                             cbuf[n] = '\0';
-                            str_append(&md, cbuf, n);
-                            total += n;
+                            /* Count and truncate at 5 lines */
+                            for (size_t k = 0; k < n && line_count < 5; k++) {
+                                str_append(&md, &cbuf[k], 1);
+                                total++;
+                                if (cbuf[k] == '\n') line_count++;
+                            }
                         }
-                        if (total >= 8000)
-                            str_append_cstr(&md, "\n... (truncated)\n");
+                        long file_sz = 0;
+                        fseek(cf, 0, SEEK_END);
+                        file_sz = ftell(cf);
+                        if (total < (size_t)file_sz)
+                            str_append_cstr(&md, "  ...\n");
                         str_append_cstr(&md, "```\n");
                         fclose(cf);
                     }
+                } else {
+                    str_appendf(&md, "**%s** `%s`", tool, sanitize_md_link(desc));
+                    if (!failed && sz > 0)
+                        str_appendf(&md, " → %d chars", sz);
+                    if (failed)
+                        str_append_cstr(&md, " ✗");
+                    str_append_cstr(&md, "\n");
                 }
             }
             str_append_cstr(&md, "\n");
@@ -641,7 +657,58 @@ void ui_state_enter(ui_state_t *ui) {
 
         ui_state_reload_file(ui);
     }
-    /* Non-.md links: no action (could add step expansion later) */
+    /* Non-.md links: treat as raw file (store ref like R0S3) */
+    /* Resolve relative to session_dir and display content */
+    char raw_path[4096];
+    if (uri[0] == '/') {
+        snprintf(raw_path, sizeof(raw_path), "%s", uri);
+    } else {
+        snprintf(raw_path, sizeof(raw_path), "%s/%s",
+                 ui->session_dir, uri);
+    }
+
+    /* Check file exists */
+    FILE *test = fopen(raw_path, "r");
+    if (!test) return;
+    fclose(test);
+
+    /* Save current state to nav stack */
+    if (ui->nav_depth >= ui->nav_cap) {
+        ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+        ui->nav_stack = realloc(ui->nav_stack,
+                                 (size_t)ui->nav_cap * sizeof(nav_entry_t));
+    }
+    nav_entry_t *raw_entry = &ui->nav_stack[ui->nav_depth];
+    raw_entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    raw_entry->scroll_y = ui->scroll_y;
+    raw_entry->scroll_x = ui->scroll_x;
+    raw_entry->cursor_link = ui->cursor_link;
+    ui->nav_depth++;
+
+    /* Read file content and wrap in MD */
+    char *raw_content = read_file(raw_path);
+    if (!raw_content) raw_content = strdup("*Empty*\n");
+
+    str_t wrapped = str_new(strlen(raw_content) + 256);
+    /* Extract just the filename for the heading */
+    const char *fname = strrchr(uri, '/');
+    fname = fname ? fname + 1 : uri;
+    str_appendf(&wrapped, "# %s\n\n```\n", fname);
+    str_append_cstr(&wrapped, raw_content);
+    str_append_cstr(&wrapped, "\n```\n");
+    free(raw_content);
+
+    char *md_source = str_steal(&wrapped);
+    md_doc_free(ui->doc);
+    ui->doc = md_parse(md_source);
+    free(md_source);
+
+    free(ui->current_filepath);
+    ui->current_filepath = strdup(raw_path);
+    ui->scroll_y = 0;
+    ui->scroll_x = 0;
+    ui->cursor_link = 0;
+    ui->dirty = 1;
 }
 
 void ui_state_back(ui_state_t *ui) {
