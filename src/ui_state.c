@@ -342,7 +342,6 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             }
         }
         free(preview);
-        str_append_cstr(&md, "\n");
     }
 
     for (int i = 0; i < qcount; i++) {
@@ -477,7 +476,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                     str_append_cstr(&md, "\n");
                 }
             }
-            str_append_cstr(&md, "\n");
             (void)step;
         }
         cJSON_Delete(entry);
