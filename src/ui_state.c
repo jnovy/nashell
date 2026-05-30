@@ -922,6 +922,34 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
         /* Regenerate react MD and reload if viewing it */
         ui_state_generate_react_md(ui, ui->current_react_loop);
+
+        /* Auto-navigate into reactRX.md on first step so user sees
+         * streaming tokens in real-time instead of just the preview
+         * in session.md. Push current view onto nav stack. */
+        if (ev->step == 0 && !viewing_react_file(ui, ui->current_react_loop)) {
+            if (ui->nav_depth >= ui->nav_cap) {
+                ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+                ui->nav_stack = realloc(ui->nav_stack,
+                                         (size_t)ui->nav_cap * sizeof(nav_entry_t));
+            }
+            nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
+            ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->scroll_y = ui->scroll_y;
+            ne->scroll_x = ui->scroll_x;
+            ne->cursor_link = ui->cursor_link;
+            ui->nav_depth++;
+
+            char rpath[4096];
+            snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
+                     ui->session_dir, ui->current_react_loop);
+            free(ui->current_filepath);
+            ui->current_filepath = strdup(rpath);
+            ui->scroll_y = 0;
+            ui->scroll_x = 0;
+            ui->cursor_link = 0;
+            ui->focus = FOCUS_JOURNAL;
+        }
+
         if (viewing_react_file(ui, ui->current_react_loop)) {
             ui_state_reload_file(ui);
             auto_scroll_bottom(ui);
