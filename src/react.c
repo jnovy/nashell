@@ -1919,22 +1919,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                     free(guidance);
                 } else {
-                    /* No synthesis — inject top memories verbatim (P1 only).
-                     * Still better than session-start-only injection because
-                     * the memory set is refreshed based on evolved context. */
-                    str_t mem_msg = str_new(2048);
+                    /* No synthesis — inject memory references only.
+                     * The model can use memory_recall to retrieve full content
+                     * when needed, avoiding context bloat from raw values. */
+                    str_t mem_msg = str_new(512);
                     str_appendf(&mem_msg,
-                        "[RELEVANT MEMORIES — refreshed at step %d]\n"
-                        "Apply any relevant patterns from these memories "
-                        "to your current task using memory_recall tool. "
-                        "Ignore memories that aren't applicable.\n",
+                        "[MEMORY REFERENCES — refreshed at step %d]\n"
+                        "Use memory_recall to retrieve full content from these keys:\n",
                         step + 1);
                     for (int mi = 0; mi < refreshed.count && mi < 3; mi++) {
-                        str_appendf(&mem_msg, "\n--- %s ---\n%s\n",
+                        str_appendf(&mem_msg, "- %s\n",
                             refreshed.entries[mi].key ?
-                                refreshed.entries[mi].key : "",
-                            refreshed.entries[mi].value ?
-                                refreshed.entries[mi].value : "");
+                                refreshed.entries[mi].key : "");
                         /* Track for validation scoring */
                         tool_track_recalled_key(ctx->tools,
                             refreshed.entries[mi].key);
