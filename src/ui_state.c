@@ -321,17 +321,25 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
                     icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
 
-        /* 10-line preview from reactRX.md */
+        /* 10-line preview from reactRX.md (indented 4 spaces = code block).
+         * We use indentation instead of ``` fences because the preview
+         * content itself may contain ``` markers from code blocks in
+         * reactRX.md, which would break nested fence parsing. */
         char rpath[4096];
         snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                  ui->session_dir, qi->react_loop);
         char *preview = read_last_lines(rpath, 10);
         if (preview && preview[0]) {
-            str_append_cstr(&md, "```\n");
-            str_append_cstr(&md, preview);
-            if (preview[strlen(preview)-1] != '\n')
+            /* Indent each line by 4 spaces for markdown code block */
+            const char *p = preview;
+            while (*p) {
+                const char *eol = strchr(p, '\n');
+                if (!eol) eol = p + strlen(p);
+                str_append_cstr(&md, "    ");
+                str_append(&md, p, (size_t)(eol - p));
                 str_append_cstr(&md, "\n");
-            str_append_cstr(&md, "```\n");
+                p = (*eol == '\n') ? eol + 1 : eol;
+            }
         }
         free(preview);
         str_append_cstr(&md, "\n");

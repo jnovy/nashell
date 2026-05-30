@@ -567,6 +567,12 @@ md_doc_t *md_parse(const char *source) {
         /* Skip everything inside code fences */
         if (in_code_fence) { p++; continue; }
 
+        /* Skip 4-space indented lines (markdown code blocks via indentation) */
+        if (*p == ' ' && p[1] == ' ' && p[2] == ' ' && p[3] == ' ') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+
         /* Look for [text](uri) pattern — only on lines starting with [ */
         if (*p == '[') {
             /* Find ] on the SAME line (don't cross line boundaries) */
