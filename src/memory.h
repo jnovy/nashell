@@ -85,10 +85,10 @@ int memory_unpin(memory_t *m, const char *key);
  * Caller must free with memory_results_free(). */
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results);
 
-/* Build a compact index of all memory keys+tags for system prompt injection.
- * Format: "  key1 [tag1, tag2]\n  key2 [tag3]\n..."
+/* Build a compact memory summary (counts by type only).
+ * Format: "Memory: N entries, X lessons, Y strategies, Z skills, ..."
  * Caller must free. Returns NULL if no memories. */
-char *memory_build_index(memory_t *m, int max_entries);
+char *memory_build_index(memory_t *m);
 
 /* Load all pinned memories and return their values concatenated.
  * Format: "[PINNED: key1]\nvalue1\n\n[PINNED: key2]\nvalue2\n..."

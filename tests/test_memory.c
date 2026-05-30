@@ -69,11 +69,12 @@ static void test_build_index(void) {
     memory_store(m, "strategy:b", "value b", NULL, 0, 0, NULL, NULL, 0);
     memory_store(m, "fact:c", "value c", NULL, 0, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
-    ASSERT_STR_CONTAINS(index, "lesson");
-    ASSERT_STR_CONTAINS(index, "strategy");
-    ASSERT_STR_CONTAINS(index, "fact");
+    ASSERT_STR_CONTAINS(index, "3 entries");
+    ASSERT_STR_CONTAINS(index, "1 lessons");
+    ASSERT_STR_CONTAINS(index, "1 strategies");
+    ASSERT_STR_CONTAINS(index, "1 facts");
     free(index);
 
     memory_free(m);
@@ -157,7 +158,7 @@ static void test_index_type_grouping(void) {
     memory_store(m, "task:t1", "task value", NULL, 0, 0, NULL, NULL, 0);
     memory_store(m, "skill:sk1", "skill value", NULL, 0, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
 
     /* Verify header contains type counts */
@@ -190,7 +191,7 @@ static void test_index_topic_counts(void) {
     memory_store(m, "fact:f1", "v1", NULL, 0, 0, NULL, NULL, 0);
     memory_store(m, "skill:sk1", "v1", NULL, 0, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
 
     /* Verify counts */
@@ -218,15 +219,12 @@ static void test_index_cap(void) {
         memory_store(m, key, "some value", NULL, 0, 0, NULL, NULL, 0);
     }
 
-    char *index = memory_build_index(m, 3);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
-
-    /* Verify cap message */
-    ASSERT_STR_CONTAINS(index, "showing first 3 of 10");
-    ASSERT_STR_CONTAINS(index, "memory_recall");
 
     /* Verify total count in header */
     ASSERT_STR_CONTAINS(index, "10 entries");
+    ASSERT_STR_CONTAINS(index, "10 facts");
 
     free(index);
     memory_free(m);
@@ -242,7 +240,7 @@ static void test_index_no_cap_when_under_limit(void) {
     memory_store(m, "fact:a", "v1", NULL, 0, 0, NULL, NULL, 0);
     memory_store(m, "fact:b", "v2", NULL, 0, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
 
     /* Should NOT contain cap message */
@@ -262,13 +260,12 @@ static void test_index_with_tags_display(void) {
     const char *tags[] = {"redis", "migration"};
     memory_store(m, "lesson:redis-upgrade", "upgrade guide", tags, 2, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
 
-    /* Verify tags are shown */
-    ASSERT_STR_CONTAINS(index, "redis");
-    ASSERT_STR_CONTAINS(index, "migration");
-    ASSERT_STR_CONTAINS(index, "lesson:redis-upgrade");
+    /* Index now returns counts only — verify it reflects the entry */
+    ASSERT_STR_CONTAINS(index, "1 entries");
+    ASSERT_STR_CONTAINS(index, "1 lessons");
 
     free(index);
     memory_free(m);
@@ -310,12 +307,12 @@ static void test_skill_in_index(void) {
     memory_store(m, "skill:deploy-app", "deploy steps", NULL, 0, 0, NULL, NULL, 0);
     memory_store(m, "lesson:l1", "lesson", NULL, 0, 0, NULL, NULL, 0);
 
-    char *index = memory_build_index(m, 50);
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
 
-    /* Verify skill appears in index and is counted */
+    /* Verify skill is counted in index */
+    ASSERT_STR_CONTAINS(index, "2 entries");
     ASSERT_STR_CONTAINS(index, "1 skills");
-    ASSERT_STR_CONTAINS(index, "skill:deploy-app");
 
     free(index);
     memory_free(m);
@@ -397,10 +394,9 @@ static void test_index_unlimited_with_zero(void) {
         memory_store(m, key, "value", NULL, 0, 0, NULL, NULL, 0);
     }
 
-    /* max_entries=0 should show all (used for MEMORY.md) */
-    char *index = memory_build_index(m, 0);
+    /* Index returns counts only */
+    char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
-    ASSERT(strstr(index, "showing first") == NULL);  /* no cap message */
     ASSERT_STR_CONTAINS(index, "5 entries");
 
     free(index);

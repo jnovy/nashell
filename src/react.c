@@ -271,12 +271,11 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* Step 2: Add memory context (fresh) */
     if (ctx->tools->memory) {
-        int mem_max = ctx->tools->cfg ? ctx->tools->cfg->memory_index_max : 50;
-        char *mem_index = memory_build_index(ctx->tools->memory, mem_max);
-        if (mem_index && strlen(mem_index) > 0) {
-            char *mem_msg = malloc(strlen(mem_index) + 64);
+        char *mem_summary = memory_build_index(ctx->tools->memory);
+        if (mem_summary && strlen(mem_summary) > 0) {
+            char *mem_msg = malloc(strlen(mem_summary) + 128);
             if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s", mem_index);
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.", mem_summary);
                 llm_chat_add(chat, "user", mem_msg);
                 free(mem_msg);
             }
@@ -294,10 +293,10 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
         /* Log memory context for debugging (checkpoint restore path) */
         log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_index, pinned,
+                           ctx->tools->step, mem_summary, pinned,
                            NULL, user_query);
 
-        free(mem_index);
+        free(mem_summary);
         free(pinned);
     }
 
@@ -728,14 +727,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * LLM-pruned summaries). Within-loop recovery uses LLM summarization
      * instead of manifest re-injection. */
 
-    /* Inject memory index (list of available memories for the LLM to know about) */
+    /* Inject memory summary (counts only — no alphabetical listing) */
     if (ctx->tools->memory) {
-        int mem_max = ctx->tools->cfg ? ctx->tools->cfg->memory_index_max : 50;
-        char *mem_index = memory_build_index(ctx->tools->memory, mem_max);
-        if (mem_index && strlen(mem_index) > 0) {
-            char *mem_msg = malloc(strlen(mem_index) + 64);
+        char *mem_summary = memory_build_index(ctx->tools->memory);
+        if (mem_summary && strlen(mem_summary) > 0) {
+            char *mem_msg = malloc(strlen(mem_summary) + 128);
             if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s", mem_index);
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.", mem_summary);
                 llm_chat_add(chat, "user", mem_msg);
                 free(mem_msg);
             }
@@ -798,12 +796,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         #undef INJECT_TYPE
 
-        /* Log memory context for debugging — before freeing mem_index/pinned */
+        /* Log memory context for debugging — before freeing mem_summary/pinned */
         log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_index, pinned,
+                           ctx->tools->step, mem_summary, pinned,
                            &all_memories, user_query);
 
-        free(mem_index);
+        free(mem_summary);
         free(pinned);
         memory_results_free(&all_memories);
     }

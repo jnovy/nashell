@@ -802,33 +802,18 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
 /* ── build_index ─────────────────────────────────────── */
 
-/* FIX #11: Sorted memory index — entries sorted alphabetically by key */
-typedef struct {
-    char *line;   /* formatted line: "  key [tags]\n" */
-    char *key;    /* key for sorting */
-} index_entry_t;
-
-static int index_entry_cmp(const void *a, const void *b) {
-    return strcmp(((const index_entry_t *)a)->key,
-                 ((const index_entry_t *)b)->key);
-}
-
-/* Context for build_index callback */
+/* Context for build_index callback — only counts by type */
 typedef struct {
     int n_lessons, n_strategies, n_facts, n_tasks, n_skills, n_other;
     int total;
-    int entries_cap;
-    index_entry_t *entries;
 } build_index_ctx_t;
 
 static int build_index_cb(const char *dirpath __attribute__((unused)), cJSON *entry, void *user_data) {
     build_index_ctx_t *ctx = (build_index_ctx_t *)user_data;
 
     cJSON *k = cJSON_GetObjectItem(entry, "key");
-    cJSON *tags = cJSON_GetObjectItem(entry, "tags");
 
     if (k && k->valuestring) {
-        /* Count by type */
         if (strncmp(k->valuestring, "lesson:", 7) == 0) ctx->n_lessons++;
         else if (strncmp(k->valuestring, "strategy:", 9) == 0) ctx->n_strategies++;
         else if (strncmp(k->valuestring, "fact:", 5) == 0) ctx->n_facts++;
@@ -836,60 +821,22 @@ static int build_index_cb(const char *dirpath __attribute__((unused)), cJSON *en
         else if (strncmp(k->valuestring, "skill:", 6) == 0) ctx->n_skills++;
         else ctx->n_other++;
 
-        /* Build formatted line */
-        str_t line = str_new(256);
-        str_appendf(&line, "  %s", k->valuestring);
-        if (tags && cJSON_GetArraySize(tags) > 0) {
-            str_append_cstr(&line, " [");
-            int n = cJSON_GetArraySize(tags);
-            for (int i = 0; i < n; i++) {
-                cJSON *t = cJSON_GetArrayItem(tags, i);
-                if (i > 0) str_append_cstr(&line, ", ");
-                if (t && t->valuestring) str_append_cstr(&line, t->valuestring);
-            }
-            str_append_cstr(&line, "]");
-        }
-        str_append_cstr(&line, "\n");
-
-        /* Grow entries array if needed */
-        if (ctx->total >= ctx->entries_cap) {
-            ctx->entries_cap *= 2;
-            ctx->entries = realloc(ctx->entries, (size_t)ctx->entries_cap * sizeof(index_entry_t));
-        }
-        ctx->entries[ctx->total].line = str_steal(&line);
-        ctx->entries[ctx->total].key = strdup(k->valuestring);
         ctx->total++;
     }
     return JSON_CB_CONTINUE;
 }
 
-char *memory_build_index(memory_t *m, int max_entries) {
+/* Build a compact memory summary (counts only). No alphabetical listing.
+ * Caller must free. Returns NULL if no memories. */
+char *memory_build_index(memory_t *m) {
     if (!m) return NULL;
 
-    /* Count entries by type for progressive disclosure */
     build_index_ctx_t ctx = {0};
-    ctx.entries_cap = 64;
-    ctx.entries = calloc((size_t)ctx.entries_cap, sizeof(index_entry_t));
-
     for_each_json_entry(m->dir, build_index_cb, &ctx);
 
-    if (ctx.total == 0) {
-        free(ctx.entries);
-        return NULL;
-    }
+    if (ctx.total == 0) return NULL;
 
-    /* Sort entries alphabetically by key (FIX #11) */
-    qsort(ctx.entries, (size_t)ctx.total, sizeof(index_entry_t), index_entry_cmp);
-
-    /* Build output string */
-    str_t out = str_new(2048);
-    int show = (max_entries == 0) ? ctx.total : (ctx.total < max_entries ? ctx.total : max_entries);
-    for (int i = 0; i < show; i++) {
-        str_append_cstr(&out, ctx.entries[i].line);
-    }
-
-    /* Build header with topic summary */
-    str_t result = str_new(2048);
+    str_t result = str_new(256);
     str_appendf(&result, "Memory: %d entries", ctx.total);
     if (ctx.n_lessons > 0) str_appendf(&result, ", %d lessons", ctx.n_lessons);
     if (ctx.n_strategies > 0) str_appendf(&result, ", %d strategies", ctx.n_strategies);
@@ -897,20 +844,6 @@ char *memory_build_index(memory_t *m, int max_entries) {
     if (ctx.n_facts > 0) str_appendf(&result, ", %d facts", ctx.n_facts);
     if (ctx.n_tasks > 0) str_appendf(&result, ", %d tasks", ctx.n_tasks);
     if (ctx.n_other > 0) str_appendf(&result, ", %d other", ctx.n_other);
-    str_append_cstr(&result, "\n");
-
-    if (ctx.total > max_entries && max_entries > 0) {
-        str_appendf(&result, "  (showing first %d of %d — use memory_recall to search)\n", max_entries, ctx.total);
-    }
-    str_append_cstr(&result, str_cstr(&out));
-    str_free(&out);
-
-    /* Free entries */
-    for (int i = 0; i < ctx.total; i++) {
-        free(ctx.entries[i].line);
-        free(ctx.entries[i].key);
-    }
-    free(ctx.entries);
 
     return str_steal(&result);
 }
