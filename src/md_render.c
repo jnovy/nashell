@@ -549,19 +549,39 @@ md_doc_t *md_parse(const char *source) {
     if (!doc) return NULL;
     doc->source = strdup(source ? source : "");
 
-    /* Extract [text](uri) links */
+    /* Extract [text](uri) links — skip code fences (``` blocks) */
     const char *p = doc->source;
     int line_num = 0;
+    int in_code_fence = 0;
     while (*p) {
         if (*p == '\n') { line_num++; p++; continue; }
 
-        /* Look for [text](uri) pattern */
+        /* Detect code fence toggle (``` at start of line) */
+        if (*p == '`' && p[1] == '`' && p[2] == '`') {
+            in_code_fence = !in_code_fence;
+            /* Skip to end of line */
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+
+        /* Skip everything inside code fences */
+        if (in_code_fence) { p++; continue; }
+
+        /* Look for [text](uri) pattern — only on lines starting with [ */
         if (*p == '[') {
+            /* Find ] on the SAME line (don't cross line boundaries) */
             const char *text_start = p + 1;
-            const char *text_end = strchr(text_start, ']');
+            const char *text_end = NULL;
+            for (const char *q = text_start; *q && *q != '\n'; q++) {
+                if (*q == ']') { text_end = q; break; }
+            }
             if (text_end && text_end[1] == '(') {
                 const char *uri_start = text_end + 2;
-                const char *uri_end = strchr(uri_start, ')');
+                /* Find ) on the SAME line */
+                const char *uri_end = NULL;
+                for (const char *q = uri_start; *q && *q != '\n'; q++) {
+                    if (*q == ')') { uri_end = q; break; }
+                }
                 if (uri_end) {
                     /* Found a link */
                     if (doc->link_count >= doc->link_cap) {
