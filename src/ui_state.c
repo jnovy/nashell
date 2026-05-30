@@ -271,6 +271,7 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                             cJSON *pat = cJSON_GetObjectItem(params, "pattern");
                             cJSON *qry = cJSON_GetObjectItem(params, "query");
                             cJSON *res = cJSON_GetObjectItem(params, "result");
+                            cJSON *url = cJSON_GetObjectItem(params, "url");
                             if (strcmp(t, "grep_search") == 0 && pat && pat->valuestring) {
                                 /* Combine pattern + path so TUI shows what file was searched */
                                 char grep_desc[128];
@@ -309,6 +310,8 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                 } else {
                                     desc = path->valuestring;
                                 }
+                            } else if ((strcmp(t, "web_fetch") == 0 || strcmp(t, "web_search") == 0) && url && url->valuestring) {
+                                desc = url->valuestring;
                             } else if (cmd && cmd->valuestring) desc = cmd->valuestring;
                             else if (path && path->valuestring) desc = path->valuestring;
                             else if (pat && pat->valuestring) desc = pat->valuestring;
