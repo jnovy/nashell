@@ -169,6 +169,9 @@ static void print_banner(const config_t *cfg, const char *props_json,
            think_str,
            cfg->stream ? "on" : "off");
     printf("data:   %s\n", nash_dir);
+    char cwd_buf[4096];
+    if (getcwd(cwd_buf, sizeof(cwd_buf)))
+        printf("cwd:    %s\n", cwd_buf);
     printf("\n");
 }
 
@@ -256,6 +259,9 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
                 ts,
                 cfg->stream ? "on" : "off");
     str_appendf(&s, "data:   %s\n", nash_dir);
+    char cwd_buf[4096];
+    if (getcwd(cwd_buf, sizeof(cwd_buf)))
+        str_appendf(&s, "cwd:    %s\n", cwd_buf);
     if (session_dir)
         str_appendf(&s, "\n[session: %s]\n", session_dir);
 
