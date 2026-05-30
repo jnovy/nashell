@@ -133,6 +133,19 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
         url && url->valuestring)
         return url->valuestring;
+    /* Truncate done/plan result to first line, max 80 chars */
+    if ((strcmp(tool, "done") == 0 || strcmp(tool, "plan") == 0)
+        && res && res->valuestring) {
+        static char trunc_desc[128];
+        const char *s = res->valuestring;
+        /* Find first newline */
+        const char *nl = strchr(s, '\n');
+        int len = nl ? (int)(nl - s) : (int)strlen(s);
+        if (len > 80) len = 80;
+        snprintf(trunc_desc, sizeof(trunc_desc), "%.*s%s",
+                 len, s, (nl || (int)strlen(s) > 80) ? "..." : "");
+        return trunc_desc;
+    }
     if (cmd && cmd->valuestring) return cmd->valuestring;
     if (path && path->valuestring) return path->valuestring;
     if (pat && pat->valuestring) return pat->valuestring;
@@ -217,6 +230,9 @@ void ui_state_free(ui_state_t *ui) {
     for (int i = 0; i < ui->history_count; i++)
         free(ui->history[i]);
     free(ui->history);
+    for (int i = 0; i < ui->expanded_count; i++)
+        free(ui->expanded_uris[i]);
+    free(ui->expanded_uris);
     pthread_mutex_destroy(&ui->mtx);
     free(ui);
 }
@@ -439,10 +455,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         str_append_cstr(&md, " ✗");
                     str_appendf(&md, "](%s)\n", ref);
 
-                    /* Show 5-line preview from store — only for the LAST step.
-                     * Earlier steps are collapsed (just the hyperlink line). */
+                    /* Show preview if: last step OR explicitly toggled via 'c' key.
+                     * Earlier steps are collapsed unless user expands them. */
                     int is_last_step = (step_idx == total_steps - 1);
-                    if (!is_last_step) goto skip_preview;
+                    int is_expanded = 0;
+                    for (int ei = 0; ei < ui->expanded_count; ei++) {
+                        if (strcmp(ui->expanded_uris[ei], ref) == 0) {
+                            is_expanded = 1;
+                            break;
+                        }
+                    }
+                    if (!is_last_step && !is_expanded) goto skip_preview;
                     char rpath[4096];
                     snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, ref);
                     FILE *cf = fopen(rpath, "r");
@@ -735,6 +758,52 @@ void ui_state_enter(ui_state_t *ui) {
     ui->scroll_y = 0;
     ui->scroll_x = 0;
     ui->cursor_link = 0;
+    ui->dirty = 1;
+}
+
+/* Toggle collapse/expand preview for the currently selected link */
+void ui_state_toggle_preview(ui_state_t *ui) {
+    if (!ui || !ui->doc || ui->doc->link_count == 0) return;
+    if (ui->focus != FOCUS_JOURNAL) return;
+
+    int idx = ui->cursor_link;
+    if (idx < 0 || idx >= ui->doc->link_count) return;
+
+    const char *uri = ui->doc->links[idx].uri;
+    if (!uri || !uri[0]) return;
+
+    /* Check if already expanded — if so, remove it */
+    for (int i = 0; i < ui->expanded_count; i++) {
+        if (strcmp(ui->expanded_uris[i], uri) == 0) {
+            free(ui->expanded_uris[i]);
+            ui->expanded_uris[i] = ui->expanded_uris[--ui->expanded_count];
+            goto regen;
+        }
+    }
+
+    /* Not expanded — add it */
+    if (ui->expanded_count >= ui->expanded_cap) {
+        ui->expanded_cap = ui->expanded_cap ? ui->expanded_cap * 2 : 16;
+        ui->expanded_uris = realloc(ui->expanded_uris,
+                                     (size_t)ui->expanded_cap * sizeof(char *));
+    }
+    ui->expanded_uris[ui->expanded_count++] = strdup(uri);
+
+regen:
+    /* Regenerate the current file to reflect the change */
+    if (ui->nav_depth > 0) {
+        /* Inside a reactRX.md — figure out which react loop */
+        if (ui->current_filepath) {
+            const char *r = strstr(ui->current_filepath, "reactR");
+            if (r) {
+                int loop = atoi(r + 6);
+                ui_state_generate_react_md(ui, loop);
+            }
+        }
+    } else {
+        ui_state_generate_session_md(ui);
+    }
+    ui_state_reload_file(ui);
     ui->dirty = 1;
 }
 

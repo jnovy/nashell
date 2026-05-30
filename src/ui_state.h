@@ -81,6 +81,11 @@ typedef struct {
     int            bg_jobs;
     volatile int  *pause_flag;
 
+    /* ── Preview toggle (expanded store refs) ── */
+    char         **expanded_uris;     /* URIs toggled to show preview */
+    int            expanded_count;
+    int            expanded_cap;
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;
@@ -135,6 +140,9 @@ void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text);
 void ui_state_set_banner(ui_state_t *ui, const char *banner);
 void ui_state_add_query(ui_state_t *ui, const char *query_text);
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal);
+
+/* Toggle collapse/expand preview for the currently selected link */
+void ui_state_toggle_preview(ui_state_t *ui);
 
 /* ── Breadcrumb path for status bar ──────────────────────── */
 

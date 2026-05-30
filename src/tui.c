@@ -664,6 +664,14 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_QUERY) ui_state_input_delete(ui);
         break;
 
+    case 'c':
+        if (ui->focus == FOCUS_JOURNAL) {
+            ui_state_toggle_preview(ui);
+            break;
+        }
+        /* fall through to typing in query */
+        goto handle_default;
+
     default:
     handle_default:
         if (ui->focus == FOCUS_QUERY && ch >= 32 && ch < 127) {
