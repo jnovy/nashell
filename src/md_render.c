@@ -978,10 +978,14 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     wp += chunk;
                     remaining -= chunk;
                     lines_consumed++;
+                    first = 0;
+                    /* Advance render_line for continuation chunks so
+                     * each wrapped segment renders on its own row.
+                     * Without this, all chunks render at the same row
+                     * and overwrite each other — only the last chunk
+                     * was visible, making wrapping appear broken. */
+                    if (remaining > 0) render_line++;
                 }
-                /* Item 9: explicit line advancement */
-                if (lines_consumed > 1)
-                    advance_render_line(&render_line, lines_consumed);
             }
 
         } else if (is_link_line) {
