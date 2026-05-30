@@ -321,27 +321,26 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
                     icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
 
-        /* 10-line preview from reactRX.md (indented 4 spaces = code block).
-         * We use indentation instead of ``` fences because the preview
-         * content itself may contain ``` markers from code blocks in
-         * reactRX.md, which would break nested fence parsing. */
-        char rpath[4096];
-        snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
-                 ui->session_dir, qi->react_loop);
-        char *preview = read_last_lines(rpath, 10);
-        if (preview && preview[0]) {
-            /* Indent each line by 4 spaces for markdown code block */
-            const char *p = preview;
-            while (*p) {
-                const char *eol = strchr(p, '\n');
-                if (!eol) eol = p + strlen(p);
-                str_append_cstr(&md, "    ");
-                str_append(&md, p, (size_t)(eol - p));
-                str_append_cstr(&md, "\n");
-                p = (*eol == '\n') ? eol + 1 : eol;
+        /* Preview: only show for the ACTIVE react loop.
+         * All other react loops are collapsed (just the link line). */
+        if (is_active) {
+            char rpath[4096];
+            snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
+                     ui->session_dir, qi->react_loop);
+            char *preview = read_last_lines(rpath, 10);
+            if (preview && preview[0]) {
+                const char *p = preview;
+                while (*p) {
+                    const char *eol = strchr(p, '\n');
+                    if (!eol) eol = p + strlen(p);
+                    str_append_cstr(&md, "    ");
+                    str_append(&md, p, (size_t)(eol - p));
+                    str_append_cstr(&md, "\n");
+                    p = (*eol == '\n') ? eol + 1 : eol;
+                }
             }
+            free(preview);
         }
-        free(preview);
     }
 
     for (int i = 0; i < qcount; i++) {
@@ -371,6 +370,22 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
     char *query_text = NULL;
     char line[65536];
+
+    /* First pass: count total steps for this react loop.
+     * Used to determine which step is "last" (only last step
+     * gets expanded preview; others are collapsed). */
+    int total_steps = 0;
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
+        const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+        if (loop == react_loop && t && strcmp(t, "query") != 0 && strcmp(t, "system") != 0)
+            total_steps++;
+        cJSON_Delete(entry);
+    }
+    rewind(f);
+    int step_idx = 0;
 
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
@@ -430,7 +445,10 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         str_append_cstr(&md, " ✗");
                     str_appendf(&md, "](%s)\n", ref);
 
-                    /* Show 5-line preview from store */
+                    /* Show 5-line preview from store — only for the LAST step.
+                     * Earlier steps are collapsed (just the hyperlink line). */
+                    int is_last_step = (step_idx == total_steps - 1);
+                    if (!is_last_step) goto skip_preview;
                     char rpath[4096];
                     snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, ref);
                     FILE *cf = fopen(rpath, "r");
@@ -467,6 +485,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         str_append_cstr(&md, "```\n");
                         fclose(cf);
                     }
+                skip_preview:;
                 } else {
                     str_appendf(&md, "**%s** `%s`", tool, sanitize_md_link(desc));
                     if (!failed && sz > 0)
@@ -476,6 +495,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                     str_append_cstr(&md, "\n");
                 }
             }
+            step_idx++;
             (void)step;
         }
         cJSON_Delete(entry);
