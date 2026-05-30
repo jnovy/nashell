@@ -664,6 +664,7 @@ void ui_state_enter(ui_state_t *ui) {
         ui->cursor_link = 0;
 
         ui_state_reload_file(ui);
+        return;  /* done — don't fall through to raw file handler */
     }
     /* Non-.md links: treat as raw file (store ref like R0S3) */
     /* Resolve relative to session_dir and display content */
