@@ -1145,6 +1145,7 @@ int main(int argc, char **argv) {
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_RUNNING, "Running...");
                 ui_state_add_query(ui, submitted_query);
+                ui->current_react_loop = tools.react_loop;
                 pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
                 iargs = (infer_args_t){
@@ -1167,7 +1168,7 @@ int main(int argc, char **argv) {
                 if (now > last_refresh) {
                     last_refresh = now;
                     pthread_mutex_lock(&ui->mtx);
-                    ui_state_rebuild_md(ui);
+                    ui_state_reload_file(ui);
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
                 }

@@ -19,36 +19,32 @@ typedef enum {
     STATUS_ERROR
 } ui_status_t;
 
-/* ── Per-query link state ──────────────────────────────── */
+/* ── Navigation stack entry ──────────────────────────────── */
 
-typedef enum {
-    LINK_COLLAPSED,     /* just show the query line */
-    LINK_SHOW_RESULT,   /* show query + result preview */
-    LINK_SHOW_STEPS,
-    LINK_SHOW_CONTENT     /* show query + all react steps */
-} link_state_t;
+typedef struct {
+    char *filepath;     /* absolute path to .md file */
+    int   scroll_y;     /* saved scroll position */
+    int   scroll_x;     /* saved horizontal scroll */
+    int   cursor_link;  /* saved cursor position */
+} nav_entry_t;
 
-/* ── Main UI state (the ViewModel) ───────────────────── */
+/* ── Main UI state (the ViewModel) ─────────────────────── */
 
 typedef struct {
     /* ── MD document for main pane ── */
     md_doc_t      *doc;              /* parsed MD document */
     int            scroll_y;         /* vertical scroll offset */
-    int            scroll_x;         /* horizontal scroll offset (for wide tables) */
+    int            scroll_x;         /* horizontal scroll offset */
     int            visible_rows;     /* main pane height (set by tui.c) */
     int            cursor_link;      /* index into doc->links[] */
 
-    /* ── Per-link state (indexed by link position) ── */
-    link_state_t  *link_states;      /* array: one state per link */
-    int            link_states_count;
-    int            link_states_cap;
+    /* ── Navigation stack (hierarchical MD browser) ── */
+    nav_entry_t   *nav_stack;        /* stack of parent views */
+    int            nav_depth;        /* current depth (0 = session.md) */
+    int            nav_cap;          /* allocated capacity */
+    char          *current_filepath; /* path of currently displayed file */
 
-    /* Step content expansion — tracked by URI, not link index */
-    char         **expanded_uris;     /* URIs of steps in SHOW_CONTENT state */
-    int            expanded_count;
-    int            expanded_cap;
-
-    /* ── Source data for MD generation ── */
+    /* ── Source data ── */
     char          *banner;           /* ASCII art + server info */
     char          *session_dir;
     store_t       *store;
@@ -76,35 +72,36 @@ typedef struct {
     int            stream_cap;
     int            current_step;
     int            max_steps;
+    int            current_react_loop;  /* which react loop is active */
 
-    /* ── Model / context info (for nashell-style status bar) ── */
-    char          *model_name;    /* e.g. "claude-sonnet-4-20250514" */
-    int            context_size;  /* server n_ctx (for ctx % calculation) */
-    int            context_used;  /* current prompt tokens in context */
-    int            bg_jobs;       /* number of background jobs */
-    volatile int  *pause_flag;    /* pointer to react.pause_requested (set by main.c) */
+    /* ── Model / context info (for status bar) ── */
+    char          *model_name;
+    int            context_size;
+    int            context_used;
+    int            bg_jobs;
+    volatile int  *pause_flag;
 
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;
 } ui_state_t;
 
-/* ── Lifecycle ───────────────────────────────────────── */
+/* ── Lifecycle ───────────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store);
 void        ui_state_free(ui_state_t *ui);
 
-/* ── Navigation ──────────────────────────────────────── */
+/* ── Navigation ──────────────────────────────────────────── */
 
 void ui_state_tab(ui_state_t *ui);
 void ui_state_up(ui_state_t *ui);
 void ui_state_down(ui_state_t *ui);
-void ui_state_enter(ui_state_t *ui);     /* toggle link state */
-void ui_state_back(ui_state_t *ui);      /* collapse current link */
+void ui_state_enter(ui_state_t *ui);     /* follow .md link or toggle step */
+void ui_state_back(ui_state_t *ui);      /* pop nav stack (Esc) */
 void ui_state_page_up(ui_state_t *ui);
 void ui_state_page_down(ui_state_t *ui);
 
-/* ── Input editing ───────────────────────────────────── */
+/* ── Input editing ───────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch);
 void ui_state_input_backspace(ui_state_t *ui);
@@ -114,21 +111,35 @@ void ui_state_input_right(ui_state_t *ui);
 void ui_state_input_home(ui_state_t *ui);
 void ui_state_input_end(ui_state_t *ui);
 
-/* ── React event handler ─────────────────────────────── */
+/* ── React event handler ─────────────────────────────────── */
 
 void ui_state_on_event(const react_event_t *ev, void *userdata);
 
-/* ── MD document regeneration ────────────────────────── */
+/* ── File-based MD operations ────────────────────────────── */
 
-/* Regenerate the MD document from journal + link states.
- * Called after: link state change, new query, journal reload. */
-void ui_state_rebuild_md(ui_state_t *ui);
+/* Reload the current file from disk and re-parse.
+ * Called by timer refresh and after navigation. */
+void ui_state_reload_file(ui_state_t *ui);
 
-/* ── Status & data updates ───────────────────────────── */
+/* Generate/update session.md from journal + banner.
+ * Called after: new query, step complete, done. */
+void ui_state_generate_session_md(ui_state_t *ui);
+
+/* Generate/update reactRX.md for a specific react loop.
+ * Called by on_event as steps progress. */
+void ui_state_generate_react_md(ui_state_t *ui, int react_loop);
+
+/* ── Status & data updates ───────────────────────────────── */
 
 void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text);
 void ui_state_set_banner(ui_state_t *ui, const char *banner);
 void ui_state_add_query(ui_state_t *ui, const char *query_text);
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal);
+
+/* ── Breadcrumb path for status bar ──────────────────────── */
+
+/* Build breadcrumb string like "session.md > reactR2.md".
+ * Returns malloc'd string, caller frees. */
+char *ui_state_breadcrumb(ui_state_t *ui);
 
 #endif

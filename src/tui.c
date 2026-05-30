@@ -354,6 +354,16 @@ static void render_bottom(ui_state_t *ui) {
                          "%s", ui->status_text);
     }
 
+    /* Breadcrumb path (shows current file in nav stack) */
+    {
+        char *crumb = ui_state_breadcrumb(ui);
+        if (crumb && crumb[0]) {
+            slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                             " │ %s", crumb);
+        }
+        free(crumb);
+    }
+
     /* Right side: model │ ctx │ bg */
     if (ui->model_name && ui->model_name[0]) {
         slen += snprintf(status_line + slen, sizeof(status_line) - slen,
