@@ -459,6 +459,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         file_sz = ftell(cf);
                         if (total < (size_t)file_sz)
                             str_append_cstr(&md, "  ...\n");
+                        /* Ensure content ends with newline before closing fence.
+                         * Without this, the closing ``` lands on the same line as
+                         * the last content line, and md_parse() won't detect it
+                         * as a code fence toggle (it checks start-of-line). */
+                        if (md.len > 0 && md.data[md.len - 1] != '\n')
+                            str_append_cstr(&md, "\n");
                         str_append_cstr(&md, "```\n");
                         fclose(cf);
                     }
