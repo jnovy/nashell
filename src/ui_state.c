@@ -423,7 +423,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                        thought[tlen-1] == '\r' || thought[tlen-1] == ' '))
                     tlen--;
                 if (tlen > 0)
-                    str_appendf(&md, "💭 %.*s\n\n", tlen, thought);
+                    str_appendf(&md, "💭 %.*s\n", tlen, thought);
             }
             free(thought);
 
