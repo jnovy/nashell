@@ -742,10 +742,11 @@ void ui_state_back(ui_state_t *ui) {
         ui->scroll_x = entry->scroll_x;
         ui->cursor_link = entry->cursor_link;
 
-        /* Regenerate session.md before loading (previews may have changed) */
-        if (ui->nav_depth == 0)
-            ui_state_generate_session_md(ui);
-
+        /* Just reload from disk — session.md is already there.
+         * The 1-second timer refresh will regenerate it if the react
+         * loop has progressed. Calling generate_session_md() here was
+         * expensive: it re-reads journal.jsonl + all reactRX.md files
+         * for previews, making Esc noticeably slow. */
         ui_state_reload_file(ui);
     }
     ui->dirty = 1;
