@@ -644,9 +644,12 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     char *post_hash = store_save(ctx->store, result);
     char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");
 
-    /* Generate diff-like output for display (stored as the main ref).
-     * Shows context lines, removed lines ("- "), and added lines ("+ ").
-     * The TUI's md_render detects +/- prefixes and applies diff colors. */
+    /* Generate diff output with line numbers (matching nashell format).
+     * Format: "  Added N lines, removed M lines\n"
+     *         "  {lnum:5d} +added_line\n"
+     *         "  {lnum:5d} -removed_line\n"
+     *         "  {lnum:5d}  context_line\n"
+     * The TUI's md_render detects this format in ```diff blocks. */
     {
         /* Count lines before the edit for context — walk backward from pos */
         /* First, find the start of the line containing pos */
@@ -656,6 +659,11 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             while (scan >= content && *scan != '\n') scan--;
             line_start = scan + 1;
         }
+
+        /* Compute 1-based line number of line_start */
+        int start_lnum = 1;
+        for (const char *p = content; p < line_start; p++)
+            if (*p == '\n') start_lnum++;
 
         /* Walk backward from the byte before line_start, skipping the
          * newline that terminates the line before the edit line. Then
@@ -684,6 +692,11 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             ctx_start = content;
         }
 
+        /* Compute 1-based line number of ctx_start */
+        int ctx_start_lnum = 1;
+        for (const char *p = content; p < ctx_start; p++)
+            if (*p == '\n') ctx_start_lnum++;
+
         /* Find context after the edit */
         char *after_edit = result + (size_t)(pos - content) + new_len;
         size_t after_len = (result + result_len) - after_edit;
@@ -695,21 +708,44 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         }
         if (ctx_end > result + result_len) ctx_end = result + result_len;
 
+        /* Count added/removed lines for summary */
+        int added_count = 0, removed_count = 0;
+        {
+            const char *p = old_text;
+            while (*p) { if (*p == '\n') removed_count++; p++; }
+            if (old_len > 0 && old_text[old_len - 1] != '\n') removed_count++;
+            p = new_text;
+            while (*p) { if (*p == '\n') added_count++; p++; }
+            if (new_len > 0 && new_text[new_len - 1] != '\n') added_count++;
+        }
+
         /* Build diff output */
         size_t diff_cap = 4096;
         char *diff = malloc(diff_cap);
         int diff_len = 0;
+
+        /* Summary header */
+        diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                             "  Added %d lines, removed %d lines\n",
+                             added_count, removed_count);
+
+        /* Track line numbers: old_lnum for removed, new_lnum for added */
+        int old_lnum = ctx_start_lnum;
+        int new_lnum = ctx_start_lnum;
 
         /* Context before — stop at line_start (start of edit line), not pos */
         char *cl = ctx_start;
         while (cl < line_start) {
             char *nl = strchr(cl, '\n');
             int llen = nl ? (int)(nl - cl) : (int)(line_start - cl);
-            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
                 diff = realloc(diff, diff_cap);
             }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, " %.*s\n", llen, cl);
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                 "  %5d  %.*s\n", new_lnum, llen, cl);
+            old_lnum++;
+            new_lnum++;
             cl = nl ? nl + 1 : cl + llen;
         }
 
@@ -718,11 +754,13 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         while (cl < pos + old_len) {
             char *nl = memchr(cl, '\n', old_len - (size_t)(cl - pos));
             int llen = nl ? (int)(nl - cl) : (int)(pos + old_len - cl);
-            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
                 diff = realloc(diff, diff_cap);
             }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, "- %.*s\n", llen, cl);
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                 "  %5d -%.*s\n", old_lnum, llen, cl);
+            old_lnum++;
             cl = nl ? nl + 1 : cl + llen;
         }
 
@@ -731,24 +769,28 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         while (cl < (char *)new_text + new_len) {
             char *nl = memchr(cl, '\n', new_len - (size_t)(cl - (char *)new_text));
             int llen = nl ? (int)(nl - cl) : (int)((char *)new_text + new_len - cl);
-            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
                 diff = realloc(diff, diff_cap);
             }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, "+ %.*s\n", llen, cl);
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                 "  %5d +%.*s\n", new_lnum, llen, cl);
+            new_lnum++;
             cl = nl ? nl + 1 : cl + llen;
         }
 
-        /* Context after */
+        /* Context after — use new_lnum (post-edit line numbers) */
         cl = after_edit;
         while (cl < ctx_end) {
             char *nl = strchr(cl, '\n');
             int llen = nl ? (int)(nl - cl) : (int)(ctx_end - cl);
-            if ((size_t)(diff_len + llen + 4) >= diff_cap) {
+            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
                 diff = realloc(diff, diff_cap);
             }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len, " %.*s\n", llen, cl);
+            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                 "  %5d  %.*s\n", new_lnum, llen, cl);
+            new_lnum++;
             cl = nl ? nl + 1 : cl + llen;
         }
 

@@ -392,14 +392,38 @@ static int render_inline_wrapped(WINDOW *win, int start_row, int col,
 
 /* ── Diff line rendering ── */
 
-/* Check if a line is a diff add/remove line (starts with + or -).
- * Returns: 1 = diff add (+), -1 = diff remove (-), 0 = not a diff line.
- * Only treats it as diff if the character is followed by a space or end-of-line,
- * to avoid false positives on lines like "-foo" that are just regular text. */
+/* Check if a line is a diff add/remove/context line.
+ * Supports two formats:
+ *   Old: "+ code" / "- code" / "  code" (prefix at column 0)
+ *   New: "  {5d} +code" / "  {5d} -code" / "  {5d}  code" (with line numbers)
+ * Returns: 1 = diff add (+), -1 = diff remove (-), 2 = context, 0 = not a diff line.
+ * Sets *content_offset to the byte offset where the actual code content starts
+ * (after the +/- prefix), and *lnum_end to the end of the line number prefix. */
 static int is_diff_line(const char *line, int line_len) {
     if (line_len < 1) return 0;
+
+    /* New format: "  {5d} +code" — leading spaces, digits, space, then +/-/space */
+    const char *p = line;
+    const char *end = line + line_len;
+
+    /* Skip leading spaces */
+    while (p < end && *p == ' ') p++;
+
+    /* Check for digits (line number) */
+    const char *digit_start = p;
+    while (p < end && *p >= '0' && *p <= '9') p++;
+
+    if (p > digit_start && p < end && *p == ' ') {
+        /* Found "  {digits} " — now check the diff marker */
+        p++; /* skip the space after line number */
+        if (p >= end) return 2; /* context line (empty after number) */
+        if (*p == '+') return 1;
+        if (*p == '-') return -1;
+        return 2; /* context line (space prefix) */
+    }
+
+    /* Old format: "+code" / "-code" at column 0 */
     if (line[0] == '+' || line[0] == '-') {
-        /* Must be followed by space, tab, or end-of-line to be a diff line */
         if (line_len == 1 || line[1] == ' ' || line[1] == '\t') {
             return (line[0] == '+') ? 1 : -1;
         }
@@ -407,9 +431,53 @@ static int is_diff_line(const char *line, int line_len) {
     return 0;
 }
 
-/* Render a diff line with colored background.
- * diff_type: 1 = add (green bg), -1 = remove (red bg).
- * text: the full line text (including + or - prefix).
+/* Parse a diff line to find the line number prefix end and content start.
+ * For "  {5d} +code": lnum_start points to first digit, lnum_len is digit count,
+ * content_start points to the code after +/-.
+ * For old format "+ code": lnum_start=NULL, content_start points to code after "+ ". */
+static void parse_diff_parts(const char *line, int line_len,
+                              const char **lnum_start, int *lnum_len,
+                              const char **marker_pos,
+                              const char **content_start, int *content_len) {
+    const char *p = line;
+    const char *end = line + line_len;
+
+    *lnum_start = NULL;
+    *lnum_len = 0;
+    *marker_pos = NULL;
+    *content_start = line;
+    *content_len = line_len;
+
+    /* Skip leading spaces */
+    while (p < end && *p == ' ') p++;
+
+    /* Check for digits (line number) */
+    const char *ds = p;
+    while (p < end && *p >= '0' && *p <= '9') p++;
+
+    if (p > ds && p < end && *p == ' ') {
+        *lnum_start = ds;
+        *lnum_len = (int)(p - ds);
+        p++; /* skip space after line number */
+        *marker_pos = p;
+        if (p < end && (*p == '+' || *p == '-')) {
+            *content_start = p; /* include the +/- in colored content */
+            *content_len = (int)(end - p);
+        } else {
+            /* Context line — content starts at the space after marker */
+            *content_start = p;
+            *content_len = (int)(end - p);
+        }
+    } else {
+        /* Old format: +/- at column 0 */
+        *content_start = line;
+        *content_len = line_len;
+    }
+}
+
+/* Render a diff line with line number (dim) and colored background.
+ * diff_type: 1 = add (green bg), -1 = remove (red bg), 2 = context.
+ * text: the full line text.
  * text_len: byte length of text.
  * Returns number of display lines consumed. */
 static int render_diff_line(WINDOW *win, int row, int col,
@@ -417,72 +485,61 @@ static int render_diff_line(WINDOW *win, int row, int col,
                              int cols) {
     if (text_len <= 0) return 1;
 
-    int pair = (diff_type > 0) ? CP_DIFF_ADD : CP_DIFF_DEL;
+    /* Parse line number and content parts */
+    const char *lnum_start, *marker_pos, *content_start;
+    int lnum_len, content_len;
+    parse_diff_parts(text, text_len, &lnum_start, &lnum_len,
+                     &marker_pos, &content_start, &content_len);
 
-    /* Parse inline formatting, then apply diff background to all segments */
-    inline_seg_t segs[MAX_INLINE_SEGS];
-    int n = parse_inline(text, text_len, segs, MAX_INLINE_SEGS);
-    if (n <= 0) return 1;
+    int x = col;
 
-    /* Apply diff background color pair to all segments */
-    for (int i = 0; i < n; i++) {
-        if (segs[i].attr) {
-            segs[i].attr |= COLOR_PAIR(pair);
-        } else {
-            segs[i].attr = COLOR_PAIR(pair);
+    /* Render leading spaces + line number in dim */
+    if (lnum_start) {
+        /* Leading spaces before line number */
+        int leading = (int)(lnum_start - text);
+        if (leading > 0) {
+            wattron(win, COLOR_PAIR(C_DIM));
+            mvwaddnstr(win, row, x, text, leading);
+            wattroff(win, COLOR_PAIR(C_DIM));
+            x += leading;
         }
+        /* Line number in dim */
+        wattron(win, COLOR_PAIR(C_DIM));
+        mvwaddnstr(win, row, x, lnum_start, lnum_len);
+        wattroff(win, COLOR_PAIR(C_DIM));
+        x += lnum_len;
+        /* Space after line number */
+        mvwaddch(win, row, x, ' ');
+        x++;
     }
 
-    /* Check if segments fit on one line */
-    int total_cols = 0;
-    for (int i = 0; i < n; i++)
-        total_cols += seg_display_cols(segs[i].text, segs[i].len);
-
-    if (total_cols <= cols) {
-        render_segs_on_line(win, row, col, segs, n, cols);
-        /* Pad remaining columns with diff background */
-        int cur_x = col + total_cols;
-        for (int x = cur_x; x < cols; x++)
-            mvwaddch(win, row, x, ' ' | COLOR_PAIR(pair));
+    /* For context lines (diff_type == 2), render content without background */
+    if (diff_type == 2) {
+        if (content_len > 0) {
+            wattron(win, COLOR_PAIR(C_STREAM));
+            mvwaddnstr(win, row, x, content_start, content_len);
+            wattroff(win, COLOR_PAIR(C_STREAM));
+        }
         return 1;
     }
 
-    /* Multi-line wrapping with diff background */
-    /* For simplicity, render each wrapped line with the diff bg */
-    int usable = cols;
-    int lines_used = 1;
-    const char *wp = text;
-    int remaining = text_len;
-    int cur_row = row;
+    /* For add/remove lines, render content with colored background */
+    int pair = (diff_type > 0) ? CP_DIFF_ADD : CP_DIFF_DEL;
 
-    while (remaining > 0) {
-        int chunk = remaining > usable ? usable : remaining;
-        if (chunk < remaining) {
-            int min_pos = usable / 4;
-            int last_space = find_word_boundary(wp, chunk, min_pos);
-            if (last_space > 0) chunk = last_space + 1;
-        }
-
-        /* Render chunk with diff color */
+    if (content_len > 0) {
         wattron(win, COLOR_PAIR(pair));
-        mvwaddnstr(win, cur_row, col, wp, chunk);
+        mvwaddnstr(win, row, x, content_start, content_len);
         wattroff(win, COLOR_PAIR(pair));
-
-        /* Pad remainder of line with diff background */
-        int dc = utf8_display_len(wp, chunk);
-        int pad_x = col + dc;
-        wattron(win, COLOR_PAIR(pair));
-        for (int x = pad_x; x < cols; x++)
-            mvwaddch(win, cur_row, x, ' ');
-        wattroff(win, COLOR_PAIR(pair));
-
-        wp += chunk;
-        remaining -= chunk;
-        cur_row++;
-        lines_used++;
+        x += utf8_display_len(content_start, content_len);
     }
 
-    return lines_used;
+    /* Pad remaining columns with diff background */
+    wattron(win, COLOR_PAIR(pair));
+    for (int px = x; px < cols; px++)
+        mvwaddch(win, row, px, ' ');
+    wattroff(win, COLOR_PAIR(pair));
+
+    return 1;
 }
 
 /* ── Parse ── */
@@ -863,11 +920,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             }
 
             if (diff_type != 0 && visible) {
-                /* Diff line: render with colored background */
+                /* Diff line: render with line number + colored background */
                 int lines_consumed = render_diff_line(
                     win, vis_line, 0, diff_type, line_buf, line_len, cols);
                 if (lines_consumed > 1)
                     advance_render_line(&render_line, lines_consumed);
+            } else if (diff_type != 0) {
+                /* Diff line but not visible — still counts as 1 line */
             } else {
                 /* Code block content: wrap at cols-2, render in cyan */
                 int usable = cols - 2;

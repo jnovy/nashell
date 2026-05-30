@@ -364,7 +364,11 @@ void ui_state_rebuild_md(ui_state_t *ui) {
                                          ui->session_dir, ref);
                                 FILE *cf = fopen(rpath, "r");
                                 if (cf) {
-                                    str_append_cstr(&md, "```\n");
+                                    /* Use ```diff fence for file_edit to enable diff coloring */
+                                    if (strcmp(t, "file_edit") == 0)
+                                        str_append_cstr(&md, "```diff\n");
+                                    else
+                                        str_append_cstr(&md, "```\n");
                                     char cbuf[4096];
                                     size_t total = 0;
                                     size_t n;
