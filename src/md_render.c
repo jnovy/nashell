@@ -539,6 +539,49 @@ void md_doc_free(md_doc_t *doc) {
     free(doc);
 }
 
+/* ── OSC 8 terminal hyperlinks ── */
+
+/* Write a raw byte to the window using waddch, bypassing ncurses'
+ * escape processing. This ensures OSC 8 sequences reach the terminal
+ * unmodified. */
+static void raw_waddch(WINDOW *win, char c) {
+    waddch(win, (chtype)(unsigned char)c);
+}
+
+/* Emit an OSC 8 hyperlink start sequence: ESC ] 8 ; ; URI ESC \
+ * The terminal will treat all subsequent text as clickable until the
+ * end sequence (ESC ] 8 ; ; ESC \) is emitted.
+ *
+ * We write each byte individually via waddch to avoid ncurses
+ * interpreting the ESC character as a cursor movement command. */
+static void emit_osc8_start(WINDOW *win, const char *uri) {
+    raw_waddch(win, '\033');
+    raw_waddch(win, ']');
+    raw_waddch(win, '8');
+    raw_waddch(win, ';');
+    raw_waddch(win, ';');
+    while (*uri)
+        raw_waddch(win, *uri++);
+    raw_waddch(win, '\033');
+    raw_waddch(win, '\\');
+}
+
+/* Emit an OSC 8 hyperlink end sequence: ESC ] 8 ; ; ESC \ */
+static void emit_osc8_end(WINDOW *win) {
+    raw_waddch(win, '\033');
+    raw_waddch(win, ']');
+    raw_waddch(win, '8');
+    raw_waddch(win, ';');
+    raw_waddch(win, ';');
+    raw_waddch(win, '\033');
+    raw_waddch(win, '\\');
+}
+
+/* Check if a URI is a web URL (http:// or https://) */
+static int is_web_uri(const char *uri) {
+    return strncmp(uri, "http://", 7) == 0 || strncmp(uri, "https://", 8) == 0;
+}
+
 /* ── Render helpers ── */
 
 /* Count the number of display columns a UTF-8 string occupies.
@@ -861,6 +904,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int is_cursor = (focus && link_idx == cursor_link);
             md_link_t *lk = &doc->links[link_idx];
             lk->render_line = render_line;
+            int has_osc8 = visible && is_web_uri(lk->uri);
             link_idx++;
 
             if (visible) {
@@ -870,10 +914,20 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     wattron(win, COLOR_PAIR(C_FOCUS));
                 }
 
+                /* Emit OSC 8 hyperlink start for web URIs */
+                if (has_osc8) {
+                    emit_osc8_start(win, lk->uri);
+                }
+
                 /* Render the link text with inline formatting */
                 inline_seg_t segs[MAX_INLINE_SEGS];
                 int n = parse_inline(lk->text, (int)strlen(lk->text), segs, MAX_INLINE_SEGS);
                 render_segs_on_line(win, vis_line, 0, segs, n, cols);
+
+                /* Emit OSC 8 hyperlink end for web URIs */
+                if (has_osc8) {
+                    emit_osc8_end(win);
+                }
 
                 /* Pad for reverse video */
                 if (is_cursor) {
