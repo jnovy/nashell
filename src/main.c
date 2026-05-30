@@ -726,6 +726,48 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
+                /* Handle /name command — create a named symlink to the current session */
+                if (strncmp(submitted_query, "/name ", 6) == 0) {
+                    const char *name = submitted_query + 6;
+                    /* Validate: non-empty, no slashes, reasonable length */
+                    if (strlen(name) == 0 || strlen(name) > 255 ||
+                        strchr(name, '/') != NULL || strchr(name, '\n') != NULL) {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                            "/name: invalid name (no slashes, max 255 chars)");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+                    char sessions_base[1024], link_path[1088];
+                    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", nash_dir);
+                    snprintf(link_path, sizeof(link_path), "%s/%s", sessions_base, name);
+                    /* Remove existing symlink if present */
+                    unlink(link_path);
+                    /* Create symlink */
+                    if (symlink(session_dir, link_path) == 0) {
+                        /* Extract just the session ID (basename) for display */
+                        const char *session_id = strrchr(session_dir, '/');
+                        session_id = session_id ? session_id + 1 : session_dir;
+                        pthread_mutex_lock(&ui->mtx);
+                        char status[512];
+                        snprintf(status, sizeof(status),
+                            "Named session: %s → %s", name, session_id);
+                        ui_state_set_status(ui, STATUS_READY, status);
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                    } else {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                            "/name: failed to create symlink");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                    }
+                    free(submitted_query);
+                    continue;
+                }
+
                 /* Handle /dream command — memory consolidation in a NEW session */
                 if (strcmp(submitted_query, "/dream") == 0) {
                     free(submitted_query);
