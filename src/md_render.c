@@ -762,6 +762,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
     int src_line = 0;     /* source line number (for link matching) */
     int link_idx = 0;     /* current link index */
     int in_code_block = 0;
+    char *code_lang = NULL;  /* language tag from ```lang fence */
 
     while (*src) {
         /* Extract one line */
@@ -776,6 +777,24 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
          * so in_code_block state is always correct, and skip render_line++
          * so fence lines don't produce blank lines in the output. */
         if (strncmp(line_buf, "```", 3) == 0) {
+            if (!in_code_block) {
+                /* Opening fence — parse language tag (e.g., ```diff, ```c) */
+                const char *tag = line_buf + 3;
+                /* Skip leading spaces after ``` */
+                while (*tag == ' ' || *tag == '\t') tag++;
+                int tag_len = (int)strlen(tag);
+                /* Trim trailing backticks if present (e.g., ```diff``` ) */
+                while (tag_len > 0 && tag[tag_len - 1] == '`') tag_len--;
+                if (tag_len > 0) {
+                    code_lang = strndup(tag, tag_len);
+                } else {
+                    code_lang = NULL;
+                }
+            } else {
+                /* Closing fence — reset language tag */
+                free(code_lang);
+                code_lang = NULL;
+            }
             in_code_block = !in_code_block;
             /* Don't render ``` markers and don't increment render_line —
              * they should be invisible (no blank line). */
@@ -794,8 +813,11 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                             src_line == doc->links[link_idx].doc_line);
 
         if (in_code_block) {
-            /* Check if this is a diff line (+ or - prefix) */
-            int diff_type = is_diff_line(line_buf, line_len);
+            /* Diff rendering only when ```diff fence was used */
+            int diff_type = 0;
+            if (code_lang && strcmp(code_lang, "diff") == 0) {
+                diff_type = is_diff_line(line_buf, line_len);
+            }
 
             if (diff_type != 0 && visible) {
                 /* Diff line: render with colored background */
