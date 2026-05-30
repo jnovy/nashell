@@ -1161,11 +1161,14 @@ int main(int argc, char **argv) {
             if (ui->dirty) tui_render(ui);
 
             /* Small sleep to avoid busy-waiting when no input */
-            /* Auto-refresh MD every 1 second during inference */
+            /* Auto-refresh MD every 100ms during inference */
             if (inferring) {
-                static time_t last_refresh = 0;
-                time_t now = time(NULL);
-                if (now > last_refresh) {
+                static struct timespec last_refresh = {0, 0};
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long elapsed_ms = (now.tv_sec - last_refresh.tv_sec) * 1000
+                                + (now.tv_nsec - last_refresh.tv_nsec) / 1000000;
+                if (elapsed_ms >= 100) {
                     last_refresh = now;
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_reload_file(ui);
