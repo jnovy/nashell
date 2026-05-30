@@ -973,8 +973,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
 
-            /* Throttle: only update file every 512 bytes of tokens */
-            if (ui->stream_len % 512 < tlen) {
+            /* Throttle: update file every 64 bytes of tokens.
+             * 512 was too aggressive — at ~250 chars/sec typical LLM output,
+             * updates only happened every ~2 seconds, making streaming
+             * invisible. 64 bytes = ~4-5 updates/sec = smooth streaming. */
+            if (ui->stream_len % 64 < tlen) {
                 ui_state_generate_react_md(ui, ui->current_react_loop);
                 if (viewing_react_file(ui, ui->current_react_loop)) {
                     ui_state_reload_file(ui);
