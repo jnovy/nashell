@@ -1924,7 +1924,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                      * the memory set is refreshed based on evolved context. */
                     str_t mem_msg = str_new(2048);
                     str_appendf(&mem_msg,
-                        "[RELEVANT MEMORIES — refreshed at step %d]\n",
+                        "[RELEVANT MEMORIES — refreshed at step %d]\n"
+                        "Apply any relevant patterns from these memories "
+                        "to your current task using memory_recall tool. "
+                        "Ignore memories that aren't applicable.\n",
                         step + 1);
                     for (int mi = 0; mi < refreshed.count && mi < 3; mi++) {
                         str_appendf(&mem_msg, "\n--- %s ---\n%s\n",
