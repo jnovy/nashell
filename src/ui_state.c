@@ -752,9 +752,12 @@ void ui_state_enter(ui_state_t *ui) {
     /* Extract just the filename for the heading */
     const char *fname = strrchr(uri, '/');
     fname = fname ? fname + 1 : uri;
-    str_appendf(&wrapped, "# %s\n\n```\n", fname);
+    str_appendf(&wrapped, "# %s\n\n", fname);
+    /* Render content as markdown — store refs may contain formatted
+     * done results, plans, or other markdown-rich text. Wrapping in
+     * a code fence would suppress all formatting (bold, headers, etc.). */
     str_append_cstr(&wrapped, raw_content);
-    str_append_cstr(&wrapped, "\n```\n");
+    str_append_cstr(&wrapped, "\n");
     free(raw_content);
 
     char *md_source = str_steal(&wrapped);
