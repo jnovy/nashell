@@ -28,6 +28,16 @@ typedef struct {
     int   route;     /* 0=direct (thinking off), 1=cot (thinking on) */
 } edrm_result_t;
 
+/* Belief Entropy probe result — see MMPO [arXiv:2605.30159]
+ * ℋ_BE(m_t) = H(y | m_t, q) — entropy of response to anchor question q
+ * given current memory m_t. Lower = clearer belief, higher = ambiguous. */
+typedef struct {
+    float h_mean;    /* mean token-level entropy of response */
+    float h_total;   /* total entropy (h_mean * n_tokens) */
+    int   n_tokens;  /* number of tokens in response */
+    int   ok;        /* 1 = probe succeeded, 0 = failed */
+} belief_entropy_result_t;
+
 /* EDRM entropy probe: generate a short completion and analyze entropy dynamics.
  * Returns routing decision based on entropy trajectory descriptors. */
 /* Apply chat template via server /apply-template endpoint.
@@ -37,6 +47,16 @@ char *llm_apply_template(const char *api_base, const char *user_query);
 edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
                                int n_predict, int n_probs, float temperature,
                                float tau_rho, float tau_vnr, float tau_h);
+
+/* Belief Entropy probe: send anchor question with memory context,
+ * compute mean token-level entropy of response.
+ * Returns belief_entropy_result_t with h_mean = ℋ_BE(m_t).
+ * Pass NULL for memory_context to probe with no memory context. */
+belief_entropy_result_t llm_belief_entropy_probe(const char *api_base,
+                                                   const char *memory_context,
+                                                   const char *anchor_question,
+                                                   int n_predict, int n_probs,
+                                                   float temperature);
 
 /* A single chat message — supports tool_calls API threading */
 typedef struct {

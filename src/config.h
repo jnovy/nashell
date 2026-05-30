@@ -40,6 +40,22 @@ typedef struct {
     int    caching;          /* enable prompt caching (Anthropic) */
 } provider_config_toml_t;
 
+/* Belief Entropy configuration — forward-looking memory quality signal.
+ * Based on MMPO [arXiv:2605.30159]: ℋ_BE(m_t) = H(y | m_t, q) measures
+ * how clearly the current memory induces a confident belief about task state.
+ * Lower entropy = clearer memory, higher entropy = ambiguous/incomplete. */
+typedef struct {
+    int    enabled;            /* enable Belief Entropy monitoring */
+    double alpha;              /* weight vs outcome reward (Eq. 6, default 1.0) */
+    char  *anchor_question;    /* probe question for entropy measurement */
+    int    probe_tokens;       /* tokens to generate in entropy probe (default 30) */
+    int    probe_n_probs;      /* top-N logprobs to request (default 10) */
+    float  probe_temperature;  /* probe sampling temperature (default 0.6) */
+    int    eviction_gate;      /* gate context eviction on entropy (default 0) */
+    int    best_of_n_summaries;/* candidates for compression (default 1 = no selection) */
+    float  warn_threshold;     /* H_BE increase that triggers warning (default 0.15) */
+} belief_entropy_config_t;
+
 /* Embedding configuration — semantic memory matching via vector embeddings.
  * Inspired by GDN-2's "short convolution on gates": instead of independent
  * substring scoring per memory, use dense semantic vectors for context-aware
@@ -62,6 +78,9 @@ typedef struct {
 
     /* [embedding] — semantic memory matching */
     embedding_config_t embedding;
+
+    /* [memory_belief_entropy] — Belief Entropy quality signal */
+    belief_entropy_config_t belief_entropy;
 
     /* [client] */
     float  temperature;

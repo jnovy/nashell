@@ -254,6 +254,23 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddNumberToObject(entry, "recall_hits", recall_hits);
     cJSON_AddNumberToObject(entry, "recall_misses", recall_misses);
 
+    /* Belief Entropy — forward-looking quality signal (MMPO).
+     * Preserve existing value on overwrite, or write -1 (not computed). */
+    {
+        double belief_entropy = -1;
+        char *buf = slurp_file(path, NULL);
+        if (buf) {
+            cJSON *old = cJSON_Parse(buf);
+            if (old) {
+                cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
+                if (be) belief_entropy = cJSON_GetNumberValue(be);
+                cJSON_Delete(old);
+            }
+            free(buf);
+        }
+        cJSON_AddNumberToObject(entry, "belief_entropy", belief_entropy);
+    }
+
     /* Provenance: link to the session journal where this memory was created.
      * The dreaming LLM can read this journal to understand original context. */
     if (journal_ref)
@@ -718,6 +735,10 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
         e->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
         e->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+
+        /* Belief Entropy — forward-looking quality signal (MMPO) */
+        cJSON *be = cJSON_GetObjectItem(entry, "belief_entropy");
+        e->belief_entropy = be ? cJSON_GetNumberValue(be) : -1.0;
 
         /* Copy journal provenance reference */
         cJSON *jr = cJSON_GetObjectItem(entry, "journal_ref");

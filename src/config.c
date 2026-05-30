@@ -62,6 +62,19 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
     /* P2: memory_synthesis default 0 (disabled) — opt-in for now */
     /* (no default needed — calloc zeros it to 0 = disabled) */
+
+    /* [memory_belief_entropy] defaults */
+    cfg->belief_entropy.enabled = 0;
+    cfg->belief_entropy.alpha = 1.0;
+    cfg->belief_entropy.anchor_question = strdup(
+        "Based on current memory, what is our task progress and what information is still needed?");
+    cfg->belief_entropy.probe_tokens = 30;
+    cfg->belief_entropy.probe_n_probs = 10;
+    cfg->belief_entropy.probe_temperature = 0.6f;
+    cfg->belief_entropy.eviction_gate = 0;
+    cfg->belief_entropy.best_of_n_summaries = 1;
+    cfg->belief_entropy.warn_threshold = 0.15f;
+
     cfg->stream = 1;     /* always on for now */
 
     /* [thinking] defaults — EDRM is the default mode.
@@ -250,6 +263,20 @@ config_t *config_load(const char *path) {
         cfg->thinking.budget           = toml_int(thinking, "budget", -1);
     }
 
+    /* [memory_belief_entropy] — Belief Entropy quality signal */
+    toml_table_t *be = toml_table_in(root, "memory_belief_entropy");
+    if (be) {
+        cfg->belief_entropy.enabled         = toml_bl(be, "enabled", 0);
+        cfg->belief_entropy.alpha           = toml_dbl(be, "alpha", 0);
+        cfg->belief_entropy.anchor_question = toml_str(be, "anchor_question");
+        cfg->belief_entropy.probe_tokens    = toml_int(be, "probe_tokens", 0);
+        cfg->belief_entropy.probe_n_probs   = toml_int(be, "probe_n_probs", 0);
+        cfg->belief_entropy.probe_temperature = (float)toml_dbl(be, "probe_temperature", 0);
+        cfg->belief_entropy.eviction_gate   = toml_bl(be, "eviction_gate", 0);
+        cfg->belief_entropy.best_of_n_summaries = toml_int(be, "best_of_n_summaries", 0);
+        cfg->belief_entropy.warn_threshold  = (float)toml_dbl(be, "warn_threshold", 0);
+    }
+
     toml_free(root);
     config_set_defaults(cfg);
     return cfg;
@@ -270,6 +297,7 @@ void config_free(config_t *cfg) {
     free(cfg->data_dir);
     free(cfg->search_engine);
     free(cfg->searxng_url);
+    free(cfg->belief_entropy.anchor_question);
     free(cfg);
 }
 
@@ -372,6 +400,21 @@ int config_write_default(const char *path) {
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
         "memory_synthesis = false     # P2: query-time memory synthesis via extra LLM call\n"
+        "\n"
+        "# Belief Entropy — forward-looking memory quality signal.\n"
+        "# Based on MMPO [arXiv:2605.30159]: measures how clearly the current\n"
+        "# memory induces a confident belief about task state.\n"
+        "# Lower entropy = clearer memory, higher entropy = ambiguous/incomplete.\n"
+        "[memory_belief_entropy]\n"
+        "enabled = false              # enable Belief Entropy monitoring\n"
+        "alpha = 1.0                  # weight vs outcome reward (Eq. 6)\n"
+        "anchor_question = \\\"Based on current memory, what is our task progress and what information is still needed?\\\"\n"
+        "probe_tokens = 30            # tokens to generate in entropy probe\n"
+        "probe_n_probs = 10           # top-N logprobs to request\n"
+        "probe_temperature = 0.6      # probe sampling temperature\n"
+        "eviction_gate = false        # gate context eviction on entropy\n"
+        "best_of_n_summaries = 1      # candidates for compression (1 = no selection)\n"
+        "warn_threshold = 0.15        # H_BE increase that triggers warning\n"
         "\n"
         "[paths]\n"
         "data_dir = \"\"                # data directory (empty = ~/.nash/)\n"

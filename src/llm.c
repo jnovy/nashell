@@ -470,3 +470,98 @@ edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
     cJSON_Delete(resp);
     return result;
 }
+
+/* ── Belief Entropy probe — MMPO [arXiv:2605.30159] ────────────── */
+
+belief_entropy_result_t llm_belief_entropy_probe(const char *api_base,
+                                                    const char *memory_context,
+                                                    const char *anchor_question,
+                                                    int n_predict, int n_probs,
+                                                    float temperature) {
+    belief_entropy_result_t result = {0, 0, 0, 0};
+
+    /* Build prompt: memory context + anchor question */
+    str_t prompt = str_new(8192);
+    if (memory_context && strlen(memory_context) > 0) {
+        str_appendf(&prompt,
+            "Current memory state:\n%s\n\n", memory_context);
+    }
+    str_appendf(&prompt,
+        "Question: %s\n\nAnswer:", anchor_question);
+
+    /* Build /completion request with logprobs */
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "prompt", prompt.data);
+    cJSON_AddNumberToObject(req, "n_predict", n_predict);
+    cJSON_AddNumberToObject(req, "n_probs", n_probs);
+    cJSON_AddNumberToObject(req, "temperature", temperature);
+    cJSON_AddBoolToObject(req, "cache_prompt", 1);
+    cJSON_AddBoolToObject(req, "stream", 0);
+
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    str_free(&prompt);
+    if (!body) return result;
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/completion", api_base);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t response = str_new(16384);
+    if (http_post(url, body, headers, 30L, &response) != 0) {
+        curl_slist_free_all(headers);
+        free(body);
+        str_free(&response);
+        return result;
+    }
+    curl_slist_free_all(headers);
+    free(body);
+
+    /* Parse response and extract entropy from completion_probabilities */
+    cJSON *resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) return result;
+
+    cJSON *probs_arr = cJSON_GetObjectItem(resp, "completion_probabilities");
+    if (!probs_arr || !cJSON_IsArray(probs_arr)) {
+        cJSON_Delete(resp);
+        return result;
+    }
+
+    int n_tokens = cJSON_GetArraySize(probs_arr);
+    if (n_tokens < 1) {
+        cJSON_Delete(resp);
+        return result;
+    }
+
+    /* Compute per-token entropy from top logprobs */
+    float h_sum = 0;
+    for (int i = 0; i < n_tokens; i++) {
+        cJSON *tok = cJSON_GetArrayItem(probs_arr, i);
+        cJSON *top = cJSON_GetObjectItem(tok, "top_logprobs");
+        if (!top || !cJSON_IsArray(top)) continue;
+
+        float h = 0;
+        int k = cJSON_GetArraySize(top);
+        for (int j = 0; j < k; j++) {
+            cJSON *entry = cJSON_GetArrayItem(top, j);
+            cJSON *lp = cJSON_GetObjectItem(entry, "logprob");
+            if (lp && cJSON_IsNumber(lp)) {
+                float logp = (float)lp->valuedouble;
+                float p = expf(logp);
+                if (p > 0) h -= p * logp;  /* H = -Σ p·log(p) */
+            }
+        }
+        h_sum += h;
+    }
+
+    result.h_mean = h_sum / n_tokens;
+    result.h_total = h_sum;
+    result.n_tokens = n_tokens;
+    result.ok = 1;
+
+    cJSON_Delete(resp);
+    return result;
+}

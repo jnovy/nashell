@@ -54,6 +54,7 @@ typedef struct {
     double relevance;     /* final composite score from last memory_recall */
     double raw_relevance; /* semantic+substring blend [0,1] before importance/vscore */
     double importance;    /* log access frequency [0,1] */
+    double belief_entropy; /* ℋ_BE — forward-looking quality signal (MMPO). -1 = not computed */
 } memory_entry_t;
 
 typedef struct {
