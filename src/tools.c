@@ -708,26 +708,11 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         }
         if (ctx_end > result + result_len) ctx_end = result + result_len;
 
-        /* Count added/removed lines for summary */
-        int added_count = 0, removed_count = 0;
-        {
-            const char *p = old_text;
-            while (*p) { if (*p == '\n') removed_count++; p++; }
-            if (old_len > 0 && old_text[old_len - 1] != '\n') removed_count++;
-            p = new_text;
-            while (*p) { if (*p == '\n') added_count++; p++; }
-            if (new_len > 0 && new_text[new_len - 1] != '\n') added_count++;
-        }
-
-        /* Build diff output */
+        /* Build diff output — summary is prepended after computing actual diff. */
         size_t diff_cap = 4096;
         char *diff = malloc(diff_cap);
         int diff_len = 0;
-
-        /* Summary header */
-        diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
-                             "  Added %d lines, removed %d lines\n",
-                             added_count, removed_count);
+        int actual_added = 0, actual_removed = 0;  /* filled by diff algorithm */
 
         /* Track line numbers: old_lnum for removed, new_lnum for added */
         int old_lnum = ctx_start_lnum;
@@ -749,34 +734,114 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             cl = nl ? nl + 1 : cl + llen;
         }
 
-        /* Removed lines (old_text) */
-        cl = pos;
-        while (cl < pos + old_len) {
-            char *nl = memchr(cl, '\n', old_len - (size_t)(cl - pos));
-            int llen = nl ? (int)(nl - cl) : (int)(pos + old_len - cl);
-            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
-                diff_cap *= 2;
-                diff = realloc(diff, diff_cap);
-            }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
-                                 "  %5d -%.*s\n", old_lnum, llen, cl);
-            old_lnum++;
-            cl = nl ? nl + 1 : cl + llen;
-        }
+        /* Line-level diff: find common prefix/suffix between old and new,
+         * emit shared lines as context, only truly changed lines as +/-.
+         * This avoids showing identical boundary lines as removed+added. */
+        {
+            /* Split old_text and new_text into line arrays */
+            typedef struct { const char *s; int len; } dline_t;
+            int old_cap = 64, new_cap = 64;
+            int old_cnt = 0, new_cnt = 0;
+            dline_t *old_lines = malloc((size_t)old_cap * sizeof(dline_t));
+            dline_t *new_lines = malloc((size_t)new_cap * sizeof(dline_t));
 
-        /* Added lines (new_text) */
-        cl = (char *)new_text;
-        while (cl < (char *)new_text + new_len) {
-            char *nl = memchr(cl, '\n', new_len - (size_t)(cl - (char *)new_text));
-            int llen = nl ? (int)(nl - cl) : (int)((char *)new_text + new_len - cl);
-            if ((size_t)(diff_len + llen + 16) >= diff_cap) {
-                diff_cap *= 2;
-                diff = realloc(diff, diff_cap);
+            /* Parse old_text into lines */
+            const char *p = pos;
+            while (p < pos + old_len) {
+                const char *nl = memchr(p, '\n', old_len - (size_t)(p - pos));
+                int llen = nl ? (int)(nl - p) : (int)(pos + old_len - p);
+                if (old_cnt >= old_cap) {
+                    old_cap *= 2;
+                    old_lines = realloc(old_lines, (size_t)old_cap * sizeof(dline_t));
+                }
+                old_lines[old_cnt++] = (dline_t){ p, llen };
+                p = nl ? nl + 1 : p + llen;
             }
-            diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
-                                 "  %5d +%.*s\n", new_lnum, llen, cl);
-            new_lnum++;
-            cl = nl ? nl + 1 : cl + llen;
+
+            /* Parse new_text into lines */
+            p = new_text;
+            while (p < new_text + new_len) {
+                const char *nl = memchr(p, '\n', new_len - (size_t)(p - new_text));
+                int llen = nl ? (int)(nl - p) : (int)(new_text + new_len - p);
+                if (new_cnt >= new_cap) {
+                    new_cap *= 2;
+                    new_lines = realloc(new_lines, (size_t)new_cap * sizeof(dline_t));
+                }
+                new_lines[new_cnt++] = (dline_t){ p, llen };
+                p = nl ? nl + 1 : p + llen;
+            }
+
+            /* Find common prefix lines */
+            int prefix = 0;
+            while (prefix < old_cnt && prefix < new_cnt &&
+                   old_lines[prefix].len == new_lines[prefix].len &&
+                   memcmp(old_lines[prefix].s, new_lines[prefix].s,
+                          (size_t)old_lines[prefix].len) == 0)
+                prefix++;
+
+            /* Find common suffix lines (don't overlap with prefix) */
+            int suffix = 0;
+            while (suffix < (old_cnt - prefix) && suffix < (new_cnt - prefix) &&
+                   old_lines[old_cnt - 1 - suffix].len == new_lines[new_cnt - 1 - suffix].len &&
+                   memcmp(old_lines[old_cnt - 1 - suffix].s,
+                          new_lines[new_cnt - 1 - suffix].s,
+                          (size_t)old_lines[old_cnt - 1 - suffix].len) == 0)
+                suffix++;
+
+            /* Emit common prefix as context */
+            for (int i = 0; i < prefix; i++) {
+                dline_t *dl = &new_lines[i];
+                if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
+                    diff_cap *= 2;
+                    diff = realloc(diff, diff_cap);
+                }
+                diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                     "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
+                old_lnum++;
+                new_lnum++;
+            }
+
+            /* Emit removed lines (middle section of old) */
+            for (int i = prefix; i < old_cnt - suffix; i++) {
+                dline_t *dl = &old_lines[i];
+                if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
+                    diff_cap *= 2;
+                    diff = realloc(diff, diff_cap);
+                }
+                diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                     "  %5d -%.*s\n", old_lnum, dl->len, dl->s);
+                old_lnum++;
+                actual_removed++;
+            }
+
+            /* Emit added lines (middle section of new) */
+            for (int i = prefix; i < new_cnt - suffix; i++) {
+                dline_t *dl = &new_lines[i];
+                if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
+                    diff_cap *= 2;
+                    diff = realloc(diff, diff_cap);
+                }
+                diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                     "  %5d +%.*s\n", new_lnum, dl->len, dl->s);
+                new_lnum++;
+                actual_added++;
+            }
+
+            /* Emit common suffix as context */
+            for (int i = old_cnt - suffix; i < old_cnt; i++) {
+                dline_t *dl = &new_lines[new_cnt - suffix + (i - (old_cnt - suffix))];
+                if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
+                    diff_cap *= 2;
+                    diff = realloc(diff, diff_cap);
+                }
+                diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
+                                     "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
+                old_lnum++;
+                new_lnum++;
+            }
+
+            free(old_lines);
+            free(new_lines);
         }
 
         /* Context after — use new_lnum (post-edit line numbers) */
@@ -792,6 +857,22 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                                  "  %5d  %.*s\n", new_lnum, llen, cl);
             new_lnum++;
             cl = nl ? nl + 1 : cl + llen;
+        }
+
+        /* Prepend summary header with actual counts */
+        {
+            char hdr[64];
+            int hlen = snprintf(hdr, sizeof(hdr),
+                                "  Added %d lines, removed %d lines\n",
+                                actual_added, actual_removed);
+            /* Grow buffer if needed, then shift body right and insert header */
+            if ((size_t)(diff_len + hlen + 1) >= diff_cap) {
+                diff_cap = (size_t)(diff_len + hlen + 64);
+                diff = realloc(diff, diff_cap);
+            }
+            memmove(diff + hlen, diff, (size_t)diff_len + 1);  /* +1 for NUL */
+            memcpy(diff, hdr, (size_t)hlen);
+            diff_len += hlen;
         }
 
         /* Store diff as the display ref */
