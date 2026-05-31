@@ -987,10 +987,36 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              * with an "x" marker instead of "+". */
             {
                 cJSON *err_params = cJSON_CreateObject();
-                cJSON_AddStringToObject(err_params, "error",
-                    consecutive_null_responses >= 2
-                        ? "LLM server error after scratchpad reformulation — giving up"
-                        : "LLM server returned NULL response (HTTP 500 or malformed output)");
+                /* Build error message from actual server error if available */
+                {
+                    const char *srv_err = NULL;
+                    if (ctx->provider && ctx->provider->last_error)
+                        srv_err = ctx->provider->last_error;
+                    else if (ctx->llm->last_error)
+                        srv_err = ctx->llm->last_error;
+
+                    if (consecutive_null_responses >= 2) {
+                        if (srv_err) {
+                            char emsg[512];
+                            snprintf(emsg, sizeof(emsg),
+                                "LLM server error after recovery attempt — %s", srv_err);
+                            cJSON_AddStringToObject(err_params, "error", emsg);
+                        } else {
+                            cJSON_AddStringToObject(err_params, "error",
+                                "LLM server error after recovery attempt — giving up");
+                        }
+                    } else {
+                        if (srv_err) {
+                            char emsg[512];
+                            snprintf(emsg, sizeof(emsg),
+                                "LLM server returned NULL response (%s)", srv_err);
+                            cJSON_AddStringToObject(err_params, "error", emsg);
+                        } else {
+                            cJSON_AddStringToObject(err_params, "error",
+                                "LLM server returned NULL response (unknown error)");
+                        }
+                    }
+                }
                 cJSON_AddNumberToObject(err_params, "attempt", consecutive_null_responses);
 
                 /* Capture context size for diagnostics */
@@ -1065,6 +1091,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             react_event_t ev = {0};
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
+
+            /* Check if this is an authentication error (HTTP 401/403).
+             * Auth errors can't be fixed by scratchpad manipulation —
+             * the provider already retried once with a fresh token.
+             * If it still fails, the credentials are truly invalid. */
+            {
+                const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
+                if (perr && (strstr(perr, "HTTP 401") || strstr(perr, "HTTP 403"))) {
+                    ev.message = "Authentication failed — token expired or invalid, "
+                                 "please re-authenticate (e.g. gcloud auth login)";
+                    emit(on_event, userdata, &ev);
+                    break;
+                }
+            }
 
             /* 3-tier retry strategy for HTTP 500 / NULL responses.
              * Each tier addresses a different root cause:

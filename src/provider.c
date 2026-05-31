@@ -778,6 +778,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 
         CURLcode res = curl_easy_perform(curl);
+
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
@@ -788,6 +791,15 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
+        }
+
+        /* HTTP 401/403: auth failure — invalidate cached token and
+         * retry once with a fresh token (Vertex AI OAuth2). */
+        if ((http_code == 401 || http_code == 403) &&
+            p->type == PROVIDER_VERTEX && attempt == 1) {
+            p->_auth_token_expiry = 0;  /* force token refresh */
+            str_clear(&response);
+            continue;
         }
 
         resp = cJSON_Parse(response.data);
@@ -939,6 +951,14 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                         "retry in %ds)\n",
                         http_code, attempt, PROVIDER_MAX_RETRIES, delay);
                 sleep(delay);
+                continue;
+            }
+            /* HTTP 401/403: auth failure — invalidate cached token and
+             * retry once with a fresh token.  Only applies to Vertex AI
+             * (OAuth2 tokens expire and can be refreshed via gcloud). */
+            if ((http_code == 401 || http_code == 403) &&
+                p->type == PROVIDER_VERTEX && attempt == 1) {
+                p->_auth_token_expiry = 0;  /* force token refresh */
                 continue;
             }
             /* 4xx, deterministic 500, or final attempt: return NULL */

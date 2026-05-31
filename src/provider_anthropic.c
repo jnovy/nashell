@@ -35,8 +35,8 @@ static const char *get_anthropic_api_key(const provider_config_t *cfg) {
 static const char *get_vertex_token(provider_t *p) {
     time_t now = time(NULL);
 
-    /* Return cached token if still valid (refresh 5 min before expiry) */
-    if (p->_cached_auth_token && p->_auth_token_expiry > now + 300) {
+    /* Return cached token if still valid (refresh 2 min before expiry) */
+    if (p->_cached_auth_token && p->_auth_token_expiry > now + 120) {
         return p->_cached_auth_token;
     }
 
@@ -67,7 +67,7 @@ static const char *get_vertex_token(provider_t *p) {
 
     free(p->_cached_auth_token);
     p->_cached_auth_token = strdup(token);
-    p->_auth_token_expiry = now + 3600;  /* gcloud tokens last ~1 hour */
+    p->_auth_token_expiry = now + 600;   /* refresh every 10 min to avoid stale tokens */
 
     return p->_cached_auth_token;
 }
