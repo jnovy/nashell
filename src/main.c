@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <time.h>
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -63,6 +64,23 @@ static char *create_session_dir(const char *nash_dir) {
              sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(path, 0755);
     return strdup(path);
+}
+
+/* Check if a directory is empty (no files other than . and ..).
+ * Returns 1 if empty, 0 if not empty or on error. */
+static int is_dir_empty(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *ent;
+    int empty = 1;
+    while ((ent = readdir(d)) != NULL) {
+        if (strcmp(ent->d_name, ".") != 0 && strcmp(ent->d_name, "..") != 0) {
+            empty = 0;
+            break;
+        }
+    }
+    closedir(d);
+    return empty;
 }
 
 /* Helper: get JSON string or default */
@@ -494,6 +512,10 @@ int main(int argc, char **argv) {
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
+        /* Remove session directory if it's empty (no work was done) */
+        if (session_dir && is_dir_empty(session_dir)) {
+            rmdir(session_dir);
+        }
         if (session_dir) free(session_dir);
         store_free(shared_store);
         memory_free(memory);
@@ -1192,6 +1214,10 @@ int main(int argc, char **argv) {
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         journal_free(journal);
+        /* Remove session directory if it's empty (no work was done) */
+        if (session_dir && is_dir_empty(session_dir)) {
+            rmdir(session_dir);
+        }
         if (session_dir) free(session_dir);
     }
     printf("Bye.\n");
