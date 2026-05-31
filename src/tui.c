@@ -174,11 +174,14 @@ void tui_shutdown(void) {
 
 /* ── Resize handling ─────────────────────────────────── */
 
+/* Prompt is "> " (2 chars). All wrapping math uses this constant. */
+#define INPUT_PROMPT_W 2
+
 /* Calculate number of wrapped display lines for input text.
- * First line has prompt "nash> " (6 chars), continuation lines use full width. */
+ * First line has prompt "> " (2 chars), continuation lines use full width. */
 static int calc_input_lines(int input_len, int cols) {
     if (input_len <= 0) return 1;
-    int first_w = cols - 6;  /* first line width (after prompt) */
+    int first_w = cols - INPUT_PROMPT_W;  /* first line width (after prompt) */
     if (first_w <= 0) first_w = 1;
     if (input_len <= first_w) return 1;
     int remaining = input_len - first_w;
@@ -187,14 +190,14 @@ static int calc_input_lines(int input_len, int cols) {
 }
 
 /* Convert linear cursor_pos to (row, col) in the wrapped display.
- * Row 0 starts at col 6 (after prompt), subsequent rows at col 0. */
+ * Row 0 starts at col INPUT_PROMPT_W (after prompt), subsequent rows at col 0. */
 static void cursor_to_rowcol(int cursor_pos, int cols,
                               int *out_row, int *out_col) {
-    int first_w = cols - 6;
+    int first_w = cols - INPUT_PROMPT_W;
     if (first_w <= 0) first_w = 1;
     if (cursor_pos <= first_w) {
         *out_row = 0;
-        *out_col = 6 + cursor_pos;
+        *out_col = INPUT_PROMPT_W + cursor_pos;
     } else {
         int remaining = cursor_pos - first_w;
         int cont_w = cols > 0 ? cols : 1;
@@ -397,49 +400,74 @@ static void render_bottom(ui_state_t *ui) {
     int input_start_row = 1;
 
     if (ui->focus == FOCUS_QUERY) {
-        /* Build input line */
-        char input_line[1024];
-        int ilen = 0;
-        ilen += snprintf(input_line + ilen, sizeof(input_line) - ilen,
-                         "> ");
+        /* Render input text with proper wrapping across multiple rows.
+         * Row 0 (input_start_row): "> " prompt + first first_w chars
+         * Row 1+: continuation lines using full terminal width */
+        int first_w = cols - INPUT_PROMPT_W;
+        if (first_w <= 0) first_w = 1;
+        int cont_w = cols > 0 ? cols : 1;
+        const char *text = ui->input_buffer;
+        int text_len = (ui->input_buffer && ui->input_len > 0) ? ui->input_len : 0;
+        int text_pos = 0;  /* how far into input_buffer we've rendered */
+        int row = input_start_row;
 
-        if (ui->input_buffer && ui->input_len > 0) {
-            int copy_len = ui->input_len;
-            if (copy_len > (int)sizeof(input_line) - ilen - 2)
-                copy_len = (int)sizeof(input_line) - ilen - 2;
-            ilen += snprintf(input_line + ilen, sizeof(input_line) - ilen,
-                             "%.*s", copy_len, ui->input_buffer);
+        /* Row 0: prompt + first chunk */
+        {
+            char row_buf[1024];
+            int rlen = 0;
+            rlen += snprintf(row_buf + rlen, sizeof(row_buf) - rlen, "> ");
+            int chunk = text_len < first_w ? text_len : first_w;
+            if (chunk > 0 && text) {
+                if (chunk > (int)sizeof(row_buf) - rlen - 1)
+                    chunk = (int)sizeof(row_buf) - rlen - 1;
+                memcpy(row_buf + rlen, text, (size_t)chunk);
+                rlen += chunk;
+            }
+            row_buf[rlen] = '\0';
+            render_ncurses_row(win_bottom, row, cols,
+                                CP_INPUT_ACTIVE, row_buf);
+            text_pos = chunk;
+            row++;
         }
 
-        /* Input bar: lighter dark blue bg (#191E2D), light text (#DCE5F0) */
-        render_ncurses_row(win_bottom, input_start_row, cols,
-                            CP_INPUT_ACTIVE, input_line);
-
-        /* Position cursor at the right spot */
-        int cursor_col = 2 + ui->cursor_pos;  /* "> " prefix = 2 chars */
-        int cursor_row = input_start_row;
-        if (cursor_col >= cols) {
-            /* Multi-line: wrap */
-            int cont_w = cols;
-            if (cont_w < 1) cont_w = 1;
-            cursor_row = input_start_row + 1 + (cursor_col - cols) / cont_w;
-            cursor_col = (cursor_col - cols) % cont_w;
+        /* Continuation rows */
+        while (text_pos < text_len && row < bh) {
+            int chunk = text_len - text_pos;
+            if (chunk > cont_w) chunk = cont_w;
+            char row_buf[1024];
+            if (chunk > (int)sizeof(row_buf) - 1)
+                chunk = (int)sizeof(row_buf) - 1;
+            memcpy(row_buf, text + text_pos, (size_t)chunk);
+            row_buf[chunk] = '\0';
+            render_ncurses_row(win_bottom, row, cols,
+                                CP_INPUT_ACTIVE, row_buf);
+            text_pos += chunk;
+            row++;
         }
+
+        /* Fill any remaining rows with empty input-colored background */
+        for (int r = row; r < bh; r++) {
+            render_ncurses_row(win_bottom, r, cols,
+                                CP_INPUT_ACTIVE, "");
+        }
+
+        /* Position cursor using consistent wrapping math */
+        int cursor_row, cursor_col;
+        cursor_to_rowcol(ui->cursor_pos, cols, &cursor_row, &cursor_col);
+        cursor_row += input_start_row;  /* offset by status bar row */
         if (cursor_row >= bh) cursor_row = bh - 1;
         if (cursor_col >= cols) cursor_col = cols - 1;
         wmove(win_bottom, cursor_row, cursor_col);
     } else {
         /* Not focused: show a dim prompt */
-        char dim_prompt[1024];
-        snprintf(dim_prompt, sizeof(dim_prompt), "> ");
         render_ncurses_row(win_bottom, input_start_row, cols,
-                            CP_INPUT_DIM, dim_prompt);
-    }
+                            CP_INPUT_DIM, "> ");
 
-    /* Fill any remaining rows (for multi-line input expansion) */
-    for (int r = bh - 1; r > input_start_row; r--) {
-        render_ncurses_row(win_bottom, r, cols,
-                            CP_INPUT_ACTIVE, "");
+        /* Fill remaining rows with input background */
+        for (int r = input_start_row + 1; r < bh; r++) {
+            render_ncurses_row(win_bottom, r, cols,
+                                CP_INPUT_ACTIVE, "");
+        }
     }
 
     wnoutrefresh(win_bottom);
@@ -507,14 +535,14 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_QUERY) {
             /* Navigate up within wrapped input lines */
             int cols_now = getmaxx(stdscr);
-            int fw = cols_now - 6; if (fw < 1) fw = 1;
+            int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
             int cw = cols_now;     if (cw < 1) cw = 1;
             int crow, ccol;
             input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
             if (crow > 0) {
                 /* Move up one wrapped line.
                  * When moving to row 0, clamp to first-line width (fw)
-                 * since row 0 is shorter due to "nash> " prompt (6 chars). */
+                 * since row 0 is shorter due to "> " prompt. */
                 int cur_w = (crow == 0) ? fw : cw;  /* width of current row */
                 int new_pos = ui->cursor_pos - cur_w;
                 if (new_pos < 0) new_pos = 0;
@@ -546,7 +574,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_QUERY) {
             /* Navigate down within wrapped input lines */
             int cols_now = getmaxx(stdscr);
-            int fw = cols_now - 6; if (fw < 1) fw = 1;
+            int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
             int cw = cols_now;     if (cw < 1) cw = 1;
             int crow, ccol;
             input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
