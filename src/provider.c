@@ -2,6 +2,7 @@
 #include "tools_registry.h"
 #include "str.h"
 #include "tui.h"
+#include "nash_log.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,8 +128,7 @@ provider_type_t provider_type_from_str(const char *s) {
         return PROVIDER_ANTHROPIC;
     if (strcmp(s, "vertex") == 0)
         return PROVIDER_VERTEX;
-    if (!g_tui_active)
-        fprintf(stderr, "[provider] unknown type '%s', defaulting to local\n", s);
+    nash_log("[provider] unknown type '%s', defaulting to local", s);
     return PROVIDER_LOCAL;
 }
 
@@ -792,9 +792,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 
         if (res != CURLE_OK) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (res != CURLE_SSL_CONNECT_ERROR && !g_tui_active)
-                fprintf(stderr, "[provider] curl error: %s (attempt %d/%d, retry in %ds)\n",
-                        curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
+            if (res != CURLE_SSL_CONNECT_ERROR)
+                nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+                         curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
@@ -813,9 +813,8 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         str_free(&response);
         if (!resp) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (!g_tui_active)
-                fprintf(stderr, "[provider] JSON parse failed (attempt %d/%d, retry in %ds)\n",
-                        attempt, PROVIDER_MAX_RETRIES, delay);
+            nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
+                     attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             free(req_body); free(endpoint);
             return NULL;
@@ -831,9 +830,8 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 if (emsg && cJSON_IsString(emsg)) msg = emsg->valuestring;
             }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (!g_tui_active)
-                fprintf(stderr, "[provider] API error: %s (attempt %d/%d, retry in %ds)\n",
-                        msg, attempt, PROVIDER_MAX_RETRIES, delay);
+            nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
+                     msg, attempt, PROVIDER_MAX_RETRIES, delay);
             cJSON_Delete(resp);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             free(req_body); free(endpoint);
@@ -945,10 +943,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
          * grammar-constrained generation). Let react.c handle recovery
          * by stripping context and retrying with a modified prompt. */
         if (http_code >= 400) {
-            if (!g_tui_active)
-                fprintf(stderr, "[provider] HTTP %ld error: %.2000s\n",
-                        http_code,
-                        st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
+            nash_log("[provider] HTTP %ld error: %.2000s",
+                     http_code,
+                     st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
             if (http_code > 500 && attempt < PROVIDER_MAX_RETRIES) {
                 /* Only retry on transient gateway/overload errors (502/503/504).
                  * HTTP 500 from llama.cpp is almost always deterministic —
@@ -957,10 +954,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                  * while the user sees a "stuck" process. Let react.c handle
                  * recovery by reformulating the scratchpad/context. */
                 int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-                if (!g_tui_active)
-                    fprintf(stderr, "[provider] transient %ld error (attempt %d/%d, "
-                            "retry in %ds)\n",
-                            http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+                nash_log("[provider] transient %ld error (attempt %d/%d, "
+                         "retry in %ds)",
+                         http_code, attempt, PROVIDER_MAX_RETRIES, delay);
                 sleep(delay);
                 continue;
             }
@@ -993,9 +989,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
 
         if (res != CURLE_OK && !st.stopped) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (res != CURLE_SSL_CONNECT_ERROR && !g_tui_active)
-                fprintf(stderr, "[provider] curl error: %s (attempt %d/%d, retry in %ds)\n",
-                        curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
+            if (res != CURLE_SSL_CONNECT_ERROR)
+                nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+                         curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             /* Populate error diagnostics for react.c journal entry */
             free(p->last_error);

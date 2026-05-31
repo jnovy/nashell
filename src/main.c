@@ -21,6 +21,7 @@
 #include "memory.h"
 #include "ui_state.h"
 #include "tui.h"
+#include "nash_log.h"
 #include "str.h"
 
 /* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
@@ -578,6 +579,9 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
         };
 
+        /* Initialize logging subsystem for TUI error routing */
+        nash_log_init(journal, shared_store);
+
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
         /* Pass model name + context info for nashell-style status bar */
@@ -596,6 +600,7 @@ int main(int argc, char **argv) {
         /* Initialize TUI BEFORE loading journal, so visible_rows is set
          * correctly for autoscroll calculations in rebuild_md(). */
         tui_init();
+        nash_log_set_ui(ui);  /* enable TUI error routing */
         ui->visible_rows = LINES - 4;  /* terminal height minus chrome (top/bottom bars) */
 
         /* Load existing journal entries into UI state */
@@ -1193,6 +1198,7 @@ int main(int argc, char **argv) {
         }
 
         tui_shutdown();
+        nash_log_set_ui(NULL);  /* disable TUI error routing */
         ui_state_free(ui);
 
         /* Save scratchpad */

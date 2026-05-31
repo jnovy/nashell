@@ -4,6 +4,7 @@
 #include "cJSON.h"
 #include "str.h"
 #include "tui.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -469,7 +470,7 @@ int embed_probe(embed_ctx_t *ctx) {
     /* ONNX backend: initialize locally, no network probe needed */
     if (ctx->cfg.type == EMBED_ONNX) {
         if (!ctx->cfg.model_path) {
-            if (!g_tui_active) fprintf(stderr, "[embed] ONNX: no model_path configured\n");
+            nash_log("[embed] ONNX: no model_path configured");
             ctx->available = 0;
             return 0;
         }
@@ -640,8 +641,8 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
                 free(chunk_results);  /* array only — vecs moved to results */
             } else {
                 /* Batch call failed — fall back to sequential for this chunk */
-                if (!g_tui_active) fprintf(stderr, "[embed] batch API failed for chunk %d-%d, "
-                        "falling back to sequential\n", offset, offset + chunk);
+                nash_log("[embed] batch API failed for chunk %d-%d, "
+                        "falling back to sequential", offset, offset + chunk);
                 for (int i = 0; i < chunk; i++) {
                     results[offset + i] = embed_text(ctx, texts[offset + i]);
                     if (results[offset + i].data) total_received++;

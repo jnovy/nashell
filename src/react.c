@@ -3,6 +3,7 @@
 #include "memory.h"
 #include "journal.h"
 #include "store.h"
+#include "nash_log.h"
 #include "cJSON.h"
 #include "str.h"
 #include <stdio.h>
@@ -893,6 +894,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
         ctx->tools->step = step + 1;
+        nash_log_set_context(ctx->tools->react_loop, step + 1);
 
         /* Emit step start */
         {

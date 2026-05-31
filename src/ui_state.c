@@ -134,6 +134,12 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
         url && url->valuestring)
         return url->valuestring;
+    /* System log entries: show the message */
+    if (strcmp(tool, "log") == 0) {
+        cJSON *msg = cJSON_GetObjectItem(params, "message");
+        if (msg && msg->valuestring) return msg->valuestring;
+        return "(system log)";
+    }
     /* Truncate done/plan result to first line, max 80 chars */
     if ((strcmp(tool, "done") == 0 || strcmp(tool, "plan") == 0)
         && res && res->valuestring) {

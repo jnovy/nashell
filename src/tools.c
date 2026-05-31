@@ -2,6 +2,7 @@
 #include "memory.h"
 #include "str.h"
 #include "tui.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2345,7 +2346,7 @@ static int searxng_start_container(int port) {
              rt);
     rc = system(cmd);
     if (rc != 0) {
-        if (!g_tui_active) fprintf(stderr, "[nash] Warning: could not enable JSON format in SearXNG settings\n");
+        nash_log("[nash] Warning: could not enable JSON format in SearXNG settings");
         return 0;  /* still usable for HTML, don't fail hard */
     }
 
@@ -2354,7 +2355,7 @@ static int searxng_start_container(int port) {
              "%s restart nash-searxng >/dev/null 2>&1", rt);
     rc = system(cmd);
     if (rc != 0) {
-        if (!g_tui_active) fprintf(stderr, "[nash] Warning: could not restart SearXNG after config change\n");
+        nash_log("[nash] Warning: could not restart SearXNG after config change");
         return 0;
     }
 
@@ -2363,7 +2364,7 @@ static int searxng_start_container(int port) {
         sleep(1);
         if (searxng_is_running(health_url)) return 0;
     }
-    if (!g_tui_active) fprintf(stderr, "[nash] Warning: SearXNG did not become ready after restart\n");
+    nash_log("[nash] Warning: SearXNG did not become ready after restart");
     return -1;  /* timed out after restart */
 }
 
@@ -2380,15 +2381,15 @@ static int ensure_searxng(const char *searxng_url) {
 
     /* Not running — auto-start a container */
     int port = searxng_port_from_url(searxng_url);
-    if (!g_tui_active) fprintf(stderr, "[nash] SearXNG not running at %s — starting container on port %d...\n",
-            base, port);
+    nash_log("[nash] SearXNG not running at %s — starting container on port %d...",
+             base, port);
     free(base);
 
     if (searxng_start_container(port) != 0) {
-        if (!g_tui_active) fprintf(stderr, "[nash] Failed to start SearXNG container\n");
+        nash_log("[nash] Failed to start SearXNG container");
         return -1;
     }
-    if (!g_tui_active) fprintf(stderr, "[nash] SearXNG container started successfully\n");
+    nash_log("[nash] SearXNG container started successfully");
     return 0;
 }
 
@@ -2426,10 +2427,10 @@ static char *searxng_search(const char *searxng_url, const char *query,
     }
 
     if (http_code == 403) {
-        if (!g_tui_active) fprintf(stderr,
-                "[nash] SearXNG returned 403 Forbidden for JSON format.\n"
-                "[nash] Fix: add 'json' to search.formats in "
-                "/etc/searxng/settings.yml and restart SearXNG.\n");
+        nash_log(
+                "[nash] SearXNG returned 403 Forbidden for JSON format. "
+                "Fix: add 'json' to search.formats in "
+                "/etc/searxng/settings.yml and restart SearXNG.");
         str_free(&body);
         return NULL;
     }
@@ -2664,7 +2665,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
 /* Tear down auto-started SearXNG container. Called on nash exit. */
 void web_search_cleanup(void) {
     if (!searxng_auto_started) return;
-    if (!g_tui_active) fprintf(stderr, "[nash] Stopping auto-started SearXNG container...\n");
+    nash_log("[nash] Stopping auto-started SearXNG container...");
     int rc = system("podman stop nash-searxng >/dev/null 2>&1 && "
                     "podman rm nash-searxng >/dev/null 2>&1");
     if (rc != 0) {

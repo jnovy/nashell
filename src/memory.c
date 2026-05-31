@@ -2,6 +2,7 @@
 #include "memory.h"
 #include "str.h"
 #include "tui.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1092,12 +1093,12 @@ int memory_init_embeddings(memory_t *m, const char *type,
     /* Probe the backend — if it's not available, gracefully disable */
     if (!embed_probe(m->embed)) {
         if (cfg.type == EMBED_ONNX) {
-            if (!g_tui_active) fprintf(stderr, "[memory] ONNX embedding at %s not available, "
-                    "falling back to substring matching\n",
+            nash_log("[memory] ONNX embedding at %s not available, "
+                    "falling back to substring matching",
                     model_path ? model_path : "(no path)");
         } else {
-            if (!g_tui_active) fprintf(stderr, "[memory] embedding service at %s not available, "
-                    "falling back to substring matching\n", cfg.api_base);
+            nash_log("[memory] embedding service at %s not available, "
+                    "falling back to substring matching", cfg.api_base);
         }
         embed_free(m->embed);
         m->embed = NULL;
@@ -1105,11 +1106,11 @@ int memory_init_embeddings(memory_t *m, const char *type,
     }
 
     if (cfg.type == EMBED_ONNX) {
-        if (!g_tui_active) fprintf(stderr, "[memory] ONNX embeddings enabled: %s (dim=%d, max_chars=%d)\n",
+        nash_log("[memory] ONNX embeddings enabled: %s (dim=%d, max_chars=%d)",
                 model_path, m->embed->detected_dim,
                 embed_max_input_chars(m->embed));
     } else {
-        if (!g_tui_active) fprintf(stderr, "[memory] semantic embeddings enabled: %s/%s (dim=%d, max_chars=%d)\n",
+        nash_log("[memory] semantic embeddings enabled: %s/%s (dim=%d, max_chars=%d)",
                 cfg.api_base, cfg.model, m->embed->detected_dim,
                 embed_max_input_chars(m->embed));
     }
@@ -1117,7 +1118,7 @@ int memory_init_embeddings(memory_t *m, const char *type,
     /* On first enable, embed any existing memories that lack .emb files */
     int embedded = memory_embed_all(m);
     if (embedded > 0) {
-        if (!g_tui_active) fprintf(stderr, "[memory] generated embeddings for %d existing memories\n",
+        nash_log("[memory] generated embeddings for %d existing memories",
                 embedded);
     }
 
