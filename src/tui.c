@@ -17,6 +17,21 @@ static int main_height = 0;
 static int bottom_height = 0;
 static int paste_mode = 0;          /* bracketed paste: 1 while receiving pasted text */
 
+/* ── Clipboard token store ───────────────────────────────
+ * Multi-line pastes are stored here and represented as [clipboard1] etc.
+ * in the input buffer. On submission, tokens are expanded back. */
+#define MAX_CLIPS 64
+static struct {
+    char *data;     /* malloc'd content (may contain newlines) */
+    int   len;      /* length in bytes */
+} clip_store[MAX_CLIPS];
+static int clip_count = 0;          /* number of stored clips */
+
+/* Temporary paste accumulation buffer */
+#define PASTE_BUF_CAP 262144        /* 256 KB max paste */
+static char  paste_buf[PASTE_BUF_CAP];
+static int   paste_len = 0;
+
 /* ── Colors ──────────────────────────────────────────── */
 
 #define C_NORMAL    0
@@ -171,12 +186,104 @@ void tui_init(void) {
     g_tui_active = 1;
 }
 
+/* Free all stored clipboard entries */
+static void clip_store_clear(void) {
+    for (int i = 0; i < clip_count; i++) {
+        free(clip_store[i].data);
+        clip_store[i].data = NULL;
+        clip_store[i].len = 0;
+    }
+    clip_count = 0;
+}
+
+/* Finish a bracketed paste: if multi-line, tokenize; else insert directly.
+ * Must be called with ui->mtx held. */
+static void finish_paste(ui_state_t *ui) {
+    if (paste_len <= 0) return;
+
+    /* Check if paste contains a newline */
+    int has_nl = 0;
+    for (int i = 0; i < paste_len; i++) {
+        if (paste_buf[i] == '\n') { has_nl = 1; break; }
+    }
+
+    if (!has_nl) {
+        /* Single-line paste: insert directly into input buffer */
+        for (int i = 0; i < paste_len; i++) {
+            int ch = (unsigned char)paste_buf[i];
+            if (ch >= 32 && ch < 127)
+                ui_state_input_char(ui, ch);
+        }
+    } else {
+        /* Multi-line paste: store in clip_store, insert token */
+        if (clip_count < MAX_CLIPS) {
+            int idx = clip_count++;
+            clip_store[idx].data = malloc((size_t)paste_len + 1);
+            memcpy(clip_store[idx].data, paste_buf, (size_t)paste_len);
+            clip_store[idx].data[paste_len] = '\0';
+            clip_store[idx].len = paste_len;
+
+            /* Insert [clipboardN] token (1-based) into input buffer */
+            char token[32];
+            snprintf(token, sizeof(token), "[clipboard%d]", idx + 1);
+            for (int i = 0; token[i]; i++)
+                ui_state_input_char(ui, token[i]);
+        }
+        /* else: too many clips, silently drop */
+    }
+    paste_len = 0;
+}
+
+/* Expand [clipboardN] tokens in a string, returning a new malloc'd string.
+ * Caller must free the result. */
+static char *expand_clipboard_tokens(const char *input, int input_len) {
+    if (clip_count == 0) return strndup(input, (size_t)input_len);
+
+    /* Worst case: every token expands to max clip size */
+    size_t cap = (size_t)input_len + 1;
+    for (int i = 0; i < clip_count; i++)
+        cap += (size_t)clip_store[i].len + 32;
+    char *out = malloc(cap);
+    int olen = 0;
+    int pos = 0;
+
+    while (pos < input_len) {
+        if (input[pos] == '[') {
+            /* Try to match [clipboardN] */
+            int matched = 0;
+            for (int ci = 0; ci < clip_count; ci++) {
+                char token[32];
+                int tlen = snprintf(token, sizeof(token), "[clipboard%d]", ci + 1);
+                if (pos + tlen <= input_len &&
+                    memcmp(input + pos, token, (size_t)tlen) == 0) {
+                    /* Replace token with clip content */
+                    memcpy(out + olen, clip_store[ci].data,
+                           (size_t)clip_store[ci].len);
+                    olen += clip_store[ci].len;
+                    pos += tlen;
+                    matched = 1;
+                    break;
+                }
+            }
+            if (!matched) {
+                out[olen++] = input[pos++];
+            }
+        } else {
+            out[olen++] = input[pos++];
+        }
+    }
+    out[olen] = '\0';
+    return out;
+}
+
 void tui_shutdown(void) {
     g_tui_active = 0;
 
     /* Disable bracketed paste mode */
     printf("\033[?2004l");
     fflush(stdout);
+
+    clip_store_clear();
 
     if (win_main)   delwin(win_main);
     if (win_bottom) delwin(win_bottom);
@@ -612,6 +719,27 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     pthread_mutex_lock(&ui->mtx);
 
+    /* During bracketed paste, intercept all printable chars + newline + tab
+     * and accumulate into paste_buf. Only ESC sequences (for detecting the
+     * paste-end bracket ESC[201~) pass through normally. */
+    if (paste_mode && ui->focus == FOCUS_QUERY) {
+        if (ch == '\n' || ch == KEY_ENTER) {
+            if (paste_len < PASTE_BUF_CAP - 1)
+                paste_buf[paste_len++] = '\n';
+            goto paste_done;
+        } else if (ch == '\t') {
+            if (paste_len < PASTE_BUF_CAP - 1)
+                paste_buf[paste_len++] = '\t';
+            goto paste_done;
+        } else if (ch >= 32 && ch < 127) {
+            if (paste_len < PASTE_BUF_CAP - 1)
+                paste_buf[paste_len++] = (char)ch;
+            goto paste_done;
+        }
+        /* else: ESC, special keys — fall through to normal handling
+         * (needed to detect ESC[201~ paste-end sequence) */
+    }
+
     switch (ch) {
     case '\t':
     case KEY_BTAB:
@@ -753,11 +881,13 @@ int tui_input(ui_state_t *ui, char **out_query) {
             ui_state_enter(ui);
         } else if (ui->focus == FOCUS_QUERY) {
             if (paste_mode) {
-                /* During bracketed paste, Enter inserts a newline */
-                ui_state_input_char(ui, '\n');
+                /* During bracketed paste, Enter appends newline to paste buffer */
+                if (paste_len < PASTE_BUF_CAP - 1)
+                    paste_buf[paste_len++] = '\n';
             } else if (ui->input_len > 0) {
-                /* Submit query — save to history first */
-                *out_query = strndup(ui->input_buffer, ui->input_len);
+                /* Submit query — expand clipboard tokens, save to history */
+                *out_query = expand_clipboard_tokens(ui->input_buffer,
+                                                      ui->input_len);
                 /* Add to history (grow array if needed) */
                 if (ui->history_count >= ui->history_cap) {
                     int new_cap = ui->history_cap ? ui->history_cap * 2 : 32;
@@ -772,6 +902,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     ui->history[ui->history_count++] = strdup(*out_query);
                 }
                 ui->history_idx = ui->history_count;  /* past end = fresh input */
+                clip_store_clear();  /* discard expanded clipboard entries */
                 ui->input_buffer[0] = '\0';
                 ui->input_len = 0;
                 ui->cursor_pos = 0;
@@ -802,7 +933,9 @@ int tui_input(ui_state_t *ui, char **out_query) {
             if (got == 4 && seq[0] == '2' && seq[1] == '0' && seq[3] == '~') {
                 if (seq[2] == '0') {
                     paste_mode = 1;  /* Start of bracketed paste */
+                    paste_len = 0;   /* Reset paste accumulation buffer */
                 } else if (seq[2] == '1') {
+                    finish_paste(ui); /* Store/insert pasted content */
                     paste_mode = 0;  /* End of bracketed paste */
                 }
             }
@@ -874,11 +1007,18 @@ int tui_input(ui_state_t *ui, char **out_query) {
     default:
     handle_default:
         if (ui->focus == FOCUS_QUERY && ch >= 32 && ch < 127) {
-            ui_state_input_char(ui, ch);
+            if (paste_mode) {
+                /* During bracketed paste, accumulate into paste buffer */
+                if (paste_len < PASTE_BUF_CAP - 1)
+                    paste_buf[paste_len++] = (char)ch;
+            } else {
+                ui_state_input_char(ui, ch);
+            }
         }
         break;
     }
 
+paste_done:
     pthread_mutex_unlock(&ui->mtx);
     return 1;
 }
