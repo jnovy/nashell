@@ -513,7 +513,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         /* Build the step line */
         /* Format: [  icon  step HH:MM tool_name    thought (or desc)](ref)
-         *         then desc (or thought) on indented second line */
+         *         then desc (or thought) on indented second line
+         *         shell_exec: command shown on second line as **`cmd`** */
+        int is_shell = (strcmp(si->tool, "shell_exec") == 0);
         if (tlen > 0) {
             /* Has thought: show thought on main line, desc on second line */
             char thought_trunc[128];
@@ -532,8 +534,25 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                             icon, si->step, ts_buf,
                             si->tool, thought_trunc);
             }
-            if (desc_trunc[0])
-                str_appendf(&md, "                %s%s\n", desc_trunc, elapsed_str);
+            if (desc_trunc[0]) {
+                if (is_shell)
+                    str_appendf(&md, "                **`%s`**%s\n", desc_trunc, elapsed_str);
+                else
+                    str_appendf(&md, "                %s%s\n", desc_trunc, elapsed_str);
+            }
+        } else if (is_shell && desc_trunc[0]) {
+            /* shell_exec without thought: tool name on link line,
+             * command on second line as bold code */
+            if (si->ref) {
+                str_appendf(&md, "[  %s %3d %s %-13s %s](%s)\n",
+                            icon, si->step, ts_buf,
+                            si->tool, elapsed_str, si->ref);
+            } else {
+                str_appendf(&md, "  %s %3d %s %-13s %s\n",
+                            icon, si->step, ts_buf,
+                            si->tool, elapsed_str);
+            }
+            str_appendf(&md, "                **`%s`**\n", desc_trunc);
         } else {
             /* No thought: show desc on main line (original behavior) */
             if (si->ref) {
