@@ -2304,8 +2304,5 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(ctx->tools->recalled_keys[i]);
     ctx->tools->n_recalled_keys = 0;
 
-    /* Increment react loop counter for next query */
-    ctx->tools->react_loop++;
-
     return final_result;
 }
