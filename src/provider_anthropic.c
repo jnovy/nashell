@@ -431,6 +431,14 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
     cJSON *tools = build_tools_from_registry(PROVIDER_ANTHROPIC);
     cJSON_AddItemToObject(req, "tools", tools);
 
+    /* Force tool use — the agent always expects a tool call response.
+     * Without this, the model sometimes responds with plain text
+     * (e.g., "I'm ready to help!") which fails JSON parsing and
+     * wastes a round-trip on recovery. */
+    cJSON *tool_choice = cJSON_CreateObject();
+    cJSON_AddStringToObject(tool_choice, "type", "any");
+    cJSON_AddItemToObject(req, "tool_choice", tool_choice);
+
     char *json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     return json;
