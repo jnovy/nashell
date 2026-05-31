@@ -698,6 +698,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
 
     if (!restored) {
+    /* Reset per-loop counters FIRST — before any journal logging that uses step.
+     * Previously this was done after memory injection, causing memory_context
+     * journal entries to inherit the step value from the previous react loop. */
+    ctx->tools->step = 0;
+
     /* System message */
     llm_chat_add(chat, "system", tools_system_prompt());
 
@@ -850,9 +855,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* User query */
     llm_chat_add(chat, "user", user_query);
-
-    /* Reset per-loop counters (react_loop is 0-based, incremented at END of loop) */
-    ctx->tools->step = 0;
 
     /* Record system prompt and user query in journal (step 0) */
     {
