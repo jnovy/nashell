@@ -133,4 +133,7 @@ void tool_result_free(tool_result_t *r);
 /* System prompt with tool descriptions */
 const char *tools_system_prompt(void);
 
+/* Tear down auto-started SearXNG container (called on nash exit) */
+void web_search_cleanup(void);
+
 #endif

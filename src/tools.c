@@ -2292,31 +2292,148 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── web_search ────────────────────────────────────────── */
 
-static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring)
-        return make_error("missing 'query' parameter");
+/* Track whether we auto-started a SearXNG container so we can tear it down
+ * on nash exit.  0 = not started, 1 = we started it. */
+static int searxng_auto_started = 0;
 
-    const char *query = query_j->valuestring;
-
-    /* Use DuckDuckGo lite HTML search */
-    /* URL-encode the query */
+/* Check if a URL is reachable (HTTP GET, expect 2xx). Returns 1 if up. */
+static int searxng_is_running(const char *base_url) {
     CURL *curl = curl_easy_init();
-    if (!curl) return make_error("curl_easy_init failed");
+    if (!curl) return 0;
+    str_t body = str_new(256);
+    curl_easy_setopt(curl, CURLOPT_URL, base_url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    if (res == CURLE_OK)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_easy_cleanup(curl);
+    str_free(&body);
+    return (res == CURLE_OK && http_code >= 200 && http_code < 500);
+}
+
+/* Extract host:port from a URL like "http://localhost:8888/search".
+ * Returns the port number, or 8888 as default. */
+static int searxng_port_from_url(const char *url) {
+    /* Find "://", skip it, then find ":" for port */
+    const char *p = strstr(url, "://");
+    if (p) p += 3; else p = url;
+    const char *colon = strchr(p, ':');
+    if (colon) {
+        int port = atoi(colon + 1);
+        if (port > 0 && port < 65536) return port;
+    }
+    return 8888;
+}
+
+/* Build the SearXNG base URL (without /search path) from the configured URL.
+ * e.g. "http://localhost:8888/search" → "http://localhost:8888"
+ * Caller must free the returned string. */
+static char *searxng_base_url(const char *url) {
+    /* Find the path component after host:port */
+    const char *p = strstr(url, "://");
+    if (p) p += 3; else p = url;
+    const char *slash = strchr(p, '/');
+    if (slash) {
+        size_t len = (size_t)(slash - url);
+        char *base = malloc(len + 1);
+        memcpy(base, url, len);
+        base[len] = '\0';
+        return base;
+    }
+    return strdup(url);
+}
+
+/* Start a SearXNG container using podman/docker.
+ * Returns 0 on success, -1 on failure. */
+static int searxng_start_container(int port) {
+    /* Check if container already exists (maybe stopped) */
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "podman rm -f nash-searxng >/dev/null 2>&1; "
+             "podman run -d --name nash-searxng "
+             "-p %d:8080 "
+             "-e SEARXNG_BASE_URL=http://localhost:%d/ "
+             "docker.io/searxng/searxng:latest "
+             ">/dev/null 2>&1",
+             port, port);
+    int rc = system(cmd);
+    if (rc != 0) {
+        /* Try docker as fallback */
+        snprintf(cmd, sizeof(cmd),
+                 "docker rm -f nash-searxng >/dev/null 2>&1; "
+                 "docker run -d --name nash-searxng "
+                 "-p %d:8080 "
+                 "-e SEARXNG_BASE_URL=http://localhost:%d/ "
+                 "docker.io/searxng/searxng:latest "
+                 ">/dev/null 2>&1",
+                 port, port);
+        rc = system(cmd);
+    }
+    if (rc != 0) return -1;
+
+    searxng_auto_started = 1;
+
+    /* Wait for SearXNG to become ready (up to 30 seconds) */
+    char health_url[256];
+    snprintf(health_url, sizeof(health_url), "http://localhost:%d/", port);
+    for (int i = 0; i < 30; i++) {
+        sleep(1);
+        if (searxng_is_running(health_url)) return 0;
+    }
+    return -1;  /* timed out */
+}
+
+/* Ensure SearXNG is running. Starts container if needed.
+ * Returns 0 if SearXNG is available, -1 on failure. */
+static int ensure_searxng(const char *searxng_url) {
+    char *base = searxng_base_url(searxng_url);
+
+    /* First check if it's already running (user-managed or previously started) */
+    if (searxng_is_running(base)) {
+        free(base);
+        return 0;
+    }
+
+    /* Not running — auto-start a container */
+    int port = searxng_port_from_url(searxng_url);
+    fprintf(stderr, "[nash] SearXNG not running at %s — starting container on port %d...\n",
+            base, port);
+    free(base);
+
+    if (searxng_start_container(port) != 0) {
+        fprintf(stderr, "[nash] Failed to start SearXNG container\n");
+        return -1;
+    }
+    fprintf(stderr, "[nash] SearXNG container started successfully\n");
+    return 0;
+}
+
+/* Perform a search using SearXNG JSON API.
+ * Returns a formatted results string (caller frees), or NULL on failure.
+ * *out_count receives the number of results. */
+static char *searxng_search(const char *searxng_url, const char *query,
+                            int *out_count) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
 
     char *encoded_q = curl_easy_escape(curl, query, 0);
     char url[2048];
-    snprintf(url, sizeof(url), "https://lite.duckduckgo.com/lite/?q=%s", encoded_q);
+    snprintf(url, sizeof(url), "%s?q=%s&format=json&categories=general",
+             searxng_url, encoded_q);
     curl_free(encoded_q);
 
     str_t body = str_new(32768);
-
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
@@ -2324,40 +2441,114 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        char msg[512];
-        snprintf(msg, sizeof(msg), "search failed: %s", curl_easy_strerror(res));
         str_free(&body);
-        return make_error(msg);
+        return NULL;
     }
 
-    /* Parse DuckDuckGo lite HTML results — extract links and snippets */
+    /* Parse JSON response */
+    cJSON *root = cJSON_Parse(body.data);
+    str_free(&body);
+    if (!root) return NULL;
+
+    cJSON *results_arr = cJSON_GetObjectItem(root, "results");
+    if (!results_arr || !cJSON_IsArray(results_arr)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+
+    str_t results = str_new(4096);
+    int count = 0;
+    int arr_size = cJSON_GetArraySize(results_arr);
+
+    for (int i = 0; i < arr_size && count < 10; i++) {
+        cJSON *item = cJSON_GetArrayItem(results_arr, i);
+        if (!item) continue;
+
+        cJSON *title_j   = cJSON_GetObjectItem(item, "title");
+        cJSON *url_j     = cJSON_GetObjectItem(item, "url");
+        cJSON *content_j = cJSON_GetObjectItem(item, "content");
+
+        const char *title   = (title_j && title_j->valuestring) ? title_j->valuestring : "";
+        const char *item_url = (url_j && url_j->valuestring) ? url_j->valuestring : "";
+        const char *content = (content_j && content_j->valuestring) ? content_j->valuestring : "";
+
+        if (!item_url[0]) continue;
+
+        count++;
+        if (title[0] && content[0]) {
+            str_appendf(&results, "%d. %s\n   %s\n   %s\n\n", count, title, item_url, content);
+        } else if (title[0]) {
+            str_appendf(&results, "%d. %s\n   %s\n\n", count, title, item_url);
+        } else {
+            str_appendf(&results, "%d. %s\n\n", count, item_url);
+        }
+    }
+
+    cJSON_Delete(root);
+    *out_count = count;
+
+    if (count == 0) {
+        str_free(&results);
+        return NULL;
+    }
+
+    return str_steal(&results);
+}
+
+/* DuckDuckGo lite search — original implementation as fallback.
+ * Returns formatted results string (caller frees) or NULL.
+ * *out_count receives number of results. */
+static char *ddg_search(const char *query, int *out_count) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    char *encoded_q = curl_easy_escape(curl, query, 0);
+    char url[2048];
+    snprintf(url, sizeof(url), "https://lite.duckduckgo.com/lite/?q=%s", encoded_q);
+    curl_free(encoded_q);
+
+    str_t body = str_new(32768);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        str_free(&body);
+        return NULL;
+    }
+
     str_t results = str_new(4096);
     int result_count = 0;
 
-    /* Simple HTML parsing: find result links in <a class="result-link"> or <a> tags with http */
     const char *p = body.data;
     while (p && result_count < 10) {
-        /* Look for result links — DDG lite uses <a rel="nofollow" href="..."> */
         const char *href = strstr(p, "href=\"http");
         if (!href) break;
-        href += 6;  /* skip href=" */
+        href += 6;
         const char *end = strchr(href, '"');
         if (!end || end - href > 500) { p = href; continue; }
 
-        /* Extract URL */
         char link[512];
         size_t link_len = (size_t)(end - href);
         if (link_len >= sizeof(link)) link_len = sizeof(link) - 1;
         memcpy(link, href, link_len);
         link[link_len] = '\0';
 
-        /* Skip DDG internal links */
         if (strstr(link, "duckduckgo.com") || strstr(link, "duck.co")) {
             p = end;
             continue;
         }
 
-        /* Try to find a title — look for text between > and < after the <a> tag */
         const char *tag_end = strchr(end, '>');
         char title[256] = "";
         if (tag_end) {
@@ -2370,51 +2561,98 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
             }
         }
 
-        if (title[0]) {
-            str_appendf(&results, "%d. %s\n   %s\n\n", result_count + 1, title, link);
-        } else {
-            str_appendf(&results, "%d. %s\n\n", result_count + 1, link);
-        }
         result_count++;
+        if (title[0]) {
+            str_appendf(&results, "%d. %s\n   %s\n\n", result_count, title, link);
+        } else {
+            str_appendf(&results, "%d. %s\n\n", result_count, link);
+        }
         p = end;
     }
 
+    str_free(&body);
+    *out_count = result_count;
+
     if (result_count == 0) {
-        /* No results = explicit failure — don't store useless content,
-         * record as error in journal so reflection can see it */
+        str_free(&results);
+        return NULL;
+    }
+
+    return str_steal(&results);
+}
+
+static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
+    cJSON *query_j = cJSON_GetObjectItem(params, "query");
+    if (!query_j || !query_j->valuestring)
+        return make_error("missing 'query' parameter");
+
+    const char *query = query_j->valuestring;
+    const char *engine = ctx->cfg->search_engine;
+    char *results_text = NULL;
+    int result_count = 0;
+
+    if (engine && strcmp(engine, "searxng") == 0) {
+        /* SearXNG mode — ensure server is running, then search */
+        if (ensure_searxng(ctx->cfg->searxng_url) != 0) {
+            return make_error("SearXNG not available and could not be auto-started. "
+                              "Install podman/docker or configure a running SearXNG instance "
+                              "in ~/.nash/config.toml [search] section.");
+        }
+        results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count);
+    } else {
+        /* DuckDuckGo mode — try DDG first, fall back to SearXNG */
+        results_text = ddg_search(query, &result_count);
+
+        if (!results_text) {
+            /* DDG failed — try SearXNG as fallback */
+            if (ensure_searxng(ctx->cfg->searxng_url) == 0) {
+                results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count);
+            }
+        }
+    }
+
+    if (!results_text || result_count == 0) {
         char errmsg[512];
         snprintf(errmsg, sizeof(errmsg),
                  "no results found for query: %s", query);
-
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
                        params, NULL, 0, 0, errmsg, NULL);
-
-        str_free(&results);
-        str_free(&body);
+        free(results_text);
         return make_error(errmsg);
     }
 
     /* Store results */
-    char *hash = store_save(ctx->store, results.data);
+    char *hash = store_save(ctx->store, results_text);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "query", query);
     cJSON_AddNumberToObject(meta, "results", result_count);
-    cJSON_AddNumberToObject(meta, "chars", (double)results.len);
+    cJSON_AddNumberToObject(meta, "chars", (double)strlen(results_text));
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
-    /* Content stored to .store/ — model reads via file_read(ref) */
-
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
-                   params, alias, results.len, result_count, NULL, NULL);
+                   params, alias, strlen(results_text), result_count, NULL, NULL);
 
     char *ref_copy = alias ? strdup(alias) : NULL;
     free(alias);
     free(hash);
-    str_free(&results);
-    str_free(&body);
+    free(results_text);
     return make_result(1, meta, ref_copy);
+}
+
+/* Tear down auto-started SearXNG container. Called on nash exit. */
+void web_search_cleanup(void) {
+    if (!searxng_auto_started) return;
+    fprintf(stderr, "[nash] Stopping auto-started SearXNG container...\n");
+    int rc = system("podman stop nash-searxng >/dev/null 2>&1 && "
+                    "podman rm nash-searxng >/dev/null 2>&1");
+    if (rc != 0) {
+        /* Try docker as fallback */
+        system("docker stop nash-searxng >/dev/null 2>&1 && "
+               "docker rm nash-searxng >/dev/null 2>&1");
+    }
+    searxng_auto_started = 0;
 }
 
 

@@ -1221,6 +1221,7 @@ int main(int argc, char **argv) {
         if (session_dir) free(session_dir);
     }
     printf("Bye.\n");
+    web_search_cleanup();  /* tear down auto-started SearXNG container */
     store_free(shared_store);
     memory_free(memory);
     provider_free(provider);
