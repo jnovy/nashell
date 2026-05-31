@@ -2415,9 +2415,9 @@ static char *searxng_search(const char *searxng_url, const char *query,
 
         count++;
         if (title[0] && content[0]) {
-            str_appendf(&results, "%d. %s\n   %s\n   %s\n\n", count, title, item_url, content);
+            str_appendf(&results, "%d. [%s](%s)\n   %s\n\n", count, title, item_url, content);
         } else if (title[0]) {
-            str_appendf(&results, "%d. %s\n   %s\n\n", count, title, item_url);
+            str_appendf(&results, "%d. [%s](%s)\n\n", count, title, item_url);
         } else {
             str_appendf(&results, "%d. %s\n\n", count, item_url);
         }
@@ -2434,8 +2434,9 @@ static char *searxng_search(const char *searxng_url, const char *query,
     return str_steal(&results);
 }
 
-/* DuckDuckGo lite search — original implementation as fallback.
- * Returns formatted results string (caller frees) or NULL.
+/* DuckDuckGo Instant Answer API search.
+ * Uses the JSON API (no CAPTCHA issues unlike lite/html endpoints).
+ * Returns formatted markdown results string (caller frees) or NULL.
  * *out_count receives number of results. */
 static char *ddg_search(const char *query, int *out_count) {
     CURL *curl = curl_easy_init();
@@ -2443,7 +2444,9 @@ static char *ddg_search(const char *query, int *out_count) {
 
     char *encoded_q = curl_easy_escape(curl, query, 0);
     char url[2048];
-    snprintf(url, sizeof(url), "https://lite.duckduckgo.com/lite/?q=%s", encoded_q);
+    snprintf(url, sizeof(url),
+             "https://api.duckduckgo.com/?q=%s&format=json&no_html=1",
+             encoded_q);
     curl_free(encoded_q);
 
     str_t body = str_new(32768);
@@ -2454,9 +2457,7 @@ static char *ddg_search(const char *query, int *out_count) {
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -2466,53 +2467,78 @@ static char *ddg_search(const char *query, int *out_count) {
         return NULL;
     }
 
+    /* Parse JSON response */
+    cJSON *root = cJSON_Parse(body.data);
+    str_free(&body);
+    if (!root) return NULL;
+
     str_t results = str_new(4096);
-    int result_count = 0;
+    int count = 0;
 
-    const char *p = body.data;
-    while (p && result_count < 10) {
-        const char *href = strstr(p, "href=\"http");
-        if (!href) break;
-        href += 6;
-        const char *end = strchr(href, '"');
-        if (!end || end - href > 500) { p = href; continue; }
-
-        char link[512];
-        size_t link_len = (size_t)(end - href);
-        if (link_len >= sizeof(link)) link_len = sizeof(link) - 1;
-        memcpy(link, href, link_len);
-        link[link_len] = '\0';
-
-        if (strstr(link, "duckduckgo.com") || strstr(link, "duck.co")) {
-            p = end;
-            continue;
-        }
-
-        const char *tag_end = strchr(end, '>');
-        char title[256] = "";
-        if (tag_end) {
-            tag_end++;
-            const char *title_end = strchr(tag_end, '<');
-            if (title_end && title_end - tag_end > 0 && title_end - tag_end < 250) {
-                size_t tlen = (size_t)(title_end - tag_end);
-                memcpy(title, tag_end, tlen);
-                title[tlen] = '\0';
-            }
-        }
-
-        result_count++;
-        if (title[0]) {
-            str_appendf(&results, "%d. %s\n   %s\n\n", result_count, title, link);
-        } else {
-            str_appendf(&results, "%d. %s\n\n", result_count, link);
-        }
-        p = end;
+    /* 1. Abstract — main topic result (e.g. from Wikipedia) */
+    const char *abstract = cJSON_GetStringValue(
+        cJSON_GetObjectItem(root, "AbstractText"));
+    const char *abstract_url = cJSON_GetStringValue(
+        cJSON_GetObjectItem(root, "AbstractURL"));
+    const char *heading = cJSON_GetStringValue(
+        cJSON_GetObjectItem(root, "Heading"));
+    if (abstract && abstract[0] && abstract_url && abstract_url[0]) {
+        count++;
+        str_appendf(&results, "%d. [%s](%s)\n   %s\n\n",
+                     count,
+                     (heading && heading[0]) ? heading : "Result",
+                     abstract_url, abstract);
     }
 
-    str_free(&body);
-    *out_count = result_count;
+    /* 2. Results[] — official sites, direct answers */
+    cJSON *results_arr = cJSON_GetObjectItem(root, "Results");
+    if (results_arr && cJSON_IsArray(results_arr)) {
+        int arr_sz = cJSON_GetArraySize(results_arr);
+        for (int i = 0; i < arr_sz && count < 10; i++) {
+            cJSON *item = cJSON_GetArrayItem(results_arr, i);
+            if (!item) continue;
+            const char *r_url = cJSON_GetStringValue(
+                cJSON_GetObjectItem(item, "FirstURL"));
+            const char *r_text = cJSON_GetStringValue(
+                cJSON_GetObjectItem(item, "Text"));
+            if (r_url && r_url[0]) {
+                count++;
+                str_appendf(&results, "%d. [%s](%s)\n\n",
+                             count,
+                             (r_text && r_text[0]) ? r_text : r_url,
+                             r_url);
+            }
+        }
+    }
 
-    if (result_count == 0) {
+    /* 3. RelatedTopics[] — related links (skip category groupings) */
+    cJSON *related = cJSON_GetObjectItem(root, "RelatedTopics");
+    if (related && cJSON_IsArray(related)) {
+        int arr_sz = cJSON_GetArraySize(related);
+        for (int i = 0; i < arr_sz && count < 10; i++) {
+            cJSON *item = cJSON_GetArrayItem(related, i);
+            if (!item) continue;
+            /* Skip category groups (they have "Topics" sub-array) */
+            if (cJSON_GetObjectItem(item, "Topics")) continue;
+            const char *r_url = cJSON_GetStringValue(
+                cJSON_GetObjectItem(item, "FirstURL"));
+            const char *r_text = cJSON_GetStringValue(
+                cJSON_GetObjectItem(item, "Text"));
+            if (r_url && r_url[0] &&
+                !strstr(r_url, "duckduckgo.com/c/")) {
+                count++;
+                str_appendf(&results, "%d. [%s](%s)\n\n",
+                             count,
+                             (r_text && r_text[0]) ? r_text : r_url,
+                             r_url);
+            }
+        }
+    }
+
+    cJSON_Delete(root);
+    *out_count = count;
+
+    if (count == 0) {
         str_free(&results);
         return NULL;
     }
@@ -2554,8 +2580,13 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
         char errmsg[512];
         snprintf(errmsg, sizeof(errmsg),
                  "no results found for query: %s", query);
+        /* Store error to .store/ so it gets a ref for reactRX.md hyperlink */
+        char *err_hash = store_save(ctx->store, errmsg);
+        char *err_alias = tool_register_alias(ctx, err_hash ? err_hash : "");
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
-                       params, NULL, 0, 0, errmsg, NULL);
+                       params, err_alias, strlen(errmsg), 0, errmsg, NULL);
+        free(err_hash);
+        free(err_alias);
         free(results_text);
         return make_error(errmsg);
     }
