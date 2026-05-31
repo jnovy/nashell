@@ -231,16 +231,6 @@ cJSON *build_tools_from_registry(provider_type_t type) {
     return tools;
 }
 
-/* ── Shared curl write callback ─────────────────────────────────── */
-
-/* Append received data to a str_t. Used by curl_easy_setopt(..., CURLOPT_WRITEFUNCTION).
- * Exported so provider_local.c can use it for local_fetch_model_info HTTP calls. */
-size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    str_t *s = userdata;
-    str_append(s, ptr, size * nmemb);
-    return size * nmemb;
-}
-
 /* ── Shared: build OpenAI-compatible base request ───────────────── */
 
 /* Build the common part of an OpenAI-compatible request body.
@@ -783,7 +773,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         curl_easy_setopt(curl, CURLOPT_URL, endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 

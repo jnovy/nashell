@@ -129,10 +129,6 @@ char *parse_openai_response(provider_t *p, const char *response_json,
 /* Extract prompt/completion token stats from OpenAI-format response. */
 void extract_openai_stats(cJSON *resp, llm_stats_t *stats);
 
-/* Shared curl write callback: append received data to a str_t.
- * Returns size*nmemb (curl callback convention). */
-size_t write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
-
 /* Look up context window size by model ID prefix (unified table).
  * Returns 0 if no match found. */
 int provider_lookup_context_size(const char *model_id);

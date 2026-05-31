@@ -62,7 +62,7 @@ static cJSON *local_build_tools(provider_t *p) {
 /* ── Fetch model info (local server only) ───────────────────────── */
 
 /* Local servers have /props and /v1/models endpoints — cannot use
- * the shared API provider fetch_model_info. Uses shared write_cb. */
+ * the shared API provider fetch_model_info. Uses http_get(). */
 static int local_fetch_model_info(provider_t *p, int *context_size,
                                   char **model_name, char **props_json) {
     const char *base = p->cfg.api_base ? p->cfg.api_base : "http://localhost:8080";
@@ -73,33 +73,22 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
         snprintf(url, sizeof(url), "%s/props", base);
 
         str_t response = str_new(4096);
-        CURL *curl = curl_easy_init();
-        if (curl) {
-            curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+        if (http_get(url, 5, &response) == 0 && response.len > 0) {
+            if (props_json) *props_json = strdup(response.data);
 
-            CURLcode res = curl_easy_perform(curl);
-            curl_easy_cleanup(curl);
-
-            if (res == CURLE_OK && response.len > 0) {
-                if (props_json) *props_json = strdup(response.data);
-
-                if (context_size) {
-                    cJSON *props = cJSON_Parse(response.data);
-                    if (props) {
-                        cJSON *dgs = cJSON_GetObjectItem(props, "default_generation_settings");
-                        if (dgs) {
-                            cJSON *nctx = cJSON_GetObjectItem(dgs, "n_ctx");
-                            if (nctx) *context_size = nctx->valueint;
-                        }
-                        cJSON_Delete(props);
+            if (context_size) {
+                cJSON *props = cJSON_Parse(response.data);
+                if (props) {
+                    cJSON *dgs = cJSON_GetObjectItem(props, "default_generation_settings");
+                    if (dgs) {
+                        cJSON *nctx = cJSON_GetObjectItem(dgs, "n_ctx");
+                        if (nctx) *context_size = nctx->valueint;
                     }
+                    cJSON_Delete(props);
                 }
             }
-            str_free(&response);
         }
+        str_free(&response);
     }
 
     /* Fetch /v1/models for model name */
@@ -108,31 +97,20 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
         snprintf(url, sizeof(url), "%s/v1/models", base);
 
         str_t response = str_new(1024);
-        CURL *curl = curl_easy_init();
-        if (curl) {
-            curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-
-            CURLcode res = curl_easy_perform(curl);
-            curl_easy_cleanup(curl);
-
-            if (res == CURLE_OK && response.len > 0) {
-                cJSON *models = cJSON_Parse(response.data);
-                if (models) {
-                    cJSON *data = cJSON_GetObjectItem(models, "data");
-                    if (data && cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
-                        cJSON *first = cJSON_GetArrayItem(data, 0);
-                        cJSON *id = cJSON_GetObjectItem(first, "id");
-                        if (id && cJSON_IsString(id))
-                            *model_name = strdup(id->valuestring);
-                    }
-                    cJSON_Delete(models);
+        if (http_get(url, 5, &response) == 0 && response.len > 0) {
+            cJSON *models = cJSON_Parse(response.data);
+            if (models) {
+                cJSON *data = cJSON_GetObjectItem(models, "data");
+                if (data && cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
+                    cJSON *first = cJSON_GetArrayItem(data, 0);
+                    cJSON *id = cJSON_GetObjectItem(first, "id");
+                    if (id && cJSON_IsString(id))
+                        *model_name = strdup(id->valuestring);
                 }
+                cJSON_Delete(models);
             }
-            str_free(&response);
         }
+        str_free(&response);
     }
 
     return 0;
