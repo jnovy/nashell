@@ -1,6 +1,7 @@
 #include "llm.h"
 #include "provider.h"
 #include "str.h"
+#include "tui.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,7 +173,7 @@ cJSON *llm_parse_action(const char *response) {
     if (repaired) {
         action = cJSON_Parse(repaired);
         if (action) {
-            fprintf(stderr, "[llm] repaired malformed JSON response\n");
+            if (!g_tui_active) fprintf(stderr, "[llm] repaired malformed JSON response\n");
         }
         free(repaired);
     }

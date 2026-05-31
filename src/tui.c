@@ -9,6 +9,8 @@
 
 /* ── Windows ─────────────────────────────────────────── */
 
+int g_tui_active = 0;  /* set by tui_init(), cleared by tui_shutdown() */
+
 static WINDOW *win_main   = NULL;   /* top pane: MD rendered content */
 static WINDOW *win_bottom = NULL;   /* bottom pane: status + input */
 static int main_height = 0;
@@ -159,9 +161,11 @@ void tui_init(void) {
     scrollok(win_main, FALSE);
     scrollok(win_bottom, FALSE);
     refresh();
+    g_tui_active = 1;
 }
 
 void tui_shutdown(void) {
+    g_tui_active = 0;
     if (win_main)   delwin(win_main);
     if (win_bottom) delwin(win_bottom);
     win_main = win_bottom = NULL;

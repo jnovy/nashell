@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "embedding_onnx.h"
 #include "onnxruntime_c_api.h"
+#include "tui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -79,7 +80,7 @@ static int wp_vocab_lookup(const wp_vocab_t *v, const char *token, int len) {
 static wp_vocab_t *wp_vocab_load(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
-        fprintf(stderr, "[onnx-embed] cannot open vocab: %s\n", path);
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] cannot open vocab: %s\n", path);
         return NULL;
     }
 
@@ -100,7 +101,7 @@ static wp_vocab_t *wp_vocab_load(const char *path) {
     }
 
     fclose(f);
-    fprintf(stderr, "[onnx-embed] loaded vocab: %d tokens from %s\n",
+    if (!g_tui_active) fprintf(stderr, "[onnx-embed] loaded vocab: %d tokens from %s\n",
             v->vocab_size, path);
     return v;
 }
@@ -240,7 +241,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     /* Check files exist */
     FILE *f = fopen(model_path, "rb");
     if (!f) {
-        fprintf(stderr, "[onnx-embed] model not found: %s\n", model_path);
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] model not found: %s\n", model_path);
         return NULL;
     }
     fclose(f);
@@ -253,7 +254,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     const OrtApiBase *base = OrtGetApiBase();
     const OrtApi *api = base->GetApi(ORT_API_VERSION);
     if (!api) {
-        fprintf(stderr, "[onnx-embed] failed to get ONNX Runtime API v%d\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] failed to get ONNX Runtime API v%d\n",
                 ORT_API_VERSION);
         wp_vocab_free(vocab);
         return NULL;
@@ -269,7 +270,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     /* Create environment */
     status = api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "nash-embed", &ctx->env);
     if (status) {
-        fprintf(stderr, "[onnx-embed] CreateEnv failed: %s\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] CreateEnv failed: %s\n",
                 api->GetErrorMessage(status));
         api->ReleaseStatus(status);
         goto fail;
@@ -278,7 +279,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     /* Create session options */
     status = api->CreateSessionOptions(&ctx->opts);
     if (status) {
-        fprintf(stderr, "[onnx-embed] CreateSessionOptions failed: %s\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] CreateSessionOptions failed: %s\n",
                 api->GetErrorMessage(status));
         api->ReleaseStatus(status);
         goto fail;
@@ -291,7 +292,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     /* Create session (loads model) */
     status = api->CreateSession(ctx->env, model_path, ctx->opts, &ctx->session);
     if (status) {
-        fprintf(stderr, "[onnx-embed] CreateSession failed: %s\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] CreateSession failed: %s\n",
                 api->GetErrorMessage(status));
         api->ReleaseStatus(status);
         goto fail;
@@ -301,7 +302,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     status = api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault,
                                       &ctx->mem_info);
     if (status) {
-        fprintf(stderr, "[onnx-embed] CreateCpuMemoryInfo failed: %s\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] CreateCpuMemoryInfo failed: %s\n",
                 api->GetErrorMessage(status));
         api->ReleaseStatus(status);
         goto fail;
@@ -313,10 +314,10 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     if (test) {
         ctx->dim = test_dim;
         free(test);
-        fprintf(stderr, "[onnx-embed] initialized: %s (dim=%d)\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] initialized: %s (dim=%d)\n",
                 model_path, ctx->dim);
     } else {
-        fprintf(stderr, "[onnx-embed] test inference failed\n");
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] test inference failed\n");
         goto fail;
     }
 
@@ -377,7 +378,7 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
                       input_names, (const OrtValue *const *)input_tensors, 3,
                       output_names, 1, &output_tensor);
     if (status) {
-        fprintf(stderr, "[onnx-embed] Run failed: %s\n",
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] Run failed: %s\n",
                 api->GetErrorMessage(status));
         api->ReleaseStatus(status);
         goto cleanup;
@@ -406,13 +407,13 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
     api->ReleaseTensorTypeAndShapeInfo(type_info);
 
     if (dim_count != 3) {
-        fprintf(stderr, "[onnx-embed] unexpected output rank: %zu\n", dim_count);
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] unexpected output rank: %zu\n", dim_count);
         goto cleanup;
     }
 
     int hidden_dim = (int)dims[2];
     if (hidden_dim <= 0 || hidden_dim > 4096) {
-        fprintf(stderr, "[onnx-embed] unexpected hidden dim: %d\n", hidden_dim);
+        if (!g_tui_active) fprintf(stderr, "[onnx-embed] unexpected hidden dim: %d\n", hidden_dim);
         goto cleanup;
     }
 

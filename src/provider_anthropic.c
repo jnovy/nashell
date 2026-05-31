@@ -16,6 +16,7 @@
 #include "provider.h"
 #include "str.h"
 #include "cJSON.h"
+#include "tui.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,14 +44,16 @@ static const char *get_vertex_token(provider_t *p) {
     /* Get fresh token via gcloud */
     FILE *fp = popen("gcloud auth print-access-token 2>/dev/null", "r");
     if (!fp) {
-        fprintf(stderr, "[provider/vertex] failed to run gcloud auth\n");
+        if (!g_tui_active)
+            fprintf(stderr, "[provider/vertex] failed to run gcloud auth\n");
         return NULL;
     }
 
     char token[4096];
     if (!fgets(token, sizeof(token), fp)) {
         pclose(fp);
-        fprintf(stderr, "[provider/vertex] gcloud auth returned empty token\n");
+        if (!g_tui_active)
+            fprintf(stderr, "[provider/vertex] gcloud auth returned empty token\n");
         return NULL;
     }
     pclose(fp);
@@ -61,7 +64,8 @@ static const char *get_vertex_token(provider_t *p) {
         token[--len] = '\0';
 
     if (len == 0) {
-        fprintf(stderr, "[provider/vertex] gcloud auth returned empty token\n");
+        if (!g_tui_active)
+            fprintf(stderr, "[provider/vertex] gcloud auth returned empty token\n");
         return NULL;
     }
 
@@ -458,7 +462,8 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
             snprintf(auth, sizeof(auth), "Authorization: Bearer %s", token);
             headers = curl_slist_append(headers, auth);
         } else {
-            fprintf(stderr, "[provider/vertex] WARNING: no OAuth2 token available\n");
+            if (!g_tui_active)
+                fprintf(stderr, "[provider/vertex] WARNING: no OAuth2 token available\n");
         }
     } else {
         /* Direct Anthropic: x-api-key header */
@@ -468,8 +473,9 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
             snprintf(auth, sizeof(auth), "x-api-key: %s", api_key);
             headers = curl_slist_append(headers, auth);
         } else {
-            fprintf(stderr, "[provider/anthropic] WARNING: no API key in $%s\n",
-                    p->cfg.api_key_env ? p->cfg.api_key_env : "ANTHROPIC_API_KEY");
+            if (!g_tui_active)
+                fprintf(stderr, "[provider/anthropic] WARNING: no API key in $%s\n",
+                        p->cfg.api_key_env ? p->cfg.api_key_env : "ANTHROPIC_API_KEY");
         }
         headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
     }

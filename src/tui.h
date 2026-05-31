@@ -3,6 +3,11 @@
 
 #include "ui_state.h"
 
+/* Global flag: 1 when ncurses TUI is active, 0 otherwise.
+ * Library code must check this before writing to stderr/stdout
+ * to avoid corrupting the ncurses display. */
+extern int g_tui_active;
+
 /* Initialize ncurses TUI — creates windows, sets up colors */
 void tui_init(void);
 

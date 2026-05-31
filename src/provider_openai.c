@@ -10,6 +10,7 @@
 #include "provider.h"
 #include "str.h"
 #include "cJSON.h"
+#include "tui.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,8 +51,9 @@ static struct curl_slist *openai_build_headers(provider_t *p) {
         snprintf(auth, sizeof(auth), "Authorization: Bearer %s", api_key);
         headers = curl_slist_append(headers, auth);
     } else {
-        fprintf(stderr, "[provider/openai] WARNING: no API key found in $%s\n",
-                p->cfg.api_key_env ? p->cfg.api_key_env : "OPENAI_API_KEY");
+        if (!g_tui_active)
+            fprintf(stderr, "[provider/openai] WARNING: no API key found in $%s\n",
+                    p->cfg.api_key_env ? p->cfg.api_key_env : "OPENAI_API_KEY");
     }
 
     return headers;
