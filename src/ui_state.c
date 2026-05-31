@@ -539,18 +539,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 str_appendf(&md, "                **`%s`**\n", desc_trunc);
             }
         } else if (is_shell && desc_trunc[0]) {
-            /* shell_exec without thought: tool name on link line,
-             * command on second line as bold code */
+            /* shell_exec without thought: command on same line as tool */
             if (si->ref) {
-                str_appendf(&md, "[  %s %3d %s %-13s %s](%s)\n",
+                str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
                             icon, si->step, ts_buf,
-                            si->tool, elapsed_str, si->ref);
+                            si->tool, sanitize_md_link(desc_trunc),
+                            elapsed_str, si->ref);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s %s\n",
+                str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
                             icon, si->step, ts_buf,
-                            si->tool, elapsed_str);
+                            si->tool, desc_trunc, elapsed_str);
             }
-            str_appendf(&md, "                **`%s`**\n", desc_trunc);
         } else if (tlen > 0) {
             /* Has thought: show thought on main line, desc on second line */
             char thought_trunc[128];
