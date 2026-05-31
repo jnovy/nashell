@@ -500,31 +500,55 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             desc_trunc[0] = '\0';
         }
 
-        /* Build the step line */
-        /* Format: [  icon  step HH:MM tool_name    desc (elapsed)](ref) */
-        if (si->ref) {
-            str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
-                        icon, si->step, ts_buf,
-                        si->tool, sanitize_md_link(desc_trunc),
-                        elapsed_str, si->ref);
-        } else {
-            str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
-                        icon, si->step, ts_buf,
-                        si->tool, desc_trunc, elapsed_str);
+        /* Prepare thought text: strip leading/trailing whitespace/newlines */
+        const char *thought_start = si->thought;
+        int tlen = 0;
+        if (thought_start && thought_start[0]) {
+            while (*thought_start == '\n' || *thought_start == '\r' ||
+                   *thought_start == ' ' || *thought_start == '\t')
+                thought_start++;
+            tlen = (int)strlen(thought_start);
+            while (tlen > 0 && (thought_start[tlen-1] == '\n' ||
+                   thought_start[tlen-1] == '\r' ||
+                   thought_start[tlen-1] == ' ' ||
+                   thought_start[tlen-1] == '\t'))
+                tlen--;
         }
 
-        /* Thought on second line (indented, compact) */
-        if (si->thought && si->thought[0]) {
-            int tlen = (int)strlen(si->thought);
-            while (tlen > 0 && (si->thought[tlen-1] == '\n' ||
-                   si->thought[tlen-1] == '\r' || si->thought[tlen-1] == ' '))
-                tlen--;
-            if (tlen > 0 && tlen <= 120) {
-                /* Short thought: show inline */
-                str_appendf(&md, "                %.*s\n", tlen, si->thought);
-            } else if (tlen > 120) {
-                /* Long thought: truncate */
-                str_appendf(&md, "                %.117s...\n", si->thought);
+        /* Build the step line */
+        /* Format: [  icon  step HH:MM tool_name    thought (or desc)](ref)
+         *         then desc (or thought) on indented second line */
+        if (tlen > 0) {
+            /* Has thought: show thought on main line, desc on second line */
+            char thought_trunc[128];
+            if (tlen <= 120) {
+                snprintf(thought_trunc, sizeof(thought_trunc), "%.*s", tlen, thought_start);
+            } else {
+                snprintf(thought_trunc, sizeof(thought_trunc), "%.117s...", thought_start);
+            }
+            if (si->ref) {
+                str_appendf(&md, "[  %s %3d %s %-13s %s](%s)\n",
+                            icon, si->step, ts_buf,
+                            si->tool, sanitize_md_link(thought_trunc),
+                            si->ref);
+            } else {
+                str_appendf(&md, "  %s %3d %s %-13s %s\n",
+                            icon, si->step, ts_buf,
+                            si->tool, thought_trunc);
+            }
+            if (desc_trunc[0])
+                str_appendf(&md, "                %s%s\n", desc_trunc, elapsed_str);
+        } else {
+            /* No thought: show desc on main line (original behavior) */
+            if (si->ref) {
+                str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
+                            icon, si->step, ts_buf,
+                            si->tool, sanitize_md_link(desc_trunc),
+                            elapsed_str, si->ref);
+            } else {
+                str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
+                            icon, si->step, ts_buf,
+                            si->tool, desc_trunc, elapsed_str);
             }
         }
 
