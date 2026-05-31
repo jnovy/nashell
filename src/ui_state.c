@@ -452,8 +452,37 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
     fclose(f);
 
-    /* Header */
-    str_appendf(&md, "# Query: %s\n\n", query_text ? query_text : "?");
+    /* Header — for multi-line queries, show first line as heading
+     * and remaining lines as a blockquote block */
+    if (query_text && query_text[0]) {
+        const char *nl = strchr(query_text, '\n');
+        if (nl) {
+            /* Multi-line query: first line as heading */
+            str_append_cstr(&md, "# Query: ");
+            str_append(&md, query_text, (size_t)(nl - query_text));
+            str_append_cstr(&md, "\n\n");
+            /* Remaining lines as blockquote */
+            const char *rest = nl + 1;
+            while (*rest) {
+                const char *eol = strchr(rest, '\n');
+                str_append_cstr(&md, "> ");
+                if (eol) {
+                    str_append(&md, rest, (size_t)(eol - rest));
+                    str_append_cstr(&md, "\n");
+                    rest = eol + 1;
+                } else {
+                    str_append_cstr(&md, rest);
+                    str_append_cstr(&md, "\n");
+                    break;
+                }
+            }
+            str_append_cstr(&md, "\n");
+        } else {
+            str_appendf(&md, "# Query: %s\n\n", query_text);
+        }
+    } else {
+        str_appendf(&md, "# Query: ?\n\n");
+    }
 
     /* Render each step in nashell-style compact format */
     for (int i = 0; i < nsteps; i++) {
@@ -1040,7 +1069,9 @@ void ui_state_page_down(ui_state_t *ui) {
 /* ── Input editing ─────────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch) {
-    if (!ui || ch < 32 || ch > 126) return;
+    if (!ui) return;
+    /* Allow printable ASCII (32-126) and newline (10) for multi-line input */
+    if (ch != '\n' && (ch < 32 || ch > 126)) return;
     if (ui->input_len >= ui->input_cap - 1) {
         ui->input_cap *= 2;
         ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);

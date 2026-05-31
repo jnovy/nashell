@@ -15,6 +15,7 @@ static WINDOW *win_main   = NULL;   /* top pane: MD rendered content */
 static WINDOW *win_bottom = NULL;   /* bottom pane: status + input */
 static int main_height = 0;
 static int bottom_height = 0;
+static int paste_mode = 0;          /* bracketed paste: 1 while receiving pasted text */
 
 /* ── Colors ──────────────────────────────────────────── */
 
@@ -161,11 +162,22 @@ void tui_init(void) {
     scrollok(win_main, FALSE);
     scrollok(win_bottom, FALSE);
     refresh();
+
+    /* Enable bracketed paste mode so we can distinguish pasted text
+     * (which may contain newlines) from typed Enter keypresses. */
+    printf("\033[?2004h");
+    fflush(stdout);
+
     g_tui_active = 1;
 }
 
 void tui_shutdown(void) {
     g_tui_active = 0;
+
+    /* Disable bracketed paste mode */
+    printf("\033[?2004l");
+    fflush(stdout);
+
     if (win_main)   delwin(win_main);
     if (win_bottom) delwin(win_bottom);
     win_main = win_bottom = NULL;
@@ -177,70 +189,123 @@ void tui_shutdown(void) {
 /* Prompt is "> " (2 chars). All wrapping math uses this constant. */
 #define INPUT_PROMPT_W 2
 
-/* Calculate number of wrapped display lines for input text.
- * First line has prompt "> " (2 chars), continuation lines use full width. */
-static int calc_input_lines(int input_len, int cols) {
-    if (input_len <= 0) return 1;
-    int first_w = cols - INPUT_PROMPT_W;  /* first line width (after prompt) */
-    if (first_w <= 0) first_w = 1;
-    if (input_len <= first_w) return 1;
-    int remaining = input_len - first_w;
-    int cont_w = cols > 0 ? cols : 1;
+/* ── Newline-aware wrapping helpers ──────────────────────
+ *
+ * The input buffer may contain '\n' characters (from Alt+Enter or paste).
+ * We split the buffer into "logical lines" at each '\n', then each logical
+ * line wraps independently at terminal width.
+ *
+ * The FIRST logical line's first display row is shortened by INPUT_PROMPT_W
+ * (for the "> " prompt). All other display rows use full terminal width.
+ * Subsequent logical lines also use full width on all rows (no prompt).
+ */
+
+/* Count wrapped display rows for a single logical line of length `len`.
+ * `first_row_w` = available width on its first display row.
+ * `cont_w`      = full terminal width (for continuation rows). */
+static int wrap_rows_for_segment(int len, int first_row_w, int cont_w) {
+    if (first_row_w <= 0) first_row_w = 1;
+    if (cont_w <= 0) cont_w = 1;
+    if (len <= 0) return 1;  /* empty line still occupies one row */
+    if (len <= first_row_w) return 1;
+    int remaining = len - first_row_w;
     return 1 + (remaining + cont_w - 1) / cont_w;
 }
 
-/* Convert linear cursor_pos to (row, col) in the wrapped display.
- * Row 0 starts at col INPUT_PROMPT_W (after prompt), subsequent rows at col 0. */
-static void cursor_to_rowcol(int cursor_pos, int cols,
-                              int *out_row, int *out_col) {
+/* Buffer-aware: counts display lines considering '\n' characters. */
+static int calc_input_lines_buf(const char *buf, int buf_len, int cols) {
+    if (buf_len <= 0 || !buf) return 1;
     int first_w = cols - INPUT_PROMPT_W;
     if (first_w <= 0) first_w = 1;
-    if (cursor_pos <= first_w) {
-        *out_row = 0;
-        *out_col = INPUT_PROMPT_W + cursor_pos;
-    } else {
-        int remaining = cursor_pos - first_w;
-        int cont_w = cols > 0 ? cols : 1;
-        *out_row = 1 + remaining / cont_w;
-        *out_col = remaining % cont_w;
+    int cont_w = cols > 0 ? cols : 1;
+
+    int total_rows = 0;
+    int pos = 0;
+    int logical_line = 0;  /* 0 = first logical line (has prompt) */
+
+    while (pos <= buf_len) {
+        /* Find end of this logical line */
+        int line_start = pos;
+        while (pos < buf_len && buf[pos] != '\n') pos++;
+        int line_len = pos - line_start;
+
+        /* First row width depends on whether this is the first logical line */
+        int frw = (logical_line == 0) ? first_w : cont_w;
+        total_rows += wrap_rows_for_segment(line_len, frw, cont_w);
+
+        if (pos < buf_len) pos++;  /* skip '\n' */
+        else break;
+        logical_line++;
     }
+
+    return total_rows > 0 ? total_rows : 1;
 }
 
-/* Convert cursor position to row/col given first-line and continuation widths */
-static void input_pos_to_rowcol(int pos, int first_w, int cont_w,
-                                 int *out_row, int *out_col) {
+/* Buffer-aware cursor→rowcol: handles '\n' in the input buffer. */
+static void cursor_to_rowcol_buf(const char *buf, int buf_len,
+                                  int cursor_pos, int cols,
+                                  int *out_row, int *out_col) {
+    int first_w = cols - INPUT_PROMPT_W;
     if (first_w <= 0) first_w = 1;
-    if (cont_w <= 0) cont_w = 1;
-    if (pos <= first_w) {
-        *out_row = 0;
-        *out_col = pos;  /* 0-based within content area; caller adds prompt offset */
-    } else {
-        int remaining = pos - first_w;
-        *out_row = 1 + remaining / cont_w;
-        *out_col = remaining % cont_w;
+    int cont_w = cols > 0 ? cols : 1;
+
+    int display_row = 0;
+    int pos = 0;
+    int logical_line = 0;
+
+    while (pos <= buf_len) {
+        /* Find end of this logical line */
+        int line_start = pos;
+        while (pos < buf_len && buf[pos] != '\n') pos++;
+        int line_len = pos - line_start;
+
+        /* Is the cursor within this logical line? */
+        int cursor_offset = cursor_pos - line_start;
+        if (cursor_pos >= line_start &&
+            (cursor_pos < pos || (cursor_pos == pos && (pos >= buf_len || buf[pos] == '\n')))) {
+            /* Cursor is in this logical line */
+            int frw = (logical_line == 0) ? first_w : cont_w;
+            if (cursor_offset <= frw) {
+                *out_row = display_row;
+                *out_col = (logical_line == 0)
+                           ? INPUT_PROMPT_W + cursor_offset
+                           : cursor_offset;
+            } else {
+                int rem = cursor_offset - frw;
+                *out_row = display_row + 1 + rem / cont_w;
+                *out_col = rem % cont_w;
+            }
+            return;
+        }
+
+        /* Advance display_row by the number of wrapped rows for this line */
+        int frw = (logical_line == 0) ? first_w : cont_w;
+        display_row += wrap_rows_for_segment(line_len, frw, cont_w);
+
+        if (pos < buf_len) pos++;  /* skip '\n' */
+        else break;
+        logical_line++;
     }
+
+    /* Fallback: cursor at end */
+    *out_row = display_row > 0 ? display_row - 1 : 0;
+    *out_col = 0;
 }
 
-/* Count total wrapped lines for input of given length */
-static int input_wrapped_lines(int input_len, int first_w, int cont_w) {
-    if (first_w <= 0) first_w = 1;
-    if (cont_w <= 0) cont_w = 1;
-    if (input_len <= first_w) return 1;
-    int remaining = input_len - first_w;
-    return 1 + (remaining + cont_w - 1) / cont_w;
-}
+static void resize_panes_with_input_buf(const char *buf, int input_len,
+                                         int input_cursor);
 
-static void resize_panes_with_input(int input_len, int input_cursor);
-
-static void resize_panes_with_input(int input_len, int input_cursor) {
+static void resize_panes_with_input_buf(const char *buf, int input_len,
+                                         int input_cursor) {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
 
     /* Dynamic bottom height: 1 (status) + wrapped input lines */
-    int input_lines = calc_input_lines(input_len, cols);
+    int input_lines = calc_input_lines_buf(buf, input_len, cols);
     /* Also ensure cursor row is visible */
     int cursor_row, cursor_col;
-    cursor_to_rowcol(input_cursor, cols, &cursor_row, &cursor_col);
+    cursor_to_rowcol_buf(buf, input_len, input_cursor, cols,
+                         &cursor_row, &cursor_col);
     if (cursor_row + 1 > input_lines) input_lines = cursor_row + 1;
     /* Cap at 50% of screen */
     int max_bottom = rows / 2;
@@ -400,49 +465,69 @@ static void render_bottom(ui_state_t *ui) {
     int input_start_row = 1;
 
     if (ui->focus == FOCUS_QUERY) {
-        /* Render input text with proper wrapping across multiple rows.
-         * Row 0 (input_start_row): "> " prompt + first first_w chars
-         * Row 1+: continuation lines using full terminal width */
+        /* Render input text with newline-aware wrapping across multiple rows.
+         * The buffer is split into logical lines at '\n' characters.
+         * First logical line's first row shows "> " prompt (INPUT_PROMPT_W).
+         * All other rows use full terminal width. */
         int first_w = cols - INPUT_PROMPT_W;
         if (first_w <= 0) first_w = 1;
         int cont_w = cols > 0 ? cols : 1;
         const char *text = ui->input_buffer;
         int text_len = (ui->input_buffer && ui->input_len > 0) ? ui->input_len : 0;
-        int text_pos = 0;  /* how far into input_buffer we've rendered */
         int row = input_start_row;
+        int text_pos = 0;
+        int logical_line = 0;
 
-        /* Row 0: prompt + first chunk */
-        {
-            char row_buf[1024];
-            int rlen = 0;
-            rlen += snprintf(row_buf + rlen, sizeof(row_buf) - rlen, "> ");
-            int chunk = text_len < first_w ? text_len : first_w;
-            if (chunk > 0 && text) {
-                if (chunk > (int)sizeof(row_buf) - rlen - 1)
-                    chunk = (int)sizeof(row_buf) - rlen - 1;
-                memcpy(row_buf + rlen, text, (size_t)chunk);
-                rlen += chunk;
+        while (text_pos <= text_len && row < bh) {
+            /* Find end of this logical line (up to '\n' or end of buffer) */
+            int line_start = text_pos;
+            while (text_pos < text_len && text[text_pos] != '\n') text_pos++;
+            int line_len = text_pos - line_start;
+
+            /* First row of this logical line */
+            int is_first_logical = (logical_line == 0);
+            int frw = is_first_logical ? first_w : cont_w;
+
+            /* Render first row of this logical line */
+            {
+                char row_buf[1024];
+                int rlen = 0;
+                if (is_first_logical) {
+                    rlen += snprintf(row_buf + rlen, sizeof(row_buf) - rlen, "> ");
+                }
+                int chunk = line_len < frw ? line_len : frw;
+                if (chunk > 0 && text) {
+                    if (chunk > (int)sizeof(row_buf) - rlen - 1)
+                        chunk = (int)sizeof(row_buf) - rlen - 1;
+                    memcpy(row_buf + rlen, text + line_start, (size_t)chunk);
+                    rlen += chunk;
+                }
+                row_buf[rlen] = '\0';
+                render_ncurses_row(win_bottom, row, cols,
+                                    CP_INPUT_ACTIVE, row_buf);
+                row++;
+                int seg_pos = chunk;
+
+                /* Continuation rows within this logical line (wrapping) */
+                while (seg_pos < line_len && row < bh) {
+                    int wchunk = line_len - seg_pos;
+                    if (wchunk > cont_w) wchunk = cont_w;
+                    char wbuf[1024];
+                    if (wchunk > (int)sizeof(wbuf) - 1)
+                        wchunk = (int)sizeof(wbuf) - 1;
+                    memcpy(wbuf, text + line_start + seg_pos, (size_t)wchunk);
+                    wbuf[wchunk] = '\0';
+                    render_ncurses_row(win_bottom, row, cols,
+                                        CP_INPUT_ACTIVE, wbuf);
+                    seg_pos += wchunk;
+                    row++;
+                }
             }
-            row_buf[rlen] = '\0';
-            render_ncurses_row(win_bottom, row, cols,
-                                CP_INPUT_ACTIVE, row_buf);
-            text_pos = chunk;
-            row++;
-        }
 
-        /* Continuation rows */
-        while (text_pos < text_len && row < bh) {
-            int chunk = text_len - text_pos;
-            if (chunk > cont_w) chunk = cont_w;
-            char row_buf[1024];
-            if (chunk > (int)sizeof(row_buf) - 1)
-                chunk = (int)sizeof(row_buf) - 1;
-            memcpy(row_buf, text + text_pos, (size_t)chunk);
-            row_buf[chunk] = '\0';
-            render_ncurses_row(win_bottom, row, cols,
-                                CP_INPUT_ACTIVE, row_buf);
-            text_pos += chunk;
-            row++;
+            /* Skip the '\n' character */
+            if (text_pos < text_len) text_pos++;
+            else break;
+            logical_line++;
         }
 
         /* Fill any remaining rows with empty input-colored background */
@@ -451,9 +536,11 @@ static void render_bottom(ui_state_t *ui) {
                                 CP_INPUT_ACTIVE, "");
         }
 
-        /* Position cursor using consistent wrapping math */
+        /* Position cursor using buffer-aware wrapping math */
         int cursor_row, cursor_col;
-        cursor_to_rowcol(ui->cursor_pos, cols, &cursor_row, &cursor_col);
+        cursor_to_rowcol_buf(ui->input_buffer, ui->input_len,
+                             ui->cursor_pos, cols,
+                             &cursor_row, &cursor_col);
         cursor_row += input_start_row;  /* offset by status bar row */
         if (cursor_row >= bh) cursor_row = bh - 1;
         if (cursor_col >= cols) cursor_col = cols - 1;
@@ -484,7 +571,7 @@ void tui_render(ui_state_t *ui) {
         return;
     }
 
-    resize_panes_with_input(ui->input_len, ui->cursor_pos);
+    resize_panes_with_input_buf(ui->input_buffer, ui->input_len, ui->cursor_pos);
 
     /* Clear stdscr to prevent stale background content showing through */
     werase(stdscr);
@@ -533,25 +620,47 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     case KEY_UP:
         if (ui->focus == FOCUS_QUERY) {
-            /* Navigate up within wrapped input lines */
+            /* Navigate up within wrapped input lines (newline-aware) */
             int cols_now = getmaxx(stdscr);
-            int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
-            int cw = cols_now;     if (cw < 1) cw = 1;
             int crow, ccol;
-            input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
+            cursor_to_rowcol_buf(ui->input_buffer, ui->input_len,
+                                 ui->cursor_pos, cols_now, &crow, &ccol);
             if (crow > 0) {
-                /* Move up one wrapped line.
-                 * When moving to row 0, clamp to first-line width (fw)
-                 * since row 0 is shorter due to "> " prompt. */
-                int cur_w = (crow == 0) ? fw : cw;  /* width of current row */
+                /* Find the buffer position one display row up.
+                 * Walk backward from cursor to find the start of the current
+                 * display row, then go one more row back. */
+                int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
+                int cw = cols_now > 0 ? cols_now : 1;
+
+                /* Scan backward to find a position on the previous display row.
+                 * Simple approach: try subtracting the current row's width. */
+                int cur_w = (crow == 0) ? fw : cw;
                 int new_pos = ui->cursor_pos - cur_w;
                 if (new_pos < 0) new_pos = 0;
-                /* Clamp to target row's width when landing on row 0 */
-                if (crow == 1 && new_pos > fw) new_pos = fw;
+                /* Don't cross a newline boundary — clamp to start of current
+                 * logical line if we'd jump past a '\n' */
+                int nl_pos = ui->cursor_pos - 1;
+                while (nl_pos >= new_pos) {
+                    if (ui->input_buffer[nl_pos] == '\n') {
+                        /* There's a newline between new_pos and cursor.
+                         * Move to the position on the line above the '\n'. */
+                        /* Find the start of the line above */
+                        int above_start = nl_pos;
+                        while (above_start > 0 && ui->input_buffer[above_start - 1] != '\n')
+                            above_start--;
+                        int above_len = nl_pos - above_start;
+                        /* Try to land at same column offset */
+                        new_pos = above_start + (ccol < above_len ? ccol : above_len);
+                        break;
+                    }
+                    nl_pos--;
+                }
+                if (new_pos < 0) new_pos = 0;
+                if (new_pos > ui->input_len) new_pos = ui->input_len;
                 ui->cursor_pos = new_pos;
                 ui->dirty = 1;
             } else {
-                /* On first line — load previous history */
+                /* On first display row — load previous history */
                 if (ui->history_count > 0 && ui->history_idx > 0) {
                     ui->history_idx--;
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
@@ -572,22 +681,46 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     case KEY_DOWN:
         if (ui->focus == FOCUS_QUERY) {
-            /* Navigate down within wrapped input lines */
+            /* Navigate down within wrapped input lines (newline-aware) */
             int cols_now = getmaxx(stdscr);
-            int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
-            int cw = cols_now;     if (cw < 1) cw = 1;
             int crow, ccol;
-            input_pos_to_rowcol(ui->cursor_pos, fw, cw, &crow, &ccol);
-            int total_rows = input_wrapped_lines(ui->input_len, fw, cw);
+            cursor_to_rowcol_buf(ui->input_buffer, ui->input_len,
+                                 ui->cursor_pos, cols_now, &crow, &ccol);
+            int total_rows = calc_input_lines_buf(ui->input_buffer,
+                                                   ui->input_len, cols_now);
             if (crow < total_rows - 1) {
-                /* Move down one wrapped line */
+                /* Move down one display row */
+                int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
+                int cw = cols_now > 0 ? cols_now : 1;
                 int cur_w = (crow == 0) ? fw : cw;
-                int new_pos = ui->cursor_pos + cur_w;
+
+                /* Check if there's a '\n' between cursor and cursor+cur_w */
+                int scan_end = ui->cursor_pos + cur_w;
+                if (scan_end > ui->input_len) scan_end = ui->input_len;
+                int nl_found = -1;
+                for (int i = ui->cursor_pos; i < scan_end; i++) {
+                    if (ui->input_buffer[i] == '\n') {
+                        nl_found = i;
+                        break;
+                    }
+                }
+                int new_pos;
+                if (nl_found >= 0) {
+                    /* There's a newline — move to the next logical line */
+                    int next_start = nl_found + 1;
+                    int next_end = next_start;
+                    while (next_end < ui->input_len && ui->input_buffer[next_end] != '\n')
+                        next_end++;
+                    int next_len = next_end - next_start;
+                    new_pos = next_start + (ccol < next_len ? ccol : next_len);
+                } else {
+                    new_pos = ui->cursor_pos + cur_w;
+                }
                 if (new_pos > ui->input_len) new_pos = ui->input_len;
                 ui->cursor_pos = new_pos;
                 ui->dirty = 1;
             } else {
-                /* On last line — load next history or clear */
+                /* On last display row — load next history or do nothing */
                 if (ui->history_count > 0 && ui->history_idx < ui->history_count - 1) {
                     ui->history_idx++;
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
@@ -600,7 +733,6 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     ui->cursor_pos = hlen;
                     ui->dirty = 1;
                 }
-                /* On last line with no more history — do nothing */
             }
         } else {
             ui_state_down(ui);
@@ -619,36 +751,71 @@ int tui_input(ui_state_t *ui, char **out_query) {
     case KEY_ENTER:
         if (ui->focus == FOCUS_JOURNAL) {
             ui_state_enter(ui);
-        } else if (ui->focus == FOCUS_QUERY && ui->input_len > 0) {
-            /* Submit query — save to history first */
-            *out_query = strndup(ui->input_buffer, ui->input_len);
-            /* Add to history (grow array if needed) */
-            if (ui->history_count >= ui->history_cap) {
-                int new_cap = ui->history_cap ? ui->history_cap * 2 : 32;
-                char **new_hist = realloc(ui->history,
-                                          (size_t)new_cap * sizeof(char *));
-                if (new_hist) {
-                    ui->history = new_hist;
-                    ui->history_cap = new_cap;
+        } else if (ui->focus == FOCUS_QUERY) {
+            if (paste_mode) {
+                /* During bracketed paste, Enter inserts a newline */
+                ui_state_input_char(ui, '\n');
+            } else if (ui->input_len > 0) {
+                /* Submit query — save to history first */
+                *out_query = strndup(ui->input_buffer, ui->input_len);
+                /* Add to history (grow array if needed) */
+                if (ui->history_count >= ui->history_cap) {
+                    int new_cap = ui->history_cap ? ui->history_cap * 2 : 32;
+                    char **new_hist = realloc(ui->history,
+                                              (size_t)new_cap * sizeof(char *));
+                    if (new_hist) {
+                        ui->history = new_hist;
+                        ui->history_cap = new_cap;
+                    }
                 }
+                if (ui->history_count < ui->history_cap) {
+                    ui->history[ui->history_count++] = strdup(*out_query);
+                }
+                ui->history_idx = ui->history_count;  /* past end = fresh input */
+                ui->input_buffer[0] = '\0';
+                ui->input_len = 0;
+                ui->cursor_pos = 0;
+                ui->focus = FOCUS_JOURNAL;  /* switch focus to main pane */
+                ui->dirty = 1;
             }
-            if (ui->history_count < ui->history_cap) {
-                ui->history[ui->history_count++] = strdup(*out_query);
-            }
-            ui->history_idx = ui->history_count;  /* past end = fresh input */
-            ui->input_buffer[0] = '\0';
-            ui->input_len = 0;
-            ui->cursor_pos = 0;
-            ui->focus = FOCUS_JOURNAL;  /* switch focus to main pane */
-            ui->dirty = 1;
         }
         break;
 
-    case 27:  /* Escape — navigate back (no clash with pause) */
-        if (ui->focus == FOCUS_JOURNAL) {
-            ui_state_back(ui);
+    case 27: { /* Escape — detect Alt+Enter and bracketed paste sequences */
+        /* Peek at next character to distinguish ESC from Alt+key / paste bracket.
+         * nodelay is already TRUE, so getch() returns ERR if no char is pending. */
+        int next = getch();
+        if (next == '\n' || next == '\r') {
+            /* Alt+Enter: insert newline into query */
+            if (ui->focus == FOCUS_QUERY) {
+                ui_state_input_char(ui, '\n');
+            }
+        } else if (next == '[') {
+            /* Could be a bracketed paste sequence: ESC [ 2 0 0 ~ or ESC [ 2 0 1 ~ */
+            int seq[4];
+            int got = 0;
+            for (int i = 0; i < 4; i++) {
+                seq[i] = getch();
+                if (seq[i] == ERR) break;
+                got++;
+            }
+            if (got == 4 && seq[0] == '2' && seq[1] == '0' && seq[3] == '~') {
+                if (seq[2] == '0') {
+                    paste_mode = 1;  /* Start of bracketed paste */
+                } else if (seq[2] == '1') {
+                    paste_mode = 0;  /* End of bracketed paste */
+                }
+            }
+            /* Other ESC [ sequences are consumed (arrow keys etc. handled by ncurses) */
+        } else if (next == ERR) {
+            /* Plain Escape — navigate back */
+            if (ui->focus == FOCUS_JOURNAL) {
+                ui_state_back(ui);
+            }
         }
+        /* else: some other Alt+key combo, ignore */
         break;
+    }
 
     case ' ':  /* Space — pause react loop when running */
         if (ui->focus == FOCUS_JOURNAL &&
