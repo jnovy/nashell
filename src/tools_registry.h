@@ -57,7 +57,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
 
     {"memory_store",
      "Store reusable knowledge in long-term memory.",
-     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"tags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Tags for search\"}},\"required\":[\"key\",\"value\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"}},\"required\":[\"key\",\"value\"]}"},
 
     {"memory_recall",
      "Recall information from long-term memory.",

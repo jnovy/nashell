@@ -2072,7 +2072,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
                 "- value: the causal insight — state the assumption/variable/invariant "
                 "explicitly (for skills: include approach, pitfalls, verification)\n"
-                "- tags: include 'lesson' or 'strategy' or 'skill' tag plus domain tags\n"
+""
                 "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
                 "If nothing worth storing, call done immediately.\n"
                 "Respond with ONE JSON object per turn: "
@@ -2113,13 +2113,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "For lessons, call memory_store with:\n"
                 "- key: lesson:short-name\n"
                 "- value: the causal chain — root assumption, what broke it, the fix\n"
-                "- tags: include 'lesson' tag plus domain tags\n\n"
+"\n"
                 "For anti-patterns, call memory_store with:\n"
                 "- key: anti-pattern:short-name (e.g. anti-pattern:never-grep-binary-files)\n"
                 "- value: Start with 'NEVER' or 'AVOID'. State: what NOT to do, WHY it "
                 "fails, and what to do INSTEAD. Include the trigger condition "
                 "(when_NOT_to_apply).\n"
-                "- tags: include 'anti-pattern' tag plus domain tags\n\n"
+"\n"
                 "Anti-patterns are MORE VALUABLE than lessons for preventing repeated "
                 "mistakes. Prefer anti-patterns when the failure has a clear 'never do X' "
                 "pattern. If nothing worth storing, call done immediately.\n"
@@ -2223,7 +2223,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                   ctx->tools->memory->embed);
                     char *prep = embed_prepare_text(rkey_j->valuestring,
                                                      rval_j->valuestring,
-                                                     NULL, 0, mic);
+                                                     mic);
                     if (prep) {
                         embed_vec_t new_emb = embed_text(
                             ctx->tools->memory->embed, prep);

@@ -117,16 +117,15 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
 
 /* ── Text preparation ────────────────────────────────── */
 
-/* Prepare memory content for embedding: concatenates key + tags + value,
+/* Prepare memory content for embedding: concatenates key + value,
  * truncated to max_chars. Caller must free returned string. */
-char *embed_prepare_text(const char *key, const char *value,
-                         const char **tags, int n_tags, int max_chars);
+char *embed_prepare_text(const char *key, const char *value, int max_chars);
 
 /* ── Chunked (multi-vector) embeddings ───────────────── */
 
 /* Multi-vector embedding: one memory entry → N chunk vectors.
  * Solves the truncation asymmetry: long values (skills, strategies) are
- * split into overlapping chunks, each prefixed with key+tags for context.
+ * split into overlapping chunks, each prefixed with key for context.
  * At recall time, similarity = max over all chunks (MaxSim). */
 
 typedef struct {
@@ -136,14 +135,13 @@ typedef struct {
 } embed_multi_vec_t;
 
 /* Prepare memory content as overlapping chunks for embedding.
- * Each chunk = key + tags + value_slice (with overlap between slices).
+ * Each chunk = key + value_slice (with overlap between slices).
  * If content fits in one chunk, returns array of 1.
  * chunk_max_chars: max chars per chunk (default 2000 if ≤0).
  * overlap_chars: overlap between consecutive value slices (default 200 if ≤0).
  * Sets *out_n_chunks to number of chunks returned.
  * Caller must free each string and the array itself. */
 char **embed_prepare_text_chunked(const char *key, const char *value,
-                                  const char **tags, int n_tags,
                                   int chunk_max_chars, int overlap_chars,
                                   int *out_n_chunks);
 

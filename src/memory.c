@@ -195,8 +195,7 @@ static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
 /* ── store ───────────────────────────────────────────── */
 
 int memory_store(memory_t *m, const char *key, const char *value,
-                 const char **tags, int n_tags, int pinned,
-                 const char *journal_ref,
+                 int pinned, const char *journal_ref,
                  const char **refs, int n_refs) {
     if (!m || !key || !value) return -1;
 
@@ -214,8 +213,6 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddStringToObject(entry, "value", value);
 
     cJSON *tags_arr = cJSON_CreateArray();
-    for (int i = 0; i < n_tags; i++)
-        cJSON_AddItemToArray(tags_arr, cJSON_CreateString(tags[i]));
     cJSON_AddItemToObject(entry, "tags", tags_arr);
 
     cJSON_AddBoolToObject(entry, "pinned", pinned);
@@ -304,7 +301,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
 
     /* Generate embedding for semantic matching (if enabled) */
     if (m->embed && m->embed->available) {
-        memory_embed_entry(m, key, value, tags, n_tags);
+        memory_embed_entry(m, key, value);
     }
 
     /* Git commit: track memory creation/update */
@@ -367,17 +364,9 @@ int memory_unpin(memory_t *m, const char *key) {
 
 /* Substring-based relevance scoring (fallback when embeddings unavailable) */
 static double score_entry_substring(const char *key, const char *value,
-                                     cJSON *tags, const char *query) {
+                                     const char *query) {
     double relevance = 0;
     if (strcasestr(key, query)) relevance += 3.0;
-    if (tags) {
-        int n = cJSON_GetArraySize(tags);
-        for (int i = 0; i < n; i++) {
-            cJSON *t = cJSON_GetArrayItem(tags, i);
-            if (t && t->valuestring && strcasestr(t->valuestring, query))
-                relevance += 2.0;
-        }
-    }
     if (strcasestr(value, query)) relevance += 1.0;
     return relevance;
 }
@@ -398,7 +387,7 @@ static double score_entry_substring(const char *key, const char *value,
  * that capture the full semantic context of the query — a continuous,
  * context-aware relevance signal. */
 static double score_entry_hybrid(const char *key, const char *value,
-                                  cJSON *tags, const char *query,
+                                  const char *query,
                                   int access_count,
                                   int recall_hits, int recall_misses,
                                   float semantic_sim, int has_semantic,
@@ -413,17 +402,17 @@ static double score_entry_hybrid(const char *key, const char *value,
          * After blending, normalize to [0, 1] for consistent thresholding. */
         double clamped = (double)semantic_sim;
         if (clamped < 0.0) clamped = 0.0;
-        double semantic = clamped * 6.0;  /* [0, 6] */
-        double substring = score_entry_substring(key, value, tags, query);
+        double semantic = clamped * 4.0;  /* [0, 4] */
+        double substring = score_entry_substring(key, value, query);
 
         /* Blend: 70% semantic + 30% substring, then normalize to [0, 1].
-         * Max raw blended = 6.0*0.7 + 6.0*0.3 = 6.0. */
-        relevance = (semantic * 0.7 + substring * 0.3) / 6.0;  /* [0, 1] */
+         * Max raw blended = 4.0*0.7 + 4.0*0.3 = 4.0. */
+        relevance = (semantic * 0.7 + substring * 0.3) / 4.0;  /* [0, 1] */
     } else {
         /* Fallback: pure substring matching (no embeddings available).
          * Normalize to [0, 1] — same range as the embedding path.
-         * Max raw substring = 3.0 (key) + 2.0 (tag) + 1.0 (value) = 6.0. */
-        relevance = score_entry_substring(key, value, tags, query) / 6.0;  /* [0, 1] */
+         * Max raw substring = 3.0 (key) + 1.0 (value) = 4.0. */
+        relevance = score_entry_substring(key, value, query) / 4.0;  /* [0, 1] */
         if (relevance == 0) return 0;  /* no match at all */
     }
 
@@ -560,7 +549,6 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         const char *value = "";
         cJSON *k = cJSON_GetObjectItem(entry, "key");
         cJSON *v = cJSON_GetObjectItem(entry, "value");
-        cJSON *tags = cJSON_GetObjectItem(entry, "tags");
         if (k && k->valuestring) key = k->valuestring;
         if (v && v->valuestring) value = v->valuestring;
 
@@ -608,7 +596,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
          * This prevents "skill:" from inflating every skill entry's
          * substring score uniformly, and removes noise from embeddings. */
         double out_rel = 0, out_imp = 0;
-        double s = score_entry_hybrid(key, value, tags, score_query,
+        double s = score_entry_hybrid(key, value, score_query,
                                        acc_count, entry_hits, entry_misses,
                                        semantic_sim, entry_has_semantic,
                                        &out_rel, &out_imp);
@@ -1135,19 +1123,18 @@ int memory_init_embeddings(memory_t *m, const char *type,
     return 1;
 }
 
-int memory_embed_entry(memory_t *m, const char *key, const char *value,
-                       const char **tags, int n_tags) {
+int memory_embed_entry(memory_t *m, const char *key, const char *value) {
     if (!m || !m->embed || !m->embed->available || !key) return -1;
 
     /* Prepare text as chunks for embedding.
      * Short entries produce 1 chunk; long entries are split into
-     * overlapping chunks, each prefixed with key+tags for context
+     * overlapping chunks, each prefixed with key for context
      * anchoring. Chunk size adapts to model's context window. */
     int max_chars = embed_max_input_chars(m->embed);
     int overlap = max_chars / 10;  /* 10% overlap, min 200 */
     if (overlap < 200) overlap = 200;
     int n_chunks = 0;
-    char **chunks = embed_prepare_text_chunked(key, value, tags, n_tags,
+    char **chunks = embed_prepare_text_chunked(key, value,
                                                max_chars, overlap, &n_chunks);
     if (!chunks || n_chunks <= 0) return -1;
 
@@ -1226,8 +1213,6 @@ int memory_embed_all(memory_t *m) {
     typedef struct {
         char *key;             /* memory key (strdup'd) */
         char *value;           /* memory value (strdup'd) */
-        const char **tags;     /* tag array (malloc'd, strings are transient) */
-        int n_tags;            /* number of tags */
     } pending_embed_t;
 
     int pending_cap = 64;
@@ -1272,7 +1257,7 @@ int memory_embed_all(memory_t *m) {
             }
         }
 
-        /* Load JSON entry to get key/value/tags for chunked embedding */
+        /* Load JSON entry to get key/value for chunked embedding */
         char *buf = slurp_file(json_path, NULL);
         if (!buf) continue;
 
@@ -1282,35 +1267,21 @@ int memory_embed_all(memory_t *m) {
 
         cJSON *k = cJSON_GetObjectItem(entry, "key");
         cJSON *v = cJSON_GetObjectItem(entry, "value");
-        cJSON *t = cJSON_GetObjectItem(entry, "tags");
 
         const char *ekey = (k && k->valuestring) ? k->valuestring : "";
         const char *eval = (v && v->valuestring) ? v->valuestring : "";
-
-        /* Extract tags as string array (strdup'd — cJSON entry freed below) */
-        int nt = t ? cJSON_GetArraySize(t) : 0;
-        const char **tag_strs = NULL;
-        if (nt > 0) {
-            tag_strs = malloc(sizeof(char *) * (size_t)nt);
-            for (int i = 0; i < nt; i++) {
-                cJSON *ti = cJSON_GetArrayItem(t, i);
-                tag_strs[i] = (ti && ti->valuestring) ? strdup(ti->valuestring) : strdup("");
-            }
-        }
 
         /* Grow pending array if needed */
         if (pending_count >= pending_cap) {
             pending_cap *= 2;
             pending_embed_t *tmp = realloc(pending,
                 sizeof(pending_embed_t) * (size_t)pending_cap);
-            if (!tmp) { free(tag_strs); cJSON_Delete(entry); break; }
+            if (!tmp) { cJSON_Delete(entry); break; }
             pending = tmp;
         }
 
         pending[pending_count].key = strdup(ekey);
         pending[pending_count].value = strdup(eval);
-        pending[pending_count].tags = tag_strs;
-        pending[pending_count].n_tags = nt;
         pending_count++;
         cJSON_Delete(entry);
     }
@@ -1326,8 +1297,7 @@ int memory_embed_all(memory_t *m) {
      * the chunking, batch embedding, and multi-vec persistence. */
     int embedded = 0;
     for (int i = 0; i < pending_count; i++) {
-        if (memory_embed_entry(m, pending[i].key, pending[i].value,
-                               pending[i].tags, pending[i].n_tags) == 0) {
+        if (memory_embed_entry(m, pending[i].key, pending[i].value) == 0) {
             embedded++;
         }
     }
@@ -1336,12 +1306,6 @@ int memory_embed_all(memory_t *m) {
     for (int i = 0; i < pending_count; i++) {
         free(pending[i].key);
         free(pending[i].value);
-        /* Free strdup'd tag strings and the array itself */
-        if (pending[i].tags) {
-            for (int t = 0; t < pending[i].n_tags; t++)
-                free((char *)pending[i].tags[t]);
-            free(pending[i].tags);
-        }
     }
     free(pending);
 

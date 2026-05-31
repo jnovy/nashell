@@ -166,14 +166,7 @@ int main(int argc, char *argv[]) {
                vscore, e->recall_hits, e->recall_misses,
                e->access_count);
 
-        /* Show tags */
-        if (e->n_tags > 0) {
-            printf("    Tags: ");
-            for (int t = 0; t < e->n_tags; t++) {
-                printf("%s%s", t > 0 ? ", " : "", e->tags[t]);
-            }
-            printf("\n");
-        }
+        /* tags removed */
 
         /* Show pinned status */
         if (e->pinned) printf("    📌 PINNED (always injected)\n");

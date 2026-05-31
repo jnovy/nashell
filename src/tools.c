@@ -1905,15 +1905,11 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         return;
     }
 
-    /* FIX B13: Merge tags from both entries before storing consolidated version.
-     * Previously, consolidation called memory_store with NULL tags, losing
-     * all tags from both the old and new entries. */
     {
-        /* Collect tags from old entry */
-        cJSON *old_tags = cJSON_GetObjectItem(old_entry, "tags");
-        int n_old_tags = old_tags ? cJSON_GetArraySize(old_tags) : 0;
-
-        /* Load new entry's tags from its stored JSON file */
+        /* FIX B1: Preserve journal_ref provenance from the new entry.
+         * Previously passed NULL, breaking the provenance chain for
+         * consolidated memories — the dreaming system couldn't trace
+         * them back to their originating session journal. */
         char new_fname[512];
         snprintf(new_fname, sizeof(new_fname), "%s", new_key);
         for (char *p = new_fname; *p; p++)
@@ -1922,9 +1918,8 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         snprintf(new_json_path, sizeof(new_json_path), "%s/%s.json",
                  ctx->memory->dir, new_fname);
 
+        const char *new_jref = NULL;
         cJSON *new_entry_json = NULL;
-        cJSON *new_tags = NULL;
-        int n_new_tags = 0;
         {
             size_t nbuf_len = 0;
             char *nbuf = slurp_file(new_json_path, &nbuf_len);
@@ -1933,54 +1928,15 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             }
             free(nbuf);
             if (new_entry_json) {
-                new_tags = cJSON_GetObjectItem(new_entry_json, "tags");
-                n_new_tags = new_tags ? cJSON_GetArraySize(new_tags) : 0;
+                cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
+                if (jr && jr->valuestring) new_jref = jr->valuestring;
             }
         }
 
-        /* Merge: collect unique tags from both entries */
-        int max_merged = n_old_tags + n_new_tags;
-        const char **merged_tags = NULL;
-        int n_merged = 0;
-        if (max_merged > 0) {
-            merged_tags = malloc(sizeof(char *) * (size_t)max_merged);
-            if (merged_tags) {
-                /* Add new entry's tags first */
-                for (int i = 0; i < n_new_tags; i++) {
-                    cJSON *t = cJSON_GetArrayItem(new_tags, i);
-                    if (t && t->valuestring)
-                        merged_tags[n_merged++] = t->valuestring;
-                }
-                /* Add old entry's tags (skip duplicates) */
-                for (int i = 0; i < n_old_tags; i++) {
-                    cJSON *t = cJSON_GetArrayItem(old_tags, i);
-                    if (!t || !t->valuestring) continue;
-                    int dup = 0;
-                    for (int j = 0; j < n_merged; j++) {
-                        if (strcmp(merged_tags[j], t->valuestring) == 0) {
-                            dup = 1; break;
-                        }
-                    }
-                    if (!dup) merged_tags[n_merged++] = t->valuestring;
-                }
-            }
-        }
-
-        /* FIX B1: Preserve journal_ref provenance from the new entry.
-         * Previously passed NULL, breaking the provenance chain for
-         * consolidated memories — the dreaming system couldn't trace
-         * them back to their originating session journal. */
-        const char *new_jref = NULL;
-        if (new_entry_json) {
-            cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
-            if (jr && jr->valuestring) new_jref = jr->valuestring;
-        }
-
-        /* Store consolidated version under the new key with merged tags */
+        /* Store consolidated version under the new key */
         memory_store(ctx->memory, new_key, consolidated,
-                     merged_tags, n_merged, 0, new_jref, NULL, 0);
+                     0, new_jref, NULL, 0);
 
-        free(merged_tags);
         cJSON_Delete(new_entry_json);
     }
 
@@ -2003,22 +1959,6 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
     const char *key = key_j->valuestring;
     const char *value = val_j->valuestring;
-
-    /* Parse tags (comma-separated string) */
-    const char *tags_arr[32];
-    int n_tags = 0;
-    cJSON *tags_j = cJSON_GetObjectItem(params, "tags");
-    char *tags_copy = NULL;
-    if (tags_j && tags_j->valuestring) {
-        tags_copy = strdup(tags_j->valuestring);
-        char *saveptr = NULL;
-        char *tok = strtok_r(tags_copy, ",", &saveptr);
-        while (tok && n_tags < 32) {
-            while (*tok == ' ') tok++;  /* trim leading space */
-            tags_arr[n_tags++] = tok;
-            tok = strtok_r(NULL, ",", &saveptr);
-        }
-    }
 
     int pinned = 0;
     cJSON *pin_j = cJSON_GetObjectItem(params, "pinned");
@@ -2052,10 +1992,9 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
-    int rc = memory_store(ctx->memory, key, value, tags_arr, n_tags, pinned,
+    int rc = memory_store(ctx->memory, key, value, pinned,
                           jref[0] ? jref : NULL,
                           n_refs > 0 ? refs_arr : NULL, n_refs);
-    free(tags_copy);
     free(refs_copy);
 
     if (rc != 0) return make_error("failed to store memory");

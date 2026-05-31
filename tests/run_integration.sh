@@ -81,7 +81,7 @@ echo ""
 echo "--- Memory ---"
 # Store a memory
 $NASH --api "$API_BASE" --data-dir "$TEST_DIR" -p \
-    'use memory_store to save key "fact:test-value" with value "the secret number is 42" and tags "test"' \
+    'use memory_store to save key "fact:test-value" with value "the secret number is 42"' \
     >/dev/null 2>&1
 
 # Check memory file exists

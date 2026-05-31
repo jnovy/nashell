@@ -899,7 +899,7 @@ int main(int argc, char **argv) {
                             snprintf(dream_prompt, sizeof(dream_prompt),
                                 "You are performing MEMORY INVENTORY for a persistent knowledge store.\n\n"
                                 "GOAL: Read and catalog ALL memories at: %s\n"
-                                "Each memory is a JSON file with fields: key, value, tags, pinned, "
+                                "Each memory is a JSON file with fields: key, value, pinned, "
                                 "created_at, last_accessed, access_count, recall_hits, recall_misses, journal_ref.\n"
                                 "Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) -- Beta posterior mean.\n\n"
                                 "TASK: List all memory files, read each one, and produce a structured report:\n"
@@ -986,8 +986,6 @@ int main(int argc, char **argv) {
                                 "  - A skill refs strategies that inform its approach\n"
                                 "When creating new strategy: entries in part A, ALWAYS include refs to the "
                                 "source lesson keys.\n\n"
-                                "C. TAG ENRICHMENT: Update tags on memories that are missing domain tags "
-                                "or cross-cutting concern tags.\n\n"
                                 "CONSTRAINTS:\n"
                                 "- Only create strategies when 3+ lessons share a clear pattern\n"
                                 "- Don't create strategies that already exist\n"
@@ -1102,14 +1100,7 @@ int main(int argc, char **argv) {
                         str_append_cstr(&display, e->value);
                         str_append_cstr(&display, "\n\n");
                         /* Tags */
-                        if (e->n_tags > 0) {
-                            str_append_cstr(&display, "tags: ");
-                            for (int t = 0; t < e->n_tags; t++) {
-                                if (t > 0) str_append_cstr(&display, ", ");
-                                str_append_cstr(&display, e->tags[t]);
-                            }
-                            str_append_cstr(&display, "\n\n");
-                        }
+                        (void)0; /* tags removed */
                         /* Validation score */
                         double vscore = (e->recall_hits + 1.0) /
                                         (e->recall_hits + e->recall_misses + 2.0);

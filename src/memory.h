@@ -71,8 +71,7 @@ void      memory_free(memory_t *m);
  * was created (e.g. "/path/to/session/journal.jsonl:R5"). NULL = no ref.
  * The dreaming LLM can read this journal to understand the original context. */
 int memory_store(memory_t *m, const char *key, const char *value,
-                 const char **tags, int n_tags, int pinned,
-                 const char *journal_ref,
+                 int pinned, const char *journal_ref,
                  const char **refs, int n_refs);
 
 /* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
@@ -81,7 +80,7 @@ int memory_pin(memory_t *m, const char *key);
 /* Unpin an existing memory (set pinned=false). Returns 0 on success, -1 if not found. */
 int memory_unpin(memory_t *m, const char *key);
 
-/* Search memories by query (substring match on key + value + tags).
+/* Search memories by query (substring match on key + value).
  * Returns up to max_results matches, sorted by relevance.
  * Caller must free with memory_results_free(). */
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results);
@@ -132,8 +131,7 @@ int memory_init_embeddings(memory_t *m, const char *type,
  * Called automatically by memory_store when embeddings are enabled.
  * Saves to .memory/<key>.emb alongside the .json file.
  * Returns 0 on success, -1 on failure. */
-int memory_embed_entry(memory_t *m, const char *key, const char *value,
-                       const char **tags, int n_tags);
+int memory_embed_entry(memory_t *m, const char *key, const char *value);
 
 /* Re-embed all memory entries that don't have .emb files.
  * Useful after enabling embeddings on an existing memory store.

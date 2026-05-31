@@ -664,8 +664,7 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
 
 /* ── text preparation ────────────────────────────────── */
 
-char *embed_prepare_text(const char *key, const char *value,
-                         const char **tags, int n_tags, int max_chars) {
+char *embed_prepare_text(const char *key, const char *value, int max_chars) {
     if (!key && !value) return NULL;
     if (max_chars <= 0) max_chars = 2000;  /* default: ~500 tokens */
 
@@ -674,16 +673,6 @@ char *embed_prepare_text(const char *key, const char *value,
     /* Key (most important for matching) */
     if (key) {
         str_append_cstr(&out, key);
-        str_append_cstr(&out, "\n");
-    }
-
-    /* Tags (secondary importance) */
-    if (tags && n_tags > 0) {
-        str_append_cstr(&out, "Tags: ");
-        for (int i = 0; i < n_tags; i++) {
-            if (i > 0) str_append_cstr(&out, ", ");
-            if (tags[i]) str_append_cstr(&out, tags[i]);
-        }
         str_append_cstr(&out, "\n");
     }
 
@@ -724,27 +713,18 @@ char *embed_prepare_text(const char *key, const char *value,
 
 /* ── chunked (multi-vector) embeddings ───────────────── */
 
-/* Build the key+tags prefix that starts every chunk.
+/* Build the key prefix that starts every chunk.
  * Returns a malloc'd string. Caller must free. */
-static char *build_chunk_prefix(const char *key, const char **tags, int n_tags) {
+static char *build_chunk_prefix(const char *key) {
     str_t pfx = str_new(256);
     if (key) {
         str_append_cstr(&pfx, key);
-        str_append_cstr(&pfx, "\n");
-    }
-    if (tags && n_tags > 0) {
-        str_append_cstr(&pfx, "Tags: ");
-        for (int i = 0; i < n_tags; i++) {
-            if (i > 0) str_append_cstr(&pfx, ", ");
-            if (tags[i]) str_append_cstr(&pfx, tags[i]);
-        }
         str_append_cstr(&pfx, "\n");
     }
     return str_steal(&pfx);
 }
 
 char **embed_prepare_text_chunked(const char *key, const char *value,
-                                  const char **tags, int n_tags,
                                   int chunk_max_chars, int overlap_chars,
                                   int *out_n_chunks) {
     if (!out_n_chunks) return NULL;
@@ -753,8 +733,8 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
     if (chunk_max_chars <= 0) chunk_max_chars = 2000;
     if (overlap_chars <= 0) overlap_chars = 200;
 
-    /* Build the prefix (key + tags) that anchors every chunk */
-    char *prefix = build_chunk_prefix(key, tags, n_tags);
+    /* Build the prefix (key) that anchors every chunk */
+    char *prefix = build_chunk_prefix(key);
     if (!prefix) return NULL;
     size_t prefix_len = strlen(prefix);
 
@@ -769,7 +749,7 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
     if (prefix_len + vlen <= (size_t)chunk_max_chars) {
         char **result = malloc(sizeof(char *));
         if (!result) { free(prefix); return NULL; }
-        result[0] = embed_prepare_text(key, value, tags, n_tags, chunk_max_chars);
+        result[0] = embed_prepare_text(key, value, chunk_max_chars);
         if (!result[0]) { free(result); free(prefix); return NULL; }
         *out_n_chunks = 1;
         free(prefix);
