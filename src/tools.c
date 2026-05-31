@@ -2293,7 +2293,9 @@ static char *searxng_base_url(const char *url) {
  * Returns 0 on success, -1 on failure. */
 static int searxng_start_container(int port) {
     /* Check if container already exists (maybe stopped) */
-    char cmd[512];
+    char cmd[1024];
+    int use_docker = 0;  /* 0 = podman, 1 = docker */
+
     snprintf(cmd, sizeof(cmd),
              "podman rm -f nash-searxng >/dev/null 2>&1; "
              "podman run -d --name nash-searxng "
@@ -2305,6 +2307,7 @@ static int searxng_start_container(int port) {
     int rc = system(cmd);
     if (rc != 0) {
         /* Try docker as fallback */
+        use_docker = 1;
         snprintf(cmd, sizeof(cmd),
                  "docker rm -f nash-searxng >/dev/null 2>&1; "
                  "docker run -d --name nash-searxng "
@@ -2322,11 +2325,45 @@ static int searxng_start_container(int port) {
     /* Wait for SearXNG to become ready (up to 30 seconds) */
     char health_url[256];
     snprintf(health_url, sizeof(health_url), "http://localhost:%d/", port);
+    int ready = 0;
+    for (int i = 0; i < 30; i++) {
+        sleep(1);
+        if (searxng_is_running(health_url)) { ready = 1; break; }
+    }
+    if (!ready) return -1;  /* timed out */
+
+    /* Enable JSON output format in SearXNG settings.
+     * By default SearXNG only allows HTML format, so requests with
+     * ?format=json return 403 Forbidden.  We patch settings.yml to
+     * add 'json' to the allowed formats list, then restart. */
+    const char *rt = use_docker ? "docker" : "podman";
+    snprintf(cmd, sizeof(cmd),
+             "%s exec nash-searxng "
+             "sed -i '/^    - html$/a\\    - json' "
+             "/etc/searxng/settings.yml >/dev/null 2>&1",
+             rt);
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[nash] Warning: could not enable JSON format in SearXNG settings\n");
+        return 0;  /* still usable for HTML, don't fail hard */
+    }
+
+    /* Restart container so SearXNG picks up the new settings */
+    snprintf(cmd, sizeof(cmd),
+             "%s restart nash-searxng >/dev/null 2>&1", rt);
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "[nash] Warning: could not restart SearXNG after config change\n");
+        return 0;
+    }
+
+    /* Wait for SearXNG to become ready again after restart (up to 30 seconds) */
     for (int i = 0; i < 30; i++) {
         sleep(1);
         if (searxng_is_running(health_url)) return 0;
     }
-    return -1;  /* timed out */
+    fprintf(stderr, "[nash] Warning: SearXNG did not become ready after restart\n");
+    return -1;  /* timed out after restart */
 }
 
 /* Ensure SearXNG is running. Starts container if needed.
@@ -2377,9 +2414,21 @@ static char *searxng_search(const char *searxng_url, const char *query,
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
     CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    if (res == CURLE_OK)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
+        str_free(&body);
+        return NULL;
+    }
+
+    if (http_code == 403) {
+        fprintf(stderr,
+                "[nash] SearXNG returned 403 Forbidden for JSON format.\n"
+                "[nash] Fix: add 'json' to search.formats in "
+                "/etc/searxng/settings.yml and restart SearXNG.\n");
         str_free(&body);
         return NULL;
     }
