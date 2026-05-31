@@ -86,6 +86,9 @@ typedef struct {
     int            expanded_count;
     int            expanded_cap;
 
+    /* ── user_ask state ── */
+    char          *user_ask_question; /* full question text (while awaiting answer) */
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;

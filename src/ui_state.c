@@ -209,6 +209,7 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->stream_tokens);
     free(ui->model_name);
     free(ui->current_filepath);
+    free(ui->user_ask_question);
     for (int i = 0; i < ui->nav_depth; i++)
         free(ui->nav_stack[i].filepath);
     free(ui->nav_stack);
@@ -339,15 +340,10 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                      ui->session_dir, qi->react_loop);
             char *preview = read_last_lines(rpath, 10);
             if (preview && preview[0]) {
-                const char *p = preview;
-                while (*p) {
-                    const char *eol = strchr(p, '\n');
-                    if (!eol) eol = p + strlen(p);
-                    str_append_cstr(&md, "    ");
-                    str_append(&md, p, (size_t)(eol - p));
+                str_append_cstr(&md, preview);
+                /* Ensure trailing newline */
+                if (preview[strlen(preview) - 1] != '\n')
                     str_append_cstr(&md, "\n");
-                    p = (*eol == '\n') ? eol + 1 : eol;
-                }
             }
             free(preview);
         }
@@ -612,6 +608,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
             str_append_cstr(&md, "\n```\n");
         }
+    }
+
+    /* user_ask: display full question in main pane */
+    if (ui->status == STATUS_AWAITING_INPUT &&
+        ui->current_react_loop == react_loop &&
+        ui->user_ask_question && ui->user_ask_question[0]) {
+        str_append_cstr(&md, "\n---\n\n");
+        str_append_cstr(&md, "## \xf0\x9f\xa4\x94 Agent Question\n\n");
+        str_append_cstr(&md, ui->user_ask_question);
+        str_append_cstr(&md, "\n\n---\n");
+        str_append_cstr(&md, "*Type your answer in the input bar below and press Enter*\n");
     }
 
     /* Free collected steps */
@@ -1204,16 +1211,16 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     case REACT_EVENT_USER_ASK:
         ui->status = STATUS_AWAITING_INPUT;
         free(ui->status_text);
-        if (ev->message) {
-            char ask_buf[512];
-            snprintf(ask_buf, sizeof(ask_buf), "Agent asks: %s", ev->message);
-            ui->status_text = strdup(ask_buf);
-        } else {
-            ui->status_text = strdup("Agent is asking a question...");
-        }
+        ui->status_text = strdup("Agent is asking a question — see main pane. Type answer below.");
+        /* Store full question for display in main pane */
+        free(ui->user_ask_question);
+        ui->user_ask_question = (ev->message && ev->message[0])
+            ? strdup(ev->message) : strdup("(no question specified)");
         ui_state_generate_react_md(ui, ui->current_react_loop);
-        if (viewing_react_file(ui, ui->current_react_loop))
+        if (viewing_react_file(ui, ui->current_react_loop)) {
             ui_state_reload_file(ui);
+            auto_scroll_bottom(ui);
+        }
         break;
 
     case REACT_EVENT_ERROR:
@@ -1232,6 +1239,11 @@ void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
     ui->status = status;
     free(ui->status_text);
     ui->status_text = text ? strdup(text) : NULL;
+    /* Clear user_ask question when leaving AWAITING_INPUT state */
+    if (status != STATUS_AWAITING_INPUT) {
+        free(ui->user_ask_question);
+        ui->user_ask_question = NULL;
+    }
     ui->dirty = 1;
 }
 
