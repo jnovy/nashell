@@ -12,6 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <stdint.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -747,7 +748,24 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int max_antipatterns = ctx->tools->cfg ? ctx->tools->cfg->max_antipatterns_per_query : 1;
         /* Request enough candidates to cover all types after filtering */
         int max_candidates = (max_skills + max_lessons + max_strategies + max_antipatterns) * 3;
-        memory_results_t all_memories = memory_recall(ctx->tools->memory, user_query, max_candidates);
+
+        /* Build enriched recall query: user_query + scratchpad content.
+         * The scratchpad carries accumulated working memory across loops,
+         * so including it helps retrieve memories relevant to the current
+         * task context, not just the raw user query. memory_recall handles
+         * capacity overflow via multi-vec chunking internally. */
+        str_t recall_query = str_new(1024);
+        str_append_cstr(&recall_query, user_query);
+        if (ctx->tools->scratch.count > 0) {
+            char *sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, SIZE_MAX);
+            if (sp_text && sp_text[0]) {
+                str_append_cstr(&recall_query, "\n");
+                str_append_cstr(&recall_query, sp_text);
+            }
+            free(sp_text);
+        }
+        memory_results_t all_memories = memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
+        str_free(&recall_query);
 
         /* Helper macro: inject entries of a given type prefix */
         // NOLINTNEXTLINE(bugprone-macro-parentheses)

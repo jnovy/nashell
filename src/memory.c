@@ -518,12 +518,56 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
     }
 
-    /* Generate query embedding once (if embeddings are available) */
-    embed_vec_t query_emb = {0};
+    /* Generate query embedding once (if embeddings are available).
+     * If the query text exceeds the model's input capacity (e.g., when
+     * enriched with scratchpad context), chunk it into multiple vectors
+     * and use multi-vs-multi MaxSim scoring. Short queries take the
+     * single-vector fast path unchanged. */
+    embed_multi_vec_t query_mv = {0};
     int has_semantic = 0;
     if (m->embed && m->embed->available) {
-        query_emb = embed_text(m->embed, score_query);
-        has_semantic = (query_emb.data != NULL && query_emb.dim > 0);
+        int max_chars = embed_max_input_chars(m->embed);
+        size_t query_len = strlen(score_query);
+
+        if (query_len <= (size_t)max_chars) {
+            /* Fits in one embedding — single-vector fast path */
+            embed_vec_t single = embed_text(m->embed, score_query);
+            if (single.data && single.dim > 0) {
+                query_mv.data = single.data;
+                query_mv.dim = single.dim;
+                query_mv.n_chunks = 1;
+                has_semantic = 1;
+            }
+        } else {
+            /* Overflow — chunk the query, embed each chunk */
+            int n_chunks = 0;
+            char **chunks = embed_prepare_text_chunked(
+                NULL, score_query, max_chars, 0, &n_chunks);
+            if (chunks && n_chunks > 0) {
+                int out_count = 0;
+                embed_vec_t *vecs = embed_text_batch(
+                    m->embed, (const char **)chunks, n_chunks, &out_count);
+                if (vecs && out_count > 0) {
+                    /* Pack into contiguous multi-vec */
+                    int dim = vecs[0].dim;
+                    query_mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)out_count);
+                    if (query_mv.data) {
+                        query_mv.dim = dim;
+                        query_mv.n_chunks = out_count;
+                        for (int ci = 0; ci < out_count; ci++) {
+                            memcpy(query_mv.data + ci * dim,
+                                   vecs[ci].data, sizeof(float) * (size_t)dim);
+                        }
+                        has_semantic = 1;
+                    }
+                    for (int ci = 0; ci < out_count; ci++)
+                        embed_vec_free(&vecs[ci]);
+                    free(vecs);
+                }
+                for (int ci = 0; ci < n_chunks; ci++) free(chunks[ci]);
+                free(chunks);
+            }
+        }
     }
 
     /* Dynamic scored array — grows as needed (FIX #5: no fixed 1024 limit) */
@@ -582,8 +626,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                  * different model (e.g., switched from MiniLM-384d to
                  * nomic-embed-768d). Mismatched dims would give 0.0 from
                  * cosine_sim anyway, but this makes the intent explicit. */
-                if (entry_emb.dim == query_emb.dim) {
-                    semantic_sim = embed_cosine_sim_multi(&query_emb, &entry_emb);
+                if (entry_emb.dim == query_mv.dim) {
+                    semantic_sim = embed_cosine_sim_multi_multi(&query_mv, &entry_emb);
                     entry_has_semantic = 1;
                 } else {
                     /* Stale embedding — delete it so memory_embed_all can
@@ -646,8 +690,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     }
     closedir(dir);
 
-    /* Free query embedding */
-    embed_vec_free(&query_emb);
+    /* Free query embedding (multi-vec: data is contiguous, single free) */
+    embed_multi_vec_free(&query_mv);
 
     /* Ref-boost: if a high-scoring memory has refs pointing to other
      * entries in the scored set, boost those ref'd entries' scores.
