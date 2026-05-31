@@ -33,6 +33,11 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    size_t size, int lines, const char *error,
                    const char *tool_call_id);
 
+/* Recursively unwrap nested JSON in a thought string.
+ * Returns a heap-allocated clean thought, or NULL if no unwrapping was needed.
+ * Caller must free() the result. */
+char *unwrap_thought(const char *thought);
+
 /* Build a compact manifest string for context injection.
  * Caller must free returned string. */
 char *journal_manifest(journal_t *j, int max_steps);

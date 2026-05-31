@@ -176,37 +176,16 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
 }
 
 /* Recursively unwrap nested JSON in the "thought" field.
- * The LLM sometimes echoes its own previous response as a thought,
- * producing double- or triple-nested JSON. This function keeps unwrapping
- * while the result is still JSON with a "thought" key (max 5 levels). */
+ * Delegates to the shared unwrap_thought() in journal.c. */
 static void sanitize_thought(cJSON *action) {
     cJSON *th = cJSON_GetObjectItemCaseSensitive(action, "thought");
     if (!th || !cJSON_IsString(th) || !th->valuestring || th->valuestring[0] != '{')
         return;
-
-    char *current = th->valuestring;
-    th->valuestring = NULL;
-
-    for (int depth = 0; depth < 5; depth++) {
-        cJSON *nested = cJSON_Parse(current);
-        if (!nested) break;
-        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-        if (!inner || !cJSON_IsString(inner) || !inner->valuestring || inner->valuestring[0] == '\0') {
-            cJSON_Delete(nested);
-            break;
-        }
-        char *next = strdup(inner->valuestring);
-        cJSON_Delete(nested);
-        free(current);
-        if (next[0] != '{') {
-            th->valuestring = next;  /* fully unwrapped */
-            return;
-        }
-        current = next;  /* still JSON, continue unwrapping */
+    char *clean = unwrap_thought(th->valuestring);
+    if (clean) {
+        free(th->valuestring);
+        th->valuestring = clean;
     }
-
-    /* If we exhausted depth limit, store the last unwrapped value */
-    th->valuestring = current;
 }
 
 /* Streaming token callback context — bridges llm_token_fn to react_event_fn */

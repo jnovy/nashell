@@ -1,5 +1,6 @@
 #include "ui_state.h"
 #include "md_render.h"
+#include "journal.h"
 #include "str.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -156,31 +157,15 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     return "";
 }
 
-/* Extract thought from params, unwrapping nested JSON if needed. */
+/* Extract thought from params, unwrapping nested JSON if needed.
+ * Delegates to the shared unwrap_thought() in journal.c. */
 static char *extract_thought(cJSON *params) {
     if (!params) return NULL;
     cJSON *th = cJSON_GetObjectItem(params, "thought");
     if (!th || !th->valuestring || !th->valuestring[0]) return NULL;
 
-    if (th->valuestring[0] != '{') return strdup(th->valuestring);
-
-    /* Unwrap nested JSON thoughts */
-    char *cur = strdup(th->valuestring);
-    for (int d = 0; d < 5 && cur; d++) {
-        cJSON *nested = cJSON_Parse(cur);
-        if (!nested) break;
-        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-        if (!inner || !cJSON_IsString(inner) || !inner->valuestring[0]) {
-            cJSON_Delete(nested);
-            break;
-        }
-        char *next = strdup(inner->valuestring);
-        cJSON_Delete(nested);
-        free(cur);
-        cur = next;
-        if (cur[0] != '{') return cur;
-    }
-    return cur;
+    char *clean = unwrap_thought(th->valuestring);
+    return clean ? clean : strdup(th->valuestring);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────── */

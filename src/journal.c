@@ -16,7 +16,7 @@
  * This function keeps unwrapping while the result is still JSON with a "thought" key.
  * Returns a heap-allocated clean thought, or NULL if no unwrapping was needed.
  * Caller must free() the result. */
-static char *unwrap_thought(const char *thought) {
+char *unwrap_thought(const char *thought) {
     if (!thought || thought[0] != '{') return NULL;  /* nothing to unwrap */
 
     char *current = strdup(thought);
@@ -145,116 +145,9 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
 }
 
 char *journal_manifest(journal_t *j, int max_steps) {
-    FILE *f = fopen(j->path, "r");
-    if (!f) return strdup("Session history: (empty — new session)");
-    flock(fileno(f), LOCK_SH);  /* shared lock for reading */
-
-    str_t out = str_new(2048);
-    str_append_cstr(&out, "Session history:\n");
-
-    char line[65536];
-    int count = 0;
-    int current_loop = -1;
-
-    while (fgets(line, sizeof(line), f) && count < max_steps) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-
-        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
-        (void)cJSON_GetObjectItem(entry, "step");  /* step parsed but unused in manifest */
-        const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
-        const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
-        double sz = cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
-        cJSON *params = cJSON_GetObjectItem(entry, "params");
-
-        /* New react loop — show header with query text */
-        if (loop != current_loop) {
-            current_loop = loop;
-            if (loop > 0) str_append_cstr(&out, "\n");
-            str_appendf(&out, "  [Query R%d]", loop);
-
-            /* Look for the query text in this entry or next */
-            if (tool && strcmp(tool, "query") == 0 && params) {
-                cJSON *text = cJSON_GetObjectItem(params, "text");
-                if (text && text->valuestring) {
-                    char truncated[101];
-                    utf8_truncate(truncated, text->valuestring, 100);
-                    str_appendf(&out, " \"%s\"", truncated);
-                }
-            }
-            str_append_cstr(&out, "\n");
-        }
-
-        /* Skip system and query entries (already shown in header) */
-        if (tool && (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0)) {
-            cJSON_Delete(entry);
-            count++;
-            continue;
-        }
-
-        /* Extract thought and key param for display */
-        const char *key_param = "";
-        const char *thought = NULL;
-        char *unwrapped = NULL;
-        if (params) {
-            cJSON *th = cJSON_GetObjectItem(params, "thought");
-            if (th && th->valuestring && th->valuestring[0]) {
-                unwrapped = unwrap_thought(th->valuestring);
-                thought = unwrapped ? unwrapped : th->valuestring;
-            }
-            cJSON *cmd = cJSON_GetObjectItem(params, "command");
-            cJSON *p = cJSON_GetObjectItem(params, "path");
-            cJSON *pat = cJSON_GetObjectItem(params, "pattern");
-            cJSON *res = cJSON_GetObjectItem(params, "result");
-            if (cmd && cmd->valuestring) key_param = cmd->valuestring;
-            else if (p && p->valuestring) key_param = p->valuestring;
-            else if (pat && pat->valuestring) key_param = pat->valuestring;
-            else if (res && res->valuestring) key_param = res->valuestring;
-        }
-
-        /* Show thought above the step line (truncated for manifest) */
-        if (thought) {
-            char th_trunc[121];
-            utf8_truncate(th_trunc, thought, 120);
-            str_appendf(&out, "  \xf0\x9f\x92\xad %s\n", th_trunc);
-        }
-
-        /* Format: "    ✓ R0S1: shell_exec "ls -la" -> 473 chars"
-         *         "    ✗ R0S3: web_search "query""
-         * Errors NOT inlined — model can file_read(ref) if it needs details. */
-        char buf[512];
-        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-        int failed = (failed_j && cJSON_IsTrue(failed_j));
-        const char *mark = failed ? "x" : "+";
-
-        /* Pre-truncate key_param to avoid cutting mid-UTF-8 */
-        char kp[101];
-        utf8_truncate(kp, key_param, 80);
-
-        if (tool && strcmp(tool, "done") == 0) {
-            char kp_done[101];
-            utf8_truncate(kp_done, key_param, 100);
-            snprintf(buf, sizeof(buf), "    %s %s: -> \"%s\"",
-                     mark, ref ? ref : "?", kp_done);
-        } else if (failed) {
-            /* Failed — just show ✗ and ref, no inline error text */
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\"",
-                     mark, ref ? ref : "?", tool ? tool : "?", kp);
-        } else {
-            snprintf(buf, sizeof(buf), "    %s %s: %s \"%s\" -> %d chars",
-                     mark, ref ? ref : "?", tool ? tool : "?", kp, (int)sz);
-        }
-        str_append_cstr(&out, buf);
-        str_append_cstr(&out, "\n");
-
-        free(unwrapped);
-        unwrapped = NULL;
-        cJSON_Delete(entry);
-        count++;
-    }
-    fclose(f);
-
-    return str_steal(&out);
+    /* Delegate to the filtered version with no eviction filtering.
+     * target_loop=-1 ensures the eviction check never matches. */
+    return journal_manifest_filtered(j, max_steps, -1, 0);
 }
 
 /* FIX D8: Build a manifest that collapses evicted steps into a summary.
