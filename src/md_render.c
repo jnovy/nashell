@@ -939,7 +939,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         int vis_line = render_line - scroll_y;
         int visible = (vis_line >= 0 && vis_line < rows);
 
-        /* Track links regardless of visibility */
+        /* Track links regardless of visibility.
+         * Catch-up: if link_idx fell behind (e.g., a link was on a heading,
+         * blockquote, or table line whose branch didn't advance link_idx),
+         * skip past stale entries so subsequent links still render. */
+        while (link_idx < doc->link_count &&
+               doc->links[link_idx].doc_line < src_line)
+            link_idx++;
         int has_link = (link_idx < doc->link_count &&
                         src_line == doc->links[link_idx].doc_line);
         /* A "link line" starts with '[' — the entire line is the link.
@@ -1206,10 +1212,42 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             }
 
         } else {
-            /* Regular text — with inline formatting and word-wrapping */
+            /* Regular text — with inline formatting and word-wrapping.
+             * Defense-in-depth: if the line contains [text](uri) syntax
+             * (e.g., a link on a line type we didn't expect), render it
+             * as a proper link instead of showing raw markdown syntax. */
             int lines_consumed = 1;
             if (line_buf[0] != '\0') {
-                if (visible) {
+                /* Check for [text](uri) pattern in the line */
+                const char *bracket = strchr(line_buf, '[');
+                const char *bracket_end = bracket ? strchr(bracket, ']') : NULL;
+                const char *paren_end = NULL;
+                if (bracket_end && bracket_end[1] == '(')
+                    paren_end = strchr(bracket_end + 2, ')');
+
+                if (bracket && bracket_end && paren_end && visible) {
+                    /* Render as embedded link: prefix + link + suffix */
+                    int x = 0;
+                    int prefix_len = (int)(bracket - line_buf);
+                    if (prefix_len > 0) {
+                        inline_seg_t segs[MAX_INLINE_SEGS];
+                        int n = parse_inline(line_buf, prefix_len, segs, MAX_INLINE_SEGS);
+                        x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
+                    }
+                    wattron(win, COLOR_PAIR(C_FOCUS));
+                    int link_text_len = (int)(bracket_end - bracket - 1);
+                    if (link_text_len > 0 && x < cols)
+                        x += render_segment(win, vis_line, x,
+                                            bracket + 1, link_text_len, cols - x);
+                    wattroff(win, COLOR_PAIR(C_FOCUS));
+                    const char *suffix = paren_end + 1;
+                    int suffix_len = (int)strlen(suffix);
+                    if (suffix_len > 0 && x < cols) {
+                        inline_seg_t segs[MAX_INLINE_SEGS];
+                        int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
+                        render_segs_on_line(win, vis_line, x, segs, n, cols - x);
+                    }
+                } else if (visible) {
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
                 } else {
                     /* Item 4: use count_wrapped_lines for off-screen counting */
