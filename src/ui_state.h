@@ -103,6 +103,9 @@ typedef struct {
     int            cum_llm_steps;            /* number of LLM calls with stats */
     int            react_done;               /* 1 = react loop finished (show final stats) */
 
+    /* ── Spinner phase for "processing..." indicator ── */
+    int            spinner_phase;
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;

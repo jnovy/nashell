@@ -762,12 +762,15 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     /* Streaming indicator if actively running */
     if (ui->status == STATUS_RUNNING &&
         ui->current_react_loop == react_loop) {
+        static const char spin[] = "|/-\\";
+        char sc = spin[ui->spinner_phase % 4];
+        ui->spinner_phase++;
         if (ui->max_steps > 0)
-            str_appendf(&md, "  | %3d %s %-13s processing...\n",
-                        ui->current_step, "", "");
+            str_appendf(&md, "  %c %3d %s %-13s processing...\n",
+                        sc, ui->current_step, "", "");
         else
-            str_appendf(&md, "  | %3d        %-13s processing...\n",
-                        ui->current_step, "");
+            str_appendf(&md, "  %c %3d        %-13s processing...\n",
+                        sc, ui->current_step, "");
         if (ui->stream_tokens && ui->stream_len > 0) {
             str_append_cstr(&md, "```\n");
             str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
