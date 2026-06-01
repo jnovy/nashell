@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#include <errno.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -66,6 +67,26 @@ static char *create_session_dir(const char *nash_dir) {
              sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(path, 0755);
     return strdup(path);
+}
+
+/* Recursive mkdir: create all path components (like mkdir -p).
+ * Returns 0 on success, -1 on failure (errno set). */
+static int mkdir_p(const char *path, mode_t mode) {
+    char tmp[4096];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, path, len + 1);
+    /* Strip trailing slash */
+    if (tmp[len - 1] == '/') tmp[--len] = '\0';
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+    return 0;
 }
 
 /* Check if a directory is empty (no files other than . and ..).
@@ -1040,6 +1061,62 @@ int main(int argc, char **argv) {
                         pthread_mutex_unlock(&ui->mtx);
                         tui_render(ui);
                     }
+                    free(submitted_query);
+                    continue;
+                }
+
+                /* Handle /cwd command — change working directory, create if needed */
+                if (strncmp(submitted_query, "/cwd ", 5) == 0) {
+                    const char *dir = submitted_query + 5;
+                    /* Skip leading whitespace */
+                    while (*dir == ' ') dir++;
+                    if (*dir == '\0') {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                            "/cwd: missing directory argument");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+                    /* Create directory if it doesn't exist */
+                    struct stat st;
+                    if (stat(dir, &st) != 0) {
+                        if (mkdir_p(dir, 0755) != 0) {
+                            char errbuf[512];
+                            snprintf(errbuf, sizeof(errbuf),
+                                "/cwd: failed to create '%s': %s", dir, strerror(errno));
+                            pthread_mutex_lock(&ui->mtx);
+                            ui_state_set_status(ui, STATUS_ERROR, errbuf);
+                            pthread_mutex_unlock(&ui->mtx);
+                            tui_render(ui);
+                            free(submitted_query);
+                            continue;
+                        }
+                    }
+                    /* Change to the directory */
+                    if (chdir(dir) != 0) {
+                        char errbuf[512];
+                        snprintf(errbuf, sizeof(errbuf),
+                            "/cwd: failed to chdir to '%s': %s", dir, strerror(errno));
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR, errbuf);
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+                    /* Show success with resolved path */
+                    char resolved[4096];
+                    if (!getcwd(resolved, sizeof(resolved)))
+                        snprintf(resolved, sizeof(resolved), "%s", dir);
+                    char status_msg[4112];
+                    snprintf(status_msg, sizeof(status_msg),
+                        "CWD: %s", resolved);
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_READY, status_msg);
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
                     free(submitted_query);
                     continue;
                 }
