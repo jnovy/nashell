@@ -654,13 +654,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 EMIT_CONTINUATION(desc_clean, 1);
             }
         } else if (is_shell && desc_clean) {
-            /* shell_exec without thought: command inline or underneath */
-            if (desc_len <= avail) {
-                EMIT_TOOL_WITH_TEXT(desc_clean, 1);
-            } else {
-                EMIT_TOOL_HEADER(0);
-                EMIT_CONTINUATION(desc_clean, 1);
-            }
+            /* shell_exec without thought: command always on same line as tool;
+             * the md renderer word-wraps long code spans across multiple lines */
+            EMIT_TOOL_WITH_TEXT(desc_clean, 1);
         } else if (tlen > 0) {
             /* Has thought: thought on main line, desc on second line */
             char *thought_text = malloc((size_t)tlen + 1);

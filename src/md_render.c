@@ -1226,7 +1226,10 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     paren_end = strchr(bracket_end + 2, ')');
 
                 if (bracket && bracket_end && paren_end && visible) {
-                    /* Render as embedded link: prefix + link + suffix */
+                    /* Render as embedded link: prefix + link + suffix.
+                     * The suffix (typically a `command` code span) may be long,
+                     * so use word-wrapping for it — continuation lines indent
+                     * to the column where the suffix started. */
                     int x = 0;
                     int prefix_len = (int)(bracket - line_buf);
                     if (prefix_len > 0) {
@@ -1243,9 +1246,20 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     const char *suffix = paren_end + 1;
                     int suffix_len = (int)strlen(suffix);
                     if (suffix_len > 0 && x < cols) {
-                        inline_seg_t segs[MAX_INLINE_SEGS];
-                        int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
-                        render_segs_on_line(win, vis_line, x, segs, n, cols - x);
+                        int remaining = cols - x;
+                        lines_consumed = render_inline_wrapped(
+                            win, vis_line, x, suffix, suffix_len, remaining);
+                    }
+                } else if (bracket && bracket_end && paren_end) {
+                    /* Off-screen link line: count wrapped lines for suffix */
+                    int prefix_len = (int)(bracket - line_buf);
+                    int link_text_len = (int)(bracket_end - bracket - 1);
+                    int x = prefix_len + link_text_len;
+                    const char *suffix = paren_end + 1;
+                    int suffix_len = (int)strlen(suffix);
+                    if (suffix_len > 0 && x < cols) {
+                        int remaining = cols - x;
+                        lines_consumed = count_wrapped_lines(suffix, suffix_len, remaining);
                     }
                 } else if (visible) {
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
