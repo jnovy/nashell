@@ -502,14 +502,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         if (i > 0 && si->ts > 0 && steps[i-1].ts > 0)
             elapsed = si->ts - steps[i-1].ts;
 
-        /* Format timestamp HH:MM:SS */
-        char ts_buf[16] = "";
-        if (si->ts > 0) {
-            time_t t = (time_t)si->ts;
-            struct tm *tm = localtime(&t);
-            if (tm) strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", tm);
-        }
-
         /* Format elapsed */
         char elapsed_str[32] = "";
         if (elapsed > 0) {
@@ -556,39 +548,46 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             snprintf(link_uri, sizeof(link_uri), "%s#%s", si->ref, si->tool);
 
         /* Build the step line */
-        /* Format:   N RXSY HH:MM:SS [tool_name](ref#tool) `args` (Ns)
+        /* Format:   RXSY [tool_name](ref#tool) `args` (Ns)
          *         Only tool_name is a hyperlink, args rendered as `code`
+         *         Ref column is padded to 10 chars to fit R999S9999.
          *
          * If the text (desc or thought) is longer than the remaining
          * space to the end of the terminal, print it in full on a
          * continuation line underneath instead of truncating. */
+
+        /* Pad ref to fixed width (10 = fits "R999S9999") */
+        #define REF_COL_WIDTH 10
+        char ref_pad[16] = "";
+        if (si->ref)
+            snprintf(ref_pad, sizeof(ref_pad), "%-*s", REF_COL_WIDTH, si->ref);
+        else
+            snprintf(ref_pad, sizeof(ref_pad), "%-*s", REF_COL_WIDTH, "");
 
         /* Pad tool name to max_tool_len for column alignment */
         char tool_pad[64];
         snprintf(tool_pad, sizeof(tool_pad), "%-*s", max_tool_len, si->tool);
 
         /* Available display columns for inline text after the prefix.
-         * Prefix (rendered): "N RXSY HH:MM:SS tool_pad " ≈ 18 + max_tool_len */
+         * Prefix (rendered): "RXSY_pad tool_pad " = REF_COL_WIDTH + 1 + max_tool_len */
         int term_cols = ui->visible_cols > 0 ? ui->visible_cols : 120;
-        int ref_len = si->ref ? (int)strlen(si->ref) : 0;
-        int prefix_cols = 4 + ref_len + 9 + max_tool_len;
+        int prefix_cols = REF_COL_WIDTH + 1 + max_tool_len + 1;
         int suffix_cols = (int)strlen(elapsed_str);
         int avail = term_cols - prefix_cols - suffix_cols;
         if (avail < 10) avail = 10;
 
-        int step_num = i + 1;  /* sequential display number */
         int is_shell = (strcmp(si->tool, "shell_exec") == 0);
 
         /* Helper: emit the tool header line (without any text content) */
         #define EMIT_TOOL_HEADER(with_elapsed) do { \
             if (si->ref) { \
-                str_appendf(&md, "%d %s %s [%s](%s)%s\n", \
-                            step_num, si->ref, ts_buf, \
+                str_appendf(&md, "%s [%s](%s)%s\n", \
+                            ref_pad, \
                             tool_pad, link_uri, \
                             (with_elapsed) ? elapsed_str : ""); \
             } else { \
-                str_appendf(&md, "%d %s %s%s\n", \
-                            step_num, ts_buf, \
+                str_appendf(&md, "%s %s%s\n", \
+                            ref_pad, \
                             tool_pad, \
                             (with_elapsed) ? elapsed_str : ""); \
             } \
@@ -597,21 +596,22 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Helper: emit the tool header with inline text */
         #define EMIT_TOOL_WITH_TEXT(text, with_elapsed) do { \
             if (si->ref) { \
-                str_appendf(&md, "%d %s %s [%s](%s) `%s`%s\n", \
-                            step_num, si->ref, ts_buf, \
+                str_appendf(&md, "%s [%s](%s) `%s`%s\n", \
+                            ref_pad, \
                             tool_pad, link_uri, \
                             (text), (with_elapsed) ? elapsed_str : ""); \
             } else { \
-                str_appendf(&md, "%d %s %s `%s`%s\n", \
-                            step_num, ts_buf, \
+                str_appendf(&md, "%s %s `%s`%s\n", \
+                            ref_pad, \
                             tool_pad, (text), \
                             (with_elapsed) ? elapsed_str : ""); \
             } \
         } while (0)
 
-        /* Helper: emit continuation line with text */
+        /* Helper: emit continuation line with text (indented to match tool column) */
         #define EMIT_CONTINUATION(text, with_elapsed) do { \
-            str_appendf(&md, "    `%s`%s\n", \
+            str_appendf(&md, "%*s `%s`%s\n", \
+                        REF_COL_WIDTH + 1 + max_tool_len, "", \
                         (text), (with_elapsed) ? elapsed_str : ""); \
         } while (0)
 
@@ -783,6 +783,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Prompt processing speed */
         if (ui->cum_prompt_per_second > 0)
             str_appendf(&md, " | pp %.0f t/s", ui->cum_prompt_per_second);
+
+        /* Start time HH:MM:SS from first step */
+        if (nsteps > 0 && steps[0].ts > 0) {
+            time_t t0 = (time_t)steps[0].ts;
+            struct tm *tm0 = localtime(&t0);
+            if (tm0) {
+                char start_buf[16];
+                strftime(start_buf, sizeof(start_buf), "%H:%M:%S", tm0);
+                str_appendf(&md, " | start %s", start_buf);
+            }
+        }
 
         /* Total elapsed time */
         if (ui->react_total_elapsed > 0) {
