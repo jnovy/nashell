@@ -95,25 +95,6 @@ When configured, nash uses dense vector embeddings for semantic similarity:
 
 Cosine similarity is clamped to [0, 1] (negative = no match) and scaled to [0, 6] before blending with substring scores. Without embeddings, pure substring matching is used with a 1.0x scale factor to produce comparable score ranges.
 
-#### Memory Refresh — Adaptive Re-evaluation
-
-Every 3 steps during a react loop, nash re-evaluates memory relevance based on the evolving task context:
-
-> *"A query that starts as 'fix this bug' might evolve into 'redesign the database schema' by step 15. Without re-evaluation, stale memories from step 0 persist."*
-
-This is inspired by:
-- **CALMem** [arXiv:2605.20724] — token-budget-adaptive injection mechanism (MOIM) that re-evaluates per turn
-- **MemForest** [arXiv:2605.23986] — temporal indexing shows that memory relevance changes over time
-
-#### Memory Synthesis — Query-Time Guidance Generation
-
-When `memory_synthesis` is enabled, retrieved memories are passed through an LLM synthesis call to generate context-adapted guidance instead of injecting verbatim entries:
-
-- **Mem-π** [arXiv:2605.21463] — generative memory policy that generates context-specific guidance, +59% on WebArena
-- **DeferMem** [arXiv:2605.22411] — query-time evidence distillation produces faithful, self-contained evidence
-
-The synthesis prompt can respond "NONE" for semantic abstention — more nuanced than score thresholding.
-
 #### Memory Pruning — Bayesian Quality Control
 
 After every react loop, nash runs deterministic Bayesian pruning:
@@ -352,7 +333,6 @@ max_skills_per_query = 3                  # skills loaded per query
 max_lessons_per_query = 2                 # lessons loaded per query
 max_strategies_per_query = 2              # strategies loaded per query
 max_antipatterns_per_query = 1            # anti-patterns loaded per query
-memory_synthesis = true                   # enable query-time synthesis
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning
 consolidation_threshold = 0.82            # cosine threshold for dedup

@@ -135,24 +135,6 @@ typedef struct {
      * threshold on the composite relevance signal. */
     double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
 
-    /* P2: Query-time memory synthesis — synthesize retrieved memories into
-     * context-specific guidance via an extra LLM call before injection.
-     * 0 = disabled (inject verbatim), 1 = enabled.
-     *
-     * Research basis:
-     *   Mem-π [arXiv:2605.21463, May 2026] — generative memory replaces
-     *     retrieval with generation, achieving +59% on WebArena.
-     *   DeferMem [arXiv:2605.22411, May 2026] — query-time evidence
-     *     distillation via RL for long-term memory QA.
-     *   CALMem [arXiv:2605.20724, May 2026] — token-budget-adaptive
-     *     injection mechanism (MOIM) that scales with context pressure.
-     *
-     * This is the frozen-model equivalent: instead of training a dedicated
-     * memory model, we use the same LLM with a synthesis prompt to fuse
-     * retrieved fragments into adapted guidance. The LLM can also respond
-     * "NONE" for semantic abstention (more nuanced than score thresholding). */
-    int    memory_synthesis;     /* enable query-time synthesis (default 0) */
-
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
 
