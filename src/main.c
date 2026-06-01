@@ -631,10 +631,11 @@ int main(int argc, char **argv) {
                     /* Refresh journal view to show completed query */
                     ui_state_load_journal(ui, journal);
                 } else if (react.pause_requested) {
-                    /* User pressed ESC — paused with checkpoint saved */
-                    ui_state_set_status(ui, STATUS_READY,
-                        "Paused (checkpoint saved — submit query to resume)");
+                    /* User pressed Space — paused with checkpoint saved (toggle) */
                     react.pause_requested = 0;  /* reset for next run */
+                    react.paused = 1;
+                    ui_state_set_status(ui, STATUS_READY,
+                        "Paused (Space to resume, type query to redirect)");
                 } else {
                     ui_state_set_status(ui, STATUS_ERROR, "No result");
                 }
@@ -1127,6 +1128,12 @@ int main(int argc, char **argv) {
                     tui_render(ui);
                     free(submitted_query);
                     continue;
+                }
+
+                /* If paused, any query (typed or Space-resume) clears the paused flag.
+                 * checkpoint_restore will inject the query into restored context. */
+                if (react.paused) {
+                    react.paused = 0;
                 }
 
                 /* Handle /continue: resume from checkpoint with original query.

@@ -12,7 +12,8 @@ typedef struct {
     tool_ctx_t   *tools;
     int           max_steps;
     int           verbose;
-    volatile int  pause_requested;  /* set by TUI (ESC key) to pause after current step */
+    volatile int  pause_requested;  /* set by TUI (Space) to pause after current step */
+    int           paused;           /* 1 when paused with checkpoint saved (toggle state) */
 
     /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,

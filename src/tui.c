@@ -1,11 +1,13 @@
 #include "tui.h"
 #include "md_render.h"
 #include "str.h"
+#include "cJSON.h"
 #include <ncurses.h>
 #include <string.h>
 #include <stdlib.h>
 #include <locale.h>
 #include <time.h>
+#include <unistd.h>
 
 /* ── Windows ─────────────────────────────────────────── */
 
@@ -984,13 +986,51 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
     }
 
-    case ' ':  /* Space — pause react loop when running */
+    case ' ':  /* Space — toggle pause/resume */
         if (ui->focus == FOCUS_JOURNAL &&
             ui->status == STATUS_RUNNING && ui->pause_flag) {
+            /* Running → pause */
             *ui->pause_flag = 1;
             ui_state_set_status(ui, STATUS_READY, "Pausing after current step...");
             ui->dirty = 1;
             break;
+        } else if (ui->focus == FOCUS_JOURNAL &&
+                   ui->status == STATUS_READY && ui->session_dir) {
+            /* Paused → resume with original query (toggle) */
+            char cp_path[4096];
+            snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", ui->session_dir);
+            if (access(cp_path, F_OK) == 0) {
+                /* Checkpoint exists — read original query and return it */
+                char *buf = NULL;
+                { FILE *f = fopen(cp_path, "r");
+                  long sz;
+                  if (f) {
+                      fseek(f, 0, SEEK_END);
+                      sz = ftell(f);
+                      fseek(f, 0, SEEK_SET);
+                      if (sz > 0 && sz < 1048576) {
+                          buf = malloc((size_t)sz + 1);
+                          if (buf) fread(buf, 1, (size_t)sz, f);
+                      }
+                      fclose(f);
+                  }
+                }
+                if (buf) {
+                    cJSON *cp = cJSON_Parse(buf);
+                    free(buf);
+                    if (cp) {
+                        cJSON *q = cJSON_GetObjectItem(cp, "user_query");
+                        if (q && q->valuestring && q->valuestring[0]) {
+                            *out_query = strdup(q->valuestring);
+                            ui_state_set_status(ui, STATUS_READY,
+                                "Resuming (Space toggle — type query + Enter for new direction)");
+                            ui->dirty = 1;
+                        }
+                        cJSON_Delete(cp);
+                    }
+                }
+                if (*out_query) break;
+            }
         }
         /* Otherwise fall through to default (typing space in query) */
         goto handle_default;

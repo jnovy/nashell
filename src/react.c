@@ -1631,6 +1631,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     tool_result_free(&tr);
                     cJSON_Delete(action);
                     free(response);
+                    free(action_str);
+                    free(ut_json);
+                    free(ut_ref);
+                    free(ut_alias);
+                    cJSON_Delete(ut_data);
                     continue;  /* retry — model gets another chance */
                 }
             }
@@ -1886,13 +1891,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (!final_result) checkpoint_save(ctx, step + 1, user_query,
                         chat->last_tool_call_id);
 
-        /* Check for pause request (ESC pressed in TUI).
+        /* Check for pause request (Space pressed in TUI — toggle pause/resume).
          * Save checkpoint and exit cleanly so the task can be resumed later. */
         if (!final_result && ctx->pause_requested) {
             react_event_t ev = {0};
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
-            ev.message = "Paused by user (ESC) — checkpoint saved, resume with /continue";
+            ev.message = "Paused (Space to resume, type query to redirect)";
             emit(on_event, userdata, &ev);
             /* Checkpoint already saved above — just break out of the loop */
             cJSON_Delete(action);
