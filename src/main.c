@@ -714,9 +714,12 @@ int main(int argc, char **argv) {
                         }
                         if (sf) fclose(sf);
                         if (df) fclose(df);
-                        /* Copy symlinks from all react loops */
+                        /* Copy symlinks from all react loops.
+                         * Use the alias map's next_seq as the upper bound —
+                         * it tracks the actual number of aliases created. */
+                        int max_alias = tools.aliases ? tools.aliases->next_seq : fork_step + 5;
                         for (int loop = 0; loop <= tools.react_loop; loop++) {
-                            for (int i = 0; i <= fork_step + 5; i++) {
+                            for (int i = 0; i <= max_alias; i++) {
                                 char ref[32], sl[NASH_PATH_MAX], tgt[NASH_PATH_MAX], dl[NASH_PATH_MAX];
                                 snprintf(ref, sizeof(ref), "R%dS%d",
                                          loop, i);
@@ -882,11 +885,9 @@ int main(int argc, char **argv) {
                             .react_loop = 0,
                             .aliases = alias_map_new(),
                         };
-                        /* Copy shared scratchpad INTO this pass's embedded struct.
-                         * After the pass, we copy it back out. */
-                        pass_tools.scratch = shared_scratch;
-                        /* Zero out shared_scratch so it doesn't double-own the pointers */
-                        memset(&shared_scratch, 0, sizeof(shared_scratch));
+                        /* Move shared scratchpad INTO this pass's embedded struct.
+                         * After the pass, we move it back out. */
+                        scratchpad_move(&pass_tools.scratch, &shared_scratch);
 
                         react_ctx_t pass_react = {
                             .provider = provider,
@@ -1015,10 +1016,7 @@ int main(int argc, char **argv) {
                                                       &(infer_args_t){.ui = ui});
 
                         /* Harvest the scratchpad back from this pass for the next one */
-                        shared_scratch = pass_tools.scratch;
-                        /* Zero out pass_tools.scratch so cleanup doesn't free the sections
-                         * we just moved to shared_scratch */
-                        memset(&pass_tools.scratch, 0, sizeof(pass_tools.scratch));
+                        scratchpad_move(&shared_scratch, &pass_tools.scratch);
 
                         /* Check for failure before cleanup */
                         int pass_failed = (pass_result == NULL);

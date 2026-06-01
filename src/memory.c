@@ -220,11 +220,13 @@ int memory_store(memory_t *m, const char *key, const char *value,
 
     cJSON_AddBoolToObject(entry, "pinned", pinned);
 
-    /* Check if entry already exists (preserve counters) */
+    /* Check if entry already exists (preserve counters and metadata).
+     * Single read to preserve all fields from the existing entry. */
     int access_count = 1;  /* store itself counts as one access */
     int recall_hits = 0;
     int recall_misses = 0;
     double created_at = epoch_now();
+    double belief_entropy = -1;
     {
         char *buf = slurp_file(path, NULL);
         if (buf) {
@@ -239,6 +241,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
                 if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
                 cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
                 if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
+                cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
+                if (be) belief_entropy = cJSON_GetNumberValue(be);
                 cJSON_Delete(old);
             }
             free(buf);
@@ -255,21 +259,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddNumberToObject(entry, "recall_misses", recall_misses);
 
     /* Belief Entropy — forward-looking quality signal (MMPO).
-     * Preserve existing value on overwrite, or write -1 (not computed). */
-    {
-        double belief_entropy = -1;
-        char *buf = slurp_file(path, NULL);
-        if (buf) {
-            cJSON *old = cJSON_Parse(buf);
-            if (old) {
-                cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
-                if (be) belief_entropy = cJSON_GetNumberValue(be);
-                cJSON_Delete(old);
-            }
-            free(buf);
-        }
-        cJSON_AddNumberToObject(entry, "belief_entropy", belief_entropy);
-    }
+     * Preserved from existing entry above, or -1 (not computed). */
+    cJSON_AddNumberToObject(entry, "belief_entropy", belief_entropy);
 
     /* Provenance: link to the session journal where this memory was created.
      * The dreaming LLM can read this journal to understand original context. */

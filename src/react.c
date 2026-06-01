@@ -907,7 +907,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     clock_gettime(CLOCK_MONOTONIC, &task_start);
 
     /* Action signature tracking for cycling detection */
-    char last_sigs[8][256];
+    char last_sigs[8][512];
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
 
@@ -929,8 +929,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         clock_gettime(CLOCK_MONOTONIC, &step_start);
 
         /* EDRM routing: decide thinking mode before LLM call.
-         * On step 0, probe entropy dynamics to determine if CoT is beneficial.
-         * Subsequent steps inherit the decision from step 0.
+         * On the first step of this run (step 0, or resume_step on checkpoint
+         * restore), probe entropy dynamics to determine if CoT is beneficial.
+         * Subsequent steps inherit the decision.
          * See [arXiv:2605.22873] for the theory. */
         if (ctx->tools->cfg && step == resume_step) {
             int mode = ctx->tools->cfg->thinking.mode;
@@ -1396,11 +1397,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(ua_json);
             free(ua_hash);
 
-            /* Build result message for the model */
-            size_t ans_len = strlen(answer) + 64;
+            /* Build result message for the model (JSON-escape the answer) */
+            cJSON *ans_obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(ans_obj, "answer", answer);
+            char *ans_json = cJSON_PrintUnformatted(ans_obj);
+            cJSON_Delete(ans_obj);
+            size_t ans_len = (ans_json ? strlen(ans_json) : 2) + 32;
             char *result_msg = malloc(ans_len);
-            snprintf(result_msg, ans_len, "{\"answer\":\"%s\"}\n[step %d | user_ask]",
-                     answer, step + 1);
+            snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
+                     ans_json ? ans_json : "{}", step + 1);
+            free(ans_json);
 
             /* Add to chat as tool result */
             if (chat->last_tool_call_id) {
@@ -1490,10 +1496,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * require repeated operations (e.g., reading multiple sections
          * of the same file, running similar commands). */
         int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
-        char sig[256];
+        char sig[512];
         const char *cmd = json_get_str(action, "command");
         const char *path = json_get_str(action, "path");
         const char *pattern = json_get_str(action, "pattern");
+        const char *content = json_get_str(action, "content");
+        const char *old_text = json_get_str(action, "old_text");
+        const char *new_text = json_get_str(action, "new_text");
+        const char *query = json_get_str(action, "query");
+        const char *question = json_get_str(action, "question");
+        const char *url = json_get_str(action, "url");
         /* Include start_line/end_line in signature so that reading different
          * line ranges of the same file is NOT detected as cycling.
          * file_read("react.c", 1, 50) and file_read("react.c", 50, 100)
@@ -1502,23 +1514,35 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *el = cJSON_GetObjectItem(action, "end_line");
         int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
-        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d",
+        /* Build signature from all action-distinguishing parameters.
+         * Truncate long fields (content, old_text, new_text) to keep sig bounded. */
+        char content_prefix[32] = "", old_prefix[32] = "", new_prefix[32] = "";
+        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.30s", content);
+        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.30s", old_text);
+        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.30s", new_text);
+        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s",
                  action_name,
                  cmd ? cmd : "",
                  path ? path : "",
                  pattern ? pattern : "",
-                 start_line, end_line);
+                 start_line, end_line,
+                 content_prefix,
+                 old_prefix,
+                 new_prefix,
+                 query ? query : "",
+                 question ? question : "",
+                 url ? url : "");
 
         int repeated = 0;
         for (int i = 0; i < sig_count && i < 8; i++) {
             if (strcmp(last_sigs[i], sig) == 0) repeated++;
         }
         if (sig_count < 8) {
-            snprintf(last_sigs[sig_count], 256, "%s", sig);
+            snprintf(last_sigs[sig_count], 512, "%s", sig);
             sig_count++;
         } else {
-            memmove(last_sigs, last_sigs + 1, 7 * 256);
-            snprintf(last_sigs[7], 256, "%s", sig);
+            memmove(last_sigs, last_sigs + 1, 7 * 512);
+            snprintf(last_sigs[7], 512, "%s", sig);
         }
 
         if (cycling_enabled && repeated >= 2) {
@@ -1719,7 +1743,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     total_chars += (int)strlen(chat->msgs[i].content);
                 usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
 
-                /* If still over 70%, do standard eviction */
+                /* If still over threshold, do standard eviction */
                 int keep_head = 3;
                 int keep_tail = 4;
                 int evict_start = keep_head;
@@ -2088,6 +2112,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 break;
             }
 
+            int should_store = 1;  /* declared outside if-block for use in feedback message */
             if (strcmp(ract, "memory_store") == 0) {
                 /* FIX #4+B4: Deduplication guard — check if a very similar memory
                  * already exists before storing. This prevents reflection from
@@ -2095,7 +2120,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * B4 fix: Load existing entry's cached .emb file directly instead
                  * of calling memory_recall() (which generates a query embedding)
                  * and then re-embedding the existing entry. Saves 2 API calls. */
-                int should_store = 1;
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
@@ -2142,9 +2166,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             llm_chat_add(reflect, "assistant", rresp);
             llm_chat_add(reflect, "user",
-                "Stored. Any more causal insights? What other assumptions, "
-                "hidden variables, or invariants should be captured? "
-                "Call memory_store or done.");
+                should_store
+                    ? "Stored. Any more causal insights? What other assumptions, "
+                      "hidden variables, or invariants should be captured? "
+                      "Call memory_store or done."
+                    : "Skipped (too similar to existing memory). Any other "
+                      "causal insights? Call memory_store or done.");
             cJSON_Delete(raction);
             free(rresp);
         }

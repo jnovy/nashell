@@ -1186,6 +1186,12 @@ void scratchpad_free(scratchpad_t *sp) {
     sp->count = 0;
 }
 
+void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
+    scratchpad_free(dst);
+    *dst = *src;
+    memset(src, 0, sizeof(*src));
+}
+
 int scratchpad_find(scratchpad_t *sp, const char *name) {
     for (int i = 0; i < sp->count; i++) {
         if (strcmp(sp->sections[i].name, name) == 0)
@@ -1683,6 +1689,15 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     return make_result(1, meta, ref_copy);
 }
 
+
+/* ── user_ask stub ────────────────────────────────────── */
+/* user_ask is handled by react.c before reaching tool_execute().
+ * This stub exists only so the dispatch table has an entry.
+ * If reached, it means react.c's special-casing was bypassed. */
+static tool_result_t tool_user_ask_stub(tool_ctx_t *ctx, cJSON *params) {
+    (void)ctx; (void)params;
+    return make_error("user_ask must be handled by react loop, not tool dispatch");
+}
 
 /* ── plan ──────────────────────────────────────────────── */
 
@@ -2700,7 +2715,7 @@ static const struct {
     {"notes",         tool_notes},
     {"done",          tool_done},
     {"plan",          tool_plan},
-    {"user_ask",      tool_plan},  /* stub — actual logic is in react.c (special-cased before tool_execute) */
+    {"user_ask",      tool_user_ask_stub},  /* actual logic is in react.c (special-cased before tool_execute) */
     {"memory_store",  tool_memory_store},
     {"memory_recall", tool_memory_recall},
     {"memory_pin",    tool_memory_pin},

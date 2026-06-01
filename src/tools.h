@@ -60,6 +60,10 @@ typedef struct {
 void scratchpad_init(scratchpad_t *sp);
 void scratchpad_free(scratchpad_t *sp);
 
+/* Move ownership: dst takes all sections from src, src is zeroed.
+ * Any existing sections in dst are freed first. */
+void scratchpad_move(scratchpad_t *dst, scratchpad_t *src);
+
 /* Find section by name. Returns index or -1. */
 int scratchpad_find(scratchpad_t *sp, const char *name);
 
