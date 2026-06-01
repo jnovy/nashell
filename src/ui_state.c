@@ -546,47 +546,55 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 tlen--;
         }
 
+        /* Build link URI with tool name in fragment: ref#toolname */
+        char link_uri[256];
+        if (si->ref)
+            snprintf(link_uri, sizeof(link_uri), "%s#%s", si->ref, si->tool);
+
         /* Build the step line */
-        /* Format: [  icon  step HH:MM tool_name    thought (or desc)](ref)
-         *         then desc (or thought) on indented second line
-         *         shell_exec: command shown on second line as **`cmd`** */
+        /* Format:   icon  step HH:MM [tool_name](ref#tool)  `args`  (Ns)
+         *         Only tool_name is a hyperlink, args rendered as `code`
+         *         shell_exec: command shown on second line as `cmd` */
         int is_shell = (strcmp(si->tool, "shell_exec") == 0);
         if (is_shell && tlen > 0) {
             /* shell_exec with thought: show "thought" on main line,
-             * command on second line as bold code */
+             * command on second line as code */
             char thought_trunc[128];
             if (tlen <= 120) {
                 snprintf(thought_trunc, sizeof(thought_trunc), "\"%.*s\"", tlen, thought_start);
             } else {
                 snprintf(thought_trunc, sizeof(thought_trunc), "\"%.114s...\"", thought_start);
             }
+            int step_num = i + 1;  /* sequential display number */
             if (si->ref) {
-                str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
-                            icon, si->step, ts_buf,
-                            si->tool, sanitize_md_link(thought_trunc),
-                            elapsed_str, si->ref);
+                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
+                            icon, step_num, ts_buf,
+                            si->tool, link_uri,
+                            thought_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
-                            icon, si->step, ts_buf,
+                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                            icon, step_num, ts_buf,
                             si->tool, thought_trunc, elapsed_str);
             }
             if (desc_trunc[0]) {
-                str_appendf(&md, "                **`%s`**\n", desc_trunc);
+                str_appendf(&md, "                `%s`\n", desc_trunc);
             }
         } else if (is_shell && desc_trunc[0]) {
             /* shell_exec without thought: command on same line as tool */
+            int step_num = i + 1;
             if (si->ref) {
-                str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
-                            icon, si->step, ts_buf,
-                            si->tool, sanitize_md_link(desc_trunc),
-                            elapsed_str, si->ref);
+                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
+                            icon, step_num, ts_buf,
+                            si->tool, link_uri,
+                            desc_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
-                            icon, si->step, ts_buf,
+                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                            icon, step_num, ts_buf,
                             si->tool, desc_trunc, elapsed_str);
             }
         } else if (tlen > 0) {
             /* Has thought: show thought on main line, desc on second line */
+            int step_num = i + 1;
             char thought_trunc[128];
             if (tlen <= 120) {
                 snprintf(thought_trunc, sizeof(thought_trunc), "%.*s", tlen, thought_start);
@@ -594,28 +602,29 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 snprintf(thought_trunc, sizeof(thought_trunc), "%.117s...", thought_start);
             }
             if (si->ref) {
-                str_appendf(&md, "[  %s %3d %s %-13s %s](%s)\n",
-                            icon, si->step, ts_buf,
-                            si->tool, sanitize_md_link(thought_trunc),
-                            si->ref);
+                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`\n",
+                            icon, step_num, ts_buf,
+                            si->tool, link_uri,
+                            thought_trunc);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s %s\n",
-                            icon, si->step, ts_buf,
+                str_appendf(&md, "  %s %3d %s %-13s `%s`\n",
+                            icon, step_num, ts_buf,
                             si->tool, thought_trunc);
             }
             if (desc_trunc[0]) {
-                str_appendf(&md, "                %s%s\n", desc_trunc, elapsed_str);
+                str_appendf(&md, "                `%s`%s\n", desc_trunc, elapsed_str);
             }
         } else {
             /* No thought: show desc on main line (original behavior) */
+            int step_num = i + 1;
             if (si->ref) {
-                str_appendf(&md, "[  %s %3d %s %-13s %s%s](%s)\n",
-                            icon, si->step, ts_buf,
-                            si->tool, sanitize_md_link(desc_trunc),
-                            elapsed_str, si->ref);
+                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
+                            icon, step_num, ts_buf,
+                            si->tool, link_uri,
+                            desc_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s %s%s\n",
-                            icon, si->step, ts_buf,
+                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                            icon, step_num, ts_buf,
                             si->tool, desc_trunc, elapsed_str);
             }
         }
@@ -871,14 +880,29 @@ void ui_state_enter(ui_state_t *ui) {
         ui_state_reload_file(ui);
         return;  /* done — don't fall through to raw file handler */
     }
-    /* Non-.md links: treat as raw file (store ref like R0S3) */
+    /* Non-.md links: treat as raw file (store ref like R0S3)
+     * URI may contain a #fragment with the tool name (e.g., "R0S3#file_read") */
+    const char *fragment = strchr(uri, '#');
+    const char *tool_hint = fragment ? fragment + 1 : NULL;
+
+    /* Strip fragment from URI to get the file path portion */
+    char uri_path[4096];
+    if (fragment) {
+        size_t plen = (size_t)(fragment - uri);
+        if (plen >= sizeof(uri_path)) plen = sizeof(uri_path) - 1;
+        memcpy(uri_path, uri, plen);
+        uri_path[plen] = '\0';
+    } else {
+        snprintf(uri_path, sizeof(uri_path), "%s", uri);
+    }
+
     /* Resolve relative to session_dir and display content */
     char raw_path[4096];
-    if (uri[0] == '/') {
-        snprintf(raw_path, sizeof(raw_path), "%s", uri);
+    if (uri_path[0] == '/') {
+        snprintf(raw_path, sizeof(raw_path), "%s", uri_path);
     } else {
         snprintf(raw_path, sizeof(raw_path), "%s/%s",
-                 ui->session_dir, uri);
+                 ui->session_dir, uri_path);
     }
 
     /* Check file exists */
@@ -903,15 +927,48 @@ void ui_state_enter(ui_state_t *ui) {
     char *raw_content = read_file(raw_path);
     if (!raw_content) raw_content = strdup("*Empty*\n");
 
+    /* Determine rendering mode based on tool hint:
+     * - Markdown tools (done, plan, notes, memory_*, user_ask): render as markdown
+     * - file_edit: wrap in ```diff code fence
+     * - All other tools: wrap in ``` code fence */
+    int render_as_md = 0;
+    int render_as_diff = 0;
+    if (tool_hint) {
+        if (strcmp(tool_hint, "done") == 0 ||
+            strcmp(tool_hint, "plan") == 0 ||
+            strcmp(tool_hint, "notes") == 0 ||
+            strcmp(tool_hint, "user_ask") == 0 ||
+            strncmp(tool_hint, "memory_", 7) == 0) {
+            render_as_md = 1;
+        } else if (strcmp(tool_hint, "file_edit") == 0) {
+            render_as_diff = 1;
+        }
+    }
+
     str_t wrapped = str_new(strlen(raw_content) + 256);
-    /* Extract just the filename for the heading */
-    const char *fname = strrchr(uri, '/');
-    fname = fname ? fname + 1 : uri;
+    /* Extract just the filename for the heading (strip fragment) */
+    const char *fname = strrchr(uri_path, '/');
+    fname = fname ? fname + 1 : uri_path;
     str_appendf(&wrapped, "# %s\n\n", fname);
-    /* Render content as markdown — store refs may contain formatted
-     * done results, plans, or other markdown-rich text. Wrapping in
-     * a code fence would suppress all formatting (bold, headers, etc.). */
-    str_append_cstr(&wrapped, raw_content);
+
+    if (render_as_md) {
+        /* Markdown tools: render content with formatting */
+        str_append_cstr(&wrapped, raw_content);
+    } else if (render_as_diff) {
+        /* file_edit: render as diff */
+        str_append_cstr(&wrapped, "```diff\n");
+        str_append_cstr(&wrapped, raw_content);
+        if (raw_content[0] && raw_content[strlen(raw_content)-1] != '\n')
+            str_append_cstr(&wrapped, "\n");
+        str_append_cstr(&wrapped, "```\n");
+    } else {
+        /* All other tools: render as code */
+        str_append_cstr(&wrapped, "```\n");
+        str_append_cstr(&wrapped, raw_content);
+        if (raw_content[0] && raw_content[strlen(raw_content)-1] != '\n')
+            str_append_cstr(&wrapped, "\n");
+        str_append_cstr(&wrapped, "```\n");
+    }
     str_append_cstr(&wrapped, "\n");
     free(raw_content);
 

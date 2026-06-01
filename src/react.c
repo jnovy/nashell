@@ -1103,7 +1103,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 }
 
                 journal_append(ctx->tools->journal,
-                    ctx->tools->react_loop, step, "server_error",
+                    ctx->tools->react_loop, step + 1, "server_error",
                     err_params, se_alias, se_alias ? strlen(se_alias) : 0, 0,
                     "LLM server error", NULL);
                 free(se_alias);
@@ -1390,7 +1390,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             char *ua_hash = store_save(ctx->tools->store, ua_json ? ua_json : "{}");
             char *ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
             journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step, "user_ask", ua_params, ua_alias,
+                           step + 1, "user_ask", ua_params, ua_alias,
                            strlen(answer), 0, NULL, NULL);
             free(ua_json);
             free(ua_hash);
@@ -2006,7 +2006,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         tool_register_alias(ctx->tools, mr_hash) : NULL;
 
                     journal_append(ctx->tools->journal,
-                        ctx->tools->react_loop, step, "memory_refresh",
+                        ctx->tools->react_loop, step + 1, "memory_refresh",
                         mr_params, mr_alias, 0, refreshed.count, NULL, NULL);
 
                     free(mr_json);
