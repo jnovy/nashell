@@ -776,9 +776,32 @@ int tui_input(ui_state_t *ui, char **out_query) {
             if (paste_len < PASTE_BUF_CAP - 1)
                 paste_buf[paste_len++] = '\t';
             goto paste_done;
-        } else if (ch >= 32 && ch < 127) {
-            if (paste_len < PASTE_BUF_CAP - 1)
-                paste_buf[paste_len++] = (char)ch;
+        } else if (ch >= 32 && ch != 127) {
+            /* Accept printable ASCII and Unicode codepoints (ncursesw).
+             * Encode codepoint to UTF-8 bytes in paste buffer. */
+            char utf8[4];
+            int nb;
+            if (ch < 0x80) {
+                utf8[0] = (char)ch; nb = 1;
+            } else if (ch < 0x800) {
+                utf8[0] = (char)(0xC0 | (ch >> 6));
+                utf8[1] = (char)(0x80 | (ch & 0x3F)); nb = 2;
+            } else if (ch < 0x10000) {
+                utf8[0] = (char)(0xE0 | (ch >> 12));
+                utf8[1] = (char)(0x80 | ((ch >> 6) & 0x3F));
+                utf8[2] = (char)(0x80 | (ch & 0x3F)); nb = 3;
+            } else if (ch < 0x110000) {
+                utf8[0] = (char)(0xF0 | (ch >> 18));
+                utf8[1] = (char)(0x80 | ((ch >> 12) & 0x3F));
+                utf8[2] = (char)(0x80 | ((ch >> 6) & 0x3F));
+                utf8[3] = (char)(0x80 | (ch & 0x3F)); nb = 4;
+            } else {
+                goto paste_done;  /* invalid codepoint */
+            }
+            if (paste_len + nb < PASTE_BUF_CAP) {
+                memcpy(paste_buf + paste_len, utf8, (size_t)nb);
+                paste_len += nb;
+            }
             goto paste_done;
         }
         /* else: ESC, special keys — fall through to normal handling
@@ -1129,11 +1152,32 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     default:
     handle_default:
-        if (ui->focus == FOCUS_QUERY && ch >= 32 && ch < 127) {
+        if (ui->focus == FOCUS_QUERY && ch >= 32 && ch != 127) {
             if (paste_mode) {
-                /* During bracketed paste, accumulate into paste buffer */
-                if (paste_len < PASTE_BUF_CAP - 1)
-                    paste_buf[paste_len++] = (char)ch;
+                /* During bracketed paste, encode codepoint to UTF-8 bytes */
+                char utf8[4];
+                int nb;
+                if (ch < 0x80) {
+                    utf8[0] = (char)ch; nb = 1;
+                } else if (ch < 0x800) {
+                    utf8[0] = (char)(0xC0 | (ch >> 6));
+                    utf8[1] = (char)(0x80 | (ch & 0x3F)); nb = 2;
+                } else if (ch < 0x10000) {
+                    utf8[0] = (char)(0xE0 | (ch >> 12));
+                    utf8[1] = (char)(0x80 | ((ch >> 6) & 0x3F));
+                    utf8[2] = (char)(0x80 | (ch & 0x3F)); nb = 3;
+                } else if (ch < 0x110000) {
+                    utf8[0] = (char)(0xF0 | (ch >> 18));
+                    utf8[1] = (char)(0x80 | ((ch >> 12) & 0x3F));
+                    utf8[2] = (char)(0x80 | ((ch >> 6) & 0x3F));
+                    utf8[3] = (char)(0x80 | (ch & 0x3F)); nb = 4;
+                } else {
+                    break;  /* invalid codepoint */
+                }
+                if (paste_len + nb < PASTE_BUF_CAP) {
+                    memcpy(paste_buf + paste_len, utf8, (size_t)nb);
+                    paste_len += nb;
+                }
             } else {
                 ui_state_input_char(ui, ch);
             }

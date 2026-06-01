@@ -1277,45 +1277,110 @@ void ui_state_page_down(ui_state_t *ui) {
 
 void ui_state_input_char(ui_state_t *ui, int ch) {
     if (!ui) return;
-    /* Allow printable ASCII (32-126) and newline (10) for multi-line input */
-    if (ch != '\n' && (ch < 32 || ch > 126)) return;
-    if (ui->input_len >= ui->input_cap - 1) {
+    /* Allow printable ASCII, newline, and Unicode codepoints (UTF-8).
+     * With ncursesw, getch() returns full Unicode codepoints as int values.
+     * We encode them as UTF-8 bytes into the input buffer. */
+    if (ch != '\n' && ch < 32) return;      /* reject control chars except newline */
+    if (ch == 127) return;                   /* reject DEL */
+
+    /* Encode codepoint to UTF-8 */
+    char utf8[4];
+    int nbytes;
+    if (ch < 0x80) {
+        utf8[0] = (char)ch;
+        nbytes = 1;
+    } else if (ch < 0x800) {
+        utf8[0] = (char)(0xC0 | (ch >> 6));
+        utf8[1] = (char)(0x80 | (ch & 0x3F));
+        nbytes = 2;
+    } else if (ch < 0x10000) {
+        utf8[0] = (char)(0xE0 | (ch >> 12));
+        utf8[1] = (char)(0x80 | ((ch >> 6) & 0x3F));
+        utf8[2] = (char)(0x80 | (ch & 0x3F));
+        nbytes = 3;
+    } else if (ch < 0x110000) {
+        utf8[0] = (char)(0xF0 | (ch >> 18));
+        utf8[1] = (char)(0x80 | ((ch >> 12) & 0x3F));
+        utf8[2] = (char)(0x80 | ((ch >> 6) & 0x3F));
+        utf8[3] = (char)(0x80 | (ch & 0x3F));
+        nbytes = 4;
+    } else {
+        return;  /* invalid codepoint */
+    }
+
+    /* Ensure capacity for nbytes */
+    while (ui->input_len + nbytes >= ui->input_cap - 1) {
         ui->input_cap *= 2;
         ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
     }
-    memmove(ui->input_buffer + ui->cursor_pos + 1,
+    memmove(ui->input_buffer + ui->cursor_pos + nbytes,
             ui->input_buffer + ui->cursor_pos,
             (size_t)(ui->input_len - ui->cursor_pos + 1));
-    ui->input_buffer[ui->cursor_pos] = (char)ch;
-    ui->cursor_pos++;
-    ui->input_len++;
+    memcpy(ui->input_buffer + ui->cursor_pos, utf8, (size_t)nbytes);
+    ui->cursor_pos += nbytes;
+    ui->input_len += nbytes;
     ui->dirty = 1;
+}
+
+/* Helper: count bytes in the UTF-8 character ending at buf[pos-1] (backspace).
+ * Returns 1-4 for valid UTF-8, 1 for ASCII or malformed sequences. */
+static int utf8_char_len_back(const char *buf, int pos) {
+    if (pos <= 0) return 0;
+    /* Walk backward over continuation bytes (10xxxxxx = 0x80..0xBF) */
+    int i = pos - 1;
+    int count = 1;
+    while (i > 0 && count < 4 &&
+           ((unsigned char)buf[i] & 0xC0) == 0x80) {
+        i--;
+        count++;
+    }
+    return count;
+}
+
+/* Helper: count bytes in the UTF-8 character starting at buf[pos] (delete/right).
+ * Returns 1-4 for valid UTF-8, 1 for ASCII or malformed sequences. */
+static int utf8_char_len_fwd(const char *buf, int pos, int len) {
+    if (pos >= len) return 0;
+    unsigned char c = (unsigned char)buf[pos];
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return (pos + 2 <= len) ? 2 : 1;
+    if ((c & 0xF0) == 0xE0) return (pos + 3 <= len) ? 3 : 1;
+    if ((c & 0xF8) == 0xF0) return (pos + 4 <= len) ? 4 : 1;
+    return 1;  /* continuation byte or invalid — treat as single byte */
 }
 
 void ui_state_input_backspace(ui_state_t *ui) {
     if (!ui || ui->cursor_pos <= 0) return;
-    memmove(ui->input_buffer + ui->cursor_pos - 1,
+    int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+    memmove(ui->input_buffer + ui->cursor_pos - nb,
             ui->input_buffer + ui->cursor_pos,
             (size_t)(ui->input_len - ui->cursor_pos + 1));
-    ui->cursor_pos--;
-    ui->input_len--;
+    ui->cursor_pos -= nb;
+    ui->input_len -= nb;
     ui->dirty = 1;
 }
 
 void ui_state_input_delete(ui_state_t *ui) {
     if (!ui || ui->cursor_pos >= ui->input_len) return;
+    int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
     memmove(ui->input_buffer + ui->cursor_pos,
-            ui->input_buffer + ui->cursor_pos + 1,
-            (size_t)(ui->input_len - ui->cursor_pos));
-    ui->input_len--;
+            ui->input_buffer + ui->cursor_pos + nb,
+            (size_t)(ui->input_len - ui->cursor_pos - nb + 1));
+    ui->input_len -= nb;
     ui->dirty = 1;
 }
 
 void ui_state_input_left(ui_state_t *ui) {
-    if (ui && ui->cursor_pos > 0) { ui->cursor_pos--; ui->dirty = 1; }
+    if (!ui || ui->cursor_pos <= 0) return;
+    int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+    ui->cursor_pos -= nb;
+    ui->dirty = 1;
 }
 void ui_state_input_right(ui_state_t *ui) {
-    if (ui && ui->cursor_pos < ui->input_len) { ui->cursor_pos++; ui->dirty = 1; }
+    if (!ui || ui->cursor_pos >= ui->input_len) return;
+    int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
+    ui->cursor_pos += nb;
+    ui->dirty = 1;
 }
 void ui_state_input_home(ui_state_t *ui) {
     if (ui) { ui->cursor_pos = 0; ui->dirty = 1; }
