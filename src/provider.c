@@ -652,11 +652,23 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                     if (partial && cJSON_IsString(partial)) {
                         str_append_cstr(&st->tool_call_args, partial->valuestring);
                     }
+                    /* Count tool input deltas for wall-clock t/s timing */
+                    st->streaming_token_count++;
+                    if (!st->first_token_seen) {
+                        clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+                        st->first_token_seen = 1;
+                    }
                 }
                 else if (strcmp(delta_type->valuestring, "thinking") == 0) {
                     cJSON *thinking = cJSON_GetObjectItem(delta, "thinking");
                     if (thinking && cJSON_IsString(thinking)) {
                         str_append_cstr(&st->thinking_content, thinking->valuestring);
+                    }
+                    /* Count thinking deltas for wall-clock t/s timing */
+                    st->streaming_token_count++;
+                    if (!st->first_token_seen) {
+                        clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+                        st->first_token_seen = 1;
                     }
                 }
             }
@@ -1045,19 +1057,28 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
 
     /* Compute wall-clock streaming t/s as fallback when server doesn't report it.
      * This makes gen/pp t/s available for all providers (Anthropic, Vertex, OpenAI)
-     * even when the server doesn't include per_second fields in the response. */
+     * even when the server doesn't include per_second fields in the response.
+     *
+     * For API providers (Anthropic/Vertex), streaming_token_count counts SSE
+     * content_block_delta events (text_delta + input_json_delta + thinking),
+     * which are chunks, not actual tokens.  When completion_tokens is available
+     * from the usage stats, use that instead for accurate t/s. */
     if (stats && st.first_token_seen && st.streaming_token_count > 1) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
 
-        /* Generation speed: (tokens - 1) / time_since_first_token.
-         * We subtract 1 because the first token marks the start of timing. */
+        /* Generation speed: completion_tokens / time_since_first_token.
+         * Prefer completion_tokens from API usage stats (accurate token count).
+         * Fall back to streaming_token_count (SSE chunk count) if unavailable. */
         if (stats->predicted_per_second <= 0) {
             double gen_elapsed = (now.tv_sec - st.first_token_time.tv_sec) +
                                  (now.tv_nsec - st.first_token_time.tv_nsec) / 1e9;
             if (gen_elapsed > 0.1) {
-                stats->predicted_per_second =
-                    (st.streaming_token_count - 1) / gen_elapsed;
+                int gen_count = (stats->completion_tokens > 0)
+                    ? stats->completion_tokens
+                    : st.streaming_token_count - 1;
+                if (gen_count > 0)
+                    stats->predicted_per_second = (double)gen_count / gen_elapsed;
             }
         }
 
