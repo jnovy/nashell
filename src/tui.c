@@ -144,6 +144,7 @@ static void init_true_colors(void) {
 
 void tui_init(void) {
     setlocale(LC_ALL, "");
+    set_escdelay(25);       /* default is 1000ms — far too slow for Esc-as-back */
     initscr();
     cbreak();
     noecho();
@@ -435,7 +436,7 @@ static void render_main(ui_state_t *ui) {
     int rows = getmaxy(win_main);
     ui->visible_rows = rows;  /* tell ui_state how tall the main pane is */
     int cols = getmaxx(win_main);
-    (void)rows;
+    (void)cols;
 
     werase(win_main);
 
@@ -443,6 +444,40 @@ static void render_main(ui_state_t *ui) {
         int focus = (ui->focus == FOCUS_JOURNAL);
         md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
                  ui->cursor_link, focus);
+
+        /* Deferred auto-scroll: now that md_render() has set doc->total_lines
+         * and link render_lines, we can compute the correct scroll_y.
+         * Before this, auto_scroll_bottom ran right after md_parse which
+         * hadn't set these values yet (total_lines=0, render_line=-1). */
+        if (ui->needs_auto_scroll) {
+            ui->needs_auto_scroll = 0;
+
+            /* Move cursor to last link */
+            if (ui->doc->link_count > 0)
+                ui->cursor_link = ui->doc->link_count - 1;
+
+            int vis = rows > 0 ? rows : 20;
+
+            if (ui->doc->link_count > 0) {
+                int link_line = md_link_line(ui->doc, ui->doc->link_count - 1);
+                int half = vis / 2;
+                int target = link_line - half;
+                int max_scroll = ui->doc->total_lines - vis;
+                if (max_scroll < 0) max_scroll = 0;
+                if (target < 0) target = 0;
+                if (target > max_scroll) target = max_scroll;
+                ui->scroll_y = target;
+            } else {
+                int max_scroll = ui->doc->total_lines - vis;
+                if (max_scroll < 0) max_scroll = 0;
+                ui->scroll_y = max_scroll;
+            }
+
+            /* Re-render with corrected scroll position */
+            werase(win_main);
+            md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
+                     ui->cursor_link, focus);
+        }
     } else {
         wattron(win_main, COLOR_PAIR(C_DIM));
         mvwaddstr(win_main, 0, 0, "  Loading...");
@@ -450,7 +485,6 @@ static void render_main(ui_state_t *ui) {
     }
 
     wnoutrefresh(win_main);
-    (void)cols;
 }
 
 /* ── Render bottom pane (nashell-style status + input) ─ */
@@ -979,11 +1013,46 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
 
     case KEY_HOME:
-        if (ui->focus == FOCUS_QUERY) ui_state_input_home(ui);
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_home(ui);
+        } else if (ui->focus == FOCUS_JOURNAL) {
+            /* HOME in journal: scroll to top of current md file */
+            ui->scroll_y = 0;
+            ui->scroll_x = 0;
+            ui->user_scrolled = 1;  /* prevent auto-scroll override */
+            /* Move cursor to first visible link */
+            if (ui->doc && ui->doc->link_count > 0) {
+                int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+                ui->cursor_link = 0;
+                for (int i = 0; i < ui->doc->link_count; i++) {
+                    int ll = md_link_line(ui->doc, i);
+                    if (ll >= 0 && ll < vis) {
+                        ui->cursor_link = i;
+                        break;
+                    }
+                }
+            }
+            ui->dirty = 1;
+        }
         break;
 
     case KEY_END:
-        if (ui->focus == FOCUS_QUERY) ui_state_input_end(ui);
+        if (ui->focus == FOCUS_QUERY) {
+            ui_state_input_end(ui);
+        } else if (ui->focus == FOCUS_JOURNAL) {
+            /* END in journal: scroll to bottom, resume auto-scroll */
+            ui->user_scrolled = 0;
+            if (ui->doc) {
+                int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+                int max_scroll = ui->doc->total_lines - vis;
+                if (max_scroll < 0) max_scroll = 0;
+                ui->scroll_y = max_scroll;
+                /* Move cursor to last link */
+                if (ui->doc->link_count > 0)
+                    ui->cursor_link = ui->doc->link_count - 1;
+            }
+            ui->dirty = 1;
+        }
         break;
 
     case KEY_BACKSPACE:

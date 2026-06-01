@@ -89,6 +89,10 @@ typedef struct {
     /* ── user_ask state ── */
     char          *user_ask_question; /* full question text (while awaiting answer) */
 
+    /* ── Scroll control ── */
+    int            user_scrolled;    /* 1 = user scrolled away, suppress auto-scroll */
+    int            needs_auto_scroll; /* 1 = deferred auto-scroll after next md_render */
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;
