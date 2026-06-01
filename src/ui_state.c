@@ -452,6 +452,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
     fclose(f);
 
+    /* Compute max tool name length for column alignment */
+    int max_tool_len = 0;
+    for (int i = 0; i < nsteps; i++) {
+        int tl = (int)strlen(steps[i].tool);
+        if (tl > max_tool_len) max_tool_len = tl;
+    }
+
     /* Header — for multi-line queries, show first line as heading
      * and remaining lines as a blockquote block */
     if (query_text && query_text[0]) {
@@ -555,6 +562,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Format:   icon  step HH:MM [tool_name](ref#tool)  `args`  (Ns)
          *         Only tool_name is a hyperlink, args rendered as `code`
          *         shell_exec: command shown on second line as `cmd` */
+
+        /* Pad tool name to max_tool_len for column alignment */
+        char tool_pad[64];
+        snprintf(tool_pad, sizeof(tool_pad), "%-*s", max_tool_len, si->tool);
+
         int is_shell = (strcmp(si->tool, "shell_exec") == 0);
         if (is_shell && tlen > 0) {
             /* shell_exec with thought: show "thought" on main line,
@@ -569,12 +581,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (si->ref) {
                 str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, link_uri,
+                            tool_pad, link_uri,
                             thought_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, thought_trunc, elapsed_str);
+                            tool_pad, thought_trunc, elapsed_str);
             }
             if (desc_trunc[0]) {
                 str_appendf(&md, "                `%s`\n", desc_trunc);
@@ -585,12 +597,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (si->ref) {
                 str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, link_uri,
+                            tool_pad, link_uri,
                             desc_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, desc_trunc, elapsed_str);
+                            tool_pad, desc_trunc, elapsed_str);
             }
         } else if (tlen > 0) {
             /* Has thought: show thought on main line, desc on second line */
@@ -604,12 +616,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (si->ref) {
                 str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`\n",
                             icon, step_num, ts_buf,
-                            si->tool, link_uri,
+                            tool_pad, link_uri,
                             thought_trunc);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s `%s`\n",
+                str_appendf(&md, "  %s %3d %s %s `%s`\n",
                             icon, step_num, ts_buf,
-                            si->tool, thought_trunc);
+                            tool_pad, thought_trunc);
             }
             if (desc_trunc[0]) {
                 str_appendf(&md, "                `%s`%s\n", desc_trunc, elapsed_str);
@@ -620,12 +632,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (si->ref) {
                 str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, link_uri,
+                            tool_pad, link_uri,
                             desc_trunc, elapsed_str);
             } else {
-                str_appendf(&md, "  %s %3d %s %-13s `%s`%s\n",
+                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
                             icon, step_num, ts_buf,
-                            si->tool, desc_trunc, elapsed_str);
+                            tool_pad, desc_trunc, elapsed_str);
             }
         }
 
@@ -723,6 +735,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 void ui_state_reload_file(ui_state_t *ui) {
     if (!ui || !ui->current_filepath) return;
 
+    /* Skip reload for raw (non-.md) files — they are static store refs
+     * that were already wrapped in code fences by ui_state_enter().
+     * Reloading them would read the raw content without wrapping,
+     * causing a brief correct render followed by broken markdown. */
+    int len = (int)strlen(ui->current_filepath);
+    if (len < 3 || strcmp(ui->current_filepath + len - 3, ".md") != 0)
+        return;
+
     char *content = read_file(ui->current_filepath);
     if (!content) content = strdup("*File not found*\n");
 
@@ -774,6 +794,10 @@ void ui_state_tab(ui_state_t *ui) {
 void ui_state_up(ui_state_t *ui) {
     if (!ui) return;
     if (ui->focus == FOCUS_JOURNAL && ui->doc) {
+        /* Arrow-up while react loop is running → user takes scroll control */
+        if (ui->status == STATUS_RUNNING)
+            ui->user_scrolled = 1;
+
         int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
         int first_vis, last_vis;
         int n_vis = find_visible_links(ui->doc, ui->scroll_y, vis,
@@ -827,6 +851,11 @@ void ui_state_down(ui_state_t *ui) {
                 }
             }
         }
+
+        /* If cursor reached the last link, resume auto-scroll */
+        if (ui->doc->link_count > 0 &&
+            ui->cursor_link == ui->doc->link_count - 1)
+            ui->user_scrolled = 0;
     }
     ui->dirty = 1;
 }
@@ -1059,6 +1088,9 @@ void ui_state_back(ui_state_t *ui) {
 
 void ui_state_page_up(ui_state_t *ui) {
     if (!ui) return;
+    /* Page-up while react loop is running → user takes scroll control */
+    if (ui->status == STATUS_RUNNING)
+        ui->user_scrolled = 1;
     int page = (ui->visible_rows > 3) ? (ui->visible_rows / 3) : 3;
     ui->scroll_y -= page;
     if (ui->scroll_y < 0) ui->scroll_y = 0;
@@ -1194,16 +1226,16 @@ static int viewing_session(ui_state_t *ui) {
     return strcmp(base, "session.md") == 0;
 }
 
-/* Auto-scroll to bottom of document */
+/* Auto-scroll: request deferred scroll to bottom.
+ * The actual scroll computation is done in render_main() (tui.c) AFTER
+ * md_render() has set doc->total_lines and link render_lines.
+ * Before this fix, scroll_y was computed here with stale data (total_lines=0,
+ * render_line=-1) because md_parse doesn't call md_render. */
 static void auto_scroll_bottom(ui_state_t *ui) {
     if (!ui->doc) return;
-    int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
-    int max_scroll = ui->doc->total_lines - vis;
-    if (max_scroll < 0) max_scroll = 0;
-    ui->scroll_y = max_scroll;
-    /* Move cursor to last link */
-    if (ui->doc->link_count > 0)
-        ui->cursor_link = ui->doc->link_count - 1;
+    if (ui->user_scrolled) return;          /* user took control */
+    ui->needs_auto_scroll = 1;
+    ui->dirty = 1;
 }
 
 void ui_state_on_event(const react_event_t *ev, void *userdata) {
@@ -1231,6 +1263,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
         /* Regenerate react MD and reload if viewing it */
         ui_state_generate_react_md(ui, ui->current_react_loop);
+
+        /* Reset user_scrolled on first step of a new react loop so
+         * auto-scroll is active for the fresh run. */
+        if (ev->step == 0)
+            ui->user_scrolled = 0;
 
         /* Auto-navigate into reactRX.md on first step so user sees
          * streaming tokens in real-time instead of just the preview
@@ -1328,6 +1365,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             if (ev->context_size > 0)
                 ui->context_size = ev->context_size;
         }
+
+        /* React loop finished — clear user_scrolled so final
+         * auto-scroll shows the completed result. */
+        ui->user_scrolled = 0;
 
         ui_state_generate_react_md(ui, ui->current_react_loop);
         ui_state_generate_session_md(ui);
