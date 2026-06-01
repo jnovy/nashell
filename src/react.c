@@ -1385,17 +1385,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             const char *answer = ctx->user_ask_answer;
             if (!answer) answer = "(no answer)";
 
-            /* Log to journal */
+            /* Log to journal — store as markdown so TUI renders it nicely */
             cJSON *ua_params = cJSON_CreateObject();
             cJSON_AddStringToObject(ua_params, "question", question);
             cJSON_AddStringToObject(ua_params, "answer", answer);
-            char *ua_json = cJSON_PrintUnformatted(ua_params);
-            char *ua_hash = store_save(ctx->tools->store, ua_json ? ua_json : "{}");
+            size_t ua_md_len = strlen(question) + strlen(answer) + 64;
+            char *ua_md = malloc(ua_md_len);
+            snprintf(ua_md, ua_md_len,
+                     "## Question\n\n%s\n\n## Answer\n\n%s\n",
+                     question, answer);
+            char *ua_hash = store_save(ctx->tools->store, ua_md);
+            free(ua_md);
             char *ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
             journal_append(ctx->tools->journal, ctx->tools->react_loop,
                            step + 1, "user_ask", ua_params, ua_alias,
                            strlen(answer), 0, NULL, NULL);
-            free(ua_json);
             free(ua_hash);
 
             /* Build result message for the model (JSON-escape the answer) */
