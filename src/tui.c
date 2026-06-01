@@ -212,12 +212,26 @@ static void finish_paste(ui_state_t *ui) {
     }
 
     if (!has_nl) {
-        /* Single-line paste: insert directly into input buffer */
-        for (int i = 0; i < paste_len; i++) {
-            int ch = (unsigned char)paste_buf[i];
-            if (ch >= 32 && ch < 127)
-                ui_state_input_char(ui, ch);
+        /* Single-line paste: insert raw UTF-8 bytes into input buffer.
+         * paste_buf already contains properly encoded UTF-8 from the
+         * paste accumulation path, so we insert bytes directly rather
+         * than going through ui_state_input_char() which would try to
+         * re-encode each byte as a codepoint. */
+        int nbytes = paste_len;
+        /* Ensure capacity */
+        while (ui->input_len + nbytes >= ui->input_cap - 1) {
+            ui->input_cap *= 2;
+            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
         }
+        /* Make room at cursor position */
+        memmove(ui->input_buffer + ui->cursor_pos + nbytes,
+                ui->input_buffer + ui->cursor_pos,
+                (size_t)(ui->input_len - ui->cursor_pos + 1));
+        /* Copy paste buffer bytes directly */
+        memcpy(ui->input_buffer + ui->cursor_pos, paste_buf, (size_t)nbytes);
+        ui->cursor_pos += nbytes;
+        ui->input_len += nbytes;
+        ui->dirty = 1;
     } else {
         /* Multi-line paste: store in clip_store, insert token */
         if (clip_count < MAX_CLIPS) {
