@@ -642,8 +642,10 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             }
         }
 
-        /* Preview: show for last step or explicitly expanded steps */
-        int show_preview = is_last;
+        /* Preview: show for last step or explicitly expanded steps.
+         * Plan tool always shows full preview rendered as markdown. */
+        int is_plan = (strcmp(si->tool, "plan") == 0);
+        int show_preview = is_last || is_plan;
         if (!show_preview && si->ref) {
             for (int ei = 0; ei < ui->expanded_count; ei++) {
                 if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
@@ -656,34 +658,51 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         if (show_preview && si->ref) {
             char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, si->ref);
-            FILE *cf = fopen(rpath, "r");
-            if (cf) {
-                if (strcmp(si->tool, "file_edit") == 0)
-                    str_append_cstr(&md, "```diff\n");
-                else
-                    str_append_cstr(&md, "```\n");
-                char cbuf[NASH_PATH_MAX];
-                int line_count = 0;
-                size_t total = 0;
-                size_t n;
-                while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
-                       && total < 8000 && line_count < 5) {
-                    cbuf[n] = '\0';
-                    for (size_t k = 0; k < n && line_count < 5; k++) {
-                        str_append(&md, &cbuf[k], 1);
-                        total++;
-                        if (cbuf[k] == '\n') line_count++;
-                    }
-                }
-                long file_sz = 0;
-                fseek(cf, 0, SEEK_END);
-                file_sz = ftell(cf);
-                if (total < (size_t)file_sz)
-                    str_append_cstr(&md, "  ...\n");
-                if (md.len > 0 && md.data[md.len - 1] != '\n')
+
+            if (is_plan) {
+                /* Plan: read full file and render as markdown (no code
+                 * fences, no line limit) so numbered steps display
+                 * with proper formatting. */
+                char *plan_text = slurp_file(rpath, NULL);
+                if (plan_text) {
                     str_append_cstr(&md, "\n");
-                str_append_cstr(&md, "```\n");
-                fclose(cf);
+                    str_append_cstr(&md, plan_text);
+                    if (plan_text[0] &&
+                        plan_text[strlen(plan_text) - 1] != '\n')
+                        str_append_cstr(&md, "\n");
+                    str_append_cstr(&md, "\n");
+                    free(plan_text);
+                }
+            } else {
+                FILE *cf = fopen(rpath, "r");
+                if (cf) {
+                    if (strcmp(si->tool, "file_edit") == 0)
+                        str_append_cstr(&md, "```diff\n");
+                    else
+                        str_append_cstr(&md, "```\n");
+                    char cbuf[NASH_PATH_MAX];
+                    int line_count = 0;
+                    size_t total = 0;
+                    size_t n;
+                    while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
+                           && total < 8000 && line_count < 5) {
+                        cbuf[n] = '\0';
+                        for (size_t k = 0; k < n && line_count < 5; k++) {
+                            str_append(&md, &cbuf[k], 1);
+                            total++;
+                            if (cbuf[k] == '\n') line_count++;
+                        }
+                    }
+                    long file_sz = 0;
+                    fseek(cf, 0, SEEK_END);
+                    file_sz = ftell(cf);
+                    if (total < (size_t)file_sz)
+                        str_append_cstr(&md, "  ...\n");
+                    if (md.len > 0 && md.data[md.len - 1] != '\n')
+                        str_append_cstr(&md, "\n");
+                    str_append_cstr(&md, "```\n");
+                    fclose(cf);
+                }
             }
         }
     }
