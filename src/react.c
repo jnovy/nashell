@@ -1578,21 +1578,47 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
                 if (err_j && err_j->valuestring &&
                     strstr(err_j->valuestring, "unknown tool")) {
+                    /* Store garbled tool details in the store for debugging.
+                     * This lets us investigate patterns: why did the model produce
+                     * a garbled name? Which model? What context triggered it? */
+                    cJSON *ut_data = cJSON_CreateObject();
+                    cJSON_AddStringToObject(ut_data, "garbled_tool", action_name);
+                    char *action_str = cJSON_PrintUnformatted(action);
+                    cJSON_AddStringToObject(ut_data, "params", action_str ? action_str : "");
+                    char *ut_json = cJSON_PrintUnformatted(ut_data);
+                    char *ut_ref = (ut_json && ctx->tools->store)
+                        ? store_save(ctx->tools->store, ut_json) : NULL;
+                    char *ut_alias = (ut_ref && ctx->tools->aliases)
+                        ? tool_register_alias(ctx->tools, ut_ref) : NULL;
+
                     /* Log the error for audit trail */
                     journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                                   step + 1, "unknown_tool", tr.meta, NULL,
-                                   0, 0, err_j->valuestring, NULL);
+                                   step + 1, "unknown_tool", tr.meta, ut_alias,
+                                   ut_json ? strlen(ut_json) : 0, 0,
+                                   err_j->valuestring, NULL);
 
-                    /* Inject corrective message into chat */
-                    char correction[512];
-                    snprintf(correction, sizeof(correction),
-                        "ERROR: '%s' is not a valid tool. "
-                        "Available tools: shell_exec, file_read, file_write, "
-                        "file_edit, grep_search, web_fetch, web_search, notes, "
-                        "done, memory_store, memory_recall, memory_pin, "
-                        "memory_unpin, memory_delete. "
-                        "Please retry with the correct tool name.",
-                        action_name);
+                    /* Inject corrective message into chat (with store ref for debugging) */
+                    char correction[1024];
+                    if (ut_alias) {
+                        snprintf(correction, sizeof(correction),
+                            "ERROR: '%s' is not a valid tool. "
+                            "Stored garbled call for debugging: file_read(\"%s\"). "
+                            "Available tools: shell_exec, file_read, file_write, "
+                            "file_edit, grep_search, web_fetch, web_search, notes, "
+                            "done, memory_store, memory_recall, memory_pin, "
+                            "memory_unpin, memory_delete. "
+                            "Please retry with the correct tool name.",
+                            action_name, ut_alias);
+                    } else {
+                        snprintf(correction, sizeof(correction),
+                            "ERROR: '%s' is not a valid tool. "
+                            "Available tools: shell_exec, file_read, file_write, "
+                            "file_edit, grep_search, web_fetch, web_search, notes, "
+                            "done, memory_store, memory_recall, memory_pin, "
+                            "memory_unpin, memory_delete. "
+                            "Please retry with the correct tool name.",
+                            action_name);
+                    }
 
                     if (chat->last_tool_call_id) {
                         /* Tool calls API: send error as tool result */
