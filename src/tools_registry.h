@@ -57,7 +57,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
 
     {"memory_store",
      "Store reusable knowledge in long-term memory.",
-     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"}},\"required\":[\"key\",\"value\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Related memory keys for cross-references\"}},\"required\":[\"key\",\"value\"]}"},
 
     {"memory_recall",
      "Recall information from long-term memory.",
@@ -94,10 +94,14 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "pauses until the user responds.",
      "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\",\"description\":\"Question to ask the user\"}},\"required\":[\"question\"]}"},
 
+    {"memory_delete",
+     "Delete a memory entry by key.",
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to delete\"}},\"required\":[\"key\"]}"},
+
     {NULL, NULL, NULL}  /* sentinel */
 };
 
-#define TOOL_REGISTRY_COUNT 16
+#define TOOL_REGISTRY_COUNT 17
 
 /* Build a cJSON tools array from the registry, formatted for the given provider type.
  * Handles the structural differences between Local/OpenAI/Anthropic APIs.

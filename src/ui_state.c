@@ -318,7 +318,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         if (qi->ts > 0) {
             time_t t = (time_t)qi->ts;
             struct tm *tm = localtime(&t);
-            if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
+            if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", tm);
         }
 
         /* Status icon */
@@ -502,16 +502,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         if (i > 0 && si->ts > 0 && steps[i-1].ts > 0)
             elapsed = si->ts - steps[i-1].ts;
 
-        /* Format timestamp HH:MM */
-        char ts_buf[8] = "";
+        /* Format timestamp HH:MM:SS */
+        char ts_buf[16] = "";
         if (si->ts > 0) {
             time_t t = (time_t)si->ts;
             struct tm *tm = localtime(&t);
-            if (tm) strftime(ts_buf, sizeof(ts_buf), "%H:%M", tm);
+            if (tm) strftime(ts_buf, sizeof(ts_buf), "%H:%M:%S", tm);
         }
-
-        /* Status icon */
-        const char *icon = si->failed ? "\xe2\x9c\x97" : "\xe2\x9c\x93";
 
         /* Format elapsed */
         char elapsed_str[32] = "";
@@ -521,22 +518,21 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 snprintf(elapsed_str, sizeof(elapsed_str), " (%ds)", es);
         }
 
-        /* Truncate desc to ~60 chars */
-        char desc_trunc[80];
+        /* Clean desc: replace newlines with spaces, full length (no truncation) */
+        char *desc_clean = NULL;
+        int desc_len = 0;
         if (si->desc && si->desc[0]) {
-            /* Replace newlines with spaces */
-            int j = 0;
-            for (int k = 0; si->desc[k] && j < 60; k++) {
-                if (si->desc[k] == '\n' || si->desc[k] == '\r')
-                    desc_trunc[j++] = ' ';
-                else
-                    desc_trunc[j++] = si->desc[k];
+            desc_len = (int)strlen(si->desc);
+            desc_clean = malloc((size_t)desc_len + 1);
+            if (desc_clean) {
+                for (int k = 0; k < desc_len; k++) {
+                    if (si->desc[k] == '\n' || si->desc[k] == '\r')
+                        desc_clean[k] = ' ';
+                    else
+                        desc_clean[k] = si->desc[k];
+                }
+                desc_clean[desc_len] = '\0';
             }
-            desc_trunc[j] = '\0';
-            if ((int)strlen(si->desc) > 60)
-                strcat(desc_trunc, "...");
-        } else {
-            desc_trunc[0] = '\0';
         }
 
         /* Prepare thought text: strip leading/trailing whitespace/newlines */
@@ -560,87 +556,135 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             snprintf(link_uri, sizeof(link_uri), "%s#%s", si->ref, si->tool);
 
         /* Build the step line */
-        /* Format:   icon  step HH:MM [tool_name](ref#tool)  `args`  (Ns)
+        /* Format:   N RXSY HH:MM:SS [tool_name](ref#tool) `args` (Ns)
          *         Only tool_name is a hyperlink, args rendered as `code`
-         *         shell_exec: command shown on second line as `cmd` */
+         *
+         * If the text (desc or thought) is longer than the remaining
+         * space to the end of the terminal, print it in full on a
+         * continuation line underneath instead of truncating. */
 
         /* Pad tool name to max_tool_len for column alignment */
         char tool_pad[64];
         snprintf(tool_pad, sizeof(tool_pad), "%-*s", max_tool_len, si->tool);
 
+        /* Available display columns for inline text after the prefix.
+         * Prefix (rendered): "N RXSY HH:MM:SS tool_pad " ≈ 18 + max_tool_len */
+        int term_cols = ui->visible_cols > 0 ? ui->visible_cols : 120;
+        int ref_len = si->ref ? (int)strlen(si->ref) : 0;
+        int prefix_cols = 4 + ref_len + 9 + max_tool_len;
+        int suffix_cols = (int)strlen(elapsed_str);
+        int avail = term_cols - prefix_cols - suffix_cols;
+        if (avail < 10) avail = 10;
+
+        int step_num = i + 1;  /* sequential display number */
         int is_shell = (strcmp(si->tool, "shell_exec") == 0);
+
+        /* Helper: emit the tool header line (without any text content) */
+        #define EMIT_TOOL_HEADER(with_elapsed) do { \
+            if (si->ref) { \
+                str_appendf(&md, "%d %s %s [%s](%s)%s\n", \
+                            step_num, si->ref, ts_buf, \
+                            tool_pad, link_uri, \
+                            (with_elapsed) ? elapsed_str : ""); \
+            } else { \
+                str_appendf(&md, "%d %s %s%s\n", \
+                            step_num, ts_buf, \
+                            tool_pad, \
+                            (with_elapsed) ? elapsed_str : ""); \
+            } \
+        } while (0)
+
+        /* Helper: emit the tool header with inline text */
+        #define EMIT_TOOL_WITH_TEXT(text, with_elapsed) do { \
+            if (si->ref) { \
+                str_appendf(&md, "%d %s %s [%s](%s) `%s`%s\n", \
+                            step_num, si->ref, ts_buf, \
+                            tool_pad, link_uri, \
+                            (text), (with_elapsed) ? elapsed_str : ""); \
+            } else { \
+                str_appendf(&md, "%d %s %s `%s`%s\n", \
+                            step_num, ts_buf, \
+                            tool_pad, (text), \
+                            (with_elapsed) ? elapsed_str : ""); \
+            } \
+        } while (0)
+
+        /* Helper: emit continuation line with text */
+        #define EMIT_CONTINUATION(text, with_elapsed) do { \
+            str_appendf(&md, "    `%s`%s\n", \
+                        (text), (with_elapsed) ? elapsed_str : ""); \
+        } while (0)
+
         if (is_shell && tlen > 0) {
-            /* shell_exec with thought: show "thought" on main line,
-             * command on second line as code */
-            char thought_trunc[128];
-            if (tlen <= 120) {
-                snprintf(thought_trunc, sizeof(thought_trunc), "\"%.*s\"", tlen, thought_start);
-            } else {
-                snprintf(thought_trunc, sizeof(thought_trunc), "\"%.114s...\"", thought_start);
+            /* shell_exec with thought: thought on main line,
+             * command on second line */
+            char *thought_text = NULL;
+            if (tlen > 0) {
+                thought_text = malloc((size_t)tlen + 3); /* +2 for quotes, +1 for NUL */
+                if (thought_text) {
+                    thought_text[0] = '"';
+                    memcpy(thought_text + 1, thought_start, (size_t)tlen);
+                    thought_text[tlen + 1] = '"';
+                    thought_text[tlen + 2] = '\0';
+                }
             }
-            int step_num = i + 1;  /* sequential display number */
-            if (si->ref) {
-                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, link_uri,
-                            thought_trunc, elapsed_str);
+            int thought_display = tlen + 2; /* +2 for quotes */
+            if (thought_text && thought_display <= avail) {
+                EMIT_TOOL_WITH_TEXT(thought_text, !desc_clean);
+            } else if (thought_text) {
+                EMIT_TOOL_HEADER(!desc_clean);
+                EMIT_CONTINUATION(thought_text, 0);
             } else {
-                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, thought_trunc, elapsed_str);
+                EMIT_TOOL_HEADER(!desc_clean);
             }
-            if (desc_trunc[0]) {
-                str_appendf(&md, "                `%s`\n", desc_trunc);
+            free(thought_text);
+            if (desc_clean) {
+                EMIT_CONTINUATION(desc_clean, 1);
             }
-        } else if (is_shell && desc_trunc[0]) {
-            /* shell_exec without thought: command on same line as tool */
-            int step_num = i + 1;
-            if (si->ref) {
-                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, link_uri,
-                            desc_trunc, elapsed_str);
+        } else if (is_shell && desc_clean) {
+            /* shell_exec without thought: command inline or underneath */
+            if (desc_len <= avail) {
+                EMIT_TOOL_WITH_TEXT(desc_clean, 1);
             } else {
-                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, desc_trunc, elapsed_str);
+                EMIT_TOOL_HEADER(0);
+                EMIT_CONTINUATION(desc_clean, 1);
             }
         } else if (tlen > 0) {
-            /* Has thought: show thought on main line, desc on second line */
-            int step_num = i + 1;
-            char thought_trunc[128];
-            if (tlen <= 120) {
-                snprintf(thought_trunc, sizeof(thought_trunc), "%.*s", tlen, thought_start);
-            } else {
-                snprintf(thought_trunc, sizeof(thought_trunc), "%.117s...", thought_start);
+            /* Has thought: thought on main line, desc on second line */
+            char *thought_text = malloc((size_t)tlen + 1);
+            if (thought_text) {
+                memcpy(thought_text, thought_start, (size_t)tlen);
+                thought_text[tlen] = '\0';
             }
-            if (si->ref) {
-                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, link_uri,
-                            thought_trunc);
+            if (thought_text && tlen <= avail) {
+                EMIT_TOOL_WITH_TEXT(thought_text, !desc_clean);
+            } else if (thought_text) {
+                EMIT_TOOL_HEADER(!desc_clean);
+                EMIT_CONTINUATION(thought_text, 0);
             } else {
-                str_appendf(&md, "  %s %3d %s %s `%s`\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, thought_trunc);
+                EMIT_TOOL_HEADER(!desc_clean);
             }
-            if (desc_trunc[0]) {
-                str_appendf(&md, "                `%s`%s\n", desc_trunc, elapsed_str);
+            free(thought_text);
+            if (desc_clean) {
+                EMIT_CONTINUATION(desc_clean, 1);
             }
         } else {
-            /* No thought: show desc on main line (original behavior) */
-            int step_num = i + 1;
-            if (si->ref) {
-                str_appendf(&md, "  %s %3d %s [%s](%s)  `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, link_uri,
-                            desc_trunc, elapsed_str);
+            /* No thought: show desc on main line or underneath */
+            if (desc_clean && desc_len <= avail) {
+                EMIT_TOOL_WITH_TEXT(desc_clean, 1);
+            } else if (desc_clean) {
+                EMIT_TOOL_HEADER(0);
+                EMIT_CONTINUATION(desc_clean, 1);
             } else {
-                str_appendf(&md, "  %s %3d %s %s `%s`%s\n",
-                            icon, step_num, ts_buf,
-                            tool_pad, desc_trunc, elapsed_str);
+                EMIT_TOOL_HEADER(1);
             }
         }
+
+        #undef EMIT_TOOL_HEADER
+        #undef EMIT_TOOL_WITH_TEXT
+        #undef EMIT_CONTINUATION
+
+        free(desc_clean);
 
         /* Preview: show for last step or explicitly expanded steps.
          * Plan tool always shows full preview rendered as markdown. */
@@ -721,6 +765,37 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
             str_append_cstr(&md, "\n```\n");
         }
+    }
+
+    /* Token generation statistics footer — show at end of active react loop */
+    if (ui->current_react_loop == react_loop &&
+        (ui->cum_prompt_tokens > 0 || ui->cum_completion_tokens > 0)) {
+        str_append_cstr(&md, "\n---\n");
+
+        /* Build stats line: "📊 N in → M out" */
+        str_appendf(&md, "\xf0\x9f\x93\x8a %d in \xe2\x86\x92 %d out",
+                    ui->cum_prompt_tokens, ui->cum_completion_tokens);
+
+        /* Generation speed (last step's value — most representative) */
+        if (ui->cum_predicted_per_second > 0)
+            str_appendf(&md, " | gen %.0f t/s", ui->cum_predicted_per_second);
+
+        /* Prompt processing speed */
+        if (ui->cum_prompt_per_second > 0)
+            str_appendf(&md, " | pp %.0f t/s", ui->cum_prompt_per_second);
+
+        /* Total elapsed time */
+        if (ui->react_total_elapsed > 0) {
+            char dur[32];
+            fmt_duration(ui->react_total_elapsed, dur, sizeof(dur));
+            str_appendf(&md, " | total %s", dur);
+        }
+
+        /* Number of LLM calls */
+        if (ui->cum_llm_steps > 1)
+            str_appendf(&md, " | %d calls", ui->cum_llm_steps);
+
+        str_append_cstr(&md, "\n");
     }
 
     /* user_ask: display full question in main pane */
@@ -1284,10 +1359,18 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         /* Regenerate react MD and reload if viewing it */
         ui_state_generate_react_md(ui, ui->current_react_loop);
 
-        /* Reset user_scrolled on first step of a new react loop so
-         * auto-scroll is active for the fresh run. */
-        if (ev->step == 0)
+        /* Reset cumulative stats and user_scrolled on first step of a
+         * new react loop so stats start fresh and auto-scroll is active. */
+        if (ev->step == 0) {
             ui->user_scrolled = 0;
+            ui->cum_prompt_tokens = 0;
+            ui->cum_completion_tokens = 0;
+            ui->cum_predicted_per_second = 0;
+            ui->cum_prompt_per_second = 0;
+            ui->react_total_elapsed = 0;
+            ui->cum_llm_steps = 0;
+            ui->react_done = 0;
+        }
 
         /* Auto-navigate into reactRX.md on first step so user sees
          * streaming tokens in real-time instead of just the preview
@@ -1360,6 +1443,19 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             if (ev->context_size > 0)
                 ui->context_size = ev->context_size;
         }
+        /* Accumulate token stats for the react loop summary */
+        if (ev->type == REACT_EVENT_STEP_COMPLETE &&
+            (ev->stats.prompt_tokens > 0 || ev->stats.completion_tokens > 0)) {
+            ui->cum_prompt_tokens += ev->stats.prompt_tokens;
+            ui->cum_completion_tokens += ev->stats.completion_tokens;
+            if (ev->stats.predicted_per_second > 0)
+                ui->cum_predicted_per_second = ev->stats.predicted_per_second;
+            if (ev->stats.prompt_per_second > 0)
+                ui->cum_prompt_per_second = ev->stats.prompt_per_second;
+            ui->cum_llm_steps++;
+        }
+        if (ev->total_elapsed > 0)
+            ui->react_total_elapsed = ev->total_elapsed;
         /* Clear streaming tokens */
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
@@ -1385,6 +1481,19 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             if (ev->context_size > 0)
                 ui->context_size = ev->context_size;
         }
+        /* Accumulate final step's token stats */
+        if (ev->stats.prompt_tokens > 0 || ev->stats.completion_tokens > 0) {
+            ui->cum_prompt_tokens += ev->stats.prompt_tokens;
+            ui->cum_completion_tokens += ev->stats.completion_tokens;
+            if (ev->stats.predicted_per_second > 0)
+                ui->cum_predicted_per_second = ev->stats.predicted_per_second;
+            if (ev->stats.prompt_per_second > 0)
+                ui->cum_prompt_per_second = ev->stats.prompt_per_second;
+            ui->cum_llm_steps++;
+        }
+        if (ev->total_elapsed > 0)
+            ui->react_total_elapsed = ev->total_elapsed;
+        ui->react_done = 1;
 
         /* React loop finished — clear user_scrolled so final
          * auto-scroll shows the completed result. */

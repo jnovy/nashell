@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 
 /* ── Simple TUI frontend ─────────────────────────────── */
@@ -69,31 +71,48 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
                      ev->stats.prompt_tokens, ev->stats.completion_tokens,
                      pp_str, gen_str, ctx_str);
         }
-        /* Truncate description for display */
+        /* Show description: inline if it fits, full on next line otherwise */
         const char *desc = ev->description ? ev->description : "";
-        char desc_buf[201];
-        if (strlen(desc) > 200) {
-            memcpy(desc_buf, desc, 197);
-            desc_buf[197] = '.'; desc_buf[198] = '.';
-            desc_buf[199] = '.'; desc_buf[200] = '\0';
-            desc = desc_buf;
+        char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
+        /* Get terminal width */
+        int term_cols = 120;
+        { struct winsize ws;
+          if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+              term_cols = ws.ws_col; }
+        /* Compute prefix: "[step N] action: " */
+        char prefix[128];
+        snprintf(prefix, sizeof(prefix), "[step %d] %s: ",
+                 ev->step, ev->action ? ev->action : "?");
+        /* Compute suffix: " (dur)stats" */
+        char suffix[256];
+        snprintf(suffix, sizeof(suffix), " (%s)%s", _dur, stats_buf);
+        int avail = term_cols - (int)strlen(prefix) - (int)strlen(suffix);
+        if (avail < 10) avail = 10;
+        if ((int)strlen(desc) <= avail) {
+            fprintf(stderr, "\r\033[K%s%s%s\n", prefix, desc, suffix);
+        } else {
+            fprintf(stderr, "\r\033[K%s%s\n  %s\n", prefix, suffix, desc);
         }
-        { char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
-        fprintf(stderr, "\r\033[K[step %d] %s: %s (%s)%s\n",
-                ev->step, ev->action ? ev->action : "?",
-                desc, _dur, stats_buf); }
         break;
     }
 
     case REACT_EVENT_TOOL_OUTPUT: {
-        /* Print metadata JSON */
+        /* Print metadata JSON: inline if it fits, full on next line otherwise */
         if (ev->tool_meta) {
             char *meta_str = cJSON_PrintUnformatted(ev->tool_meta);
             if (meta_str) {
-                fprintf(stderr, "  → %.*s%s\n",
-                        (int)(strlen(meta_str) < 300 ? strlen(meta_str) : 300),
-                        meta_str,
-                        strlen(meta_str) > 300 ? "..." : "");
+                int meta_len = (int)strlen(meta_str);
+                int tc = 120;
+                { struct winsize ws;
+                  if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
+                      tc = ws.ws_col; }
+                int meta_avail = tc - 4; /* "  → " prefix = 4 display cols */
+                if (meta_avail < 10) meta_avail = 10;
+                if (meta_len <= meta_avail) {
+                    fprintf(stderr, "  → %s\n", meta_str);
+                } else {
+                    fprintf(stderr, "  →\n  %s\n", meta_str);
+                }
                 free(meta_str);
             }
         }

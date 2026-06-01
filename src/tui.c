@@ -439,7 +439,7 @@ static void render_main(ui_state_t *ui) {
     int rows = getmaxy(win_main);
     ui->visible_rows = rows;  /* tell ui_state how tall the main pane is */
     int cols = getmaxx(win_main);
-    (void)cols;
+    ui->visible_cols = cols;  /* tell ui_state how wide the main pane is */
 
     werase(win_main);
 
@@ -512,13 +512,21 @@ static void render_ncurses_row(WINDOW *win, int row, int cols,
     if (content && content[0]) {
         mvwaddnstr(win, row, 0, content, -1);
     }
-    /* Pad from current cursor position to end of row */
+    /* Pad from current cursor position to end of row.
+     * If the content exactly filled the row, mvwaddnstr wraps the cursor
+     * to the next row (getcury != row, getcurx == 0).  In that case the
+     * row is already fully covered — padding would overwrite it with
+     * spaces because the loop uses the original `row` parameter. */
     {
+        int cur_y = getcury(win);
         int cur_x = getcurx(win);
-        
-        for (int c = cur_x; c < cols; c++) {
-            mvwaddch(win, row, c, ' ' | attr);
+
+        if (cur_y == row) {
+            for (int c = cur_x; c < cols; c++) {
+                mvwaddch(win, row, c, ' ' | attr);
+            }
         }
+        /* else: cursor wrapped → row is fully filled, no padding needed */
     }
     wattroff(win, attr);
 }
@@ -879,7 +887,12 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     int next_len = next_end - next_start;
                     new_pos = next_start + (ccol < next_len ? ccol : next_len);
                 } else {
-                    new_pos = ui->cursor_pos + cur_w;
+                    /* Jump by full terminal width (cw) so that the visual
+                     * column is preserved.  Row 0 starts at column
+                     * INPUT_PROMPT_W, continuation rows start at column 0,
+                     * so jumping by cur_w (== fw when crow==0) would shift
+                     * the cursor left by INPUT_PROMPT_W. */
+                    new_pos = ui->cursor_pos + cw;
                 }
                 if (new_pos > ui->input_len) new_pos = ui->input_len;
                 ui->cursor_pos = new_pos;

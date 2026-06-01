@@ -36,6 +36,7 @@ typedef struct {
     int            scroll_y;         /* vertical scroll offset */
     int            scroll_x;         /* horizontal scroll offset */
     int            visible_rows;     /* main pane height (set by tui.c) */
+    int            visible_cols;     /* main pane width  (set by tui.c) */
     int            cursor_link;      /* index into doc->links[] */
 
     /* ── Navigation stack (hierarchical MD browser) ── */
@@ -92,6 +93,15 @@ typedef struct {
     /* ── Scroll control ── */
     int            user_scrolled;    /* 1 = user scrolled away, suppress auto-scroll */
     int            needs_auto_scroll; /* 1 = deferred auto-scroll after next md_render */
+
+    /* ── Cumulative token stats for active react loop ── */
+    int            cum_prompt_tokens;       /* total prompt (input) tokens across all steps */
+    int            cum_completion_tokens;    /* total completion (output) tokens across all steps */
+    double         cum_predicted_per_second; /* last gen speed (t/s) — most recent step */
+    double         cum_prompt_per_second;    /* last prompt processing speed (t/s) */
+    double         react_total_elapsed;      /* total wall time for the react loop */
+    int            cum_llm_steps;            /* number of LLM calls with stats */
+    int            react_done;               /* 1 = react loop finished (show final stats) */
 
     /* ── Dirty flag + mutex ── */
     int            dirty;

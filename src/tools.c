@@ -20,7 +20,13 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
-
+/* Inject the current step's thought into a params cJSON before journal_append.
+ * The thought is stored in ctx->thought by react.c before calling tool_execute. */
+static inline void inject_thought(tool_ctx_t *ctx, cJSON *params) {
+    if (ctx->thought && ctx->thought[0] && params &&
+        !cJSON_GetObjectItem(params, "thought"))
+        cJSON_AddStringToObject(params, "thought", ctx->thought);
+}
 
 static tool_result_t make_result(int success, cJSON *meta, char *ref) {
     return (tool_result_t){ .meta = meta, .store_ref = ref, .success = success };
@@ -396,6 +402,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "preview", preview);
     }
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "shell_exec", params, alias,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
 
@@ -542,6 +549,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_read", params, alias,
                    display_len, display_lines, NULL, NULL);
 
@@ -582,6 +590,7 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "bytes", (double)len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_write", params, alias,
                    len, count_lines(content), NULL, NULL);
 
@@ -890,6 +899,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
         cJSON_AddStringToObject(meta, "post_ref", post_alias);
 
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, diff_alias,
                        diff_len, 0, NULL, NULL);
 
@@ -1001,6 +1011,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "grep_search", params, alias,
                    out.len, matches, NULL, NULL);
 
@@ -1102,54 +1113,119 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     parse_glob_pattern(pattern, root, sizeof(root), name, sizeof(name),
                        &recursive, &exact, exact_path, sizeof(exact_path));
 
-    /* Build the find command based on parsed components */
-    char cmd[NASH_PATH_MAX];
+    /* Build find arguments — use fork/execvp to avoid shell injection.
+     * (grep_search already uses fork/execlp for the same reason.) */
+    char full_path[NASH_PATH_MAX];
 
+    /* For exact file path, just check existence directly */
     if (exact) {
-        /* Exact file path — check if it exists */
-        snprintf(cmd, sizeof(cmd),
-            "test -f '%s/%s' && echo '%s/%s' || true",
-            search_path, exact_path, search_path, exact_path);
-    } else if (strcmp(root, ".") == 0 && recursive) {
-        /* Bare glob pattern — search recursively from search_path */
-        snprintf(cmd, sizeof(cmd),
-            "find '%s' -type f -name '%s' "
-            "! -path '*/.git/*' "
-            "! -path '*/node_modules/*' "
-            "! -path '*/__pycache__/*' "
-            "! -name '*.o' "
-            "2>/dev/null | sort | head -200",
-            search_path, name);
-    } else if (recursive) {
-        /* Directory prefix with recursive glob */
-        snprintf(cmd, sizeof(cmd),
-            "find '%s/%s' -type f -name '%s' "
-            "! -path '*/.git/*' "
-            "! -path '*/node_modules/*' "
-            "! -path '*/__pycache__/*' "
-            "! -name '*.o' "
-            "2>/dev/null | sort | head -200",
-            search_path, root, name);
-    } else {
-        /* Directory prefix with non-recursive glob */
-        snprintf(cmd, sizeof(cmd),
-            "find '%s/%s' -maxdepth 1 -type f -name '%s' "
-            "! -path '*/.git/*' "
-            "! -path '*/node_modules/*' "
-            "! -path '*/__pycache__/*' "
-            "! -name '*.o' "
-            "2>/dev/null | sort | head -200",
-            search_path, root, name);
+        snprintf(full_path, sizeof(full_path), "%s/%s", search_path, exact_path);
+        str_t out = str_new(256);
+        struct stat st;
+        if (stat(full_path, &st) == 0 && S_ISREG(st.st_mode)) {
+            str_append_cstr(&out, full_path);
+            str_append_cstr(&out, "\n");
+        }
+
+        int matches = count_lines(out.data);
+        char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(no matches)");
+        char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+        cJSON *meta = cJSON_CreateObject();
+        cJSON_AddStringToObject(meta, "pattern", pattern);
+        if (strcmp(search_path, ".") != 0)
+            cJSON_AddStringToObject(meta, "path", search_path);
+        cJSON_AddNumberToObject(meta, "matches", matches);
+        cJSON_AddStringToObject(meta, "ref", alias);
+
+        inject_thought(ctx, params);
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, "glob_search", params, alias,
+                       out.len, matches, NULL, NULL);
+
+        char *ref_copy = strdup(alias);
+        free(alias);
+        str_free(&out);
+        free(hash);
+        return make_result(1, meta, ref_copy);
     }
 
-    str_t out = str_new(4096);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return make_error("failed to execute find");
+    /* Build find_path: the directory to search in */
+    if (strcmp(root, ".") == 0) {
+        snprintf(full_path, sizeof(full_path), "%s", search_path);
+    } else {
+        snprintf(full_path, sizeof(full_path), "%s/%s", search_path, root);
+    }
 
-    char line[NASH_PATH_MAX];
-    while (fgets(line, sizeof(line), fp))
-        str_append_cstr(&out, line);
-    pclose(fp);
+    /* Use fork/execvp for find — avoids shell injection via pattern/path */
+    int pipefd[2];
+    if (pipe(pipefd) < 0) return make_error("pipe failed");
+
+    pid_t pid = fork();
+    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return make_error("fork failed"); }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        /* Redirect stderr to /dev/null (like 2>/dev/null in original) */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+
+        if (recursive) {
+            execlp("find", "find", full_path,
+                   "-type", "f", "-name", name,
+                   "!", "-path", "*/.git/*",
+                   "!", "-path", "*/node_modules/*",
+                   "!", "-path", "*/__pycache__/*",
+                   "!", "-name", "*.o",
+                   (char *)NULL);
+        } else {
+            execlp("find", "find", full_path,
+                   "-maxdepth", "1",
+                   "-type", "f", "-name", name,
+                   "!", "-path", "*/.git/*",
+                   "!", "-path", "*/node_modules/*",
+                   "!", "-path", "*/__pycache__/*",
+                   "!", "-name", "*.o",
+                   (char *)NULL);
+        }
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    str_t out = str_new(4096);
+    char buf[NASH_PATH_MAX];
+    ssize_t n;
+    int line_count = 0;
+
+    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
+        str_append(&out, buf, (size_t)n);
+        /* Count lines for limit (head -200 equivalent) */
+        for (ssize_t i = 0; i < n; i++)
+            if (buf[i] == '\n') line_count++;
+        if (line_count >= 200) break;
+    }
+    close(pipefd[0]);
+
+    /* Kill find if we hit the line limit */
+    if (line_count >= 200) kill(pid, SIGKILL);
+    int status;
+    waitpid(pid, &status, 0);
+
+    /* Truncate to 200 lines if we overshot */
+    if (line_count > 200 && out.data) {
+        int seen = 0;
+        for (size_t i = 0; i < out.len; i++) {
+            if (out.data[i] == '\n') {
+                seen++;
+                if (seen >= 200) {
+                    out.data[i + 1] = '\0';
+                    out.len = i + 1;
+                    break;
+                }
+            }
+        }
+    }
 
     int matches = count_lines(out.data);
     char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(no matches)");
@@ -1162,6 +1238,7 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "matches", matches);
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "glob_search", params, alias,
                    out.len, matches, NULL, NULL);
 
@@ -1515,6 +1592,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddNumberToObject(meta, "sections", ctx->scratch.count);
         cJSON_AddStringToObject(meta, "ref", alias);
 
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
                        full ? strlen(full) : 0, 0, NULL, NULL);
 
@@ -1554,6 +1632,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         /* Store content for full audit trail */
         char *w_hash = store_save(ctx->store, content);
         char *w_alias = tool_register_alias(ctx, w_hash ? w_hash : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, w_alias,
                        strlen(content), 0, NULL, NULL);
         free(w_alias); free(w_hash);
@@ -1579,6 +1658,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         /* Store content for full audit trail */
         char *a_hash = store_save(ctx->store, content);
         char *a_alias = tool_register_alias(ctx, a_hash ? a_hash : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, a_alias,
                        strlen(content), 0, NULL, NULL);
         free(a_alias); free(a_hash);
@@ -1600,6 +1680,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddNumberToObject(meta, "priority", ctx->scratch.sections[idx].priority);
         cJSON_AddStringToObject(meta, "ref", alias);
 
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, alias,
                        strlen(sec_content), 0, NULL, NULL);
 
@@ -1627,6 +1708,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
             char *c_str = cJSON_Print(meta);
             char *c_hash = store_save(ctx->store, c_str ? c_str : "{}");
             char *c_alias = tool_register_alias(ctx, c_hash ? c_hash : "");
+            inject_thought(ctx, params);
             journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, c_alias,
                            0, 0, NULL, NULL);
             free(c_alias); free(c_hash); free(c_str);
@@ -1652,6 +1734,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         {
             char *l_hash = store_save(ctx->store, out.len > 0 ? out.data : "{}");
             char *l_alias = tool_register_alias(ctx, l_hash ? l_hash : "");
+            inject_thought(ctx, params);
             journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, l_alias,
                            out.len, ctx->scratch.count, NULL, NULL);
             free(l_alias); free(l_hash);
@@ -1680,6 +1763,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "result", result);
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "done", params, alias,
                    strlen(result), 0, NULL, NULL);
 
@@ -1734,6 +1818,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "steps", steps);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "plan",
                    params, alias, strlen(result), steps, NULL, NULL);
 
@@ -1999,14 +2084,24 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     int n_refs = 0;
     cJSON *refs_j = cJSON_GetObjectItem(params, "refs");
     char *refs_copy = NULL;
-    if (refs_j && refs_j->valuestring) {
-        refs_copy = strdup(refs_j->valuestring);
-        char *saveptr = NULL;
-        char *tok = strtok_r(refs_copy, ",", &saveptr);
-        while (tok && n_refs < 32) {
-            while (*tok == ' ') tok++;  /* trim leading space */
-            refs_arr[n_refs++] = tok;
-            tok = strtok_r(NULL, ",", &saveptr);
+    if (refs_j) {
+        if (cJSON_IsArray(refs_j)) {
+            /* Handle JSON array format: ["key1", "key2"] */
+            cJSON *item;
+            cJSON_ArrayForEach(item, refs_j) {
+                if (item->valuestring && n_refs < 32)
+                    refs_arr[n_refs++] = item->valuestring;
+            }
+        } else if (refs_j->valuestring) {
+            /* Handle legacy comma-separated string format */
+            refs_copy = strdup(refs_j->valuestring);
+            char *saveptr = NULL;
+            char *tok = strtok_r(refs_copy, ",", &saveptr);
+            while (tok && n_refs < 32) {
+                while (*tok == ' ') tok++;  /* trim leading space */
+                refs_arr[n_refs++] = tok;
+                tok = strtok_r(NULL, ",", &saveptr);
+            }
         }
     }
 
@@ -2035,6 +2130,7 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "key", key);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_store",
                    params, alias, strlen(value), 0, NULL, NULL);
 
@@ -2074,6 +2170,7 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     /* Content stored to .store/ — model reads via file_read(ref) */
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
                    params, alias, out.len, results.count, NULL, NULL);
 
@@ -2105,6 +2202,7 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
         char *_p = cJSON_PrintUnformatted(params);
         char *_h = store_save(ctx->store, _p ? _p : "{}");
         char *_a = tool_register_alias(ctx, _h ? _h : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
                        params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
         free(_a); free(_h); free(_p);
@@ -2131,6 +2229,7 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
         char *_p = cJSON_PrintUnformatted(params);
         char *_h = store_save(ctx->store, _p ? _p : "{}");
         char *_a = tool_register_alias(ctx, _h ? _h : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
                        params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
         free(_a); free(_h); free(_p);
@@ -2157,6 +2256,7 @@ static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
         char *_p = cJSON_PrintUnformatted(params);
         char *_h = store_save(ctx->store, _p ? _p : "{}");
         char *_a = tool_register_alias(ctx, _h ? _h : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_delete",
                        params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
         free(_a); free(_h); free(_p);
@@ -2236,6 +2336,7 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 
     /* Content stored to .store/ — model reads via file_read(ref) */
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
                    params, alias, body.len, count_lines(body.data), NULL, NULL);
 
@@ -2650,6 +2751,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
         /* Store error to .store/ so it gets a ref for reactRX.md hyperlink */
         char *err_hash = store_save(ctx->store, errmsg);
         char *err_alias = tool_register_alias(ctx, err_hash ? err_hash : "");
+        inject_thought(ctx, params);
         journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
                        params, err_alias, strlen(errmsg), 0, errmsg, NULL);
         free(err_hash);
@@ -2668,6 +2770,7 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)strlen(results_text));
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
+    inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
                    params, alias, strlen(results_text), result_count, NULL, NULL);
 
@@ -2753,7 +2856,13 @@ void tool_result_free(tool_result_t *r) {
 /* ── system prompt ───────────────────────────────────── */
 
 const char *tools_system_prompt(void) {
-    static char buf[NASH_PATH_MAX];
+    /* Thread-safe: each call returns a heap-allocated string.
+     * Callers that store the result must free it; callers that use it
+     * transiently (llm_chat_add copies) can free after use.
+     * For backward compat, we cache the last result in a static pointer
+     * and free it on the next call — single-threaded callers "just work". */
+    static char *cached = NULL;
+    free(cached);
 
     /* UTC timestamp */
     time_t now = time(NULL);
@@ -2766,7 +2875,10 @@ const char *tools_system_prompt(void) {
     if (!getcwd(cwdbuf, sizeof(cwdbuf)))
         snprintf(cwdbuf, sizeof(cwdbuf), "(unknown)");
 
-    snprintf(buf, sizeof(buf),
+    char *buf = malloc(NASH_PATH_MAX);
+    if (!buf) { cached = NULL; return ""; }
+
+    snprintf(buf, NASH_PATH_MAX,
         "You are an autonomous coding agent. Solve the user's task step by step "
         "using the available tools.\n"
         "\n"
@@ -2791,5 +2903,6 @@ const char *tools_system_prompt(void) {
         "- Call done with the final answer when finished.\n",
         timebuf, cwdbuf);
 
+    cached = buf;
     return buf;
 }

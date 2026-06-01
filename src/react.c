@@ -94,13 +94,13 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
         const char *p = pinned;
         while (*p) {
             /* Find "[PINNED: key]" pattern */
-            if (strncmp(p, "[PINNED: ", 10) == 0) {
-                const char *end = strchr(p + 10, ']');
+            if (strncmp(p, "[PINNED: ", 9) == 0) {
+                const char *end = strchr(p + 9, ']');
                 if (end) {
                     char key[256];
-                    int klen = (int)(end - (p + 10));
+                    int klen = (int)(end - (p + 9));
                     if (klen >= (int)sizeof(key)) klen = (int)sizeof(key) - 1;
-                    memcpy(key, p + 10, (size_t)klen);
+                    memcpy(key, p + 9, (size_t)klen);
                     key[klen] = '\0';
                     cJSON_AddItemToArray(pinned_keys, cJSON_CreateString(key));
                     p = end + 1;
@@ -921,6 +921,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_STEP_START;
             ev.step = step + 1;
             ev.max_steps = ctx->max_steps;
+            ev.context_size = ctx->llm->context_size;
             emit(on_event, userdata, &ev);
         }
 
@@ -1463,7 +1464,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             /* Store result for full audit trail (journal + store/) */
+            ctx->tools->thought = thought;
             tool_result_t tr = tool_execute(ctx->tools, action_name, action);
+            ctx->tools->thought = NULL;
             tool_result_free(&tr);
 
             struct timespec now;
@@ -1592,8 +1595,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_Delete(cr_params);
             }
         } else {
-            /* Normal execution */
+            /* Normal execution — inject thought into tool_ctx for journal recording */
+            ctx->tools->thought = thought;
             tr = tool_execute(ctx->tools, action_name, action);
+            ctx->tools->thought = NULL;
 
             /* Unknown tool recovery: if the model generated a garbled tool name
              * (e.g., "shell_execshell_exec"), don't send the raw error back —
@@ -1936,8 +1941,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     llm_chat_free(chat);
 
-    /* Remove checkpoint — task completed (successfully or not) */
-    checkpoint_remove(ctx);
+    /* Remove checkpoint — task completed (successfully or not).
+     * Only needed for non-done exits (max steps, errors);
+     * the done handler already removes it on success. */
+    if (!final_result)
+        checkpoint_remove(ctx);
 
     /* Post-task reflection: ask LLM to extract reusable lessons/strategies.
      * Fires for BOTH successful and failed tasks — failures are often more

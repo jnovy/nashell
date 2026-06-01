@@ -1088,11 +1088,12 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             /* Item 9: explicit line advancement */
             advance_render_line(&render_line, lines_consumed);
 
-        } else if (strncmp(line_buf, "  \xe2\x9c\x93", 5) == 0 ||
-                   strncmp(line_buf, "  \xe2\x9c\x97", 5) == 0) {
-            /* React step line: success (✓) or failure (✗) */
-            int is_fail = (memcmp(line_buf + 2, "\xe2\x9c\x97", 3) == 0);
-            int pair = is_fail ? C_FAILED : C_SUCCESS;
+        } else if (has_link && !is_link_line) {
+            /* React step line: line with an embedded [tool](uri) link
+             * but not starting with '[' (those are standalone link lines).
+             * Covers both old format "  ✓ N HH:MM [tool](uri) ..."
+             * and new format "N RXSY HH:MM:SS [tool](uri) ..." */
+            int pair = C_SUCCESS;
 
             /* Check for inline link on this step line */
             int step_has_link = has_link;

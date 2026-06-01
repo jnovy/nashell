@@ -113,6 +113,8 @@ typedef struct {
     int            recalled_keys_cap;
     /* FIX B2: Guard flag to prevent recursive consolidation */
     int            consolidating;
+    /* Current step's thought (set by react.c before tool_execute, cleared after) */
+    const char    *thought;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

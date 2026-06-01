@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <stdarg.h>
+#include <time.h>
 
 #define PROVIDER_MAX_RETRIES    10
 #define PROVIDER_RETRY_BASE_SEC 10
@@ -149,7 +150,10 @@ provider_t *provider_create(const provider_config_t *cfg) {
     if (!p) return NULL;
 
     p->type = cfg->type;
-    p->cfg = *cfg;  /* shallow copy — caller must keep strings alive */
+    p->cfg = *cfg;  /* shallow copy of scalars */
+    /* Deep-copy model_id so provider owns its own string.
+     * This avoids aliasing hazards when callers free the original. */
+    p->cfg.model_id = cfg->model_id ? strdup(cfg->model_id) : NULL;
 
     /* Set defaults */
     if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
@@ -178,6 +182,9 @@ void provider_free(provider_t *p) {
     if (p->destroy) p->destroy(p);
     free(p->_cached_endpoint);
     free(p->_cached_auth_token);
+    /* Free model_id if it was strdup'd (provider_create uses shallow copy,
+     * but callers like main.c may strdup into cfg.model_id after creation) */
+    free((char *)p->cfg.model_id);
     free(p);
 }
 
@@ -442,6 +449,11 @@ typedef struct {
     int            in_tool_use;       /* currently inside a tool_use block */
     str_t          thinking_content;  /* accumulated thinking text */
     provider_t    *provider;          /* back-pointer for vtable dispatch */
+    /* Wall-clock streaming timing (fallback when server doesn't report t/s) */
+    struct timespec first_token_time;   /* timestamp of first content token */
+    struct timespec request_start_time; /* timestamp when HTTP request started */
+    int            first_token_seen;    /* 1 = first_token_time is valid */
+    int            streaming_token_count; /* number of content tokens received */
 } provider_sse_state_t;
 
 /* ── SSE line processing (OpenAI-compatible format) ─────────────── */
@@ -509,6 +521,13 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
         }
 
         str_append_cstr(&st->full_content, text);
+
+        /* Wall-clock streaming timing for t/s computation */
+        st->streaming_token_count++;
+        if (!st->first_token_seen) {
+            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+            st->first_token_seen = 1;
+        }
 
         /* Repeat detection */
         if (st->repeat_threshold > 0 && tlen > 0) {
@@ -616,6 +635,12 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                     if (text && cJSON_IsString(text)) {
                         const char *t = text->valuestring;
                         str_append_cstr(&st->full_content, t);
+                        /* Wall-clock streaming timing for t/s computation */
+                        st->streaming_token_count++;
+                        if (!st->first_token_seen) {
+                            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+                            st->first_token_seen = 1;
+                        }
                         if (st->on_token && !st->in_tool_use) {
                             st->last_token_idx++;
                             st->on_token(t, st->userdata);
@@ -889,6 +914,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         .in_tool_use      = 0,
         .thinking_content = str_new(256),
         .provider         = p,
+        .first_token_time    = {0, 0},
+        .request_start_time  = {0, 0},
+        .first_token_seen    = 0,
+        .streaming_token_count = 0,
     };
 
     char *result = NULL;
@@ -904,6 +933,8 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         st.stopped = 0;
         st.repeat_count = 0;
         st.last_token_idx = 0;
+        st.first_token_seen = 0;
+        st.streaming_token_count = 0;
         if (stats) memset(stats, 0, sizeof(*stats));
 
         CURL *curl = curl_easy_init();
@@ -921,6 +952,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
 
+        clock_gettime(CLOCK_MONOTONIC, &st.request_start_time);
         CURLcode res = curl_easy_perform(curl);
 
         long http_code = 0;
@@ -1009,6 +1041,35 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         }
 
         break;  /* success */
+    }
+
+    /* Compute wall-clock streaming t/s as fallback when server doesn't report it.
+     * This makes gen/pp t/s available for all providers (Anthropic, Vertex, OpenAI)
+     * even when the server doesn't include per_second fields in the response. */
+    if (stats && st.first_token_seen && st.streaming_token_count > 1) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        /* Generation speed: (tokens - 1) / time_since_first_token.
+         * We subtract 1 because the first token marks the start of timing. */
+        if (stats->predicted_per_second <= 0) {
+            double gen_elapsed = (now.tv_sec - st.first_token_time.tv_sec) +
+                                 (now.tv_nsec - st.first_token_time.tv_nsec) / 1e9;
+            if (gen_elapsed > 0.1) {
+                stats->predicted_per_second =
+                    (st.streaming_token_count - 1) / gen_elapsed;
+            }
+        }
+
+        /* Prompt processing speed: prompt_tokens / time_to_first_token.
+         * Time-to-first-token approximates prompt processing time. */
+        if (stats->prompt_per_second <= 0 && stats->prompt_tokens > 0) {
+            double pp_elapsed = (st.first_token_time.tv_sec - st.request_start_time.tv_sec) +
+                                (st.first_token_time.tv_nsec - st.request_start_time.tv_nsec) / 1e9;
+            if (pp_elapsed > 0.1) {
+                stats->prompt_per_second = stats->prompt_tokens / pp_elapsed;
+            }
+        }
     }
 
     free(req_body);
