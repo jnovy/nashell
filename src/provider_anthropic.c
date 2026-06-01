@@ -14,6 +14,7 @@
  */
 
 #include "provider.h"
+#include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
 #include "tui.h"
@@ -49,7 +50,7 @@ static const char *get_vertex_token(provider_t *p) {
         return NULL;
     }
 
-    char token[4096];
+    char token[NASH_PATH_MAX];
     if (!fgets(token, sizeof(token), fp)) {
         pclose(fp);
         nash_log("[provider/vertex] gcloud auth returned empty token");

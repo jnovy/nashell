@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "store.h"
+#include "nash_limits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,7 +13,7 @@
 store_t *store_new(const char *project_root) {
     store_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/store", project_root);
     mkdir(path, 0755);  /* ignore EEXIST */
     s->dir = strdup(path);
@@ -43,7 +44,7 @@ char *store_save(store_t *s, const char *content) {
     if (!hex) return NULL;
 
     /* Build full path: .store/<hash> (no extension) */
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", s->dir, hex);
 
     /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */

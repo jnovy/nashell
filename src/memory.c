@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "memory.h"
+#include "nash_limits.h"
 #include "str.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -101,7 +102,7 @@ static int memory_git_run(memory_t *m, const char *const argv[]) {
  * Called on first memory_store — lazy init. */
 static void memory_git_init(memory_t *m) {
     if (!m) return;
-    char git_path[4096];
+    char git_path[NASH_PATH_MAX];
     snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
     struct stat st;
     if (stat(git_path, &st) == 0) return;  /* already initialized */
@@ -128,7 +129,7 @@ static void memory_git_init(memory_t *m) {
  * No-op if nothing changed (git commit will exit 1, which we ignore). */
 static void memory_git_commit(memory_t *m, const char *msg) {
     if (!m || !msg) return;
-    char git_path[4096];
+    char git_path[NASH_PATH_MAX];
     snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
     struct stat st;
     if (stat(git_path, &st) != 0) return;  /* no git repo */
@@ -154,7 +155,7 @@ static void memory_git_commit(memory_t *m, const char *msg) {
 memory_t *memory_new(const char *project_root) {
     memory_t *m = calloc(1, sizeof(*m));
     if (!m) return NULL;
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/memory", project_root);
     mkdir(path, 0755);
     m->dir = strdup(path);
@@ -185,7 +186,7 @@ static void json_to_emb_path(const char *json_path, char *emb_path, size_t sz) {
 static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
     char *buf = slurp_file(path, NULL);
     if (!buf) return NULL;
@@ -207,7 +208,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
 
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     cJSON *entry = cJSON_CreateObject();
@@ -324,7 +325,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
 
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
@@ -474,7 +475,7 @@ static double score_entry_hybrid(const char *key, const char *value,
 }
 
 /* qsort comparator for scored entries (descending by score) */
-typedef struct { char path[4096]; double score; double relevance; double importance; cJSON *cached_entry; } scored_t;
+typedef struct { char path[NASH_PATH_MAX]; double score; double relevance; double importance; cJSON *cached_entry; } scored_t;
 
 static int scored_cmp_desc(const void *a, const void *b) {
     double sa = ((const scored_t *)a)->score;
@@ -581,7 +582,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         size_t len = strlen(de->d_name);
         if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
 
-        char path[4096];
+        char path[NASH_PATH_MAX];
         snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
 
         char *buf = slurp_file(path, NULL);
@@ -618,7 +619,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         int entry_has_semantic = 0;
         if (has_semantic) {
             /* Try to load cached embedding for this entry */
-            char emb_path[4096];
+            char emb_path[NASH_PATH_MAX];
             json_to_emb_path(path, emb_path, sizeof(emb_path));
             embed_multi_vec_t entry_emb = embed_multi_vec_load(emb_path);
             if (entry_emb.data && entry_emb.dim > 0) {
@@ -932,7 +933,7 @@ int memory_delete(memory_t *m, const char *key) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
 
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     /* Check if entry exists */
@@ -945,7 +946,7 @@ int memory_delete(memory_t *m, const char *key) {
     /* Remove embedding file if it exists */
     char emb_fname[512];
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
-    char emb_path[4096];
+    char emb_path[NASH_PATH_MAX];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
     unlink(emb_path);  /* ignore error if not exists */
 
@@ -1012,14 +1013,14 @@ static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
         if (k && k->valuestring) {
             char json_fname[512];
             key_to_path(k->valuestring, ".json", json_fname, sizeof(json_fname));
-            char path[4096];
+            char path[NASH_PATH_MAX];
             snprintf(path, sizeof(path), "%s/%s", dirpath, json_fname);
             unlink(path);
             /* FIX B9: Also delete the .emb file to prevent orphaned
              * embedding files from accumulating over time. */
             char emb_fname[512];
             key_to_path(k->valuestring, ".emb", emb_fname, sizeof(emb_fname));
-            char emb_path[4096];
+            char emb_path[NASH_PATH_MAX];
             snprintf(emb_path, sizeof(emb_path), "%s/%s", dirpath, emb_fname);
             unlink(emb_path);  /* ignore error if not exists */
             ctx->pruned++;
@@ -1055,7 +1056,7 @@ static int memory_increment_field(memory_t *m, const char *key,
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
 
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
@@ -1100,7 +1101,7 @@ int memory_init_embeddings(memory_t *m, const char *type,
     if (!m || !type) return 0;
 
     /* Expand ~ in model_path */
-    char expanded_path[4096];
+    char expanded_path[NASH_PATH_MAX];
     const char *resolved_model_path = model_path;
     if (model_path && model_path[0] == '~' && (model_path[1] == '/' || model_path[1] == '\0')) {
         const char *home = getenv("HOME");
@@ -1238,7 +1239,7 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
     char emb_fname[512];
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
 
-    char emb_path[4096];
+    char emb_path[NASH_PATH_MAX];
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
 
     int rc = embed_multi_vec_save(&mv, emb_path);
@@ -1275,7 +1276,7 @@ int memory_embed_all(memory_t *m) {
         /* Check if .emb file already exists AND has correct dimension.
          * Stale embeddings from a previous model (e.g., switched from
          * MiniLM-384d to nomic-embed-768d) must be regenerated. */
-        char json_path[4096], emb_path[4096];
+        char json_path[NASH_PATH_MAX], emb_path[NASH_PATH_MAX];
         snprintf(json_path, sizeof(json_path), "%s/%s", m->dir, de->d_name);
         json_to_emb_path(json_path, emb_path, sizeof(emb_path));
 

@@ -18,6 +18,7 @@
 #include "store.h"
 #include "journal.h"
 #include "frontend_tui.h"
+#include "nash_limits.h"
 #include "memory.h"
 #include "ui_state.h"
 #include "tui.h"
@@ -27,10 +28,10 @@
 /* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
  * Caps at 32KB to prevent memory explosion. */
 static char *load_legacy_scratchpad(const char *session_dir) {
-    char sp_path[4096];
+    char sp_path[NASH_PATH_MAX];
     snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
     char *buf = slurp_file(sp_path, NULL);
-    if (!buf || strlen(buf) >= 32768) {
+    if (!buf || strlen(buf) >= NASH_INITIAL_BUF) {
         free(buf);
         return NULL;
     }
@@ -188,7 +189,7 @@ static void print_banner(const config_t *cfg, const char *props_json,
            think_str,
            cfg->stream ? "on" : "off");
     printf("data:   %s\n", nash_dir);
-    char cwd_buf[4096];
+    char cwd_buf[NASH_PATH_MAX];
     if (getcwd(cwd_buf, sizeof(cwd_buf)))
         printf("cwd:    %s\n", cwd_buf);
     printf("\n");
@@ -278,7 +279,7 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
                 ts,
                 cfg->stream ? "on" : "off");
     str_appendf(&s, "data:   %s\n", nash_dir);
-    char cwd_buf[4096];
+    char cwd_buf[NASH_PATH_MAX];
     if (getcwd(cwd_buf, sizeof(cwd_buf)))
         str_appendf(&s, "cwd:    %s\n", cwd_buf);
     if (session_dir)
@@ -504,7 +505,7 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         /* Save scratchpad if session was created */
         if (session_dir && tools.scratch.count > 0) {
-            char sp_path[4096];
+            char sp_path[NASH_PATH_MAX];
             snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
             scratchpad_save(&tools.scratch, sp_path);
         }
@@ -542,7 +543,7 @@ int main(int argc, char **argv) {
             }
         }
         if (!session_dir) {
-            char cwd[4096];
+            char cwd[NASH_PATH_MAX];
             if (getcwd(cwd, sizeof(cwd))) {
                 char jpath[4112];
                 snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
@@ -694,13 +695,13 @@ int main(int argc, char **argv) {
                     if (fork_step > 0) {
                         char *new_dir = create_session_dir(nash_dir);
                         /* Copy journal lines where step <= fork_step */
-                        char src_j[4096], dst_j[4096];
+                        char src_j[NASH_PATH_MAX], dst_j[NASH_PATH_MAX];
                         snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
                         snprintf(dst_j, sizeof(dst_j), "%s/journal.jsonl", new_dir);
                         FILE *sf = fopen(src_j, "r");
                         FILE *df = fopen(dst_j, "w");
                         if (sf && df) {
-                            char jl[65536];
+                            char jl[NASH_LINE_MAX];
                             while (fgets(jl, sizeof(jl), sf)) {
                                 cJSON *e = cJSON_Parse(jl);
                                 if (e) {
@@ -716,7 +717,7 @@ int main(int argc, char **argv) {
                         /* Copy symlinks from all react loops */
                         for (int loop = 0; loop <= tools.react_loop; loop++) {
                             for (int i = 0; i <= fork_step + 5; i++) {
-                                char ref[32], sl[4096], tgt[4096], dl[4096];
+                                char ref[32], sl[NASH_PATH_MAX], tgt[NASH_PATH_MAX], dl[NASH_PATH_MAX];
                                 snprintf(ref, sizeof(ref), "R%dS%d",
                                          loop, i);
                                 snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
@@ -738,7 +739,7 @@ int main(int argc, char **argv) {
                         if (tools.scratchpad)
                             cJSON_AddStringToObject(cp, "scratchpad", tools.scratchpad);
                         char *cpj = cJSON_Print(cp);
-                        char cp_path[4096];
+                        char cp_path[NASH_PATH_MAX];
                         snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", new_dir);
                         FILE *cpf = fopen(cp_path, "w");
                         if (cpf) { fputs(cpj, cpf); fclose(cpf); }
@@ -1079,7 +1080,7 @@ int main(int argc, char **argv) {
                         free(submitted_query);
                         continue;
                     }
-                    char qbuf[4096];
+                    char qbuf[NASH_PATH_MAX];
                     memcpy(qbuf, q_start, q_len);
                     qbuf[q_len] = '\0';
 
@@ -1210,7 +1211,7 @@ int main(int argc, char **argv) {
 
         /* Save scratchpad */
         if (tools.scratch.count > 0) {
-            char sp_path[4096];
+            char sp_path[NASH_PATH_MAX];
             snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
             scratchpad_save(&tools.scratch, sp_path);
         }

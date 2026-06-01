@@ -1,4 +1,5 @@
 #include "str.h"
+#include "nash_limits.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -186,7 +187,7 @@ void for_each_dir_entry(const char *dirpath, const char *suffix,
         if (len <= sfx_len) continue;
         if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
 
-        char path[4096];
+        char path[NASH_PATH_MAX];
         snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
 
         int rc = cb(dirpath, de->d_name, path, user_data);

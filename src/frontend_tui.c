@@ -1,4 +1,5 @@
 #include "react_event.h"
+#include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
 #include <stdio.h>
@@ -11,11 +12,11 @@
 
 static void read_and_print_store_file(const char *session_dir, const char *ref) {
     if (!session_dir || !ref) return;
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", session_dir, ref);
     FILE *f = fopen(path, "r");
     if (!f) return;
-    char buf[4096];
+    char buf[NASH_PATH_MAX];
     size_t total = 0;
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf) - 1, f)) > 0 && total < 8000) {

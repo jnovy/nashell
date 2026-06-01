@@ -1,4 +1,5 @@
 #include "react.h"
+#include "nash_limits.h"
 #include "config.h"
 #include "memory.h"
 #include "journal.h"
@@ -203,7 +204,7 @@ typedef struct {
  * Populates chat with reconstructed messages. */
 static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                                const char *user_query) {
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json",
              ctx->tools->session_dir);
 
@@ -305,7 +306,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     llm_chat_add(chat, "user", user_query);
 
     /* Step 6: Replay tool calls from journal to rebuild conversation history */
-    char jpath[4096];
+    char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
              ctx->tools->session_dir);
     FILE *f = fopen(jpath, "r");
@@ -318,7 +319,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         return saved_step;
     }
 
-    char line[65536];
+    char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
@@ -351,10 +352,10 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         char entry_hash_buf[128] = "";
         if (ref) {
             /* Extract hash from ref by resolving the symlink */
-            char ref_path[4096];
+            char ref_path[NASH_PATH_MAX];
             snprintf(ref_path, sizeof(ref_path), "%s/%s",
                      ctx->tools->session_dir, ref);
-            char link_target[4096];
+            char link_target[NASH_PATH_MAX];
             ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
             if (llen > 0) {
                 link_target[llen] = '\0';
@@ -560,7 +561,7 @@ static const char *get_action_desc(cJSON *action, const char *action_name,
  * the ephemeral state needed to resume: step, scratchpad, evicted steps. */
 static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
                             const char *last_tc_id) {
-    char path[4096], tmp_path[4096];
+    char path[NASH_PATH_MAX], tmp_path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
     snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
 
@@ -592,7 +593,7 @@ static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
 
 /* Remove checkpoint on successful completion (task done, no resume needed) */
 static void checkpoint_remove(react_ctx_t *ctx) {
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
     unlink(path);
 }
@@ -602,7 +603,7 @@ static void checkpoint_remove(react_ctx_t *ctx) {
  * Returns heap-allocated string or NULL if no checkpoint. Caller frees. */
 char *checkpoint_read_query(const char *session_dir) {
     if (!session_dir) return NULL;
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json", session_dir);
     char *buf = slurp_file(path, NULL);
     if (!buf) return NULL;
@@ -850,7 +851,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * reliable cross-loop fallback so user follow-ups can reference
      * the previous task's output. */
     {
-        char rpath[4096];
+        char rpath[NASH_PATH_MAX];
         snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
         char *prev_result = slurp_file(rpath, NULL);
         if (prev_result && strlen(prev_result) > 0) {
@@ -1445,7 +1446,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
             }
             {
-                char rpath[4096];
+                char rpath[NASH_PATH_MAX];
                 snprintf(rpath, sizeof(rpath), "%s/result.txt",
                          ctx->tools->session_dir);
                 FILE *rf = fopen(rpath, "w");

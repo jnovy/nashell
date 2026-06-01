@@ -1,4 +1,5 @@
 #include "tui.h"
+#include "nash_limits.h"
 #include "md_render.h"
 #include "str.h"
 #include "cJSON.h"
@@ -997,7 +998,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
         } else if (ui->focus == FOCUS_JOURNAL &&
                    ui->status == STATUS_READY && ui->session_dir) {
             /* Paused → resume with original query (toggle) */
-            char cp_path[4096];
+            char cp_path[NASH_PATH_MAX];
             snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", ui->session_dir);
             if (access(cp_path, F_OK) == 0) {
                 /* Checkpoint exists — read original query and return it */
@@ -1008,7 +1009,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                       fseek(f, 0, SEEK_END);
                       sz = ftell(f);
                       fseek(f, 0, SEEK_SET);
-                      if (sz > 0 && sz < 1048576) {
+                      if (sz > 0 && sz < NASH_FILE_READ_MAX) {
                           buf = malloc((size_t)sz + 1);
                           if (buf) fread(buf, 1, (size_t)sz, f);
                       }

@@ -1,4 +1,5 @@
 #include "journal.h"
+#include "nash_limits.h"
 #include "cJSON.h"
 #include "str.h"
 #include <stdio.h>
@@ -47,7 +48,7 @@ journal_t *journal_new(const char *session_dir) {
     if (!j) return NULL;
     j->session_dir = strdup(session_dir);
     if (!j->session_dir) { free(j); return NULL; }
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/journal.jsonl", session_dir);
     j->path = strdup(path);
     j->lazy_created = 1;
@@ -95,7 +96,7 @@ static int journal_create_lazy_session(journal_t *j) {
     mkdir(path, 0755);
 
     j->session_dir = strdup(path);
-    char jpath[4096];
+    char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", path);
     j->path = strdup(jpath);
     j->lazy_created = 1;
@@ -163,7 +164,7 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     str_t out = str_new(2048);
     str_append_cstr(&out, "Session history:\n");
 
-    char line[65536];
+    char line[NASH_LINE_MAX];
     int count = 0;
     int current_loop = -1;
     int evicted_count = 0;  /* count of evicted steps in target_loop */
@@ -294,7 +295,7 @@ int journal_max_react_loop(journal_t *j) {
     flock(fileno(f), LOCK_SH);  /* shared lock for reading */
 
     int max_loop = -1;
-    char line[65536];
+    char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;

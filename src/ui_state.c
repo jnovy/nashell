@@ -1,4 +1,5 @@
 #include "ui_state.h"
+#include "nash_limits.h"
 #include "md_render.h"
 #include "journal.h"
 #include "str.h"
@@ -39,9 +40,9 @@ static char *read_last_lines(const char *path, int n_lines) {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     if (sz <= 0) { fclose(f); return strdup(""); }
-    if (sz > 65536) {
-        fseek(f, sz - 65536, SEEK_SET);
-        sz = 65536;
+    if (sz > NASH_LINE_MAX) {
+        fseek(f, sz - NASH_LINE_MAX, SEEK_SET);
+        sz = NASH_LINE_MAX;
     } else {
         fseek(f, 0, SEEK_SET);
     }
@@ -74,7 +75,7 @@ static char *read_file(const char *path) {
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
     if (sz <= 0) { fclose(f); return strdup(""); }
-    if (sz > 1048576) sz = 1048576; /* cap at 1MB */
+    if (sz > NASH_FILE_READ_MAX) sz = NASH_FILE_READ_MAX;
     fseek(f, 0, SEEK_SET);
     char *buf = malloc((size_t)sz + 1);
     if (!buf) { fclose(f); return NULL; }
@@ -86,7 +87,7 @@ static char *read_file(const char *path) {
 
 /* Write string to file atomically (write to .tmp, rename). */
 static void write_md_file(const char *path, const char *content) {
-    char tmp[4096];
+    char tmp[NASH_PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s.tmp", path);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
@@ -184,7 +185,7 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
     ui->focus = FOCUS_QUERY;
     ui->status = STATUS_READY;
     ui->status_text = strdup("Ready");
-    ui->input_cap = 4096;
+    ui->input_cap = NASH_PATH_MAX;
     ui->input_buffer = calloc(1, (size_t)ui->input_cap);
     ui->stream_cap = 8192;
     ui->stream_tokens = calloc(1, (size_t)ui->stream_cap);
@@ -196,7 +197,7 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
 
     /* Set initial file to session.md */
     if (session_dir) {
-        char path[4096];
+        char path[NASH_PATH_MAX];
         snprintf(path, sizeof(path), "%s/session.md", session_dir);
         ui->current_filepath = strdup(path);
     }
@@ -243,7 +244,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     }
 
     /* Read journal for query list */
-    char jpath[4096];
+    char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
     FILE *f = fopen(jpath, "r");
     if (!f) {
@@ -265,7 +266,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     qinfo_t *qinfos = NULL;
     int qcount = 0, qcap = 0;
 
-    char line[65536];
+    char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
@@ -341,7 +342,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             }
         }
         if (is_active || is_expanded) {
-            char rpath[4096];
+            char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                      ui->session_dir, qi->react_loop);
             char *preview = read_last_lines(rpath, 10);
@@ -363,7 +364,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
 
 write_out:;
     char *md_str = str_steal(&md);
-    char spath[4096];
+    char spath[NASH_PATH_MAX];
     snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
     write_md_file(spath, md_str);
     free(md_str);
@@ -375,7 +376,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     str_t md = str_new(8192);
 
     /* Read journal for this react loop's entries */
-    char jpath[4096];
+    char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
     FILE *f = fopen(jpath, "r");
     if (!f) return;
@@ -395,7 +396,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     step_info_t *steps = NULL;
     int nsteps = 0, scap = 0;
     char *query_text = NULL;
-    char line[65536];
+    char line[NASH_LINE_MAX];
 
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
@@ -653,7 +654,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         }
 
         if (show_preview && si->ref) {
-            char rpath[4096];
+            char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, si->ref);
             FILE *cf = fopen(rpath, "r");
             if (cf) {
@@ -661,7 +662,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                     str_append_cstr(&md, "```diff\n");
                 else
                     str_append_cstr(&md, "```\n");
-                char cbuf[4096];
+                char cbuf[NASH_PATH_MAX];
                 int line_count = 0;
                 size_t total = 0;
                 size_t n;
@@ -725,7 +726,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     free(query_text);
 
     char *md_str = str_steal(&md);
-    char rpath[4096];
+    char rpath[NASH_PATH_MAX];
     snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
              ui->session_dir, react_loop);
     write_md_file(rpath, md_str);
@@ -890,7 +891,7 @@ void ui_state_enter(ui_state_t *ui) {
         ui->nav_depth++;
 
         /* Resolve URI relative to current file's directory */
-        char new_path[4096];
+        char new_path[NASH_PATH_MAX];
         if (uri[0] == '/') {
             /* Absolute path */
             snprintf(new_path, sizeof(new_path), "%s", uri);
@@ -915,7 +916,7 @@ void ui_state_enter(ui_state_t *ui) {
     const char *tool_hint = fragment ? fragment + 1 : NULL;
 
     /* Strip fragment from URI to get the file path portion */
-    char uri_path[4096];
+    char uri_path[NASH_PATH_MAX];
     if (fragment) {
         size_t plen = (size_t)(fragment - uri);
         if (plen >= sizeof(uri_path)) plen = sizeof(uri_path) - 1;
@@ -926,7 +927,7 @@ void ui_state_enter(ui_state_t *ui) {
     }
 
     /* Resolve relative to session_dir and display content */
-    char raw_path[4096];
+    char raw_path[NASH_PATH_MAX * 2];
     if (uri_path[0] == '/') {
         snprintf(raw_path, sizeof(raw_path), "%s", uri_path);
     } else {
@@ -1285,7 +1286,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ne->cursor_link = ui->cursor_link;
             ui->nav_depth++;
 
-            char rpath[4096];
+            char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                      ui->session_dir, ui->current_react_loop);
             free(ui->current_filepath);

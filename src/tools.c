@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "nash_limits.h"
 #include "memory.h"
 #include "str.h"
 #include "tui.h"
@@ -170,8 +171,8 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
 
     /* Create symlink in session directory: R1S0 → ../store/hash */
     if (ctx->session_dir && hash && hash[0]) {
-        char link_path[4096];
-        char target[4096];
+        char link_path[NASH_PATH_MAX];
+        char target[NASH_PATH_MAX];
         snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, alias_buf);
         snprintf(target, sizeof(target), "../../store/%s", hash);
         symlink(target, link_path);  /* ignore EEXIST */
@@ -271,7 +272,7 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
         struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
         int pr = poll(&pfd, 1, 100);
         if (pr > 0 && (pfd.revents & POLLIN)) {
-            char buf[4096];
+            char buf[NASH_PATH_MAX];
             ssize_t n = read(pipefd[0], buf, sizeof(buf));
             if (n <= 0) break;  /* EOF or error */
             /* Respect output cap */
@@ -284,7 +285,7 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
             str_append(out, buf, (size_t)n);
         } else if (pr > 0 && (pfd.revents & (POLLHUP | POLLERR))) {
             /* Pipe closed (child exited) or error — drain any remaining data */
-            char buf[4096];
+            char buf[NASH_PATH_MAX];
             ssize_t n;
             while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
                 if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
@@ -301,7 +302,7 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
             pid_t w = waitpid(pid, &status, WNOHANG);
             if (w > 0) {
                 /* Child exited — drain remaining output */
-                char buf[4096];
+                char buf[NASH_PATH_MAX];
                 ssize_t n;
                 while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
                     if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
@@ -419,7 +420,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     if (resolved) path = resolved;
 
     /* Resolve store/ paths relative to session directory (legacy) */
-    char resolved_buf[4096];
+    char resolved_buf[NASH_PATH_MAX];
     if (strncmp(path, "store/", 6) == 0) {
         snprintf(resolved_buf, sizeof(resolved_buf), "%s/%s", ctx->session_dir, path);
         path = resolved_buf;
@@ -918,7 +919,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     if (resolved) path = resolved;
 
     /* Resolve store/ paths (legacy) */
-    char resolved_path[4096];
+    char resolved_path[NASH_PATH_MAX];
     if (strncmp(path, "store/", 6) == 0) {
         snprintf(resolved_path, sizeof(resolved_path), "%s/%s", ctx->session_dir, path);
         path = resolved_path;
@@ -951,7 +952,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
 
     close(pipefd[1]);
     str_t out = str_new(4096);
-    char buf[4096];
+    char buf[NASH_PATH_MAX];
     ssize_t n;
 
     /* Read with timeout + output cap */
@@ -1102,7 +1103,7 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
                        &recursive, &exact, exact_path, sizeof(exact_path));
 
     /* Build the find command based on parsed components */
-    char cmd[4096];
+    char cmd[NASH_PATH_MAX];
 
     if (exact) {
         /* Exact file path — check if it exists */
@@ -1145,7 +1146,7 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     FILE *fp = popen(cmd, "r");
     if (!fp) return make_error("failed to execute find");
 
-    char line[4096];
+    char line[NASH_PATH_MAX];
     while (fgets(line, sizeof(line), fp))
         str_append_cstr(&out, line);
     pclose(fp);
@@ -1743,7 +1744,7 @@ typedef struct {
     const char *dir;
     float consolidation_threshold;
     char best_key[256];
-    char best_path[4096];
+    char best_path[NASH_PATH_MAX];
     float best_sim;
 } consolidation_scan_t;
 
@@ -1798,7 +1799,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     for (char *p = new_emb_fname; *p; p++) {
         if (*p == ':' || *p == '/') *p = '_';
     }
-    char new_emb_path[4096];
+    char new_emb_path[NASH_PATH_MAX];
     snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
              ctx->memory->dir, new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
@@ -1832,7 +1833,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     /* Load the similar memory's value */
     size_t buf_len = 0;
     char *buf = slurp_file(scan.best_path, &buf_len);
-    if (!buf || buf_len == 0 || buf_len > 65536) { free(buf); return; }
+    if (!buf || buf_len == 0 || buf_len > NASH_LINE_MAX) { free(buf); return; }
 
     cJSON *old_entry = cJSON_Parse(buf);
     free(buf);
@@ -1916,7 +1917,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         snprintf(new_fname, sizeof(new_fname), "%s", new_key);
         for (char *p = new_fname; *p; p++)
             if (*p == ':' || *p == '/') *p = '_';
-        char new_json_path[4096];
+        char new_json_path[NASH_PATH_MAX];
         snprintf(new_json_path, sizeof(new_json_path), "%s/%s.json",
                  ctx->memory->dir, new_fname);
 
@@ -1925,7 +1926,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         {
             size_t nbuf_len = 0;
             char *nbuf = slurp_file(new_json_path, &nbuf_len);
-            if (nbuf && nbuf_len > 0 && nbuf_len < 65536) {
+            if (nbuf && nbuf_len > 0 && nbuf_len < NASH_LINE_MAX) {
                 new_entry_json = cJSON_Parse(nbuf);
             }
             free(nbuf);
@@ -1967,7 +1968,7 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     if (pin_j && cJSON_IsTrue(pin_j)) pinned = 1;
 
     /* Build journal provenance reference: "session_dir/journal.jsonl:R<loop>" */
-    char jref[4096];
+    char jref[NASH_PATH_MAX];
     if (ctx->session_dir && ctx->journal) {
         snprintf(jref, sizeof(jref), "%s/journal.jsonl:R%d",
                  ctx->session_dir, ctx->react_loop);
@@ -2407,7 +2408,7 @@ static char *searxng_search(const char *searxng_url, const char *query,
              searxng_url, encoded_q);
     curl_free(encoded_q);
 
-    str_t body = str_new(32768);
+    str_t body = str_new(NASH_INITIAL_BUF);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -2500,7 +2501,7 @@ static char *ddg_search(const char *query, int *out_count) {
              encoded_q);
     curl_free(encoded_q);
 
-    str_t body = str_new(32768);
+    str_t body = str_new(NASH_INITIAL_BUF);
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
@@ -2737,7 +2738,7 @@ void tool_result_free(tool_result_t *r) {
 /* ── system prompt ───────────────────────────────────── */
 
 const char *tools_system_prompt(void) {
-    static char buf[4096];
+    static char buf[NASH_PATH_MAX];
 
     /* UTC timestamp */
     time_t now = time(NULL);
