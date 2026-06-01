@@ -81,6 +81,10 @@ llm_chat_t *llm_chat_new(void);
 void        llm_chat_free(llm_chat_t *chat);
 void        llm_chat_add(llm_chat_t *chat, const char *role, const char *content);
 
+/* Serialize entire chat into a human-readable markdown document.
+ * Returns malloc'd string. Caller must free. */
+char       *llm_chat_serialize(llm_chat_t *chat);
+
 /* Remove all messages whose content starts with the given prefix.
  * Used for progressive context stripping on LLM failures. */
 int         llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix);

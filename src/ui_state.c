@@ -135,6 +135,17 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
         url && url->valuestring)
         return url->valuestring;
+    /* Context entry: show message count */
+    if (strcmp(tool, "context") == 0) {
+        cJSON *nm = cJSON_GetObjectItem(params, "n_messages");
+        if (nm) {
+            static char ctx_desc[64];
+            snprintf(ctx_desc, sizeof(ctx_desc), "%d messages",
+                     (int)cJSON_GetNumberValue(nm));
+            return ctx_desc;
+        }
+        return "full LLM context";
+    }
     /* System log entries: show the message */
     if (strcmp(tool, "log") == 0) {
         cJSON *msg = cJSON_GetObjectItem(params, "message");
@@ -421,7 +432,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             continue;
         }
 
-        if (strcmp(tool, "system") == 0) {
+        if (strcmp(tool, "system") == 0 ||
+            strcmp(tool, "memory_context") == 0) {
             cJSON_Delete(entry);
             continue;
         }
@@ -1072,6 +1084,7 @@ void ui_state_enter(ui_state_t *ui) {
         if (strcmp(tool_hint, "done") == 0 ||
             strcmp(tool_hint, "plan") == 0 ||
             strcmp(tool_hint, "notes") == 0 ||
+            strcmp(tool_hint, "context") == 0 ||
             strcmp(tool_hint, "user_ask") == 0 ||
             strncmp(tool_hint, "memory_", 7) == 0) {
             render_as_md = 1;

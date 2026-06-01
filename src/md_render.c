@@ -553,11 +553,12 @@ md_doc_t *md_parse(const char *source) {
     const char *p = doc->source;
     int line_num = 0;
     int in_code_fence = 0;
+    int at_line_start = 1;  /* track whether p is at the beginning of a line */
     while (*p) {
-        if (*p == '\n') { line_num++; p++; continue; }
+        if (*p == '\n') { line_num++; p++; at_line_start = 1; continue; }
 
         /* Detect code fence toggle (``` at start of line) */
-        if (*p == '`' && p[1] == '`' && p[2] == '`') {
+        if (at_line_start && *p == '`' && p[1] == '`' && p[2] == '`') {
             in_code_fence = !in_code_fence;
             /* Skip to end of line */
             while (*p && *p != '\n') p++;
@@ -565,15 +566,19 @@ md_doc_t *md_parse(const char *source) {
         }
 
         /* Skip everything inside code fences */
-        if (in_code_fence) { p++; continue; }
+        if (in_code_fence) { p++; at_line_start = 0; continue; }
 
-        /* Skip 4-space indented lines (markdown code blocks via indentation) */
-        if (*p == ' ' && p[1] == ' ' && p[2] == ' ' && p[3] == ' ') {
+        /* Skip 4-space indented lines (markdown code blocks via indentation).
+         * Only check at line start — mid-line spaces must not trigger this
+         * (e.g., "R0S1       [tool](uri)" has 6+ spaces after the ref). */
+        if (at_line_start && *p == ' ' && p[1] == ' ' && p[2] == ' ' && p[3] == ' ') {
             while (*p && *p != '\n') p++;
             continue;
         }
 
-        /* Look for [text](uri) pattern — only on lines starting with [ */
+        at_line_start = 0;
+
+        /* Look for [text](uri) pattern anywhere on the line */
         if (*p == '[') {
             /* Find ] on the SAME line (don't cross line boundaries) */
             const char *text_start = p + 1;
@@ -937,6 +942,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         /* Track links regardless of visibility */
         int has_link = (link_idx < doc->link_count &&
                         src_line == doc->links[link_idx].doc_line);
+        /* A "link line" starts with '[' — the entire line is the link.
+         * Lines with embedded links (prefix + [tool](uri) + suffix)
+         * are handled by the has_link && !is_link_line branch below. */
         int is_link_line = (line_buf[0] == '[' && has_link);
 
         if (in_code_block) {

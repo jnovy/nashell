@@ -98,6 +98,23 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     chat->n_msgs++;
 }
 
+/* ── Chat serialization ──────────────────────────────────────── */
+
+/* Serialize entire chat into a human-readable markdown document.
+ * Format per message: ### role\n\ncontent\n\n
+ * Returns malloc'd string. Caller must free. */
+char *llm_chat_serialize(llm_chat_t *chat) {
+    if (!chat || chat->n_msgs == 0) return strdup("");
+    str_t s = str_new(4096);
+    for (int i = 0; i < chat->n_msgs; i++) {
+        llm_msg_t *m = &chat->msgs[i];
+        str_appendf(&s, "### %s\n\n%s\n\n",
+                    m->role ? m->role : "unknown",
+                    m->content ? m->content : "");
+    }
+    return str_steal(&s);
+}
+
 /* ── Parse action from assistant response ────────────────────── */
 
 /* Attempt to repair common JSON errors produced by models:

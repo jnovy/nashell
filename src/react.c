@@ -901,6 +901,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(q_hash);
     }
 
+    /* Log the full initial LLM context (all messages) as a single
+     * journal entry so the TUI can show exactly what the LLM received. */
+    {
+        char *ctx_text = llm_chat_serialize(chat);
+        if (ctx_text && ctx_text[0]) {
+            char *ctx_hash = store_save(ctx->tools->store, ctx_text);
+            char *ctx_alias = ctx_hash ? tool_register_alias(ctx->tools, ctx_hash) : NULL;
+            cJSON *ctx_p = cJSON_CreateObject();
+            cJSON_AddNumberToObject(ctx_p, "n_messages", chat->n_msgs);
+            journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
+                           "context", ctx_p, ctx_alias,
+                           strlen(ctx_text), count_lines(ctx_text), NULL, NULL);
+            cJSON_Delete(ctx_p);
+            free(ctx_alias);
+            free(ctx_hash);
+        }
+        free(ctx_text);
+    }
+
     } /* end if (!restored) */
     char *final_result = NULL;
     struct timespec task_start;
