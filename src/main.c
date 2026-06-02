@@ -320,42 +320,13 @@ typedef struct {
     atomic_int done;
 } infer_args_t;
 
-/* --- Threading for non-blocking /dream --- */
-typedef struct {
-    /* Inputs (set by main thread before pthread_create) */
-    char            *nash_dir;
-    store_t         *store;
-    memory_t        *memory;
-    config_t        *cfg;
-    llm_config_t    *llm;
-    provider_t      *provider;
-    char            *server_model;
-    ui_state_t      *ui;
-    /* Output */
-    int              dream_ok;
-    atomic_int       done;
-} dream_args_t;
-
-/* Generic event callback for background threads — routes react events to TUI.
- * The userdata must point to a struct whose first member is unused (or any struct)
- * but which has a .ui field accessible. We use infer_args_t for regular queries
- * and dream_event_ctx_t for dream passes. */
-typedef struct {
-    ui_state_t *ui;
-} dream_event_ctx_t;
+/* --- Threading for non-blocking inference --- */
 
 static void threaded_event_cb(const react_event_t *ev, void *userdata) {
     infer_args_t *a = (infer_args_t *)userdata;
     pthread_mutex_lock(&a->ui->mtx);
     ui_state_on_event(ev, (void *)a->ui);
     pthread_mutex_unlock(&a->ui->mtx);
-}
-
-static void dream_event_cb(const react_event_t *ev, void *userdata) {
-    dream_event_ctx_t *ctx = (dream_event_ctx_t *)userdata;
-    pthread_mutex_lock(&ctx->ui->mtx);
-    ui_state_on_event(ev, (void *)ctx->ui);
-    pthread_mutex_unlock(&ctx->ui->mtx);
 }
 
 static void *infer_worker(void *arg) {
@@ -365,198 +336,7 @@ static void *infer_worker(void *arg) {
     return NULL;
 }
 
-static void *dream_worker(void *arg) {
-    dream_args_t *da = (dream_args_t *)arg;
-    dream_event_ctx_t ev_ctx = { .ui = da->ui };
 
-    scratchpad_t shared_scratch;
-    scratchpad_init(&shared_scratch);
-
-    const int n_dream_passes = 4;
-    int dream_ok = 1;
-
-    for (int pass = 0; pass < n_dream_passes; pass++) {
-        const char *pass_labels[] = {
-            "Dream 1/4: Inventory & scan",
-            "Dream 2/4: Merge duplicates",
-            "Dream 3/4: Resolve contradictions",
-            "Dream 4/4: Synthesize & cross-link",
-        };
-        pthread_mutex_lock(&da->ui->mtx);
-        ui_state_set_status(da->ui, STATUS_RUNNING, pass_labels[pass]);
-        pthread_mutex_unlock(&da->ui->mtx);
-
-        /* Fresh session per pass */
-        char *pass_dir = create_session_dir(da->nash_dir);
-        journal_t *pass_journal = journal_new(pass_dir);
-
-        llm_config_t llm_cfg_copy = *da->llm;
-        tool_ctx_t pass_tools = {
-            .store = da->store,
-            .journal = pass_journal,
-            .memory = da->memory,
-            .session_dir = pass_dir,
-            .scratchpad = NULL,
-            .cfg = da->cfg, .llm = &llm_cfg_copy, .provider = da->provider,
-            .react_loop = 0,
-            .aliases = alias_map_new(),
-        };
-        scratchpad_move(&pass_tools.scratch, &shared_scratch);
-
-        react_flags_t dream_flags = REACT_FLAGS_BARE;
-        react_ctx_t pass_react = {
-            .provider = da->provider,
-            .llm = &llm_cfg_copy,
-            .tools = &pass_tools,
-            .max_steps = da->cfg->max_react_steps,
-            .verbose = 1,
-            .flags = dream_flags,
-        };
-
-        /* Build per-pass prompt */
-        char dream_prompt[8192];
-        const char *mdir = da->memory->dir;
-        const char *model = da->server_model ? da->server_model : "unknown-model";
-
-        switch (pass) {
-        case 0:
-            snprintf(dream_prompt, sizeof(dream_prompt),
-                "You are performing MEMORY INVENTORY for a persistent knowledge store.\n\n"
-                "GOAL: Read and catalog ALL memories at: %s\n"
-                "Each memory is a JSON file with fields: key, value, pinned, "
-                "created_at, last_accessed, access_count, recall_hits, recall_misses, journal_ref.\n"
-                "Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) -- Beta posterior mean.\n\n"
-                "TASK: List all memory files, read each one, and produce a structured report:\n"
-                "1. Total memory count\n"
-                "2. Groups of near-duplicate entries (same concept, different wording) -- list their keys\n"
-                "3. Pairs of contradictory entries -- list their keys and the contradiction\n"
-                "4. Task-specific entries that could be generalized -- list their keys\n"
-                "5. Low-evidence entries (access_count=0, score=0.50) -- list their keys\n\n"
-                "DO NOT make any changes. Only read and report.\n"
-                "Store your full report in the scratchpad (notes tool) so the next pass can use it.\n"
-                "Call done with a summary of what you found.",
-                mdir);
-            break;
-
-        case 1:
-            snprintf(dream_prompt, sizeof(dream_prompt),
-                "You are performing DEDUPLICATION for a persistent knowledge store at: %s\n\n"
-                "Read the scratchpad -- it contains an inventory from the previous pass listing "
-                "near-duplicate memory groups.\n\n"
-                "CAPABILITIES:\n"
-                "- Read any memory: file_read on the JSON file path\n"
-                "- Create/update memories: memory_store (preserves validation scores on update)\n"
-                "- Delete memories: memory_delete with the key\n\n"
-                "TASK: For each group of near-duplicates identified in the scratchpad:\n"
-                "1. Read all entries in the group\n"
-                "2. Create ONE merged entry combining the best content from all\n"
-                "3. Preserve recall_hits/recall_misses from the highest-scored source\n"
-                "4. Delete the redundant entries\n\n"
-                "CONSTRAINTS:\n"
-                "- Never touch pinned memories\n"
-                "- Keep high-scoring entries (score > 0.7) -- merge INTO them, don't delete them\n"
-                "- Be conservative -- only merge entries that truly cover the same concept\n\n"
-                "Update the scratchpad with what you merged.\n"
-                "Call done with a list of merges performed (old keys -> new key).",
-                mdir);
-            break;
-
-        case 2:
-            snprintf(dream_prompt, sizeof(dream_prompt),
-                "You are performing CONTRADICTION RESOLUTION for a persistent knowledge store at: %s\n\n"
-                "Read the scratchpad -- it contains an inventory identifying contradictory memory pairs, "
-                "plus a log of merges already performed in the previous pass.\n\n"
-                "CAPABILITIES:\n"
-                "- Read any memory: file_read on the JSON file path\n"
-                "- Read original context: file_read on journal_ref path\n"
-                "- Read git history: shell_exec \"git -C %s log --oneline\"\n"
-                "- Create/update memories: memory_store\n"
-                "- Delete memories: memory_delete with the key\n\n"
-                "TASK: For each contradictory pair:\n"
-                "1. Read both entries fully\n"
-                "2. If journal_ref exists, read the original context to understand WHY each was created\n"
-                "3. Keep the one with higher validation score, or reconcile into a single entry\n"
-                "4. Delete the superseded entry\n\n"
-                "CONSTRAINTS:\n"
-                "- Never touch pinned memories\n"
-                "- If both have high scores, reconcile rather than delete\n"
-                "- Check if previous pass already merged/deleted any of these entries\n\n"
-                "Update the scratchpad with resolutions.\n"
-                "Call done with a list of contradictions resolved.",
-                mdir, mdir);
-            break;
-
-        case 3:
-            snprintf(dream_prompt, sizeof(dream_prompt),
-                "You are performing KNOWLEDGE SYNTHESIS for a persistent knowledge store at: %s\n\n"
-                "Read the scratchpad -- it contains the full history of previous passes "
-                "(inventory, merges, contradiction resolutions).\n\n"
-                "CAPABILITIES:\n"
-                "- List memories: shell_exec \"ls %s/\"\n"
-                "- Read any memory: file_read on the JSON file path\n"
-                "- Create/update memories: memory_store\n\n"
-                "TASK (three parts):\n\n"
-                "A. GENERALIZE: Find clusters of task-specific lessons that share a common pattern. "
-                "Create a new 'strategy:' entry that captures the general principle. "
-                "Do NOT delete the source lessons.\n\n"
-                "B. CROSS-LINK via refs: Establish inter-memory relationships using the 'refs' "
-                "parameter of memory_store. For each memory that relates to others, call "
-                "memory_store with refs=[\"key1\", \"key2\", ...] listing the related memory keys. "
-                "This creates 'see also' links between memories.\n"
-                "Examples of valid refs relationships:\n"
-                "  - A strategy refs the lessons it was generalized from\n"
-                "  - A lesson refs other lessons about the same topic\n"
-                "  - An anti-pattern refs the lesson that discovered it\n"
-                "  - A skill refs strategies that inform its approach\n"
-                "When creating new strategy: entries in part A, ALWAYS include refs to the "
-                "source lesson keys.\n\n"
-                "CONSTRAINTS:\n"
-                "- Only create strategies when 3+ lessons share a clear pattern\n"
-                "- Don't create strategies that already exist\n"
-                "- Be conservative with refs -- only add genuinely useful connections\n"
-                "- refs should be EXISTING memory keys (verify they exist before adding)\n\n"
-                "WHEN DONE:\n"
-                "- Compose a FULL summary of ALL changes across ALL 4 passes "
-                "(read the scratchpad for passes 1-3)\n"
-                "- Run: shell_exec \"cd %s && git add -A && git commit -m "
-                "'Dream consolidation (4-pass)\\n\\n<your full summary here>"
-                "\\n\\nConsolidated-by: %s'\"\n"
-                "- Call done with the SAME summary text",
-                mdir, mdir, mdir, model);
-            break;
-        }
-
-        /* Run this pass */
-        char *pass_result = react_run(&pass_react, dream_prompt,
-                                      dream_event_cb, &ev_ctx);
-
-        /* Harvest the scratchpad back from this pass for the next one */
-        scratchpad_move(&shared_scratch, &pass_tools.scratch);
-
-        int pass_failed = (pass_result == NULL);
-
-        /* Cleanup per-pass resources */
-        free(pass_result);
-        if (pass_tools.scratchpad) free(pass_tools.scratchpad);
-        alias_map_free(pass_tools.aliases);
-        journal_free(pass_journal);
-        free(pass_dir);
-
-        if (pass_failed) {
-            dream_ok = 0;
-            break;
-        }
-    }
-
-    scratchpad_free(&shared_scratch);
-    da->dream_ok = dream_ok;
-
-    /* Post-dream: prune with fresh validation scores */
-    memory_prune(da->memory, da->cfg->prune_min_score, da->cfg->prune_min_evidence);
-
-    da->done = 1;
-    return NULL;
-}
 
 int main(int argc, char **argv) {
     /* Load config from ~/.nash/config.toml (or default) */
@@ -570,6 +350,7 @@ int main(int argc, char **argv) {
     /* CLI flags override config */
     const char *query = NULL;
     const char *session_dir_arg = NULL;
+    const char *play_arg = NULL;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -581,16 +362,19 @@ int main(int argc, char **argv) {
             cfg->provider.type = strdup("local");
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc) {
             query = argv[++i];
+        } else if (strcmp(argv[i], "--play") == 0 && i + 1 < argc) {
+            play_arg = argv[++i];
         } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
             free(cfg->data_dir);
             cfg->data_dir = strdup(argv[++i]);
         } else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc) {
             session_dir_arg = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR]\n");
+            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
             printf("  --api URL       LLM server URL (default: %s)\n", cfg->api_base);
             printf("  -p QUERY        Run single query and exit (headless mode)\n");
+            printf("  --play NAME     Run a playbook and exit (e.g. --play dream)\n");
             printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
             printf("  --session DIR   Open existing session directory\n");
             printf("\nConfig: %s\n", config_path);
@@ -673,8 +457,9 @@ int main(int argc, char **argv) {
         .context_size = context_size,
     };
 
-    /* Print banner */
-    print_banner(cfg, props_json, nash_dir);
+    /* Print banner (skip in headless playbook mode) */
+    if (!play_arg)
+        print_banner(cfg, props_json, nash_dir);
 
     /* Shared store + memory */
     store_t *shared_store = store_new(nash_dir);
@@ -697,6 +482,70 @@ int main(int argc, char **argv) {
                                cfg->embedding.model_path,
                                cfg->embedding.dimension,
                                cfg->embedding.max_input_chars);
+    }
+
+    /* Headless playbook mode: --play NAME */
+    if (play_arg) {
+        /* Resolve playbook path */
+        char pb_path[NASH_PATH_MAX];
+        if (strcmp(play_arg, "dream") == 0) {
+            snprintf(pb_path, sizeof(pb_path), "%s/playbooks/dream.yaml", nash_dir);
+        } else if (strchr(play_arg, '/') || strchr(play_arg, '.')) {
+            snprintf(pb_path, sizeof(pb_path), "%s", play_arg);
+        } else {
+            snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml", nash_dir, play_arg);
+        }
+
+        playbook_t *pb = playbook_load(pb_path);
+        if (!pb && strcmp(play_arg, "dream") == 0) {
+            playbook_write_default_dream(pb_path);
+            pb = playbook_load(pb_path);
+        }
+        if (!pb) {
+            fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
+            store_free(shared_store);
+            memory_free(memory);
+            provider_free(provider);
+            free(nash_dir);
+            free(props_json);
+            free(server_model);
+            config_free(cfg);
+            return 1;
+        }
+
+        fprintf(stderr, "[play] Running playbook '%s' (%d passes)\n",
+                pb->name, pb->n_passes);
+
+        playbook_args_t pargs = {
+            .playbook = pb,
+            .nash_dir = nash_dir,
+            .store = shared_store,
+            .memory = memory,
+            .cfg = cfg,
+            .llm = &llm_cfg,
+            .provider = provider,
+            .server_model = server_model,
+            .ui = NULL,  /* headless — no TUI */
+            .playbook_ok = 0,
+            .done = 0,
+        };
+
+        /* Run synchronously (no thread needed in headless mode) */
+        playbook_worker(&pargs);
+
+        int ok = pargs.playbook_ok;
+        fprintf(stderr, "[play] Playbook '%s' %s\n",
+                pb->name, ok ? "completed successfully" : "FAILED");
+
+        playbook_free(pb);
+        store_free(shared_store);
+        memory_free(memory);
+        provider_free(provider);
+        free(nash_dir);
+        free(props_json);
+        free(server_model);
+        config_free(cfg);
+        return ok ? 0 : 1;
     }
 
     /* One-shot headless mode */
@@ -881,7 +730,6 @@ int main(int argc, char **argv) {
         int inferring = 0;
         pthread_t infer_tid;
         static infer_args_t iargs;
-        static dream_args_t dargs;
         static playbook_args_t pargs_tui;
         while (running) {
             /* Check if playbook thread completed */
@@ -902,19 +750,7 @@ int main(int argc, char **argv) {
                 inferring = 0;
                 tui_render(ui);
             }
-            /* Check if dream thread completed */
-            if (inferring == 2 && dargs.done) {
-                pthread_join(infer_tid, NULL);
-                pthread_mutex_lock(&ui->mtx);
-                if (dargs.dream_ok) {
-                    ui_state_set_status(ui, STATUS_DONE, "Dream complete (4 passes)");
-                } else {
-                    ui_state_set_status(ui, STATUS_ERROR, "Dream failed");
-                }
-                pthread_mutex_unlock(&ui->mtx);
-                inferring = 0;
-                tui_render(ui);
-            }
+
             /* Check if inference thread completed */
             if (inferring == 1 && iargs.done) {
                 pthread_join(infer_tid, NULL);
@@ -1183,39 +1019,29 @@ int main(int argc, char **argv) {
                         dream_pb = playbook_load(pb_path);
                     }
                     if (!dream_pb) {
-                        /* Fallback: use legacy dream_worker */
-                        dargs = (dream_args_t){
-                            .nash_dir = nash_dir,
-                            .store = shared_store,
-                            .memory = memory,
-                            .cfg = cfg,
-                            .llm = &llm_cfg,
-                            .provider = provider,
-                            .server_model = server_model,
-                            .ui = ui,
-                            .dream_ok = 0,
-                            .done = 0,
-                        };
-                        pthread_create(&infer_tid, NULL, dream_worker, &dargs);
-                        inferring = 2;
-                    } else {
-                        /* Use playbook system */
-                        pargs_tui = (playbook_args_t){
-                            .playbook = dream_pb,
-                            .nash_dir = nash_dir,
-                            .store = shared_store,
-                            .memory = memory,
-                            .cfg = cfg,
-                            .llm = &llm_cfg,
-                            .provider = provider,
-                            .server_model = server_model,
-                            .ui = ui,
-                            .playbook_ok = 0,
-                            .done = 0,
-                        };
-                        pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
-                        inferring = 3;  /* 3 = playbook */
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                            "Cannot load dream playbook");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        continue;
                     }
+
+                    pargs_tui = (playbook_args_t){
+                        .playbook = dream_pb,
+                        .nash_dir = nash_dir,
+                        .store = shared_store,
+                        .memory = memory,
+                        .cfg = cfg,
+                        .llm = &llm_cfg,
+                        .provider = provider,
+                        .server_model = server_model,
+                        .ui = ui,
+                        .playbook_ok = 0,
+                        .done = 0,
+                    };
+                    pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
+                    inferring = 3;
                     tui_render(ui);
                     continue;
                 }
@@ -1301,6 +1127,191 @@ int main(int argc, char **argv) {
                     pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
                     inferring = 3;
                     tui_render(ui);
+                    free(submitted_query);
+                    continue;
+                }
+
+                /* Handle /runs command — list/show playbook run logs */
+                if (strcmp(submitted_query, "/runs") == 0 ||
+                    strcmp(submitted_query, "/runs list") == 0 ||
+                    strncmp(submitted_query, "/runs ", 6) == 0) {
+                    const char *sub = submitted_query + 5;
+                    while (*sub == ' ') sub++;
+
+                    int show_detail = 0;
+                    const char *show_id = NULL;
+                    if (strncmp(sub, "show ", 5) == 0) {
+                        show_detail = 1;
+                        show_id = sub + 5;
+                        while (*show_id == ' ') show_id++;
+                    }
+
+                    char rdir[NASH_PATH_MAX];
+                    snprintf(rdir, sizeof(rdir), "%s/runs", nash_dir);
+
+                    if (show_detail && show_id && *show_id) {
+                        /* /runs show <id> — display a specific run log */
+                        char rpath[NASH_PATH_MAX];
+                        /* Try exact filename, or append .jsonl */
+                        if (strstr(show_id, ".jsonl"))
+                            snprintf(rpath, sizeof(rpath), "%s/%s", rdir, show_id);
+                        else
+                            snprintf(rpath, sizeof(rpath), "%s/%s.jsonl", rdir, show_id);
+
+                        FILE *rf = fopen(rpath, "r");
+                        if (!rf) {
+                            pthread_mutex_lock(&ui->mtx);
+                            ui_state_set_status(ui, STATUS_ERROR,
+                                "/runs show: run log not found");
+                            pthread_mutex_unlock(&ui->mtx);
+                            tui_render(ui);
+                            free(submitted_query);
+                            continue;
+                        }
+
+                        str_t display = str_new(2048);
+                        str_appendf(&display, "# Run Log: %s\n\n", show_id);
+                        char line[NASH_LINE_MAX];
+                        while (fgets(line, sizeof(line), rf)) {
+                            cJSON *ev = cJSON_Parse(line);
+                            if (!ev) continue;
+                            const char *e = cJSON_GetStringValue(
+                                cJSON_GetObjectItem(ev, "e"));
+                            if (!e) { cJSON_Delete(ev); continue; }
+
+                            if (strcmp(e, "start") == 0) {
+                                str_appendf(&display, "**Playbook**: %s  \n",
+                                    cJSON_GetStringValue(
+                                        cJSON_GetObjectItem(ev, "pb")));
+                                str_appendf(&display, "**Passes**: %d\n\n",
+                                    (int)cJSON_GetNumberValue(
+                                        cJSON_GetObjectItem(ev, "n")));
+                            } else if (strcmp(e, "pass") == 0) {
+                                int idx = (int)cJSON_GetNumberValue(
+                                    cJSON_GetObjectItem(ev, "i"));
+                                const char *label = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(ev, "l"));
+                                const char *sid = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(ev, "sid"));
+                                str_appendf(&display,
+                                    "- **Pass %d**: %s\n  session: `%s`\n",
+                                    idx + 1, label ? label : "?",
+                                    sid ? sid : "?");
+                            } else if (strcmp(e, "done") == 0) {
+                                const char *st = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(ev, "st"));
+                                double ts = cJSON_GetNumberValue(
+                                    cJSON_GetObjectItem(ev, "ts"));
+                                str_appendf(&display, "  status: %s  (%.0f)\n",
+                                    st ? st : "?", ts);
+                            } else if (strcmp(e, "end") == 0) {
+                                const char *st = cJSON_GetStringValue(
+                                    cJSON_GetObjectItem(ev, "st"));
+                                str_appendf(&display, "\n**Result**: %s\n",
+                                    st ? st : "?");
+                            }
+                            cJSON_Delete(ev);
+                        }
+                        fclose(rf);
+
+                        char *banner = str_steal(&display);
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_banner(ui, banner);
+                        ui_state_set_status(ui, STATUS_READY, "Run log");
+                        pthread_mutex_unlock(&ui->mtx);
+                        free(banner);
+                        tui_render(ui);
+                    } else {
+                        /* /runs or /runs list — list all run logs */
+                        DIR *d = opendir(rdir);
+                        str_t display = str_new(2048);
+                        str_appendf(&display, "# Playbook Runs\n\n");
+
+                        if (!d) {
+                            str_appendf(&display, "No runs yet (%s/runs/ not found)\n", nash_dir);
+                        } else {
+                            struct dirent *ent;
+                            int count = 0;
+                            /* Collect filenames, sort newest first */
+                            char *names[1024];
+                            int nnames = 0;
+                            while ((ent = readdir(d)) && nnames < 1024) {
+                                int nlen = (int)strlen(ent->d_name);
+                                if (nlen > 6 && strcmp(ent->d_name + nlen - 6, ".jsonl") == 0)
+                                    names[nnames++] = strdup(ent->d_name);
+                            }
+                            closedir(d);
+                            /* Sort descending (newest first by epoch name) */
+                            for (int i = 0; i < nnames - 1; i++)
+                                for (int j = i + 1; j < nnames; j++)
+                                    if (strcmp(names[i], names[j]) < 0) {
+                                        char *tmp = names[i];
+                                        names[i] = names[j];
+                                        names[j] = tmp;
+                                    }
+                            for (int i = 0; i < nnames; i++) {
+                                char fpath[NASH_PATH_MAX];
+                                snprintf(fpath, sizeof(fpath), "%s/%s", rdir, names[i]);
+                                FILE *rf = fopen(fpath, "r");
+                                if (rf) {
+                                    char line[NASH_LINE_MAX];
+                                    if (fgets(line, sizeof(line), rf)) {
+                                        cJSON *ev = cJSON_Parse(line);
+                                        if (ev) {
+                                            const char *pb_name = cJSON_GetStringValue(
+                                                cJSON_GetObjectItem(ev, "pb"));
+                                            int n = (int)cJSON_GetNumberValue(
+                                                cJSON_GetObjectItem(ev, "n"));
+                                            /* Check if run completed by scanning for end event */
+                                            char *status_str = "running";
+                                            char lastline[NASH_LINE_MAX];
+                                            lastline[0] = '\0';
+                                            while (fgets(lastline, sizeof(lastline), rf));
+                                            if (lastline[0]) {
+                                                cJSON *last = cJSON_Parse(lastline);
+                                                if (last) {
+                                                    const char *le = cJSON_GetStringValue(
+                                                        cJSON_GetObjectItem(last, "e"));
+                                                    if (le && strcmp(le, "end") == 0) {
+                                                        const char *st = cJSON_GetStringValue(
+                                                            cJSON_GetObjectItem(last, "st"));
+                                                        status_str = (st && strcmp(st, "ok") == 0)
+                                                            ? "ok" : "fail";
+                                                    }
+                                                    cJSON_Delete(last);
+                                                }
+                                            }
+                                            /* Strip .jsonl for display */
+                                            char id[256];
+                                            snprintf(id, sizeof(id), "%s", names[i]);
+                                            char *dot = strstr(id, ".jsonl");
+                                            if (dot) *dot = '\0';
+                                            str_appendf(&display,
+                                                "%d. **%s** — %s (%d passes) [%s]\n",
+                                                ++count, id,
+                                                pb_name ? pb_name : "?",
+                                                n, status_str);
+                                            cJSON_Delete(ev);
+                                        }
+                                    }
+                                    fclose(rf);
+                                }
+                                free(names[i]);
+                            }
+                            if (count == 0)
+                                str_appendf(&display, "No runs found\n");
+                            else
+                                str_appendf(&display, "\nUse `/runs show <id>` for details\n");
+                        }
+
+                        char *banner = str_steal(&display);
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_banner(ui, banner);
+                        ui_state_set_status(ui, STATUS_READY, "Run list");
+                        pthread_mutex_unlock(&ui->mtx);
+                        free(banner);
+                        tui_render(ui);
+                    }
                     free(submitted_query);
                     continue;
                 }

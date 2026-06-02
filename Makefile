@@ -31,10 +31,18 @@ all: $(BIN)
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
+# Embed bundled playbooks as C byte arrays at build time.
+# playbooks/dream.yaml → src/dream_yaml.inc (included by playbook.c)
+src/dream_yaml.inc: playbooks/dream.yaml
+	xxd -i $< > $@
+
 # Header dependencies — ALL .o files depend on ALL headers.
 # This is conservative but safe: changing any header recompiles everything.
 # For a 15-file project this adds <1s to rebuilds.
 HDRS    = $(wildcard src/*.h)
+
+# playbook.o additionally depends on the embedded YAML
+src/playbook.o: src/dream_yaml.inc
 
 src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -67,6 +75,6 @@ test: $(TEST_BIN)
 	echo "=== $$failures failures ==="
 
 clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN)
+	rm -f $(OBJ) $(BIN) $(TEST_BIN) src/dream_yaml.inc
 
 .PHONY: all clean test

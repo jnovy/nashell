@@ -1119,7 +1119,10 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
 
     /* For exact file path, just check existence directly */
     if (exact) {
-        snprintf(full_path, sizeof(full_path), "%s/%s", search_path, exact_path);
+        if (exact_path[0] == '/')
+            snprintf(full_path, sizeof(full_path), "%s", exact_path);
+        else
+            snprintf(full_path, sizeof(full_path), "%s/%s", search_path, exact_path);
         str_t out = str_new(256);
         struct stat st;
         if (stat(full_path, &st) == 0 && S_ISREG(st.st_mode)) {
@@ -1149,9 +1152,14 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
         return make_result(1, meta, ref_copy);
     }
 
-    /* Build find_path: the directory to search in */
+    /* Build find_path: the directory to search in.
+     * If root is an absolute path (starts with /), use it directly
+     * instead of prepending search_path — avoids creating invalid
+     * paths like "./home/user/dir". */
     if (strcmp(root, ".") == 0) {
         snprintf(full_path, sizeof(full_path), "%s", search_path);
+    } else if (root[0] == '/') {
+        snprintf(full_path, sizeof(full_path), "%s", root);
     } else {
         snprintf(full_path, sizeof(full_path), "%s/%s", search_path, root);
     }

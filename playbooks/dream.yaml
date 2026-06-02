@@ -1,0 +1,141 @@
+name: dream
+description: "Memory consolidation - 4-pass cognitive maintenance"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+post:
+  prune_memory: true
+  commit: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "Inventory & scan"
+    prompt: |
+      You are performing MEMORY INVENTORY for a persistent knowledge store.
+
+      GOAL: Read and catalog ALL memories at: {{memory_dir}}
+      Each memory is a JSON file with fields: key, value, pinned,
+      created_at, last_accessed, access_count, recall_hits, recall_misses, journal_ref.
+      Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) -- Beta posterior mean.
+
+      TASK: List all memory files, read each one, and produce a structured report:
+      1. Total memory count
+      2. Groups of near-duplicate entries (same concept, different wording) -- list their keys
+      3. Pairs of contradictory entries -- list their keys and the contradiction
+      4. Task-specific entries that could be generalized -- list their keys
+      5. Low-evidence entries (access_count=0, score=0.50) -- list their keys
+
+      DO NOT make any changes. Only read and report.
+      Store your full report in the scratchpad (notes tool) so the next pass can use it.
+      Call done with a summary of what you found.
+
+  - label: "Merge duplicates"
+    prompt: |
+      You are performing DEDUPLICATION for a persistent knowledge store at: {{memory_dir}}
+
+      Read the scratchpad -- it contains an inventory from the previous pass listing
+      near-duplicate memory groups.
+
+      CAPABILITIES:
+      - Read any memory: file_read on the JSON file path
+      - Create/update memories: memory_store (preserves validation scores on update)
+      - Delete memories: memory_delete with the key
+
+      TASK: For each group of near-duplicates identified in the scratchpad:
+      1. Read all entries in the group
+      2. Create ONE merged entry combining the best content from all
+      3. Preserve recall_hits/recall_misses from the highest-scored source
+      4. Delete the redundant entries
+
+      CONSTRAINTS:
+      - Never touch pinned memories
+      - Keep high-scoring entries (score > 0.7) -- merge INTO them, don't delete them
+      - Be conservative -- only merge entries that truly cover the same concept
+
+      Update the scratchpad with what you merged.
+      Call done with a list of merges performed (old keys -> new key).
+
+  - label: "Resolve contradictions"
+    prompt: |
+      You are performing CONTRADICTION RESOLUTION for a persistent knowledge store at: {{memory_dir}}
+
+      Read the scratchpad -- it contains an inventory identifying contradictory memory pairs,
+      plus a log of merges already performed in the previous pass.
+
+      CAPABILITIES:
+      - Read any memory: file_read on the JSON file path
+      - Read original context: file_read on journal_ref path
+      - Read git history: shell_exec "git -C {{memory_dir}} log --oneline"
+      - Create/update memories: memory_store
+      - Delete memories: memory_delete with the key
+
+      TASK: For each contradictory pair:
+      1. Read both entries fully
+      2. If journal_ref exists, read the original context to understand WHY each was created
+      3. Keep the one with higher validation score, or reconcile into a single entry
+      4. Delete the superseded entry
+
+      CONSTRAINTS:
+      - Never touch pinned memories
+      - If both have high scores, reconcile rather than delete
+      - Check if previous pass already merged/deleted any of these entries
+
+      Update the scratchpad with resolutions.
+      Call done with a list of contradictions resolved.
+
+  - label: "Synthesize & cross-link"
+    react:
+      max_steps: 50
+    prompt: |
+      You are performing KNOWLEDGE SYNTHESIS for a persistent knowledge store at: {{memory_dir}}
+
+      Read the scratchpad -- it contains the full history of previous passes
+      (inventory, merges, contradiction resolutions).
+
+      CAPABILITIES:
+      - List memories: shell_exec "ls {{memory_dir}}/"
+      - Read any memory: file_read on the JSON file path
+      - Create/update memories: memory_store
+
+      TASK (three parts):
+
+      A. GENERALIZE: Find clusters of task-specific lessons that share a common pattern.
+      Create a new 'strategy:' entry that captures the general principle.
+      Do NOT delete the source lessons.
+
+      B. CROSS-LINK via refs: Establish inter-memory relationships using the 'refs'
+      parameter of memory_store. For each memory that relates to others, call
+      memory_store with refs=["key1", "key2", ...] listing the related memory keys.
+      This creates 'see also' links between memories.
+      Examples of valid refs relationships:
+        - A strategy refs the lessons it was generalized from
+        - A lesson refs other lessons about the same topic
+        - An anti-pattern refs the lesson that discovered it
+        - A skill refs strategies that inform its approach
+      When creating new strategy: entries in part A, ALWAYS include refs to the
+      source lesson keys.
+
+      CONSTRAINTS:
+      - Only create strategies when 3+ lessons share a clear pattern
+      - Don't create strategies that already exist
+      - Be conservative with refs -- only add genuinely useful connections
+      - refs should be EXISTING memory keys (verify they exist before adding)
+
+      WHEN DONE:
+      - Compose a FULL summary of ALL changes across ALL 4 passes
+        (read the scratchpad for passes 1-3)
+      - Run: shell_exec "cd {{memory_dir}} && git add -A && git commit -m
+        'Dream consolidation (4-pass)\n\n<your full summary here>
+        \n\nConsolidated-by: {{model}}'"
+      - Call done with the SAME summary text

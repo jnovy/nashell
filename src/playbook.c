@@ -11,6 +11,7 @@
 #include "nash_limits.h"
 #include "nash_log.h"
 #include "str.h"
+#include "frontend_tui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -353,7 +354,9 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
     return list;
 }
 
-/* ── Default dream.yaml ──────────────────────────────── */
+/* ── Default dream.yaml (embedded from playbooks/dream.yaml at build time) ── */
+
+#include "dream_yaml.inc"
 
 int playbook_write_default_dream(const char *path) {
     /* Create parent directory if needed */
@@ -368,56 +371,7 @@ int playbook_write_default_dream(const char *path) {
     FILE *f = fopen(path, "w");
     if (!f) return -1;
 
-    fprintf(f,
-"name: dream\n"
-"description: \"Memory consolidation - 4-pass cognitive maintenance\"\n"
-"version: 1\n"
-"\n"
-"session_mode: per-pass\n"
-"scratchpad_mode: shared\n"
-"pause_between: false\n"
-"\n"
-"post:\n"
-"  prune_memory: true\n"
-"  commit: false\n"
-"\n"
-"react:\n"
-"  max_steps: 0\n"
-"  inject_memory: false\n"
-"  inject_prev_result: false\n"
-"  enable_reflection: false\n"
-"  enable_pruning: false\n"
-"  enable_compaction: false\n"
-"  enable_scoring: false\n"
-"\n"
-"passes:\n"
-"  - label: \"Inventory & scan\"\n"
-"    prompt: |\n"
-"      You are performing MEMORY INVENTORY for a persistent knowledge store.\n"
-"      GOAL: Read and catalog ALL memories at: {{memory_dir}}\n"
-"      Call done with a summary of what you found.\n"
-"\n"
-"  - label: \"Merge duplicates\"\n"
-"    prompt: |\n"
-"      You are performing DEDUPLICATION at: {{memory_dir}}\n"
-"      Read the scratchpad for the inventory from the previous pass.\n"
-"      Call done with a list of merges performed.\n"
-"\n"
-"  - label: \"Resolve contradictions\"\n"
-"    prompt: |\n"
-"      You are performing CONTRADICTION RESOLUTION at: {{memory_dir}}\n"
-"      Read the scratchpad for inventory and merge history.\n"
-"      Call done with contradictions resolved.\n"
-"\n"
-"  - label: \"Synthesize & cross-link\"\n"
-"    react:\n"
-"      max_steps: 25\n"
-"    prompt: |\n"
-"      You are performing KNOWLEDGE SYNTHESIS at: {{memory_dir}}\n"
-"      Read the scratchpad for the full history of previous passes.\n"
-"      Call done with a full summary of ALL changes across ALL 4 passes.\n"
-    );
-
+    fwrite(playbooks_dream_yaml, 1, playbooks_dream_yaml_len, f);
     fclose(f);
     return 0;
 }
@@ -431,6 +385,11 @@ typedef struct {
 
 static void pb_event_cb(const react_event_t *ev, void *userdata) {
     pb_event_ctx_t *ctx = (pb_event_ctx_t *)userdata;
+    if (!ctx || !ctx->ui) {
+        /* Headless mode: print events to stderr */
+        tui_on_event(ev, NULL);
+        return;
+    }
     pthread_mutex_lock(&ctx->ui->mtx);
     ui_state_on_event(ev, (void *)ctx->ui);
     pthread_mutex_unlock(&ctx->ui->mtx);
@@ -453,6 +412,26 @@ void *playbook_worker(void *arg) {
 
     int playbook_ok = 1;
 
+    /* ── Run log: append-only JSONL tracking orchestration ── */
+    char runs_dir[NASH_PATH_MAX];
+    snprintf(runs_dir, sizeof(runs_dir), "%s/runs", pa->nash_dir);
+    mkdir(runs_dir, 0755);
+
+    struct timespec run_tp;
+    clock_gettime(CLOCK_REALTIME, &run_tp);
+    char run_path[NASH_PATH_MAX];
+    snprintf(run_path, sizeof(run_path), "%s/%ld.%05ld.jsonl",
+             runs_dir, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000);
+
+    FILE *run_log = fopen(run_path, "a");
+    if (run_log) {
+        fprintf(run_log,
+            "{\"e\":\"start\",\"pb\":\"%s\",\"ts\":%ld.%05ld,\"n\":%d}\n",
+            pb->name, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000,
+            pb->n_passes);
+        fflush(run_log);
+    }
+
     for (int pass = 0; pass < pb->n_passes; pass++) {
         pa->current_pass = pass;
 
@@ -461,9 +440,13 @@ void *playbook_worker(void *arg) {
         snprintf(status, sizeof(status), "%s %d/%d: %s",
                  pb->name, pass + 1, pb->n_passes,
                  pb->passes[pass].label);
-        pthread_mutex_lock(&pa->ui->mtx);
-        ui_state_set_status(pa->ui, STATUS_RUNNING, status);
-        pthread_mutex_unlock(&pa->ui->mtx);
+        if (pa->ui) {
+            pthread_mutex_lock(&pa->ui->mtx);
+            ui_state_set_status(pa->ui, STATUS_RUNNING, status);
+            pthread_mutex_unlock(&pa->ui->mtx);
+        } else {
+            fprintf(stderr, "[play] %s\n", status);
+        }
 
         /* Inter-pass pause */
         if (pass > 0 && pb->pause_between) {
@@ -489,6 +472,19 @@ void *playbook_worker(void *arg) {
             pass_dir = create_session_dir(pa->nash_dir);
         } else {
             pass_dir = strdup(shared_session_dir);
+        }
+
+        /* Run log: emit pass start */
+        if (run_log) {
+            const char *sid = strrchr(pass_dir, '/');
+            sid = sid ? sid + 1 : pass_dir;
+            struct timespec pass_tp;
+            clock_gettime(CLOCK_REALTIME, &pass_tp);
+            fprintf(run_log,
+                "{\"e\":\"pass\",\"i\":%d,\"l\":\"%s\",\"sid\":\"%s\",\"ts\":%ld.%05ld}\n",
+                pass, pb->passes[pass].label, sid,
+                (long)pass_tp.tv_sec, pass_tp.tv_nsec / 10000);
+            fflush(run_log);
         }
 
         /* Setup per-pass tool_ctx */
@@ -543,11 +539,27 @@ void *playbook_worker(void *arg) {
 
         int pass_failed = (result == NULL);
 
+        /* Run log: emit pass done */
+        if (run_log) {
+            struct timespec done_tp;
+            clock_gettime(CLOCK_REALTIME, &done_tp);
+            fprintf(run_log,
+                "{\"e\":\"done\",\"i\":%d,\"st\":\"%s\",\"ts\":%ld.%05ld}\n",
+                pass, pass_failed ? "fail" : "ok",
+                (long)done_tp.tv_sec, done_tp.tv_nsec / 10000);
+            fflush(run_log);
+        }
+
         /* Cleanup */
         free(prev_result);
         prev_result = result;
         free(prompt);
         if (pass_tools.scratchpad) free(pass_tools.scratchpad);
+        /* Free section-based scratchpad.
+         * For PB_SCRATCH_SHARED: already moved back to shared_scratch
+         * (struct zeroed by scratchpad_move), so this is a no-op.
+         * For PB_SCRATCH_ISOLATED: sections must be freed here. */
+        scratchpad_free(&pass_tools.scratch);
         alias_map_free(pass_tools.aliases);
         journal_free(pass_journal);
         free(pass_dir);
@@ -556,6 +568,17 @@ void *playbook_worker(void *arg) {
             playbook_ok = 0;
             break;
         }
+    }
+
+    /* Run log: emit end */
+    if (run_log) {
+        struct timespec end_tp;
+        clock_gettime(CLOCK_REALTIME, &end_tp);
+        fprintf(run_log,
+            "{\"e\":\"end\",\"st\":\"%s\",\"ts\":%ld.%05ld}\n",
+            playbook_ok ? "ok" : "fail",
+            (long)end_tp.tv_sec, end_tp.tv_nsec / 10000);
+        fclose(run_log);
     }
 
     /* Post-playbook hooks */

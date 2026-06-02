@@ -1,6 +1,7 @@
 # Compiled binaries
 nash
 *.o
+src/dream_yaml.inc
 tests/test_memory
 tests/test_store
 tests/test_config
