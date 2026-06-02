@@ -152,9 +152,11 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         if (msg && msg->valuestring) return msg->valuestring;
         return "(system log)";
     }
-    /* Truncate done/plan result to first line, max 80 chars */
-    if ((strcmp(tool, "done") == 0 || strcmp(tool, "plan") == 0)
-        && res && res->valuestring) {
+    /* Plan: don't show inline text — the full plan is rendered below */
+    if (strcmp(tool, "plan") == 0)
+        return "";
+    /* Truncate done result to first line, max 80 chars */
+    if (strcmp(tool, "done") == 0 && res && res->valuestring) {
         static char trunc_desc[128];
         const char *s = res->valuestring;
         /* Find first newline */
