@@ -715,7 +715,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * instead of manifest re-injection. */
 
     /* Inject memory summary (counts only — no alphabetical listing) */
-    if (ctx->tools->memory) {
+    if (ctx->flags.inject_memory && ctx->tools->memory) {
         char *mem_summary = memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
             char *mem_msg = malloc(strlen(mem_summary) + 128);
@@ -850,7 +850,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * resolved info including the R<N>_result section). Provides a
      * reliable cross-loop fallback so user follow-ups can reference
      * the previous task's output. */
-    {
+    if (ctx->flags.inject_prev_result) {
         char rpath[NASH_PATH_MAX];
         snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
         char *prev_result = slurp_file(rpath, NULL);
@@ -1745,7 +1745,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
 
         /* Within-loop context management: evict old messages when context gets full */
-        if (ctx->llm->context_size > 0) {
+        if (ctx->flags.enable_compaction && ctx->llm->context_size > 0) {
             int total_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
                 total_chars += (int)strlen(chat->msgs[i].content);
@@ -1980,7 +1980,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * these are high-frequency, low-value changes that pollute the git log
      * (access_count, recall_hits, recall_misses). Git history is reserved
      * for meaningful content changes (store, delete, prune, consolidate). */
-    if (ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
+    if (ctx->flags.enable_scoring && ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
             if (task_succeeded)
                 memory_increment_hits(ctx->tools->memory,
@@ -1993,7 +1993,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* FIX D2: Skip reflection when max_reflection_steps == 0 */
     int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
-    if (ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {
+    if (ctx->flags.enable_reflection && ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {
         llm_chat_t *reflect = llm_chat_new();
         if (task_succeeded) {
             llm_chat_add(reflect, "system",
@@ -2216,7 +2216,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * NOTE: The done result (R<N>_result section) is excluded from pruning.
      * It is preserved for cross-loop follow-ups via result.txt. The LLM pruning
      * should only remove task-specific working notes, not the final result. */
-    if (final_result && ctx->tools->scratch.count > 0) {
+    if (ctx->flags.enable_pruning && final_result && ctx->tools->scratch.count > 0) {
         /* Extract the R<N>_result section to preserve it across pruning */
         char result_sec_name[32];
         snprintf(result_sec_name, sizeof(result_sec_name), "R%d_result",

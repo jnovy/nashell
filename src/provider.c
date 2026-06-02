@@ -1,4 +1,5 @@
 #include "provider.h"
+#include "tools.h"
 #include "tools_registry.h"
 #include "str.h"
 #include "tui.h"
@@ -211,10 +212,33 @@ static void strict_object(cJSON *schema) {
 }
 
 cJSON *build_tools_from_registry(provider_type_t type) {
+    return build_tools_from_registry_filtered(type, NULL);
+}
+
+cJSON *build_tools_from_registry_filtered(provider_type_t type,
+                                           const void *filter_ptr) {
+    const tool_filter_t *filter = (const tool_filter_t *)filter_ptr;
     cJSON *tools = cJSON_CreateArray();
 
     for (int i = 0; TOOL_REGISTRY[i].name; i++) {
         const tool_def_t *td = &TOOL_REGISTRY[i];
+
+        /* Apply tool filter if provided */
+        if (filter) {
+            if (filter->allowed) {
+                int found = 0;
+                for (int j = 0; j < filter->n_allowed; j++)
+                    if (strcmp(td->name, filter->allowed[j]) == 0) { found = 1; break; }
+                if (!found) continue;
+            }
+            if (filter->blocked) {
+                int skip = 0;
+                for (int j = 0; j < filter->n_blocked; j++)
+                    if (strcmp(td->name, filter->blocked[j]) == 0) { skip = 1; break; }
+                if (skip) continue;
+            }
+        }
+
         cJSON *params = cJSON_Parse(td->params_json);
 
         if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {

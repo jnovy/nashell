@@ -2828,6 +2828,19 @@ static const struct {
 };
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
+    /* Tool filter: check whitelist/blacklist before dispatch */
+    if (ctx->tool_filter.allowed) {
+        int found = 0;
+        for (int i = 0; i < ctx->tool_filter.n_allowed; i++)
+            if (strcmp(action, ctx->tool_filter.allowed[i]) == 0) { found = 1; break; }
+        if (!found) return make_error("tool not available in this context");
+    }
+    if (ctx->tool_filter.blocked) {
+        for (int i = 0; i < ctx->tool_filter.n_blocked; i++)
+            if (strcmp(action, ctx->tool_filter.blocked[i]) == 0)
+                return make_error("tool not available in this context");
+    }
+
     /* Dispatch via table lookup */
     for (int i = 0; TOOL_DISPATCH[i].name; i++) {
         if (strcmp(action, TOOL_DISPATCH[i].name) == 0)

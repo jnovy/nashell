@@ -92,6 +92,17 @@ int scratchpad_save(scratchpad_t *sp, const char *session_dir);
 /* Load scratchpad from disk. Returns 0 on success. */
 int scratchpad_load(scratchpad_t *sp, const char *session_dir);
 
+/* Tool filter: whitelist or blacklist tool access per-pass.
+ * If allowed is non-NULL, only those tools can be called (whitelist mode).
+ * If blocked is non-NULL, those tools are denied (blacklist mode).
+ * Both NULL = all tools available (default). */
+typedef struct {
+    const char **allowed;    /* NULL = all allowed; non-NULL = whitelist */
+    int          n_allowed;
+    const char **blocked;    /* NULL = none blocked; non-NULL = blacklist */
+    int          n_blocked;
+} tool_filter_t;
+
 /* Session context passed to all tools */
 typedef struct {
     store_t       *store;
@@ -115,6 +126,8 @@ typedef struct {
     int            consolidating;
     /* Current step's thought (set by react.c before tool_execute, cleared after) */
     const char    *thought;
+    /* Per-pass tool access control (playbooks/dream) */
+    tool_filter_t  tool_filter;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

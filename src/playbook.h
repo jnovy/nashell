@@ -1,0 +1,126 @@
+#ifndef PLAYBOOK_H
+#define PLAYBOOK_H
+
+#include "react.h"
+#include "tools.h"
+#include "config.h"
+#include "ui_state.h"
+#include <stdatomic.h>
+
+/* ── Playbook types ──────────────────────────────────── */
+
+typedef enum {
+    PB_SESSION_PER_PASS,   /* fresh session per pass (like dream) */
+    PB_SESSION_SHARED,     /* one session for all passes */
+} pb_session_mode_t;
+
+typedef enum {
+    PB_SCRATCH_SHARED,     /* carry scratchpad across passes */
+    PB_SCRATCH_ISOLATED,   /* fresh scratchpad per pass */
+} pb_scratch_mode_t;
+
+/* Per-pass react loop overrides.
+ * -1 = "not set, inherit from playbook/global default"
+ * 0 = explicitly disabled, 1 = explicitly enabled */
+typedef struct {
+    int  max_steps;           /* 0 = inherit */
+    int  inject_memory;       /* -1 = inherit */
+    int  inject_prev_result;  /* -1 = inherit */
+    int  enable_reflection;   /* -1 = inherit */
+    int  enable_pruning;      /* -1 = inherit */
+    int  enable_compaction;   /* -1 = inherit */
+    int  enable_scoring;      /* -1 = inherit */
+    /* Tool filter */
+    char **tools_allow;       /* NULL = inherit */
+    int    n_tools_allow;
+    char **tools_block;       /* NULL = inherit */
+    int    n_tools_block;
+} pb_react_overrides_t;
+
+#define PB_REACT_INHERIT { 0, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0 }
+
+typedef struct {
+    char *label;
+    char *prompt_template;    /* raw template with {{var}} placeholders */
+    pb_react_overrides_t react;  /* per-pass overrides */
+} pb_pass_t;
+
+typedef struct {
+    char *name;
+    char *description;
+    char *filepath;
+
+    pb_session_mode_t session_mode;
+    pb_scratch_mode_t scratch_mode;
+    int  pause_between;
+
+    /* Template variables */
+    char **var_keys;
+    char **var_values;
+    int    n_vars;
+
+    /* Post hooks */
+    int  post_prune;
+    int  post_commit;
+
+    /* React defaults for all passes */
+    pb_react_overrides_t react_defaults;
+
+    /* Passes */
+    pb_pass_t *passes;
+    int        n_passes;
+} playbook_t;
+
+/* ── Playbook execution args (for worker thread) ─────── */
+
+typedef struct {
+    playbook_t      *playbook;
+    char            *nash_dir;
+    store_t         *store;
+    memory_t        *memory;
+    config_t        *cfg;
+    llm_config_t    *llm;
+    provider_t      *provider;
+    char            *server_model;
+    ui_state_t      *ui;
+    /* State */
+    int              current_pass;
+    int              playbook_ok;
+    atomic_int       done;
+    /* Inter-pass pause */
+    volatile int     waiting_for_user;
+    char            *inter_pass_message;
+} playbook_args_t;
+
+/* ── API ─────────────────────────────────────────────── */
+
+/* Load a playbook from a YAML file */
+playbook_t *playbook_load(const char *path);
+
+/* Free a playbook */
+void playbook_free(playbook_t *pb);
+
+/* Resolve react flags for a specific pass:
+ * pass overrides → playbook defaults → global config defaults */
+react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
+                                      const config_t *cfg);
+
+/* Resolve tool filter for a specific pass */
+tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx);
+
+/* Expand {{var}} placeholders in a prompt string */
+char *playbook_expand(const playbook_t *pb, const char *tmpl,
+                      int pass_idx, const char *prev_result,
+                      const char *memory_dir, const char *model,
+                      const char *session_dir, const char *nash_dir);
+
+/* List available playbooks from ~/.nash/playbooks/ */
+playbook_t **playbook_list(const char *nash_dir, int *count);
+
+/* Write default dream.yaml */
+int playbook_write_default_dream(const char *path);
+
+/* Worker thread entry point */
+void *playbook_worker(void *arg);
+
+#endif /* PLAYBOOK_H */

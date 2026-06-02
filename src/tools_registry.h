@@ -109,4 +109,9 @@ static const tool_def_t TOOL_REGISTRY[] = {
  * For Anthropic: uses "input_schema" instead of "parameters" and no "function" wrapper. */
 cJSON *build_tools_from_registry(provider_type_t type);
 
+/* Build tool definitions with an optional filter (whitelist/blacklist).
+ * filter=NULL means all tools included. Pass a tool_filter_t* (as void*). */
+cJSON *build_tools_from_registry_filtered(provider_type_t type,
+                                           const void *filter);
+
 #endif /* TOOLS_REGISTRY_H */

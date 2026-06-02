@@ -1,0 +1,573 @@
+/*
+ * Playbook system for nash — multi-pass agentic workflows.
+ *
+ * A playbook is a YAML file defining a sequence of react_run() passes
+ * with shared scratchpad, configurable react loop flags, and template
+ * variable expansion. Dream is the first built-in playbook.
+ */
+
+#include "playbook.h"
+#include "yaml_parse.h"
+#include "nash_limits.h"
+#include "nash_log.h"
+#include "str.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
+
+/* Forward declaration — defined in main.c.\n * Weak symbol so tests can link without main.o. */
+char *create_session_dir(const char *nash_dir) __attribute__((weak));
+
+/* ── YAML → Playbook parsing ────────────────────────── */
+
+static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t *ro) {
+    if (!react_node) return;
+
+    yaml_node_t *n;
+    if ((n = yaml_get(react_node, "max_steps")))
+        ro->max_steps = yaml_int(n, 0);
+    if ((n = yaml_get(react_node, "inject_memory")))
+        ro->inject_memory = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "inject_prev_result")))
+        ro->inject_prev_result = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "enable_reflection")))
+        ro->enable_reflection = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "enable_pruning")))
+        ro->enable_pruning = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "enable_compaction")))
+        ro->enable_compaction = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "enable_scoring")))
+        ro->enable_scoring = yaml_bool(n, -1);
+
+    /* Tool filter */
+    yaml_node_t *tools = yaml_get(react_node, "tools");
+    if (tools) {
+        yaml_node_t *allow = yaml_get(tools, "allow");
+        if (allow && allow->type == YAML_SEQUENCE) {
+            ro->n_tools_allow = yaml_len(allow);
+            ro->tools_allow = calloc(ro->n_tools_allow, sizeof(char *));
+            for (int i = 0; i < ro->n_tools_allow; i++) {
+                const char *s = yaml_str(yaml_item(allow, i));
+                ro->tools_allow[i] = s ? strdup(s) : strdup("");
+            }
+        }
+        yaml_node_t *block = yaml_get(tools, "block");
+        if (block && block->type == YAML_SEQUENCE) {
+            ro->n_tools_block = yaml_len(block);
+            ro->tools_block = calloc(ro->n_tools_block, sizeof(char *));
+            for (int i = 0; i < ro->n_tools_block; i++) {
+                const char *s = yaml_str(yaml_item(block, i));
+                ro->tools_block[i] = s ? strdup(s) : strdup("");
+            }
+        }
+    }
+}
+
+playbook_t *playbook_load(const char *path) {
+    yaml_node_t *root = yaml_parse_file(path);
+    if (!root) return NULL;
+
+    playbook_t *pb = calloc(1, sizeof(playbook_t));
+    if (!pb) { yaml_free(root); return NULL; }
+
+    pb->filepath = strdup(path);
+
+    /* Initialize react defaults to inherit */
+    pb->react_defaults = (pb_react_overrides_t)PB_REACT_INHERIT;
+
+    /* Top-level fields */
+    const char *s;
+    if ((s = yaml_str(yaml_get(root, "name"))))
+        pb->name = strdup(s);
+    else
+        pb->name = strdup("unnamed");
+
+    if ((s = yaml_str(yaml_get(root, "description"))))
+        pb->description = strdup(s);
+
+    /* Session mode */
+    s = yaml_str(yaml_get(root, "session_mode"));
+    if (s && strcmp(s, "shared") == 0)
+        pb->session_mode = PB_SESSION_SHARED;
+    else
+        pb->session_mode = PB_SESSION_PER_PASS;
+
+    /* Scratchpad mode */
+    s = yaml_str(yaml_get(root, "scratchpad_mode"));
+    if (s && strcmp(s, "isolated") == 0)
+        pb->scratch_mode = PB_SCRATCH_ISOLATED;
+    else
+        pb->scratch_mode = PB_SCRATCH_SHARED;
+
+    /* Pause between */
+    pb->pause_between = yaml_bool(yaml_get(root, "pause_between"), 0);
+
+    /* Template variables */
+    yaml_node_t *vars = yaml_get(root, "vars");
+    if (vars && vars->type == YAML_MAPPING) {
+        pb->n_vars = vars->n_children;
+        pb->var_keys = calloc(pb->n_vars, sizeof(char *));
+        pb->var_values = calloc(pb->n_vars, sizeof(char *));
+        for (int i = 0; i < pb->n_vars; i++) {
+            pb->var_keys[i] = strdup(vars->keys[i]);
+            const char *v = yaml_str(vars->values[i]);
+            pb->var_values[i] = v ? strdup(v) : strdup("");
+        }
+    }
+
+    /* Post hooks */
+    yaml_node_t *post = yaml_get(root, "post");
+    if (post) {
+        pb->post_prune = yaml_bool(yaml_get(post, "prune_memory"), 0);
+        pb->post_commit = yaml_bool(yaml_get(post, "commit"), 0);
+    }
+
+    /* React defaults */
+    parse_react_overrides(yaml_get(root, "react"), &pb->react_defaults);
+
+    /* Passes */
+    yaml_node_t *passes = yaml_get(root, "passes");
+    if (passes && passes->type == YAML_SEQUENCE) {
+        pb->n_passes = yaml_len(passes);
+        pb->passes = calloc(pb->n_passes, sizeof(pb_pass_t));
+        for (int i = 0; i < pb->n_passes; i++) {
+            yaml_node_t *pass = yaml_item(passes, i);
+            if (!pass) continue;
+
+            pb->passes[i].react = (pb_react_overrides_t)PB_REACT_INHERIT;
+
+            const char *label = yaml_str(yaml_get(pass, "label"));
+            pb->passes[i].label = label ? strdup(label) : strdup("(unnamed)");
+
+            const char *prompt = yaml_str(yaml_get(pass, "prompt"));
+            pb->passes[i].prompt_template = prompt ? strdup(prompt) : strdup("");
+
+            /* Per-pass react overrides */
+            parse_react_overrides(yaml_get(pass, "react"), &pb->passes[i].react);
+        }
+    }
+
+    yaml_free(root);
+    return pb;
+}
+
+static void free_react_overrides(pb_react_overrides_t *ro) {
+    for (int i = 0; i < ro->n_tools_allow; i++) free(ro->tools_allow[i]);
+    free(ro->tools_allow);
+    for (int i = 0; i < ro->n_tools_block; i++) free(ro->tools_block[i]);
+    free(ro->tools_block);
+}
+
+void playbook_free(playbook_t *pb) {
+    if (!pb) return;
+    free(pb->name);
+    free(pb->description);
+    free(pb->filepath);
+    for (int i = 0; i < pb->n_vars; i++) {
+        free(pb->var_keys[i]);
+        free(pb->var_values[i]);
+    }
+    free(pb->var_keys);
+    free(pb->var_values);
+    free_react_overrides(&pb->react_defaults);
+    for (int i = 0; i < pb->n_passes; i++) {
+        free(pb->passes[i].label);
+        free(pb->passes[i].prompt_template);
+        free_react_overrides(&pb->passes[i].react);
+    }
+    free(pb->passes);
+    free(pb);
+}
+
+/* ── Flag resolution (3-level cascade) ───────────────── */
+
+react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
+                                      const config_t *cfg) {
+    const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
+    const pb_react_overrides_t *def = &pb->react_defaults;
+    (void)cfg;  /* global config doesn't have per-flag settings yet */
+
+    #define RESOLVE(field, global_default) \
+        (pass->field != -1 ? pass->field : \
+         (def->field != -1 ? def->field : global_default))
+
+    react_flags_t f;
+    f.inject_memory       = RESOLVE(inject_memory, 1);
+    f.inject_prev_result  = RESOLVE(inject_prev_result, 1);
+    f.enable_reflection   = RESOLVE(enable_reflection, 1);
+    f.enable_pruning      = RESOLVE(enable_pruning, 1);
+    f.enable_compaction   = RESOLVE(enable_compaction, 1);
+    f.enable_scoring      = RESOLVE(enable_scoring, 1);
+
+    #undef RESOLVE
+    return f;
+}
+
+tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx) {
+    tool_filter_t tf = {0};
+    const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
+    const pb_react_overrides_t *def = &pb->react_defaults;
+
+    /* Pass-level overrides take precedence */
+    if (pass->tools_allow) {
+        tf.allowed = (const char **)pass->tools_allow;
+        tf.n_allowed = pass->n_tools_allow;
+    } else if (def->tools_allow) {
+        tf.allowed = (const char **)def->tools_allow;
+        tf.n_allowed = def->n_tools_allow;
+    }
+
+    if (pass->tools_block) {
+        tf.blocked = (const char **)pass->tools_block;
+        tf.n_blocked = pass->n_tools_block;
+    } else if (def->tools_block) {
+        tf.blocked = (const char **)def->tools_block;
+        tf.n_blocked = def->n_tools_block;
+    }
+
+    return tf;
+}
+
+/* ── Template expansion ──────────────────────────────── */
+
+/* Replace all occurrences of {{key}} with value in a string */
+static char *str_replace_all(const char *src, const char *key, const char *val) {
+    if (!src || !key || !val) return src ? strdup(src) : NULL;
+
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "{{%s}}", key);
+    int plen = (int)strlen(pattern);
+    int vlen = (int)strlen(val);
+
+    /* Count occurrences */
+    int count = 0;
+    const char *p = src;
+    while ((p = strstr(p, pattern)) != NULL) { count++; p += plen; }
+
+    if (count == 0) return strdup(src);
+
+    int slen = (int)strlen(src);
+    int new_len = slen + count * (vlen - plen);
+    char *result = malloc(new_len + 1);
+    char *dst = result;
+    p = src;
+    while (*p) {
+        if (strncmp(p, pattern, plen) == 0) {
+            memcpy(dst, val, vlen);
+            dst += vlen;
+            p += plen;
+        } else {
+            *dst++ = *p++;
+        }
+    }
+    *dst = '\0';
+    return result;
+}
+
+char *playbook_expand(const playbook_t *pb, const char *tmpl,
+                      int pass_idx, const char *prev_result,
+                      const char *memory_dir, const char *model,
+                      const char *session_dir, const char *nash_dir) {
+    if (!tmpl) return strdup("");
+
+    char *result = strdup(tmpl);
+
+    /* Built-in variables */
+    char pass_num[16], total_passes[16];
+    snprintf(pass_num, sizeof(pass_num), "%d", pass_idx + 1);
+    snprintf(total_passes, sizeof(total_passes), "%d", pb->n_passes);
+
+        char datebuf[32];
+    time_t now = time(NULL);
+    struct tm *utc = gmtime(&now);
+    strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", utc);
+
+    char cwdbuf[NASH_PATH_MAX];
+    if (!getcwd(cwdbuf, sizeof(cwdbuf)))
+        snprintf(cwdbuf, sizeof(cwdbuf), ".");
+
+    struct { const char *key; const char *val; } builtins[] = {
+        {"memory_dir",   memory_dir ? memory_dir : ""},
+        {"model",        model ? model : "unknown"},
+        {"session_dir",  session_dir ? session_dir : ""},
+        {"nash_dir",     nash_dir ? nash_dir : ""},
+        {"cwd",          cwdbuf},
+        {"date",         datebuf},
+        {"pass_number",  pass_num},
+        {"total_passes", total_passes},
+        {"prev_result",  prev_result ? prev_result : ""},
+        {NULL, NULL},
+    };
+
+    for (int i = 0; builtins[i].key; i++) {
+        char *next = str_replace_all(result, builtins[i].key, builtins[i].val);
+        free(result);
+        result = next;
+    }
+
+    /* User-defined variables */
+    for (int i = 0; i < pb->n_vars; i++) {
+        char *next = str_replace_all(result, pb->var_keys[i], pb->var_values[i]);
+        free(result);
+        result = next;
+    }
+
+    return result;
+}
+
+/* ── Playbook listing ────────────────────────────────── */
+
+playbook_t **playbook_list(const char *nash_dir, int *count) {
+    *count = 0;
+    char pb_dir[NASH_PATH_MAX];
+    snprintf(pb_dir, sizeof(pb_dir), "%s/playbooks", nash_dir);
+
+    DIR *d = opendir(pb_dir);
+    if (!d) return NULL;
+
+    playbook_t **list = NULL;
+    int cap = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        int nlen = (int)strlen(ent->d_name);
+        if (nlen < 5 || strcmp(ent->d_name + nlen - 5, ".yaml") != 0)
+            continue;
+
+        char path[NASH_PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s", pb_dir, ent->d_name);
+        playbook_t *pb = playbook_load(path);
+        if (!pb) continue;
+
+        if (*count >= cap) {
+            cap = cap ? cap * 2 : 8;
+            list = realloc(list, cap * sizeof(playbook_t *));
+        }
+        list[(*count)++] = pb;
+    }
+    closedir(d);
+    return list;
+}
+
+/* ── Default dream.yaml ──────────────────────────────── */
+
+int playbook_write_default_dream(const char *path) {
+    /* Create parent directory if needed */
+    char dir[NASH_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s", path);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        mkdir(dir, 0755);
+    }
+
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+
+    fprintf(f,
+"name: dream\n"
+"description: \"Memory consolidation - 4-pass cognitive maintenance\"\n"
+"version: 1\n"
+"\n"
+"session_mode: per-pass\n"
+"scratchpad_mode: shared\n"
+"pause_between: false\n"
+"\n"
+"post:\n"
+"  prune_memory: true\n"
+"  commit: false\n"
+"\n"
+"react:\n"
+"  max_steps: 0\n"
+"  inject_memory: false\n"
+"  inject_prev_result: false\n"
+"  enable_reflection: false\n"
+"  enable_pruning: false\n"
+"  enable_compaction: false\n"
+"  enable_scoring: false\n"
+"\n"
+"passes:\n"
+"  - label: \"Inventory & scan\"\n"
+"    prompt: |\n"
+"      You are performing MEMORY INVENTORY for a persistent knowledge store.\n"
+"      GOAL: Read and catalog ALL memories at: {{memory_dir}}\n"
+"      Call done with a summary of what you found.\n"
+"\n"
+"  - label: \"Merge duplicates\"\n"
+"    prompt: |\n"
+"      You are performing DEDUPLICATION at: {{memory_dir}}\n"
+"      Read the scratchpad for the inventory from the previous pass.\n"
+"      Call done with a list of merges performed.\n"
+"\n"
+"  - label: \"Resolve contradictions\"\n"
+"    prompt: |\n"
+"      You are performing CONTRADICTION RESOLUTION at: {{memory_dir}}\n"
+"      Read the scratchpad for inventory and merge history.\n"
+"      Call done with contradictions resolved.\n"
+"\n"
+"  - label: \"Synthesize & cross-link\"\n"
+"    react:\n"
+"      max_steps: 25\n"
+"    prompt: |\n"
+"      You are performing KNOWLEDGE SYNTHESIS at: {{memory_dir}}\n"
+"      Read the scratchpad for the full history of previous passes.\n"
+"      Call done with a full summary of ALL changes across ALL 4 passes.\n"
+    );
+
+    fclose(f);
+    return 0;
+}
+
+/* ── Worker thread ───────────────────────────────────── */
+
+/* Event callback for playbook passes — routes to TUI */
+typedef struct {
+    ui_state_t *ui;
+} pb_event_ctx_t;
+
+static void pb_event_cb(const react_event_t *ev, void *userdata) {
+    pb_event_ctx_t *ctx = (pb_event_ctx_t *)userdata;
+    pthread_mutex_lock(&ctx->ui->mtx);
+    ui_state_on_event(ev, (void *)ctx->ui);
+    pthread_mutex_unlock(&ctx->ui->mtx);
+}
+
+void *playbook_worker(void *arg) {
+    playbook_args_t *pa = arg;
+    playbook_t *pb = pa->playbook;
+    pb_event_ctx_t ev_ctx = { .ui = pa->ui };
+
+    scratchpad_t shared_scratch;
+    scratchpad_init(&shared_scratch);
+
+    char *prev_result = NULL;
+    char *shared_session_dir = NULL;
+
+    if (pb->session_mode == PB_SESSION_SHARED) {
+        shared_session_dir = create_session_dir(pa->nash_dir);
+    }
+
+    int playbook_ok = 1;
+
+    for (int pass = 0; pass < pb->n_passes; pass++) {
+        pa->current_pass = pass;
+
+        /* Update TUI status */
+        char status[256];
+        snprintf(status, sizeof(status), "%s %d/%d: %s",
+                 pb->name, pass + 1, pb->n_passes,
+                 pb->passes[pass].label);
+        pthread_mutex_lock(&pa->ui->mtx);
+        ui_state_set_status(pa->ui, STATUS_RUNNING, status);
+        pthread_mutex_unlock(&pa->ui->mtx);
+
+        /* Inter-pass pause */
+        if (pass > 0 && pb->pause_between) {
+            pa->waiting_for_user = 1;
+            pa->inter_pass_message = pb->passes[pass].label;
+            while (pa->waiting_for_user) {
+                struct timespec ts = {0, 50000000};
+                nanosleep(&ts, NULL);
+            }
+        }
+
+        /* Expand template */
+        const char *mdir = pa->memory ? pa->memory->dir : "";
+        const char *model = pa->server_model ? pa->server_model : "unknown";
+        char *prompt = playbook_expand(pb, pb->passes[pass].prompt_template,
+                                       pass, prev_result,
+                                       mdir, model,
+                                       NULL, pa->nash_dir);
+
+        /* Create session */
+        char *pass_dir;
+        if (pb->session_mode == PB_SESSION_PER_PASS) {
+            pass_dir = create_session_dir(pa->nash_dir);
+        } else {
+            pass_dir = strdup(shared_session_dir);
+        }
+
+        /* Setup per-pass tool_ctx */
+        journal_t *pass_journal = journal_new(pass_dir);
+        llm_config_t llm_copy = *pa->llm;
+        tool_filter_t tf = playbook_resolve_tools(pb, pass);
+        tool_ctx_t pass_tools = {
+            .store = pa->store,
+            .journal = pass_journal,
+            .memory = pa->memory,
+            .session_dir = pass_dir,
+            .scratchpad = NULL,
+            .cfg = pa->cfg,
+            .llm = &llm_copy,
+            .provider = pa->provider,
+            .react_loop = 0,
+            .aliases = alias_map_new(),
+            .tool_filter = tf,
+        };
+
+        /* Transfer shared scratchpad */
+        if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+            scratchpad_move(&pass_tools.scratch, &shared_scratch);
+        } else {
+            scratchpad_init(&pass_tools.scratch);
+        }
+
+        /* Resolve react flags for this pass */
+        react_flags_t flags = playbook_resolve_flags(pb, pass, pa->cfg);
+        int max_steps = pb->passes[pass].react.max_steps > 0
+                        ? pb->passes[pass].react.max_steps
+                        : (pb->react_defaults.max_steps > 0
+                           ? pb->react_defaults.max_steps
+                           : pa->cfg->max_react_steps);
+
+        react_ctx_t pass_react = {
+            .provider = pa->provider,
+            .llm = &llm_copy,
+            .tools = &pass_tools,
+            .max_steps = max_steps,
+            .verbose = 1,
+            .flags = flags,
+        };
+
+        /* Run the pass */
+        char *result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
+
+        /* Harvest scratchpad */
+        if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+            scratchpad_move(&shared_scratch, &pass_tools.scratch);
+        }
+
+        int pass_failed = (result == NULL);
+
+        /* Cleanup */
+        free(prev_result);
+        prev_result = result;
+        free(prompt);
+        if (pass_tools.scratchpad) free(pass_tools.scratchpad);
+        alias_map_free(pass_tools.aliases);
+        journal_free(pass_journal);
+        free(pass_dir);
+
+        if (pass_failed) {
+            playbook_ok = 0;
+            break;
+        }
+    }
+
+    /* Post-playbook hooks */
+    if (pb->post_prune && pa->memory) {
+        memory_prune(pa->memory, pa->cfg->prune_min_score,
+                     pa->cfg->prune_min_evidence);
+    }
+
+    free(prev_result);
+    free(shared_session_dir);
+    scratchpad_free(&shared_scratch);
+    pa->playbook_ok = playbook_ok;
+    pa->done = 1;
+    return NULL;
+}

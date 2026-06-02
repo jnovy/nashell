@@ -6,12 +6,30 @@
 #include "tools.h"
 #include "react_event.h"
 
+/* React loop subsystem flags — controls which subsystems fire per react_run().
+ * Default: all enabled (1). Playbooks/dream can selectively disable. */
+typedef struct {
+    unsigned int inject_memory       : 1;  /* inject memory index + pinned + recall */
+    unsigned int inject_prev_result  : 1;  /* inject result.txt as [PREVIOUS RESULT] */
+    unsigned int enable_reflection   : 1;  /* post-task reflection (memory_store lessons) */
+    unsigned int enable_pruning      : 1;  /* post-reflection scratchpad pruning */
+    unsigned int enable_compaction   : 1;  /* LLM-based context eviction/summarization */
+    unsigned int enable_scoring      : 1;  /* validation scoring (recall_hits/misses) */
+} react_flags_t;
+
+/* Default: all subsystems enabled */
+#define REACT_FLAGS_DEFAULT { 1, 1, 1, 1, 1, 1 }
+
+/* Bare mode: all subsystems disabled (for dream/playbook passes) */
+#define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0 }
+
 typedef struct {
     provider_t   *provider;  /* provider abstraction (replaces llm_config_t) */
     llm_config_t *llm;       /* kept for backward compat (EDRM probe, etc.) */
     tool_ctx_t   *tools;
     int           max_steps;
     int           verbose;
+    react_flags_t flags;          /* controls which subsystems fire */
     volatile int  pause_requested;  /* set by TUI (Space) to pause after current step */
     int           paused;           /* 1 when paused with checkpoint saved (toggle state) */
 

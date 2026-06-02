@@ -106,6 +106,12 @@ void provider_free(provider_t *p);
  * Returns a cJSON array formatted for the provider's API. Caller owns result. */
 cJSON *build_tools_from_registry(provider_type_t type);
 
+/* Build tool definitions with an optional filter (whitelist/blacklist).
+ * filter=NULL means all tools included. Uses tool_filter_t from tools.h. */
+struct tool_filter_t;  /* forward declaration */
+cJSON *build_tools_from_registry_filtered(provider_type_t type,
+                                           const void *filter);
+
 /* Shared utilities (used by local/openai providers) */
 
 /* Build the "messages" JSON array from a chat history.

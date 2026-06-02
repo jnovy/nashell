@@ -25,6 +25,7 @@
 #include "tui.h"
 #include "nash_log.h"
 #include "str.h"
+#include "playbook.h"
 
 /* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
  * Caps at 32KB to prevent memory explosion. */
@@ -54,7 +55,7 @@ static char *get_nash_dir(const config_t *cfg) {
 }
 
 /* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/ */
-static char *create_session_dir(const char *nash_dir) {
+char *create_session_dir(const char *nash_dir) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
 
@@ -402,12 +403,14 @@ static void *dream_worker(void *arg) {
         };
         scratchpad_move(&pass_tools.scratch, &shared_scratch);
 
+        react_flags_t dream_flags = REACT_FLAGS_BARE;
         react_ctx_t pass_react = {
             .provider = da->provider,
             .llm = &llm_cfg_copy,
             .tools = &pass_tools,
             .max_steps = da->cfg->max_react_steps,
             .verbose = 1,
+            .flags = dream_flags,
         };
 
         /* Build per-pass prompt */
@@ -732,9 +735,11 @@ int main(int argc, char **argv) {
                 tools.scratchpad = load_legacy_scratchpad(session_dir);
             }
         }
+        react_flags_t default_flags = REACT_FLAGS_DEFAULT;
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
+            .flags = default_flags,
         };
         char *result = react_run(&react, query, tui_on_event, NULL);
         /* Resolve session_dir from journal for lazy sessions.
@@ -820,9 +825,11 @@ int main(int argc, char **argv) {
         } else {
             tools.scratchpad = load_legacy_scratchpad(session_dir);
         }
+        react_flags_t tui_default_flags = REACT_FLAGS_DEFAULT;
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
+            .flags = tui_default_flags,
         };
 
         /* Initialize logging subsystem for TUI error routing */
@@ -863,7 +870,26 @@ int main(int argc, char **argv) {
         pthread_t infer_tid;
         static infer_args_t iargs;
         static dream_args_t dargs;
+        static playbook_args_t pargs_tui;
         while (running) {
+            /* Check if playbook thread completed */
+            if (inferring == 3 && pargs_tui.done) {
+                pthread_join(infer_tid, NULL);
+                pthread_mutex_lock(&ui->mtx);
+                if (pargs_tui.playbook_ok) {
+                    char done_msg[256];
+                    snprintf(done_msg, sizeof(done_msg), "Playbook '%s' complete (%d passes)",
+                             pargs_tui.playbook->name, pargs_tui.playbook->n_passes);
+                    ui_state_set_status(ui, STATUS_DONE, done_msg);
+                } else {
+                    ui_state_set_status(ui, STATUS_ERROR, "Playbook failed");
+                }
+                pthread_mutex_unlock(&ui->mtx);
+                playbook_free(pargs_tui.playbook);
+                pargs_tui.playbook = NULL;
+                inferring = 0;
+                tui_render(ui);
+            }
             /* Check if dream thread completed */
             if (inferring == 2 && dargs.done) {
                 pthread_join(infer_tid, NULL);
@@ -1121,7 +1147,7 @@ int main(int argc, char **argv) {
                     continue;
                 }
 
-                /* Handle /dream command — memory consolidation in a NEW session */
+                /* Handle /dream command — alias for /play dream */
                 if (strcmp(submitted_query, "/dream") == 0) {
                     free(submitted_query);
                     submitted_query = NULL;
@@ -1135,12 +1161,120 @@ int main(int argc, char **argv) {
                         continue;
                     }
 
-                    /* ---- P4: Multi-pass dreaming (N=4) ----
-                     * Memory consolidation as offline cognitive function.
-                     * Each pass (SCAN→DEDUP→RESOLVE→SYNTHESIZE) operates on
-                     * progressively cleaner data from previous passes.
-                     * Runs on a background thread so the TUI stays responsive. */
-                    dargs = (dream_args_t){
+                    /* Load dream playbook from ~/.nash/playbooks/dream.yaml.
+                     * If not found, write the default and load it. */
+                    char pb_path[NASH_PATH_MAX];
+                    snprintf(pb_path, sizeof(pb_path), "%s/playbooks/dream.yaml", nash_dir);
+                    playbook_t *dream_pb = playbook_load(pb_path);
+                    if (!dream_pb) {
+                        playbook_write_default_dream(pb_path);
+                        dream_pb = playbook_load(pb_path);
+                    }
+                    if (!dream_pb) {
+                        /* Fallback: use legacy dream_worker */
+                        dargs = (dream_args_t){
+                            .nash_dir = nash_dir,
+                            .store = shared_store,
+                            .memory = memory,
+                            .cfg = cfg,
+                            .llm = &llm_cfg,
+                            .provider = provider,
+                            .server_model = server_model,
+                            .ui = ui,
+                            .dream_ok = 0,
+                            .done = 0,
+                        };
+                        pthread_create(&infer_tid, NULL, dream_worker, &dargs);
+                        inferring = 2;
+                    } else {
+                        /* Use playbook system */
+                        pargs_tui = (playbook_args_t){
+                            .playbook = dream_pb,
+                            .nash_dir = nash_dir,
+                            .store = shared_store,
+                            .memory = memory,
+                            .cfg = cfg,
+                            .llm = &llm_cfg,
+                            .provider = provider,
+                            .server_model = server_model,
+                            .ui = ui,
+                            .playbook_ok = 0,
+                            .done = 0,
+                        };
+                        pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
+                        inferring = 3;  /* 3 = playbook */
+                    }
+                    tui_render(ui);
+                    continue;
+                }
+
+                /* Handle /play command — run a playbook */
+                if (strncmp(submitted_query, "/play ", 6) == 0) {
+                    const char *arg = submitted_query + 6;
+                    while (*arg == ' ') arg++;
+
+                    if (inferring) {
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_status(ui, STATUS_ERROR,
+                                            "Wait for inference to finish");
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+
+                    if (strcmp(arg, "list") == 0) {
+                        /* List available playbooks */
+                        int pb_count = 0;
+                        playbook_t **pbs = playbook_list(nash_dir, &pb_count);
+                        str_t display = str_new(1024);
+                        str_appendf(&display, "# Available Playbooks\n\n");
+                        if (pb_count == 0) {
+                            str_appendf(&display, "No playbooks found in %s/playbooks/\n", nash_dir);
+                        } else {
+                            for (int i = 0; i < pb_count; i++) {
+                                str_appendf(&display, "- **%s**: %s (%d passes)\n",
+                                    pbs[i]->name,
+                                    pbs[i]->description ? pbs[i]->description : "",
+                                    pbs[i]->n_passes);
+                                playbook_free(pbs[i]);
+                            }
+                            free(pbs);
+                        }
+                        char *banner = str_steal(&display);
+                        pthread_mutex_lock(&ui->mtx);
+                        ui_state_set_banner(ui, banner);
+                        ui_state_set_status(ui, STATUS_READY, "Playbook list");
+                        pthread_mutex_unlock(&ui->mtx);
+                        free(banner);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+
+                    /* Load playbook by name or path */
+                    char pb_path[NASH_PATH_MAX];
+                    if (strchr(arg, '/') || strchr(arg, '.')) {
+                        snprintf(pb_path, sizeof(pb_path), "%s", arg);
+                    } else {
+                        snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml",
+                                 nash_dir, arg);
+                    }
+                    playbook_t *pb = playbook_load(pb_path);
+                    if (!pb) {
+                        pthread_mutex_lock(&ui->mtx);
+                        char errmsg[512];
+                        snprintf(errmsg, sizeof(errmsg),
+                                 "/play: cannot load playbook '%s'", pb_path);
+                        ui_state_set_status(ui, STATUS_ERROR, errmsg);
+                        pthread_mutex_unlock(&ui->mtx);
+                        tui_render(ui);
+                        free(submitted_query);
+                        continue;
+                    }
+
+                    pargs_tui = (playbook_args_t){
+                        .playbook = pb,
                         .nash_dir = nash_dir,
                         .store = shared_store,
                         .memory = memory,
@@ -1149,12 +1283,13 @@ int main(int argc, char **argv) {
                         .provider = provider,
                         .server_model = server_model,
                         .ui = ui,
-                        .dream_ok = 0,
+                        .playbook_ok = 0,
                         .done = 0,
                     };
-                    pthread_create(&infer_tid, NULL, dream_worker, &dargs);
-                    inferring = 2;  /* 2 = dream (vs 1 = regular inference) */
+                    pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
+                    inferring = 3;
                     tui_render(ui);
+                    free(submitted_query);
                     continue;
                 }
 
