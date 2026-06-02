@@ -27,9 +27,20 @@ char *unwrap_thought(const char *thought) {
         cJSON *nested = cJSON_Parse(current);
         if (!nested) break;
         cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-        if (!inner || !cJSON_IsString(inner) || !inner->valuestring || inner->valuestring[0] == '\0') {
+        if (!inner || !cJSON_IsString(inner) || !inner->valuestring) {
+            /* No thought field or not a string — the input is a JSON object
+             * (e.g. a full action echo) with no extractable thought. */
             cJSON_Delete(nested);
-            break;
+            free(current);
+            return NULL;
+        }
+        if (inner->valuestring[0] == '\0') {
+            /* Nested thought is empty — the model echoed the full action
+             * JSON as the thought field but left thought="".  Return NULL
+             * so the display layer treats this as "no thought". */
+            cJSON_Delete(nested);
+            free(current);
+            return NULL;
         }
         char *next = strdup(inner->valuestring);
         cJSON_Delete(nested);
@@ -38,9 +49,10 @@ char *unwrap_thought(const char *thought) {
         current = next;  /* still JSON, continue unwrapping */
     }
 
-    /* If we exhausted depth limit or broke out, return the last unwrapped value
-     * (it may still be JSON, but we can't unwrap further). */
-    return current;
+    /* If we exhausted depth limit, the value is still JSON.
+     * Return NULL since it's not meaningful thought text. */
+    free(current);
+    return NULL;
 }
 
 journal_t *journal_new(const char *session_dir) {
@@ -228,7 +240,11 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             cJSON *th = cJSON_GetObjectItem(params, "thought");
             if (th && th->valuestring && th->valuestring[0]) {
                 unwrapped2 = unwrap_thought(th->valuestring);
-                thought = unwrapped2 ? unwrapped2 : th->valuestring;
+                if (unwrapped2)
+                    thought = unwrapped2;
+                else if (th->valuestring[0] != '{')
+                    thought = th->valuestring; /* plain text, use as-is */
+                /* else: JSON with no extractable thought — skip */
             }
             cJSON *cmd = cJSON_GetObjectItem(params, "command");
             cJSON *p = cJSON_GetObjectItem(params, "path");

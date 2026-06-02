@@ -185,7 +185,12 @@ static char *extract_thought(cJSON *params) {
     if (!th || !th->valuestring || !th->valuestring[0]) return NULL;
 
     char *clean = unwrap_thought(th->valuestring);
-    return clean ? clean : strdup(th->valuestring);
+    if (clean) return clean;
+    /* unwrap_thought returned NULL — if the raw value is JSON (starts with
+     * '{'), it's a garbled echo with no extractable thought; suppress it.
+     * Otherwise it's plain text — use as-is. */
+    if (th->valuestring[0] == '{') return NULL;
+    return strdup(th->valuestring);
 }
 
 /* ── lifecycle ─────────────────────────────────────────────── */

@@ -188,6 +188,12 @@ static void sanitize_thought(cJSON *action) {
     if (clean) {
         free(th->valuestring);
         th->valuestring = clean;
+    } else {
+        /* unwrap_thought returned NULL — the thought was a JSON object
+         * with no extractable thought text (e.g. the model echoed the full
+         * action JSON with thought="").  Clear it to empty. */
+        free(th->valuestring);
+        th->valuestring = strdup("");
     }
 }
 
