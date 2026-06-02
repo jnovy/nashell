@@ -634,25 +634,41 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                         (text), (with_elapsed) ? elapsed_str : ""); \
         } while (0)
 
+        /* Helper: emit the tool header with inline thought (plain text, no backticks) */
+        #define EMIT_TOOL_WITH_THOUGHT(text, with_elapsed) do { \
+            if (si->ref) { \
+                str_appendf(&md, "%s [%s](%s) %s%s\n", \
+                            ref_pad, \
+                            tool_pad, link_uri, \
+                            (text), (with_elapsed) ? elapsed_str : ""); \
+            } else { \
+                str_appendf(&md, "%s %s %s%s\n", \
+                            ref_pad, \
+                            tool_pad, (text), \
+                            (with_elapsed) ? elapsed_str : ""); \
+            } \
+        } while (0)
+
+        /* Helper: emit continuation line with thought (plain text, no backticks) */
+        #define EMIT_THOUGHT_CONTINUATION(text, with_elapsed) do { \
+            str_appendf(&md, "%*s %s%s\n", \
+                        REF_COL_WIDTH + 1 + max_tool_len, "", \
+                        (text), (with_elapsed) ? elapsed_str : ""); \
+        } while (0)
+
         if (is_shell && tlen > 0) {
-            /* shell_exec with thought: thought on main line,
-             * command on second line */
-            char *thought_text = NULL;
-            if (tlen > 0) {
-                thought_text = malloc((size_t)tlen + 3); /* +2 for quotes, +1 for NUL */
-                if (thought_text) {
-                    thought_text[0] = '"';
-                    memcpy(thought_text + 1, thought_start, (size_t)tlen);
-                    thought_text[tlen + 1] = '"';
-                    thought_text[tlen + 2] = '\0';
-                }
+            /* shell_exec with thought: thought on main line (plain text),
+             * command on second line (code) */
+            char *thought_text = malloc((size_t)tlen + 1);
+            if (thought_text) {
+                memcpy(thought_text, thought_start, (size_t)tlen);
+                thought_text[tlen] = '\0';
             }
-            int thought_display = tlen + 2; /* +2 for quotes */
-            if (thought_text && thought_display <= avail) {
-                EMIT_TOOL_WITH_TEXT(thought_text, !desc_clean);
+            if (thought_text && tlen <= avail) {
+                EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
             } else if (thought_text) {
                 EMIT_TOOL_HEADER(!desc_clean);
-                EMIT_CONTINUATION(thought_text, 0);
+                EMIT_THOUGHT_CONTINUATION(thought_text, 0);
             } else {
                 EMIT_TOOL_HEADER(!desc_clean);
             }
@@ -665,17 +681,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
              * the md renderer word-wraps long code spans across multiple lines */
             EMIT_TOOL_WITH_TEXT(desc_clean, 1);
         } else if (tlen > 0) {
-            /* Has thought: thought on main line, desc on second line */
+            /* Has thought: thought on main line (plain text), desc on second line (code) */
             char *thought_text = malloc((size_t)tlen + 1);
             if (thought_text) {
                 memcpy(thought_text, thought_start, (size_t)tlen);
                 thought_text[tlen] = '\0';
             }
             if (thought_text && tlen <= avail) {
-                EMIT_TOOL_WITH_TEXT(thought_text, !desc_clean);
+                EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
             } else if (thought_text) {
                 EMIT_TOOL_HEADER(!desc_clean);
-                EMIT_CONTINUATION(thought_text, 0);
+                EMIT_THOUGHT_CONTINUATION(thought_text, 0);
             } else {
                 EMIT_TOOL_HEADER(!desc_clean);
             }
@@ -698,6 +714,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         #undef EMIT_TOOL_HEADER
         #undef EMIT_TOOL_WITH_TEXT
         #undef EMIT_CONTINUATION
+        #undef EMIT_TOOL_WITH_THOUGHT
+        #undef EMIT_THOUGHT_CONTINUATION
 
         free(desc_clean);
 
