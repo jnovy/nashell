@@ -421,6 +421,22 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
         cJSON_AddBoolToObject(req, "stream", 1);
     }
 
+    /* BUG FIX: Add thinking configuration when enabled.
+     * Claude Opus 4 / Sonnet 4 support extended thinking but the request
+     * must explicitly enable it. Without this, enable_thinking was set
+     * in the config but never serialized into the request body. */
+    if (p->cfg.enable_thinking) {
+        cJSON *thinking = cJSON_CreateObject();
+        cJSON_AddStringToObject(thinking, "type", "enabled");
+        int budget = p->cfg.thinking_budget;
+        if (budget <= 0) budget = 10000;  /* default budget if unrestricted/-1 */
+        cJSON_AddNumberToObject(thinking, "budget_tokens", budget);
+        cJSON_AddItemToObject(req, "thinking", thinking);
+        /* Anthropic requires temperature=1 when thinking is enabled */
+        cJSON_ReplaceItemInObject(req, "temperature",
+                                  cJSON_CreateNumber(1.0));
+    }
+
     /* Move system and messages from converted */
     cJSON *sys = cJSON_DetachItemFromObject(converted, "system");
     if (sys) cJSON_AddItemToObject(req, "system", sys);

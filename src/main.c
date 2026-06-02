@@ -636,9 +636,20 @@ int main(int argc, char **argv) {
         server_model = llm_fetch_model_name(cfg->api_base);
         props_json = llm_fetch_props_json(cfg->api_base);
     } else {
-        /* API providers: use config values */
+        /* API providers: use config values, with sensible defaults */
         context_size = cfg->provider.context_size;
         server_model = cfg->provider.model_id ? strdup(cfg->provider.model_id) : NULL;
+
+        /* BUG FIX: Cloud providers (Vertex, Anthropic, OpenAI) have no /props
+         * endpoint to auto-detect context_size. Without a default, context_size
+         * stays 0 and context eviction never triggers — causing unbounded
+         * context growth until the API rejects with HTTP 400. */
+        if (context_size == 0) {
+            if (pcfg.type == PROVIDER_VERTEX || pcfg.type == PROVIDER_ANTHROPIC)
+                context_size = 200000;  /* Claude models: 200K tokens */
+            else if (pcfg.type == PROVIDER_OPENAI)
+                context_size = 128000;  /* GPT-4o/4.1: 128K tokens */
+        }
     }
 
     /* Update provider and config with fetched context size */

@@ -929,6 +929,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     char last_sigs[8][512];
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
+    int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
         ctx->tools->step = step + 1;
@@ -1147,6 +1148,53 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                  "please re-authenticate (e.g. gcloud auth login)";
                     emit(on_event, userdata, &ev);
                     break;
+                }
+            }
+
+            /* BUG FIX: Detect HTTP 400 (client error = bad request).
+             * Unlike HTTP 500 (transient server error), 400 means the request
+             * itself is malformed — typically context too large. The old tier 1
+             * retry (remove 2 messages + continue) would let the model respond
+             * successfully, resetting consecutive_null_responses to 0, then the
+             * next LLM call would fail again with 400 → infinite loop.
+             * For 400 errors: do aggressive context eviction immediately. */
+            {
+                const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
+                if (perr && strstr(perr, "HTTP 400")) {
+                    total_400_errors++;
+                    if (total_400_errors >= 6) {
+                        ev.message = "HTTP 400 — context still too large after "
+                                     "repeated eviction, giving up";
+                        emit(on_event, userdata, &ev);
+                        break;
+                    }
+                    /* Aggressive eviction: remove half of middle messages */
+                    int keep_head = 3;
+                    int keep_tail = 4;
+                    int evict_start = keep_head;
+                    int evict_end = chat->n_msgs - keep_tail;
+                    if (evict_end > evict_start + 2) {
+                        /* Evict the older half of the evictable range */
+                        int mid = evict_start + (evict_end - evict_start) / 2;
+                        int n_evict = mid - evict_start;
+                        for (int i = evict_start; i < mid; i++) {
+                            free(chat->msgs[i].role);
+                            free(chat->msgs[i].content);
+                            free(chat->msgs[i].tool_call_id);
+                            free(chat->msgs[i].tool_calls_json);
+                        }
+                        memmove(&chat->msgs[evict_start],
+                                &chat->msgs[mid],
+                                (chat->n_msgs - mid) * sizeof(llm_msg_t));
+                        chat->n_msgs -= n_evict;
+                        char emsg[128];
+                        snprintf(emsg, sizeof(emsg),
+                            "HTTP 400 — evicted %d messages to reduce context "
+                            "(attempt %d/6)", n_evict, total_400_errors);
+                        ev.message = emsg;
+                        emit(on_event, userdata, &ev);
+                    }
+                    continue;
                 }
             }
 
