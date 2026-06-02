@@ -1,0 +1,119 @@
+name: reflect
+description: "Post-mortem on failed or difficult sessions - extract lessons from struggle"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "Find problematic sessions"
+    react:
+      max_steps: 25
+    prompt: |
+      You are performing a POST-MORTEM analysis on recent sessions.
+
+      Sessions are stored in: {{nash_dir}}/sessions/
+      Each session has a journal.jsonl with one JSON line per event.
+
+      TASK: Identify problematic sessions from the last 30 sessions.
+
+      A session is "problematic" if ANY of:
+      - Failed tool calls > 3 (high error rate)
+      - Total steps > 40 (excessive work)
+      - No "done" tool call at the end (task abandoned or crashed)
+      - Multiple consecutive failed calls (thrashing)
+
+      For each session:
+      1. shell_exec "ls {{nash_dir}}/sessions/ | tail -30"
+      2. Read each journal.jsonl
+      3. Compute: total steps, failed count, has_done, longest failure streak
+      4. Extract the query (tool="query" entry)
+
+      Produce a ranked list of problematic sessions (worst first).
+      For each, include: session ID, query, total steps, failures, failure streak,
+      outcome (done/abandoned).
+
+      Store in scratchpad.
+      Call done with count of problematic sessions found.
+
+  - label: "Deep-dive analysis"
+    react:
+      max_steps: 40
+    prompt: |
+      You are performing DEEP-DIVE ANALYSIS on problematic sessions.
+
+      Read the scratchpad — it contains a ranked list of problematic sessions.
+
+      TASK: For the top 3-5 worst sessions, perform a detailed analysis:
+
+      1. Read the FULL journal.jsonl for each session
+      2. Reconstruct the step-by-step narrative:
+         - What was the agent trying to do?
+         - Where did it first go wrong?
+         - What was the ROOT CAUSE of each failure?
+         - Did it recover or spiral?
+
+      3. Classify each failure into categories:
+         - TOOL MISUSE: wrong tool for the job, bad parameters
+         - KNOWLEDGE GAP: didn't know how to do something
+         - PLANNING FAILURE: no plan, wrong plan, didn't follow plan
+         - CONTEXT LOSS: forgot what it was doing (context eviction)
+         - EXTERNAL: API error, file not found, permission denied
+         - THRASHING: repeated identical failing attempts
+
+      4. For each session, write:
+         - One-line summary of what went wrong
+         - Root cause category
+         - What SHOULD have been done differently
+         - Whether a memory entry could prevent recurrence
+
+      Store detailed analysis in scratchpad.
+      Call done with summary of root causes found.
+
+  - label: "Create preventive memories"
+    react:
+      max_steps: 25
+    prompt: |
+      You are creating PREVENTIVE MEMORIES from post-mortem analysis.
+
+      Read the scratchpad — it contains deep-dive analysis of problematic sessions.
+      Memory store is at: {{memory_dir}}
+
+      CAPABILITIES:
+      - memory_recall to check for existing related memories
+      - memory_store to create new entries
+      - file_read to examine existing memory entries
+
+      TASK:
+      1. For each root cause identified:
+         a. Search for existing memories covering this topic
+         b. If well-covered, SKIP
+         c. If partially covered, UPDATE the existing entry to include the new failure mode
+         d. If novel, CREATE a new memory
+
+      2. New memory format:
+         - Key: lesson:<failure-type>-<specific-topic>
+         - Value must include:
+           - What went wrong (with session evidence)
+           - WHY it went wrong (causal mechanism)
+           - How to prevent it (actionable fix)
+           - When this applies (trigger conditions)
+         - refs: link to related existing memories
+
+      CONSTRAINTS:
+      - Maximum 3 new memories — only the most impactful
+      - Each must be genuinely actionable (not just "be more careful")
+      - Must cite specific session IDs as evidence
+      - Never duplicate existing memories
+
+      Call done with list of memories created/updated.

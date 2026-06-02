@@ -1,0 +1,134 @@
+name: health
+description: "System health check - verify data integrity and report anomalies"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "File system integrity"
+    react:
+      max_steps: 25
+    prompt: |
+      You are performing a SYSTEM HEALTH CHECK for a persistent agentic shell.
+
+      Nash data directory: {{nash_dir}}
+      Memory directory: {{memory_dir}}
+
+      TASK: Check file system integrity and report anomalies.
+
+      1. MEMORY STORE INTEGRITY:
+         - List all files in {{memory_dir}}/
+         - Every .json file should have a matching .emb file and vice versa
+         - Report orphaned .json files (no .emb) and orphaned .emb files (no .json)
+         - Check for 0-byte files
+         - Run: shell_exec "cd {{memory_dir}} && git status"
+           Report any uncommitted changes (indicates interrupted operations)
+
+      2. MEMORY JSON VALIDITY:
+         - Sample 20 random .json files and verify they parse as valid JSON
+         - Check required fields exist: key, value, created_at
+         - Check for corruption: value fields containing JSON action objects
+           (look for {"thought": or {"action": patterns inside value)
+         - Check that the filename matches the key field
+
+      3. SESSION DIRECTORY:
+         - Count total sessions and total disk usage
+         - Check for empty session directories (no journal.jsonl)
+         - Check for extremely large sessions (>5MB)
+
+      4. STORE (content-addressed blobs):
+         - Count total blobs and disk usage
+         - Check for 0-byte blobs
+
+      5. DISK USAGE SUMMARY:
+         - shell_exec "du -sh {{nash_dir}}/*"
+
+      Store the full report in the scratchpad.
+      Call done with a summary: OK count, WARNING count, ERROR count.
+
+  - label: "Memory quality metrics"
+    react:
+      max_steps: 25
+    prompt: |
+      You are computing MEMORY QUALITY METRICS for a persistent knowledge store.
+
+      Memory directory: {{memory_dir}}
+
+      Read the scratchpad for file integrity results from the previous pass.
+
+      TASK: Compute aggregate statistics by reading ALL memory entries.
+
+      Use shell_exec with a python3 one-liner or small script to efficiently
+      process all JSON files at once. Example approach:
+        shell_exec "python3 -c \"
+        import json, glob, os
+        files = glob.glob('{{memory_dir}}/*.json')
+        # ... process all files ...
+        \""
+
+      Metrics to compute:
+      1. RECALL EFFECTIVENESS:
+         - Entries with recall data (hits+misses > 0) vs entries never recalled
+         - Distribution of validation scores
+         - Top 10 most-recalled entries (highest hits)
+         - Bottom 10 (highest misses relative to hits)
+
+      2. KEY NAMESPACE DISTRIBUTION:
+         - Count by prefix: lesson:, strategy:, skill:, other
+         - Average score per namespace
+
+      3. CROSS-REFERENCE HEALTH:
+         - Entries with refs vs entries without
+         - Dangling refs (pointing to non-existent keys)
+         - Isolated clusters (groups connected by refs)
+
+      4. AGE DISTRIBUTION:
+         - Entries created in last 7 days, 30 days, older
+         - Correlation between age and recall effectiveness
+
+      5. CONTENT QUALITY:
+         - Average value length
+         - Entries with very short values (<100 chars)
+         - Entries with very long values (>3000 chars)
+
+      Append metrics to scratchpad.
+      Call done with key findings (e.g., "83% of entries never recalled",
+      "15 dangling refs found", etc.).
+
+  - label: "Generate health report"
+    react:
+      max_steps: 15
+    prompt: |
+      You are generating a HEALTH REPORT for a persistent agentic shell.
+
+      Read the scratchpad — it contains file integrity checks and memory quality metrics.
+
+      TASK: Produce a concise, actionable health report.
+
+      1. Synthesize all findings into a single markdown report
+      2. Classify each finding as:  ✅ OK  |  ⚠️ WARNING  |  ❌ ERROR
+      3. For each WARNING/ERROR, include a specific remediation step
+      4. Include a "recommended actions" section prioritized by impact
+
+      Write the report to: {{nash_dir}}/HEALTH_REPORT.md
+      Use file_write to create the file.
+
+      The report should include:
+      - Date: {{date}}
+      - Model: {{model}}
+      - Summary line (e.g., "3 OK, 2 WARNING, 1 ERROR")
+      - Detailed findings
+      - Recommended actions
+
+      Call done with the summary line.

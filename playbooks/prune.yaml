@@ -1,0 +1,103 @@
+name: prune
+description: "Memory pruning - remove stale, unused, and low-value entries"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+post:
+  prune_memory: false
+  commit: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "Assess memory quality"
+    react:
+      max_steps: 40
+    prompt: |
+      You are performing MEMORY QUALITY ASSESSMENT for a persistent knowledge store.
+
+      Memory store is at: {{memory_dir}}
+      Each memory is a JSON file with fields: key, value, pinned,
+      created_at, last_accessed, access_count, recall_hits, recall_misses, journal_ref, refs.
+      Validation score = (recall_hits+1)/(recall_hits+recall_misses+2) — Beta posterior mean.
+
+      TASK: Catalog ALL memories and classify them by quality tier:
+
+      1. DEAD (candidates for deletion):
+         - access_count == 0 AND created more than 7 days ago
+         - recall_hits == 0 AND recall_misses > 3 (consistently fails to match)
+         - value is trivially short (<50 chars) or clearly task-specific garbage
+
+      2. STALE (candidates for review):
+         - last_accessed more than 30 days ago
+         - Low validation score (<0.35) with evidence (recall_hits+recall_misses >= 3)
+         - References (refs) point to deleted keys
+
+      3. BLOATED (candidates for compression):
+         - value length > 2000 chars — may contain unnecessary verbosity
+         - Contains raw output or examples that could be summarized
+
+      4. HEALTHY (keep as-is):
+         - Regular recall hits, good score, reasonable size
+
+      Read ALL memory files to build this classification.
+      Write a structured report to the scratchpad with:
+      - Lists of keys in each tier
+      - Total count per tier
+      - Estimated space savings from pruning tiers 1-2
+
+      Call done with tier counts.
+
+  - label: "Prune dead entries"
+    react:
+      max_steps: 60
+    prompt: |
+      You are performing MEMORY PRUNING on a persistent knowledge store at: {{memory_dir}}
+
+      Read the scratchpad — it contains a quality assessment with entries classified
+      into tiers: DEAD, STALE, BLOATED, HEALTHY.
+
+      CAPABILITIES:
+      - Read any memory: file_read on the JSON file path
+      - Delete memories: memory_delete with the key
+      - Update memories: memory_store (to fix stale refs or compress bloated entries)
+
+      TASK: Process entries by tier:
+
+      TIER 1 — DEAD entries:
+      1. Read each entry one more time to confirm it's truly useless
+      2. Check: is it referenced by any HEALTHY entry's refs? If so, SKIP.
+      3. Delete confirmed dead entries with memory_delete
+
+      TIER 2 — STALE entries:
+      1. Read each entry
+      2. If the content is genuinely outdated or wrong, delete it
+      3. If the content is still valid but has stale refs, update it with memory_store
+         (fixing refs to point to valid keys)
+      4. If unsure, SKIP — conservative is better
+
+      TIER 3 — BLOATED entries (only if >10 entries):
+      1. Read the full value
+      2. Rewrite to be more concise while preserving the causal insight
+      3. Update with memory_store
+
+      CONSTRAINTS:
+      - NEVER delete pinned memories
+      - NEVER delete entries with recall_hits > 5 (proven useful)
+      - Maximum 50 deletions per run — don't be too aggressive
+      - Log every deletion in scratchpad with the reason
+
+      After all changes, run:
+        shell_exec "cd {{memory_dir}} && git add -A && git commit -m 'Prune: remove stale/dead memories\n\nPruned-by: {{model}} on {{date}}'"
+
+      Call done with a summary: entries deleted, entries updated, entries skipped.

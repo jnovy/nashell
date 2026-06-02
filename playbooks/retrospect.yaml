@@ -1,0 +1,116 @@
+name: retrospect
+description: "Session retrospective - analyze recent work patterns and extract lessons"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "Scan recent sessions"
+    react:
+      max_steps: 40
+    prompt: |
+      You are performing a SESSION RETROSPECTIVE for a persistent agentic shell.
+
+      GOAL: Scan the most recent sessions and collect data about work patterns.
+
+      Sessions are stored in: {{nash_dir}}/sessions/
+      Each session is a directory named by timestamp, containing:
+        - journal.jsonl — one JSON line per tool call with fields:
+          react_loop, step, ts, tool, params, ref, size, lines, failed
+
+      TASK:
+      1. List all session directories: shell_exec "ls {{nash_dir}}/sessions/ | tail -20"
+      2. For each of the last 10-15 sessions, read the journal.jsonl and extract:
+         - What query/task was attempted (look for tool="query" entries)
+         - Total steps taken
+         - Number of failed tool calls
+         - Which tools were used most
+         - Whether it ended with a "done" tool call (success) or not
+      3. Compile a structured report with:
+         - Session ID, query summary, steps, failures, outcome
+         - Overall success rate
+         - Most common tool usage patterns
+         - Sessions with unusually high failure rates or step counts
+
+      Store the full report in the scratchpad (notes tool).
+      Call done with a brief summary of sessions analyzed.
+
+  - label: "Identify patterns and anti-patterns"
+    react:
+      max_steps: 30
+    prompt: |
+      You are performing PATTERN ANALYSIS on session retrospective data.
+
+      Read the scratchpad — it contains a structured report of recent sessions.
+
+      TASK: Analyze the session data for:
+
+      1. RECURRING FAILURE PATTERNS:
+         - Do certain tool calls fail repeatedly? (e.g., grep_search timeouts, file_read on missing files)
+         - Are there sessions with >5 failed steps? What caused them?
+         - Do failures cluster around specific task types?
+
+      2. EFFICIENCY PATTERNS:
+         - Average steps per successful task vs failed task
+         - Sessions with excessive step counts (>30) — what caused the bloat?
+         - Tool sequences that indicate thrashing (e.g., repeated file_read of same file)
+
+      3. TASK TYPE DISTRIBUTION:
+         - Code analysis / bug-finding
+         - File editing / code writing
+         - Research / web search
+         - Memory management
+         - Other
+
+      4. SKILL GAPS:
+         - Tasks that failed or took too many steps may indicate missing knowledge
+         - Repeated similar queries suggest the agent isn't learning from experience
+
+      Store your analysis in the scratchpad (append to existing content).
+      Call done with a summary of patterns found.
+
+  - label: "Generate actionable lessons"
+    react:
+      max_steps: 30
+    prompt: |
+      You are performing LESSON EXTRACTION from session pattern analysis.
+
+      Read the scratchpad — it contains session data and pattern analysis.
+      Memory store is at: {{memory_dir}}
+
+      CAPABILITIES:
+      - Read existing memories: file_read on JSON files in {{memory_dir}}/
+      - Check for existing lessons: shell_exec "ls {{memory_dir}}/ | grep lesson"
+      - Create new memories: memory_store with key, value, and optional refs
+      - Search for related memories: memory_recall
+
+      TASK:
+      1. Review the patterns and anti-patterns identified
+      2. For each actionable insight, check if a similar lesson already exists:
+         - Use memory_recall to search for related content
+         - Read any candidate memories to verify
+      3. Create NEW lesson/strategy memories ONLY for genuinely novel insights:
+         - Use key format: lesson:<descriptive-name> or strategy:<descriptive-name>
+         - Include the causal mechanism (why the pattern occurs)
+         - Include the fix or mitigation
+         - Add refs to related existing memories
+
+      CONSTRAINTS:
+      - Do NOT create memories for things already well-covered
+      - Each new memory must cite specific session evidence (session IDs, step counts)
+      - Maximum 5 new memories — focus on the highest-impact patterns
+      - Never touch pinned memories
+
+      Call done with a list of lessons created (or "no new lessons needed" if existing
+      coverage is sufficient).

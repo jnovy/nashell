@@ -1,0 +1,109 @@
+name: digest
+description: "Weekly digest - summarize recent activity, task outcomes, and memory growth"
+version: 1
+
+session_mode: per-pass
+scratchpad_mode: shared
+pause_between: false
+
+react:
+  max_steps: 0
+  inject_memory: false
+  inject_prev_result: false
+  enable_reflection: false
+  enable_pruning: false
+  enable_compaction: false
+  enable_scoring: false
+
+passes:
+  - label: "Collect activity data"
+    react:
+      max_steps: 30
+    prompt: |
+      You are generating a WEEKLY ACTIVITY DIGEST for a persistent agentic shell.
+      Today's date: {{date}}
+
+      TASK: Collect raw data about the past week's activity.
+
+      1. SESSION ACTIVITY:
+         Run: shell_exec "python3 -c \"
+         import os, json, time
+         d = '{{nash_dir}}/sessions'
+         week_ago = time.time() - 7*86400
+         sessions = []
+         for sd in sorted(os.listdir(d)):
+             jf = os.path.join(d, sd, 'journal.jsonl')
+             if not os.path.exists(jf): continue
+             try:
+                 ts = float(sd)
+             except ValueError:
+                 continue
+             if ts < week_ago: continue
+             lines = open(jf).readlines()
+             query = ''
+             tools = {}
+             failed = 0
+             has_done = False
+             for l in lines:
+                 j = json.loads(l)
+                 t = j.get('tool','')
+                 tools[t] = tools.get(t,0)+1
+                 if j.get('failed'): failed += 1
+                 if t == 'query': query = j.get('params',{}).get('text','')[:100]
+                 if t == 'done': has_done = True
+             sessions.append({'id':sd, 'query':query, 'steps':len(lines), 'failed':failed, 'done':has_done, 'tools':tools})
+         print(f'Sessions this week: {len(sessions)}')
+         for s in sessions:
+             print(f\\\"  {s['id']}: {s['steps']} steps, {s['failed']} failed, done={s['done']}\\\")
+             print(f\\\"    Query: {s['query']}\\\")
+         \""
+
+      2. MEMORY CHANGES:
+         Run: shell_exec "cd {{memory_dir}} && git log --since='7 days ago' --oneline | head -50"
+         Count new entries, deletions, and updates.
+
+      3. PLAYBOOK RUNS:
+         Run: shell_exec "ls -la {{nash_dir}}/runs/ 2>/dev/null"
+         Check for any playbook runs in the past week.
+
+      Store all raw data in the scratchpad.
+      Call done with session count and memory change count.
+
+  - label: "Compose digest"
+    react:
+      max_steps: 15
+    prompt: |
+      You are composing a WEEKLY DIGEST for a persistent agentic shell.
+      Today's date: {{date}}
+
+      Read the scratchpad — it contains raw activity data from the past week.
+
+      TASK: Write a concise, readable digest to: {{nash_dir}}/DIGEST.md
+
+      Format:
+      ```
+      # Nash Weekly Digest — {{date}}
+
+      ## Summary
+      - Sessions: N (M successful, K failed)
+      - Memory: +X new, -Y deleted, Z updated
+      - Playbook runs: N
+
+      ## Tasks Attempted
+      | Session | Query | Steps | Outcome |
+      |---------|-------|-------|---------|
+      | ...     | ...   | ...   | ✅/❌   |
+
+      ## Highlights
+      - Most complex task: (highest step count that succeeded)
+      - Fastest task: (lowest step count)
+      - New knowledge: (any new lesson/strategy memories created)
+
+      ## Trends
+      - Average steps per task: N
+      - Success rate: N%
+      - Most-used tools: tool1 (N), tool2 (M), ...
+      ```
+
+      Use file_write to create the digest file.
+      Call done with the summary line.
