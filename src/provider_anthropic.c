@@ -421,16 +421,15 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
         cJSON_AddBoolToObject(req, "stream", 1);
     }
 
-    /* BUG FIX: Add thinking configuration when enabled.
-     * Claude Opus 4 / Sonnet 4 support extended thinking but the request
-     * must explicitly enable it. Without this, enable_thinking was set
-     * in the config but never serialized into the request body. */
+    /* Add thinking configuration when enabled.
+     * Use adaptive thinking (type: "adaptive") which lets the model decide
+     * when and how much to think. Manual mode (type: "enabled" + budget_tokens)
+     * is deprecated on Claude Opus 4.6+ and the budget is not enforced on
+     * Vertex AI, leading to runaway generation (332K+ tokens observed).
+     * Adaptive thinking avoids this by letting the model self-regulate. */
     if (p->cfg.enable_thinking) {
         cJSON *thinking = cJSON_CreateObject();
-        cJSON_AddStringToObject(thinking, "type", "enabled");
-        int budget = p->cfg.thinking_budget;
-        if (budget <= 0) budget = 10000;  /* default budget if unrestricted/-1 */
-        cJSON_AddNumberToObject(thinking, "budget_tokens", budget);
+        cJSON_AddStringToObject(thinking, "type", "adaptive");
         cJSON_AddItemToObject(req, "thinking", thinking);
         /* Anthropic requires temperature=1 when thinking is enabled */
         cJSON_ReplaceItemInObject(req, "temperature",

@@ -986,7 +986,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+        /* 10 min wall-clock timeout for streaming LLM calls.
+         * Thinking-enabled models can legitimately take several minutes,
+         * but anything beyond 10 min indicates runaway generation. */
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
 
         clock_gettime(CLOCK_MONOTONIC, &st.request_start_time);
         CURLcode res = curl_easy_perform(curl);
@@ -1056,6 +1059,23 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         }
 
         if (res != CURLE_OK && !st.stopped) {
+            /* Don't retry on timeout — it means the LLM response is too long
+             * (e.g., runaway thinking), not a transient network error.
+             * Retrying would just burn another 300s+ per attempt. */
+            if (res == CURLE_OPERATION_TIMEDOUT) {
+                nash_log("[provider] LLM call timed out after %lds "
+                         "(streaming_tokens=%d) — not retrying",
+                         (long)300, st.streaming_token_count);
+                free(p->last_error);
+                p->last_error = strdup("LLM call timed out (response too long)");
+                free(p->last_error_request);
+                p->last_error_request = req_body;
+                req_body = NULL;
+                free(p->last_error_response);
+                p->last_error_response = (st.full_content.len > 0)
+                    ? strdup(str_cstr(&st.full_content)) : NULL;
+                goto cleanup;
+            }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             if (res != CURLE_SSL_CONNECT_ERROR)
                 nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
