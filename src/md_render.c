@@ -1290,3 +1290,81 @@ int md_link_line(md_doc_t *doc, int link_idx) {
     int rl = doc->links[link_idx].render_line;
     return (rl >= 0) ? rl : doc->links[link_idx].doc_line;
 }
+
+/* Convert a heading text to a GitHub-style anchor slug.
+ * Rules: lowercase, spaces/tabs → hyphens, strip non-alphanumeric/non-hyphen,
+ * collapse consecutive hyphens, trim leading/trailing hyphens.
+ * Writes into buf (max buf_size bytes including NUL). */
+static void heading_to_slug(const char *heading, char *buf, int buf_size) {
+    int j = 0;
+    for (int i = 0; heading[i] && j < buf_size - 1; i++) {
+        char c = heading[i];
+        if (c >= 'A' && c <= 'Z') {
+            buf[j++] = c + ('a' - 'A');
+        } else if (c >= 'a' && c <= 'z') {
+            buf[j++] = c;
+        } else if (c >= '0' && c <= '9') {
+            buf[j++] = c;
+        } else if (c == ' ' || c == '\t') {
+            /* Collapse multiple spaces into one hyphen */
+            if (j > 0 && buf[j-1] != '-')
+                buf[j++] = '-';
+        } else if (c == '-') {
+            if (j > 0 && buf[j-1] != '-')
+                buf[j++] = '-';
+        }
+        /* Other characters (punctuation, etc.) are stripped */
+    }
+    /* Trim trailing hyphen */
+    while (j > 0 && buf[j-1] == '-') j--;
+    buf[j] = '\0';
+}
+
+int md_find_anchor(md_doc_t *doc, const char *fragment) {
+    if (!doc || !doc->source || !fragment || !*fragment) return -1;
+
+    const char *src = doc->source;
+    int render_line = 0;
+    int in_code_fence = 0;
+
+    while (*src) {
+        const char *eol = strchr(src, '\n');
+        int line_len = eol ? (int)(eol - src) : (int)strlen(src);
+
+        /* Code fence toggle */
+        if (line_len >= 3 && src[0] == '`' && src[1] == '`' && src[2] == '`') {
+            in_code_fence = !in_code_fence;
+            /* ``` fence lines are skipped — no render_line increment */
+            src = eol ? eol + 1 : src + line_len;
+            continue;
+        }
+
+        if (!in_code_fence && src[0] == '#') {
+            /* Extract heading text (skip leading #'s and spaces) */
+            int level = 0;
+            while (level < line_len && src[level] == '#') level++;
+            int start = level;
+            while (start < line_len && src[start] == ' ') start++;
+
+            /* Convert heading to slug */
+            char slug[512];
+            char heading_text[512];
+            int hlen = line_len - start;
+            if (hlen > (int)sizeof(heading_text) - 1)
+                hlen = (int)sizeof(heading_text) - 1;
+            memcpy(heading_text, src + start, hlen);
+            heading_text[hlen] = '\0';
+
+            heading_to_slug(heading_text, slug, sizeof(slug));
+
+            if (strcmp(slug, fragment) == 0) {
+                return render_line;
+            }
+        }
+
+        render_line++;
+        src = eol ? eol + 1 : src + line_len;
+    }
+
+    return -1;
+}

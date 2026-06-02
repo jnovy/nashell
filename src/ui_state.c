@@ -995,6 +995,16 @@ void ui_state_enter(ui_state_t *ui) {
     const char *uri = ui->doc->links[idx].uri;
     if (!uri) return;
 
+    /* Handle #anchor links (same-document section navigation) */
+    if (uri[0] == '#') {
+        const char *fragment = uri + 1;
+        int target_line = md_find_anchor(ui->doc, fragment);
+        if (target_line >= 0) {
+            ui->scroll_y = target_line;
+        }
+        return;
+    }
+
     /* Check if URI points to a .md file */
     int len = (int)strlen(uri);
     if (len >= 3 && strcmp(uri + len - 3, ".md") == 0) {

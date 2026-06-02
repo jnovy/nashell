@@ -39,4 +39,10 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 /* Get the rendered line number of a link (for auto-scrolling to keep cursor visible) */
 int md_link_line(md_doc_t *doc, int link_idx);
 
+/* Find the rendered line number of a heading matching a #fragment anchor.
+ * fragment: the anchor string WITHOUT the leading '#' (e.g., "1-current-state").
+ * The document must have been rendered at least once (md_render called) so that
+ * render_line counts are accurate.  Returns -1 if no matching heading found. */
+int md_find_anchor(md_doc_t *doc, const char *fragment);
+
 #endif
