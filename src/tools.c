@@ -2408,33 +2408,102 @@ static char *searxng_base_url(const char *url) {
     return strdup(url);
 }
 
+/* Ensure the persistent SearXNG config directory exists at ~/.nash/searxng/
+ * with a settings.yml that enables JSON format.  This directory is bind-mounted
+ * into the container so the setting survives container recreation.
+ * Returns the path to the config directory (static buffer, do not free). */
+static const char *ensure_searxng_config_dir(void) {
+    static char cfg_dir[512] = {0};
+    if (cfg_dir[0]) return cfg_dir;
+
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    snprintf(cfg_dir, sizeof(cfg_dir), "%s/.nash/searxng", home);
+
+    /* Create the directory */
+    char mkdir_cmd[600];
+    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p '%s'", cfg_dir);
+    system(mkdir_cmd);
+
+    /* Write settings.yml if it doesn't exist or is missing json format */
+    char settings_path[600];
+    snprintf(settings_path, sizeof(settings_path), "%s/settings.yml", cfg_dir);
+
+    /* Check if settings.yml already exists and has json format enabled */
+    int needs_write = 0;
+    FILE *f = fopen(settings_path, "r");
+    if (!f) {
+        needs_write = 1;
+    } else {
+        /* Check if it contains "- json" in formats */
+        char line[256];
+        int has_json = 0;
+        while (fgets(line, sizeof(line), f)) {
+            if (strstr(line, "- json")) { has_json = 1; break; }
+        }
+        fclose(f);
+        if (!has_json) needs_write = 1;
+    }
+
+    if (needs_write) {
+        f = fopen(settings_path, "w");
+        if (f) {
+            fprintf(f,
+                "# Nash auto-generated SearXNG settings\n"
+                "# This file is bind-mounted into the SearXNG container.\n"
+                "# It uses use_default_settings to inherit all defaults\n"
+                "# and only overrides what nash needs (JSON API format).\n"
+                "\n"
+                "use_default_settings: true\n"
+                "\n"
+                "search:\n"
+                "  formats:\n"
+                "    - html\n"
+                "    - json\n"
+                "\n"
+                "server:\n"
+                "  secret_key: \"nash-searxng-auto-generated-key\"\n"
+            );
+            fclose(f);
+            nash_log("[nash] Created SearXNG settings at %s", settings_path);
+        } else {
+            nash_log("[nash] Warning: could not write SearXNG settings to %s", settings_path);
+        }
+    }
+
+    return cfg_dir;
+}
+
 /* Start a SearXNG container using podman/docker.
+ * Bind-mounts ~/.nash/searxng/ into the container for persistent config.
  * Returns 0 on success, -1 on failure. */
 static int searxng_start_container(int port) {
-    /* Check if container already exists (maybe stopped) */
-    char cmd[1024];
-    int use_docker = 0;  /* 0 = podman, 1 = docker */
+    char cmd[2048];
+
+    /* Ensure persistent config directory with JSON format enabled */
+    const char *cfg_dir = ensure_searxng_config_dir();
 
     snprintf(cmd, sizeof(cmd),
              "podman rm -f nash-searxng >/dev/null 2>&1; "
              "podman run -d --name nash-searxng "
              "-p %d:8080 "
              "-e SEARXNG_BASE_URL=http://localhost:%d/ "
+             "-v %s:/etc/searxng:rw,Z "
              "docker.io/searxng/searxng:latest "
              ">/dev/null 2>&1",
-             port, port);
+             port, port, cfg_dir);
     int rc = system(cmd);
     if (rc != 0) {
         /* Try docker as fallback */
-        use_docker = 1;
         snprintf(cmd, sizeof(cmd),
                  "docker rm -f nash-searxng >/dev/null 2>&1; "
                  "docker run -d --name nash-searxng "
                  "-p %d:8080 "
                  "-e SEARXNG_BASE_URL=http://localhost:%d/ "
+                 "-v %s:/etc/searxng:rw "
                  "docker.io/searxng/searxng:latest "
                  ">/dev/null 2>&1",
-                 port, port);
+                 port, port, cfg_dir);
         rc = system(cmd);
     }
     if (rc != 0) return -1;
@@ -2451,38 +2520,7 @@ static int searxng_start_container(int port) {
     }
     if (!ready) return -1;  /* timed out */
 
-    /* Enable JSON output format in SearXNG settings.
-     * By default SearXNG only allows HTML format, so requests with
-     * ?format=json return 403 Forbidden.  We patch settings.yml to
-     * add 'json' to the allowed formats list, then restart. */
-    const char *rt = use_docker ? "docker" : "podman";
-    snprintf(cmd, sizeof(cmd),
-             "%s exec nash-searxng "
-             "sed -i '/^    - html$/a\\    - json' "
-             "/etc/searxng/settings.yml >/dev/null 2>&1",
-             rt);
-    rc = system(cmd);
-    if (rc != 0) {
-        nash_log("[nash] Warning: could not enable JSON format in SearXNG settings");
-        return 0;  /* still usable for HTML, don't fail hard */
-    }
-
-    /* Restart container so SearXNG picks up the new settings */
-    snprintf(cmd, sizeof(cmd),
-             "%s restart nash-searxng >/dev/null 2>&1", rt);
-    rc = system(cmd);
-    if (rc != 0) {
-        nash_log("[nash] Warning: could not restart SearXNG after config change");
-        return 0;
-    }
-
-    /* Wait for SearXNG to become ready again after restart (up to 30 seconds) */
-    for (int i = 0; i < 30; i++) {
-        sleep(1);
-        if (searxng_is_running(health_url)) return 0;
-    }
-    nash_log("[nash] Warning: SearXNG did not become ready after restart");
-    return -1;  /* timed out after restart */
+    return 0;
 }
 
 /* Ensure SearXNG is running. Starts container if needed.
@@ -2546,8 +2584,8 @@ static char *searxng_search(const char *searxng_url, const char *query,
     if (http_code == 403) {
         nash_log(
                 "[nash] SearXNG returned 403 Forbidden for JSON format. "
-                "Fix: add 'json' to search.formats in "
-                "/etc/searxng/settings.yml and restart SearXNG.");
+                "Check ~/.nash/searxng/settings.yml has 'json' in "
+                "search.formats and restart the container.");
         str_free(&body);
         return NULL;
     }
