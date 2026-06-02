@@ -92,6 +92,14 @@ int scratchpad_save(scratchpad_t *sp, const char *session_dir);
 /* Load scratchpad from disk. Returns 0 on success. */
 int scratchpad_load(scratchpad_t *sp, const char *session_dir);
 
+/* Parse serialized scratchpad text (## section headers) into sections.
+ * Clears any existing sections in sp first. If the text contains "## "
+ * section headers, parses them into individual sections. Otherwise stores
+ * the entire text as a single section named fallback_name.
+ * default_priority is used when priority can't be determined from text. */
+int scratchpad_parse(scratchpad_t *sp, const char *text,
+                     const char *fallback_name, int default_priority);
+
 /* Tool filter: whitelist or blacklist tool access per-pass.
  * If allowed is non-NULL, only those tools can be called (whitelist mode).
  * If blocked is non-NULL, those tools are denied (blacklist mode).

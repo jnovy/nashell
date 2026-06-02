@@ -1200,6 +1200,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         ev.message = emsg;
                         emit(on_event, userdata, &ev);
                     }
+                    /* HTTP 400 is a client error (context too large), not a
+                     * transient server error. Don't let it poison the HTTP 500
+                     * retry tier counter — otherwise N recoverable 400s would
+                     * exhaust the 500-recovery budget. */
+                    consecutive_null_responses = 0;
                     continue;
                 }
             }
@@ -2276,9 +2281,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         snprintf(result_sec_name, sizeof(result_sec_name), "R%d_result",
                  ctx->tools->react_loop);
         char *preserved_result = NULL;
+        int preserved_priority = 1;
+
+        /* Save original priorities so we can restore them after LLM pruning.
+         * The LLM sees serialized text (## headers) but not the priority
+         * metadata, so we must reattach priorities after parsing its output. */
+        typedef struct { char name[256]; int priority; } sec_pri_t;
+        sec_pri_t orig_priorities[SCRATCHPAD_MAX_SECTIONS];
+        int n_orig = ctx->tools->scratch.count;
+        for (int i = 0; i < n_orig; i++) {
+            size_t nlen = strlen(ctx->tools->scratch.sections[i].name);
+            if (nlen >= sizeof(orig_priorities[0].name))
+                nlen = sizeof(orig_priorities[0].name) - 1;
+            memcpy(orig_priorities[i].name,
+                   ctx->tools->scratch.sections[i].name, nlen);
+            orig_priorities[i].name[nlen] = '\0';
+            orig_priorities[i].priority = ctx->tools->scratch.sections[i].priority;
+        }
+
         for (int i = 0; i < ctx->tools->scratch.count; i++) {
             if (strcmp(ctx->tools->scratch.sections[i].name, result_sec_name) == 0) {
                 preserved_result = strdup(ctx->tools->scratch.sections[i].content);
+                preserved_priority = ctx->tools->scratch.sections[i].priority;
                 break;
             }
         }
@@ -2297,6 +2321,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "---\n%s\n---\n\n"
                 "IMPORTANT: Preserve the section named \"%s\" (the task result). "
                 "Do NOT remove or modify it.\n"
+                "Preserve ALL \"## section_name\" headers for sections you keep. "
+                "Remove an entire section (header + body) only if fully resolved.\n"
                 "Output the scratchpad with resolved items removed, nothing else changed.\n",
                 final_result, full_sp, result_sec_name);
 
@@ -2312,19 +2338,34 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(raw_cleaned);
 
             if (cleaned) {
-                /* Replace scratchpad with cleaned version */
-                scratchpad_write(&ctx->tools->scratch, "pruned", cleaned, 1);
-                /* Remove old sections that were merged into "pruned" */
-                for (int i = ctx->tools->scratch.count - 1; i >= 0; i--) {
-                    if (strcmp(ctx->tools->scratch.sections[i].name, "pruned") != 0) {
-                        scratchpad_clear(&ctx->tools->scratch,
-                                         ctx->tools->scratch.sections[i].name);
+                /* BUG FIX: Parse the LLM output back into individual sections
+                 * instead of merging everything into a single "pruned" blob.
+                 * scratchpad_parse() splits on "## " headers (the format
+                 * scratchpad_serialize() produces), preserving the section-based
+                 * API contract. If the LLM stripped all headers, falls back to
+                 * a single "pruned" section. */
+                scratchpad_parse(&ctx->tools->scratch, cleaned, "pruned", 5);
+
+                /* Restore original priorities for sections that survived.
+                 * The LLM doesn't see priority metadata, so we reattach it. */
+                for (int i = 0; i < ctx->tools->scratch.count; i++) {
+                    for (int j = 0; j < n_orig; j++) {
+                        if (strcmp(ctx->tools->scratch.sections[i].name,
+                                   orig_priorities[j].name) == 0) {
+                            ctx->tools->scratch.sections[i].priority =
+                                orig_priorities[j].priority;
+                            break;
+                        }
                     }
                 }
-                /* Re-add the preserved result section so it survives pruning */
+
+                /* Re-add the preserved result section so it survives pruning.
+                 * If scratchpad_parse() already parsed it from LLM output,
+                 * scratchpad_write() will overwrite with the original content
+                 * (safer than trusting the LLM's copy). */
                 if (preserved_result) {
                     scratchpad_write(&ctx->tools->scratch, result_sec_name,
-                                     preserved_result, 1);
+                                     preserved_result, preserved_priority);
                 }
                 scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
             }

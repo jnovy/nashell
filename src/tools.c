@@ -1511,6 +1511,91 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
     return 0;
 }
 
+int scratchpad_parse(scratchpad_t *sp, const char *text,
+                     const char *fallback_name, int default_priority) {
+    if (!text || !*text) return -1;
+
+    /* Check if the text contains "## " section headers.
+     * Accept text that starts with "## " or contains "\n## ". */
+    const char *first_hdr = NULL;
+    if (strncmp(text, "## ", 3) == 0) {
+        first_hdr = text;
+    } else {
+        first_hdr = strstr(text, "\n## ");
+        if (first_hdr) first_hdr++;  /* skip the \n, point at ## */
+    }
+
+    if (!first_hdr) {
+        /* No section headers — store as single fallback section */
+        scratchpad_free(sp);
+        scratchpad_write(sp, fallback_name ? fallback_name : "pruned",
+                         text, default_priority);
+        return 0;
+    }
+
+    /* Parse structured content into sections */
+    scratchpad_free(sp);
+    int count = 0;
+    const char *p = first_hdr;
+
+    while (p && *p) {
+        /* Expect "## " at current position */
+        if (strncmp(p, "## ", 3) != 0) {
+            /* Skip to next "## " header */
+            const char *next = strstr(p, "\n## ");
+            if (next) { p = next + 1; continue; }
+            break;
+        }
+
+        /* Extract section name */
+        const char *hdr = p + 3;
+        const char *hdr_end = strchr(hdr, '\n');
+        if (!hdr_end) hdr_end = hdr + strlen(hdr);
+
+        char sec_name[256];
+        size_t nlen = (size_t)(hdr_end - hdr);
+        if (nlen >= sizeof(sec_name)) nlen = sizeof(sec_name) - 1;
+        memcpy(sec_name, hdr, nlen);
+        sec_name[nlen] = '\0';
+
+        /* Extract body until next "## " or end */
+        const char *body = (*hdr_end) ? hdr_end + 1 : hdr_end;
+        const char *body_end = strstr(body, "\n## ");
+        if (!body_end) body_end = body + strlen(body);
+
+        /* Trim trailing whitespace */
+        while (body_end > body &&
+               (*(body_end - 1) == '\n' || *(body_end - 1) == ' '))
+            body_end--;
+
+        size_t blen = (size_t)(body_end - body);
+        char *sec_content = malloc(blen + 1);
+        if (sec_content) {
+            memcpy(sec_content, body, blen);
+            sec_content[blen] = '\0';
+            scratchpad_write(sp, sec_name, sec_content, default_priority);
+            free(sec_content);
+            count++;
+        }
+
+        /* Advance to next section */
+        const char *next = strstr(body, "\n## ");
+        if (next) {
+            p = next + 1;  /* skip \n, point at ## */
+        } else {
+            break;
+        }
+    }
+
+    if (count == 0) {
+        /* Parsing found headers but extracted nothing — fallback */
+        scratchpad_write(sp, fallback_name ? fallback_name : "pruned",
+                         text, default_priority);
+    }
+
+    return 0;
+}
+
 /* ── notes (section-based scratchpad) ────────────────── */
 
 static void scratchpad_sync_legacy(tool_ctx_t *ctx) {
