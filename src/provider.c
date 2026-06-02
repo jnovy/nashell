@@ -842,7 +842,8 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
+        if (p->cfg.llm_timeout > 0)
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)p->cfg.llm_timeout);
 
         CURLcode res = curl_easy_perform(curl);
 
@@ -986,10 +987,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-        /* 10 min wall-clock timeout for streaming LLM calls.
-         * Thinking-enabled models can legitimately take several minutes,
-         * but anything beyond 10 min indicates runaway generation. */
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+        /* Wall-clock timeout for streaming LLM calls (configurable via
+         * [limits] llm_timeout in config.toml, default 600s = 10 min).
+         * 0 = no limit. */
+        if (p->cfg.llm_timeout > 0)
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)p->cfg.llm_timeout);
 
         clock_gettime(CLOCK_MONOTONIC, &st.request_start_time);
         CURLcode res = curl_easy_perform(curl);

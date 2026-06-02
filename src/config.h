@@ -100,6 +100,7 @@ typedef struct {
     int    web_max_size;         /* bytes */
     int    llm_max_response;     /* bytes */
     int    llm_repeat_threshold; /* consecutive identical tokens */
+    int    llm_timeout;          /* seconds, per-call wall-clock timeout for LLM API */
     int    cycling_detection;    /* 0 = disabled (default), 1 = enabled */
     int    scratchpad_max;       /* chars, 0 = auto */
     int    max_react_steps;      /* steps per react loop */

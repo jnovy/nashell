@@ -620,6 +620,7 @@ int main(int argc, char **argv) {
         .temperature    = cfg->temperature,
         .enable_thinking = 0,
         .thinking_budget = -1,
+        .llm_timeout     = cfg->llm_timeout,
     };
     provider_t *provider = provider_create(&pcfg);
 

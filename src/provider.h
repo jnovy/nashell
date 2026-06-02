@@ -29,6 +29,7 @@ typedef struct {
     float       temperature;    /* sampling temperature */
     int         enable_thinking;/* 0=off, 1=on */
     int         thinking_budget;/* -1=unrestricted, 0=none, N>0=max */
+    int         llm_timeout;    /* per-call wall-clock timeout in seconds (0=no limit) */
 } provider_config_t;
 
 /* ── Provider vtable ────────────────────────────────────────────── */

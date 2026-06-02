@@ -46,6 +46,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->web_max_size <= 0)         cfg->web_max_size = 512000;
     if (cfg->llm_max_response <= 0)     cfg->llm_max_response = 10485760;
     if (cfg->llm_repeat_threshold <= 0) cfg->llm_repeat_threshold = 100;
+    if (cfg->llm_timeout <= 0)          cfg->llm_timeout = 600;
     if (cfg->memory_index_max <= 0)     cfg->memory_index_max = 50;
     if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 3;
     if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
@@ -209,6 +210,7 @@ config_t *config_load(const char *path) {
         cfg->web_max_size       = toml_int(limits, "web_max_size", -1);
         cfg->llm_max_response   = toml_int(limits, "llm_max_response", -1);
         cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", -1);
+        cfg->llm_timeout        = toml_int(limits, "llm_timeout", -1);
         cfg->cycling_detection  = toml_bl(limits, "cycling_detection", 0);
         cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", -1);
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
@@ -378,6 +380,7 @@ int config_write_default(const char *path) {
         "# LLM streaming safety\n"
         "llm_max_response = 10485760  # max bytes from LLM response (10MB)\n"
         "llm_repeat_threshold = 100   # stop after N consecutive identical tokens\n"
+        "llm_timeout = 600            # max seconds per LLM API call (0 = no limit)\n"
         "cycling_detection = false    # detect and refuse repeated identical tool calls\n"
         "\n"
         "# Context management\n"
