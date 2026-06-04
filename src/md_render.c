@@ -1041,22 +1041,90 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             }
 
         } else if (line_buf[0] == '#') {
-            /* Heading — with inline formatting */
+            /* Heading — with inline formatting and optional link support.
+             * Search results produce headings like ### [session](path)
+             * which must render the link text as a navigable hyperlink. */
+            int level = 0;
+            while (line_buf[level] == '#') level++;
+            const char *htext = line_buf + level;
+            while (*htext == ' ') htext++;
+            int hlen = (int)strlen(htext);
+            int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
+
+            /* Track link in heading (e.g., ### [text](uri)) */
+            md_link_t *head_lk = NULL;
+            int head_is_cursor = 0;
+            if (has_link) {
+                head_lk = &doc->links[link_idx];
+                head_lk->render_line = render_line;
+                head_is_cursor = (focus && link_idx == cursor_link);
+                link_idx++;
+            }
+
             if (visible) {
-                int level = 0;
-                while (line_buf[level] == '#') level++;
-                const char *htext = line_buf + level;
-                while (*htext == ' ') htext++;
-                int hlen = (int)strlen(htext);
-                int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
+                if (head_lk) {
+                    /* Heading with embedded link: render prefix + link + suffix */
+                    const char *bracket = strchr(htext, '[');
+                    const char *bracket_end = bracket ? strchr(bracket, ']') : NULL;
+                    const char *paren_end = NULL;
+                    if (bracket_end && bracket_end[1] == '(')
+                        paren_end = strchr(bracket_end + 2, ')');
 
-                /* Parse inline formatting in heading */
-                inline_seg_t segs[MAX_INLINE_SEGS];
-                int n = parse_inline(htext, hlen, segs, MAX_INLINE_SEGS);
+                    if (bracket && bracket_end && paren_end) {
+                        int x = 0;
+                        /* 1. Prefix before [ (heading styled) */
+                        int prefix_len = (int)(bracket - htext);
+                        if (prefix_len > 0) {
+                            inline_seg_t segs[MAX_INLINE_SEGS];
+                            int n = parse_inline(htext, prefix_len, segs, MAX_INLINE_SEGS);
+                            apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
+                            x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
+                        }
 
-                /* Item 5: use apply_attr_to_segs */
-                apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
-                render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                        /* 2. Link text with link color (or cursor highlight) */
+                        int has_osc8 = is_web_uri(head_lk->uri);
+                        if (head_is_cursor)
+                            wattron(win, A_REVERSE | A_BOLD);
+                        else
+                            wattron(win, COLOR_PAIR(C_FOCUS) | A_BOLD);
+                        if (has_osc8)
+                            emit_osc8_start(win, head_lk->uri);
+
+                        int link_text_len = (int)(bracket_end - bracket - 1);
+                        if (link_text_len > 0 && x < cols)
+                            x += render_segment(win, vis_line, x,
+                                                bracket + 1, link_text_len, cols - x);
+
+                        if (has_osc8)
+                            emit_osc8_end(win);
+                        if (head_is_cursor)
+                            wattroff(win, A_REVERSE | A_BOLD);
+                        else
+                            wattroff(win, COLOR_PAIR(C_FOCUS) | A_BOLD);
+
+                        /* 3. Suffix after ) (heading styled) */
+                        const char *suffix = paren_end + 1;
+                        int suffix_len = (int)strlen(suffix);
+                        if (suffix_len > 0 && x < cols) {
+                            inline_seg_t segs[MAX_INLINE_SEGS];
+                            int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
+                            apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
+                            render_segs_on_line(win, vis_line, x, segs, n, cols - x);
+                        }
+                    } else {
+                        /* Fallback: couldn't parse link boundaries */
+                        inline_seg_t segs[MAX_INLINE_SEGS];
+                        int n = parse_inline(htext, hlen, segs, MAX_INLINE_SEGS);
+                        apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
+                        render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                    }
+                } else {
+                    /* No link — render with inline formatting as before */
+                    inline_seg_t segs[MAX_INLINE_SEGS];
+                    int n = parse_inline(htext, hlen, segs, MAX_INLINE_SEGS);
+                    apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
+                    render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                }
             }
 
         } else if (strncmp(line_buf, "---", 3) == 0) {

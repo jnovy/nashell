@@ -698,6 +698,7 @@ int main(int argc, char **argv) {
 
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
+        ui->nash_dir = strdup(nash_dir);  /* for /? cross-session search */
         /* Pass model name + context info for nashell-style status bar */
         if (server_model)
             ui->model_name = strdup(server_model);
@@ -1388,6 +1389,20 @@ int main(int argc, char **argv) {
                     pthread_mutex_unlock(&ui->mtx);
                     free(banner);
                     memory_results_free(&results);
+                    tui_render(ui);
+                    free(submitted_query);
+                    continue;
+                }
+
+                /* Handle /? search — intercept Enter to prevent inference.
+                 * Search results are already displayed live in main pane.
+                 * On Enter, clear search and input buffer. */
+                if (strncmp(submitted_query, "/?", 2) == 0) {
+                    pthread_mutex_lock(&ui->mtx);
+                    if (ui->search_active) {
+                        ui_state_search(ui, NULL);  /* clear search */
+                    }
+                    pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
                     free(submitted_query);
                     continue;

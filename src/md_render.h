@@ -5,7 +5,7 @@
 
 /* ── Hyperlink in a parsed MD document ── */
 typedef struct {
-    char *uri;          /* "file://session/R0" */
+    char *uri;          /* relative ("reactR0.md") or absolute path */
     char *text;         /* display text */
     int   doc_line;     /* line in source where this link starts */
     int   render_line;  /* line in rendered output (set by md_render, accounts for skipped ``` lines) */

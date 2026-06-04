@@ -22,10 +22,11 @@ typedef enum {
 /* ── Navigation stack entry ──────────────────────────────── */
 
 typedef struct {
-    char *filepath;     /* absolute path to .md file */
-    int   scroll_y;     /* saved scroll position */
-    int   scroll_x;     /* saved horizontal scroll */
-    int   cursor_link;  /* saved cursor position */
+    char      *filepath;     /* absolute path to .md file */
+    int        scroll_y;     /* saved scroll position */
+    int        scroll_x;     /* saved horizontal scroll */
+    int        cursor_link;  /* saved cursor position */
+    md_doc_t  *saved_doc;    /* non-NULL for virtual docs (search results) */
 } nav_entry_t;
 
 /* ── Main UI state (the ViewModel) ─────────────────────── */
@@ -106,6 +107,10 @@ typedef struct {
     /* ── Spinner phase for "processing..." indicator ── */
     int            spinner_phase;
 
+    /* ── Cross-session scratchpad search ── */
+    int            search_active;     /* 1 = search results shown in main pane */
+    char          *nash_dir;          /* ~/.nash (for finding sessions) */
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;
@@ -163,6 +168,14 @@ void ui_state_load_journal(ui_state_t *ui, journal_t *journal);
 
 /* Toggle collapse/expand preview for the currently selected link */
 void ui_state_toggle_preview(ui_state_t *ui);
+
+/* ── Cross-session scratchpad search ─────────────────────── */
+
+/* Search all session scratchpads for `query` (case-insensitive).
+ * Builds a markdown document with hyperlinks to matching scratchpads
+ * and displays it in the main pane.  Must be called with ui->mtx held.
+ * Pass NULL or "" to clear search results. */
+void ui_state_search(ui_state_t *ui, const char *query);
 
 /* ── Breadcrumb path for status bar ──────────────────────── */
 

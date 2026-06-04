@@ -1,5 +1,5 @@
 CC      ?= gcc
-CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L
+CFLAGS  ?= -Wall -g -Wextra -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 # ONNX Runtime: use pip-installed libonnxruntime if no system package
 ORT_LIB := $(shell python3 -c "import onnxruntime; import os; print(os.path.dirname(onnxruntime.__file__) + '/capi')" 2>/dev/null)
 ifneq ($(ORT_LIB),)

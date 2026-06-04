@@ -1199,6 +1199,24 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
     }
 
+    /* ── Live search: detect /? prefix and trigger search ── */
+    if (ui->focus == FOCUS_QUERY && !paste_mode &&
+        ui->input_len >= 2 && ui->input_buffer[0] == '/' && ui->input_buffer[1] == '?') {
+        if (ui->input_len >= 5) {
+            /* Have at least 3 chars after "/?": trigger search */
+            ui->input_buffer[ui->input_len] = '\0';
+            ui_state_search(ui, ui->input_buffer + 2);
+            /* Focus stays on query pane so user can refine search.
+             * Tab switches to main pane to navigate results. */
+        } else if (ui->search_active) {
+            /* Query too short — clear search results */
+            ui_state_search(ui, NULL);
+        }
+    } else if (ui->search_active && ui->focus == FOCUS_QUERY) {
+        /* Input no longer starts with /? — clear search */
+        ui_state_search(ui, NULL);
+    }
+
 paste_done:
     pthread_mutex_unlock(&ui->mtx);
     return 1;
