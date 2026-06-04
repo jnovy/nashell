@@ -971,6 +971,16 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 /* During bracketed paste, Enter appends newline to paste buffer */
                 if (paste_len < PASTE_BUF_CAP - 1)
                     paste_buf[paste_len++] = '\n';
+            } else if (ui->search_active && ui->input_len >= 2 &&
+                       ui->input_buffer[0] == '/' && ui->input_buffer[1] == '?') {
+                /* Search mode: Enter follows the highlighted link in results.
+                 * Switch focus to main pane and navigate to the selected link. */
+                ui->focus = FOCUS_JOURNAL;
+                ui->input_buffer[0] = '\0';
+                ui->input_len = 0;
+                ui->cursor_pos = 0;
+                ui_state_enter(ui);
+                ui->dirty = 1;
             } else if (ui->input_len > 0) {
                 /* Submit query — expand clipboard tokens, save to history */
                 *out_query = expand_clipboard_tokens(ui->input_buffer,
