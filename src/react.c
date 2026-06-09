@@ -280,9 +280,10 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     if (ctx->tools->memory) {
         char *mem_summary = memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
-            char *mem_msg = malloc(strlen(mem_summary) + 128);
+            char *mem_msg = malloc(strlen(mem_summary) + 256);
             if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.", mem_summary);
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.\n"
+                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
                 llm_chat_add(chat, "user", mem_msg);
                 free(mem_msg);
             }
@@ -743,9 +744,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (ctx->flags.inject_memory && ctx->tools->memory) {
         char *mem_summary = memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
-            char *mem_msg = malloc(strlen(mem_summary) + 128);
+            char *mem_msg = malloc(strlen(mem_summary) + 256);
             if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.", mem_summary);
+                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\nUse memory_recall with a query to search your memory store.\n"
+                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
                 llm_chat_add(chat, "user", mem_msg);
                 free(mem_msg);
             }

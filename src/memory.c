@@ -960,10 +960,26 @@ char *memory_build_index(memory_t *m) {
         else n_other++;
     }
 
-    str_t result = str_new(2048);
-    str_appendf(&result, "Memory: %d entries\n", m->idx.count);
+    /* Compact summary — ~30 tokens instead of ~14K for full listing */
+    str_t result = str_new(256);
+    str_appendf(&result, "Memory: %d entries", m->idx.count);
+    const char *sep = " (";
+    if (n_lessons)    { str_appendf(&result, "%s%d lessons", sep, n_lessons); sep = ", "; }
+    if (n_strategies) { str_appendf(&result, "%s%d strategies", sep, n_strategies); sep = ", "; }
+    if (n_skills)     { str_appendf(&result, "%s%d skills", sep, n_skills); sep = ", "; }
+    if (n_facts)      { str_appendf(&result, "%s%d facts", sep, n_facts); sep = ", "; }
+    if (n_tasks)      { str_appendf(&result, "%s%d tasks", sep, n_tasks); sep = ", "; }
+    if (n_other)      { str_appendf(&result, "%s%d other", sep, n_other); sep = ", "; }
+    if (sep[0] == ',') str_append_cstr(&result, ")");  /* close paren if we emitted any */
 
-    /* Emit each type group with key + description listing */
+    return str_steal(&result);
+}
+
+/* ── memory_build_listing (on-demand full listing) ─────────── */
+
+char *memory_build_listing(memory_t *m, const char *type_filter) {
+    if (!m || m->idx.count == 0) return NULL;
+
     static const struct { const char *prefix; const char *label; } types[] = {
         { "lesson:",   "Lessons" },
         { "strategy:", "Strategies" },
@@ -973,10 +989,20 @@ char *memory_build_index(memory_t *m) {
         { NULL, NULL }
     };
 
+    str_t result = str_new(4096);
+
     for (int t = 0; types[t].prefix; t++) {
         size_t plen = strlen(types[t].prefix);
+
+        /* If type_filter is set, skip non-matching groups */
+        if (type_filter && type_filter[0]) {
+            /* Match filter against label (case-insensitive first char) or prefix */
+            if (strncasecmp(type_filter, types[t].label, strlen(type_filter)) != 0 &&
+                strncmp(type_filter, types[t].prefix, strlen(type_filter)) != 0)
+                continue;
+        }
+
         int count = 0;
-        /* First pass: count */
         for (int i = 0; i < m->idx.count; i++) {
             if (m->idx.entries[i].key &&
                 strncmp(m->idx.entries[i].key, types[t].prefix, plen) == 0)
@@ -984,8 +1010,7 @@ char *memory_build_index(memory_t *m) {
         }
         if (count == 0) continue;
 
-        str_appendf(&result, "\n## %s (%d)\n", types[t].label, count);
-        /* Second pass: emit entries */
+        str_appendf(&result, "## %s (%d)\n", types[t].label, count);
         for (int i = 0; i < m->idx.count; i++) {
             mem_index_entry_t *e = &m->idx.entries[i];
             if (!e->key || strncmp(e->key, types[t].prefix, plen) != 0)
@@ -993,30 +1018,53 @@ char *memory_build_index(memory_t *m) {
             const char *desc = (e->description && e->description[0])
                                ? e->description : "(no description)";
             str_appendf(&result, "- %s", e->key);
-            /* Show pinned indicator */
             if (e->pinned) str_append_cstr(&result, " [pinned]");
             str_appendf(&result, " \xe2\x80\x94 %s\n", desc);
         }
+        str_append_cstr(&result, "\n");
     }
 
-    /* Other (uncategorized) entries */
-    if (n_other > 0) {
-        str_appendf(&result, "\n## Other (%d)\n", n_other);
+    /* Other (uncategorized) entries — only if no filter or filter matches "other" */
+    if (!type_filter || !type_filter[0] ||
+        strncasecmp(type_filter, "Other", strlen(type_filter)) == 0) {
+        int n_other = 0;
         for (int i = 0; i < m->idx.count; i++) {
             mem_index_entry_t *e = &m->idx.entries[i];
             if (!e->key) continue;
-            if (strncmp(e->key, "lesson:", 7) == 0 ||
-                strncmp(e->key, "strategy:", 9) == 0 ||
-                strncmp(e->key, "skill:", 6) == 0 ||
-                strncmp(e->key, "fact:", 5) == 0 ||
-                strncmp(e->key, "task:", 5) == 0)
-                continue;
-            const char *desc = (e->description && e->description[0])
-                               ? e->description : "(no description)";
-            str_appendf(&result, "- %s \xe2\x80\x94 %s\n", e->key, desc);
+            int categorized = 0;
+            for (int t = 0; types[t].prefix; t++) {
+                if (strncmp(e->key, types[t].prefix, strlen(types[t].prefix)) == 0) {
+                    categorized = 1;
+                    break;
+                }
+            }
+            if (!categorized) n_other++;
+        }
+        if (n_other > 0) {
+            str_appendf(&result, "## Other (%d)\n", n_other);
+            for (int i = 0; i < m->idx.count; i++) {
+                mem_index_entry_t *e = &m->idx.entries[i];
+                if (!e->key) continue;
+                int categorized = 0;
+                for (int t = 0; types[t].prefix; t++) {
+                    if (strncmp(e->key, types[t].prefix, strlen(types[t].prefix)) == 0) {
+                        categorized = 1;
+                        break;
+                    }
+                }
+                if (categorized) continue;
+                const char *desc = (e->description && e->description[0])
+                                   ? e->description : "(no description)";
+                str_appendf(&result, "- %s \xe2\x80\x94 %s\n", e->key, desc);
+            }
+            str_append_cstr(&result, "\n");
         }
     }
 
+    if (result.len == 0) {
+        str_free(&result);
+        return NULL;
+    }
     return str_steal(&result);
 }
 

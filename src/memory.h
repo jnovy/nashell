@@ -146,9 +146,15 @@ int memory_unpin(memory_t *m, const char *key);
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results);
 
 /* Build a compact memory summary (counts by type only).
- * Format: "Memory: N entries, X lessons, Y strategies, Z skills, ..."
+ * Format: "Memory: N entries (X lessons, Y strategies, Z skills, ...)"
  * Caller must free. Returns NULL if no memories. */
 char *memory_build_index(memory_t *m);
+
+/* Build a full listing of all memory keys grouped by type.
+ * type_filter: if non-NULL/non-empty, only show entries matching that type
+ * (e.g. "lesson", "strategy", "skill", "fact", "task", "other").
+ * Caller must free. Returns NULL if no matching memories. */
+char *memory_build_listing(memory_t *m, const char *type_filter);
 
 /* Load all pinned memories and return their values concatenated.
  * Format: "[PINNED: key1]\nvalue1\n\n[PINNED: key2]\nvalue2\n..."

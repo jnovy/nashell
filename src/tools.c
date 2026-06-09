@@ -2479,6 +2479,37 @@ static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
     return make_result(1, meta, NULL);
 }
 
+/* ── memory_list ────────────────────────────────────────── */
+
+static tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
+    if (!ctx->memory)
+        return make_error("memory not available");
+
+    const char *type_filter = NULL;
+    cJSON *type_j = cJSON_GetObjectItem(params, "type");
+    if (type_j && type_j->valuestring && type_j->valuestring[0])
+        type_filter = type_j->valuestring;
+
+    char *listing = memory_build_listing(ctx->memory, type_filter);
+    if (!listing)
+        return make_error("no memory entries found");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "ok");
+    if (type_filter)
+        cJSON_AddStringToObject(meta, "filter", type_filter);
+
+    char *ref = store_save(ctx->store, listing);
+    char *alias = tool_register_alias(ctx, ref ? ref : "");
+    inject_thought(ctx, params);
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_list",
+                   params, alias, listing ? strlen(listing) : 0, 0, NULL, NULL);
+
+    free(alias);
+    free(listing);
+    return make_result(1, meta, ref);  /* ref ownership transfers to caller */
+}
+
 /* ── web_fetch ──────────────────────────────────────────── */
 
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
@@ -3076,6 +3107,7 @@ static const struct {
     {"memory_pin",    tool_memory_pin},
     {"memory_unpin",  tool_memory_unpin},
     {"memory_delete", tool_memory_delete},
+    {"memory_list",   tool_memory_list},
     {NULL, NULL}  /* sentinel */
 };
 

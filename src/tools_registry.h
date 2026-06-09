@@ -98,10 +98,15 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "Delete a memory entry by key.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to delete\"}},\"required\":[\"key\"]}"},
 
+    {"memory_list",
+     "List all memory keys grouped by type. Returns key names with descriptions. "
+     "Use to browse available memories when memory_recall semantic search is too narrow.",
+     "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, other. Omit for all.\"}}}"},
+
     {NULL, NULL, NULL}  /* sentinel */
 };
 
-#define TOOL_REGISTRY_COUNT 17
+#define TOOL_REGISTRY_COUNT 18
 
 /* Build a cJSON tools array from the registry, formatted for the given provider type.
  * Handles the structural differences between Local/OpenAI/Anthropic APIs.
