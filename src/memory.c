@@ -1047,6 +1047,48 @@ char *memory_load_pinned(memory_t *m) {
 
 /* ── delete ──────────────────────────────────────────── */
 
+/* Callback context for cleaning dangling refs after a key is deleted. */
+typedef struct {
+    const char *deleted_key;
+    int cleaned;
+} gc_refs_ctx_t;
+
+/* Remove deleted_key from the refs array of every remaining entry. */
+static int gc_refs_cb(const char *dirpath, cJSON *entry, void *user_data) {
+    gc_refs_ctx_t *ctx = (gc_refs_ctx_t *)user_data;
+    cJSON *refs = cJSON_GetObjectItem(entry, "refs");
+    if (!refs || !cJSON_IsArray(refs)) return JSON_CB_CONTINUE;
+
+    int sz = cJSON_GetArraySize(refs);
+    int found = 0;
+    for (int i = sz - 1; i >= 0; i--) {
+        cJSON *item = cJSON_GetArrayItem(refs, i);
+        if (item && item->valuestring &&
+            strcmp(item->valuestring, ctx->deleted_key) == 0) {
+            cJSON_DeleteItemFromArray(refs, i);
+            found = 1;
+        }
+    }
+
+    if (found) {
+        /* Rewrite the cleaned entry to disk */
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        if (k && k->valuestring) {
+            char fname[512];
+            key_to_path(k->valuestring, ".json", fname, sizeof(fname));
+            char path[NASH_PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dirpath, fname);
+            char *json = cJSON_Print(entry);
+            if (json) {
+                write_file(path, json, strlen(json));
+                free(json);
+            }
+        }
+        ctx->cleaned++;
+    }
+    return JSON_CB_CONTINUE;
+}
+
 int memory_delete(memory_t *m, const char *key) {
     if (!m || !key) return -1;
 
@@ -1072,6 +1114,12 @@ int memory_delete(memory_t *m, const char *key) {
 
     /* P1: Remove from in-memory index */
     mem_index_remove(&m->idx, key);
+
+    /* Clean dangling refs: scan all remaining entries and remove the
+     * deleted key from their refs arrays.  O(N) per delete but N < 1000
+     * and deletes are infrequent (consolidation, prune, manual). */
+    gc_refs_ctx_t gc = { .deleted_key = key, .cleaned = 0 };
+    for_each_json_entry(m->dir, gc_refs_cb, &gc);
 
     /* Git commit */
     char msg[256];
@@ -1153,6 +1201,32 @@ static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
     return JSON_CB_CONTINUE;
 }
 
+/* Callback for orphan .emb cleanup: remove .emb files without a matching .json */
+static int orphan_emb_cb(const char *dirpath, const char *filename,
+                         const char *fullpath, void *user_data) {
+    int *cleaned = (int *)user_data;
+
+    /* Derive the expected .json filename from the .emb filename.
+     * foo_bar.emb → foo_bar.json */
+    size_t flen = strlen(filename);
+    if (flen < 5) return 0;  /* too short to be valid */
+
+    char json_fname[512];
+    snprintf(json_fname, sizeof(json_fname), "%.*s.json",
+             (int)(flen - 4), filename);  /* strip .emb, add .json */
+
+    char json_path[NASH_PATH_MAX];
+    snprintf(json_path, sizeof(json_path), "%s/%s", dirpath, json_fname);
+
+    struct stat st;
+    if (stat(json_path, &st) != 0) {
+        /* No matching .json — orphan .emb */
+        unlink(fullpath);
+        (*cleaned)++;
+    }
+    return 0;
+}
+
 int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (!m) return 0;
 
@@ -1165,6 +1239,16 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         char msg[128];
         snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", ctx.pruned);
         memory_git_commit(m, msg);
+    }
+
+    /* Sweep for orphan .emb files (no matching .json).
+     * These accumulate when crashes interrupt deletion or when .json files
+     * are removed manually.  They waste disk space and pollute embedding
+     * scans during consolidation. */
+    {
+        int emb_cleaned = 0;
+        for_each_dir_entry(m->dir, ".emb", orphan_emb_cb, &emb_cleaned);
+        /* No git commit needed — .emb files are not tracked by git */
     }
 
     return ctx.pruned;

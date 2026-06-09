@@ -1980,6 +1980,52 @@ static int consolidation_cb(const char *dirpath, const char *filename,
     return 0;
 }
 
+/* Carry forward validation scores from a deleted/old entry to the surviving
+ * entry.  When consolidation merges or replaces entries, the old entry's
+ * recall evidence (hits/misses) must be summed into the survivor to prevent
+ * a well-tested memory from losing its credibility after consolidation.
+ * Without this, a merged entry starts at vscore=0.50 (uninformed prior)
+ * and becomes vulnerable to immediate pruning. */
+static void consolidation_carry_scores(memory_t *m,
+                                       const char *survivor_key,
+                                       int old_hits, int old_misses) {
+    if (!m || !survivor_key || (old_hits == 0 && old_misses == 0)) return;
+
+    /* Build JSON path from key (same pattern as memory_try_consolidate) */
+    char fname[512];
+    snprintf(fname, sizeof(fname), "%s", survivor_key);
+    for (char *p = fname; *p; p++)
+        if (*p == ':' || *p == '/') *p = '_';
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s.json", m->dir, fname);
+
+    size_t buf_len = 0;
+    char *buf = slurp_file(path, &buf_len);
+    if (!buf || buf_len == 0) { free(buf); return; }
+
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    if (!entry) return;
+
+    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+    int cur_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+    int cur_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+
+    if (rh) cJSON_SetNumberValue(rh, cur_hits + old_hits);
+    else    cJSON_AddNumberToObject(entry, "recall_hits", old_hits);
+    if (rm) cJSON_SetNumberValue(rm, cur_misses + old_misses);
+    else    cJSON_AddNumberToObject(entry, "recall_misses", old_misses);
+
+    /* Write back */
+    char *json = cJSON_Print(entry);
+    if (json) {
+        write_file(path, json, strlen(json));
+        free(json);
+    }
+    cJSON_Delete(entry);
+}
+
 static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                     const char *new_value) {
     if (!ctx->llm || !ctx->memory) return;
@@ -2049,6 +2095,13 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         cJSON_Delete(old_entry);
         return;
     }
+
+    /* Extract old entry's validation scores BEFORE any branch deletes it.
+     * These will be carried forward to the surviving entry. */
+    cJSON *old_rh = cJSON_GetObjectItem(old_entry, "recall_hits");
+    cJSON *old_rm = cJSON_GetObjectItem(old_entry, "recall_misses");
+    int old_hits = old_rh ? (int)cJSON_GetNumberValue(old_rh) : 0;
+    int old_misses = old_rm ? (int)cJSON_GetNumberValue(old_rm) : 0;
 
     /* Build classify-then-act prompt.
      * Instead of blindly merging, ask the LLM to classify the relationship:
@@ -2129,6 +2182,10 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         if (strcmp(old_key, new_key) != 0) {
             memory_delete(ctx->memory, old_key);
         }
+        /* Carry forward old entry's validation evidence to the new entry.
+         * The new insight earned the old one's credibility by replacing it. */
+        consolidation_carry_scores(ctx->memory, new_key,
+                                   old_hits, old_misses);
         free(response);
         cJSON_Delete(old_entry);
         return;
@@ -2191,6 +2248,13 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         if (strcmp(old_key, new_key) != 0) {
             memory_delete(ctx->memory, old_key);
         }
+
+        /* Carry forward old entry's validation evidence to the merged result.
+         * memory_store() above preserved the new entry's counters (same key
+         * overwrite), but the old entry's counters were lost via delete.
+         * Sum both entries' evidence into the survivor. */
+        consolidation_carry_scores(ctx->memory, new_key,
+                                   old_hits, old_misses);
 
         free(merged);
     }
