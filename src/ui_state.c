@@ -1072,7 +1072,7 @@ void ui_state_enter(ui_state_t *ui) {
         ui->nav_depth++;
 
         /* Resolve URI relative to current file's directory */
-        char new_path[NASH_PATH_MAX];
+        char new_path[NASH_PATH_MAX + NASH_PATH_MAX];
         if (uri[0] == '/') {
             /* Absolute path */
             snprintf(new_path, sizeof(new_path), "%s", uri);

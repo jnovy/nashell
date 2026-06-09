@@ -339,7 +339,7 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
         if (nlen < 5 || strcmp(ent->d_name + nlen - 5, ".yaml") != 0)
             continue;
 
-        char path[NASH_PATH_MAX];
+        char path[NASH_PATH_MAX + 256];
         snprintf(path, sizeof(path), "%s/%s", pb_dir, ent->d_name);
         playbook_t *pb = playbook_load(path);
         if (!pb) continue;
@@ -419,7 +419,7 @@ void *playbook_worker(void *arg) {
 
     struct timespec run_tp;
     clock_gettime(CLOCK_REALTIME, &run_tp);
-    char run_path[NASH_PATH_MAX];
+    char run_path[NASH_PATH_MAX + 64];
     snprintf(run_path, sizeof(run_path), "%s/%ld.%05ld.jsonl",
              runs_dir, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000);
 

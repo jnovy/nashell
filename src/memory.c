@@ -867,6 +867,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
     /* Build results from top-k index entries */
     int n = n_scored < max_results ? n_scored : max_results;
+    if (n <= 0) { free(scored); return results; }
     results.entries = calloc((size_t)n, sizeof(memory_entry_t));
     results.count = 0;
 

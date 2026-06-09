@@ -1138,9 +1138,9 @@ int main(int argc, char **argv) {
                     playbook_t *pb = playbook_load(pb_path);
                     if (!pb) {
                         pthread_mutex_lock(&ui->mtx);
-                        char errmsg[512];
+                        char errmsg[NASH_PATH_MAX + 64];
                         snprintf(errmsg, sizeof(errmsg),
-                                 "/play: cannot load playbook '%s'", pb_path);
+                                 "/play: cannot load playbook '%.4080s'", pb_path);
                         ui_state_set_status(ui, STATUS_ERROR, errmsg);
                         pthread_mutex_unlock(&ui->mtx);
                         tui_render(ui);
@@ -1188,7 +1188,7 @@ int main(int argc, char **argv) {
 
                     if (show_detail && show_id && *show_id) {
                         /* /runs show <id> — display a specific run log */
-                        char rpath[NASH_PATH_MAX];
+                        char rpath[NASH_PATH_MAX + NASH_PATH_MAX];
                         /* Try exact filename, or append .jsonl */
                         if (strstr(show_id, ".jsonl"))
                             snprintf(rpath, sizeof(rpath), "%s/%s", rdir, show_id);
@@ -1287,7 +1287,7 @@ int main(int argc, char **argv) {
                                         names[j] = tmp;
                                     }
                             for (int i = 0; i < nnames; i++) {
-                                char fpath[NASH_PATH_MAX];
+                                char fpath[NASH_PATH_MAX + NASH_PATH_MAX];
                                 snprintf(fpath, sizeof(fpath), "%s/%s", rdir, names[i]);
                                 FILE *rf = fopen(fpath, "r");
                                 if (rf) {
