@@ -2050,35 +2050,51 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         return;
     }
 
-    /* Build consolidation prompt.
+    /* Build classify-then-act prompt.
+     * Instead of blindly merging, ask the LLM to classify the relationship:
+     * - SUPERSEDES: new entry corrects/updates old → delete old, keep new
+     * - COMPLEMENTARY: entries cover different aspects → keep both
+     * - REDUNDANT: entries say the same thing → merge into one
+     * This prevents contradictory entries from being merged into incoherent
+     * mush, and allows corrective insights to properly replace outdated ones.
+     *
      * FIX B10: Include key lengths in allocation — the format string
      * interpolates new_key and old_key too, which could be up to 256
-     * chars each. The previous 1024-byte slack was insufficient. */
+     * chars each. */
     size_t prompt_sz = strlen(new_value) + strlen(old_value) +
-                     strlen(new_key) + strlen(old_key) + 1024;
+                     strlen(new_key) + strlen(old_key) + 2048;
     char *prompt = malloc(prompt_sz);
     if (!prompt) { cJSON_Delete(old_entry); return; }
     snprintf(prompt, prompt_sz,
-        "Consolidate these two related memory entries into ONE concise entry.\n"
-        "Preserve all unique information. Remove redundancy. Keep the same style.\n"
-        "Output ONLY the consolidated text, no preamble.\n\n"
-        "--- Entry 1 (key: %s) ---\n%s\n\n"
-        "--- Entry 2 (key: %s) ---\n%s\n\n"
-        "Consolidated entry:",
+        "Two memory entries are semantically similar. Classify their relationship "
+        "and act accordingly.\n\n"
+        "--- NEW entry (key: %s) ---\n%s\n\n"
+        "--- EXISTING entry (key: %s) ---\n%s\n\n"
+        "First, classify the relationship as exactly one of:\n"
+        "SUPERSEDES — the NEW entry corrects, updates, or invalidates the EXISTING entry "
+        "(e.g. opposite advice, updated procedure, refined understanding)\n"
+        "COMPLEMENTARY — the entries cover different aspects of the same topic "
+        "(e.g. different failure modes, different contexts, different techniques)\n"
+        "REDUNDANT — the entries say essentially the same thing with different wording\n\n"
+        "Output format:\n"
+        "Line 1: SUPERSEDES or COMPLEMENTARY or REDUNDANT\n"
+        "Line 2+: If REDUNDANT, output the merged text (concise, preserve unique info). "
+        "If SUPERSEDES or COMPLEMENTARY, output nothing more.",
         new_key, new_value, old_key, old_value);
 
-    /* Call LLM for consolidation via provider when available (FIX #3) */
+    /* Call LLM for classification + optional merge */
     llm_chat_t *chat = llm_chat_new();
     llm_chat_add(chat, "system",
-        "You are a memory consolidation assistant. Merge the two entries "
-        "into one clear, concise entry preserving all unique information.");
+        "You are a memory consistency assistant. Classify the relationship between "
+        "two memory entries and, if redundant, merge them. Be precise: entries that "
+        "give OPPOSITE advice for the same situation are SUPERSEDES, not REDUNDANT.");
     llm_chat_add(chat, "user", prompt);
     free(prompt);
 
     llm_stats_t stats = {0};
-    char *consolidated = NULL;
+    char *response = NULL;
 
-    /* Temporarily override provider config for consolidation (low temp, short output) */
+    /* Temporarily override provider config (low temp, short output) */
     int saved_max_tokens = ctx->provider->cfg.max_tokens;
     float saved_temp = ctx->provider->cfg.temperature;
     int saved_thinking = ctx->provider->cfg.enable_thinking;
@@ -2087,25 +2103,60 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     ctx->provider->cfg.temperature = 0.1f;
     ctx->provider->cfg.enable_thinking = 0;
     ctx->provider->cfg.thinking_budget = 0;
-    consolidated = provider_complete(ctx->provider, chat, &stats);
+    response = provider_complete(ctx->provider, chat, &stats);
     ctx->provider->cfg.max_tokens = saved_max_tokens;
     ctx->provider->cfg.temperature = saved_temp;
     ctx->provider->cfg.enable_thinking = saved_thinking;
     ctx->provider->cfg.thinking_budget = saved_budget;
     llm_chat_free(chat);
 
-    if (!consolidated || strlen(consolidated) < 20) {
-        /* Consolidation failed or too short — skip */
-        free(consolidated);
+    if (!response || strlen(response) < 5) {
+        free(response);
         cJSON_Delete(old_entry);
         return;
     }
 
+    /* Parse classification from first line of response */
+    if (strncmp(response, "COMPLEMENTARY", 13) == 0) {
+        /* Entries cover different aspects — keep both, do nothing */
+        free(response);
+        cJSON_Delete(old_entry);
+        return;
+    }
+
+    if (strncmp(response, "SUPERSEDES", 10) == 0) {
+        /* New entry corrects/updates old — delete old, keep new as-is */
+        if (strcmp(old_key, new_key) != 0) {
+            memory_delete(ctx->memory, old_key);
+        }
+        free(response);
+        cJSON_Delete(old_entry);
+        return;
+    }
+
+    /* Default: REDUNDANT — merge (extract text after first newline) */
     {
-        /* FIX B1: Preserve journal_ref provenance from the new entry.
-         * Previously passed NULL, breaking the provenance chain for
-         * consolidated memories — the dreaming system couldn't trace
-         * them back to their originating session journal. */
+        char *merged = NULL;
+        char *newline = strchr(response, '\n');
+        if (newline) {
+            /* Skip the classification line and any leading whitespace */
+            newline++;
+            while (*newline == '\n' || *newline == '\r' || *newline == ' ')
+                newline++;
+            if (strlen(newline) >= 20) {
+                merged = strdup(newline);
+            }
+        }
+        if (!merged) {
+            /* Couldn't extract merged text — skip */
+            free(response);
+            cJSON_Delete(old_entry);
+            return;
+        }
+        free(response);
+
+        /* Preserve journal_ref provenance from the new entry.
+         * FIX B1: Without this, consolidated memories lose provenance. */
         char new_fname[512];
         snprintf(new_fname, sizeof(new_fname), "%s", new_key);
         for (char *p = new_fname; *p; p++)
@@ -2129,21 +2180,21 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             }
         }
 
-        /* Store consolidated version under the new key */
-        memory_store(ctx->memory, new_key, consolidated,
+        /* Store merged version under the new key */
+        memory_store(ctx->memory, new_key, merged,
                      0, new_jref, NULL, 0);
 
         cJSON_Delete(new_entry_json);
+
+        /* Delete the old entry if it has a different key.
+         * FIX B3: Use memory_delete() for proper .json + .emb cleanup. */
+        if (strcmp(old_key, new_key) != 0) {
+            memory_delete(ctx->memory, old_key);
+        }
+
+        free(merged);
     }
 
-    /* Delete the old entry if it has a different key.
-     * FIX B3: Use memory_delete() instead of raw unlink() — this properly
-     * removes .json + .emb files and git commits the deletion. */
-    if (strcmp(old_key, new_key) != 0) {
-        memory_delete(ctx->memory, old_key);
-    }
-
-    free(consolidated);
     cJSON_Delete(old_entry);
 }
 

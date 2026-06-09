@@ -30,6 +30,7 @@ typedef struct {
     cJSON *rkey_j;
     embed_vec_t *new_emb;
     int *should_store;
+    int task_succeeded;
 } reflection_scan_t;
 
 static int reflection_dedup_cb(const char *dirpath, const char *filename,
@@ -49,6 +50,23 @@ static int reflection_dedup_cb(const char *dirpath, const char *filename,
     float sim = embed_cosine_sim_multi(s->new_emb, &exist_emb);
     embed_multi_vec_free(&exist_emb);
     if (sim > 0.90f) {
+        /* When a task FAILED, the reflection may produce a corrective insight
+         * that contradicts an existing entry. Since contradictions have high
+         * embedding similarity (same topic, opposite conclusion), we must
+         * allow the store — memory_try_consolidate will classify it as
+         * SUPERSEDES and delete the old entry. Only block for successes. */
+        if (!s->task_succeeded) {
+            /* Log but allow — let consolidation handle contradiction */
+            cJSON *dup_p = cJSON_CreateObject();
+            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
+            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
+            cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
+            journal_append(s->ctx->tools->journal,
+                s->ctx->tools->react_loop, s->ctx->tools->step,
+                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
+            cJSON_Delete(dup_p);
+            return 1;  /* stop iterating, but should_store stays 1 */
+        }
         *s->should_store = 0;
         /* Log to journal instead of stderr (TUI mode) */
         {
@@ -2255,6 +2273,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 .rkey_j = rkey_j,
                                 .new_emb = &new_emb,
                                 .should_store = &should_store,
+                                .task_succeeded = task_succeeded,
                             };
                             for_each_dir_entry(ctx->tools->memory->dir, ".emb",
                                               reflection_dedup_cb, &rscan);
