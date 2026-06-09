@@ -32,6 +32,9 @@ static void key_to_path(const char *key, const char *ext, char *out, size_t out_
     strcat(out, ext);
 }
 
+/* Forward declarations for helpers used by index loading (defined later) */
+static void json_to_emb_path(const char *json_path, char *emb_path, size_t sz);
+
 static double epoch_now(void) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
@@ -150,6 +153,195 @@ static void memory_git_commit(memory_t *m, const char *msg) {
     memory_git_run(m, commit_argv);
 }
 
+/* ── P6: description generation ────────────────────────── */
+
+/* P6: Generate a short description from the value text.
+ * Extracts the first sentence (up to '.') or first line (up to '\n'),
+ * whichever comes first, capped at 250 chars.
+ *
+ * Research basis:
+ *   Letta Context Repositories [May 2026] — frontmatter descriptions
+ *     in memory files enable progressive disclosure.
+ *   Claude Code Auto Memory [2026] — MEMORY.md index with topic
+ *     descriptions for selective loading.
+ *   AutoMEM [arXiv:2606.04315, Jun 2026] — agents perform best when
+ *     they can browse memory descriptions before loading full content.
+ *
+ * Returns heap-allocated string. Caller must free. */
+static char *generate_description(const char *value) {
+    if (!value || !value[0]) return strdup("");
+
+    /* Skip leading whitespace and markdown headers */
+    const char *start = value;
+    while (*start == ' ' || *start == '\t' || *start == '#' ||
+           *start == '\n' || *start == '\r' || *start == '*')
+        start++;
+    if (!*start) return strdup("");
+
+    /* Find first sentence end (.) or newline, whichever comes first */
+    const char *dot = strchr(start, '.');
+    const char *nl = strchr(start, '\n');
+    const char *end;
+    size_t slen = strlen(start);
+
+    if (dot && (!nl || dot < nl) && (dot - start) < 250) {
+        end = dot + 1;  /* include the period */
+    } else if (nl && (nl - start) < 250) {
+        end = nl;
+    } else {
+        /* No sentence/line break within 250 chars — truncate */
+        end = start + (slen < 150 ? slen : 150);
+    }
+
+    int dlen = (int)(end - start);
+    if (dlen > 250) dlen = 250;
+    if (dlen <= 0) return strdup("");
+
+    char *desc = malloc((size_t)dlen + 1);
+    memcpy(desc, start, (size_t)dlen);
+    desc[dlen] = '\0';
+    return desc;
+}
+
+/* ── P1: index cache helpers ───────────────────────────── */
+
+/* Free a single index entry's owned fields */
+static void mem_index_entry_free(mem_index_entry_t *e) {
+    if (!e) return;
+    free(e->key);
+    free(e->description);
+    free(e->value);
+    free(e->path);
+    for (int i = 0; i < e->n_refs; i++) free(e->refs[i]);
+    free(e->refs);
+    if (e->has_emb) embed_multi_vec_free(&e->emb);
+    memset(e, 0, sizeof(*e));
+}
+
+/* Free the entire index */
+static void mem_index_free(mem_index_t *idx) {
+    if (!idx) return;
+    for (int i = 0; i < idx->count; i++)
+        mem_index_entry_free(&idx->entries[i]);
+    free(idx->entries);
+    memset(idx, 0, sizeof(*idx));
+}
+
+/* Find an index entry by key. Returns pointer or NULL. */
+static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
+    if (!idx || !key) return NULL;
+    for (int i = 0; i < idx->count; i++) {
+        if (idx->entries[i].key && strcmp(idx->entries[i].key, key) == 0)
+            return &idx->entries[i];
+    }
+    return NULL;
+}
+
+/* Ensure capacity for at least one more entry */
+static void mem_index_grow(mem_index_t *idx) {
+    if (idx->count >= idx->cap) {
+        idx->cap = idx->cap ? idx->cap * 2 : 64;
+        idx->entries = realloc(idx->entries,
+                               (size_t)idx->cap * sizeof(mem_index_entry_t));
+    }
+}
+
+/* Remove an entry from the index by key */
+static void mem_index_remove(mem_index_t *idx, const char *key) {
+    if (!idx || !key) return;
+    for (int i = 0; i < idx->count; i++) {
+        if (idx->entries[i].key && strcmp(idx->entries[i].key, key) == 0) {
+            mem_index_entry_free(&idx->entries[i]);
+            if (i < idx->count - 1) {
+                memmove(&idx->entries[i], &idx->entries[i + 1],
+                        (size_t)(idx->count - 1 - i) * sizeof(mem_index_entry_t));
+            }
+            idx->count--;
+            return;
+        }
+    }
+}
+
+/* Populate an index entry from a parsed cJSON entry + file path.
+ * Also loads the embedding if available. */
+static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
+                                       const char *filepath) {
+    memset(ie, 0, sizeof(*ie));
+
+    cJSON *k = cJSON_GetObjectItem(entry, "key");
+    cJSON *v = cJSON_GetObjectItem(entry, "value");
+    cJSON *d = cJSON_GetObjectItem(entry, "description");
+    cJSON *p = cJSON_GetObjectItem(entry, "pinned");
+    cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
+    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+    cJSON *be = cJSON_GetObjectItem(entry, "belief_entropy");
+    cJSON *ca = cJSON_GetObjectItem(entry, "created_at");
+
+    ie->key = (k && k->valuestring) ? strdup(k->valuestring) : strdup("");
+    ie->value = (v && v->valuestring) ? strdup(v->valuestring) : strdup("");
+    ie->description = (d && d->valuestring) ? strdup(d->valuestring)
+                                             : generate_description(ie->value);
+    ie->pinned = p ? cJSON_IsTrue(p) : 0;
+    ie->access_count = ac ? (int)cJSON_GetNumberValue(ac) : 0;
+    ie->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+    ie->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+    ie->belief_entropy = be ? cJSON_GetNumberValue(be) : -1.0;
+    if (ca && ca->valuestring) ie->created_at = atof(ca->valuestring);
+    else if (ca) ie->created_at = cJSON_GetNumberValue(ca);
+    ie->path = strdup(filepath);
+
+    /* Copy refs */
+    cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
+    if (refs_arr && cJSON_IsArray(refs_arr)) {
+        ie->n_refs = cJSON_GetArraySize(refs_arr);
+        if (ie->n_refs > 0) {
+            ie->refs = calloc((size_t)ie->n_refs, sizeof(char *));
+            for (int i = 0; i < ie->n_refs; i++) {
+                cJSON *ref = cJSON_GetArrayItem(refs_arr, i);
+                ie->refs[i] = (ref && ref->valuestring) ? strdup(ref->valuestring) : strdup("");
+            }
+        }
+    }
+
+    /* Load embedding if .emb file exists */
+    char emb_path[NASH_PATH_MAX];
+    json_to_emb_path(filepath, emb_path, sizeof(emb_path));
+    ie->emb = embed_multi_vec_load(emb_path);
+    ie->has_emb = (ie->emb.data && ie->emb.dim > 0) ? 1 : 0;
+}
+
+/* Callback for loading all entries into the index at startup */
+typedef struct {
+    mem_index_t *idx;
+} index_load_ctx_t;
+
+static int index_load_cb(const char *dirpath, const char *filename,
+                          const char *fullpath, void *user_data) {
+    index_load_ctx_t *ctx = (index_load_ctx_t *)user_data;
+    (void)dirpath; (void)filename;
+
+    char *buf = slurp_file(fullpath, NULL);
+    if (!buf) return 0;
+    cJSON *entry = cJSON_Parse(buf);
+    free(buf);
+    if (!entry) return 0;
+
+    mem_index_grow(ctx->idx);
+    mem_index_entry_from_json(&ctx->idx->entries[ctx->idx->count], entry, fullpath);
+    ctx->idx->count++;
+
+    cJSON_Delete(entry);
+    return 0;
+}
+
+/* Load the full index from disk. Called once at memory_new(). */
+static void mem_index_load(memory_t *m) {
+    mem_index_free(&m->idx);
+    index_load_ctx_t ctx = { .idx = &m->idx };
+    for_each_dir_entry(m->dir, ".json", index_load_cb, &ctx);
+}
+
 /* ── create/free ─────────────────────────────────────── */
 
 memory_t *memory_new(const char *project_root) {
@@ -159,11 +351,24 @@ memory_t *memory_new(const char *project_root) {
     snprintf(path, sizeof(path), "%s/memory", project_root);
     mkdir(path, 0755);
     m->dir = strdup(path);
+
+    /* P1: Load in-memory index from disk at startup.
+     * This is the only full directory scan — all subsequent operations
+     * (recall, build_index, load_pinned) use the cached index.
+     *
+     * Research basis:
+     *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed memory with
+     *     active control beats all passive retrieval pipelines.
+     *   MRAgent [arXiv:2606.06036, ICML 2026] — Cue-Tag-Content graph;
+     *     our index serves as the "cue" layer for fast navigation. */
+    mem_index_load(m);
+
     return m;
 }
 
 void memory_free(memory_t *m) {
     if (!m) return;
+    mem_index_free(&m->idx);
     embed_free(m->embed);
     free(m->dir);
     free(m->model);
@@ -262,6 +467,15 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * Preserved from existing entry above, or -1 (not computed). */
     cJSON_AddNumberToObject(entry, "belief_entropy", belief_entropy);
 
+    /* P6: Auto-generate description from value text for progressive disclosure.
+     * Research: Letta Context Repos [May 2026], Claude Code Auto Memory [2026],
+     * AutoMEM [arXiv:2606.04315, Jun 2026]. */
+    {
+        char *desc = generate_description(value);
+        cJSON_AddStringToObject(entry, "description", desc);
+        free(desc);
+    }
+
     /* Provenance: link to the session journal where this memory was created.
      * The dreaming LLM can read this journal to understand original context. */
     if (journal_ref)
@@ -296,6 +510,25 @@ int memory_store(memory_t *m, const char *key, const char *value,
     /* Generate embedding for semantic matching (if enabled) */
     if (m->embed && m->embed->available) {
         memory_embed_entry(m, key, value);
+    }
+
+    /* P1: Update in-memory index — either update existing entry or add new.
+     * Re-reads the just-written JSON to populate the index entry with all
+     * fields including the auto-generated description. */
+    {
+        cJSON *fresh = memory_load_entry_json(m, key);
+        if (fresh) {
+            mem_index_entry_t *existing = mem_index_find(&m->idx, key);
+            if (existing) {
+                mem_index_entry_free(existing);
+                mem_index_entry_from_json(existing, fresh, path);
+            } else {
+                mem_index_grow(&m->idx);
+                mem_index_entry_from_json(&m->idx.entries[m->idx.count], fresh, path);
+                m->idx.count++;
+            }
+            cJSON_Delete(fresh);
+        }
     }
 
     /* Git commit: track memory creation/update */
@@ -336,6 +569,12 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
+
+    /* P1: Update in-memory index */
+    {
+        mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+        if (ie) ie->pinned = pinned;
+    }
 
     /* Git: commit pin/unpin change */
     char msg[600];
@@ -466,7 +705,9 @@ static double score_entry_hybrid(const char *key, const char *value,
 }
 
 /* qsort comparator for scored entries (descending by score) */
-typedef struct { char path[NASH_PATH_MAX]; double score; double relevance; double importance; cJSON *cached_entry; } scored_t;
+/* P1: scored_t simplified — no cached_entry needed since we use the
+ * in-memory index. Only stores index position + scores. */
+typedef struct { int idx_pos; double score; double relevance; double importance; } scored_t;
 
 static int scored_cmp_desc(const void *a, const void *b) {
     double sa = ((const scored_t *)a)->score;
@@ -476,21 +717,27 @@ static int scored_cmp_desc(const void *a, const void *b) {
     return 0;
 }
 
+/* P1: memory_recall rewritten to use in-memory index cache.
+ * Eliminates O(n) filesystem reads per recall — iterates the cached
+ * index array instead of scanning the directory.
+ *
+ * Research basis:
+ *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed memory with
+ *     active control beats all passive retrieval pipelines.
+ *   MRAgent [arXiv:2606.06036, ICML 2026] — active reconstruction
+ *     mechanism integrates reasoning into memory access. Our index
+ *     enables the same pattern by making all memory metadata available
+ *     without I/O during the scoring phase.
+ *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
+ *     with synchronous fast-path access. Index iteration IS the fast path. */
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
     memory_results_t results = {0};
-    if (!m || !query) return results;
+    if (!m || !query || m->idx.count == 0) return results;
 
-    DIR *dir = opendir(m->dir);
-    if (!dir) return results;
-
-    /* FIX B1: If query starts with a type prefix (e.g., "skill:", "lesson:"),
-     * extract the prefix for type filtering but use the stripped query for
-     * scoring. This prevents the prefix from inflating substring scores
-     * (every "skill:" key matches "skill:") and from adding noise to
-     * semantic embeddings. */
-    const char *type_filter = NULL;  /* e.g., "skill:" */
+    /* FIX B1: Type prefix extraction for filtering */
+    const char *type_filter = NULL;
     size_t type_filter_len = 0;
-    const char *score_query = query;  /* query used for scoring (stripped) */
+    const char *score_query = query;
     {
         static const char *type_prefixes[] = {
             "skill:", "lesson:", "strategy:", "fact:", "task:", NULL
@@ -501,20 +748,14 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 type_filter = *pfx;
                 type_filter_len = plen;
                 score_query = query + plen;
-                /* Skip leading whitespace after prefix */
                 while (*score_query == ' ') score_query++;
-                /* If nothing left after prefix, use full query */
                 if (*score_query == '\0') score_query = query;
                 break;
             }
         }
     }
 
-    /* Generate query embedding once (if embeddings are available).
-     * If the query text exceeds the model's input capacity (e.g., when
-     * enriched with scratchpad context), chunk it into multiple vectors
-     * and use multi-vs-multi MaxSim scoring. Short queries take the
-     * single-vector fast path unchanged. */
+    /* Generate query embedding once */
     embed_multi_vec_t query_mv = {0};
     int has_semantic = 0;
     if (m->embed && m->embed->available) {
@@ -522,7 +763,6 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         size_t query_len = strlen(score_query);
 
         if (query_len <= (size_t)max_chars) {
-            /* Fits in one embedding — single-vector fast path */
             embed_vec_t single = embed_text(m->embed, score_query);
             if (single.data && single.dim > 0) {
                 query_mv.data = single.data;
@@ -531,7 +771,6 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 has_semantic = 1;
             }
         } else {
-            /* Overflow — chunk the query, embed each chunk */
             int n_chunks = 0;
             char **chunks = embed_prepare_text_chunked(
                 NULL, score_query, max_chars, 0, &n_chunks);
@@ -540,16 +779,14 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 embed_vec_t *vecs = embed_text_batch(
                     m->embed, (const char **)chunks, n_chunks, &out_count);
                 if (vecs && out_count > 0) {
-                    /* Pack into contiguous multi-vec */
                     int dim = vecs[0].dim;
                     query_mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)out_count);
                     if (query_mv.data) {
                         query_mv.dim = dim;
                         query_mv.n_chunks = out_count;
-                        for (int ci = 0; ci < out_count; ci++) {
+                        for (int ci = 0; ci < out_count; ci++)
                             memcpy(query_mv.data + ci * dim,
                                    vecs[ci].data, sizeof(float) * (size_t)dim);
-                        }
                         has_semantic = 1;
                     }
                     for (int ci = 0; ci < out_count; ci++)
@@ -562,161 +799,63 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
     }
 
-    /* Dynamic scored array — grows as needed (FIX #5: no fixed 1024 limit) */
-    int scored_cap = 256;
+    /* P1: Score all entries from in-memory index — no filesystem I/O */
+    int scored_cap = m->idx.count > 64 ? m->idx.count : 64;
     scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
     int n_scored = 0;
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *ie = &m->idx.entries[i];
+        if (!ie->key || !ie->key[0]) continue;
 
-        char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, de->d_name);
-
-        char *buf = slurp_file(path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
-        if (!entry) continue;
-
-        const char *key = "";
-        const char *value = "";
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        cJSON *v = cJSON_GetObjectItem(entry, "value");
-        if (k && k->valuestring) key = k->valuestring;
-        if (v && v->valuestring) value = v->valuestring;
-
-        /* Get importance + validation data for composite scoring */
-        int acc_count = 0;
-        cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-        if (ac) acc_count = (int)cJSON_GetNumberValue(ac);
-
-        /* FIX B4: Get validation counters for recall ranking */
-        int entry_hits = 0, entry_misses = 0;
-        cJSON *rh_score = cJSON_GetObjectItem(entry, "recall_hits");
-        cJSON *rm_score = cJSON_GetObjectItem(entry, "recall_misses");
-        if (rh_score) entry_hits = (int)cJSON_GetNumberValue(rh_score);
-        if (rm_score) entry_misses = (int)cJSON_GetNumberValue(rm_score);
-
-        /* Compute semantic similarity if embeddings available.
-         * Uses multi-vector (chunked) embeddings: MaxSim over all chunks
-         * of the stored entry against the query vector. Single-chunk
-         * entries (old format) are loaded transparently. */
+        /* P1: Use cached embedding from index instead of loading .emb file */
         float semantic_sim = 0.0f;
         int entry_has_semantic = 0;
-        if (has_semantic) {
-            /* Try to load cached embedding for this entry */
-            char emb_path[NASH_PATH_MAX];
-            json_to_emb_path(path, emb_path, sizeof(emb_path));
-            embed_multi_vec_t entry_emb = embed_multi_vec_load(emb_path);
-            if (entry_emb.data && entry_emb.dim > 0) {
-                /* FIX #9: Dimension check — skip stale embeddings from a
-                 * different model (e.g., switched from MiniLM-384d to
-                 * nomic-embed-768d). Mismatched dims would give 0.0 from
-                 * cosine_sim anyway, but this makes the intent explicit. */
-                if (entry_emb.dim == query_mv.dim) {
-                    semantic_sim = embed_cosine_sim_multi_multi(&query_mv, &entry_emb);
-                    entry_has_semantic = 1;
-                } else {
-                    /* Stale embedding — delete it so memory_embed_all can
-                     * regenerate it with the current model on next startup */
-                    unlink(emb_path);
-                }
+        if (has_semantic && ie->has_emb) {
+            if (ie->emb.dim == query_mv.dim) {
+                semantic_sim = embed_cosine_sim_multi_multi(&query_mv, &ie->emb);
+                entry_has_semantic = 1;
             }
-            embed_multi_vec_free(&entry_emb);
         }
 
-        /* FIX B1: Use score_query (type-prefix stripped) for scoring.
-         * This prevents "skill:" from inflating every skill entry's
-         * substring score uniformly, and removes noise from embeddings. */
         double out_rel = 0, out_imp = 0;
-        double s = score_entry_hybrid(key, value, score_query,
-                                       acc_count, entry_hits, entry_misses,
+        double s = score_entry_hybrid(ie->key, ie->value, score_query,
+                                       ie->access_count, ie->recall_hits,
+                                       ie->recall_misses,
                                        semantic_sim, entry_has_semantic,
                                        &out_rel, &out_imp);
 
-        /* FIX #13 + B1: Type-aware filtering using pre-extracted type_filter.
-         * If query had a type prefix, only return entries of that type. */
+        /* Type filtering */
         if (s > 0.01 && type_filter) {
-            if (strncmp(key, type_filter, type_filter_len) != 0) {
-                s = 0;  /* wrong type — exclude */
-            }
+            if (strncmp(ie->key, type_filter, type_filter_len) != 0)
+                s = 0;
         }
 
-        /* P0: Abstention gate — apply configurable score threshold.
-         * Memories below recall_min_score are excluded from results,
-         * preventing noise injection that hurts agent performance.
-         * Research: MemFail [arXiv:2605.26667] showed that injecting
-         * weakly-relevant memories degrades task accuracy. Mem-π
-         * [arXiv:2605.21463] showed that learned abstention (staying
-         * silent 30-40% of the time) yields +22% avg improvement.
-         * This threshold is the frozen-model equivalent of that
-         * learned abstention decision. */
-        /* All scores are now normalized to [0, 1]. Default threshold 0.15
-         * filters out weakly-relevant memories that would add noise. */
+        /* P0: Abstention gate */
         double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
-        if (s > 0.01 && s < min_score) {
-            s = 0;  /* below abstention threshold — exclude */
-        }
+        if (s > 0.01 && s < min_score) s = 0;
 
         if (s >= min_score) {
-            /* Grow scored array if needed (FIX #5) */
-            if (n_scored >= scored_cap) {
-                scored_cap *= 2;
-                scored = realloc(scored, (size_t)scored_cap * sizeof(scored_t));
-            }
-            snprintf(scored[n_scored].path, sizeof(scored[n_scored].path), "%s", path);
+            scored[n_scored].idx_pos = i;
             scored[n_scored].score = s;
             scored[n_scored].relevance = out_rel;
             scored[n_scored].importance = out_imp;
-            /* FIX #2/#8: Cache the parsed cJSON entry to avoid re-reading top results */
-            scored[n_scored].cached_entry = entry;
             n_scored++;
-        } else {
-            cJSON_Delete(entry);
         }
     }
-    closedir(dir);
 
-    /* Free query embedding (multi-vec: data is contiguous, single free) */
     embed_multi_vec_free(&query_mv);
 
-    /* Ref-boost: if a high-scoring memory has refs pointing to other
-     * entries in the scored set, boost those ref'd entries' scores.
-     * This implements inter-memory relationships — "see also" links
-     * populated by dreaming's SYNTHESIZE pass.
-     *
-     * Research basis:
-     *   MemForest [arXiv:2605.23986, May 2026] — hierarchical temporal
-     *     trees where parent nodes boost children's retrieval priority.
-     *   MemIR [arXiv:2605.25869, May 2026] — typed memory with
-     *     provenance chains linking evidence to claims.
-     *   ActiveGraph [arXiv:2605.21997, May 2026] — reactive graphs
-     *     where relationships ARE the memory structure.
-     *
-     * Algorithm: For each scored entry with score > 0.5 (reasonably
-     * relevant), check its refs array. For each ref'd key found in
-     * the scored set, add a boost of 0.3 × referrer's score.
-     * This is O(n × r × n) where r = avg refs per entry (~3),
-     * so effectively O(n²) but n is small (<1000) and r is tiny. */
+    /* Ref-boost using index refs (no cJSON needed) */
     for (int i = 0; i < n_scored; i++) {
-        if (scored[i].score < 0.5) continue;  /* only boost from relevant entries */
-        cJSON *refs = cJSON_GetObjectItem(scored[i].cached_entry, "refs");
-        if (!refs || !cJSON_IsArray(refs)) continue;
-        int nr = cJSON_GetArraySize(refs);
-        for (int ri = 0; ri < nr; ri++) {
-            cJSON *ref = cJSON_GetArrayItem(refs, ri);
-            if (!ref || !ref->valuestring) continue;
-            /* Find ref'd entry in scored set and boost it */
+        if (scored[i].score < 0.5) continue;
+        mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
+        for (int ri = 0; ri < ie->n_refs; ri++) {
+            if (!ie->refs[ri]) continue;
             for (int j = 0; j < n_scored; j++) {
                 if (j == i) continue;
-                cJSON *k = cJSON_GetObjectItem(scored[j].cached_entry, "key");
-                if (k && k->valuestring &&
-                    strcmp(k->valuestring, ref->valuestring) == 0) {
+                mem_index_entry_t *je = &m->idx.entries[scored[j].idx_pos];
+                if (strcmp(je->key, ie->refs[ri]) == 0) {
                     scored[j].score += 0.3 * scored[i].score;
                     break;
                 }
@@ -724,196 +863,185 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
     }
 
-    /* FIX #14: Use qsort instead of O(n²) bubble sort */
     qsort(scored, (size_t)n_scored, sizeof(scored_t), scored_cmp_desc);
 
-    /* Load top results from cached entries (FIX #2/#8: no second file read) */
+    /* Build results from top-k index entries */
     int n = n_scored < max_results ? n_scored : max_results;
     results.entries = calloc((size_t)n, sizeof(memory_entry_t));
     results.count = 0;
 
     for (int i = 0; i < n; i++) {
-        cJSON *entry = scored[i].cached_entry;
-        if (!entry) continue;
-
+        mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
         memory_entry_t *e = &results.entries[results.count];
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        cJSON *v = cJSON_GetObjectItem(entry, "value");
-        cJSON *tags = cJSON_GetObjectItem(entry, "tags");
-        cJSON *p = cJSON_GetObjectItem(entry, "pinned");
 
-        e->key = k && k->valuestring ? strdup(k->valuestring) : strdup("");
-        e->value = v && v->valuestring ? strdup(v->valuestring) : strdup("");
-        e->pinned = p ? cJSON_IsTrue(p) : 0;
+        e->key = strdup(ie->key);
+        e->value = strdup(ie->value);
+        e->description = ie->description ? strdup(ie->description) : NULL;
+        e->pinned = ie->pinned;
+        e->recall_hits = ie->recall_hits;
+        e->recall_misses = ie->recall_misses;
+        e->belief_entropy = ie->belief_entropy;
+        e->journal_ref = NULL;  /* loaded on demand if needed */
 
-        /* Copy tags */
-        if (tags) {
-            e->n_tags = cJSON_GetArraySize(tags);
-            e->tags = calloc((size_t)e->n_tags, sizeof(char *));
-            for (int t = 0; t < e->n_tags; t++) {
-                cJSON *tag = cJSON_GetArrayItem(tags, t);
-                e->tags[t] = tag && tag->valuestring ? strdup(tag->valuestring) : strdup("");
-            }
-        }
-
-        /* Copy validation counters */
-        cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-        cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-        e->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-        e->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-
-        /* Belief Entropy — forward-looking quality signal (MMPO) */
-        cJSON *be = cJSON_GetObjectItem(entry, "belief_entropy");
-        e->belief_entropy = be ? cJSON_GetNumberValue(be) : -1.0;
-
-        /* Copy journal provenance reference */
-        cJSON *jr = cJSON_GetObjectItem(entry, "journal_ref");
-        e->journal_ref = (jr && jr->valuestring) ? strdup(jr->valuestring) : NULL;
-
-        /* Copy inter-memory refs (cross-links populated by dreaming SYNTHESIZE).
-         * Research basis:
-         *   MemForest [arXiv:2605.23986] — hierarchical temporal trees with
-         *     parent-child relationships between memory nodes.
-         *   ActiveGraph [arXiv:2605.21997] — typed edges between nodes in a
-         *     reactive graph; relationships ARE the memory structure.
-         *   MemIR [arXiv:2605.25869] — provenance chains linking raw evidence
-         *     to claims via typed atoms. */
-        cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
-        if (refs_arr && cJSON_IsArray(refs_arr)) {
-            e->n_refs = cJSON_GetArraySize(refs_arr);
+        /* Copy refs from index */
+        if (ie->n_refs > 0) {
+            e->n_refs = ie->n_refs;
             e->refs = calloc((size_t)e->n_refs, sizeof(char *));
-            for (int ri = 0; ri < e->n_refs; ri++) {
-                cJSON *ref = cJSON_GetArrayItem(refs_arr, ri);
-                e->refs[ri] = (ref && ref->valuestring) ? strdup(ref->valuestring) : strdup("");
+            for (int ri = 0; ri < e->n_refs; ri++)
+                e->refs[ri] = strdup(ie->refs[ri]);
+        }
+
+        /* Update access_count in index and write back to disk */
+        ie->access_count++;
+        {
+            cJSON *entry = memory_load_entry_json(m, ie->key);
+            if (entry) {
+                cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
+                if (ac) cJSON_SetNumberValue(ac, (double)ie->access_count);
+                else cJSON_AddNumberToObject(entry, "access_count", ie->access_count);
+                char ts[32];
+                snprintf(ts, sizeof(ts), "%.5f", epoch_now());
+                cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
+                if (la) cJSON_ReplaceItemInObject(entry, "last_accessed",
+                                                   cJSON_CreateString(ts));
+                else cJSON_AddStringToObject(entry, "last_accessed", ts);
+                char *json = cJSON_Print(entry);
+                FILE *wf = fopen(ie->path, "w");
+                if (wf) { fputs(json, wf); fclose(wf); }
+                free(json);
+                cJSON_Delete(entry);
             }
         }
 
-        /* Update access_count and last_accessed.
-         * FIX B8: Create fields if missing (old entries pre-dating these
-         * fields would silently skip tracking otherwise). */
-        cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-        if (ac) {
-            cJSON_SetNumberValue(ac, cJSON_GetNumberValue(ac) + 1);
-        } else {
-            cJSON_AddNumberToObject(entry, "access_count", 1);
-        }
-        char ts[32];
-        snprintf(ts, sizeof(ts), "%.5f", epoch_now());
-        cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
-        if (la) {
-            cJSON_ReplaceItemInObject(entry, "last_accessed",
-                                      cJSON_CreateString(ts));
-        } else {
-            cJSON_AddStringToObject(entry, "last_accessed", ts);
-        }
-
-        /* Write back updated entry */
-        char *json = cJSON_Print(entry);
-        FILE *wf = fopen(scored[i].path, "w");
-        if (wf) { fputs(json, wf); fclose(wf); }
-        free(json);
-
-        /* Store the composite score for callers that need it (e.g., test tools) */
         e->relevance = scored[i].score;
         e->raw_relevance = scored[i].relevance;
         e->importance = scored[i].importance;
-
         results.count++;
     }
 
-    /* Free all cached entries (including non-top ones) */
-    for (int i = 0; i < n_scored; i++) {
-        cJSON_Delete(scored[i].cached_entry);
-    }
     free(scored);
     return results;
 }
 
-/* ── build_index ─────────────────────────────────────── */
 
-/* Context for build_index callback — only counts by type */
-typedef struct {
-    int n_lessons, n_strategies, n_facts, n_tasks, n_skills, n_other;
-    int total;
-} build_index_ctx_t;
+/* ── build_index (P2: progressive disclosure) ─────────────────────── */
 
-static int build_index_cb(const char *dirpath __attribute__((unused)), cJSON *entry, void *user_data) {
-    build_index_ctx_t *ctx = (build_index_ctx_t *)user_data;
-
-    cJSON *k = cJSON_GetObjectItem(entry, "key");
-
-    if (k && k->valuestring) {
-        if (strncmp(k->valuestring, "lesson:", 7) == 0) ctx->n_lessons++;
-        else if (strncmp(k->valuestring, "strategy:", 9) == 0) ctx->n_strategies++;
-        else if (strncmp(k->valuestring, "fact:", 5) == 0) ctx->n_facts++;
-        else if (strncmp(k->valuestring, "task:", 5) == 0) ctx->n_tasks++;
-        else if (strncmp(k->valuestring, "skill:", 6) == 0) ctx->n_skills++;
-        else ctx->n_other++;
-
-        ctx->total++;
-    }
-    return JSON_CB_CONTINUE;
-}
-
-/* Build a compact memory summary (counts only). No alphabetical listing.
+/* P2: Progressive disclosure index — structured listing with key + description.
+ *
+ * Research basis:
+ *   AutoMEM [arXiv:2606.04315, Jun 2026] — cross-scenario evaluation showed
+ *     self-managed memory with active control beats all passive pipelines.
+ *     Agents need to BROWSE memory structure, not just blind-query it.
+ *   Letta Context Repositories [May 2026] — filetree structure always in
+ *     system prompt; folder hierarchy and file names act as navigational
+ *     signals. Each file includes frontmatter with description.
+ *   Claude Code Auto Memory [2026] — MEMORY.md index file with topic
+ *     descriptions enabling selective loading of full content.
+ *   MRAgent [arXiv:2606.06036, ICML 2026] — Cue-Tag-Content graph where
+ *     cues enable fast navigation before loading full content.
+ *
+ * P1: Uses in-memory index cache — no filesystem scan needed.
  * Caller must free. Returns NULL if no memories. */
 char *memory_build_index(memory_t *m) {
-    if (!m) return NULL;
+    if (!m || m->idx.count == 0) return NULL;
 
-    build_index_ctx_t ctx = {0};
-    for_each_json_entry(m->dir, build_index_cb, &ctx);
+    /* Count by type */
+    int n_lessons = 0, n_strategies = 0, n_facts = 0;
+    int n_tasks = 0, n_skills = 0, n_other = 0;
+    for (int i = 0; i < m->idx.count; i++) {
+        const char *k = m->idx.entries[i].key;
+        if (!k) continue;
+        if (strncmp(k, "lesson:", 7) == 0) n_lessons++;
+        else if (strncmp(k, "strategy:", 9) == 0) n_strategies++;
+        else if (strncmp(k, "fact:", 5) == 0) n_facts++;
+        else if (strncmp(k, "task:", 5) == 0) n_tasks++;
+        else if (strncmp(k, "skill:", 6) == 0) n_skills++;
+        else n_other++;
+    }
 
-    if (ctx.total == 0) return NULL;
+    str_t result = str_new(2048);
+    str_appendf(&result, "Memory: %d entries\n", m->idx.count);
 
-    str_t result = str_new(256);
-    str_appendf(&result, "Memory: %d entries", ctx.total);
-    if (ctx.n_lessons > 0) str_appendf(&result, ", %d lessons", ctx.n_lessons);
-    if (ctx.n_strategies > 0) str_appendf(&result, ", %d strategies", ctx.n_strategies);
-    if (ctx.n_skills > 0) str_appendf(&result, ", %d skills", ctx.n_skills);
-    if (ctx.n_facts > 0) str_appendf(&result, ", %d facts", ctx.n_facts);
-    if (ctx.n_tasks > 0) str_appendf(&result, ", %d tasks", ctx.n_tasks);
-    if (ctx.n_other > 0) str_appendf(&result, ", %d other", ctx.n_other);
+    /* Emit each type group with key + description listing */
+    static const struct { const char *prefix; const char *label; } types[] = {
+        { "lesson:",   "Lessons" },
+        { "strategy:", "Strategies" },
+        { "skill:",    "Skills" },
+        { "fact:",     "Facts" },
+        { "task:",     "Tasks" },
+        { NULL, NULL }
+    };
+
+    for (int t = 0; types[t].prefix; t++) {
+        size_t plen = strlen(types[t].prefix);
+        int count = 0;
+        /* First pass: count */
+        for (int i = 0; i < m->idx.count; i++) {
+            if (m->idx.entries[i].key &&
+                strncmp(m->idx.entries[i].key, types[t].prefix, plen) == 0)
+                count++;
+        }
+        if (count == 0) continue;
+
+        str_appendf(&result, "\n## %s (%d)\n", types[t].label, count);
+        /* Second pass: emit entries */
+        for (int i = 0; i < m->idx.count; i++) {
+            mem_index_entry_t *e = &m->idx.entries[i];
+            if (!e->key || strncmp(e->key, types[t].prefix, plen) != 0)
+                continue;
+            const char *desc = (e->description && e->description[0])
+                               ? e->description : "(no description)";
+            str_appendf(&result, "- %s", e->key);
+            /* Show pinned indicator */
+            if (e->pinned) str_append_cstr(&result, " [pinned]");
+            str_appendf(&result, " \xe2\x80\x94 %s\n", desc);
+        }
+    }
+
+    /* Other (uncategorized) entries */
+    if (n_other > 0) {
+        str_appendf(&result, "\n## Other (%d)\n", n_other);
+        for (int i = 0; i < m->idx.count; i++) {
+            mem_index_entry_t *e = &m->idx.entries[i];
+            if (!e->key) continue;
+            if (strncmp(e->key, "lesson:", 7) == 0 ||
+                strncmp(e->key, "strategy:", 9) == 0 ||
+                strncmp(e->key, "skill:", 6) == 0 ||
+                strncmp(e->key, "fact:", 5) == 0 ||
+                strncmp(e->key, "task:", 5) == 0)
+                continue;
+            const char *desc = (e->description && e->description[0])
+                               ? e->description : "(no description)";
+            str_appendf(&result, "- %s \xe2\x80\x94 %s\n", e->key, desc);
+        }
+    }
 
     return str_steal(&result);
 }
 
-/* ── load_pinned ─────────────────────────────────────── */
+/* ── load_pinned (P1: index-based) ───────────────────────────── */
 
-typedef struct {
-    str_t out;
-    int count;
-} load_pinned_ctx_t;
-
-static int load_pinned_cb(const char *dirpath __attribute__((unused)), cJSON *entry, void *user_data) {
-    load_pinned_ctx_t *ctx = (load_pinned_ctx_t *)user_data;
-
-    cJSON *p = cJSON_GetObjectItem(entry, "pinned");
-    if (p && cJSON_IsTrue(p)) {
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        cJSON *v = cJSON_GetObjectItem(entry, "value");
-        if (k && k->valuestring && v && v->valuestring) {
-            if (ctx->count > 0) str_append_cstr(&ctx->out, "\n");
-            str_appendf(&ctx->out, "[PINNED: %s]\n%s", k->valuestring, v->valuestring);
-            ctx->count++;
-        }
-    }
-    return JSON_CB_CONTINUE;
-}
-
+/* P1: Load pinned memories from in-memory index — no filesystem scan.
+ * Caller must free. Returns NULL if no pinned memories. */
 char *memory_load_pinned(memory_t *m) {
     if (!m) return NULL;
 
-    load_pinned_ctx_t ctx;
-    ctx.out = str_new(1024);
-    ctx.count = 0;
+    str_t out = str_new(1024);
+    int count = 0;
 
-    for_each_json_entry(m->dir, load_pinned_cb, &ctx);
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *e = &m->idx.entries[i];
+        if (!e->pinned) continue;
+        if (count > 0) str_append_cstr(&out, "\n");
+        str_appendf(&out, "[PINNED: %s]\n%s", e->key, e->value);
+        count++;
+    }
 
-    if (ctx.count == 0) {
-        str_free(&ctx.out);
+    if (count == 0) {
+        str_free(&out);
         return NULL;
     }
-    return str_steal(&ctx.out);
+    return str_steal(&out);
 }
 
 /* ── delete ──────────────────────────────────────────── */
@@ -941,6 +1069,9 @@ int memory_delete(memory_t *m, const char *key) {
     snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
     unlink(emb_path);  /* ignore error if not exists */
 
+    /* P1: Remove from in-memory index */
+    mem_index_remove(&m->idx, key);
+
     /* Git commit */
     char msg[256];
     snprintf(msg, sizeof(msg), "memory: delete %s", key);
@@ -956,6 +1087,7 @@ void memory_results_free(memory_results_t *r) {
     for (int i = 0; i < r->count; i++) {
         free(r->entries[i].key);
         free(r->entries[i].value);
+        free(r->entries[i].description);
         free(r->entries[i].journal_ref);
         for (int t = 0; t < r->entries[i].n_tags; t++)
             free(r->entries[i].tags[t]);
@@ -1066,6 +1198,16 @@ static int memory_increment_field(memory_t *m, const char *key,
     write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
+
+    /* P1: Update in-memory index counter */
+    {
+        mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+        if (ie) {
+            if (strcmp(field, "recall_hits") == 0) ie->recall_hits++;
+            else if (strcmp(field, "recall_misses") == 0) ie->recall_misses++;
+            else if (strcmp(field, "access_count") == 0) ie->access_count++;
+        }
+    }
 
     /* No git commit for counter bumps — these are high-frequency,
      * low-value changes (access_count, recall_hits, recall_misses)

@@ -484,6 +484,42 @@ int main(int argc, char **argv) {
                                cfg->embedding.max_input_chars);
     }
 
+    /* P3: Auto-dream — check if memory consolidation is overdue.
+     *
+     * Research basis:
+     *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
+     *     with async "nighttime engine" for schema induction and collision
+     *     detection. Auto-dream implements the same System2 pattern.
+     *   Letta Sleep-Time Compute [2025] — agents consolidate memories
+     *     during idle time, improving future task performance.
+     *   Generative Agents [Park et al., 2023] — periodic reflection
+     *     triggered by importance threshold accumulation.
+     *
+     * Checks .memory/.last_dream timestamp file. If more than
+     * auto_dream_days have elapsed, prints a reminder to the user.
+     * We don't auto-run dream (it's expensive) — just notify. */
+    if (cfg->auto_dream_days > 0 && memory) {
+        char dream_ts_path[NASH_PATH_MAX];
+        snprintf(dream_ts_path, sizeof(dream_ts_path), "%s/memory/.last_dream",
+                 nash_dir);
+        struct stat dream_st;
+        int needs_dream = 0;
+        if (stat(dream_ts_path, &dream_st) != 0) {
+            /* No .last_dream file — never dreamed, check if memories exist */
+            if (memory->idx.count > 10) needs_dream = 1;
+        } else {
+            double elapsed = difftime(time(NULL), dream_st.st_mtime);
+            if (elapsed > (double)cfg->auto_dream_days * 86400.0)
+                needs_dream = 1;
+        }
+        if (needs_dream) {
+            fprintf(stderr,
+                "\033[33m[memory] Consolidation overdue — run /dream or "
+                "nash --play dream to merge duplicates and resolve "
+                "contradictions.\033[0m\n");
+        }
+    }
+
     /* Headless playbook mode: --play NAME */
     if (play_arg) {
         /* Resolve playbook path */

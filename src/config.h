@@ -136,6 +136,23 @@ typedef struct {
      * threshold on the composite relevance signal. */
     double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
 
+    /* P3: Auto-dream — automatic memory consolidation trigger.
+     *
+     * Research basis:
+     *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
+     *     with asynchronous "nighttime engine" (System2) that induces schemas
+     *     and sweeps for cross-domain collisions. Auto-dream implements the
+     *     same pattern: fast synchronous writes during tasks, slow async
+     *     consolidation between sessions.
+     *   Letta Sleep-Time Compute [2025] — agents process and consolidate
+     *     memories during idle time, improving future performance.
+     *   Generative Agents [Park et al., 2023] — periodic reflection triggered
+     *     by importance threshold accumulation.
+     *
+     * If > 0, nash checks .memory/.last_dream at startup and triggers
+     * the dream playbook if more than auto_dream_days have elapsed. */
+    int    auto_dream_days;      /* days between auto-dream runs (0 = disabled, default 7) */
+
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
 

@@ -8,6 +8,47 @@
  * Stored as individual JSON files in .memory/ directory.
  * Types: lesson:*, strategy:*, task:*, fact:* */
 
+/* P1: In-memory index cache — eliminates O(n) file I/O per recall.
+ *
+ * Research basis:
+ *   AutoMEM [arXiv:2606.04315, Jun 2026] — cross-scenario evaluation
+ *     showed self-managed memory with active control beats all passive
+ *     retrieval pipelines. Index enables the agent to browse memory
+ *     structure without I/O.
+ *   MRAgent [arXiv:2606.06036, ICML 2026] — Cue-Tag-Content graph
+ *     with associative tags. Our index serves as the "cue" layer,
+ *     enabling fast navigation before loading full content.
+ *   Letta Context Repositories [May 2026] — progressive disclosure
+ *     via filetree structure always in system prompt. Index provides
+ *     the equivalent navigational signal.
+ *
+ * Loaded once at memory_new(), updated incrementally on store/delete.
+ * memory_recall() iterates the in-memory array instead of scanning
+ * the filesystem, reducing recall from O(n) file reads to O(n) array
+ * scan + O(k) file reads for top-k results only. */
+typedef struct {
+    char  *key;           /* memory key (owned) */
+    char  *description;   /* first sentence/line of value (owned, ≤250 chars) */
+    char  *value;         /* full value text (owned) */
+    int    pinned;
+    int    access_count;
+    int    recall_hits;
+    int    recall_misses;
+    double belief_entropy;
+    double created_at;
+    char **refs;          /* inter-memory ref keys (owned) */
+    int    n_refs;
+    embed_multi_vec_t emb; /* cached embedding (loaded once) */
+    int    has_emb;        /* 1 if emb is valid */
+    char  *path;           /* full path to .json file (owned) */
+} mem_index_entry_t;
+
+typedef struct {
+    mem_index_entry_t *entries;
+    int count;
+    int cap;
+} mem_index_t;
+
 typedef struct {
     char *dir;          /* .memory/ directory path */
     char *model;        /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
@@ -20,11 +61,30 @@ typedef struct {
      *   MemFail [arXiv:2605.26667] — weak injection hurts performance
      * Default: 0.15 (set from config.recall_min_score) */
     double recall_min_score;
+
+    /* P1: In-memory index — populated by memory_new(), updated by
+     * memory_store()/memory_delete(). Used by memory_recall() and
+     * memory_build_index() to avoid filesystem scans. */
+    mem_index_t idx;
 } memory_t;
 
 typedef struct {
     char  *key;           /* e.g. "lesson:redis-v7-changes" */
     char  *value;         /* the knowledge text */
+    /* P6: Auto-generated description — first sentence or first 150 chars
+     * of value. Enables progressive disclosure (P2) where the agent sees
+     * key + description in the memory index without loading full content.
+     *
+     * Research basis:
+     *   Letta Context Repositories [May 2026] — each memory file includes
+     *     frontmatter with a description, similar to YAML frontmatter in
+     *     Anthropic's SKILL.md files.
+     *   Claude Code Auto Memory [2026] — MEMORY.md index file with topic
+     *     descriptions enabling selective loading.
+     *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed flat text-file
+     *     storage via tool calls achieves best cross-task ranking when
+     *     agents can browse descriptions before loading full content. */
+    char  *description;   /* first sentence/line of value (≤250 chars) */
     char **tags;          /* array of tag strings */
     int    n_tags;
     int    pinned;        /* 1 = always inject into system prompt */

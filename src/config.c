@@ -61,6 +61,7 @@ void config_set_defaults(config_t *cfg) {
     /* P0: recall_min_score default 0.15 — memories below this composite
      * score are not injected. See config.h for research basis. */
     if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
+    if (cfg->auto_dream_days <= 0)     cfg->auto_dream_days = 7;
 
 
     /* [memory_belief_entropy] defaults */
@@ -226,6 +227,7 @@ config_t *config_load(const char *path) {
         cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
         cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);
         cfg->recall_min_score   = toml_dbl(limits, "recall_min_score", 0);
+        cfg->auto_dream_days    = toml_int(limits, "auto_dream_days", -1);
     }
 
     /* [paths] */
@@ -400,6 +402,7 @@ int config_write_default(const char *path) {
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
+        "auto_dream_days = 7         # P3: days between auto-dream consolidation runs (0 = disabled)\n"
         "\n"
         "# Belief Entropy — forward-looking memory quality signal.\n"
         "# Based on MMPO [arXiv:2605.30159]: measures how clearly the current\n"

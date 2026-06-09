@@ -2072,6 +2072,27 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "explicitly (for skills: include approach, pitfalls, verification)\n"
 ""
                 "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
+                "\n"
+                "P5: SKILL EXTRACTION — if this task involved 5+ tool calls, extract a\n"
+                "reusable skill with this structure:\n"
+                "## When to apply\n"
+                "<trigger condition — when should this skill be used?>\n"
+                "## Steps\n"
+                "1. step (tool) — WHY: rationale for this step\n"
+                "2. step (tool) — WHY: rationale\n"
+                "## Pitfalls\n"
+                "- pitfall: what to do instead\n"
+                "## Verification\n"
+                "- how to confirm success\n"
+                "\n"
+                "Research basis for skill structure:\n"
+                "  Letta Skill Learning [May 2026] — +36.8%% improvement on Terminal-Bench\n"
+                "    from learned skills with approach, pitfalls, verification.\n"
+                "  CODESKILL [arXiv:2605.25430, May 2026] — skill extraction from\n"
+                "    trajectories with pitfalls as key component.\n"
+                "  Bayesian-Agent [arXiv:2606.08348, Jun 2026] — posterior-guided\n"
+                "    skill evolution from experience.\n"
+                "\n"
                 "If nothing worth storing, call done immediately.\n"
                 "Respond with ONE JSON object per turn: "
                 "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
@@ -2266,6 +2287,53 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(rresp);
         }
         llm_chat_free(reflect);
+    }
+
+    /* P4: Scratchpad-to-memory promotion — auto-promote high-priority
+     * scratchpad sections to long-term memory before they're lost.
+     *
+     * Research basis:
+     *   DCPM [arXiv:2606.09483, Jun 2026] — cognitive capability hierarchy
+     *     ascending from raw inputs through belief trajectories to schemas.
+     *     Promotion moves working knowledge UP the hierarchy.
+     *   Letta Skill Learning [May 2026] — agents that learn from past
+     *     experience improve +36.8%. Promotion captures experience that
+     *     the LLM didn't explicitly memory_store.
+     *   MemoPilot [arXiv:2606.08656, ICML 2026] — RL-trained memory
+     *     copilot that optimizes WHAT to store. Promotion is the heuristic
+     *     equivalent: high-priority sections that survived compaction are
+     *     worth persisting.
+     *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed memory with
+     *     active control. Promotion gives the system active control over
+     *     what crosses from working memory to long-term memory.
+     *
+     * Heuristic: sections with priority <= 1 and content > 200 chars
+     * are promoted to fact:<section-name> memories. Deduplication via
+     * embedding similarity prevents redundant storage. */
+    if (ctx->tools->scratch.count > 0 && ctx->tools->memory && task_succeeded) {
+        for (int si = 0; si < ctx->tools->scratch.count; si++) {
+            scratchpad_section_t *sec = &ctx->tools->scratch.sections[si];
+            if (!sec->name || !sec->content) continue;
+            if (sec->priority > 1) continue;  /* only high-priority sections */
+            if (strlen(sec->content) < 200) continue;  /* skip trivial content */
+
+            /* Skip result sections (R<N>_result) — those are handled separately */
+            if (sec->name[0] == 'R' && strstr(sec->name, "_result")) continue;
+
+            /* Check if a similar memory already exists (dedup via recall) */
+            char pkey[256];
+            snprintf(pkey, sizeof(pkey), "fact:%s", sec->name);
+            memory_results_t check = memory_recall(ctx->tools->memory, pkey, 1);
+            int already_exists = 0;
+            if (check.count > 0 && check.entries[0].relevance > 0.8)
+                already_exists = 1;
+            memory_results_free(&check);
+            if (already_exists) continue;
+
+            /* Promote to long-term memory */
+            memory_store(ctx->tools->memory, pkey, sec->content,
+                         0, NULL, NULL, 0);
+        }
     }
 
     /* Post-reflection scratchpad pruning — remove solved/stale data so the
