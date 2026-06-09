@@ -2024,6 +2024,12 @@ static void consolidation_carry_scores(memory_t *m,
         free(json);
     }
     cJSON_Delete(entry);
+
+    /* FIX BUG3: Also update the in-memory index so recall scoring
+     * sees the carried-forward evidence immediately (without restart).
+     * Without this, the merged entry has stale scores (typically 0/0)
+     * in the index and may be ranked lower than it should be. */
+    memory_update_scores(m, survivor_key, old_hits, old_misses);
 }
 
 static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,

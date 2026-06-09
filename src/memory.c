@@ -1153,14 +1153,21 @@ void memory_results_free(memory_results_t *r) {
 
 /* ── prune (forgetting/decay) ─────────────────────────────── */
 
+/* Phase 1: Scan entries and collect keys that should be pruned.
+ * Does NOT delete anything — just builds a list of keys.
+ * Phase 2 (in memory_prune) calls memory_delete() for each key AFTER
+ * the scan completes, ensuring proper index removal, gc_refs cleanup,
+ * and .emb deletion. */
 typedef struct {
-    memory_t *m;
     double min_score;
     int min_evidence;
-    int pruned;
+    char **keys;       /* collected keys to prune (heap-allocated strings) */
+    int count;
+    int cap;
 } prune_ctx_t;
 
 static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
+    (void)dirpath;
     prune_ctx_t *ctx = (prune_ctx_t *)user_data;
 
     /* Never prune pinned memories */
@@ -1180,22 +1187,15 @@ static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
     double vscore = (hits + 1.0) / (hits + misses + 2.0);
 
     if (vscore < ctx->min_score && evidence >= ctx->min_evidence) {
-        /* Derive path from dirpath + entry key */
         cJSON *k = cJSON_GetObjectItem(entry, "key");
         if (k && k->valuestring) {
-            char json_fname[512];
-            key_to_path(k->valuestring, ".json", json_fname, sizeof(json_fname));
-            char path[NASH_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", dirpath, json_fname);
-            unlink(path);
-            /* FIX B9: Also delete the .emb file to prevent orphaned
-             * embedding files from accumulating over time. */
-            char emb_fname[512];
-            key_to_path(k->valuestring, ".emb", emb_fname, sizeof(emb_fname));
-            char emb_path[NASH_PATH_MAX];
-            snprintf(emb_path, sizeof(emb_path), "%s/%s", dirpath, emb_fname);
-            unlink(emb_path);  /* ignore error if not exists */
-            ctx->pruned++;
+            /* Collect key for deferred deletion */
+            if (ctx->count >= ctx->cap) {
+                ctx->cap = ctx->cap ? ctx->cap * 2 : 16;
+                ctx->keys = realloc(ctx->keys, sizeof(char *) * (size_t)ctx->cap);
+                if (!ctx->keys) return 1;  /* alloc failure — stop */
+            }
+            ctx->keys[ctx->count++] = strdup(k->valuestring);
         }
     }
     return JSON_CB_CONTINUE;
@@ -1230,16 +1230,27 @@ static int orphan_emb_cb(const char *dirpath, const char *filename,
 int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (!m) return 0;
 
-    prune_ctx_t ctx = { .m = m, .min_score = min_score,
-                        .min_evidence = min_evidence, .pruned = 0 };
+    /* Phase 1: Collect keys to prune (scan-only, no mutation).
+     * Can't call memory_delete() inside for_each_json_entry because
+     * memory_delete() calls gc_refs_cb() which also iterates the
+     * directory — concurrent directory modification is undefined. */
+    prune_ctx_t ctx = { .min_score = min_score,
+                        .min_evidence = min_evidence,
+                        .keys = NULL, .count = 0, .cap = 0 };
 
     for_each_json_entry(m->dir, prune_cb, &ctx);
 
-    if (ctx.pruned > 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "memory: prune %d entries (score < threshold)", ctx.pruned);
-        memory_git_commit(m, msg);
+    /* Phase 2: Delete collected entries via memory_delete().
+     * This properly handles: index removal (mem_index_remove),
+     * dangling ref cleanup (gc_refs_cb), .emb file deletion,
+     * and git commit per entry. Previously, prune_cb used direct
+     * unlink() which bypassed all of these — leaving ghost entries
+     * in the in-memory index that continued to be recalled. */
+    for (int i = 0; i < ctx.count; i++) {
+        memory_delete(m, ctx.keys[i]);
+        free(ctx.keys[i]);
     }
+    free(ctx.keys);
 
     /* Sweep for orphan .emb files (no matching .json).
      * These accumulate when crashes interrupt deletion or when .json files
@@ -1251,7 +1262,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         /* No git commit needed — .emb files are not tracked by git */
     }
 
-    return ctx.pruned;
+    return ctx.count;
 }
 
 /* ── validation scoring ─────────────────────────────────────── */
@@ -1308,6 +1319,20 @@ int memory_increment_hits(memory_t *m, const char *key) {
 
 int memory_increment_misses(memory_t *m, const char *key) {
     return memory_increment_field(m, key, "recall_misses");
+}
+
+int memory_update_scores(memory_t *m, const char *key,
+                         int add_hits, int add_misses) {
+    if (!m || !key || (add_hits == 0 && add_misses == 0)) return -1;
+
+    /* Update in-memory index so recall scoring sees the new values
+     * immediately (without requiring a restart). */
+    mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+    if (ie) {
+        ie->recall_hits += add_hits;
+        ie->recall_misses += add_misses;
+    }
+    return ie ? 0 : -1;
 }
 
 /* ── embedding integration ──────────────────────────────────── */

@@ -176,6 +176,15 @@ int memory_prune(memory_t *m, double min_score, int min_evidence);
 int memory_increment_hits(memory_t *m, const char *key);
 int memory_increment_misses(memory_t *m, const char *key);
 
+/* Add validation evidence to a memory's in-memory index entry.
+ * Used by consolidation to carry forward recall_hits/misses from
+ * deleted entries to their survivors, so merged entries don't lose
+ * credibility.  Updates ONLY the in-memory index (disk JSON is
+ * updated separately by consolidation_carry_scores).
+ * Returns 0 on success, -1 if key not found. */
+int memory_update_scores(memory_t *m, const char *key,
+                         int add_hits, int add_misses);
+
 /* Initialize embedding context for semantic memory matching.
  * Call after memory_new(). Probes the embedding backend and sets
  * m->embed if available. No-op if cfg->type is "none" or NULL.

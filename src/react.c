@@ -28,7 +28,7 @@ static const char *json_get_str(cJSON *obj, const char *key) {
 typedef struct {
     react_ctx_t *ctx;
     cJSON *rkey_j;
-    embed_vec_t *new_emb;
+    embed_multi_vec_t *new_emb;  /* multi-vec for consistent similarity metric */
     int *should_store;
     int task_succeeded;
 } reflection_scan_t;
@@ -38,16 +38,17 @@ static int reflection_dedup_cb(const char *dirpath, const char *filename,
     reflection_scan_t *s = (reflection_scan_t *)user_data;
     (void)dirpath; (void)filename;
 
-    /* FIX B1+B2: Use multi-vec loader (auto-detects old single-vec and
-     * new multi-vec formats) and MaxSim similarity for consistent
-     * cross-subsystem comparison with consolidation code path. */
+    /* FIX BUG2: Use multi-vec × multi-vec (MaxSim) similarity, consistent
+     * with consolidation_cb in tools.c. Previously used single-vec × multi-vec
+     * which computes a different metric, making the 0.90 threshold here and
+     * the 0.82 threshold in consolidation incomparable. */
     embed_multi_vec_t exist_emb = embed_multi_vec_load(fullpath);
     if (!exist_emb.data) return 0;
     if (exist_emb.dim != s->new_emb->dim) {
         embed_multi_vec_free(&exist_emb);
         return 0;
     }
-    float sim = embed_cosine_sim_multi(s->new_emb, &exist_emb);
+    float sim = embed_cosine_sim_multi_multi(s->new_emb, &exist_emb);
     embed_multi_vec_free(&exist_emb);
     if (sim > 0.90f) {
         /* When a task FAILED, the reflection may produce a corrective insight
@@ -2052,19 +2053,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * valuable for learning (what went wrong, what to avoid next time). */
     int task_succeeded = (final_result != NULL);
 
-    /* Validation scoring: update recall_hits/misses for all recalled memories.
+    /* Validation scoring: update recall_hits for all recalled memories.
      * Counter bumps are written to JSON files but NOT git-committed —
      * these are high-frequency, low-value changes that pollute the git log
      * (access_count, recall_hits, recall_misses). Git history is reserved
-     * for meaningful content changes (store, delete, prune, consolidate). */
-    if (ctx->flags.enable_scoring && ctx->tools->memory && ctx->tools->n_recalled_keys > 0) {
+     * for meaningful content changes (store, delete, prune, consolidate).
+     *
+     * FIX DESIGN1: Only increment hits on success, NOT blanket misses on
+     * failure.  Previously, ALL recalled memories got a miss on failure,
+     * but failure is rarely caused by the recalled memories — it's usually
+     * task difficulty or model error.  Blanket miss attribution creates
+     * noise that degrades vscore of high-recall, high-value memories
+     * (their vscore converges to the background success rate rather than
+     * the memory's actual contribution).  Corrective insights for truly
+     * harmful memories are handled by reflection → SUPERSEDES.
+     *
+     * Future: the reflection phase could identify specific harmful memories
+     * and increment misses only for those (targeted attribution). */
+    if (ctx->flags.enable_scoring && ctx->tools->memory &&
+        ctx->tools->n_recalled_keys > 0 && task_succeeded) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
-            if (task_succeeded)
-                memory_increment_hits(ctx->tools->memory,
-                                      ctx->tools->recalled_keys[i]);
-            else
-                memory_increment_misses(ctx->tools->memory,
-                                        ctx->tools->recalled_keys[i]);
+            memory_increment_hits(ctx->tools->memory,
+                                  ctx->tools->recalled_keys[i]);
         }
     }
 
@@ -2254,18 +2264,27 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
                     ctx->tools->memory && ctx->tools->memory->embed &&
                     ctx->tools->memory->embed->available) {
-                    /* Generate embedding for the new entry.
-                     * Use model-aware max_input_chars for full fidelity. */
+                    /* FIX BUG2: Generate a multi-vec embedding (1 chunk) so the
+                     * dedup guard uses embed_cosine_sim_multi_multi — the same
+                     * similarity function as consolidation_cb in tools.c.
+                     * Previously used embed_text (single vec) which produces a
+                     * different similarity metric than consolidation. */
                     int mic = embed_max_input_chars(
                                   ctx->tools->memory->embed);
                     char *prep = embed_prepare_text(rkey_j->valuestring,
                                                      rval_j->valuestring,
                                                      mic);
                     if (prep) {
-                        embed_vec_t new_emb = embed_text(
+                        embed_vec_t single = embed_text(
                             ctx->tools->memory->embed, prep);
                         free(prep);
-                        if (new_emb.data) {
+                        if (single.data) {
+                            /* Wrap single vec into 1-chunk multi-vec */
+                            embed_multi_vec_t new_emb = {
+                                .data = single.data,
+                                .dim = single.dim,
+                                .n_chunks = 1,
+                            };
                             /* Scan existing .emb files for high similarity
                              * instead of calling memory_recall + re-embedding */
                             reflection_scan_t rscan = {
@@ -2277,7 +2296,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             };
                             for_each_dir_entry(ctx->tools->memory->dir, ".emb",
                                               reflection_dedup_cb, &rscan);
-                            embed_vec_free(&new_emb);
+                            embed_vec_free(&single);
                         }
                     }
                 }
@@ -2349,9 +2368,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             memory_results_free(&check);
             if (already_exists) continue;
 
-            /* Promote to long-term memory */
-            memory_store(ctx->tools->memory, pkey, sec->content,
-                         0, NULL, NULL, 0);
+            /* FIX BUG4: Promote via tool_execute (not direct memory_store)
+             * so the entry flows through memory_try_consolidate. Previously,
+             * promoted fact: entries could be near-duplicates of existing
+             * lesson:/strategy: entries but would never be merged. */
+            {
+                cJSON *pp = cJSON_CreateObject();
+                cJSON_AddStringToObject(pp, "key", pkey);
+                cJSON_AddStringToObject(pp, "value", sec->content);
+                tool_result_t tr = tool_execute(ctx->tools,
+                                               "memory_store", pp);
+                tool_result_free(&tr);
+                cJSON_Delete(pp);
+            }
         }
     }
 
@@ -2432,6 +2461,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * API contract. If the LLM stripped all headers, falls back to
                  * a single "pruned" section. */
                 scratchpad_parse(&ctx->tools->scratch, cleaned, "pruned", 5);
+
+                /* FIX DESIGN2: Validate LLM output preserved section structure.
+                 * If the LLM dropped all ## headers, scratchpad_parse collapses
+                 * everything into a single "pruned" section — destroying the
+                 * original section boundaries. When this happens (original had
+                 * multiple sections but result is 1 "pruned" blob), revert to
+                 * the original scratchpad to prevent data loss. */
+                if (ctx->tools->scratch.count == 1 && n_orig > 1 &&
+                    strcmp(ctx->tools->scratch.sections[0].name, "pruned") == 0) {
+                    /* LLM stripped all headers — revert to original */
+                    scratchpad_parse(&ctx->tools->scratch, full_sp, "pruned", 5);
+                }
 
                 /* Restore original priorities for sections that survived.
                  * The LLM doesn't see priority metadata, so we reattach it. */
