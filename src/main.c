@@ -484,39 +484,32 @@ int main(int argc, char **argv) {
                                cfg->embedding.max_input_chars);
     }
 
-    /* P3: Auto-dream — check if memory consolidation is overdue.
+    /* Dream reminder — usage-based memory consolidation reminder.
      *
-     * Research basis:
-     *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
-     *     with async "nighttime engine" for schema induction and collision
-     *     detection. Auto-dream implements the same System2 pattern.
-     *   Letta Sleep-Time Compute [2025] — agents consolidate memories
-     *     during idle time, improving future task performance.
-     *   Generative Agents [Park et al., 2023] — periodic reflection
-     *     triggered by importance threshold accumulation.
+     * Counts entries created since last dream using existing per-entry
+     * created_at timestamps (P1) vs .last_dream file mtime.
+     * If count >= dream_reminder_threshold, shows a warning in the status bar.
+     * Does NOT auto-trigger — user decides when to run /dream.
      *
-     * Checks .memory/.last_dream timestamp file. If more than
-     * auto_dream_days have elapsed, prints a reminder to the user.
-     * We don't auto-run dream (it's expensive) — just notify. */
-    if (cfg->auto_dream_days > 0 && memory) {
+     * Research basis: Generative Agents [Park et al., 2023] — importance
+     * threshold accumulation triggers reflection. Here the "importance"
+     * being accumulated is the count of unconsolidated writes. */
+    int dream_new_count = 0;
+    if (cfg->dream_reminder_threshold > 0 && memory) {
         char dream_ts_path[NASH_PATH_MAX];
         snprintf(dream_ts_path, sizeof(dream_ts_path), "%s/memory/.last_dream",
                  nash_dir);
         struct stat dream_st;
-        int needs_dream = 0;
+
         if (stat(dream_ts_path, &dream_st) != 0) {
-            /* No .last_dream file — never dreamed, check if memories exist */
-            if (memory->idx.count > 10) needs_dream = 1;
+            /* No .last_dream file — never dreamed, count all entries */
+            dream_new_count = memory->idx.count;
         } else {
-            double elapsed = difftime(time(NULL), dream_st.st_mtime);
-            if (elapsed > (double)cfg->auto_dream_days * 86400.0)
-                needs_dream = 1;
-        }
-        if (needs_dream) {
-            fprintf(stderr,
-                "\033[33m[memory] Consolidation overdue — run /dream or "
-                "nash --play dream to merge duplicates and resolve "
-                "contradictions.\033[0m\n");
+            double last_dream_epoch = (double)dream_st.st_mtime;
+            for (int i = 0; i < memory->idx.count; i++) {
+                if (memory->idx.entries[i].created_at > last_dream_epoch)
+                    dream_new_count++;
+            }
         }
     }
 
@@ -742,7 +735,15 @@ int main(int argc, char **argv) {
         ui->context_used = 0;
         ui->pause_flag = &react.pause_requested;  /* ESC → pause react loop */
         ui->bg_jobs = 0;
-        ui_state_set_status(ui, STATUS_READY, "Ready");
+        /* Show dream reminder in status bar if threshold exceeded */
+        if (cfg->dream_reminder_threshold > 0 && dream_new_count >= cfg->dream_reminder_threshold) {
+            char dream_msg[256];
+            snprintf(dream_msg, sizeof(dream_msg),
+                     "⚠ %d new memories — /dream to consolidate", dream_new_count);
+            ui_state_set_status(ui, STATUS_READY, dream_msg);
+        } else {
+            ui_state_set_status(ui, STATUS_READY, "Ready");
+        }
         /* Set banner text for main pane */
         char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir);
         ui_state_set_banner(ui, banner);

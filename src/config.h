@@ -136,7 +136,7 @@ typedef struct {
      * threshold on the composite relevance signal. */
     double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
 
-    /* P3: Auto-dream — automatic memory consolidation trigger.
+    /* P3: Auto-dream — usage-based memory consolidation trigger.
      *
      * Research basis:
      *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
@@ -149,9 +149,18 @@ typedef struct {
      *   Generative Agents [Park et al., 2023] — periodic reflection triggered
      *     by importance threshold accumulation.
      *
-     * If > 0, nash checks .memory/.last_dream at startup and triggers
-     * the dream playbook if more than auto_dream_days have elapsed. */
-    int    auto_dream_days;      /* days between auto-dream runs (0 = disabled, default 7) */
+     * Trigger logic (usage-based, not calendar-based):
+     *   At startup, counts memory entries created since the last dream
+     *   (using created_at timestamps in the in-memory index vs .last_dream
+     *   file mtime). If the count exceeds dream_reminder_threshold, shows a
+     *   warning in the TUI status bar for the user to trigger manually.
+     *
+     * Why usage-based beats fixed interval:
+     *   Real-world data shows daily write rates ranging from 2 to 99 entries.
+     *   A fixed 7-day interval would consolidate too late during bursts
+     *   (700 new entries) and too early during quiet periods (14 entries).
+     *   Mutation count directly measures the amount of unprocessed work. */
+    int    dream_reminder_threshold; /* new entries since last dream to show reminder (0 = disabled, default 50) */
 
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
