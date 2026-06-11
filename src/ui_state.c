@@ -593,6 +593,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             continue;
         }
 
+        /* Skip internal provider log entries — they clutter the TUI
+         * with debug info (token counts, timing) that belongs in the
+         * journal audit trail but not in the user-facing display. */
+        if (strcmp(tool, "log") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
         /* Collect step info */
         if (nsteps >= scap) {
             scap = scap ? scap * 2 : 32;
