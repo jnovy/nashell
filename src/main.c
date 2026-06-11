@@ -678,7 +678,7 @@ int main(int argc, char **argv) {
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
-            .flags = default_flags,
+            .flags = default_flags, .parent_loop = -1,
         };
         char *result = react_run(&react, query, tui_on_event, NULL);
         /* Resolve session_dir from journal for lazy sessions.
@@ -768,7 +768,7 @@ int main(int argc, char **argv) {
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
-            .flags = tui_default_flags,
+            .flags = tui_default_flags, .parent_loop = -1,
         };
 
         /* Initialize logging subsystem for TUI error routing */
@@ -1531,6 +1531,94 @@ int main(int argc, char **argv) {
                     free(submitted_query);
                     continue;
                 }
+                /* ── Tree branching: determine parent_loop ── */
+                int parent_loop = -1;  /* default: root */
+                if (tools.react_loop > 0) {
+                    int viewed_loop = -1;
+                    pthread_mutex_lock(&ui->mtx);
+                    const char *viewing = ui->current_filepath;
+                    if (viewing) {
+                        /* Find last '/' or use full string */
+                        const char *base = strrchr(viewing, '/');
+                        base = base ? base + 1 : viewing;
+                        sscanf(base, "reactR%d.md", &viewed_loop);
+                    }
+                    pthread_mutex_unlock(&ui->mtx);
+                    if (viewed_loop >= 0) {
+                        parent_loop = viewed_loop;
+                    } else {
+                        /* Viewing session.md or something else → linear follow-up */
+                        parent_loop = tools.react_loop - 1;
+                    }
+                }
+                react.parent_loop = parent_loop;
+
+                /* If branching (parent != latest completed loop), override
+                 * result.txt so [PREVIOUS RESULT] matches the branch point.
+                 * Scratchpad filtering is done non-destructively in react.c
+                 * at injection time (using parent_loop + journal ancestor chain). */
+                int is_branch = (parent_loop >= 0 &&
+                                 parent_loop != tools.react_loop - 1);
+                if (is_branch) {
+                    /* Override result.txt with parent's result from scratchpad */
+                    char sec_name[32];
+                    snprintf(sec_name, sizeof(sec_name), "R%d_result", parent_loop);
+                    int idx = scratchpad_find(&tools.scratch, sec_name);
+                    if (idx >= 0) {
+                        char rpath[NASH_PATH_MAX];
+                        snprintf(rpath, sizeof(rpath), "%s/result.txt", session_dir);
+                        FILE *rf = fopen(rpath, "w");
+                        if (rf) {
+                            fputs(tools.scratch.sections[idx].content, rf);
+                            fclose(rf);
+                        }
+                    }
+                }
+
+                /* Build the final query string — add branch context hint if branching */
+                char *final_query;
+                if (is_branch) {
+                    /* Find parent's query text from journal for context */
+                    char parent_query_text[256] = "";
+                    char jpath2[NASH_PATH_MAX];
+                    snprintf(jpath2, sizeof(jpath2), "%s/journal.jsonl", session_dir);
+                    FILE *jf2 = fopen(jpath2, "r");
+                    if (jf2) {
+                        char jline2[NASH_LINE_MAX];
+                        while (fgets(jline2, sizeof(jline2), jf2)) {
+                            cJSON *entry = cJSON_Parse(jline2);
+                            if (!entry) continue;
+                            const char *jtool = cJSON_GetStringValue(
+                                cJSON_GetObjectItem(entry, "tool"));
+                            int rl = (int)cJSON_GetNumberValue(
+                                cJSON_GetObjectItem(entry, "react_loop"));
+                            if (jtool && strcmp(jtool, "query") == 0 && rl == parent_loop) {
+                                cJSON *params = cJSON_GetObjectItem(entry, "params");
+                                cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
+                                if (text && text->valuestring) {
+                                    snprintf(parent_query_text, sizeof(parent_query_text),
+                                             "%.250s", text->valuestring);
+                                }
+                                cJSON_Delete(entry);
+                                break;
+                            }
+                            cJSON_Delete(entry);
+                        }
+                        fclose(jf2);
+                    }
+                    size_t fqlen = strlen(submitted_query) + 512;
+                    final_query = malloc(fqlen);
+                    if (final_query) {
+                        snprintf(final_query, fqlen,
+                            "[Branched from R%d: \"%s\"]\n%s",
+                            parent_loop, parent_query_text, submitted_query);
+                    } else {
+                        final_query = strdup(submitted_query);
+                    }
+                } else {
+                    final_query = strdup(submitted_query);
+                }
+
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_RUNNING, "Running...");
                 ui_state_add_query(ui, submitted_query);
@@ -1538,10 +1626,10 @@ int main(int argc, char **argv) {
                 pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
                 iargs = (infer_args_t){
-                    .react = &react, .query = strdup(submitted_query),
+                    .react = &react, .query = final_query,
                     .ui = ui, .result = NULL, .done = 0,
                 };
-                free(submitted_query);  /* strdup'd into iargs.query; ui_state_add_query also strdup'd */
+                free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
                 pthread_create(&infer_tid, NULL, infer_worker, &iargs);
                 inferring = 1;
                 tui_render(ui);

@@ -43,6 +43,12 @@ typedef struct {
     /* Cross-query context inheritance (set by caller between react_run calls) */
     char         *last_query;    /* previous query text (NULL for first query) */
     char         *last_result;   /* previous result text (NULL for first query) */
+
+    /* Tree-based branching: parent of the current react loop.
+     * -1 = root (no parent), otherwise the react_loop ID of the parent.
+     * Set by the TUI before spawning the inference thread, based on
+     * which reactRX.md the user is currently viewing. */
+    int           parent_loop;
 } react_ctx_t;
 
 /* Run the react loop for a user query.

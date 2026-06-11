@@ -871,12 +871,83 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         max_scratchpad = (size_t)ctx->llm->context_size * 4 * 15 / 100;  /* 15% in chars (~4 chars/tok) */
     }
 
-    /* Inject scratchpad if exists (budget-aware, priority-ordered) */
+    /* Inject scratchpad if exists (budget-aware, priority-ordered).
+     * When branching (parent_loop != previous loop), filter R*_result
+     * sections to only include ancestors in the branch path. */
     {
         char *serialized = NULL;
+        int is_branch = (ctx->parent_loop >= 0 &&
+                         ctx->tools->react_loop > 0 &&
+                         ctx->parent_loop != ctx->tools->react_loop - 1);
+
         if (ctx->tools->scratch.count > 0) {
-            /* Use budget-aware serialization: high-priority sections first */
-            serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
+            if (is_branch) {
+                /* Build ancestor set by walking parent chain in journal */
+                int ancestors[256];
+                int n_ancestors = 0;
+                ancestors[n_ancestors++] = ctx->parent_loop;
+
+                char jpath[NASH_PATH_MAX];
+                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
+                         ctx->tools->session_dir);
+                FILE *jf = fopen(jpath, "r");
+                if (jf) {
+                    int pmap[1024];
+                    memset(pmap, -1, sizeof(pmap));
+                    char jline[32768];
+                    while (fgets(jline, sizeof(jline), jf)) {
+                        cJSON *entry = cJSON_Parse(jline);
+                        if (!entry) continue;
+                        const char *jtool = cJSON_GetStringValue(
+                            cJSON_GetObjectItem(entry, "tool"));
+                        if (jtool && strcmp(jtool, "query") == 0) {
+                            int rl = (int)cJSON_GetNumberValue(
+                                cJSON_GetObjectItem(entry, "react_loop"));
+                            cJSON *pp = cJSON_GetObjectItem(
+                                cJSON_GetObjectItem(entry, "params"),
+                                "parent_loop");
+                            if (pp && cJSON_IsNumber(pp) && rl >= 0 && rl < 1024)
+                                pmap[rl] = (int)pp->valuedouble;
+                        }
+                        cJSON_Delete(entry);
+                    }
+                    fclose(jf);
+                    int cur = ctx->parent_loop;
+                    while (cur >= 0 && cur < 1024 && pmap[cur] >= 0
+                           && n_ancestors < 256) {
+                        cur = pmap[cur];
+                        ancestors[n_ancestors++] = cur;
+                    }
+                }
+
+                /* Build a temporary filtered scratchpad copy */
+                scratchpad_t filtered;
+                scratchpad_init(&filtered);
+                for (int si = 0; si < ctx->tools->scratch.count; si++) {
+                    const char *sname = ctx->tools->scratch.sections[si].name;
+                    int rloop = -1;
+                    if (sname && sscanf(sname, "R%d_result", &rloop) == 1) {
+                        /* Only include R*_result if it's an ancestor */
+                        int is_ancestor = 0;
+                        for (int ai = 0; ai < n_ancestors; ai++) {
+                            if (ancestors[ai] == rloop) {
+                                is_ancestor = 1;
+                                break;
+                            }
+                        }
+                        if (!is_ancestor) continue;  /* skip non-ancestor results */
+                    }
+                    /* Include this section (non-R*_result or ancestor R*_result) */
+                    scratchpad_write(&filtered, sname,
+                                     ctx->tools->scratch.sections[si].content,
+                                     ctx->tools->scratch.sections[si].priority);
+                }
+                serialized = scratchpad_serialize_budget(&filtered, max_scratchpad);
+                scratchpad_free(&filtered);
+            } else {
+                /* Normal (linear) — serialize all sections */
+                serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
+            }
         } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
             /* Legacy fallback */
             size_t slen = strlen(ctx->tools->scratchpad);
@@ -961,6 +1032,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
+        cJSON_AddNumberToObject(q_p, "parent_loop", ctx->parent_loop);
         char *q_hash = store_save(ctx->tools->store, user_query);
         char *q_alias = q_hash ? tool_register_alias(ctx->tools, q_hash) : NULL;
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, q_alias,

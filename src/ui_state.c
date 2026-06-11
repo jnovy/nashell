@@ -290,11 +290,12 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         goto write_out;
     }
 
-    /* Collect query info */
+    /* Collect query info (with tree structure support) */
     typedef struct {
         char *text;
         double ts;
         int react_loop;
+        int parent_loop;   /* -1 = root, else parent react_loop ID */
         int step_count;
         char *result;
         int done;
@@ -324,6 +325,9 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             cJSON *ts = cJSON_GetObjectItem(entry, "ts");
             qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
             qi->react_loop = loop;
+            /* Parse parent_loop from journal (backward compat: default -1 = root) */
+            cJSON *pl = params ? cJSON_GetObjectItem(params, "parent_loop") : NULL;
+            qi->parent_loop = (pl && cJSON_IsNumber(pl)) ? (int)pl->valuedouble : -1;
         } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0) {
             for (int i = qcount - 1; i >= 0; i--) {
                 if (qinfos[i].react_loop == loop) {
@@ -347,50 +351,127 @@ void ui_state_generate_session_md(ui_state_t *ui) {
 
     str_append_cstr(&md, "## Session History\n\n");
 
-    for (int i = 0; i < qcount; i++) {
-        qinfo_t *qi = &qinfos[i];
+    /* ── Tree-order rendering via DFS ── */
+    {
+        /* Build render order via iterative DFS.
+         * Nodes without a matching parent in qinfos are treated as roots.
+         * Uses visited[] to prevent cycles from causing infinite loops. */
+        size_t qalloc = qcount > 0 ? (size_t)qcount : 1;
+        int *render_order = malloc(qalloc * sizeof(int));
+        int *render_depth = malloc(qalloc * sizeof(int));
+        int *visited = calloc(qalloc, sizeof(int));
+        int rcount = 0;
 
-        /* Format timestamp */
-        char ts_buf[32] = "";
-        if (qi->ts > 0) {
-            time_t t = (time_t)qi->ts;
-            struct tm *tm = localtime(&t);
-            if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", tm);
-        }
+        /* Stack sized 2*qcount to handle branching safely */
+        int stack_cap = qcount > 0 ? qcount * 2 : 1;
+        int *dfs_stack = malloc((size_t)stack_cap * sizeof(int));
+        int *dfs_depth = malloc((size_t)stack_cap * sizeof(int));
+        int stop = 0;
 
-        /* Status icon */
-        int is_active = (ui->status == STATUS_RUNNING &&
-                         qi->react_loop == ui->current_react_loop);
-        const char *icon = is_active ? "⟳" : (qi->done ? "✓" : "▶");
-
-        /* Query as hyperlink to reactRX.md */
-        str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
-                    icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
-
-        /* Preview: show for the ACTIVE react loop, or if user toggled
-         * with 'c' key (URI in expanded_uris). */
-        char react_uri[64];
-        snprintf(react_uri, sizeof(react_uri), "reactR%d.md", qi->react_loop);
-        int is_expanded = 0;
-        for (int ei = 0; ei < ui->expanded_count; ei++) {
-            if (strcmp(ui->expanded_uris[ei], react_uri) == 0) {
-                is_expanded = 1;
-                break;
+        /* Find roots: parent_loop == -1, or parent not found in qinfos.
+         * Push in reverse order so first root is processed first. */
+        for (int i = qcount - 1; i >= 0; i--) {
+            int is_root = (qinfos[i].parent_loop < 0);
+            if (!is_root) {
+                /* Check if parent exists in qinfos */
+                int found = 0;
+                for (int j = 0; j < qcount; j++) {
+                    if (qinfos[j].react_loop == qinfos[i].parent_loop) {
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) is_root = 1;  /* orphan → treat as root */
+            }
+            if (is_root && stop < stack_cap) {
+                dfs_stack[stop] = i;
+                dfs_depth[stop] = 0;
+                stop++;
             }
         }
-        if (is_active || is_expanded) {
-            char rpath[NASH_PATH_MAX];
-            snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
-                     ui->session_dir, qi->react_loop);
-            char *preview = read_last_lines(rpath, 10);
-            if (preview && preview[0]) {
-                str_append_cstr(&md, preview);
-                /* Ensure trailing newline */
-                if (preview[strlen(preview) - 1] != '\n')
-                    str_append_cstr(&md, "\n");
+
+        while (stop > 0) {
+            stop--;
+            int idx = dfs_stack[stop];
+            int depth = dfs_depth[stop];
+
+            if (visited[idx]) continue;  /* cycle guard */
+            visited[idx] = 1;
+
+            render_order[rcount] = idx;
+            render_depth[rcount] = depth;
+            rcount++;
+
+            /* Push children (reverse order for correct DFS traversal) */
+            for (int i = qcount - 1; i >= 0; i--) {
+                if (!visited[i] && i != idx &&
+                    qinfos[i].parent_loop == qinfos[idx].react_loop &&
+                    stop < stack_cap) {
+                    dfs_stack[stop] = i;
+                    dfs_depth[stop] = depth + 1;
+                    stop++;
+                }
             }
-            free(preview);
         }
+
+        /* Render in DFS order with tree indentation */
+        for (int ri = 0; ri < rcount; ri++) {
+            int i = render_order[ri];
+            int depth = render_depth[ri];
+            qinfo_t *qi = &qinfos[i];
+
+            /* Format timestamp */
+            char ts_buf[32] = "";
+            if (qi->ts > 0) {
+                time_t t = (time_t)qi->ts;
+                struct tm *tm = localtime(&t);
+                if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", tm);
+            }
+
+            /* Status icon */
+            int is_active = (ui->status == STATUS_RUNNING &&
+                             qi->react_loop == ui->current_react_loop);
+            const char *icon = is_active ? "⟳" : (qi->done ? "✓" : "▶");
+
+            /* Tree indentation (2 spaces per depth level) */
+            for (int d = 0; d < depth; d++)
+                str_append_cstr(&md, "  ");
+
+            /* Query as hyperlink to reactRX.md */
+            str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
+                        icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
+
+            /* Preview: show for the ACTIVE react loop, or if user toggled
+             * with 'c' key (URI in expanded_uris). */
+            char react_uri[64];
+            snprintf(react_uri, sizeof(react_uri), "reactR%d.md", qi->react_loop);
+            int is_expanded = 0;
+            for (int ei = 0; ei < ui->expanded_count; ei++) {
+                if (strcmp(ui->expanded_uris[ei], react_uri) == 0) {
+                    is_expanded = 1;
+                    break;
+                }
+            }
+            if (is_active || is_expanded) {
+                char rpath[NASH_PATH_MAX];
+                snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
+                         ui->session_dir, qi->react_loop);
+                char *preview = read_last_lines(rpath, 10);
+                if (preview && preview[0]) {
+                    str_append_cstr(&md, preview);
+                    /* Ensure trailing newline */
+                    if (preview[strlen(preview) - 1] != '\n')
+                        str_append_cstr(&md, "\n");
+                }
+                free(preview);
+            }
+        }
+
+        free(render_order);
+        free(render_depth);
+        free(visited);
+        free(dfs_stack);
+        free(dfs_depth);
     }
 
     for (int i = 0; i < qcount; i++) {
