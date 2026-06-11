@@ -69,6 +69,24 @@ typedef struct {
     int    max_input_chars;  /* max chars for text preparation (0 = auto from model) */
 } embedding_config_t;
 
+/* Per-model harness profile — loaded from ~/.nash/models/ (*.toml).
+ * Enables model-specific adaptation without changing config.toml.
+ * Inspired by Self-Harness [arXiv:2606.09498]: different models
+ * need different harness rules for optimal performance. */
+typedef struct {
+    char  *match;               /* case-insensitive substring against model ID (required) */
+    int    match_len;           /* cached strlen(match) for longest-match priority */
+    char  *source_file;         /* which .toml file this came from (diagnostics) */
+
+    /* Fields the server CAN'T tell us: */
+    float  chars_per_token;     /* 0.0 = defer to provider/default (3.5) */
+    thinking_config_t thinking; /* mode, budget; mode=THINKING_UNSET means defer */
+    char  *system_prompt_extra; /* per-model harness rules, appended to system prompt */
+
+    /* Informational only: */
+    int    native_context;      /* model's training context size — for warnings */
+} model_profile_t;
+
 typedef struct {
     /* [server] — kept for backward compatibility */
     char  *api_base;
@@ -168,6 +186,16 @@ typedef struct {
     /* [search] */
     char  *search_engine;        /* "duckduckgo" or "searxng" */
     char  *searxng_url;
+
+    /* [model profiles] — loaded from ~/.nash/models/ */
+    model_profile_t *model_profiles;
+    int              n_model_profiles;
+
+    /* Active model profile (set after model detection in main.c) */
+    const char      *system_prompt_extra;  /* points into matched profile, do NOT free */
+
+    /* Was [thinking] section explicitly present in config.toml? */
+    int              thinking_explicit;    /* 1 = yes, model profile won't override */
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.
@@ -182,5 +210,16 @@ void config_free(config_t *cfg);
 
 /* Write default config to a file (creates if not exists) */
 int config_write_default(const char *path);
+
+/* Load all model profiles from a directory (e.g., ~/.nash/models/).
+ * Returns 0 on success, -1 on error. Populates cfg->model_profiles. */
+int config_load_model_profiles(config_t *cfg, const char *models_dir);
+
+/* Find the best-matching profile for a model name (longest match wins).
+ * Returns pointer into cfg->model_profiles, or NULL if no match. */
+const model_profile_t *config_match_model(const config_t *cfg, const char *model_name);
+
+/* Free model profiles array */
+void config_free_model_profiles(config_t *cfg);
 
 #endif

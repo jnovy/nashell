@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <sys/stat.h>
 
 /* Helper: read TOML string, return strdup or NULL */
@@ -249,6 +251,7 @@ config_t *config_load(const char *path) {
     /* [thinking] — overrides old [client].thinking if both present */
     toml_table_t *thinking = toml_table_in(root, "thinking");
     if (thinking) {
+        cfg->thinking_explicit = 1;  /* model profiles won't override */
         char *mode_str = toml_str(thinking, "mode");
         if (mode_str) {
             if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
@@ -303,7 +306,149 @@ void config_free(config_t *cfg) {
     free(cfg->search_engine);
     free(cfg->searxng_url);
     free(cfg->belief_entropy.anchor_question);
+    config_free_model_profiles(cfg);
     free(cfg);
+}
+
+/* ── Model profiles ── */
+
+/* Helper: case-insensitive strstr */
+static const char *strcasestr_local(const char *haystack, const char *needle) {
+    if (!needle[0]) return haystack;
+    for (const char *p = haystack; *p; p++) {
+        const char *h = p, *n = needle;
+        while (*h && *n && tolower((unsigned char)*h) == tolower((unsigned char)*n)) {
+            h++; n++;
+        }
+        if (!*n) return p;
+    }
+    return NULL;
+}
+
+/* Parse a [thinking] subtable from a TOML table */
+static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
+    char *mode_str = toml_str(tbl, "mode");
+    if (mode_str) {
+        if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
+            tc->mode = THINKING_ON;
+        else if (strcmp(mode_str, "edrm") == 0)
+            tc->mode = THINKING_EDRM;
+        else
+            tc->mode = THINKING_OFF;
+        free(mode_str);
+    }
+    int b = toml_int(tbl, "budget", 0);
+    if (b != 0) tc->budget = b;
+    int pt = toml_int(tbl, "probe_tokens", 0);
+    if (pt > 0) tc->probe_tokens = pt;
+}
+
+int config_load_model_profiles(config_t *cfg, const char *models_dir) {
+    if (!cfg || !models_dir) return -1;
+
+    DIR *d = opendir(models_dir);
+    if (!d) return 0;  /* optional feature — no dir is fine */
+
+    struct dirent *ent;
+    int cap = 8;
+    cfg->model_profiles = calloc(cap, sizeof(model_profile_t));
+    cfg->n_model_profiles = 0;
+
+    while ((ent = readdir(d)) != NULL) {
+        /* Filter for *.toml files */
+        const char *name = ent->d_name;
+        size_t nlen = strlen(name);
+        if (nlen < 6 || strcmp(name + nlen - 5, ".toml") != 0)
+            continue;
+
+        /* Build full path */
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s/%s", models_dir, name);
+
+        FILE *f = fopen(filepath, "r");
+        if (!f) continue;
+
+        char errbuf[256];
+        toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+        fclose(f);
+        if (!root) {
+            fprintf(stderr, "[model-profile] parse error in %s: %s\n", name, errbuf);
+            continue;
+        }
+
+        /* match field is required */
+        char *match = toml_str(root, "match");
+        if (!match || !match[0]) {
+            fprintf(stderr, "[model-profile] %s: missing 'match' field, skipping\n", name);
+            free(match);
+            toml_free(root);
+            continue;
+        }
+
+        /* Grow array if needed */
+        if (cfg->n_model_profiles >= cap) {
+            cap *= 2;
+            cfg->model_profiles = realloc(cfg->model_profiles,
+                                          cap * sizeof(model_profile_t));
+        }
+
+        model_profile_t *p = &cfg->model_profiles[cfg->n_model_profiles];
+        memset(p, 0, sizeof(*p));
+
+        p->match = match;
+        p->match_len = (int)strlen(match);
+        p->source_file = strdup(name);
+
+        /* Optional fields */
+        p->chars_per_token = (float)toml_dbl(root, "chars_per_token", 0);
+        p->native_context  = toml_int(root, "native_context", 0);
+        p->system_prompt_extra = toml_str(root, "system_prompt_extra");
+
+        /* [thinking] subtable */
+        p->thinking.mode = THINKING_UNSET;  /* sentinel: defer */
+        toml_table_t *think_tbl = toml_table_in(root, "thinking");
+        if (think_tbl) {
+            parse_thinking_from_toml(think_tbl, &p->thinking);
+        }
+
+        cfg->n_model_profiles++;
+        toml_free(root);
+    }
+    closedir(d);
+
+    if (cfg->n_model_profiles > 0) {
+        fprintf(stderr, "[model-profile] loaded %d profile(s) from %s\n",
+                cfg->n_model_profiles, models_dir);
+    }
+    return 0;
+}
+
+const model_profile_t *config_match_model(const config_t *cfg, const char *model_name) {
+    if (!cfg || !model_name || cfg->n_model_profiles == 0) return NULL;
+
+    const model_profile_t *best = NULL;
+    int best_len = 0;
+
+    for (int i = 0; i < cfg->n_model_profiles; i++) {
+        const model_profile_t *p = &cfg->model_profiles[i];
+        if (strcasestr_local(model_name, p->match) && p->match_len > best_len) {
+            best = p;
+            best_len = p->match_len;
+        }
+    }
+    return best;
+}
+
+void config_free_model_profiles(config_t *cfg) {
+    if (!cfg || !cfg->model_profiles) return;
+    for (int i = 0; i < cfg->n_model_profiles; i++) {
+        free(cfg->model_profiles[i].match);
+        free(cfg->model_profiles[i].source_file);
+        free(cfg->model_profiles[i].system_prompt_extra);
+    }
+    free(cfg->model_profiles);
+    cfg->model_profiles = NULL;
+    cfg->n_model_profiles = 0;
 }
 
 int config_write_default(const char *path) {

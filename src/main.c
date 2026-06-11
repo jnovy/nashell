@@ -123,7 +123,7 @@ static int jbool(cJSON *obj, const char *key, int def) {
 
 /* Print banner: header art + server props + client overrides */
 static void print_banner(const config_t *cfg, const char *props_json,
-                         const char *nash_dir) {
+                         const char *nash_dir, const char *profile_file) {
     /* ASCII art header with gradient green ANSI colors */
     printf("\n");
     printf("  \033[1m\033[38;2;80;255;120m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
@@ -214,12 +214,15 @@ static void print_banner(const config_t *cfg, const char *props_json,
     char cwd_buf[NASH_PATH_MAX];
     if (getcwd(cwd_buf, sizeof(cwd_buf)))
         printf("cwd:    %s\n", cwd_buf);
+    if (profile_file)
+        printf("profile: %s\n", profile_file);
     printf("\n");
 }
 
 /* Build banner as a string for ncurses TUI (no ANSI escapes) */
 static char *build_banner_string(const config_t *cfg, const char *props_json,
-                                  const char *nash_dir, const char *session_dir) {
+                                  const char *nash_dir, const char *session_dir,
+                                  const char *profile_file) {
     str_t s = str_new(2048);
 
     str_append_cstr(&s, "\n");
@@ -304,6 +307,8 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
     char cwd_buf[NASH_PATH_MAX];
     if (getcwd(cwd_buf, sizeof(cwd_buf)))
         str_appendf(&s, "cwd:    %s\n", cwd_buf);
+    if (profile_file)
+        str_appendf(&s, "profile: %s\n", profile_file);
     if (session_dir)
         str_appendf(&s, "\n[session: %s]\n", session_dir);
 
@@ -386,6 +391,14 @@ int main(int argc, char **argv) {
     /* Initialize data directory */
     char *nash_dir = get_nash_dir(cfg);
 
+    /* Create models/ directory for per-model profiles */
+    {
+        char models_dir[1024];
+        snprintf(models_dir, sizeof(models_dir), "%s/models", nash_dir);
+        mkdir(models_dir, 0755);
+        config_load_model_profiles(cfg, models_dir);
+    }
+
     /* Write default config if it doesn't exist */
     config_write_default(config_path);
 
@@ -448,6 +461,42 @@ int main(int argc, char **argv) {
         provider->cfg.model_id = strdup(server_model);  /* replace with server-reported model */
     }
 
+    /* ── Apply model profile ── */
+    const char *matched_profile_file = NULL;
+    if (server_model) {
+        const model_profile_t *profile = config_match_model(cfg, server_model);
+        if (profile) {
+            matched_profile_file = profile->source_file;
+            fprintf(stderr, "[model-profile] matched '%s' from %s\n",
+                    profile->match, profile->source_file);
+
+            /* chars_per_token: profile overrides default, but explicit [provider] wins */
+            if (profile->chars_per_token > 0 && cfg->provider.chars_per_token <= 0) {
+                if (provider) provider->cfg.chars_per_token = profile->chars_per_token;
+                cfg->provider.chars_per_token = profile->chars_per_token;
+            }
+
+            /* thinking: profile sets defaults only if config didn't explicitly set them */
+            if (!cfg->thinking_explicit) {
+                if (profile->thinking.mode != THINKING_UNSET)
+                    cfg->thinking.mode = profile->thinking.mode;
+            }
+            if (profile->thinking.budget != 0)
+                cfg->thinking.budget = profile->thinking.budget;
+
+            /* system_prompt_extra: store for react.c to use */
+            if (profile->system_prompt_extra)
+                cfg->system_prompt_extra = profile->system_prompt_extra;
+
+            /* native_context warning */
+            if (profile->native_context > 0 && context_size > 0 &&
+                context_size < profile->native_context / 2) {
+                fprintf(stderr, "[model-profile] ⚠ server n_ctx=%d but %s supports %d\n",
+                        context_size, profile->match, profile->native_context);
+            }
+        }
+    }
+
     /* Build LLM config (kept for backward compat: EDRM probe, etc.) */
     llm_config_t llm_cfg = {
         .api_base     = cfg->api_base,
@@ -459,7 +508,7 @@ int main(int argc, char **argv) {
 
     /* Print banner (skip in headless playbook mode) */
     if (!play_arg)
-        print_banner(cfg, props_json, nash_dir);
+        print_banner(cfg, props_json, nash_dir, matched_profile_file);
 
     /* Shared store + memory */
     store_t *shared_store = store_new(nash_dir);
@@ -745,7 +794,7 @@ int main(int argc, char **argv) {
             ui_state_set_status(ui, STATUS_READY, "Ready");
         }
         /* Set banner text for main pane */
-        char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir);
+        char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir, matched_profile_file);
         ui_state_set_banner(ui, banner);
         free(banner);
 

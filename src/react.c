@@ -23,6 +23,26 @@ static const char *json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
+/* Add system prompt to chat, appending model-specific rules if configured.
+ * Avoids 3x duplication of the same logic at each call site. */
+static void add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
+    const char *base = tools_system_prompt();
+    const char *extra = cfg ? cfg->system_prompt_extra : NULL;
+    if (extra && extra[0]) {
+        size_t len = strlen(base) + strlen(extra) + 64;
+        char *full = malloc(len);
+        if (full) {
+            snprintf(full, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base, extra);
+            llm_chat_add(chat, "system", full);
+            free(full);
+        } else {
+            llm_chat_add(chat, "system", base);
+        }
+    } else {
+        llm_chat_add(chat, "system", base);
+    }
+}
+
 /* ── reflection deduplication callback ───────────────── */
 
 typedef struct {
@@ -272,7 +292,7 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     cJSON_Delete(cp);
 
     /* Step 1: Add system prompt (fresh — may have changed) */
-    llm_chat_add(chat, "system", tools_system_prompt());
+    add_system_prompt(chat, ctx->tools->cfg);
 
     /* v5: No manifest injection — scratchpad carries all cross-loop state. */
 
@@ -736,7 +756,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->tools->step = 0;
 
     /* System message */
-    llm_chat_add(chat, "system", tools_system_prompt());
+    add_system_prompt(chat, ctx->tools->cfg);
 
     /* v5: No manifest injection — scratchpad is the sole persistence mechanism.
      * Cross-loop state is carried via scratchpad (auto-saved done results +
@@ -911,7 +931,22 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Record system prompt and user query in journal (step 0) */
     {
-        const char *sys_prompt = tools_system_prompt();
+        const char *base_prompt = tools_system_prompt();
+        const char *extra = ctx->tools->cfg ? ctx->tools->cfg->system_prompt_extra : NULL;
+        char *full_prompt = NULL;
+        const char *sys_prompt;
+        if (extra && extra[0]) {
+            size_t len = strlen(base_prompt) + strlen(extra) + 64;
+            full_prompt = malloc(len);
+            if (full_prompt) {
+                snprintf(full_prompt, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base_prompt, extra);
+                sys_prompt = full_prompt;
+            } else {
+                sys_prompt = base_prompt;
+            }
+        } else {
+            sys_prompt = base_prompt;
+        }
         char *sys_hash = store_save(ctx->tools->store, sys_prompt);
         /* Register alias for system prompt (function auto-generates S0, S1, ...) */
         char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
@@ -922,6 +957,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON_Delete(sys_p);
         free(sys_alias);
         free(sys_hash);
+        free(full_prompt);
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
