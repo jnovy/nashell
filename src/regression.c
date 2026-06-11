@@ -987,7 +987,7 @@ static const char *SEED_HELD_OUT_YAML =
 "        expect: \"not found\"\n"
 "\n"
 "  - id: multi-tool-chain\n"
-"    query: \"Create /tmp/nash-chain-test.txt with content 'step1', then grep for 'step1' in /tmp/.\"\n"
+"    query: \"Use the file_write tool to create /tmp/nash-chain-test.txt with content 'step1', then use grep_search to find 'step1' in /tmp/.\"\n"
 "    max_turns: 15\n"
 "    criteria:\n"
 "      - type: status\n"

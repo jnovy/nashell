@@ -54,6 +54,7 @@ typedef struct {
     fail_mechanism_t mechanism;
     char *tool;                /* most common tool in this cluster */
     int   count;               /* number of instances */
+    int   n_sessions;          /* number of unique sessions affected */
     failure_instance_t *instances;  /* representative instances (up to 5) */
     int   n_instances;
     char *summary;             /* human-readable summary */

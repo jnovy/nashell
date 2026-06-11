@@ -51,6 +51,13 @@ static fail_mechanism_t classify_mechanism(const char *tool, const char *error,
                                            cJSON *params) {
     if (!tool) return FMECH_OTHER;
 
+    /* Tool name concatenation: LLM emitted two tool names joined together
+     * e.g. "web_fetchweb_search", "memory_recallshell_exec" */
+    if (strcmp(tool, "unknown_tool") == 0 && error) {
+        if (strstr(error, "unknown tool:"))
+            return FMECH_WRONG_TOOL;
+    }
+
     /* file_edit with wrong old_text */
     if (strcmp(tool, "file_edit") == 0) {
         if (error && (strstr(error, "not found") || strstr(error, "does not match") ||
@@ -231,6 +238,10 @@ static void cluster_failures(failure_list_t *list,
     failure_cluster_t *clusters = calloc(max_clusters, sizeof(failure_cluster_t));
     int n_clusters = 0;
 
+    /* Per-cluster session tracking — dynamic arrays freed after loop */
+    char ***cluster_sessions = NULL;  /* cluster_sessions[i] = array of session_dir strings */
+    int *cluster_session_caps = NULL;
+
     for (int i = 0; i < list->n_failures; i++) {
         failure_instance_t *fi = &list->failures[i];
 
@@ -257,9 +268,41 @@ static void cluster_failures(failure_list_t *list,
             clusters[found].mechanism = fi->mechanism;
             clusters[found].tool = fi->tool ? strdup(fi->tool) : NULL;
             clusters[found].instances = calloc(5, sizeof(failure_instance_t));
+
+            /* Grow session tracking arrays */
+            cluster_sessions = realloc(cluster_sessions,
+                                       n_clusters * sizeof(char **));
+            cluster_session_caps = realloc(cluster_session_caps,
+                                           n_clusters * sizeof(int));
+            cluster_sessions[found] = NULL;
+            cluster_session_caps[found] = 0;
         }
 
         clusters[found].count++;
+
+        /* Track unique sessions: scan the full session list for this cluster */
+        if (fi->session_dir) {
+            int seen = 0;
+            for (int k = 0; k < clusters[found].n_sessions; k++) {
+                if (cluster_sessions[found][k] &&
+                    strcmp(cluster_sessions[found][k], fi->session_dir) == 0) {
+                    seen = 1;
+                    break;
+                }
+            }
+            if (!seen) {
+                if (clusters[found].n_sessions >= cluster_session_caps[found]) {
+                    cluster_session_caps[found] = cluster_session_caps[found]
+                                                 ? cluster_session_caps[found] * 2 : 8;
+                    cluster_sessions[found] = realloc(
+                        cluster_sessions[found],
+                        cluster_session_caps[found] * sizeof(char *));
+                }
+                cluster_sessions[found][clusters[found].n_sessions] =
+                    strdup(fi->session_dir);
+                clusters[found].n_sessions++;
+            }
+        }
 
         /* Keep up to 5 representative instances */
         if (clusters[found].n_instances < 5) {
@@ -274,14 +317,25 @@ static void cluster_failures(failure_list_t *list,
         }
     }
 
+    /* Free session tracking arrays */
+    for (int i = 0; i < n_clusters; i++) {
+        for (int j = 0; j < clusters[i].n_sessions; j++)
+            free(cluster_sessions[i][j]);
+        free(cluster_sessions[i]);
+    }
+    free(cluster_sessions);
+    free(cluster_session_caps);
+
     /* Generate summaries */
     for (int i = 0; i < n_clusters; i++) {
         char buf[512];
-        snprintf(buf, sizeof(buf), "%s/%s via %s (%d occurrences)",
+        snprintf(buf, sizeof(buf), "%s/%s via %s (%d occurrences across %d session%s)",
                  cause_str(clusters[i].cause),
                  mechanism_str(clusters[i].mechanism),
                  clusters[i].tool ? clusters[i].tool : "unknown",
-                 clusters[i].count);
+                 clusters[i].count,
+                 clusters[i].n_sessions,
+                 clusters[i].n_sessions == 1 ? "" : "s");
         clusters[i].summary = strdup(buf);
     }
 
@@ -383,7 +437,9 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
         str_appendf(&bundle, "Cause: %s\n", cause_str(c->cause));
         str_appendf(&bundle, "Mechanism: %s\n", mechanism_str(c->mechanism));
         str_appendf(&bundle, "Tool: %s\n", c->tool ? c->tool : "N/A");
-        str_appendf(&bundle, "Count: %d\n\n", c->count);
+        str_appendf(&bundle, "Count: %d (across %d session%s)\n\n",
+                    c->count, c->n_sessions,
+                    c->n_sessions == 1 ? "" : "s");
 
         str_appendf(&bundle, "Representative instances:\n");
         for (int j = 0; j < c->n_instances; j++) {
