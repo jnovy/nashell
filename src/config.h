@@ -131,6 +131,16 @@ typedef struct {
     int    max_reflection_steps; /* max steps in post-task reflection */
     int    file_read_max_inline; /* max chars for file_read content inline */
 
+    /* Self-Harness tunable surfaces (P3) — exposed for automated harness evolution.
+     * These parameters can be tuned by the self-harness loop and validated via
+     * the regression gate (--validate-harness compare). */
+    float  recall_blend_semantic;  /* weight for semantic similarity in memory recall blend (default 0.7) */
+    float  recall_blend_substring; /* weight for substring matching in memory recall blend (default 0.3) */
+    int    tool_retry_limit;       /* max consecutive errors on same tool before forced strategy switch (default 3) */
+    int    checkpoint_frequency;   /* save checkpoint every N steps (0 = every step, default 0) */
+    int    cycling_window;         /* number of recent actions to check for cycling (default 4) */
+    int    cycling_threshold;      /* number of identical actions in window to trigger cycling (default 2) */
+
     /* Memory pruning (Bayesian validation scoring) */
     double prune_min_score;      /* validation score threshold (default 0.35) */
     int    prune_min_evidence;   /* minimum recalls before pruning (default 3) */

@@ -62,6 +62,11 @@ typedef struct {
      * Default: 0.15 (set from config.recall_min_score) */
     double recall_min_score;
 
+    /* P3: Self-Harness tunable blend weights for semantic/substring scoring.
+     * Set from config.recall_blend_semantic / recall_blend_substring. */
+    float recall_blend_semantic;   /* default 0.7 */
+    float recall_blend_substring;  /* default 0.3 */
+
     /* P1: In-memory index — populated by memory_new(), updated by
      * memory_store()/memory_delete(). Used by memory_recall() and
      * memory_build_index() to avoid filesystem scans. */

@@ -2418,6 +2418,11 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "pinned");
     cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+    /* P3: Regression-gated lessons advisory — pinning changes the system
+     * prompt and can degrade performance. Suggest validation. */
+    cJSON_AddStringToObject(meta, "harness_note",
+        "Pinned memories alter system prompt for all future sessions. "
+        "Validate with: nash --regression --validate-harness compare");
 
     {
         char *_p = cJSON_PrintUnformatted(params);

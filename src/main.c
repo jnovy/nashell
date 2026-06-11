@@ -563,6 +563,9 @@ int main(int argc, char **argv) {
         memory->model = strdup(server_model);
     /* P0: Set recall score threshold from config for abstention gate */
     memory->recall_min_score = cfg->recall_min_score;
+    /* P3: Self-Harness tunable blend weights */
+    memory->recall_blend_semantic = cfg->recall_blend_semantic;
+    memory->recall_blend_substring = cfg->recall_blend_substring;
 
     /* Prune stale memories at startup (90 days, access_count < 2) */
     int pruned = memory_prune(memory,

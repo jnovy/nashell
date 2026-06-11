@@ -65,6 +65,14 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
     if (cfg->dream_reminder_threshold <= 0)   cfg->dream_reminder_threshold = 50;
 
+    /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
+    if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.7f;
+    if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.3f;
+    if (cfg->tool_retry_limit <= 0)       cfg->tool_retry_limit = 3;
+    /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
+    if (cfg->cycling_window <= 0)         cfg->cycling_window = 4;
+    if (cfg->cycling_threshold <= 0)      cfg->cycling_threshold = 2;
+
 
     /* [memory_belief_entropy] defaults */
     cfg->belief_entropy.enabled = 0;
@@ -233,6 +241,14 @@ config_t *config_load(const char *path) {
         /* Backward compat: old "auto_dream_writes" in [limits] */
         if (cfg->dream_reminder_threshold <= 0)
             cfg->dream_reminder_threshold = toml_int(limits, "auto_dream_writes", -1);
+
+        /* P3: Self-Harness tunable surfaces */
+        cfg->recall_blend_semantic  = (float)toml_dbl(limits, "recall_blend_semantic", 0);
+        cfg->recall_blend_substring = (float)toml_dbl(limits, "recall_blend_substring", 0);
+        cfg->tool_retry_limit       = toml_int(limits, "tool_retry_limit", -1);
+        cfg->checkpoint_frequency   = toml_int(limits, "checkpoint_frequency", 0);
+        cfg->cycling_window         = toml_int(limits, "cycling_window", -1);
+        cfg->cycling_threshold      = toml_int(limits, "cycling_threshold", -1);
     }
 
     /* [paths] */
@@ -551,6 +567,16 @@ int config_write_default(const char *path) {
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
         "dream_reminder_threshold = 50 # new entries since last /dream to show status bar reminder (0 = disabled)\n"
+        "\n"
+        "# Self-Harness tunable surfaces (P3)\n"
+        "# These parameters can be automatically tuned by the self-harness loop\n"
+        "# and validated via: nash --regression --validate-harness compare\n"
+        "recall_blend_semantic = 0.7  # weight for semantic similarity in memory recall (0.0-1.0)\n"
+        "recall_blend_substring = 0.3 # weight for substring matching in memory recall (0.0-1.0)\n"
+        "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
+        "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
+        "cycling_window = 4           # recent actions to check for cycling\n"
+        "cycling_threshold = 2        # identical actions in window to trigger cycling\n"
         "\n"
         "# Belief Entropy — forward-looking memory quality signal.\n"
         "# Based on MMPO [arXiv:2605.30159]: measures how clearly the current\n"

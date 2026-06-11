@@ -642,9 +642,14 @@ static double score_entry_hybrid(const char *key, const char *value,
                                   int access_count,
                                   int recall_hits, int recall_misses,
                                   float semantic_sim, int has_semantic,
+                                  float blend_semantic, float blend_substring,
                                   double *out_relevance,
                                   double *out_importance) {
     double relevance;
+
+    /* Use configurable blend weights (P3: Self-Harness tunable surfaces) */
+    float w_sem = blend_semantic > 0 ? blend_semantic : 0.7f;
+    float w_sub = blend_substring > 0 ? blend_substring : 0.3f;
 
     if (has_semantic) {
         /* Semantic mode: cosine similarity is primary signal.
@@ -656,9 +661,10 @@ static double score_entry_hybrid(const char *key, const char *value,
         double semantic = clamped * 4.0;  /* [0, 4] */
         double substring = score_entry_substring(key, value, query);
 
-        /* Blend: 70% semantic + 30% substring, then normalize to [0, 1].
-         * Max raw blended = 4.0*0.7 + 4.0*0.3 = 4.0. */
-        relevance = (semantic * 0.7 + substring * 0.3) / 4.0;  /* [0, 1] */
+        /* Blend: semantic + substring using configurable weights.
+         * Default: 70% semantic + 30% substring.
+         * Max raw blended = 4.0*w_sem + 4.0*w_sub = 4.0 (when weights sum to 1). */
+        relevance = (semantic * w_sem + substring * w_sub) / 4.0;  /* [0, 1] */
     } else {
         /* Fallback: pure substring matching (no embeddings available).
          * Normalize to [0, 1] — same range as the embedding path.
@@ -841,6 +847,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                                        ie->access_count, ie->recall_hits,
                                        ie->recall_misses,
                                        semantic_sim, entry_has_semantic,
+                                       m->recall_blend_semantic,
+                                       m->recall_blend_substring,
                                        &out_rel, &out_imp);
 
         /* Type filtering */
