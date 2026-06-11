@@ -2326,6 +2326,13 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
     if (rc != 0) return make_error("failed to store memory");
 
+    /* P2: Lesson lineage — if 'supersedes' is provided, set the lineage chain.
+     * Self-Harness [arXiv:2606.09498] — harness lineage h₀→h₁→h₂. */
+    cJSON *sup_j = cJSON_GetObjectItem(params, "supersedes");
+    if (sup_j && sup_j->valuestring && sup_j->valuestring[0]) {
+        memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
+    }
+
     /* GDN-2 P2: Try to consolidate with similar existing memories.
      * FIX B2: Guard against recursive consolidation — memory_try_consolidate
      * calls memory_store() which could trigger another consolidation cycle. */

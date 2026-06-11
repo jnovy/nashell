@@ -26,6 +26,8 @@
 #include "nash_log.h"
 #include "str.h"
 #include "playbook.h"
+#include "regression.h"
+#include "postmortem.h"
 
 /* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
  * Caps at 32KB to prevent memory explosion. */
@@ -356,6 +358,11 @@ int main(int argc, char **argv) {
     const char *query = NULL;
     const char *session_dir_arg = NULL;
     const char *play_arg = NULL;
+    int regression_mode = 0;
+    const char *validate_harness = NULL;  /* "baseline" or "compare" */
+    int regression_split = -1;           /* -1 = all, 0 = held-in, 1 = held-out */
+    int postmortem_mode = 0;
+    int postmortem_sessions = 50;        /* default: scan last 50 sessions */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -374,6 +381,20 @@ int main(int argc, char **argv) {
             cfg->data_dir = strdup(argv[++i]);
         } else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc) {
             session_dir_arg = argv[++i];
+        } else if (strcmp(argv[i], "--regression") == 0) {
+            regression_mode = 1;
+        } else if (strcmp(argv[i], "--validate-harness") == 0 && i + 1 < argc) {
+            validate_harness = argv[++i];
+            regression_mode = 1;
+        } else if (strcmp(argv[i], "--split") == 0 && i + 1 < argc) {
+            const char *sp = argv[++i];
+            if (strcmp(sp, "held-in") == 0) regression_split = 0;
+            else if (strcmp(sp, "held-out") == 0) regression_split = 1;
+        } else if (strcmp(argv[i], "--postmortem") == 0) {
+            postmortem_mode = 1;
+        } else if (strcmp(argv[i], "--postmortem-sessions") == 0 && i + 1 < argc) {
+            postmortem_sessions = atoi(argv[++i]);
+            postmortem_mode = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -382,6 +403,12 @@ int main(int argc, char **argv) {
             printf("  --play NAME     Run a playbook and exit (e.g. --play dream)\n");
             printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
             printf("  --session DIR   Open existing session directory\n");
+            printf("\nSelf-Harness:\n");
+            printf("  --regression          Run regression test suite\n");
+            printf("  --split SPLIT         Filter: held-in or held-out\n");
+            printf("  --validate-harness MODE  baseline or compare\n");
+            printf("  --postmortem          Analyze session failures\n");
+            printf("  --postmortem-sessions N  Sessions to scan (default 50)\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -401,6 +428,25 @@ int main(int argc, char **argv) {
 
     /* Write default config if it doesn't exist */
     config_write_default(config_path);
+
+    /* ── Postmortem mode: no LLM needed ── */
+    if (postmortem_mode) {
+        postmortem_report_t *pm = postmortem_analyze(nash_dir, postmortem_sessions);
+        postmortem_print(pm);
+
+        /* Save evidence bundle */
+        char bundle_path[NASH_PATH_MAX];
+        snprintf(bundle_path, sizeof(bundle_path), "%s/postmortem.md", nash_dir);
+        if (pm->total_failures > 0) {
+            postmortem_save(pm, bundle_path);
+            fprintf(stderr, "  Evidence bundle saved: %s\n\n", bundle_path);
+        }
+
+        postmortem_free(pm);
+        free(nash_dir);
+        config_free(cfg);
+        return 0;
+    }
 
     /* ── Create provider from config ── */
     provider_config_t pcfg = {
@@ -560,6 +606,73 @@ int main(int argc, char **argv) {
                     dream_new_count++;
             }
         }
+    }
+
+    /* ── Regression test mode: --regression ── */
+    if (regression_mode) {
+        /* Create regression directory and seed query bank */
+        char regression_dir[NASH_PATH_MAX];
+        snprintf(regression_dir, sizeof(regression_dir), "%s/regression", nash_dir);
+        regression_write_seed(regression_dir);
+
+        /* Load query banks */
+        int n_banks = 0;
+        query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
+        if (!banks || n_banks == 0) {
+            fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
+            store_free(shared_store);
+            memory_free(memory);
+            provider_free(provider);
+            free(nash_dir);
+            free(props_json);
+            free(server_model);
+            config_free(cfg);
+            return 1;
+        }
+
+        fprintf(stderr, "[regression] loaded %d query banks\n", n_banks);
+
+        /* Run tests */
+        regression_report_t *report = regression_run(
+            banks, n_banks, regression_split,
+            provider, &llm_cfg, cfg, memory, shared_store, nash_dir);
+
+        regression_print_report(report);
+
+        int exit_code = 0;
+
+        /* Handle --validate-harness */
+        if (validate_harness) {
+            char baseline_path[NASH_PATH_MAX];
+            snprintf(baseline_path, sizeof(baseline_path),
+                     "%s/regression/baseline.json", nash_dir);
+
+            if (strcmp(validate_harness, "baseline") == 0) {
+                regression_save_report(report, baseline_path);
+                fprintf(stderr, "[regression] baseline saved: %s\n", baseline_path);
+            } else if (strcmp(validate_harness, "compare") == 0) {
+                regression_report_t *baseline = regression_load_report(baseline_path);
+                if (!baseline) {
+                    fprintf(stderr, "[regression] no baseline found at %s\n", baseline_path);
+                    fprintf(stderr, "[regression] run with --validate-harness baseline first\n");
+                    exit_code = 2;
+                } else {
+                    exit_code = (int)regression_compare(baseline, report);
+                    regression_free_report(baseline);
+                }
+            }
+        }
+
+        regression_free_report(report);
+        regression_free_banks(banks, n_banks);
+        store_free(shared_store);
+        memory_free(memory);
+        provider_free(provider);
+        free(nash_dir);
+        free(props_json);
+        free(server_model);
+        config_free(cfg);
+        return exit_code;
     }
 
     /* Headless playbook mode: --play NAME */

@@ -1,0 +1,76 @@
+name: self-harness
+description: >
+  Self-Harness improvement cycle: mine failure patterns from session logs,
+  propose minimal harness edits, and validate via regression testing.
+  Based on Self-Harness [arXiv:2606.09498, Jun 2026].
+
+session_mode: per_pass
+scratch_mode: shared
+
+vars:
+  max_proposals: "3"
+
+react_defaults:
+  max_steps: 40
+  inject_memory: true
+  inject_prev_result: true
+  enable_reflection: false
+  enable_pruning: false
+  enable_scoring: false
+
+passes:
+  - label: "1. Weakness Mining"
+    prompt_template: |
+      You are analyzing Nash's recent failure patterns to identify recurring weaknesses.
+
+      Run `nash --postmortem` or read the postmortem evidence bundle at {{nash_dir}}/postmortem.md
+      to understand what failure patterns exist.
+
+      For each failure cluster, analyze:
+      1. The terminal cause (tool_error, step_limit, cycling, etc.)
+      2. The agent mechanism (file_edit_mismatch, shell_retry, spec_violation, etc.)
+      3. How frequently it occurs
+      4. What harness surface could address it (system prompt rules, tool schemas,
+         memory injection parameters, config values)
+
+      Write your analysis to the scratchpad under section "failure-analysis".
+      Include specific examples from the evidence bundle.
+
+      Call done with a summary of the top 3 failure patterns.
+
+  - label: "2. Harness Proposal"
+    prompt_template: |
+      Based on the failure analysis in your scratchpad, propose up to {{max_proposals}}
+      concrete, minimal harness edits to address the identified weaknesses.
+
+      Each proposal MUST:
+      - Target a specific failure mechanism from the analysis
+      - Map to a concrete editable surface:
+        * System prompt rule (via model profile system_prompt_extra)
+        * Pinned memory (lesson/strategy)
+        * Config parameter (config.toml value)
+        * Tool schema change
+      - Be minimal — change as little as possible
+      - Be diverse — each proposal should target a different mechanism
+
+      For system prompt rules: write the exact text to add.
+      For pinned memories: write the exact key and value.
+      For config changes: specify the exact parameter and value.
+
+      Write each proposal to the scratchpad under section "proposals".
+      Call done with a summary of your proposals.
+
+  - label: "3. Implementation"
+    prompt_template: |
+      Review the proposals in your scratchpad section "proposals".
+
+      Implement the FIRST proposal only (the most impactful one).
+      Use the appropriate tool:
+      - For pinned memories: memory_store with the proposed key/value, then memory_pin
+      - For config changes: describe the change (manual step)
+      - For model profile rules: describe the change (manual step)
+
+      After implementing, record what you changed in scratchpad section "changes".
+      Call done with what was implemented.
+    react:
+      inject_memory: true

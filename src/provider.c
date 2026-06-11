@@ -621,7 +621,16 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
             cJSON *usage = cJSON_GetObjectItem(message, "usage");
             if (usage) {
                 cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
-                if (it) st->stats->prompt_tokens = it->valueint;
+                if (it) {
+                    st->stats->prompt_tokens = it->valueint;
+                    nash_log("[provider/sse] message_start: input_tokens=%d (valueint=%d, valuedouble=%.0f)",
+                             st->stats->prompt_tokens, it->valueint, it->valuedouble);
+                } else {
+                    nash_log("[provider/sse] message_start: no input_tokens in usage! usage=%s",
+                             cJSON_PrintUnformatted(usage));
+                }
+            } else {
+                nash_log("[provider/sse] message_start: no usage in message!");
             }
         }
     }
@@ -1138,6 +1147,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             }
         }
     }
+
+    if (stats)
+        nash_log("[provider/complete] final stats: prompt_tokens=%d completion_tokens=%d pp=%.1f gen=%.1f",
+                 stats->prompt_tokens, stats->completion_tokens,
+                 stats->prompt_per_second, stats->predicted_per_second);
 
     free(req_body);
     result = build_sse_result(&st, chat);

@@ -115,6 +115,18 @@ typedef struct {
     double raw_relevance; /* semantic+substring blend [0,1] before importance/vscore */
     double importance;    /* log access frequency [0,1] */
     double belief_entropy; /* ℋ_BE — forward-looking quality signal (MMPO). -1 = not computed */
+
+    /* P2: Lesson lineage tracking — Self-Harness harness lineage h₀→h₁→h₂.
+     * When a new lesson supersedes an old one, record the superseded key.
+     * This creates a chain: the agent can trace how its understanding evolved.
+     * Based on: Self-Harness [arXiv:2606.09498, Jun 2026] — harness lineage
+     *
+     * Example: lesson:file-edit-v2 supersedes lesson:file-edit-v1
+     * The old entry is NOT deleted — it becomes inactive (low relevance via
+     * validation scoring) while the new one takes over. The chain preserves
+     * the full evolution history for retrospective analysis. */
+    char  *supersedes;    /* key of the memory this entry supersedes (NULL = none) */
+    int    version;       /* lineage version number (1 = original, 2+ = superseding) */
 } memory_entry_t;
 
 typedef struct {
@@ -181,6 +193,12 @@ int memory_prune(memory_t *m, double min_score, int min_evidence);
  * Validation score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
 int memory_increment_hits(memory_t *m, const char *key);
 int memory_increment_misses(memory_t *m, const char *key);
+
+/* P2: Set supersedes field on a memory entry.
+ * Creates a lineage chain: new_key supersedes old_key.
+ * Sets version = old_version + 1 on the new entry.
+ * Returns 0 on success, -1 if new_key not found. */
+int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key);
 
 /* Add validation evidence to a memory's in-memory index entry.
  * Used by consolidation to carry forward recall_hits/misses from

@@ -432,6 +432,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     int recall_misses = 0;
     double created_at = epoch_now();
     double belief_entropy = -1;
+    char *old_supersedes = NULL;
+    int old_version = 0;
     {
         char *buf = slurp_file(path, NULL);
         if (buf) {
@@ -448,6 +450,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
                 if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
                 cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
                 if (be) belief_entropy = cJSON_GetNumberValue(be);
+                /* P2: Preserve lineage fields */
+                cJSON *ss = cJSON_GetObjectItem(old, "supersedes");
+                if (ss && ss->valuestring) old_supersedes = strdup(ss->valuestring);
+                cJSON *vn = cJSON_GetObjectItem(old, "version");
+                if (vn) old_version = (int)cJSON_GetNumberValue(vn);
                 cJSON_Delete(old);
             }
             free(buf);
@@ -501,6 +508,17 @@ int memory_store(memory_t *m, const char *key, const char *value,
         for (int i = 0; i < n_refs; i++)
             cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
     }
+
+    /* P2: Lesson lineage — preserve supersedes and version from old entry.
+     * New supersedes values are set by the caller via memory_set_supersedes(). */
+    if (old_supersedes) {
+        cJSON_AddStringToObject(entry, "supersedes", old_supersedes);
+        free(old_supersedes);
+    }
+    if (old_version > 0)
+        cJSON_AddNumberToObject(entry, "version", old_version);
+    else
+        cJSON_AddNumberToObject(entry, "version", 1);
 
     char *json = cJSON_Print(entry);
     write_file(path, json, strlen(json));
@@ -1193,6 +1211,8 @@ void memory_results_free(memory_results_t *r) {
         for (int ri = 0; ri < r->entries[i].n_refs; ri++)
             free(r->entries[i].refs[ri]);
         free(r->entries[i].refs);
+        /* P2: Free lineage fields */
+        free(r->entries[i].supersedes);
     }
     free(r->entries);
     r->entries = NULL;
@@ -1381,6 +1401,47 @@ int memory_update_scores(memory_t *m, const char *key,
         ie->recall_misses += add_misses;
     }
     return ie ? 0 : -1;
+}
+
+/* ── P2: Lesson lineage ──────────────────────────────────────── */
+
+int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key) {
+    if (!m || !new_key || !old_key) return -1;
+
+    /* Load the new entry's JSON */
+    cJSON *entry = memory_load_entry_json(m, new_key);
+    if (!entry) return -1;
+
+    /* Determine version from the old entry */
+    int old_version = 1;
+    cJSON *old_entry = memory_load_entry_json(m, old_key);
+    if (old_entry) {
+        cJSON *vn = cJSON_GetObjectItem(old_entry, "version");
+        if (vn) old_version = (int)cJSON_GetNumberValue(vn);
+        cJSON_Delete(old_entry);
+    }
+
+    /* Set supersedes and version */
+    cJSON *ss = cJSON_GetObjectItem(entry, "supersedes");
+    if (ss) cJSON_SetValuestring(ss, old_key);
+    else cJSON_AddStringToObject(entry, "supersedes", old_key);
+
+    cJSON *vn = cJSON_GetObjectItem(entry, "version");
+    if (vn) cJSON_SetNumberValue(vn, (double)(old_version + 1));
+    else cJSON_AddNumberToObject(entry, "version", old_version + 1);
+
+    /* Write back */
+    char fname[512];
+    key_to_path(new_key, ".json", fname, sizeof(fname));
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    char *json = cJSON_Print(entry);
+    write_file(path, json, strlen(json));
+    free(json);
+    cJSON_Delete(entry);
+
+    return 0;
 }
 
 /* ── embedding integration ──────────────────────────────────── */

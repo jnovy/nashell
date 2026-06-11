@@ -610,9 +610,13 @@ static void render_bottom(ui_state_t *ui) {
                          " %s", ui->model_name);
     }
     if (ui->context_size > 0 && ui->context_used > 0) {
-        int ctx_pct = (int)(100.0 * ui->context_used / ui->context_size);
-        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                         " │ ctx %d%%", ctx_pct);
+        double ctx_pct = 100.0 * ui->context_used / ui->context_size;
+        if (ctx_pct >= 1.0)
+            slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                             " │ ctx %d%%", (int)ctx_pct);
+        else
+            slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                             " │ ctx <1%%");
     } else if (ui->context_size > 0) {
         slen += snprintf(status_line + slen, sizeof(status_line) - slen,
                          " │ ctx 0%%");

@@ -57,7 +57,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
 
     {"memory_store",
      "Store reusable knowledge in long-term memory.",
-     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Related memory keys for cross-references\"}},\"required\":[\"key\",\"value\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Related memory keys for cross-references\"},\"supersedes\":{\"type\":\"string\",\"description\":\"Key of the memory this entry replaces (lesson lineage tracking)\"}},\"required\":[\"key\",\"value\"]}"},
 
     {"memory_recall",
      "Recall information from long-term memory. Use when the task may depend on user preferences, prior decisions, or historical context.",
