@@ -64,8 +64,11 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
                 snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s",
                          ev->stats.predicted_per_second);
             if (ev->context_size > 0 && ev->stats.prompt_tokens > 0) {
-                int pct = (int)(100.0 * ev->stats.prompt_tokens / ev->context_size);
-                snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", pct);
+                double pctf = 100.0 * ev->stats.prompt_tokens / ev->context_size;
+                if (pctf >= 1.0)
+                    snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", (int)pctf);
+                else
+                    snprintf(ctx_str, sizeof(ctx_str), " | ctx <1%%");
             }
             snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s%s]",
                      ev->stats.prompt_tokens, ev->stats.completion_tokens,
@@ -153,8 +156,11 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
                 snprintf(gen_str, sizeof(gen_str), " | gen %.0f t/s",
                          ev->stats.predicted_per_second);
             if (ev->context_size > 0 && ev->stats.prompt_tokens > 0) {
-                int pct = (int)(100.0 * ev->stats.prompt_tokens / ev->context_size);
-                snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", pct);
+                double pctf = 100.0 * ev->stats.prompt_tokens / ev->context_size;
+                if (pctf >= 1.0)
+                    snprintf(ctx_str, sizeof(ctx_str), " | ctx %d%%", (int)pctf);
+                else
+                    snprintf(ctx_str, sizeof(ctx_str), " | ctx <1%%");
             }
             char _tdur[32]; fmt_duration(ev->total_elapsed, _tdur, sizeof(_tdur));
             fprintf(stderr, "[%d→%d tok%s%s%s | total %s]\n",
