@@ -1804,14 +1804,13 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
-        nash_log("[ui_state] event=%d prompt_tokens=%d completion_tokens=%d context_size=%d",
-                 ev->type, ev->stats.prompt_tokens, ev->stats.completion_tokens, ev->context_size);
+        /* NOTE: Do NOT call nash_log() here — this handler runs with
+         * ui->mtx already held (via threaded_event_cb in main.c).
+         * nash_log() tries to lock the same mutex → deadlock. */
         if (ev->stats.prompt_tokens > 0) {
             ui->context_used = ev->stats.prompt_tokens;
             if (ev->context_size > 0)
                 ui->context_size = ev->context_size;
-            nash_log("[ui_state] set context_used=%d context_size=%d",
-                     ui->context_used, ui->context_size);
         }
         /* Accumulate token stats for the react loop summary */
         if (ev->type == REACT_EVENT_STEP_COMPLETE &&
