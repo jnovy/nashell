@@ -3138,7 +3138,38 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
             return TOOL_DISPATCH[i].handler(ctx, params);
     }
 
-    /* Unknown tool — build available tools list dynamically from the
+    /* Concatenated tool name recovery: when the model emits a garbled name
+     * like "file_readfile_read" or "shell_execmemory_recall", try to find
+     * a known tool name as a prefix.  Pick the longest matching prefix to
+     * avoid false positives (e.g. "done" matching "donefile_read").
+     * This eliminates the retry loop that wastes steps and often never
+     * converges because the model keeps producing the same concatenation. */
+    {
+        const char *best_name = NULL;
+        tool_handler_fn best_handler = NULL;
+        size_t best_len = 0;
+        size_t action_len = strlen(action);
+
+        for (int i = 0; TOOL_DISPATCH[i].name; i++) {
+            size_t nlen = strlen(TOOL_DISPATCH[i].name);
+            if (nlen < action_len && nlen > best_len &&
+                strncmp(action, TOOL_DISPATCH[i].name, nlen) == 0) {
+                best_name = TOOL_DISPATCH[i].name;
+                best_handler = TOOL_DISPATCH[i].handler;
+                best_len = nlen;
+            }
+        }
+
+        if (best_handler) {
+            /* Log the recovery so postmortem can track how often this fires */
+            fprintf(stderr, "[tool] recovered concatenated tool name: "
+                    "'%s' → '%s' (dropped suffix: '%s')\n",
+                    action, best_name, action + best_len);
+            return best_handler(ctx, params);
+        }
+    }
+
+    /* Truly unknown tool — build available tools list dynamically from the
      * dispatch table (no hardcoded list to keep in sync). react.c handles
      * this by injecting a corrective message and letting the model retry. */
     char msg[1024];
