@@ -2151,22 +2151,87 @@ void ui_state_search(ui_state_t *ui, const char *query) {
 
 /* ── Breadcrumb ──────────────────────────────────────────── */
 
+/* Check if a string is a 64-char hex SHA-256 hash. */
+static int is_sha256_hash(const char *s) {
+    int i;
+    for (i = 0; s[i]; i++) {
+        char c = s[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            return 0;
+    }
+    return i == 64;
+}
+
+/* Try to find a symlink alias (e.g. "R0S3") in session_dir that resolves
+ * to the same store path as `filepath`.  Returns a malloc'd alias name
+ * or NULL if none found. */
+static char *resolve_store_alias(const char *session_dir, const char *filepath) {
+    if (!session_dir || !filepath) return NULL;
+    DIR *d = opendir(session_dir);
+    if (!d) return NULL;
+
+    /* Resolve the target filepath to a canonical path for comparison */
+    char target_real[NASH_PATH_MAX];
+    if (!realpath(filepath, target_real)) {
+        closedir(d);
+        return NULL;
+    }
+
+    char *result = NULL;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        /* Only check symlinks */
+        if (ent->d_type != DT_LNK) continue;
+
+        char link_path[NASH_PATH_MAX];
+        snprintf(link_path, sizeof(link_path), "%s/%s", session_dir, ent->d_name);
+
+        char link_real[NASH_PATH_MAX];
+        if (realpath(link_path, link_real) && strcmp(link_real, target_real) == 0) {
+            result = strdup(ent->d_name);
+            break;
+        }
+    }
+    closedir(d);
+    return result;
+}
+
+/* Append a breadcrumb segment for `filepath`, resolving store hashes
+ * to their symlink aliases (e.g. "R0S3") or truncating to 15 chars. */
+static void breadcrumb_append(str_t *s, const char *filepath,
+                              const char *session_dir) {
+    const char *base = strrchr(filepath, '/');
+    base = base ? base + 1 : filepath;
+
+    if (is_sha256_hash(base)) {
+        /* Try to resolve to a friendly alias */
+        char *alias = resolve_store_alias(session_dir, filepath);
+        if (alias) {
+            str_append_cstr(s, alias);
+            free(alias);
+        } else {
+            /* Truncate: first 15 chars + ellipsis */
+            str_append(s, base, 15);
+            str_append_cstr(s, "\xe2\x80\xa6");  /* UTF-8 '…' */
+        }
+    } else {
+        str_append_cstr(s, base);
+    }
+}
+
 char *ui_state_breadcrumb(ui_state_t *ui) {
     if (!ui) return strdup("");
 
     str_t s = str_new(256);
     for (int i = 0; i < ui->nav_depth; i++) {
         if (ui->nav_stack[i].filepath) {
-            const char *base = strrchr(ui->nav_stack[i].filepath, '/');
-            base = base ? base + 1 : ui->nav_stack[i].filepath;
-            str_append_cstr(&s, base);
+            breadcrumb_append(&s, ui->nav_stack[i].filepath, ui->session_dir);
             str_append_cstr(&s, " > ");
         }
     }
     if (ui->current_filepath) {
-        const char *base = strrchr(ui->current_filepath, '/');
-        base = base ? base + 1 : ui->current_filepath;
-        str_append_cstr(&s, base);
+        breadcrumb_append(&s, ui->current_filepath, ui->session_dir);
     }
     return str_steal(&s);
 }
