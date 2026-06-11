@@ -60,7 +60,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Related memory keys for cross-references\"}},\"required\":[\"key\",\"value\"]}"},
 
     {"memory_recall",
-     "Recall information from long-term memory.",
+     "Recall information from long-term memory. Use when the task may depend on user preferences, prior decisions, or historical context.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Exact key to recall\"},\"query\":{\"type\":\"string\",\"description\":\"Search query\"}}}"},
 
     {"memory_pin",
