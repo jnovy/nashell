@@ -107,6 +107,10 @@ typedef struct {
     /* ── Spinner phase for "processing..." indicator ── */
     int            spinner_phase;
 
+    /* ── Playbook session tracking ── */
+    char          *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */
+    int            playbook_react_loop;  /* react loop of active playbook pass */
+
     /* ── Cross-session scratchpad search ── */
     int            search_active;     /* 1 = search results shown in main pane */
     char          *nash_dir;          /* ~/.nash (for finding sessions) */

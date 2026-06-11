@@ -250,6 +250,7 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->model_name);
     free(ui->current_filepath);
     free(ui->user_ask_question);
+    free(ui->playbook_session_dir);
     free(ui->nash_dir);
     for (int i = 0; i < ui->nav_depth; i++) {
         free(ui->nav_stack[i].filepath);
@@ -409,11 +410,16 @@ write_out:;
 void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     if (!ui || !ui->session_dir) return;
 
+    /* Use playbook session dir if active, else main session dir */
+    const char *eff_dir = ui->playbook_session_dir
+                        ? ui->playbook_session_dir
+                        : ui->session_dir;
+
     str_t md = str_new(8192);
 
     /* Read journal for this react loop's entries */
     char jpath[NASH_PATH_MAX];
-    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
     FILE *f = fopen(jpath, "r");
     if (!f) return;
 
@@ -887,7 +893,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     char *md_str = str_steal(&md);
     char rpath[NASH_PATH_MAX];
     snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
-             ui->session_dir, react_loop);
+             eff_dir, react_loop);
     write_md_file(rpath, md_str);
     free(md_str);
 }
@@ -1546,14 +1552,40 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     ui_state_t *ui = (ui_state_t *)userdata;
     if (!ui) return;
 
+    /* Track playbook session provenance so we read journal/react files
+     * from the correct directory instead of ui->session_dir. */
+    if (ev->session_dir) {
+        if (!ui->playbook_session_dir ||
+            strcmp(ui->playbook_session_dir, ev->session_dir) != 0) {
+            free(ui->playbook_session_dir);
+            ui->playbook_session_dir = strdup(ev->session_dir);
+        }
+        ui->playbook_react_loop = ev->react_loop;
+        ui->current_react_loop = ev->react_loop;
+    }
+
+    /* Effective session dir: use playbook's if active, else main */
+    const char *eff_session_dir = ui->playbook_session_dir
+                                ? ui->playbook_session_dir
+                                : ui->session_dir;
+
     switch (ev->type) {
     case REACT_EVENT_STEP_START: {
         char buf[128];
-        if (ev->max_steps > 0)
-            snprintf(buf, sizeof(buf), "Running step %d/%d...",
-                     ev->step, ev->max_steps);
-        else
-            snprintf(buf, sizeof(buf), "Running step %d...", ev->step);
+        if (ev->pass_label) {
+            if (ev->max_steps > 0)
+                snprintf(buf, sizeof(buf), "[%s] step %d/%d...",
+                         ev->pass_label, ev->step, ev->max_steps);
+            else
+                snprintf(buf, sizeof(buf), "[%s] step %d...",
+                         ev->pass_label, ev->step);
+        } else {
+            if (ev->max_steps > 0)
+                snprintf(buf, sizeof(buf), "Running step %d/%d...",
+                         ev->step, ev->max_steps);
+            else
+                snprintf(buf, sizeof(buf), "Running step %d...", ev->step);
+        }
         ui->status = STATUS_RUNNING;
         free(ui->status_text);
         ui->status_text = strdup(buf);
@@ -1600,7 +1632,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
             char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
-                     ui->session_dir, ui->current_react_loop);
+                     eff_session_dir, ui->current_react_loop);
             free(ui->current_filepath);
             ui->current_filepath = strdup(rpath);
             ui->scroll_y = 0;

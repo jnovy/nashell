@@ -21,6 +21,8 @@ react:
 
 passes:
   - label: "Inventory & scan"
+    react:
+      tools_block: [memory_store, memory_delete, memory_pin, memory_unpin]
     prompt: |
       You are performing MEMORY INVENTORY for a persistent knowledge store.
 
@@ -38,6 +40,7 @@ passes:
 
       DO NOT make any changes. Only read and report.
       Store your full report in the scratchpad (notes tool) so the next pass can use it.
+      Do NOT call memory_store -- this pass is read-only.
       Call done with a summary of what you found.
 
   - label: "Merge duplicates"
@@ -62,6 +65,8 @@ passes:
       - Never touch pinned memories
       - Keep high-scoring entries (score > 0.7) -- merge INTO them, don't delete them
       - Be conservative -- only merge entries that truly cover the same concept
+      - Do NOT create fact: entries (no fact:merge-plan, fact:merge-log, etc.)
+      - Use the scratchpad (notes tool) for all working state, NOT memory_store
 
       Update the scratchpad with what you merged.
       Call done with a list of merges performed (old keys -> new key).
@@ -90,6 +95,8 @@ passes:
       - Never touch pinned memories
       - If both have high scores, reconcile rather than delete
       - Check if previous pass already merged/deleted any of these entries
+      - Do NOT create fact: entries (no fact:resolution-log, etc.)
+      - Use the scratchpad (notes tool) for all working state, NOT memory_store
 
       Update the scratchpad with resolutions.
       Call done with a list of contradictions resolved.
@@ -131,6 +138,7 @@ passes:
       - Don't create strategies that already exist
       - Be conservative with refs -- only add genuinely useful connections
       - refs should be EXISTING memory keys (verify they exist before adding)
+      - Do NOT create fact: entries -- use scratchpad for working state
 
       WHEN DONE:
       - Compose a FULL summary of ALL changes across ALL 4 passes

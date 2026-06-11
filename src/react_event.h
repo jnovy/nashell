@@ -37,6 +37,12 @@ typedef struct {
     cJSON       *tool_meta;   /* tool result metadata JSON (borrowed, do not free) */
     llm_stats_t  stats;       /* LLM timing/token stats */
     int          context_size; /* server's n_ctx (for computing context utilization %) */
+
+    /* Provenance fields — set by playbook passes, NULL/0 for normal queries */
+    const char  *session_dir; /* session directory where journal lives */
+    int          react_loop;  /* react loop number within the session */
+    int          pass_index;  /* playbook pass index (0-based), -1 for normal */
+    const char  *pass_label;  /* playbook pass label (e.g. "reflect"), NULL for normal */
 } react_event_t;
 
 /* Frontend callback: implement this to handle react engine events */

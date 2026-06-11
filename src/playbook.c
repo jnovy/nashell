@@ -292,16 +292,37 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
     if (!getcwd(cwdbuf, sizeof(cwdbuf)))
         snprintf(cwdbuf, sizeof(cwdbuf), ".");
 
+    /* Change 6: Load previous scratchpad from state dir */
+    char *prev_scratch_text = NULL;
+    if (nash_dir && pb->name) {
+        char sp_path[NASH_PATH_MAX];
+        snprintf(sp_path, sizeof(sp_path), "%s/playbooks/.state/%s/scratchpad.md",
+                 nash_dir, pb->name);
+        FILE *spf = fopen(sp_path, "r");
+        if (spf) {
+            fseek(spf, 0, SEEK_END);
+            long sz = ftell(spf);
+            if (sz > 0) {
+                fseek(spf, 0, SEEK_SET);
+                prev_scratch_text = malloc((size_t)sz + 1);
+                size_t rd = fread(prev_scratch_text, 1, (size_t)sz, spf);
+                prev_scratch_text[rd] = '\0';
+            }
+            fclose(spf);
+        }
+    }
+
     struct { const char *key; const char *val; } builtins[] = {
-        {"memory_dir",   memory_dir ? memory_dir : ""},
-        {"model",        model ? model : "unknown"},
-        {"session_dir",  session_dir ? session_dir : ""},
-        {"nash_dir",     nash_dir ? nash_dir : ""},
-        {"cwd",          cwdbuf},
-        {"date",         datebuf},
-        {"pass_number",  pass_num},
-        {"total_passes", total_passes},
-        {"prev_result",  prev_result ? prev_result : ""},
+        {"memory_dir",      memory_dir ? memory_dir : ""},
+        {"model",           model ? model : "unknown"},
+        {"session_dir",     session_dir ? session_dir : ""},
+        {"nash_dir",        nash_dir ? nash_dir : ""},
+        {"cwd",             cwdbuf},
+        {"date",            datebuf},
+        {"pass_number",     pass_num},
+        {"total_passes",    total_passes},
+        {"prev_result",     prev_result ? prev_result : ""},
+        {"prev_scratchpad", prev_scratch_text ? prev_scratch_text : ""},
         {NULL, NULL},
     };
 
@@ -318,6 +339,7 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
         result = next;
     }
 
+    free(prev_scratch_text);
     return result;
 }
 
@@ -380,7 +402,11 @@ int playbook_write_default_dream(const char *path) {
 
 /* Event callback for playbook passes — routes to TUI */
 typedef struct {
-    ui_state_t *ui;
+    ui_state_t  *ui;
+    const char  *pass_dir;    /* session directory for this pass */
+    int          react_loop;  /* react loop number within the pass session */
+    int          pass_index;  /* 0-based pass index */
+    const char  *pass_label;  /* pass label string */
 } pb_event_ctx_t;
 
 static void pb_event_cb(const react_event_t *ev, void *userdata) {
@@ -390,18 +416,36 @@ static void pb_event_cb(const react_event_t *ev, void *userdata) {
         tui_on_event(ev, NULL);
         return;
     }
+    /* Shallow-copy and enrich with provenance */
+    react_event_t enriched = *ev;
+    enriched.session_dir = ctx->pass_dir;
+    enriched.react_loop  = ctx->react_loop;
+    enriched.pass_index  = ctx->pass_index;
+    enriched.pass_label  = ctx->pass_label;
     pthread_mutex_lock(&ctx->ui->mtx);
-    ui_state_on_event(ev, (void *)ctx->ui);
+    ui_state_on_event(&enriched, (void *)ctx->ui);
     pthread_mutex_unlock(&ctx->ui->mtx);
 }
 
 void *playbook_worker(void *arg) {
     playbook_args_t *pa = arg;
     playbook_t *pb = pa->playbook;
-    pb_event_ctx_t ev_ctx = { .ui = pa->ui };
+    pb_event_ctx_t ev_ctx = {
+        .ui = pa->ui,
+        .pass_dir = NULL,
+        .react_loop = 0,
+        .pass_index = 0,
+        .pass_label = NULL,
+    };
 
     scratchpad_t shared_scratch;
     scratchpad_init(&shared_scratch);
+
+    /* Change 5: Load persisted scratchpad from previous runs */
+    char state_dir[NASH_PATH_MAX];
+    snprintf(state_dir, sizeof(state_dir), "%s/playbooks/.state/%s",
+             pa->nash_dir, pb->name);
+    scratchpad_load(&shared_scratch, state_dir);
 
     char *prev_result = NULL;
     char *shared_session_dir = NULL;
@@ -491,6 +535,13 @@ void *playbook_worker(void *arg) {
         journal_t *pass_journal = journal_new(pass_dir);
         llm_config_t llm_copy = *pa->llm;
         tool_filter_t tf = playbook_resolve_tools(pb, pass);
+        /* Change 4: correct react_loop numbering for shared sessions */
+        int pass_react_loop = 0;
+        if (pb->session_mode == PB_SESSION_SHARED) {
+            int max_rl = journal_max_react_loop(pass_journal);
+            pass_react_loop = (max_rl >= 0) ? max_rl + 1 : 0;
+        }
+
         tool_ctx_t pass_tools = {
             .store = pa->store,
             .journal = pass_journal,
@@ -500,7 +551,7 @@ void *playbook_worker(void *arg) {
             .cfg = pa->cfg,
             .llm = &llm_copy,
             .provider = pa->provider,
-            .react_loop = 0,
+            .react_loop = pass_react_loop,
             .aliases = alias_map_new(),
             .tool_filter = tf,
         };
@@ -528,6 +579,12 @@ void *playbook_worker(void *arg) {
             .verbose = 1,
             .flags = flags,
         };
+
+        /* Change 2: Update event context with pass provenance */
+        ev_ctx.pass_dir   = pass_dir;
+        ev_ctx.react_loop = pass_react_loop;
+        ev_ctx.pass_index = pass;
+        ev_ctx.pass_label = pb->passes[pass].label;
 
         /* Run the pass */
         char *result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
@@ -585,6 +642,101 @@ void *playbook_worker(void *arg) {
     if (pb->post_prune && pa->memory) {
         memory_prune(pa->memory, pa->cfg->prune_min_score,
                      pa->cfg->prune_min_evidence);
+    }
+
+    /* Clean up ephemeral fact: entries created during playbook execution.
+     * Playbook passes (especially dream) may store working state as
+     * fact:* entries (inventory reports, merge plans, logs). These are
+     * intermediate artifacts, not reusable knowledge, and pollute the
+     * memory store. Delete any fact: entries created after the run started. */
+    if (pa->memory && pa->memory->dir) {
+        double run_ts = (double)run_tp.tv_sec +
+                        (double)run_tp.tv_nsec / 1e9;
+        DIR *mdir = opendir(pa->memory->dir);
+        if (mdir) {
+            /* Phase 1: collect keys to delete (can't delete while iterating) */
+            char **del_keys = NULL;
+            int n_del = 0, del_cap = 0;
+            struct dirent *de;
+            while ((de = readdir(mdir)) != NULL) {
+                /* Match fact_*.json files */
+                if (strncmp(de->d_name, "fact_", 5) != 0) continue;
+                size_t nlen = strlen(de->d_name);
+                if (nlen < 6 || strcmp(de->d_name + nlen - 5, ".json") != 0)
+                    continue;
+
+                /* Read created_at from the JSON file */
+                char fpath[NASH_PATH_MAX];
+                snprintf(fpath, sizeof(fpath), "%s/%s",
+                         pa->memory->dir, de->d_name);
+                FILE *fp = fopen(fpath, "r");
+                if (!fp) continue;
+                char buf[8192];
+                size_t rd = fread(buf, 1, sizeof(buf) - 1, fp);
+                fclose(fp);
+                buf[rd] = '\0';
+
+                /* Quick parse: find "key" and "created_at" values.
+                 * Read key from JSON directly (avoids filename→key mapping bugs). */
+                const char *ca = strstr(buf, "\"created_at\"");
+                if (!ca) continue;
+                ca = strchr(ca + 12, ':');
+                if (!ca) continue;
+                ca++;
+                while (*ca == ' ' || *ca == '"') ca++;
+                double entry_ts = strtod(ca, NULL);
+                if (entry_ts < run_ts) continue;
+
+                /* Extract key from the "key" field in JSON */
+                const char *kp = strstr(buf, "\"key\"");
+                if (!kp) continue;
+                kp = strchr(kp + 4, ':');
+                if (!kp) continue;
+                kp++;
+                while (*kp == ' ') kp++;
+                if (*kp != '"') continue;
+                kp++;  /* skip opening quote */
+                const char *ke = strchr(kp, '"');
+                if (!ke || ke - kp >= 256) continue;
+                char key[256];
+                snprintf(key, sizeof(key), "%.*s", (int)(ke - kp), kp);
+                /* Verify it starts with "fact:" */
+                if (strncmp(key, "fact:", 5) != 0) continue;
+
+                if (n_del >= del_cap) {
+                    del_cap = del_cap ? del_cap * 2 : 8;
+                    del_keys = realloc(del_keys, sizeof(char *) * (size_t)del_cap);
+                }
+                del_keys[n_del++] = strdup(key);
+            }
+            closedir(mdir);
+
+            /* Phase 2: delete collected keys */
+            for (int i = 0; i < n_del; i++) {
+                memory_delete(pa->memory, del_keys[i]);
+                free(del_keys[i]);
+            }
+            free(del_keys);
+        }
+    }
+
+    /* Change 5: Persist scratchpad for next run */
+    if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+        /* Create state directory (mkdir -p equivalent) */
+        char state_parent[NASH_PATH_MAX];
+        snprintf(state_parent, sizeof(state_parent), "%s/playbooks/.state",
+                 pa->nash_dir);
+        mkdir(state_parent, 0755);
+        mkdir(state_dir, 0755);
+        scratchpad_save(&shared_scratch, state_dir);
+    }
+
+    /* Change 3: Clear playbook session dir on UI when done */
+    if (pa->ui) {
+        pthread_mutex_lock(&pa->ui->mtx);
+        free(pa->ui->playbook_session_dir);
+        pa->ui->playbook_session_dir = NULL;
+        pthread_mutex_unlock(&pa->ui->mtx);
     }
 
     free(prev_result);
