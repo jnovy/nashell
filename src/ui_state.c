@@ -313,14 +313,22 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
 
         if (tool && strcmp(tool, "query") == 0) {
-            if (qcount >= qcap) {
-                qcap = qcap ? qcap * 2 : 16;
-                qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+            /* Check if a placeholder was already created by memory_context */
+            qinfo_t *qi = NULL;
+            for (int i = 0; i < qcount; i++) {
+                if (qinfos[i].react_loop == loop) { qi = &qinfos[i]; break; }
             }
-            qinfo_t *qi = &qinfos[qcount++];
-            memset(qi, 0, sizeof(*qi));
+            if (!qi) {
+                if (qcount >= qcap) {
+                    qcap = qcap ? qcap * 2 : 16;
+                    qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                }
+                qi = &qinfos[qcount++];
+                memset(qi, 0, sizeof(*qi));
+            }
             cJSON *params = cJSON_GetObjectItem(entry, "params");
             cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
+            free(qi->text);  /* free any placeholder text from memory_context */
             qi->text = (text && text->valuestring) ? strdup(text->valuestring) : strdup("?");
             cJSON *ts = cJSON_GetObjectItem(entry, "ts");
             qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
@@ -328,6 +336,29 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             /* Parse parent_loop from journal (backward compat: default -1 = root) */
             cJSON *pl = params ? cJSON_GetObjectItem(params, "parent_loop") : NULL;
             qi->parent_loop = (pl && cJSON_IsNumber(pl)) ? (int)pl->valuedouble : -1;
+        } else if (tool && strcmp(tool, "memory_context") == 0) {
+            /* Fallback: if a react loop was interrupted after memory_context
+             * was logged but before the "query" entry was written, use the
+             * memory_context's "query" field to make the loop visible. */
+            int already_known = 0;
+            for (int i = 0; i < qcount; i++) {
+                if (qinfos[i].react_loop == loop) { already_known = 1; break; }
+            }
+            if (!already_known) {
+                if (qcount >= qcap) {
+                    qcap = qcap ? qcap * 2 : 16;
+                    qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                }
+                qinfo_t *qi = &qinfos[qcount++];
+                memset(qi, 0, sizeof(*qi));
+                cJSON *params = cJSON_GetObjectItem(entry, "params");
+                cJSON *qtext = params ? cJSON_GetObjectItem(params, "query") : NULL;
+                qi->text = (qtext && qtext->valuestring) ? strdup(qtext->valuestring) : strdup("(interrupted)");
+                cJSON *ts = cJSON_GetObjectItem(entry, "ts");
+                qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+                qi->react_loop = loop;
+                qi->parent_loop = -1;  /* unknown parent — treat as root */
+            }
         } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0) {
             for (int i = qcount - 1; i >= 0; i--) {
                 if (qinfos[i].react_loop == loop) {
@@ -544,8 +575,19 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             continue;
         }
 
-        if (strcmp(tool, "system") == 0 ||
-            strcmp(tool, "memory_context") == 0) {
+        if (strcmp(tool, "memory_context") == 0) {
+            /* Fallback query text for interrupted loops (no "query" entry) */
+            if (!query_text) {
+                cJSON *params = cJSON_GetObjectItem(entry, "params");
+                cJSON *qtext = params ? cJSON_GetObjectItem(params, "query") : NULL;
+                if (qtext && qtext->valuestring)
+                    query_text = strdup(qtext->valuestring);
+            }
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        if (strcmp(tool, "system") == 0) {
             cJSON_Delete(entry);
             continue;
         }
