@@ -568,33 +568,10 @@ md_doc_t *md_parse(const char *source) {
         /* Skip everything inside code fences */
         if (in_code_fence) { p++; at_line_start = 0; continue; }
 
-        /* Skip 4-space indented lines (markdown code blocks via indentation).
-         * Only check at line start — mid-line spaces must not trigger this
-         * (e.g., "R0S1       [tool](uri)" has 6+ spaces after the ref).
-         * Exception: don't skip if the line contains a [text](uri) link —
-         * these are indented tree entries (e.g., session.md history tree),
-         * not code blocks. */
-        if (at_line_start && *p == ' ' && p[1] == ' ' && p[2] == ' ' && p[3] == ' ') {
-            /* Scan ahead: does this line contain a markdown link? */
-            int has_link = 0;
-            for (const char *q = p; *q && *q != '\n'; q++) {
-                if (*q == '[') {
-                    /* Look for matching ](uri) on same line */
-                    for (const char *r = q + 1; *r && *r != '\n'; r++) {
-                        if (*r == ']' && r[1] == '(') { has_link = 1; break; }
-                    }
-                    if (has_link) break;
-                }
-            }
-            if (!has_link) {
-                while (*p && *p != '\n') p++;
-                continue;
-            }
-            /* Has a link — skip leading whitespace but let the link parser below handle it */
-            while (*p == ' ') p++;
-            at_line_start = 0;
-            continue;  /* re-enter loop at the non-space char */
-        }
+        /* Note: 4-space indented code blocks (legacy markdown) are NOT handled
+         * here.  Fenced code blocks (```) are properly detected above.  The
+         * 4-space convention is unused by LLMs and would break legitimately
+         * indented content like session tree entries. */
 
         at_line_start = 0;
 
