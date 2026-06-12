@@ -104,6 +104,7 @@ typedef struct {
     int    inject_memory;       /* -1 = inherit, 0 = off, 1 = on */
     int    inject_prev_result;  /* -1 = inherit */
     int    enable_reflection;   /* -1 = inherit */
+    int    enable_pruning;      /* -1 = inherit */
     int    enable_compaction;   /* -1 = inherit */
     int    enable_scoring;      /* -1 = inherit */
 
@@ -286,6 +287,7 @@ typedef struct {
     int    profile_inject_memory;      /* -1 = not set */
     int    profile_inject_prev_result; /* -1 = not set */
     int    profile_enable_reflection;  /* -1 = not set */
+    int    profile_enable_pruning;     /* -1 = not set */
     int    profile_enable_compaction;  /* -1 = not set */
     int    profile_enable_scoring;     /* -1 = not set */
 } config_t;
@@ -323,5 +325,12 @@ void config_apply_profile(config_t *cfg, const model_profile_t *profile);
  * Serializes config_t after all layers (defaults + config.toml + profile)
  * have been applied. If profile_file is non-NULL, includes it in header. */
 void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file);
+
+/* Load a spec TOML file as an overlay on an existing config.
+ * Reads [react] flags, [tools] allow/block, [memory], and other sections
+ * from the spec file and applies them on top of cfg. This enables spec
+ * round-trip: `nash --spec > spec.toml` then `nash --load-spec spec.toml`.
+ * Returns 0 on success, -1 on parse error. */
+int config_load_spec_overlay(config_t *cfg, const char *path);
 
 #endif

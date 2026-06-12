@@ -105,8 +105,10 @@ void playbook_free(playbook_t *pb);
 react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
                                       const config_t *cfg);
 
-/* Resolve tool filter for a specific pass */
-tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx);
+/* Resolve tool filter for a specific pass.
+ * Inherits profile tool filter + description overrides from cfg as lowest priority. */
+tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
+                                      const config_t *cfg);
 
 /* Expand {{var}} placeholders in a prompt string */
 char *playbook_expand(const playbook_t *pb, const char *tmpl,

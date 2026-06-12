@@ -191,36 +191,47 @@ react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
                                       const config_t *cfg) {
     const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
     const pb_react_overrides_t *def = &pb->react_defaults;
-    (void)cfg;  /* global config doesn't have per-flag settings yet */
+
+    /* 3-level cascade: pass override → playbook default → profile/global.
+     * Profile values of -1 mean "not set" (inherit compile-time default of 1).
+     * cfg may be NULL in test contexts — fall back to 1. */
+    #define PROFILE_OR_1(field) \
+        (cfg && cfg->field >= 0 ? cfg->field : 1)
 
     #define RESOLVE(field, global_default) \
         (pass->field != -1 ? pass->field : \
          (def->field != -1 ? def->field : global_default))
 
     react_flags_t f;
-    f.inject_memory       = RESOLVE(inject_memory, 1);
-    f.inject_prev_result  = RESOLVE(inject_prev_result, 1);
-    f.enable_reflection   = RESOLVE(enable_reflection, 1);
-    f.enable_pruning      = RESOLVE(enable_pruning, 1);
-    f.enable_compaction   = RESOLVE(enable_compaction, 1);
-    f.enable_scoring      = RESOLVE(enable_scoring, 1);
+    f.inject_memory       = RESOLVE(inject_memory, PROFILE_OR_1(profile_inject_memory));
+    f.inject_prev_result  = RESOLVE(inject_prev_result, PROFILE_OR_1(profile_inject_prev_result));
+    f.enable_reflection   = RESOLVE(enable_reflection, PROFILE_OR_1(profile_enable_reflection));
+    f.enable_pruning      = RESOLVE(enable_pruning, PROFILE_OR_1(profile_enable_pruning));
+    f.enable_compaction   = RESOLVE(enable_compaction, PROFILE_OR_1(profile_enable_compaction));
+    f.enable_scoring      = RESOLVE(enable_scoring, PROFILE_OR_1(profile_enable_scoring));
 
     #undef RESOLVE
+    #undef PROFILE_OR_1
     return f;
 }
 
-tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx) {
+tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
+                                      const config_t *cfg) {
     tool_filter_t tf = {0};
     const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
     const pb_react_overrides_t *def = &pb->react_defaults;
 
-    /* Pass-level overrides take precedence */
+    /* 3-level cascade: pass → playbook default → profile.
+     * Pass-level overrides take highest precedence. */
     if (pass->tools_allow) {
         tf.allowed = (const char **)pass->tools_allow;
         tf.n_allowed = pass->n_tools_allow;
     } else if (def->tools_allow) {
         tf.allowed = (const char **)def->tools_allow;
         tf.n_allowed = def->n_tools_allow;
+    } else if (cfg && cfg->n_profile_tools_allow > 0) {
+        tf.allowed = (const char **)cfg->profile_tools_allow;
+        tf.n_allowed = cfg->n_profile_tools_allow;
     }
 
     if (pass->tools_block) {
@@ -229,6 +240,18 @@ tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx) {
     } else if (def->tools_block) {
         tf.blocked = (const char **)def->tools_block;
         tf.n_blocked = def->n_tools_block;
+    } else if (cfg && cfg->n_profile_tools_block > 0) {
+        tf.blocked = (const char **)cfg->profile_tools_block;
+        tf.n_blocked = cfg->n_profile_tools_block;
+    }
+
+    /* Inherit profile description overrides (Gap #7).
+     * Playbook passes don't define their own desc overrides,
+     * so always inherit from profile if available. */
+    if (cfg && cfg->n_profile_tool_descs > 0) {
+        tf.desc_names = cfg->profile_tool_desc_names;
+        tf.desc_values = cfg->profile_tool_desc_values;
+        tf.n_descs = cfg->n_profile_tool_descs;
     }
 
     return tf;
@@ -534,7 +557,7 @@ void *playbook_worker(void *arg) {
         /* Setup per-pass tool_ctx */
         journal_t *pass_journal = journal_new(pass_dir);
         llm_config_t llm_copy = *pa->llm;
-        tool_filter_t tf = playbook_resolve_tools(pb, pass);
+        tool_filter_t tf = playbook_resolve_tools(pb, pass, pa->cfg);
         /* Change 4: correct react_loop numbering for shared sessions */
         int pass_react_loop = 0;
         if (pb->session_mode == PB_SESSION_SHARED) {

@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <errno.h>
 
 /* Helper: read TOML string, return strdup or NULL */
 static char *toml_str(toml_table_t *tbl, const char *key) {
@@ -174,6 +175,7 @@ config_t *config_load(const char *path) {
     cfg->profile_inject_memory = -1;
     cfg->profile_inject_prev_result = -1;
     cfg->profile_enable_reflection = -1;
+    cfg->profile_enable_pruning = -1;
     cfg->profile_enable_compaction = -1;
     cfg->profile_enable_scoring = -1;
 
@@ -470,6 +472,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         p->inject_memory = -1;
         p->inject_prev_result = -1;
         p->enable_reflection = -1;
+        p->enable_pruning = -1;
         p->enable_compaction = -1;
         p->enable_scoring = -1;
         p->cycling_detection = -1;
@@ -496,6 +499,8 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
               if (d.ok) p->inject_prev_result = d.u.b ? 1 : 0; }
             { toml_datum_t d = toml_bool_in(react_tbl, "enable_reflection");
               if (d.ok) p->enable_reflection = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "enable_pruning");
+              if (d.ok) p->enable_pruning = d.u.b ? 1 : 0; }
             { toml_datum_t d = toml_bool_in(react_tbl, "enable_compaction");
               if (d.ok) p->enable_compaction = d.u.b ? 1 : 0; }
             { toml_datum_t d = toml_bool_in(react_tbl, "enable_scoring");
@@ -681,6 +686,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     cfg->profile_inject_memory = p->inject_memory;
     cfg->profile_inject_prev_result = p->inject_prev_result;
     cfg->profile_enable_reflection = p->enable_reflection;
+    cfg->profile_enable_pruning = p->enable_pruning;
     cfg->profile_enable_compaction = p->enable_compaction;
     cfg->profile_enable_scoring = p->enable_scoring;
 
@@ -750,6 +756,8 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
             cfg->profile_inject_prev_result == 0 ? "false" : "true");
     fprintf(out, "enable_reflection = %s\n",
             cfg->profile_enable_reflection == 0 ? "false" : "true");
+    fprintf(out, "enable_pruning = %s\n",
+            cfg->profile_enable_pruning == 0 ? "false" : "true");
     fprintf(out, "enable_compaction = %s\n",
             cfg->profile_enable_compaction == 0 ? "false" : "true");
     fprintf(out, "enable_scoring = %s\n\n",
@@ -837,22 +845,315 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "shell_timeout = %d\n", cfg->shell_timeout);
     fprintf(out, "shell_max_output = %d\n", cfg->shell_max_output);
     fprintf(out, "file_max_size = %d\n", cfg->file_max_size);
+    fprintf(out, "grep_timeout = %d\n", cfg->grep_timeout);
+    fprintf(out, "grep_max_matches = %d\n", cfg->grep_max_matches);
+    fprintf(out, "web_timeout = %d\n", cfg->web_timeout);
+    fprintf(out, "web_max_size = %d\n", cfg->web_max_size);
     fprintf(out, "llm_timeout = %d\n", cfg->llm_timeout);
     fprintf(out, "llm_max_response = %d\n", cfg->llm_max_response);
     fprintf(out, "llm_repeat_threshold = %d\n", cfg->llm_repeat_threshold);
     fprintf(out, "file_read_max_inline = %d\n", cfg->file_read_max_inline);
+    fprintf(out, "scratchpad_max = %d\n", cfg->scratchpad_max);
+    fprintf(out, "checkpoint_frequency = %d\n", cfg->checkpoint_frequency);
+    fprintf(out, "cycling_window = %d\n", cfg->cycling_window);
+    fprintf(out, "cycling_threshold = %d\n", cfg->cycling_threshold);
     fprintf(out, "prune_min_score = %.2f\n", cfg->prune_min_score);
     fprintf(out, "prune_min_evidence = %d\n", cfg->prune_min_evidence);
     fprintf(out, "consolidation_threshold = %.2f\n", cfg->consolidation_threshold);
     fprintf(out, "dream_reminder_threshold = %d\n", cfg->dream_reminder_threshold);
+    fprintf(out, "error_recall_min_length = %d\n", cfg->error_recall_min_length);
+    fprintf(out, "error_recall_candidates = %d\n", cfg->error_recall_candidates);
+    fprintf(out, "error_recall_max_inject = %d\n", cfg->error_recall_max_inject);
+    fprintf(out, "error_recall_min_relevance = %.2f\n", cfg->error_recall_min_relevance);
+    fprintf(out, "\n");
+
+    fprintf(out, "[memory_belief_entropy]\n");
+    fprintf(out, "enabled = %s\n", cfg->belief_entropy.enabled ? "true" : "false");
+    fprintf(out, "alpha = %.1f\n", cfg->belief_entropy.alpha);
+    fprintf(out, "probe_tokens = %d\n", cfg->belief_entropy.probe_tokens);
+    fprintf(out, "probe_n_probs = %d\n", cfg->belief_entropy.probe_n_probs);
+    fprintf(out, "probe_temperature = %.1f\n", cfg->belief_entropy.probe_temperature);
+    fprintf(out, "eviction_gate = %s\n", cfg->belief_entropy.eviction_gate ? "true" : "false");
+    fprintf(out, "best_of_n_summaries = %d\n", cfg->belief_entropy.best_of_n_summaries);
+    fprintf(out, "warn_threshold = %.2f\n", cfg->belief_entropy.warn_threshold);
     fprintf(out, "\n");
 
     if (cfg->system_prompt_extra) {
-        fprintf(out, "# System prompt extra (from profile):\n");
-        fprintf(out, "# system_prompt_extra = \"\"\"\n");
-        fprintf(out, "# %s\n", cfg->system_prompt_extra);
-        fprintf(out, "# \"\"\"\n");
+        fprintf(out, "system_prompt_extra = \"\"\"\n%s\"\"\"\n", cfg->system_prompt_extra);
     }
+}
+
+/* ── Unified Spec: load spec as overlay ── */
+
+int config_load_spec_overlay(config_t *cfg, const char *path) {
+    if (!cfg || !path) return -1;
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        fprintf(stderr, "[spec] cannot open %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    char errbuf[256];
+    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    fclose(f);
+
+    if (!root) {
+        fprintf(stderr, "[spec] parse error in %s: %s\n", path, errbuf);
+        return -1;
+    }
+
+    /* [provider] overlay */
+    toml_table_t *provider = toml_table_in(root, "provider");
+    if (provider) {
+        char *s;
+        if ((s = toml_str(provider, "type"))) {
+            free(cfg->provider.type); cfg->provider.type = s;
+        }
+        if ((s = toml_str(provider, "model_id"))) {
+            free(cfg->provider.model_id); cfg->provider.model_id = s;
+        }
+        int v = toml_int(provider, "context_size", 0);
+        if (v > 0) cfg->provider.context_size = v;
+        double d = toml_dbl(provider, "chars_per_token", 0);
+        if (d > 0) cfg->provider.chars_per_token = (float)d;
+        { toml_datum_t td = toml_bool_in(provider, "caching");
+          if (td.ok) cfg->provider.caching = td.u.b; }
+    }
+
+    /* [client] overlay */
+    toml_table_t *client = toml_table_in(root, "client");
+    if (client) {
+        double d = toml_dbl(client, "temperature", 0);
+        if (d > 0) cfg->temperature = (float)d;
+        int v = toml_int(client, "max_tokens", 0);
+        if (v > 0) cfg->max_tokens = v;
+        { toml_datum_t td = toml_bool_in(client, "stream");
+          if (td.ok) cfg->stream = td.u.b; }
+    }
+
+    /* [thinking] overlay */
+    toml_table_t *thinking = toml_table_in(root, "thinking");
+    if (thinking) {
+        char *mode_str = toml_str(thinking, "mode");
+        if (mode_str) {
+            if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
+                cfg->thinking.mode = THINKING_ON;
+            else if (strcmp(mode_str, "edrm") == 0)
+                cfg->thinking.mode = THINKING_EDRM;
+            else
+                cfg->thinking.mode = THINKING_OFF;
+            free(mode_str);
+        }
+        int b = toml_int(thinking, "budget", 0);
+        if (b != 0) cfg->thinking.budget = b;
+    }
+
+    /* [react] overlay — includes flags + limits that live in [react] in spec format */
+    toml_table_t *react = toml_table_in(root, "react");
+    if (react) {
+        int v;
+        v = toml_int(react, "max_react_steps", 0);
+        if (v > 0) cfg->max_react_steps = v;
+        v = toml_int(react, "max_reflection_steps", 0);
+        if (v > 0) cfg->max_reflection_steps = v;
+        v = toml_int(react, "tool_retry_limit", 0);
+        if (v > 0) cfg->tool_retry_limit = v;
+        { toml_datum_t td = toml_bool_in(react, "cycling_detection");
+          if (td.ok) cfg->cycling_detection = td.u.b; }
+
+        /* React boolean flags → stored on cfg->profile_* */
+        { toml_datum_t td = toml_bool_in(react, "inject_memory");
+          if (td.ok) cfg->profile_inject_memory = td.u.b ? 1 : 0; }
+        { toml_datum_t td = toml_bool_in(react, "inject_prev_result");
+          if (td.ok) cfg->profile_inject_prev_result = td.u.b ? 1 : 0; }
+        { toml_datum_t td = toml_bool_in(react, "enable_reflection");
+          if (td.ok) cfg->profile_enable_reflection = td.u.b ? 1 : 0; }
+        { toml_datum_t td = toml_bool_in(react, "enable_pruning");
+          if (td.ok) cfg->profile_enable_pruning = td.u.b ? 1 : 0; }
+        { toml_datum_t td = toml_bool_in(react, "enable_compaction");
+          if (td.ok) cfg->profile_enable_compaction = td.u.b ? 1 : 0; }
+        { toml_datum_t td = toml_bool_in(react, "enable_scoring");
+          if (td.ok) cfg->profile_enable_scoring = td.u.b ? 1 : 0; }
+    }
+
+    /* [memory] overlay */
+    toml_table_t *mem = toml_table_in(root, "memory");
+    if (mem) {
+        double d;
+        int v;
+        d = toml_dbl(mem, "recall_min_score", 0);
+        if (d > 0) cfg->recall_min_score = d;
+        d = toml_dbl(mem, "recall_blend_semantic", 0);
+        if (d > 0) cfg->recall_blend_semantic = (float)d;
+        d = toml_dbl(mem, "recall_blend_substring", 0);
+        if (d > 0) cfg->recall_blend_substring = (float)d;
+        { double vs = toml_dbl(mem, "vscore_exponent", -1);
+          if (vs >= 0) cfg->vscore_exponent = (float)vs; }
+        v = toml_int(mem, "memory_index_max", 0);
+        if (v > 0) cfg->memory_index_max = v;
+        v = toml_int(mem, "max_skills_per_query", 0);
+        if (v > 0) cfg->max_skills_per_query = v;
+        v = toml_int(mem, "max_lessons_per_query", 0);
+        if (v > 0) cfg->max_lessons_per_query = v;
+        v = toml_int(mem, "max_strategies_per_query", 0);
+        if (v > 0) cfg->max_strategies_per_query = v;
+        v = toml_int(mem, "max_antipatterns_per_query", 0);
+        if (v > 0) cfg->max_antipatterns_per_query = v;
+        v = toml_int(mem, "context_eviction_pct", 0);
+        if (v > 0) cfg->context_eviction_pct = v;
+    }
+
+    /* [tools] overlay — allow/block lists */
+    toml_table_t *tools = toml_table_in(root, "tools");
+    if (tools) {
+        toml_array_t *allow_arr = toml_array_in(tools, "allow");
+        if (allow_arr) {
+            int n = toml_array_nelem(allow_arr);
+            if (n > 0) {
+                /* Free any existing allow list */
+                for (int i = 0; i < cfg->n_profile_tools_allow; i++)
+                    free(cfg->profile_tools_allow[i]);
+                free(cfg->profile_tools_allow);
+                cfg->profile_tools_allow = calloc(n, sizeof(char *));
+                cfg->n_profile_tools_allow = n;
+                for (int j = 0; j < n; j++) {
+                    toml_datum_t d = toml_string_at(allow_arr, j);
+                    cfg->profile_tools_allow[j] = d.ok ? d.u.s : strdup("");
+                }
+            }
+        }
+        toml_array_t *block_arr = toml_array_in(tools, "block");
+        if (block_arr) {
+            int n = toml_array_nelem(block_arr);
+            if (n > 0) {
+                for (int i = 0; i < cfg->n_profile_tools_block; i++)
+                    free(cfg->profile_tools_block[i]);
+                free(cfg->profile_tools_block);
+                cfg->profile_tools_block = calloc(n, sizeof(char *));
+                cfg->n_profile_tools_block = n;
+                for (int j = 0; j < n; j++) {
+                    toml_datum_t d = toml_string_at(block_arr, j);
+                    cfg->profile_tools_block[j] = d.ok ? d.u.s : strdup("");
+                }
+            }
+        }
+
+        /* [tools.<name>] description overrides */
+        int ntabs = toml_table_ntab(tools);
+        if (ntabs > 0) {
+            /* Free existing desc overrides */
+            for (int i = 0; i < cfg->n_profile_tool_descs; i++) {
+                free(cfg->profile_tool_desc_names[i]);
+                free(cfg->profile_tool_desc_values[i]);
+            }
+            free(cfg->profile_tool_desc_names);
+            free(cfg->profile_tool_desc_values);
+            cfg->profile_tool_desc_names = calloc(ntabs, sizeof(char *));
+            cfg->profile_tool_desc_values = calloc(ntabs, sizeof(char *));
+            int nd = 0;
+            int nkeys = toml_table_nkval(tools)
+                      + toml_table_narr(tools)
+                      + toml_table_ntab(tools);
+            for (int j = 0; j < nkeys; j++) {
+                const char *subkey = toml_key_in(tools, j);
+                if (!subkey) continue;
+                toml_table_t *sub = toml_table_in(tools, subkey);
+                if (!sub) continue;
+                char *desc = toml_str(sub, "description");
+                if (desc) {
+                    cfg->profile_tool_desc_names[nd] = strdup(subkey);
+                    cfg->profile_tool_desc_values[nd] = desc;
+                    nd++;
+                }
+            }
+            cfg->n_profile_tool_descs = nd;
+            if (nd == 0) {
+                free(cfg->profile_tool_desc_names);
+                cfg->profile_tool_desc_names = NULL;
+                free(cfg->profile_tool_desc_values);
+                cfg->profile_tool_desc_values = NULL;
+            }
+        }
+    }
+
+    /* [limits] overlay */
+    toml_table_t *limits = toml_table_in(root, "limits");
+    if (limits) {
+        int v;
+        v = toml_int(limits, "shell_timeout", -1);
+        if (v >= 0) cfg->shell_timeout = v;
+        v = toml_int(limits, "shell_max_output", 0);
+        if (v > 0) cfg->shell_max_output = v;
+        v = toml_int(limits, "file_max_size", 0);
+        if (v > 0) cfg->file_max_size = v;
+        v = toml_int(limits, "grep_timeout", -1);
+        if (v >= 0) cfg->grep_timeout = v;
+        v = toml_int(limits, "grep_max_matches", 0);
+        if (v > 0) cfg->grep_max_matches = v;
+        v = toml_int(limits, "web_timeout", -1);
+        if (v >= 0) cfg->web_timeout = v;
+        v = toml_int(limits, "web_max_size", 0);
+        if (v > 0) cfg->web_max_size = v;
+        v = toml_int(limits, "llm_timeout", 0);
+        if (v > 0) cfg->llm_timeout = v;
+        v = toml_int(limits, "llm_max_response", 0);
+        if (v > 0) cfg->llm_max_response = v;
+        v = toml_int(limits, "llm_repeat_threshold", 0);
+        if (v > 0) cfg->llm_repeat_threshold = v;
+        v = toml_int(limits, "file_read_max_inline", 0);
+        if (v > 0) cfg->file_read_max_inline = v;
+        v = toml_int(limits, "scratchpad_max", -1);
+        if (v >= 0) cfg->scratchpad_max = v;
+        v = toml_int(limits, "checkpoint_frequency", -1);
+        if (v >= 0) cfg->checkpoint_frequency = v;
+        v = toml_int(limits, "cycling_window", 0);
+        if (v > 0) cfg->cycling_window = v;
+        v = toml_int(limits, "cycling_threshold", 0);
+        if (v > 0) cfg->cycling_threshold = v;
+        { double d = toml_dbl(limits, "prune_min_score", 0);
+          if (d > 0) cfg->prune_min_score = d; }
+        v = toml_int(limits, "prune_min_evidence", 0);
+        if (v > 0) cfg->prune_min_evidence = v;
+        { double d = toml_dbl(limits, "consolidation_threshold", 0);
+          if (d > 0) cfg->consolidation_threshold = (float)d; }
+        v = toml_int(limits, "dream_reminder_threshold", 0);
+        if (v > 0) cfg->dream_reminder_threshold = v;
+        v = toml_int(limits, "error_recall_min_length", 0);
+        if (v > 0) cfg->error_recall_min_length = v;
+        v = toml_int(limits, "error_recall_candidates", 0);
+        if (v > 0) cfg->error_recall_candidates = v;
+        v = toml_int(limits, "error_recall_max_inject", 0);
+        if (v > 0) cfg->error_recall_max_inject = v;
+        { double d = toml_dbl(limits, "error_recall_min_relevance", 0);
+          if (d > 0) cfg->error_recall_min_relevance = d; }
+    }
+
+    /* [memory_belief_entropy] overlay */
+    toml_table_t *be = toml_table_in(root, "memory_belief_entropy");
+    if (be) {
+        { toml_datum_t td = toml_bool_in(be, "enabled");
+          if (td.ok) cfg->belief_entropy.enabled = td.u.b; }
+        { double d = toml_dbl(be, "alpha", 0);
+          if (d > 0) cfg->belief_entropy.alpha = d; }
+        int v;
+        v = toml_int(be, "probe_tokens", 0);
+        if (v > 0) cfg->belief_entropy.probe_tokens = v;
+        v = toml_int(be, "probe_n_probs", 0);
+        if (v > 0) cfg->belief_entropy.probe_n_probs = v;
+        { double d = toml_dbl(be, "probe_temperature", 0);
+          if (d > 0) cfg->belief_entropy.probe_temperature = (float)d; }
+        { toml_datum_t td = toml_bool_in(be, "eviction_gate");
+          if (td.ok) cfg->belief_entropy.eviction_gate = td.u.b; }
+        v = toml_int(be, "best_of_n_summaries", 0);
+        if (v > 0) cfg->belief_entropy.best_of_n_summaries = v;
+        { double d = toml_dbl(be, "warn_threshold", 0);
+          if (d > 0) cfg->belief_entropy.warn_threshold = (float)d; }
+    }
+
+    toml_free(root);
+    fprintf(stderr, "[spec] loaded overlay from %s\n", path);
+    return 0;
 }
 
 int config_write_default(const char *path) {

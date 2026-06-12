@@ -132,6 +132,8 @@ static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
         flags->inject_prev_result = cfg->profile_inject_prev_result;
     if (cfg->profile_enable_reflection >= 0)
         flags->enable_reflection = cfg->profile_enable_reflection;
+    if (cfg->profile_enable_pruning >= 0)
+        flags->enable_pruning = cfg->profile_enable_pruning;
     if (cfg->profile_enable_compaction >= 0)
         flags->enable_compaction = cfg->profile_enable_compaction;
     if (cfg->profile_enable_scoring >= 0)
@@ -399,6 +401,7 @@ int main(int argc, char **argv) {
     int postmortem_mode = 0;
     int postmortem_sessions = 50;        /* default: scan last 50 sessions */
     int spec_mode = 0;                   /* --spec: dump resolved spec and exit */
+    const char *load_spec_path = NULL;    /* --load-spec FILE: overlay spec on config */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -433,6 +436,8 @@ int main(int argc, char **argv) {
             postmortem_mode = 1;
         } else if (strcmp(argv[i], "--spec") == 0) {
             spec_mode = 1;
+        } else if (strcmp(argv[i], "--load-spec") == 0 && i + 1 < argc) {
+            load_spec_path = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -449,6 +454,7 @@ int main(int argc, char **argv) {
             printf("  --postmortem-sessions N  Sessions to scan (default 50)\n");
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
+            printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -468,6 +474,17 @@ int main(int argc, char **argv) {
 
     /* Write default config if it doesn't exist */
     config_write_default(config_path);
+
+    /* Apply spec overlay if --load-spec was given.
+     * This overrides config.toml settings before provider creation. */
+    if (load_spec_path) {
+        if (config_load_spec_overlay(cfg, load_spec_path) != 0) {
+            fprintf(stderr, "[error] failed to load spec from %s\n", load_spec_path);
+            free(nash_dir);
+            config_free(cfg);
+            return 1;
+        }
+    }
 
     /* ── Postmortem mode: no LLM needed ── */
     if (postmortem_mode) {
