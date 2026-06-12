@@ -5,6 +5,7 @@
 #include "provider.h"
 #include "tools.h"
 #include "react_event.h"
+#include <stdatomic.h>
 
 /* React loop subsystem flags — controls which subsystems fire per react_run().
  * Default: all enabled (1). Playbooks/dream can selectively disable. */
@@ -29,13 +30,13 @@ typedef struct {
     int           max_steps;
     int           verbose;
     react_flags_t flags;          /* controls which subsystems fire */
-    volatile int  pause_requested;  /* set by TUI (Space) to pause after current step */
+    atomic_int    pause_requested;  /* set by TUI (Space) to pause after current step */
     int           paused;           /* 1 when paused with checkpoint saved (toggle state) */
 
     /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
      * then polls user_ask_pending until the TUI thread sets the answer. */
-    volatile int  user_ask_pending;   /* 1 = waiting for answer, 0 = idle */
+    atomic_int    user_ask_pending;   /* 1 = waiting for answer, 0 = idle */
     char         *user_ask_question;  /* question text (set by inference thread) */
     char         *user_ask_answer;    /* answer text (set by TUI thread, freed by inference) */
 

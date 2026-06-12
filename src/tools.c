@@ -1703,10 +1703,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     /* Load the multi-vec embedding for the new entry (just stored by
      * memory_embed_entry, which already produced chunked embeddings). */
     char new_emb_fname[512];
-    snprintf(new_emb_fname, sizeof(new_emb_fname), "%s", new_key);
-    for (char *p = new_emb_fname; *p; p++) {
-        if (*p == ':' || *p == '/') *p = '_';
-    }
+    key_to_path(new_key, "", new_emb_fname, sizeof(new_emb_fname));
     char new_emb_path[NASH_PATH_MAX];
     snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
              ctx->memory->dir, new_emb_fname);
@@ -2490,11 +2487,9 @@ static char *html_extract_text(const char *html, size_t len) {
     }
 
     /* Clean up any unclosed link */
-    if (in_link) {
-        if (link_text.len > 0)
-            str_append(&out, link_text.data, link_text.len);
-        str_free(&link_text);
-    }
+    if (in_link && link_text.len > 0)
+        str_append(&out, link_text.data, link_text.len);
+    str_free(&link_text);  /* safe even if str_new was never called ({0} → free(NULL)) */
 
     if (out.len == 0) { str_free(&out); return NULL; }
     return str_steal(&out);

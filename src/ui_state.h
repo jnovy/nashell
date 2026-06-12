@@ -7,6 +7,7 @@
 #include "store.h"
 #include "md_render.h"
 #include <stddef.h>
+#include <stdatomic.h>
 
 /* ── Focus & Status enums ──────────────────────────────── */
 
@@ -81,7 +82,7 @@ typedef struct {
     int            context_size;
     int            context_used;
     int            bg_jobs;
-    volatile int  *pause_flag;
+    atomic_int    *pause_flag;
 
     /* ── Preview toggle (expanded store refs) ── */
     char         **expanded_uris;     /* URIs toggled to show preview */

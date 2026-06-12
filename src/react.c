@@ -990,8 +990,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 llm_chat_add(chat, "user", prev_msg);
                 free(prev_msg);
             }
-            free(prev_result);
         }
+        free(prev_result);
     }
 
     /* User query */
@@ -1233,8 +1233,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     const char *srv_err = NULL;
                     if (ctx->provider && ctx->provider->last_error)
                         srv_err = ctx->provider->last_error;
-                    else if (ctx->provider->last_error)
-                        srv_err = ctx->provider->last_error;
 
                     if (consecutive_null_responses >= 2) {
                         if (srv_err) {
@@ -1263,7 +1261,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Capture context size for diagnostics */
                 int total_chars = 0;
                 for (int ci = 0; ci < chat->n_msgs; ci++)
-                    total_chars += (int)strlen(chat->msgs[ci].content);
+                    if (chat->msgs[ci].content)
+                        total_chars += (int)strlen(chat->msgs[ci].content);
                 cJSON_AddNumberToObject(err_params, "context_chars", total_chars);
                 cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
@@ -2037,7 +2036,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (ctx->flags.enable_compaction && ctx->provider->cfg.context_size > 0) {
             int total_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
-                total_chars += (int)strlen(chat->msgs[i].content);
+                if (chat->msgs[i].content)
+                    total_chars += (int)strlen(chat->msgs[i].content);
             float cpt_ev = get_chars_per_token(ctx);
             int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > 6) {
@@ -2058,7 +2058,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Recalculate after error eviction */
                 total_chars = 0;
                 for (int i = 0; i < chat->n_msgs; i++)
-                    total_chars += (int)strlen(chat->msgs[i].content);
+                    if (chat->msgs[i].content)
+                        total_chars += (int)strlen(chat->msgs[i].content);
                 usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
 
                 /* If still over threshold, do standard eviction */
@@ -2072,7 +2073,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * tool_result(tool_call_id). Never evict one without the other.
                  * Single-loop approach: scan backward from evict_end to find a clean
                  * boundary where no pair straddles the cut. */
-                while (evict_end > evict_start && evict_end < chat->n_msgs) {
+                for (int adj_iter = 0; evict_end > evict_start && evict_end < chat->n_msgs && adj_iter < 20; adj_iter++) {
                     /* If boundary lands on a tool_result, its assistant call
                      * is at evict_end-1. Include it → move forward. */
                     if (chat->msgs[evict_end].tool_call_id) {
@@ -2688,8 +2689,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                     }
                 }
-                free(orig_priorities);
-
                 /* Re-add the preserved result section so it survives pruning.
                  * If scratchpad_parse() already parsed it from LLM output,
                  * scratchpad_write() will overwrite with the original content
@@ -2702,6 +2701,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
             free(cleaned);
         }
+        free(orig_priorities);
         free(preserved_result);
         free(full_sp);
     }
