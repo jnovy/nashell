@@ -24,7 +24,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/yaml_parse.c \
           src/playbook.c \
           src/regression.c \
-          src/postmortem.c
+          src/postmortem.c \
+          src/prompt_optimize.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -58,7 +59,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/embedding.c src/embedding_onnx.c \
           src/nash_log.c \
           src/yaml_parse.c src/playbook.c \
-          src/regression.c src/postmortem.c
+          src/regression.c src/postmortem.c \
+          src/prompt_optimize.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

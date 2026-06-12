@@ -28,6 +28,7 @@
 #include "playbook.h"
 #include "regression.h"
 #include "postmortem.h"
+#include "prompt_optimize.h"
 
 /* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
  * Caps at 32KB to prevent memory explosion. */
@@ -402,6 +403,8 @@ int main(int argc, char **argv) {
     int postmortem_sessions = 50;        /* default: scan last 50 sessions */
     int spec_mode = 0;                   /* --spec: dump resolved spec and exit */
     const char *load_spec_path = NULL;    /* --load-spec FILE: overlay spec on config */
+    const char *optimize_budget = NULL;   /* --optimize BUDGET: GEPA prompt optimization */
+    const char *reflect_model_arg = NULL; /* --reflect-model MODEL: reflection LM for optimization */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -438,6 +441,10 @@ int main(int argc, char **argv) {
             spec_mode = 1;
         } else if (strcmp(argv[i], "--load-spec") == 0 && i + 1 < argc) {
             load_spec_path = argv[++i];
+        } else if (strcmp(argv[i], "--optimize") == 0 && i + 1 < argc) {
+            optimize_budget = argv[++i];
+        } else if (strcmp(argv[i], "--reflect-model") == 0 && i + 1 < argc) {
+            reflect_model_arg = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -452,6 +459,8 @@ int main(int argc, char **argv) {
             printf("  --validate-harness MODE  baseline or compare\n");
             printf("  --postmortem          Analyze session failures\n");
             printf("  --postmortem-sessions N  Sessions to scan (default 50)\n");
+            printf("  --optimize BUDGET     GEPA prompt optimization (light/medium/heavy/N)\n");
+            printf("  --reflect-model MODEL Reflection LM for optimization\n");
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
@@ -735,6 +744,119 @@ int main(int argc, char **argv) {
         free(server_model);
         config_free(cfg);
         return exit_code;
+    }
+
+    /* ── GEPA Prompt Optimization mode: --optimize BUDGET ── */
+    if (optimize_budget) {
+        int rounds = optimize_parse_budget(optimize_budget);
+        if (rounds < 0) {
+            fprintf(stderr, "[optimize] invalid budget '%s' — use light, medium, heavy, or a number\n",
+                    optimize_budget);
+            store_free(shared_store);
+            memory_free(memory);
+            provider_free(provider);
+            free(nash_dir);
+            free(props_json);
+            free(server_model);
+            config_free(cfg);
+            return 1;
+        }
+
+        /* Create regression directory and seed query banks */
+        char regression_dir[NASH_PATH_MAX];
+        snprintf(regression_dir, sizeof(regression_dir), "%s/regression", nash_dir);
+        regression_write_seed(regression_dir);
+
+        /* Load query banks */
+        int n_banks = 0;
+        query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
+        if (!banks || n_banks == 0) {
+            fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
+            store_free(shared_store);
+            memory_free(memory);
+            provider_free(provider);
+            free(nash_dir);
+            free(props_json);
+            free(server_model);
+            config_free(cfg);
+            return 1;
+        }
+
+        /* Create reflection provider (same as student by default) */
+        provider_t *reflection_provider = provider;
+        if (reflect_model_arg) {
+            /* Parse reflect-model as "provider/model" e.g. "anthropic/claude-sonnet-4-20250514" */
+            char *slash = strchr(reflect_model_arg, '/');
+            if (slash) {
+                char ptype[64];
+                snprintf(ptype, sizeof(ptype), "%.*s", (int)(slash - reflect_model_arg), reflect_model_arg);
+                const char *rmodel = slash + 1;
+                provider_config_t rpcfg = {
+                    .type           = provider_type_from_str(ptype),
+                    .model_id       = rmodel,
+                    .api_base       = cfg->api_base,
+                    .api_key_env    = cfg->provider.api_key_env,
+                    .project_id     = cfg->provider.project_id,
+                    .region         = cfg->provider.region,
+                    .context_size   = cfg->provider.context_size,
+                    .chars_per_token = cfg->provider.chars_per_token,
+                    .max_tokens     = cfg->max_tokens,
+                    .temperature    = 0.7f,  /* slightly creative for reflection */
+                    .enable_thinking = 0,
+                    .thinking_budget = -1,
+                    .llm_timeout     = cfg->llm_timeout,
+                };
+                reflection_provider = provider_create(&rpcfg);
+                if (!reflection_provider) {
+                    fprintf(stderr, "[optimize] failed to create reflection provider '%s'\n",
+                            reflect_model_arg);
+                    reflection_provider = provider;  /* fallback to student */
+                }
+            } else {
+                fprintf(stderr, "[optimize] --reflect-model format: provider/model (e.g. anthropic/claude-sonnet-4-20250514)\n");
+                fprintf(stderr, "[optimize] using student model as reflection model\n");
+            }
+        }
+
+        /* Find model profile path for writing results */
+        const char *profile_path = NULL;
+        char profile_path_buf[NASH_PATH_MAX * 2];
+        if (server_model) {
+            const model_profile_t *profile = config_match_model(cfg, server_model);
+            if (profile && profile->source_file) {
+                snprintf(profile_path_buf, sizeof(profile_path_buf),
+                         "%s/models/%s", nash_dir, profile->source_file);
+                profile_path = profile_path_buf;
+            }
+        }
+
+        /* Configure and run optimization */
+        optimize_config_t opt = {
+            .max_rounds   = rounds,
+            .student      = provider,
+            .reflection   = reflection_provider,
+            .llm          = &llm_cfg,
+            .profile_path = profile_path,
+            .split_filter = regression_split,
+            .verbose      = 1,
+        };
+
+        prompt_candidate_t best = optimize_run(
+            &opt, banks, n_banks, cfg, memory, shared_store, nash_dir);
+
+        /* Cleanup */
+        optimize_free_candidate(&best);
+        regression_free_banks(banks, n_banks);
+        if (reflection_provider != provider)
+            provider_free(reflection_provider);
+        store_free(shared_store);
+        memory_free(memory);
+        provider_free(provider);
+        free(nash_dir);
+        free(props_json);
+        free(server_model);
+        config_free(cfg);
+        return 0;
     }
 
     /* Headless playbook mode: --play NAME */
