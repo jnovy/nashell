@@ -85,7 +85,23 @@ vscore = (recall_hits + 1) / (recall_hits + recall_misses + 2)
 
 Blend weights (`blend_semantic`, `blend_substring`) and `vscore_exponent` are exposed as self-harness tunable surfaces.
 
-New memories start at vscore=0.5 (maximum entropy). Memories that consistently correlate with task failures get demoted. This is inspired by:
+New memories start at vscore=0.5 (maximum entropy). Memories that consistently correlate with task failures get demoted.
+
+#### Vscore Exponent — Cold-Start Correction
+
+Full multiplicative application of vscore (`composite × vscore`) creates a **cold-start catch-22**: new memories get vscore=0.5, halving their composite score, making them less likely to be recalled, so they never accumulate evidence to escape vscore=0.5. Empirically, after 527 sessions, 86% of 639 memories were stuck at vscore=0.5 (zero evidence), while 7% with vscore≥0.90 enjoyed rich-get-richer dynamics.
+
+The fix is a **power-law exponent**: `final_score = composite × pow(vscore, alpha)` where `alpha` (the `vscore_exponent` config parameter) defaults to 0.3.
+
+| Exponent | vscore=0.50 (new) | vscore=0.33 (poor) | vscore=0.95 (veteran) | Effect |
+|----------|-------------------|--------------------|----------------------|--------|
+| **0.0** | ×1.00 | ×1.00 | ×1.00 | Disabled — pure relevance ranking |
+| **0.3** (default) | ×0.81 | ×0.72 | ×0.99 | Mild cold-start penalty; still penalizes actual misses |
+| **1.0** | ×0.50 | ×0.33 | ×0.95 | Original behavior — harsh cold-start penalty |
+
+With the default exponent=0.3, a new but relevant memory (relevance=0.40, vscore=0.50 → 0.40×0.81=0.32) correctly beats a veteran but less relevant memory (relevance=0.25, vscore=0.95 → 0.25×0.99=0.25). With exponent=1.0, the veteran would win (0.25×0.95=0.24 vs 0.40×0.50=0.20) despite lower relevance.
+
+The scoring research foundations:
 
 - **MemFail** [arXiv:2605.26667] — diagnostic benchmark showing that injecting weakly-relevant memories *hurts* performance. Bayesian scoring provides the data-driven signal to identify which memories are genuinely useful.
 - **Generative Agents** [Park et al., 2023] — composite scoring (recency × importance × relevance) as the foundation for memory retrieval ranking.
