@@ -1938,6 +1938,64 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_chat_add(chat, "user", result_msg);
         }
 
+        /* P3: Error-triggered reactive retrieval — when a tool fails, query
+         * memory with the error message to surface relevant lessons/skills.
+         * Based on: arXiv 2605.30621 "Harness Updating Is Not Harness Benefit"
+         * — activation failure occurs when stored knowledge exists but isn't
+         * retrieved. Error scenarios are the highest-value retrieval opportunity
+         * because the agent may have a lesson about exactly this error.
+         *
+         * All thresholds are configurable via [limits] in config.toml:
+         *   error_recall_min_length    — min error text chars to trigger (default 10)
+         *   error_recall_candidates    — candidates to retrieve (default 3)
+         *   error_recall_max_inject    — max entries to inject (default 1)
+         *   error_recall_min_relevance — relevance floor for injection (default 0.25) */
+        if (!tr.success && ctx->tools->memory && ctx->flags.inject_memory) {
+            cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
+            const char *err_text = err_j ? err_j->valuestring : NULL;
+            int err_min_len = ctx->tools->cfg
+                ? ctx->tools->cfg->error_recall_min_length : 10;
+            if (err_text && (int)strlen(err_text) > err_min_len) {
+                /* Build recall query from error text + action name */
+                char err_query[512];
+                snprintf(err_query, sizeof(err_query), "error: %.400s %s",
+                         err_text, action_name);
+                int err_candidates = ctx->tools->cfg
+                    ? ctx->tools->cfg->error_recall_candidates : 3;
+                memory_results_t err_mem = memory_recall(ctx->tools->memory,
+                                                          err_query, err_candidates);
+                int err_max_inject = ctx->tools->cfg
+                    ? ctx->tools->cfg->error_recall_max_inject : 1;
+                double err_min_rel = ctx->tools->cfg
+                    ? ctx->tools->cfg->error_recall_min_relevance : 0.25;
+                /* Inject top relevant matches not already recalled */
+                int injected = 0;
+                for (int j = 0; j < err_mem.count && injected < err_max_inject; j++) {
+                    int dup = 0;
+                    for (int k = 0; k < ctx->tools->n_recalled_keys; k++) {
+                        if (strcmp(ctx->tools->recalled_keys[k],
+                                   err_mem.entries[j].key) == 0) {
+                            dup = 1;
+                            break;
+                        }
+                    }
+                    if (!dup && err_mem.entries[j].relevance > err_min_rel) {
+                        char hint[2048];
+                        snprintf(hint, sizeof(hint),
+                            "[MEMORY HINT — relevant to this error]\n"
+                            "--- %s ---\n%s",
+                            err_mem.entries[j].key,
+                            err_mem.entries[j].value);
+                        llm_chat_add(chat, "user", hint);
+                        tool_track_recalled_key(ctx->tools,
+                                                 err_mem.entries[j].key);
+                        injected++;
+                    }
+                }
+                memory_results_free(&err_mem);
+            }
+        }
+
         /* Within-loop context management: evict old messages when context gets full */
         if (ctx->flags.enable_compaction && ctx->llm->context_size > 0) {
             int total_chars = 0;

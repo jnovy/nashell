@@ -164,6 +164,14 @@ typedef struct {
      * threshold on the composite relevance signal. */
     double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
 
+    /* Error-triggered reactive retrieval (P3 from harness-benefit research).
+     * When a tool fails, memory is queried with the error text to surface
+     * relevant lessons. These 4 parameters control the retrieval behavior. */
+    int    error_recall_min_length;   /* min error text length (chars) to trigger recall (default 10) */
+    int    error_recall_candidates;   /* max candidates to retrieve from memory (default 3) */
+    int    error_recall_max_inject;   /* max entries to inject into chat (default 1) */
+    double error_recall_min_relevance; /* min relevance score [0,1] for injection (default 0.25) */
+
     /* P3: Auto-dream — usage-based memory consolidation trigger.
      *
      * Research basis:

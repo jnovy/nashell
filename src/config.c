@@ -63,6 +63,10 @@ void config_set_defaults(config_t *cfg) {
     /* P0: recall_min_score default 0.15 — memories below this composite
      * score are not injected. See config.h for research basis. */
     if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
+    if (cfg->error_recall_min_length <= 0)    cfg->error_recall_min_length = 10;
+    if (cfg->error_recall_candidates <= 0)    cfg->error_recall_candidates = 3;
+    if (cfg->error_recall_max_inject <= 0)    cfg->error_recall_max_inject = 1;
+    if (cfg->error_recall_min_relevance <= 0) cfg->error_recall_min_relevance = 0.25;
     if (cfg->dream_reminder_threshold <= 0)   cfg->dream_reminder_threshold = 50;
 
     /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
@@ -237,6 +241,10 @@ config_t *config_load(const char *path) {
         cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
         cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);
         cfg->recall_min_score   = toml_dbl(limits, "recall_min_score", 0);
+        cfg->error_recall_min_length    = toml_int(limits, "error_recall_min_length", -1);
+        cfg->error_recall_candidates    = toml_int(limits, "error_recall_candidates", -1);
+        cfg->error_recall_max_inject    = toml_int(limits, "error_recall_max_inject", -1);
+        cfg->error_recall_min_relevance = toml_dbl(limits, "error_recall_min_relevance", 0);
         cfg->dream_reminder_threshold  = toml_int(limits, "dream_reminder_threshold", -1);
         /* Backward compat: old "auto_dream_writes" in [limits] */
         if (cfg->dream_reminder_threshold <= 0)
@@ -566,6 +574,14 @@ int config_write_default(const char *path) {
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
+        "\n"
+        "# Error-triggered reactive retrieval — when a tool fails, query memory\n"
+        "# with the error text to surface relevant lessons/skills.\n"
+        "error_recall_min_length = 10  # min error text chars to trigger recall\n"
+        "error_recall_candidates = 3   # candidate memories to retrieve\n"
+        "error_recall_max_inject = 1   # max memories to inject into context\n"
+        "error_recall_min_relevance = 0.25 # min relevance score for injection [0.0-1.0]\n"
+        "\n"
         "dream_reminder_threshold = 50 # new entries since last /dream to show status bar reminder (0 = disabled)\n"
         "\n"
         "# Self-Harness tunable surfaces (P3)\n"
