@@ -136,6 +136,12 @@ typedef struct {
      * the regression gate (--validate-harness compare). */
     float  recall_blend_semantic;  /* weight for semantic similarity in memory recall blend (default 0.7) */
     float  recall_blend_substring; /* weight for substring matching in memory recall blend (default 0.3) */
+    float  vscore_exponent;        /* power-law exponent for Bayesian validation score (default 0.3).
+                                    * composite = relevance × pow(vscore, exponent).
+                                    * 0.0 = disabled (pure relevance), 1.0 = full multiplicative.
+                                    * Default 0.3 reduces cold-start penalty: new memories (vscore=0.5)
+                                    * get ×0.81 instead of ×0.50, while still penalizing memories
+                                    * with actual misses (vscore=0.33 → ×0.72). */
     int    tool_retry_limit;       /* max consecutive errors on same tool before forced strategy switch (default 3) */
     int    checkpoint_frequency;   /* save checkpoint every N steps (0 = every step, default 0) */
     int    cycling_window;         /* number of recent actions to check for cycling (default 4) */
@@ -162,7 +168,7 @@ typedef struct {
      * This is the frozen-model equivalent of Mem-π's learned abstention:
      * instead of training a model to decide when to inject, we use a score
      * threshold on the composite relevance signal. */
-    double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
+    double recall_min_score;     /* min composite score for injection (default 0.25, normalized [0,1]) */
 
     /* Error-triggered reactive retrieval (P3 from harness-benefit research).
      * When a tool fails, memory is queried with the error text to surface

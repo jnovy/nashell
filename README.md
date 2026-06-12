@@ -327,11 +327,12 @@ shell_max_output = 1048576                # bytes
 file_max_size = 52428800                  # 50MB
 
 [memory]
-recall_min_score = 0.05                   # normalized [0, 1] threshold
+recall_min_score = 0.25                   # normalized [0, 1] threshold (empirically calibrated)
+vscore_exponent = 0.3                     # power-law exponent for validation score (0=disabled, 1=full)
 memory_index_max = 50                     # max entries in memory index
-max_skills_per_query = 3                  # skills loaded per query
+max_skills_per_query = 2                  # skills loaded per query
 max_lessons_per_query = 2                 # lessons loaded per query
-max_strategies_per_query = 2              # strategies loaded per query
+max_strategies_per_query = 1              # strategies loaded per query
 max_antipatterns_per_query = 1            # anti-patterns loaded per query
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning

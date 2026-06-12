@@ -177,6 +177,8 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                     strncmp(all_memories->entries[i].key, type_prefixes[t], strlen(type_prefixes[t])) == 0) {
                     cJSON *e = cJSON_CreateObject();
                     cJSON_AddStringToObject(e, "key", all_memories->entries[i].key);
+                    cJSON_AddNumberToObject(e, "score", all_memories->entries[i].relevance);
+                    cJSON_AddNumberToObject(e, "raw_rel", all_memories->entries[i].raw_relevance);
                     cJSON_AddNumberToObject(e, "hits", all_memories->entries[i].recall_hits);
                     cJSON_AddNumberToObject(e, "misses", all_memories->entries[i].recall_misses);
                     cJSON_AddItemToArray(arr, e);

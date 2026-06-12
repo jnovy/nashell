@@ -566,6 +566,7 @@ int main(int argc, char **argv) {
     /* P3: Self-Harness tunable blend weights */
     memory->recall_blend_semantic = cfg->recall_blend_semantic;
     memory->recall_blend_substring = cfg->recall_blend_substring;
+    memory->vscore_exponent = cfg->vscore_exponent;
 
     /* Prune stale memories at startup (90 days, access_count < 2) */
     int pruned = memory_prune(memory,

@@ -59,13 +59,21 @@ typedef struct {
      * recall results, implementing the "abstention" pattern from:
      *   Mem-π [arXiv:2605.21463] — learned abstention yields +22% avg
      *   MemFail [arXiv:2605.26667] — weak injection hurts performance
-     * Default: 0.15 (set from config.recall_min_score) */
+     * Default: 0.25 (set from config.recall_min_score)
+     * Empirically calibrated with vscore_exponent=0.3: 10 queries × 639 memories. */
     double recall_min_score;
 
     /* P3: Self-Harness tunable blend weights for semantic/substring scoring.
      * Set from config.recall_blend_semantic / recall_blend_substring. */
     float recall_blend_semantic;   /* default 0.7 */
     float recall_blend_substring;  /* default 0.3 */
+
+    /* Power-law exponent for Bayesian validation score.
+     * composite = relevance × pow(vscore, exponent).
+     * 0.0 = disabled (pure relevance ranking), 1.0 = full multiplicative.
+     * Default 0.3: reduces cold-start penalty (vscore=0.5 → ×0.81 instead of ×0.50)
+     * while preserving downward signal for memories with actual misses. */
+    float vscore_exponent;         /* default 0.3 */
 
     /* P1: In-memory index — populated by memory_new(), updated by
      * memory_store()/memory_delete(). Used by memory_recall() and

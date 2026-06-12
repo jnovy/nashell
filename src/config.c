@@ -50,9 +50,9 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->llm_repeat_threshold <= 0) cfg->llm_repeat_threshold = 100;
     if (cfg->llm_timeout <= 0)          cfg->llm_timeout = 600;
     if (cfg->memory_index_max <= 0)     cfg->memory_index_max = 50;
-    if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 3;
+    if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 2;
     if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
-    if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 2;
+    if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 1;
     if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 1;
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
     if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
@@ -60,9 +60,20 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->prune_min_score <= 0)      cfg->prune_min_score = 0.35;
     if (cfg->prune_min_evidence <= 0)   cfg->prune_min_evidence = 3;
     if (cfg->consolidation_threshold <= 0) cfg->consolidation_threshold = 0.82f;
-    /* P0: recall_min_score default 0.15 — memories below this composite
-     * score are not injected. See config.h for research basis. */
-    if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
+    /* P0: recall_min_score — memories below this composite score are not
+     * injected. Formula: composite = relevance × pow(vscore, exponent).
+     *
+     * Empirically calibrated with vscore_exponent=0.3 against 10 queries:
+     *   Score distribution: P50=0.19, P75=0.22, P90=0.27, P95=0.30
+     *   t=0.20: avg 21.7/query — too noisy (47, 48, 50 for broad queries)
+     *   t=0.25: avg 6.8/query — good signal/noise, per-type limits cap it
+     *   t=0.28: avg 4.1/query — good but starts losing some relevant hits
+     *   t=0.30: avg 2.7/query — too aggressive (0 for "debug a segfault")
+     *
+     * With vscore_exponent=0.3, new memories (vscore=0.5) get ×0.81,
+     * so a good semantic match (rel=0.35) → composite=0.28 — passes 0.25.
+     * This was impossible with exponent=1.0 (same match → composite=0.175). */
+    if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.25;
     if (cfg->error_recall_min_length <= 0)    cfg->error_recall_min_length = 10;
     if (cfg->error_recall_candidates <= 0)    cfg->error_recall_candidates = 3;
     if (cfg->error_recall_max_inject <= 0)    cfg->error_recall_max_inject = 1;
@@ -72,6 +83,13 @@ void config_set_defaults(config_t *cfg) {
     /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
     if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.7f;
     if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.3f;
+    /* vscore_exponent: 0 is a valid value (disables vscore), so use sentinel -1.
+     * Default 0.3 — empirically calibrated to reduce cold-start penalty:
+     *   86% of memories have vscore=0.5 (zero evidence). With exponent=1.0,
+     *   their composite scores are halved; with 0.3, they get ×0.81 — a
+     *   19% penalty instead of 50%. Preserves downward signal for memories
+     *   with actual misses (vscore=0.33 → ×0.72). */
+    if (cfg->vscore_exponent < 0)         cfg->vscore_exponent = 0.3f;
     if (cfg->tool_retry_limit <= 0)       cfg->tool_retry_limit = 3;
     /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
     if (cfg->cycling_window <= 0)         cfg->cycling_window = 4;
@@ -149,6 +167,7 @@ void config_set_defaults(config_t *cfg) {
 config_t *config_load(const char *path) {
     config_t *cfg = calloc(1, sizeof(*cfg));
     if (!cfg) return NULL;
+    cfg->vscore_exponent = -1.0f;  /* sentinel: 0 is valid (disables vscore) */
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -253,6 +272,8 @@ config_t *config_load(const char *path) {
         /* P3: Self-Harness tunable surfaces */
         cfg->recall_blend_semantic  = (float)toml_dbl(limits, "recall_blend_semantic", 0);
         cfg->recall_blend_substring = (float)toml_dbl(limits, "recall_blend_substring", 0);
+        { double v = toml_dbl(limits, "vscore_exponent", -1);
+          if (v >= 0) cfg->vscore_exponent = (float)v; }
         cfg->tool_retry_limit       = toml_int(limits, "tool_retry_limit", -1);
         cfg->checkpoint_frequency   = toml_int(limits, "checkpoint_frequency", 0);
         cfg->cycling_window         = toml_int(limits, "cycling_window", -1);
@@ -565,15 +586,15 @@ int config_write_default(const char *path) {
         "\n"
         "# Memory\n"
         "memory_index_max = 50        # max entries shown in memory index injection\n"
-        "max_skills_per_query = 3     # max skill memories loaded per query\n"
+        "max_skills_per_query = 2     # max skill memories loaded per query\n"
         "max_lessons_per_query = 2    # max lesson memories loaded per query\n"
-        "max_strategies_per_query = 2 # max strategy memories loaded per query\n"
+        "max_strategies_per_query = 1 # max strategy memories loaded per query\n"
         "max_antipatterns_per_query = 1 # max anti-pattern memories loaded per query\n"
         "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
         "prune_min_score = 0.35       # Bayesian validation score below which memories are prunable\n"
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
-        "recall_min_score = 0.15      # P0: min composite score for memory injection (abstention threshold)\n"
+        "recall_min_score = 0.25      # P0: min composite score for memory injection (empirically calibrated)\n"
         "\n"
         "# Error-triggered reactive retrieval — when a tool fails, query memory\n"
         "# with the error text to surface relevant lessons/skills.\n"
@@ -589,6 +610,7 @@ int config_write_default(const char *path) {
         "# and validated via: nash --regression --validate-harness compare\n"
         "recall_blend_semantic = 0.7  # weight for semantic similarity in memory recall (0.0-1.0)\n"
         "recall_blend_substring = 0.3 # weight for substring matching in memory recall (0.0-1.0)\n"
+        "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
         "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
         "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
         "cycling_window = 4           # recent actions to check for cycling\n"

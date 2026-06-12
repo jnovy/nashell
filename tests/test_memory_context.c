@@ -39,6 +39,7 @@ int main(int argc, char *argv[]) {
     int max_results = 20;
     int no_embeddings = 0;
     int skills_only = 0;
+    float vscore_exp = -1.0f;  /* -1 = use config default */
 
     /* Parse ALL arguments — options can appear before or after the query.
      * The query is the first non-option positional argument. */
@@ -53,6 +54,8 @@ int main(int argc, char *argv[]) {
             no_embeddings = 1;
         } else if (strcmp(argv[i], "--skills-only") == 0) {
             skills_only = 1;
+        } else if (strcmp(argv[i], "--vscore-exponent") == 0 && i + 1 < argc) {
+            vscore_exp = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: test_memory_context [OPTIONS] \"query\"\n");
             return 0;
@@ -93,8 +96,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    /* Set threshold */
+    /* Set threshold and scoring parameters from config */
     m->recall_min_score = threshold;
+    m->recall_blend_semantic = cfg->recall_blend_semantic;
+    m->recall_blend_substring = cfg->recall_blend_substring;
+    m->vscore_exponent = (vscore_exp >= 0) ? vscore_exp : cfg->vscore_exponent;
 
     /* Initialize embeddings (unless disabled) */
     if (!no_embeddings && cfg->embedding.type &&

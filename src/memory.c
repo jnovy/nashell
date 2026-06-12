@@ -643,6 +643,7 @@ static double score_entry_hybrid(const char *key, const char *value,
                                   int recall_hits, int recall_misses,
                                   float semantic_sim, int has_semantic,
                                   float blend_semantic, float blend_substring,
+                                  float vscore_exponent,
                                   double *out_relevance,
                                   double *out_importance) {
     double relevance;
@@ -721,11 +722,27 @@ static double score_entry_hybrid(const char *key, const char *value,
      *     (recency × importance × relevance) as the foundation for
      *     memory retrieval ranking.
      *
-     * This closes the gap between validation and recall ranking. */
+     * This closes the gap between validation and recall ranking.
+     *
+     * Power-law exponent (vscore_exponent) controls vscore's influence:
+     *   composite = relevance × pow(vscore, exponent)
+     *   exponent=1.0: full multiplicative (original behavior, harsh cold-start)
+     *   exponent=0.3: reduced influence (default — 86% of memories have
+     *     vscore=0.5 due to zero evidence; ×0.81 instead of ×0.50)
+     *   exponent=0.0: disabled (pure relevance ranking)
+     *
+     * Empirical calibration (639 memories, 527 sessions):
+     *   86% stuck at vscore=0.5 (cold-start catch-22)
+     *   7% at vscore≥0.90 (rich-get-richer)
+     *   With exponent=1.0, a veteran (rel=0.25, vs=0.95 → 0.24) beats
+     *   a new memory (rel=0.40, vs=0.50 → 0.20) despite lower relevance.
+     *   With exponent=0.3, new memory wins (0.40×0.81=0.32 vs 0.25×0.99=0.25). */
     double vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
     if (out_relevance) *out_relevance = relevance;
     if (out_importance) *out_importance = importance;
-    return composite * vscore;
+    if (vscore_exponent <= 0.0f)
+        return composite;  /* exponent=0 disables vscore entirely */
+    return composite * pow(vscore, (double)vscore_exponent);
 }
 
 /* qsort comparator for scored entries (descending by score) */
@@ -849,6 +866,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                                        semantic_sim, entry_has_semantic,
                                        m->recall_blend_semantic,
                                        m->recall_blend_substring,
+                                       m->vscore_exponent,
                                        &out_rel, &out_imp);
 
         /* Type filtering */
@@ -858,7 +876,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
 
         /* P0: Abstention gate */
-        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
+        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
         if (s > 0.01 && s < min_score) s = 0;
 
         if (s >= min_score) {
