@@ -227,6 +227,37 @@ Nash provides a full ncurses-based TUI with:
 - **Status bar** — model name, context usage percentage (`ctx 42%`), background jobs count, dream reminder
 - **Journal view** — full session history with react loop headers, step markers (+/x), thoughts (💭)
 - **Keyboard navigation** — arrow keys, Page Up/Down, Home/End, Enter to expand/collapse
+- **Pause/Resume** — press Space during inference to pause after the current step; Space or new query to resume
+- **Auto-redirect** — typing a new query during active inference automatically pauses the current task, stashes the new query, and dispatches it immediately when the loop yields — no "Space then type" dance required
+- **Cross-session search** — type `/?query` to search scratchpads across all sessions (newest first); results render live in the main pane as you type; press Enter to clear
+
+#### TUI Slash Commands
+
+| Command | Description |
+|---------|-------------|
+| `/dream` | Run memory consolidation (alias for `/play dream`) |
+| `/play NAME` | Run a named playbook in background (e.g., `/play reflect`) |
+| `/play list` | List all available playbooks with descriptions |
+| `/fork N` | Fork the session at step N — copies journal, symlinks, and checkpoint to a new session |
+| `/name NAME` | Create a named symlink to the current session (`~/.nash/sessions/NAME`) |
+| `/cwd DIR` | Change working directory; creates the directory if it doesn't exist (`mkdir -p`) |
+| `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
+| `/runs show ID` | Display details of a specific playbook run |
+| `/memory_recall QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
+| `/?query` | Cross-session scratchpad search (live incremental results) |
+| `/continue` | Resume from checkpoint with the original query |
+| `quit` / `exit` | Exit nash |
+
+#### Tree-Based Branching
+
+Nash supports **non-linear conversation trees**. When the user views a previous react loop's output (`reactRX.md`) and submits a new query, nash branches from that point:
+
+1. The `parent_loop` is set to the viewed react loop
+2. A `[Branched from R<N>: "original query"]` context hint is injected
+3. The parent loop's result is loaded from the scratchpad
+4. Scratchpad sections are filtered non-destructively at injection time — only sections from the ancestor chain are included
+
+This enables exploring alternative approaches without losing the original conversation path.
 
 ### 7. Content-Addressed Store & Journal
 
@@ -261,7 +292,35 @@ On crash or restart, nash detects the checkpoint and rebuilds the conversation f
 3. Restored scratchpad (from disk)
 4. Replayed journal entries (tool calls + compact results)
 
-### 9. Post-Task Reflection
+### 9. Session Management
+
+#### Named Sessions
+
+Use `/name PROJECT` to create a human-readable symlink to the current session:
+```
+~/.nash/sessions/my-refactor → ~/.nash/sessions/1779970830.40871
+```
+Named sessions can be resumed with `--session ~/.nash/sessions/my-refactor`.
+
+#### Session Forking
+
+`/fork N` creates a new session branched at step N:
+1. Journal entries up to step N are copied
+2. Store symlinks (R0S0, R0S1, ...) are replicated
+3. A checkpoint is written at the fork point
+4. The TUI switches to the forked session
+
+This enables exploring alternative strategies from any point in a session's history.
+
+#### Lazy Sessions (Headless Mode)
+
+In headless mode (`-p QUERY`), session directories are created lazily — only when the first journal entry is written. Empty sessions are automatically cleaned up on exit (`rmdir` if empty). This prevents clutter from quick queries that produce no artifacts.
+
+#### Session Auto-Detection
+
+In TUI mode, if the current working directory contains a `journal.jsonl`, nash resumes that session automatically. This is intentionally disabled in headless mode to prevent a child `nash -p` process (spawned via `shell_exec`) from hijacking its parent's session.
+
+### 10. Post-Task Reflection
 
 After every completed task, nash runs a **reflection phase** — a mini react loop that extracts reusable lessons, strategies, and skills:
 
@@ -277,7 +336,7 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
 
-### 10. Playbooks — Multi-Pass Task Orchestration
+### 11. Playbooks — Multi-Pass Task Orchestration
 
 Playbooks are YAML-defined multi-pass workflows that orchestrate sequences of react loops with fine-grained control over each pass:
 
@@ -314,7 +373,7 @@ Bundled playbooks: `dream`, `reflect`, `digest`, `health`, `prune`, `retrospect`
 
 Run with `--play NAME` or from the TUI.
 
-### 11. Self-Harness — Automated Weakness Mining & Validation
+### 12. Self-Harness — Automated Weakness Mining & Validation
 
 Inspired by [Self-Harness, arXiv:2606.09498], nash includes a full self-improvement loop:
 
@@ -373,7 +432,7 @@ Self-harness tunable parameters exposed in config:
 - `tool_retry_limit` — max consecutive errors before forced strategy switch
 - `cycling_window` / `cycling_threshold` — cycling detection sensitivity
 
-### 12. Model Profiles
+### 13. Model Profiles
 
 Per-model configuration loaded from `~/.nash/models/*.toml`:
 
@@ -398,7 +457,7 @@ Features:
 - **System prompt injection** — model-specific harness rules appended to system prompt
 - **Native context warnings** — alerts when server n_ctx is much smaller than model capacity
 
-### 13. Error Recovery
+### 14. Error Recovery
 
 #### HTTP 500 — 4-Tier Retry Strategy
 
@@ -433,7 +492,7 @@ if ((!result || !result[0]) && thought && thought[0]) {
 }
 ```
 
-### 14. file_read with Line Ranges
+### 15. file_read with Line Ranges
 
 Nash's `file_read` tool supports `start_line` and `end_line` parameters to eliminate the need for `shell_exec sed/head/tail` hacks:
 
@@ -446,6 +505,40 @@ Nash's `file_read` tool supports `start_line` and `end_line` parameters to elimi
 - **Line numbers in output** — each line prefixed with its number (`100: static void ...`)
 - **total_lines in response** — helps model decide whether to use ranges on next call
 - **Backward compatible** — no parameters = full file read
+
+### 16. Web Search with SearXNG Auto-Start
+
+The `web_search` tool supports two backends: **DuckDuckGo** (default, zero setup) and **SearXNG** (self-hosted, private).
+
+When SearXNG is configured but not running, nash **automatically starts a SearXNG container** using podman (preferred) or docker:
+
+1. Creates a persistent config directory at `~/.nash/searxng/` with a `settings.yml` enabling JSON API
+2. Launches `docker.io/searxng/searxng:latest` with bind-mounted config
+3. Waits for the container to respond
+4. Tears down the container on nash exit (`web_search_cleanup()`)
+
+The bundled `config/searxng/settings.yml` provides a minimal override that inherits SearXNG defaults while enabling JSON output format and configuring search engines for coding tasks.
+
+### 17. Interactive user_ask Tool
+
+The `user_ask` tool allows the LLM to pause inference and ask the user a clarifying question:
+
+1. The inference thread sets `user_ask_pending` and emits a `REACT_EVENT_USER_ASK` event
+2. The TUI displays the question and waits for user input
+3. The user's response is passed back to the inference thread via `user_ask_answer`
+4. The react loop resumes with the answer injected into context
+
+This enables the agent to resolve ambiguities rather than guessing, particularly useful for tasks with underspecified requirements.
+
+### 18. Playbook Run Logs
+
+Every playbook execution is logged to `~/.nash/runs/` as a JSONL file with events:
+- `start` — playbook name, number of passes
+- `pass` — pass index, label, session ID
+- `done` — pass completion status
+- `end` — overall result (ok/fail)
+
+View run history with `/runs` (list) and `/runs show ID` (details) in the TUI.
 
 ---
 
@@ -525,6 +618,7 @@ engine = "duckduckgo"                     # duckduckgo | searxng
 - **ncursesw** — TUI rendering (wide-char support)
 - **pthreads** — concurrent inference and TUI threads
 - **ONNX Runtime** (optional) — local embedding inference
+- **podman or docker** (optional) — SearXNG container auto-start for `web_search`
 
 ### Build
 
@@ -575,6 +669,9 @@ make
 
 ```bash
 make test    # runs unit tests: test_memory, test_store, test_config, test_str, test_journal, test_memory_context
+
+# Integration tests (requires a running LLM server)
+./tests/run_integration.sh --api http://localhost:8080
 ```
 
 ---
@@ -605,10 +702,16 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 │   └── self-harness.yaml
 ├── regression/              # Regression test query banks
 │   └── *.yaml               # held-in / held-out query banks
+├── runs/                    # Playbook run logs (JSONL)
+│   └── *.jsonl              # e.g., 1779970830.dream.jsonl
+├── searxng/                 # SearXNG container config (auto-created)
+│   └── settings.yml         # Persistent search engine settings
 ├── store/                   # Content-addressed artifacts (SHA-256)
 │   ├── a1b2c3d4...          # Tool outputs, errors, etc.
 │   └── ...
+├── postmortem.md            # Latest failure analysis report
 └── sessions/
+    ├── my-project → 1779970830.40871  # Named session symlink
     └── 1779970830.40871/    # Session directory
         ├── journal.jsonl    # Full event log
         ├── scratchpad.md    # Persistent working notes
