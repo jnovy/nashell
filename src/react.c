@@ -1118,8 +1118,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     struct timespec task_start;
     clock_gettime(CLOCK_MONOTONIC, &task_start);
 
-    /* Action signature tracking for cycling detection */
-    char last_sigs[8][512];
+    /* Action signature tracking for cycling detection.
+     * Window size and threshold are configurable via config.toml:
+     *   cycling_window    = number of recent actions to track (default 4)
+     *   cycling_threshold = identical actions in window to trigger warning (default 2) */
+    int cw = (ctx->tools->cfg && ctx->tools->cfg->cycling_window > 0)
+             ? ctx->tools->cfg->cycling_window : 4;
+    int ct = (ctx->tools->cfg && ctx->tools->cfg->cycling_threshold > 0)
+             ? ctx->tools->cfg->cycling_threshold : 2;
+    if (cw > 64) cw = 64;  /* sanity cap */
+    char (*last_sigs)[512] = calloc(cw, 512);
+    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, 512); }
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
@@ -1806,18 +1815,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  url ? url : "");
 
         int repeated = 0;
-        for (int i = 0; i < sig_count && i < 8; i++) {
+        for (int i = 0; i < sig_count && i < cw; i++) {
             if (strcmp(last_sigs[i], sig) == 0) repeated++;
         }
-        if (sig_count < 8) {
+        if (sig_count < cw) {
             snprintf(last_sigs[sig_count], 512, "%s", sig);
             sig_count++;
         } else {
-            memmove(last_sigs, last_sigs + 1, 7 * 512);
-            snprintf(last_sigs[7], 512, "%s", sig);
+            memmove(last_sigs, last_sigs + 1, (cw - 1) * 512);
+            snprintf(last_sigs[cw - 1], 512, "%s", sig);
         }
 
-        if (cycling_enabled && repeated >= 2) {
+        if (cycling_enabled && repeated >= ct) {
             char warn_msg[256];
             snprintf(warn_msg, sizeof(warn_msg),
                      "Cycling detected — same action repeated %d times", repeated + 1);
@@ -1834,9 +1843,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "Do NOT re-run the same command.");
         }
 
-        /* Fix 2: Refuse execution after 3+ consecutive identical actions */
+        /* Refuse execution after threshold+1 consecutive identical actions */
         tool_result_t tr;
-        if (cycling_enabled && repeated >= 3) {
+        if (cycling_enabled && repeated >= ct + 1) {
             cJSON *err_meta = cJSON_CreateObject();
             cJSON_AddStringToObject(err_meta, "error",
                 "Refused: same action repeated 4+ times. "
@@ -2737,5 +2746,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(ctx->tools->recalled_keys[i]);
     ctx->tools->n_recalled_keys = 0;
 
+    free(last_sigs);
     return final_result;
 }

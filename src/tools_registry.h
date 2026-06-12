@@ -101,7 +101,7 @@ static const tool_def_t TOOL_REGISTRY[] = {
     {"memory_list",
      "List all memory keys grouped by type. Returns key names with descriptions. "
      "Use to browse available memories when memory_recall semantic search is too narrow.",
-     "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, other. Omit for all.\"}}}"},
+     "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, anti-pattern, other. Omit for all.\"}}}"},
 
     {NULL, NULL, NULL}  /* sentinel */
 };

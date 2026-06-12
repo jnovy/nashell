@@ -655,7 +655,7 @@ static double score_entry_hybrid(const char *key, const char *value,
     if (has_semantic) {
         /* Semantic mode: cosine similarity is primary signal.
          * Clamp negative similarities to 0 (semantically opposite = no match).
-         * Both semantic and substring scores are in [0, 6] raw range.
+         * Both semantic and substring scores are in [0, 4] raw range.
          * After blending, normalize to [0, 1] for consistent thresholding. */
         double clamped = (double)semantic_sim;
         if (clamped < 0.0) clamped = 0.0;
@@ -781,7 +781,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     const char *score_query = query;
     {
         static const char *type_prefixes[] = {
-            "skill:", "lesson:", "strategy:", "fact:", "task:", NULL
+            "skill:", "lesson:", "strategy:", "fact:", "task:",
+            "anti-pattern:", "other:", NULL
         };
         for (const char **pfx = type_prefixes; *pfx; pfx++) {
             size_t plen = strlen(*pfx);
@@ -1025,11 +1026,12 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
     if (!m || m->idx.count == 0) return NULL;
 
     static const struct { const char *prefix; const char *label; } types[] = {
-        { "lesson:",   "Lessons" },
-        { "strategy:", "Strategies" },
-        { "skill:",    "Skills" },
-        { "fact:",     "Facts" },
-        { "task:",     "Tasks" },
+        { "lesson:",        "Lessons" },
+        { "strategy:",      "Strategies" },
+        { "skill:",         "Skills" },
+        { "fact:",          "Facts" },
+        { "task:",          "Tasks" },
+        { "anti-pattern:",  "Anti-Patterns" },
         { NULL, NULL }
     };
 

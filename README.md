@@ -1,6 +1,6 @@
 # nash — Autonomous Coding Agent in C
 
-**nash** is a fully autonomous coding agent implemented in ~42,000 lines of C (~28K original, plus vendored cJSON and ONNX Runtime headers). It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+**nash** is a fully autonomous coding agent implemented in ~44,000 lines of C (~30K original, plus vendored cJSON and ONNX Runtime headers). It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
 
 Unlike wrapper-based agents, nash is a single compiled binary with zero Python dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
@@ -32,7 +32,7 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 
 ## Features
 
-### 1. ReAct Loop with Native Tool Calling
+### ReAct Loop with Native Tool Calling
 
 Nash implements a full ReAct (Reason + Act) loop that drives autonomous task completion:
 
@@ -49,7 +49,7 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 - **Concatenated tool name recovery** — when the model emits garbled names (e.g., `shell_execshell_exec`), automatically extracts the longest matching prefix and dispatches correctly
 - **Unknown tool recovery** — when the model generates a non-existent tool name, injects a corrective message listing available tools and lets the model retry
 
-### 2. Multi-Provider Support
+### Multi-Provider Support
 
 Nash supports four LLM providers through a unified vtable interface:
 
@@ -62,20 +62,21 @@ Nash supports four LLM providers through a unified vtable interface:
 
 All providers share the same tool registry and SSE streaming infrastructure. Provider-specific differences (JSON structure, auth headers, error formats) are encapsulated in the vtable.
 
-### 3. Persistent Memory System
+### Persistent Memory System
 
 Nash maintains a persistent, git-backed memory system that survives across sessions. Memories are categorized as **lessons** (what went wrong/right), **strategies** (reusable procedures), **skills** (domain-specific knowledge), **facts** (concrete data), **tasks** (ongoing work), **anti-patterns** (what not to do), and **other**.
 
 #### Hybrid Scoring — Semantic + Substring + Bayesian Validation
 
-Memory recall uses a composite scoring function that blends three signals:
+Memory recall uses a composite scoring function that blends two signals:
 
 ```
 relevance = semantic_similarity * blend_semantic + substring_match * blend_substring
-importance = log(1 + access_count) / 5.0                        (normalized to [0, 1])
-composite = relevance * 0.8 + importance * 0.2
+composite = relevance
 final_score = composite * pow(vscore, vscore_exponent)
 ```
+
+Importance (log access frequency) was intentionally removed from ranking because it distorted results — boosting frequently-recalled but irrelevant memories above less-popular but more relevant ones. Importance is redundant with vscore: popular memories accumulate more recall hits → higher vscore, which already captures usefulness without the distortion.
 
 Where `vscore` is a **Bayesian validation score** using Beta posterior mean with Laplace smoothing:
 
@@ -121,7 +122,7 @@ When configured, nash uses dense vector embeddings for semantic similarity:
 - **Ollama** — embedding via local Ollama server
 - **OpenAI** — embedding via OpenAI API
 
-Cosine similarity is clamped to [0, 1] (negative = no match) and scaled to [0, 6] before blending with substring scores. Without embeddings, pure substring matching is used with a 1.0x scale factor to produce comparable score ranges.
+Cosine similarity is clamped to [0, 1] (negative = no match) and scaled to [0, 4] before blending with substring scores. Without embeddings, pure substring matching is used and normalized to the same [0, 1] range.
 
 #### Memory Pruning — Bayesian Quality Control
 
@@ -157,7 +158,7 @@ At startup, nash counts memory entries created since the last dream (using `crea
 
 When a tool fails, nash queries memory with the error text to surface relevant lessons. Controlled by `error_recall_*` config parameters.
 
-### 4. Scratchpad-Only Architecture (v5)
+### Scratchpad-Only Architecture (v5)
 
 Nash uses a **scratchpad-only** architecture for cross-loop state management. Each react loop starts with a fresh context containing only:
 
@@ -193,7 +194,7 @@ The `extract_llm_text_output()` helper accepts both plain markdown and JSON tool
 
 When `done` is called, the result is automatically saved to the scratchpad as `R<N>_result` (priority 1), ensuring the next react loop has full access to the previous loop's conclusion.
 
-### 5. EDRM — Entropy Dynamics Routing for Thinking Mode
+### EDRM — Entropy Dynamics Routing for Thinking Mode
 
 Nash implements **Entropy Dynamics Routing** based on [arXiv:2605.22873] to dynamically decide whether to enable extended thinking (chain-of-thought) for each LLM call:
 
@@ -216,7 +217,7 @@ tau_h = 4.0              # mean entropy threshold
 budget = -1              # -1=unrestricted, 0=none, N>0=max tokens
 ```
 
-### 6. TUI — Terminal User Interface
+### TUI — Terminal User Interface
 
 Nash provides a full ncurses-based TUI with:
 
@@ -259,7 +260,7 @@ Nash supports **non-linear conversation trees**. When the user views a previous 
 
 This enables exploring alternative approaches without losing the original conversation path.
 
-### 7. Content-Addressed Store & Journal
+### Content-Addressed Store & Journal
 
 Every tool output, error, and metadata entry is stored in a **content-addressed store** (`~/.nash/store/`) using SHA-256 hashing. Session directories contain symlinks (`R0S0`, `R0S1`, ...) pointing to store entries.
 
@@ -273,7 +274,7 @@ The **journal** (`journal.jsonl`) records every event with:
 
 All journal entries have store refs — no more `+ ?: memory_context` entries. Every step is viewable and inspectable in the TUI.
 
-### 8. Checkpoint/Resume
+### Checkpoint/Resume
 
 Nash saves a checkpoint after every tool execution:
 ```json
@@ -292,7 +293,7 @@ On crash or restart, nash detects the checkpoint and rebuilds the conversation f
 3. Restored scratchpad (from disk)
 4. Replayed journal entries (tool calls + compact results)
 
-### 9. Session Management
+### Session Management
 
 #### Named Sessions
 
@@ -320,7 +321,7 @@ In headless mode (`-p QUERY`), session directories are created lazily — only w
 
 In TUI mode, if the current working directory contains a `journal.jsonl`, nash resumes that session automatically. This is intentionally disabled in headless mode to prevent a child `nash -p` process (spawned via `shell_exec`) from hijacking its parent's session.
 
-### 10. Post-Task Reflection
+### Post-Task Reflection
 
 After every completed task, nash runs a **reflection phase** — a mini react loop that extracts reusable lessons, strategies, and skills:
 
@@ -336,7 +337,7 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
 
-### 11. Playbooks — Multi-Pass Task Orchestration
+### Playbooks — Multi-Pass Task Orchestration
 
 Playbooks are YAML-defined multi-pass workflows that orchestrate sequences of react loops with fine-grained control over each pass:
 
@@ -373,7 +374,7 @@ Bundled playbooks: `dream`, `reflect`, `digest`, `health`, `prune`, `retrospect`
 
 Run with `--play NAME` or from the TUI.
 
-### 12. Self-Harness — Automated Weakness Mining & Validation
+### Self-Harness — Automated Weakness Mining & Validation
 
 Inspired by [Self-Harness, arXiv:2606.09498], nash includes a full self-improvement loop:
 
@@ -432,7 +433,7 @@ Self-harness tunable parameters exposed in config:
 - `tool_retry_limit` — max consecutive errors before forced strategy switch
 - `cycling_window` / `cycling_threshold` — cycling detection sensitivity
 
-### 13. Model Profiles — Per-Model Spec Overrides
+### Model Profiles — Per-Model Spec Overrides
 
 Model profiles in `~/.nash/models/*.toml` provide **full configuration overrides** per model. When nash detects which model it's talking to (via `config_match_model()` longest-substring match), the matched profile overlays any `config_t` field using sentinel-based inheritance: unset fields (`-1`, `0.0`, `NULL`) inherit from `config.toml`, set fields override it.
 
@@ -527,11 +528,11 @@ The special sentinel `-2.0` for `vscore_exponent` exists because both `0.0` (dis
 - **Tool filtering** — whitelist or blacklist tools per model (small models can't compose complex tools)
 - **Native context warnings** — alerts when server n_ctx is much smaller than model capacity
 
-Six bundled profiles: `claude.toml`, `qwen.toml`, `llama.toml`, `deepseek.toml`, `gemma.toml`, `mistral.toml`
+Example profiles for Claude, Qwen, LLaMA, DeepSeek, Gemma, and Mistral are shown above. Create them at `~/.nash/models/` to customize behavior per model.
 
-### 14. Error Recovery
+### Error Recovery
 
-#### HTTP 500 — 4-Tier Retry Strategy
+#### HTTP 500 — 3-Tier Retry Strategy
 
 When the LLM server returns HTTP 500 (malformed tool_calls JSON, server crash):
 
@@ -540,7 +541,7 @@ When the LLM server returns HTTP 500 (malformed tool_calls JSON, server crash):
 | 1 | 2nd | Remove last assistant+tool_result pair | Model's last output was malformed |
 | 2 | 3rd | Reformulate scratchpad via LLM | Code blocks in scratchpad confuse JSON generation |
 | 3 | 4th | Strip scratchpad entirely | Nuclear option — remove all context pollution |
-| 4 | 5th | Give up | All recovery strategies exhausted |
+| — | — | Give up | All recovery strategies exhausted |
 
 Each tier logs a `server_error` entry to the journal with full diagnostics:
 - `server_message` — actual error from the server
@@ -564,7 +565,7 @@ if ((!result || !result[0]) && thought && thought[0]) {
 }
 ```
 
-### 15. file_read with Line Ranges
+### file_read with Line Ranges
 
 Nash's `file_read` tool supports `start_line` and `end_line` parameters to eliminate the need for `shell_exec sed/head/tail` hacks:
 
@@ -578,7 +579,7 @@ Nash's `file_read` tool supports `start_line` and `end_line` parameters to elimi
 - **total_lines in response** — helps model decide whether to use ranges on next call
 - **Backward compatible** — no parameters = full file read
 
-### 16. Web Search with SearXNG Auto-Start
+### Web Search with SearXNG Auto-Start
 
 The `web_search` tool supports two backends: **DuckDuckGo** (default, zero setup) and **SearXNG** (self-hosted, private).
 
@@ -591,7 +592,7 @@ When SearXNG is configured but not running, nash **automatically starts a SearXN
 
 The bundled `config/searxng/settings.yml` provides a minimal override that inherits SearXNG defaults while enabling JSON output format and configuring search engines for coding tasks.
 
-### 17. Interactive user_ask Tool
+### Interactive user_ask Tool
 
 The `user_ask` tool allows the LLM to pause inference and ask the user a clarifying question:
 
@@ -602,7 +603,7 @@ The `user_ask` tool allows the LLM to pause inference and ask the user a clarify
 
 This enables the agent to resolve ambiguities rather than guessing, particularly useful for tasks with underspecified requirements.
 
-### 18. Playbook Run Logs
+### Playbook Run Logs
 
 Every playbook execution is logged to `~/.nash/runs/` as a JSONL file with events:
 - `start` — playbook name, number of passes
@@ -612,11 +613,11 @@ Every playbook execution is logged to `~/.nash/runs/` as a JSONL file with event
 
 View run history with `/runs` (list) and `/runs show ID` (details) in the TUI.
 
-### 19. Unified Spec — Reproducible Configuration Snapshots
+### Unified Spec — Reproducible Configuration Snapshots
 
 Inspired by [OpenJarvis](https://arxiv.org/abs/2605.17172) (Stanford, 2026), which formalizes personal AI systems as a composition of five typed primitives (Intelligence, Engine, Agents, Tools & Memory, Learning) bundled into a single versioned "spec," nash implements **full spec serialization and import**.
 
-OpenJarvis showed that when you swap a cloud model for a local one, accuracy drops 25–39 pp because the entire stack was co-designed for the cloud model. Prompt-only tuning recovers just ~5 pp. The solution: jointly optimize across all primitives via a typed spec that captures the *complete* configuration. Nash's layered model profiles (§13) implement this — the profile carries the full "tuned configuration around the model," and `--spec` makes it inspectable.
+OpenJarvis showed that when you swap a cloud model for a local one, accuracy drops 25–39 pp because the entire stack was co-designed for the cloud model. Prompt-only tuning recovers just ~5 pp. The solution: jointly optimize across all primitives via a typed spec that captures the *complete* configuration. Nash's layered model profiles implement this — the profile carries the full "tuned configuration around the model," and `--spec` makes it inspectable.
 
 #### `nash --spec` — Export
 
@@ -732,10 +733,10 @@ type = "onnx"                             # onnx | ollama | openai | none
 model_path = "~/models/all-MiniLM-L6-v2"  # ONNX model directory
 
 [limits]
-shell_timeout = 30                        # seconds
-shell_max_output = 1048576                # bytes
+shell_timeout = 300                       # seconds
+shell_max_output = 512000                 # bytes (~512KB)
 file_max_size = 52428800                  # 50MB
-max_react_steps = 100                     # steps per react loop
+max_react_steps = 0                       # 0 = unlimited
 llm_timeout = 300                         # seconds per LLM call
 
 [memory]
@@ -860,7 +861,7 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 │   └── .git/                # Full history
 ├── models/                  # Per-model profiles
 │   └── *.toml               # e.g., qwen3.toml, claude.toml
-├── playbooks/               # Custom playbooks (auto-seeded with defaults)
+├── playbooks/               # Custom playbooks (dream.yaml auto-seeded)
 │   ├── dream.yaml
 │   ├── reflect.yaml
 │   ├── digest.yaml
@@ -898,12 +899,12 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 ### Memory Architecture
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
-| [Generative Agents](https://arxiv.org/abs/2304.03442) | 2023 | Composite scoring (recency × importance × relevance) | Hybrid scoring with semantic + substring + importance |
+| [Generative Agents](https://arxiv.org/abs/2304.03442) | 2023 | Composite scoring (recency × importance × relevance) | Hybrid scoring with semantic + substring + Bayesian validation |
 | [Memory Survey](https://arxiv.org/abs/2404.13501) | 2024 | Five critical memory operations including validation | Bayesian validation scoring (hits/misses) |
-| [CALMem](https://arxiv.org/abs/2605.20724) | 2026 | Token-budget-adaptive injection (MOIM) | Memory refresh every 3 steps with context-aware re-evaluation |
+| [CALMem](https://arxiv.org/abs/2605.20724) | 2026 | Token-budget-adaptive injection (MOIM) | Inspired budget-aware memory injection design |
 | [Mem-π](https://arxiv.org/abs/2605.21463) | 2026 | Generative memory policy, learned abstention +59% | Query-time synthesis with semantic abstention ("NONE") |
 | [DeferMem](https://arxiv.org/abs/2605.22411) | 2026 | Query-time evidence distillation | Memory synthesis produces faithful, self-contained guidance |
-| [MemForest](https://arxiv.org/abs/2605.23986) | 2026 | Temporal indexing, memory relevance changes over time | Adaptive memory refresh during react loop |
+| [MemForest](https://arxiv.org/abs/2605.23986) | 2026 | Temporal indexing, memory relevance changes over time | Inspired temporal relevance awareness in scoring design |
 | [MemFail](https://arxiv.org/abs/2605.26667) | 2026 | Weak memory injection hurts performance | Bayesian scoring + abstention gate filters low-quality memories |
 | [MemMorph](https://arxiv.org/abs/2605.26154) | 2026 | Raw storage insufficient, needs active management | Post-loop pruning + consolidation |
 
@@ -924,7 +925,7 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 ### Self-Improvement & Spec Optimization
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
-| [OpenJarvis](https://arxiv.org/abs/2605.17172) | 2026 | Personal AI = 5 typed primitives (Intelligence, Engine, Agents, Tools, Learning) in a jointly-optimizable spec. LLM-guided spec search across all primitives recovers cloud-level accuracy on-device. | Unified spec (`--spec` / `--load-spec`), layered model profiles with 30+ override fields, sentinel-based cascade (§13, §19) |
+| [OpenJarvis](https://arxiv.org/abs/2605.17172) | 2026 | Personal AI = 5 typed primitives (Intelligence, Engine, Agents, Tools, Learning) in a jointly-optimizable spec. LLM-guided spec search across all primitives recovers cloud-level accuracy on-device. | Unified spec (`--spec` / `--load-spec`), layered model profiles with 30+ override fields, sentinel-based cascade (Model Profiles, Unified Spec sections) |
 | [Self-Harness](https://arxiv.org/abs/2606.09498) | 2026 | Weakness mining + proposal + validation gate | Postmortem analysis + regression testing + validation gate |
 | [DCPM](https://arxiv.org/abs/2606.09483) | 2026 | Dual-process cognitive memory with async consolidation | Auto-dream: usage-based memory consolidation trigger |
 
@@ -944,7 +945,7 @@ MIT
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~28K lines of original C, plus vendored dependencies) and self-contained.
+Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~30K lines of original C, plus vendored dependencies) and self-contained.
 
 Key design principles:
 - **No Python dependencies** — single compiled binary

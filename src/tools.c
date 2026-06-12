@@ -3529,17 +3529,18 @@ void tool_result_free(tool_result_t *r) {
 /* ── system prompt ───────────────────────────────────── */
 
 const char *tools_system_prompt(void) {
-    /* Thread-safe: each call returns a heap-allocated string.
-     * Callers that store the result must free it; callers that use it
-     * transiently (llm_chat_add copies) can free after use.
-     * For backward compat, we cache the last result in a static pointer
-     * and free it on the next call — single-threaded callers "just work". */
+    /* Returns a heap-allocated string.  Callers that store the result must
+     * free it; callers that use it transiently (llm_chat_add copies) can
+     * free after use.  For convenience we cache the last result in a static
+     * pointer and free it on the next call — this is NOT thread-safe, but
+     * the function is only called from the inference thread. */
     static char *cached = NULL;
     free(cached);
 
-    /* UTC timestamp */
+    /* UTC timestamp (gmtime_r is thread-safe unlike gmtime) */
     time_t now = time(NULL);
-    struct tm *utc = gmtime(&now);
+    struct tm utc_buf;
+    struct tm *utc = gmtime_r(&now, &utc_buf);
     char timebuf[64];
     strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M UTC", utc);
 
