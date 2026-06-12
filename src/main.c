@@ -146,17 +146,32 @@ static tool_filter_t build_profile_tool_filter(const config_t *cfg) {
 }
 
 /* Print banner: header art + server props + client overrides */
-static void print_banner(const config_t *cfg, const char *props_json,
-                         const char *nash_dir, const char *profile_file) {
-    /* ASCII art header with gradient green ANSI colors */
-    printf("\n");
-    printf("  \033[1m\033[38;2;80;255;120m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
-    printf("  \033[1m\033[38;2;60;220;100m( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \033[0m\n");
-    printf("  \033[1m\033[38;2;40;190;80m ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \033[0m\n");
-    printf("  \033[1m\033[38;2;30;160;60m(___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \033[0m\n");
-    printf("\n");
-    printf("  \033[38;2;70;200;90m--------- * New Agentic Shell * ---------\033[0m\n");
-    printf("\n");
+/* Build banner into str_t — shared implementation for both stdio and TUI.
+ * use_ansi: 1 = include ANSI color codes (terminal), 0 = plain text (TUI).
+ * session_dir: if non-NULL, appended as "[session: ...]" line. */
+static char *build_banner_impl(const config_t *cfg, const char *props_json,
+                                const char *nash_dir, const char *session_dir,
+                                const char *profile_file, int use_ansi) {
+    str_t s = str_new(2048);
+
+    /* ASCII art header */
+    str_append_cstr(&s, "\n");
+    if (use_ansi) {
+        str_append_cstr(&s, "  \033[1m\033[38;2;80;255;120m _  _    __   ____  _  _  ____  __    __   \033[0m\n");
+        str_append_cstr(&s, "  \033[1m\033[38;2;60;220;100m( \\| |  / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \033[0m\n");
+        str_append_cstr(&s, "  \033[1m\033[38;2;40;190;80m ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \033[0m\n");
+        str_append_cstr(&s, "  \033[1m\033[38;2;30;160;60m(___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \033[0m\n");
+        str_append_cstr(&s, "\n");
+        str_append_cstr(&s, "  \033[38;2;70;200;90m--------- * New Agentic Shell * ---------\033[0m\n");
+    } else {
+        str_append_cstr(&s, "   _   _   __   ____  _  _  ____  __    __   \n");
+        str_append_cstr(&s, "  ( \\ | | / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \n");
+        str_append_cstr(&s, "   ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \n");
+        str_append_cstr(&s, "  (___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \n");
+        str_append_cstr(&s, "\n");
+        str_append_cstr(&s, "  --------- * New Agentic Shell * ---------\n");
+    }
+    str_append_cstr(&s, "\n");
 
     /* 1. Provider / server info */
     const char *ptype = cfg->provider.type;
@@ -165,106 +180,7 @@ static void print_banner(const config_t *cfg, const char *props_json,
                            strcmp(ptype, "openai") == 0);
 
     if (is_api) {
-        /* API provider: show provider type, model, and relevant details */
-        printf("provider: %s\n", ptype);
-        printf("  model:    %s\n",
-               cfg->provider.model_id ? cfg->provider.model_id : "(not set)");
-        if (cfg->provider.project_id)
-            printf("  project:  %s\n", cfg->provider.project_id);
-        if (cfg->provider.region)
-            printf("  region:   %s\n", cfg->provider.region);
-        if (cfg->provider.context_size > 0)
-            printf("  ctx:      %d tok (%dk)\n",
-                   cfg->provider.context_size,
-                   cfg->provider.context_size / 1024);
-        else
-            printf("  ctx:      unknown\n");
-        printf("\n");
-    } else if (!props_json) {
-        printf("server: %s (props unavailable)\n\n",
-               cfg->api_base ? cfg->api_base : "(none)");
-    } else {
-        cJSON *props = cJSON_Parse(props_json);
-        if (!props) {
-            printf("server: %s (props parse error)\n\n",
-                   cfg->api_base ? cfg->api_base : "(none)");
-        } else {
-            cJSON *gs = cJSON_GetObjectItem(props, "default_generation_settings");
-            cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
-            cJSON *caps = cJSON_GetObjectItem(props, "chat_template_caps");
-            cJSON *mods = cJSON_GetObjectItem(props, "modalities");
-            int n_ctx = (int)jnum(gs, "n_ctx", 0);
-
-            printf("server: %s\n", cfg->api_base ? cfg->api_base : "(none)");
-            printf("  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
-            printf("  build:    %s\n", jstr(props, "build_info", "?"));
-            printf("  ctx:      %d tok (%dk)", n_ctx, n_ctx / 1024);
-            printf(" | slots: %d\n", (int)jnum(props, "total_slots", 0));
-
-            if (params) {
-                printf("  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f",
-                       jnum(params, "temperature", 0),
-                       (int)jnum(params, "top_k", 0),
-                       jnum(params, "top_p", 0),
-                       jnum(params, "min_p", 0));
-                double rp = jnum(params, "repeat_penalty", 1.0);
-                if (rp != 1.0) printf(" rep=%.1f", rp);
-                printf("\n");
-            }
-
-            printf("  caps:     tools=%s vision=%s reasoning=%s\n",
-                   caps && jbool(caps, "supports_tools", 0) ? "yes" : "no",
-                   mods && jbool(mods, "vision", 0) ? "yes" : "no",
-                   params ? jstr(params, "reasoning_format", "none") : "?");
-
-            printf("\n");
-            cJSON_Delete(props);
-        }
-    }
-
-    /* 2. Client config */
-    const char *think_str;
-    if (cfg->thinking.mode == THINKING_ON)
-        think_str = "yes";
-    else if (cfg->thinking.mode == THINKING_EDRM)
-        think_str = is_api ? "off (edrm n/a)" : "edrm";
-    else
-        think_str = "no";
-    printf("client: temp=%.1f max_tokens=%d thinking=%s stream=%s\n",
-           cfg->temperature, cfg->max_tokens,
-           think_str,
-           cfg->stream ? "on" : "off");
-    printf("data:   %s\n", nash_dir);
-    char cwd_buf[NASH_PATH_MAX];
-    if (getcwd(cwd_buf, sizeof(cwd_buf)))
-        printf("cwd:    %s\n", cwd_buf);
-    if (profile_file)
-        printf("profile: %s\n", profile_file);
-    printf("\n");
-}
-
-/* Build banner as a string for ncurses TUI (no ANSI escapes) */
-static char *build_banner_string(const config_t *cfg, const char *props_json,
-                                  const char *nash_dir, const char *session_dir,
-                                  const char *profile_file) {
-    str_t s = str_new(2048);
-
-    str_append_cstr(&s, "\n");
-    str_append_cstr(&s, "   _   _   __   ____  _  _  ____  __    __   \n");
-    str_append_cstr(&s, "  ( \\ | | / _\\ / ___\\/ )/ \\(  __)(  )  (  )  \n");
-    str_append_cstr(&s, "   ) \\  |/    \\\\___ \\) __ ( ) _) / (_/\\/ (_/\\ \n");
-    str_append_cstr(&s, "  (___)_)\\_/\\_/(____/\\_)\\_/(____\\\\____/\\____/ \n");
-    str_append_cstr(&s, "\n");
-    str_append_cstr(&s, "  --------- * New Agentic Shell * ---------\n");
-    str_append_cstr(&s, "\n");
-
-    const char *bptype = cfg->provider.type;
-    int bis_api = bptype && (strcmp(bptype, "vertex") == 0 ||
-                             strcmp(bptype, "anthropic") == 0 ||
-                             strcmp(bptype, "openai") == 0);
-
-    if (bis_api) {
-        str_appendf(&s, "provider: %s\n", bptype);
+        str_appendf(&s, "provider: %s\n", ptype);
         str_appendf(&s, "  model:    %s\n",
                     cfg->provider.model_id ? cfg->provider.model_id : "(not set)");
         if (cfg->provider.project_id)
@@ -300,11 +216,14 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
                         n_ctx, n_ctx / 1024, (int)jnum(props, "total_slots", 0));
 
             if (params) {
-                str_appendf(&s, "  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f\n",
+                str_appendf(&s, "  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f",
                             jnum(params, "temperature", 0),
                             (int)jnum(params, "top_k", 0),
                             jnum(params, "top_p", 0),
                             jnum(params, "min_p", 0));
+                double rp = jnum(params, "repeat_penalty", 1.0);
+                if (rp != 1.0) str_appendf(&s, " rep=%.1f", rp);
+                str_append_cstr(&s, "\n");
             }
 
             str_appendf(&s, "  caps:     tools=%s vision=%s reasoning=%s\n",
@@ -316,16 +235,17 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
         }
     }
 
-    const char *ts;
+    /* 2. Client config */
+    const char *think_str;
     if (cfg->thinking.mode == THINKING_ON)
-        ts = "yes";
+        think_str = "yes";
     else if (cfg->thinking.mode == THINKING_EDRM)
-        ts = bis_api ? "off (edrm n/a)" : "edrm";
+        think_str = is_api ? "off (edrm n/a)" : "edrm";
     else
-        ts = "no";
+        think_str = "no";
     str_appendf(&s, "client: temp=%.1f max_tokens=%d thinking=%s stream=%s\n",
                 cfg->temperature, cfg->max_tokens,
-                ts,
+                think_str,
                 cfg->stream ? "on" : "off");
     str_appendf(&s, "data:   %s\n", nash_dir);
     char cwd_buf[NASH_PATH_MAX];
@@ -335,8 +255,27 @@ static char *build_banner_string(const config_t *cfg, const char *props_json,
         str_appendf(&s, "profile: %s\n", profile_file);
     if (session_dir)
         str_appendf(&s, "\n[session: %s]\n", session_dir);
+    if (!session_dir)
+        str_append_cstr(&s, "\n");
 
     return str_steal(&s);
+}
+
+/* Print banner to stdout with ANSI colors (CLI mode) */
+static void print_banner(const config_t *cfg, const char *props_json,
+                         const char *nash_dir, const char *profile_file) {
+    char *banner = build_banner_impl(cfg, props_json, nash_dir, NULL,
+                                     profile_file, 1);
+    fputs(banner, stdout);
+    free(banner);
+}
+
+/* Build banner as a plain-text string for ncurses TUI */
+static char *build_banner_string(const config_t *cfg, const char *props_json,
+                                  const char *nash_dir, const char *session_dir,
+                                  const char *profile_file) {
+    return build_banner_impl(cfg, props_json, nash_dir, session_dir,
+                             profile_file, 0);
 }
 
 
