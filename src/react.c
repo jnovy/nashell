@@ -1025,6 +1025,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
         cJSON *sys_p = cJSON_CreateObject();
         cJSON_AddStringToObject(sys_p, "type", "system_prompt");
+        /* Layer 1: model identity on every react loop (for postmortem/regression) */
+        if (ctx->provider && ctx->provider->cfg.model_id)
+            cJSON_AddStringToObject(sys_p, "model", ctx->provider->cfg.model_id);
+        if (ctx->tools->cfg && ctx->tools->cfg->provider.type)
+            cJSON_AddStringToObject(sys_p, "provider", ctx->tools->cfg->provider.type);
+        if (ctx->tools->cfg && ctx->tools->cfg->matched_profile_file)
+            cJSON_AddStringToObject(sys_p, "profile", ctx->tools->cfg->matched_profile_file);
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
                        strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL);
         cJSON_Delete(sys_p);
@@ -1064,6 +1071,49 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     } /* end if (!restored) */
+
+    /* Layer 2: full spec snapshot on change (content-addressed, deduplicated).
+     * Emitted once at session start and again whenever the spec hash changes
+     * (e.g., model switch, hot-reload, --load-spec).  The full resolved spec
+     * TOML is saved in the content-addressed store — identical specs across
+     * sessions or loops cost zero extra storage.
+     * Runs unconditionally (outside !restored) so even checkpoint-resumed
+     * sessions record the spec for the current process invocation. */
+    if (ctx->tools->cfg) {
+        char *spec_str = config_dump_spec_to_string(ctx->tools->cfg,
+                                                    ctx->tools->cfg->matched_profile_file);
+        if (spec_str) {
+            char *spec_hash = store_save(ctx->tools->store, spec_str);
+            int changed = 0;
+            if (spec_hash) {
+                if (!ctx->tools->last_spec_hash ||
+                    strcmp(spec_hash, ctx->tools->last_spec_hash) != 0) {
+                    changed = 1;
+                    free(ctx->tools->last_spec_hash);
+                    ctx->tools->last_spec_hash = strdup(spec_hash);
+                }
+            }
+            if (changed && spec_hash) {
+                char *spec_alias = tool_register_alias(ctx->tools, spec_hash);
+                cJSON *sp = cJSON_CreateObject();
+                if (ctx->provider && ctx->provider->cfg.model_id)
+                    cJSON_AddStringToObject(sp, "model", ctx->provider->cfg.model_id);
+                if (ctx->tools->cfg->provider.type)
+                    cJSON_AddStringToObject(sp, "provider", ctx->tools->cfg->provider.type);
+                if (ctx->tools->cfg->matched_profile_file)
+                    cJSON_AddStringToObject(sp, "profile", ctx->tools->cfg->matched_profile_file);
+                cJSON_AddStringToObject(sp, "spec_hash", spec_hash);
+                journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
+                               "spec", sp, spec_alias,
+                               strlen(spec_str), count_lines(spec_str), NULL, NULL);
+                cJSON_Delete(sp);
+                free(spec_alias);
+            }
+            free(spec_hash);
+            free(spec_str);
+        }
+    }
+
     char *final_result = NULL;
     struct timespec task_start;
     clock_gettime(CLOCK_MONOTONIC, &task_start);

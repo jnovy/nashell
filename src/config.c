@@ -883,6 +883,19 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     }
 }
 
+/* ── Unified Spec: dump spec to heap string ── */
+
+char *config_dump_spec_to_string(const config_t *cfg, const char *profile_file) {
+    if (!cfg) return NULL;
+    char *buf = NULL;
+    size_t len = 0;
+    FILE *mem = open_memstream(&buf, &len);
+    if (!mem) return NULL;
+    config_dump_spec(cfg, mem, profile_file);
+    fclose(mem);
+    return buf;  /* caller frees */
+}
+
 /* ── Unified Spec: load spec as overlay ── */
 
 int config_load_spec_overlay(config_t *cfg, const char *path) {

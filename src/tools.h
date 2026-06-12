@@ -141,6 +141,8 @@ typedef struct {
     const char    *thought;
     /* Per-pass tool access control (playbooks/dream) */
     tool_filter_t  tool_filter;
+    /* Spec journal tracking: last spec hash for change detection */
+    char          *last_spec_hash;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

@@ -570,6 +570,7 @@ int main(int argc, char **argv) {
         const model_profile_t *profile = config_match_model(cfg, server_model);
         if (profile) {
             matched_profile_file = profile->source_file;
+            cfg->matched_profile_file = matched_profile_file;
             fprintf(stderr, "[model-profile] matched '%s' from %s\n",
                     profile->match, profile->source_file);
 
@@ -878,6 +879,7 @@ int main(int argc, char **argv) {
         if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
+        free(tools.last_spec_hash);
         journal_free(journal);
         /* Remove session directory if it's empty (no work was done) */
         if (session_dir && is_dir_empty(session_dir)) {
@@ -1863,6 +1865,7 @@ int main(int argc, char **argv) {
         if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
+        free(tools.last_spec_hash);
         journal_free(journal);
         /* Remove session directory if it's empty (no work was done) */
         if (session_dir && is_dir_empty(session_dir)) {

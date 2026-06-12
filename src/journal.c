@@ -215,9 +215,10 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             str_append_cstr(&out, "\n");
         }
 
-        /* Skip system, query, context, and memory_context entries (shown in header / redundant) */
+        /* Skip system, query, context, spec, and memory_context entries (shown in header / redundant) */
         if (tool && (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0 ||
-                     strcmp(tool, "context") == 0 || strcmp(tool, "memory_context") == 0)) {
+                     strcmp(tool, "context") == 0 || strcmp(tool, "spec") == 0 ||
+                     strcmp(tool, "memory_context") == 0)) {
             cJSON_Delete(entry);
             count++;
             continue;

@@ -267,6 +267,7 @@ typedef struct {
 
     /* Active model profile (set after model detection in main.c) */
     const char      *system_prompt_extra;  /* points into matched profile, do NOT free */
+    const char      *matched_profile_file; /* source file of matched profile (diagnostics) */
 
     /* Was [thinking] section explicitly present in config.toml? */
     int              thinking_explicit;    /* 1 = yes, model profile won't override */
@@ -332,5 +333,9 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file);
  * round-trip: `nash --spec > spec.toml` then `nash --load-spec spec.toml`.
  * Returns 0 on success, -1 on parse error. */
 int config_load_spec_overlay(config_t *cfg, const char *path);
+
+/* Dump the fully-resolved spec as a heap-allocated TOML string.
+ * Caller must free() the returned string.  Returns NULL on failure. */
+char *config_dump_spec_to_string(const config_t *cfg, const char *profile_file);
 
 #endif
