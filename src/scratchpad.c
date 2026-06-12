@@ -7,6 +7,8 @@
 
 void scratchpad_init(scratchpad_t *sp) {
     memset(sp, 0, sizeof(*sp));
+    sp->cap = SCRATCHPAD_INIT_CAP;
+    sp->sections = calloc((size_t)sp->cap, sizeof(scratchpad_section_t));
 }
 
 void scratchpad_free(scratchpad_t *sp) {
@@ -14,13 +16,29 @@ void scratchpad_free(scratchpad_t *sp) {
         free(sp->sections[i].name);
         free(sp->sections[i].content);
     }
+    free(sp->sections);
+    sp->sections = NULL;
     sp->count = 0;
+    sp->cap = 0;
 }
 
 void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
     scratchpad_free(dst);
     *dst = *src;
     memset(src, 0, sizeof(*src));
+}
+
+/* Ensure capacity for at least one more section. */
+static int scratchpad_grow(scratchpad_t *sp) {
+    if (sp->count < sp->cap) return 0;
+    int new_cap = sp->cap ? sp->cap * 2 : SCRATCHPAD_INIT_CAP;
+    scratchpad_section_t *new_s = realloc(sp->sections,
+                                          (size_t)new_cap * sizeof(scratchpad_section_t));
+    if (!new_s) return -1;
+    memset(new_s + sp->cap, 0, (size_t)(new_cap - sp->cap) * sizeof(scratchpad_section_t));
+    sp->sections = new_s;
+    sp->cap = new_cap;
+    return 0;
 }
 
 int scratchpad_find(scratchpad_t *sp, const char *name) {
@@ -43,8 +61,8 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
         sp->sections[idx].priority = priority;
         return 0;
     }
-    if (sp->count >= SCRATCHPAD_MAX_SECTIONS)
-        return -1;  /* full */
+    if (scratchpad_grow(sp) < 0)
+        return -1;  /* allocation failed */
 
     sp->sections[sp->count].name = strdup(name);
     sp->sections[sp->count].content = strdup(content);
@@ -97,24 +115,27 @@ static int section_cmp(const void *a, const void *b) {
 char *scratchpad_serialize(scratchpad_t *sp) {
     if (sp->count == 0) return NULL;
 
-    /* Sort by priority */
-    scratchpad_section_t sorted[SCRATCHPAD_MAX_SECTIONS];
-    memcpy(sorted, sp->sections, sp->count * sizeof(scratchpad_section_t));
-    qsort(sorted, sp->count, sizeof(scratchpad_section_t), section_cmp);
+    /* Sort a copy by priority */
+    scratchpad_section_t *sorted = malloc((size_t)sp->count * sizeof(scratchpad_section_t));
+    if (!sorted) return NULL;
+    memcpy(sorted, sp->sections, (size_t)sp->count * sizeof(scratchpad_section_t));
+    qsort(sorted, (size_t)sp->count, sizeof(scratchpad_section_t), section_cmp);
 
     str_t out = str_new(2048);
     for (int i = 0; i < sp->count; i++) {
         str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
     }
+    free(sorted);
     return str_steal(&out);
 }
 
 char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     if (sp->count == 0) return NULL;
 
-    /* Sort by priority (ascending = highest priority first) */
-    scratchpad_section_t sorted[SCRATCHPAD_MAX_SECTIONS];
-    memcpy(sorted, sp->sections, sp->count * sizeof(scratchpad_section_t));
+    /* Sort a copy by priority (ascending = highest priority first) */
+    scratchpad_section_t *sorted = malloc((size_t)sp->count * sizeof(scratchpad_section_t));
+    if (!sorted) return NULL;
+    memcpy(sorted, sp->sections, (size_t)sp->count * sizeof(scratchpad_section_t));
     qsort(sorted, sp->count, sizeof(scratchpad_section_t), section_cmp);
 
     str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
@@ -144,6 +165,7 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
         str_append_cstr(&out, "\n\n");
     }
 
+    free(sorted);
     if (out.len == 0) {
         str_free(&out);
         return NULL;

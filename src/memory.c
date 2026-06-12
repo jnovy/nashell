@@ -57,12 +57,18 @@ typedef int (*json_entry_cb)(const char *dirpath, cJSON *entry, void *user_data)
 
 /* ── Directory iteration wrappers (use for_each_dir_entry from str.h) ── */
 
+/* Context struct for json_entry_wrapper — avoids casting function pointers
+ * through void* (which is technically undefined behavior in ISO C). */
+typedef struct {
+    json_entry_cb cb;
+    void *user_data;
+} json_entry_ctx_t;
+
 /* Wrapper to adapt json_entry_cb to dir_entry_cb signature. */
 static int json_entry_wrapper(const char *dirpath, const char *filename,
                               const char *fullpath, void *user_data) {
     (void)filename;
-    json_entry_cb cb = (json_entry_cb)((void **)user_data)[0];
-    void *real_ud = ((void **)user_data)[1];
+    json_entry_ctx_t *ctx = (json_entry_ctx_t *)user_data;
 
     char *buf = slurp_file(fullpath, NULL);
     if (!buf) return 0;
@@ -71,15 +77,15 @@ static int json_entry_wrapper(const char *dirpath, const char *filename,
     free(buf);
     if (!entry) return 0;
 
-    int rc = cb(dirpath, entry, real_ud);
+    int rc = ctx->cb(dirpath, entry, ctx->user_data);
     if (rc != JSON_CB_KEEP_ENTRY)
         cJSON_Delete(entry);
     return rc;
 }
 
 static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
-    void *wrapper_args[2] = { (void *)cb, user_data };
-    for_each_dir_entry(dirpath, ".json", json_entry_wrapper, wrapper_args);
+    json_entry_ctx_t ctx = { .cb = cb, .user_data = user_data };
+    for_each_dir_entry(dirpath, ".json", json_entry_wrapper, &ctx);
 }
 
 /* ── git version control for memory store ──────────────────────── */
@@ -373,6 +379,16 @@ void memory_free(memory_t *m) {
     free(m->dir);
     free(m->model);
     free(m);
+}
+
+void memory_set_recall_config(memory_t *m, double min_score,
+                              float blend_semantic, float blend_substring,
+                              float vscore_exp) {
+    if (!m) return;
+    m->recall_min_score = min_score;
+    m->recall_blend_semantic = blend_semantic;
+    m->recall_blend_substring = blend_substring;
+    m->vscore_exponent = vscore_exp;
 }
 
 /* ── embedding helpers ───────────────────────────────── */
@@ -937,27 +953,10 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 e->refs[ri] = strdup(ie->refs[ri]);
         }
 
-        /* Update access_count in index and write back to disk */
+        /* Update access_count in index only (deferred disk write).
+         * Avoids O(k) file I/O per recall — access_count is persisted
+         * when the entry is next memory_store'd or on memory_flush(). */
         ie->access_count++;
-        {
-            cJSON *entry = memory_load_entry_json(m, ie->key);
-            if (entry) {
-                cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-                if (ac) cJSON_SetNumberValue(ac, (double)ie->access_count);
-                else cJSON_AddNumberToObject(entry, "access_count", ie->access_count);
-                char ts[32];
-                snprintf(ts, sizeof(ts), "%.5f", epoch_now());
-                cJSON *la = cJSON_GetObjectItem(entry, "last_accessed");
-                if (la) cJSON_ReplaceItemInObject(entry, "last_accessed",
-                                                   cJSON_CreateString(ts));
-                else cJSON_AddStringToObject(entry, "last_accessed", ts);
-                char *json = cJSON_Print(entry);
-                FILE *wf = fopen(ie->path, "w");
-                if (wf) { fputs(json, wf); fclose(wf); }
-                free(json);
-                cJSON_Delete(entry);
-            }
-        }
 
         e->relevance = scored[i].score;
         e->raw_relevance = scored[i].relevance;

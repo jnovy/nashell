@@ -5,6 +5,7 @@
 #include "journal.h"
 #include "store.h"
 #include "nash_log.h"
+#include "tools_registry.h"
 #include "cJSON.h"
 #include "str.h"
 #include <stdio.h>
@@ -17,6 +18,14 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
+/* Get chars-per-token ratio from provider config, defaulting to 3.5.
+ * Used for context budget calculations instead of hardcoded 4. */
+static float get_chars_per_token(const react_ctx_t *ctx) {
+    if (ctx->provider && ctx->provider->cfg.chars_per_token > 0)
+        return ctx->provider->cfg.chars_per_token;
+    return 3.5f;
+}
+
 static const char *json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
@@ -26,7 +35,7 @@ static const char *json_get_str(cJSON *obj, const char *key) {
 /* Add system prompt to chat, appending model-specific rules if configured.
  * Avoids 3x duplication of the same logic at each call site. */
 static void add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
-    const char *base = tools_system_prompt();
+    char *base = tools_system_prompt();
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
         size_t len = strlen(base) + strlen(extra) + 64;
@@ -41,6 +50,7 @@ static void add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
     } else {
         llm_chat_add(chat, "system", base);
     }
+    free(base);
 }
 
 /* ── reflection deduplication callback ───────────────── */
@@ -870,7 +880,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * gets a generous budget. All limits scale linearly with context_size. */
     size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
     if (ctx->llm->context_size > 0) {
-        max_scratchpad = (size_t)ctx->llm->context_size * 4 * 15 / 100;  /* 15% in chars (~4 chars/tok) */
+        float cpt = get_chars_per_token(ctx);
+        max_scratchpad = (size_t)(ctx->llm->context_size * cpt * 15 / 100);  /* 15% in chars */
     }
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
@@ -1004,7 +1015,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Record system prompt and user query in journal (step 0) */
     {
-        const char *base_prompt = tools_system_prompt();
+        char *base_prompt = tools_system_prompt();
         const char *extra = ctx->tools->cfg ? ctx->tools->cfg->system_prompt_extra : NULL;
         char *full_prompt = NULL;
         const char *sys_prompt;
@@ -1038,6 +1049,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(sys_alias);
         free(sys_hash);
         free(full_prompt);
+        free(base_prompt);
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
@@ -1904,27 +1916,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                    err_j->valuestring, NULL);
 
                     /* Inject corrective message into chat (with store ref for debugging) */
+                    char *tool_names = tool_registry_names_csv();
                     char correction[1024];
                     if (ut_alias) {
                         snprintf(correction, sizeof(correction),
                             "ERROR: '%s' is not a valid tool. "
                             "Stored garbled call for debugging: file_read(\"%s\"). "
-                            "Available tools: shell_exec, file_read, file_write, "
-                            "file_edit, grep_search, web_fetch, web_search, notes, "
-                            "done, memory_store, memory_recall, memory_pin, "
-                            "memory_unpin, memory_delete. "
+                            "Available tools: %s. "
                             "Please retry with the correct tool name.",
-                            action_name, ut_alias);
+                            action_name, ut_alias,
+                            tool_names ? tool_names : "(unknown)");
                     } else {
                         snprintf(correction, sizeof(correction),
                             "ERROR: '%s' is not a valid tool. "
-                            "Available tools: shell_exec, file_read, file_write, "
-                            "file_edit, grep_search, web_fetch, web_search, notes, "
-                            "done, memory_store, memory_recall, memory_pin, "
-                            "memory_unpin, memory_delete. "
+                            "Available tools: %s. "
                             "Please retry with the correct tool name.",
-                            action_name);
+                            action_name,
+                            tool_names ? tool_names : "(unknown)");
                     }
+                    free(tool_names);
 
                     if (chat->last_tool_call_id) {
                         /* Tool calls API: send error as tool result */
@@ -2060,7 +2070,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             int total_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
                 total_chars += (int)strlen(chat->msgs[i].content);
-            int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
+            float cpt_ev = get_chars_per_token(ctx);
+            int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * cpt_ev));
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > 6) {
                 /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
                 for (int i = 3; i < chat->n_msgs - 4; i++) {
@@ -2080,7 +2091,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 total_chars = 0;
                 for (int i = 0; i < chat->n_msgs; i++)
                     total_chars += (int)strlen(chat->msgs[i].content);
-                usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * 4));
+                usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * cpt_ev));
 
                 /* If still over threshold, do standard eviction */
                 int keep_head = 3;
@@ -2090,33 +2101,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                 /* FIX B5: Adjust eviction boundary to not split tool_call/tool_result pairs.
                  * A pair is: assistant(tool_calls_json) immediately followed by
-                 * tool_result(tool_call_id). Never evict one without the other. */
-                if (evict_end > evict_start && evict_end < chat->n_msgs) {
-                    /* Case 1: Boundary lands between assistant and its tool_result.
-                     * assistant(tool_calls) at evict_end-1, tool_result at evict_end.
-                     * Keep both by moving boundary back one. */
+                 * tool_result(tool_call_id). Never evict one without the other.
+                 * Single-loop approach: scan backward from evict_end to find a clean
+                 * boundary where no pair straddles the cut. */
+                while (evict_end > evict_start && evict_end < chat->n_msgs) {
+                    /* If boundary lands on a tool_result, its assistant call
+                     * is at evict_end-1. Include it → move forward. */
+                    if (chat->msgs[evict_end].tool_call_id) {
+                        evict_end++;
+                        continue;
+                    }
+                    /* If the last evicted message (evict_end-1) is an assistant
+                     * with tool_calls_json, its result at evict_end would be
+                     * orphaned in the tail. Pull boundary back. */
                     if (evict_end - 1 >= evict_start &&
-                        chat->msgs[evict_end - 1].tool_calls_json &&
-                        evict_end < chat->n_msgs &&
-                        chat->msgs[evict_end].tool_call_id) {
-                        evict_end--;  /* keep the pair in tail */
+                        chat->msgs[evict_end - 1].tool_calls_json) {
+                        evict_end--;
+                        continue;
                     }
-                    /* Case 2: Boundary lands on assistant with tool_calls_json, and
-                     * the next message is its tool_result. Move boundary forward to
-                     * evict both, keeping the pair together. */
-                    if (evict_end < chat->n_msgs &&
-                        chat->msgs[evict_end].tool_calls_json &&
-                        evict_end + 1 < chat->n_msgs &&
-                        chat->msgs[evict_end + 1].tool_call_id) {
-                        evict_end++;  /* evict both assistant and its tool_result */
-                    }
-                    /* Case 3: Boundary lands on a tool_result whose assistant was
-                     * already evicted (or is before evict_start). Include this
-                     * orphaned tool_result in the eviction. */
-                    if (evict_end < chat->n_msgs && chat->msgs[evict_end].tool_call_id &&
-                        (evict_end <= evict_start || !chat->msgs[evict_end - 1].tool_calls_json)) {
-                        evict_end++;  /* evict the orphaned tool_result */
-                    }
+                    break;  /* clean boundary found */
                 }
 
                 if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
@@ -2138,7 +2141,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     /* Step 2: LLM summarization call */
                     char *summary = NULL;
                     if (evicted_text.len > 0) {
-                        size_t sp_budget = (size_t)ctx->llm->context_size * 4 * 15 / 100;
+                        size_t sp_budget = (size_t)(ctx->llm->context_size * cpt_ev * 15 / 100);
                         char *current_sp = (ctx->tools->scratch.count > 0)
                             ? scratchpad_serialize(&ctx->tools->scratch) : strdup("");
 
@@ -2172,7 +2175,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         free(raw_summary);
                         if (summary) {
                             scratchpad_write(&ctx->tools->scratch, "context_summary",
-                                             summary, 0);  /* priority 0 = highest */
+                                             summary, 1);  /* priority 1 = highest */
                             scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
                         }
                         free(summary);
@@ -2209,7 +2212,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     /* Step 4: Re-inject updated scratchpad at evict_start */
                     {
                         size_t sp_max = (ctx->llm->context_size > 0)
-                            ? (size_t)ctx->llm->context_size * 4 * 15 / 100 : 8192;
+                            ? (size_t)(ctx->llm->context_size * get_chars_per_token(ctx) * 15 / 100) : 8192;
                         char *fresh_sp = scratchpad_serialize_budget(
                             &ctx->tools->scratch, sp_max);
                         if (fresh_sp && fresh_sp[0]) {
@@ -2636,8 +2639,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * The LLM sees serialized text (## headers) but not the priority
          * metadata, so we must reattach priorities after parsing its output. */
         typedef struct { char name[256]; int priority; } sec_pri_t;
-        sec_pri_t orig_priorities[SCRATCHPAD_MAX_SECTIONS];
         int n_orig = ctx->tools->scratch.count;
+        sec_pri_t *orig_priorities = calloc((size_t)(n_orig > 0 ? n_orig : 1), sizeof(sec_pri_t));
         for (int i = 0; i < n_orig; i++) {
             size_t nlen = strlen(ctx->tools->scratch.sections[i].name);
             if (nlen >= sizeof(orig_priorities[0].name))
@@ -2719,6 +2722,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                     }
                 }
+                free(orig_priorities);
 
                 /* Re-add the preserved result section so it survives pruning.
                  * If scratchpad_parse() already parsed it from LLM output,

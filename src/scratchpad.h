@@ -8,7 +8,7 @@
  * Operations: write, append, read, clear, list.
  * Priority determines compression/eviction order under context pressure. */
 
-#define SCRATCHPAD_MAX_SECTIONS 32
+#define SCRATCHPAD_INIT_CAP 32
 
 typedef struct {
     char *name;       /* section name (e.g. "findings", "plan", "status") */
@@ -17,8 +17,9 @@ typedef struct {
 } scratchpad_section_t;
 
 typedef struct {
-    scratchpad_section_t sections[SCRATCHPAD_MAX_SECTIONS];
+    scratchpad_section_t *sections;  /* dynamically allocated array */
     int count;
+    int cap;                         /* allocated capacity */
 } scratchpad_t;
 
 /* Scratchpad lifecycle */

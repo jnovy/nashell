@@ -640,7 +640,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     size_t new_len = strlen(new_text);
     size_t result_len = flen - old_len + new_len;
     char *result = malloc(result_len + 1);
-    if (!result) { free(content); free(pre_hash); return make_error("malloc failed"); }
+    if (!result) { free(content); free(pre_hash); free(pre_alias); return make_error("malloc failed"); }
 
     size_t prefix_len = (size_t)(pos - content);
     memcpy(result, content, prefix_len);
@@ -649,7 +649,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     result[result_len] = '\0';
 
     if (write_file(path, result, result_len) < 0) {
-        free(content); free(result); free(pre_hash);
+        free(content); free(result); free(pre_hash); free(pre_alias);
         return make_error("cannot write file");
     }
 
@@ -954,13 +954,13 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
         dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
         execlp("grep", "grep", "-rn",
-               "--include=*.c", "--include=*.h", "--include=*.py",
-               "--include=*.js", "--include=*.json", "--include=*.yaml",
-               "--include=*.yml", "--include=*.md", "--include=*.txt",
-               "--include=*.sh", "--include=*.go", "--include=*.rs",
-               "--include=*.toml", "--include=*.xml", "--include=*.html",
-               "--include=*.java", "--include=*.rb", "--include=*.php",
-               "--include=*.cfg", "--include=*.ini", "--include=*.conf",
+               "--binary-files=without-match",
+               "--exclude-dir=.git", "--exclude-dir=node_modules",
+               "--exclude-dir=__pycache__", "--exclude-dir=.tox",
+               "--exclude-dir=vendor", "--exclude-dir=target",
+               "--exclude-dir=build", "--exclude-dir=dist",
+               "--exclude=*.o", "--exclude=*.a", "--exclude=*.so",
+               "--exclude=*.dylib", "--exclude=*.pyc",
                "-m", max_matches_str,
                pattern, path, (char *)NULL);
         _exit(127);
@@ -1820,20 +1820,15 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     llm_stats_t stats = {0};
     char *response = NULL;
 
-    /* Temporarily override provider config (low temp, short output) */
-    int saved_max_tokens = ctx->provider->cfg.max_tokens;
-    float saved_temp = ctx->provider->cfg.temperature;
-    int saved_thinking = ctx->provider->cfg.enable_thinking;
-    int saved_budget = ctx->provider->cfg.thinking_budget;
+    /* Override provider config for consolidation (low temp, short output).
+     * Save/restore as a block to be signal-safe and clear. */
+    provider_config_t saved_cfg = ctx->provider->cfg;
     ctx->provider->cfg.max_tokens = 2048;
     ctx->provider->cfg.temperature = 0.1f;
     ctx->provider->cfg.enable_thinking = 0;
     ctx->provider->cfg.thinking_budget = 0;
     response = provider_complete(ctx->provider, chat, &stats);
-    ctx->provider->cfg.max_tokens = saved_max_tokens;
-    ctx->provider->cfg.temperature = saved_temp;
-    ctx->provider->cfg.enable_thinking = saved_thinking;
-    ctx->provider->cfg.thinking_budget = saved_budget;
+    ctx->provider->cfg = saved_cfg;
     llm_chat_free(chat);
 
     if (!response || strlen(response) < 5) {
@@ -2003,10 +1998,10 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     /* GDN-2 P2: Try to consolidate with similar existing memories.
      * FIX B2: Guard against recursive consolidation — memory_try_consolidate
      * calls memory_store() which could trigger another consolidation cycle. */
-    if (!pinned && !ctx->consolidating) {
-        ctx->consolidating = 1;
+    if (!pinned && !ctx->memory->consolidating) {
+        ctx->memory->consolidating = 1;
         memory_try_consolidate(ctx, key, value);
-        ctx->consolidating = 0;
+        ctx->memory->consolidating = 0;
     }
 
     /* Store for audit */
@@ -3185,14 +3180,8 @@ void tool_result_free(tool_result_t *r) {
 
 /* ── system prompt ───────────────────────────────────── */
 
-const char *tools_system_prompt(void) {
-    /* Returns a heap-allocated string.  Callers that store the result must
-     * free it; callers that use it transiently (llm_chat_add copies) can
-     * free after use.  For convenience we cache the last result in a static
-     * pointer and free it on the next call — this is NOT thread-safe, but
-     * the function is only called from the inference thread. */
-    static char *cached = NULL;
-    free(cached);
+char *tools_system_prompt(void) {
+    /* Returns a newly heap-allocated string. Caller must free(). */
 
     /* UTC timestamp (gmtime_r is thread-safe unlike gmtime) */
     time_t now = time(NULL);
@@ -3207,7 +3196,7 @@ const char *tools_system_prompt(void) {
         snprintf(cwdbuf, sizeof(cwdbuf), "(unknown)");
 
     char *buf = malloc(NASH_PATH_MAX);
-    if (!buf) { cached = NULL; return ""; }
+    if (!buf) return "";
 
     snprintf(buf, NASH_PATH_MAX,
         "You are an autonomous coding agent. Solve the user's task step by step "
@@ -3234,6 +3223,5 @@ const char *tools_system_prompt(void) {
         "- Call done with the final answer when finished.\n",
         timebuf, cwdbuf);
 
-    cached = buf;
     return buf;
 }

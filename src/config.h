@@ -97,7 +97,7 @@ typedef struct {
      * so switching models auto-adjusts everything. */
 
     /* [client] overrides */
-    float  temperature;         /* 0.0 = inherit */
+    float  temperature;         /* -1.0 = inherit (0.0 is valid: deterministic sampling) */
     int    max_tokens;          /* 0 = inherit */
 
     /* [react] subsystem overrides (same sentinel pattern as playbooks) */

@@ -612,12 +612,11 @@ int main(int argc, char **argv) {
     memory_t *memory = memory_new(nash_dir);
     if (server_model)
         memory->model = strdup(server_model);
-    /* P0: Set recall score threshold from config for abstention gate */
-    memory->recall_min_score = cfg->recall_min_score;
-    /* P3: Self-Harness tunable blend weights */
-    memory->recall_blend_semantic = cfg->recall_blend_semantic;
-    memory->recall_blend_substring = cfg->recall_blend_substring;
-    memory->vscore_exponent = cfg->vscore_exponent;
+    /* Set recall tuning parameters from config (centralized sync) */
+    memory_set_recall_config(memory, cfg->recall_min_score,
+                             cfg->recall_blend_semantic,
+                             cfg->recall_blend_substring,
+                             cfg->vscore_exponent);
 
     /* Prune stale memories at startup (90 days, access_count < 2) */
     int pruned = memory_prune(memory,

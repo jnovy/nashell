@@ -89,7 +89,7 @@ struct provider {
     long  _auth_token_expiry;   /* token expiry time (Vertex) */
 
     /* ── Tool filter (set by caller before provider_complete) ── */
-    const void *tool_filter;    /* points to tool_filter_t; NULL = all tools */
+    const struct tool_filter_t *tool_filter;  /* NULL = all tools */
 
     /* ── Error diagnostics (populated on error, read by react.c) ── */
     char *last_error;           /* error message (curl error, HTTP error, etc.) */
@@ -112,9 +112,8 @@ cJSON *build_tools_from_registry(provider_type_t type);
 
 /* Build tool definitions with an optional filter (whitelist/blacklist).
  * filter=NULL means all tools included. Uses tool_filter_t from tools.h. */
-struct tool_filter_t;  /* forward declaration */
 cJSON *build_tools_from_registry_filtered(provider_type_t type,
-                                           const void *filter);
+                                           const struct tool_filter_t *filter);
 
 /* Shared utilities (used by local/openai providers) */
 

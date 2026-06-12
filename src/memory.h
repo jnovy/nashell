@@ -54,26 +54,16 @@ typedef struct {
     char *model;        /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
     embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
 
-    /* P0: Score threshold for recall injection (abstention gate).
-     * Memories with composite score below this value are excluded from
-     * recall results, implementing the "abstention" pattern from:
-     *   Mem-π [arXiv:2605.21463] — learned abstention yields +22% avg
-     *   MemFail [arXiv:2605.26667] — weak injection hurts performance
-     * Default: 0.25 (set from config.recall_min_score)
-     * Empirically calibrated with vscore_exponent=0.3: 10 queries × 639 memories. */
-    double recall_min_score;
+    /* Recall tuning parameters — set once via memory_set_recall_config().
+     * Centralizes the config→memory sync (was 4 manual copies in main.c). */
+    double recall_min_score;       /* min composite score for injection (default 0.25) */
+    float recall_blend_semantic;   /* semantic weight (default 0.7) */
+    float recall_blend_substring;  /* substring weight (default 0.3) */
+    float vscore_exponent;         /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
 
-    /* P3: Self-Harness tunable blend weights for semantic/substring scoring.
-     * Set from config.recall_blend_semantic / recall_blend_substring. */
-    float recall_blend_semantic;   /* default 0.7 */
-    float recall_blend_substring;  /* default 0.3 */
-
-    /* Power-law exponent for Bayesian validation score.
-     * composite = relevance × pow(vscore, exponent).
-     * 0.0 = disabled (pure relevance ranking), 1.0 = full multiplicative.
-     * Default 0.3: reduces cold-start penalty (vscore=0.5 → ×0.81 instead of ×0.50)
-     * while preserving downward signal for memories with actual misses. */
-    float vscore_exponent;         /* default 0.3 */
+    /* Guard against recursive consolidation — set during
+     * memory_try_consolidate to prevent consolidation→store→consolidation loops. */
+    int consolidating;
 
     /* P1: In-memory index — populated by memory_new(), updated by
      * memory_store()/memory_delete(). Used by memory_recall() and
@@ -150,6 +140,12 @@ typedef struct {
 /* Create/free memory store (creates .memory/ directory) */
 memory_t *memory_new(const char *project_root);
 void      memory_free(memory_t *m);
+
+/* Set recall tuning parameters from config. Centralizes the config→memory
+ * sync — call once after config_apply_profile() and config_set_defaults(). */
+void memory_set_recall_config(memory_t *m, double min_score,
+                              float blend_semantic, float blend_substring,
+                              float vscore_exp);
 
 /* Convert a memory key to a filesystem path component.
  * Replaces ':' and '/' with '_', appends ext (e.g. ".json").

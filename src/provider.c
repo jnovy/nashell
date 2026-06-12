@@ -220,8 +220,7 @@ cJSON *build_tools_from_registry(provider_type_t type) {
 }
 
 cJSON *build_tools_from_registry_filtered(provider_type_t type,
-                                           const void *filter_ptr) {
-    const tool_filter_t *filter = (const tool_filter_t *)filter_ptr;
+                                           const struct tool_filter_t *filter) {
     cJSON *tools = cJSON_CreateArray();
 
     for (int i = 0; TOOL_REGISTRY[i].name; i++) {

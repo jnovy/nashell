@@ -33,7 +33,7 @@ static int toml_bl(toml_table_t *tbl, const char *key, int def) {
 
 void config_set_defaults(config_t *cfg) {
     if (!cfg->api_base)      cfg->api_base = strdup("http://localhost:8080");
-    if (cfg->temperature == 0) cfg->temperature = 0.7f;
+    if (cfg->temperature < 0) cfg->temperature = 0.7f;
     if (cfg->max_tokens == 0)  cfg->max_tokens = 16384;
     /* Replace -1 (sentinel for "not set in config") with actual defaults.
      * -1 comes from TOML parsing when the field is absent.
@@ -170,7 +170,8 @@ void config_set_defaults(config_t *cfg) {
 config_t *config_load(const char *path) {
     config_t *cfg = calloc(1, sizeof(*cfg));
     if (!cfg) return NULL;
-    cfg->vscore_exponent = -1.0f;  /* sentinel: 0 is valid (disables vscore) */
+    cfg->temperature = -1.0f;      /* sentinel: 0.0 is valid (deterministic sampling) */
+    cfg->vscore_exponent = -1.0f;   /* sentinel: 0 is valid (disables vscore) */
     /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
     cfg->profile_inject_memory = -1;
     cfg->profile_inject_prev_result = -1;
@@ -229,7 +230,8 @@ config_t *config_load(const char *path) {
     /* [client] */
     toml_table_t *client = toml_table_in(root, "client");
     if (client) {
-        cfg->temperature = (float)toml_dbl(client, "temperature", 0);
+        { double d = toml_dbl(client, "temperature", -1);
+          if (d >= 0) cfg->temperature = (float)d; }
         cfg->max_tokens  = toml_int(client, "max_tokens", 0);
         cfg->stream      = toml_bl(client, "stream", 1);
 
@@ -476,12 +478,14 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         p->enable_compaction = -1;
         p->enable_scoring = -1;
         p->cycling_detection = -1;
+        p->temperature = -1.0f;      /* -1 = inherit (0.0 is valid: deterministic) */
         p->vscore_exponent = -2.0f;  /* -2 = inherit (0 and -1 are valid) */
 
         /* [client] subtable */
         toml_table_t *client_tbl = toml_table_in(root, "client");
         if (client_tbl) {
-            p->temperature = (float)toml_dbl(client_tbl, "temperature", 0);
+            { double d = toml_dbl(client_tbl, "temperature", -1);
+              if (d >= 0) p->temperature = (float)d; }
             p->max_tokens = toml_int(client_tbl, "max_tokens", 0);
         }
 
@@ -661,7 +665,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         cfg->system_prompt_extra = p->system_prompt_extra;
 
     /* [client] overrides */
-    if (p->temperature > 0)     cfg->temperature = p->temperature;
+    if (p->temperature >= 0)    cfg->temperature = p->temperature;
     if (p->max_tokens > 0)      cfg->max_tokens = p->max_tokens;
 
     /* [react] limits overrides */
@@ -937,8 +941,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     /* [client] overlay */
     toml_table_t *client = toml_table_in(root, "client");
     if (client) {
-        double d = toml_dbl(client, "temperature", 0);
-        if (d > 0) cfg->temperature = (float)d;
+        double d = toml_dbl(client, "temperature", -1);
+        if (d >= 0) cfg->temperature = (float)d;
         int v = toml_int(client, "max_tokens", 0);
         if (v > 0) cfg->max_tokens = v;
         { toml_datum_t td = toml_bool_in(client, "stream");

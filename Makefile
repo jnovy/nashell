@@ -26,7 +26,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/regression.c \
           src/postmortem.c \
           src/prompt_optimize.c \
-          src/scratchpad.c
+          src/scratchpad.c \
+          src/tools_registry.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 

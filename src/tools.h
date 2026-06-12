@@ -45,7 +45,7 @@ const char  *alias_map_lookup(alias_map_t *map, const char *alias);
  * If blocked is non-NULL, those tools are denied (blacklist mode).
  * Both NULL = all tools available (default).
  * desc_names/desc_values: per-tool description overrides (Unified Spec). */
-typedef struct {
+typedef struct tool_filter_t {
     const char **allowed;    /* NULL = all allowed; non-NULL = whitelist */
     int          n_allowed;
     const char **blocked;    /* NULL = none blocked; non-NULL = blacklist */
@@ -75,8 +75,6 @@ typedef struct {
     char         **recalled_keys;
     int            n_recalled_keys;
     int            recalled_keys_cap;
-    /* FIX B2: Guard flag to prevent recursive consolidation */
-    int            consolidating;
     /* Current step's thought (set by react.c before tool_execute, cleared after) */
     const char    *thought;
     /* Per-pass tool access control (playbooks/dream) */
@@ -105,7 +103,7 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params);
 void tool_result_free(tool_result_t *r);
 
 /* System prompt with tool descriptions */
-const char *tools_system_prompt(void);
+char *tools_system_prompt(void);  /* caller must free() */
 
 /* Tear down auto-started SearXNG container (called on nash exit) */
 void web_search_cleanup(void);
