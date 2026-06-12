@@ -5,7 +5,7 @@
 
 /* Configuration for the LLM endpoint */
 typedef struct {
-    const char *api_base;       /* e.g. "http://192.168.1.18:8080" */
+    const char *api_base;       /* e.g. "http://localhost:8080" */
     const char *model;          /* e.g. "qwen3.6-35b-a3b" */
     int   max_tokens;     /* max completion tokens */
     float temperature;    /* sampling temperature */

@@ -25,6 +25,9 @@
 #include <string.h>
 #include <time.h>
 
+/* Default fallback model when none configured */
+#define ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
+
 /* ── Auth helpers ───────────────────────────────────────────────── */
 
 static const char *get_anthropic_api_key(const provider_config_t *cfg) {
@@ -412,7 +415,7 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
         cJSON_AddStringToObject(req, "anthropic_version", "vertex-2023-10-16");
     } else {
         cJSON_AddStringToObject(req, "model",
-                                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+                                p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
     }
     cJSON_AddNumberToObject(req, "max_tokens", p->cfg.max_tokens);
     cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
@@ -522,7 +525,7 @@ static const char *anthropic_get_endpoint(provider_t *p) {
                 "https://aiplatform.googleapis.com/v1/projects/%s/"
                 "locations/global/publishers/anthropic/models/%s:streamRawPredict",
                 p->cfg.project_id ? p->cfg.project_id : "",
-                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+                p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
         } else {
             return provider_cache_endpoint(p,
                 "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
@@ -530,7 +533,7 @@ static const char *anthropic_get_endpoint(provider_t *p) {
                 region,
                 p->cfg.project_id ? p->cfg.project_id : "",
                 region,
-                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+                p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
         }
     } else {
         const char *base = p->cfg.api_base;

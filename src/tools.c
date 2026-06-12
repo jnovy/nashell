@@ -2556,7 +2556,9 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    long web_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
+                       ? (long)ctx->cfg->web_timeout : 30L;
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, web_timeout);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
     CURLcode res = curl_easy_perform(curl);
@@ -2809,7 +2811,7 @@ static int ensure_searxng(const char *searxng_url) {
  * Returns a formatted results string (caller frees), or NULL on failure.
  * *out_count receives the number of results. */
 static char *searxng_search(const char *searxng_url, const char *query,
-                            int *out_count) {
+                            int *out_count, long timeout) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
 
@@ -2824,7 +2826,7 @@ static char *searxng_search(const char *searxng_url, const char *query,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
     CURLcode res = curl_easy_perform(curl);
@@ -2901,7 +2903,7 @@ static char *searxng_search(const char *searxng_url, const char *query,
  * Uses the JSON API (no CAPTCHA issues unlike lite/html endpoints).
  * Returns formatted markdown results string (caller frees) or NULL.
  * *out_count receives number of results. */
-static char *ddg_search(const char *query, int *out_count) {
+static char *ddg_search(const char *query, int *out_count, long timeout) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
 
@@ -2919,7 +2921,7 @@ static char *ddg_search(const char *query, int *out_count) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
 
     CURLcode res = curl_easy_perform(curl);
@@ -3018,6 +3020,8 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     const char *engine = ctx->cfg->search_engine;
     char *results_text = NULL;
     int result_count = 0;
+    long search_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
+                          ? (long)ctx->cfg->web_timeout : 30L;
 
     if (engine && strcmp(engine, "searxng") == 0) {
         /* SearXNG mode — ensure server is running, then search */
@@ -3026,15 +3030,15 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
                               "Install podman/docker or configure a running SearXNG instance "
                               "in ~/.nash/config.toml [search] section.");
         }
-        results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count);
+        results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count, search_timeout);
     } else {
         /* DuckDuckGo mode — try DDG first, fall back to SearXNG */
-        results_text = ddg_search(query, &result_count);
+        results_text = ddg_search(query, &result_count, search_timeout);
 
         if (!results_text) {
             /* DDG failed — try SearXNG as fallback */
             if (ensure_searxng(ctx->cfg->searxng_url) == 0) {
-                results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count);
+                results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count, search_timeout);
             }
         }
     }

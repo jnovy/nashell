@@ -29,7 +29,7 @@ static int toml_bl(toml_table_t *tbl, const char *key, int def) {
 }
 
 void config_set_defaults(config_t *cfg) {
-    if (!cfg->api_base)      cfg->api_base = strdup("http://192.168.1.18:8080");
+    if (!cfg->api_base)      cfg->api_base = strdup("http://localhost:8080");
     if (cfg->temperature == 0) cfg->temperature = 0.7f;
     if (cfg->max_tokens == 0)  cfg->max_tokens = 16384;
     /* Replace -1 (sentinel for "not set in config") with actual defaults.
@@ -509,7 +509,7 @@ int config_write_default(const char *path) {
         "# Copy to ~/.nash/config.toml and edit as needed\n"
         "\n"
         "[server]\n"
-        "api_base = \"http://192.168.1.18:8080\"\n"
+        "api_base = \"http://localhost:8080\"\n"
         "\n"
         "# Provider configuration — choose one:\n"
         "#   local    = llama.cpp or any OpenAI-compatible server (default)\n"

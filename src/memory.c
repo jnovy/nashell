@@ -500,9 +500,9 @@ int memory_store(memory_t *m, const char *key, const char *value,
      *   MemIR [arXiv:2605.25869, May 2026] — provenance chains linking
      *     raw evidence to claims.
      *
-     * During recall, ref'd memories get a score boost (+0.5) when the
-     * referencing memory scores highly, creating implicit "see also"
-     * behavior without explicit graph traversal. */
+     * During recall, ref'd memories get a score boost (+0.3 × parent score)
+     * when the referencing memory scores highly (≥0.5), creating implicit
+     * "see also" behavior without explicit graph traversal. */
     if (refs && n_refs > 0) {
         cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
         for (int i = 0; i < n_refs; i++)

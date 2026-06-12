@@ -17,6 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Default fallback model when none configured */
+#define OPENAI_DEFAULT_MODEL "gpt-4o"
+
 /* ── Resolve API key from env var ───────────────────────────────── */
 
 static const char *resolve_api_key(const provider_config_t *cfg) {
@@ -32,7 +35,7 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
     /* Use shared OpenAI-compatible base request builder.
      * OpenAI uses "max_completion_tokens" instead of "max_tokens". */
     cJSON *req = build_openai_base_request(p, chat, stream,
-                                           p->cfg.model_id ? p->cfg.model_id : "gpt-4o",
+                                           p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL,
                                            "max_completion_tokens", PROVIDER_OPENAI);
 
     char *json = cJSON_PrintUnformatted(req);
