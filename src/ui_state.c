@@ -84,22 +84,7 @@ static char *read_last_lines(const char *path, int n_lines) {
     return result;
 }
 
-/* Read entire file. Returns malloc'd string or NULL. */
-static char *read_file(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return strdup(""); }
-    if (sz > NASH_FILE_READ_MAX) sz = NASH_FILE_READ_MAX;
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t rd = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    buf[rd] = '\0';
-    return buf;
-}
+
 
 /* Write string to file atomically (write to .tmp, rename). */
 static void write_md_file(const char *path, const char *content) {
@@ -1046,7 +1031,7 @@ void ui_state_reload_file(ui_state_t *ui) {
     if (ui->search_active)
         return;
 
-    char *content = read_file(ui->current_filepath);
+    char *content = slurp_file(ui->current_filepath, NULL);
     if (!content) content = strdup("*File not found*\n");
 
     md_doc_free(ui->doc);
@@ -1311,7 +1296,7 @@ void ui_state_enter(ui_state_t *ui) {
     ui->nav_depth++;
 
     /* Read file content and wrap in MD */
-    char *raw_content = read_file(raw_path);
+    char *raw_content = slurp_file(raw_path, NULL);
     if (!raw_content) raw_content = strdup("*Empty*\n");
 
     /* Determine rendering mode based on tool hint:

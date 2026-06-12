@@ -151,6 +151,11 @@ typedef struct {
 memory_t *memory_new(const char *project_root);
 void      memory_free(memory_t *m);
 
+/* Convert a memory key to a filesystem path component.
+ * Replaces ':' and '/' with '_', appends ext (e.g. ".json").
+ * Result is written to out (max out_sz bytes). */
+void key_to_path(const char *key, const char *ext, char *out, size_t out_sz);
+
 /* Store a memory entry (creates/overwrites .memory/<key>.json).
  * journal_ref: provenance pointer to the session journal where this memory
  * was created (e.g. "/path/to/session/journal.jsonl:R5"). NULL = no ref.

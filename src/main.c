@@ -75,23 +75,7 @@ char *create_session_dir(const char *nash_dir) {
 
 /* Recursive mkdir: create all path components (like mkdir -p).
  * Returns 0 on success, -1 on failure (errno set). */
-static int mkdir_p(const char *path, mode_t mode) {
-    char tmp[4096];
-    size_t len = strlen(path);
-    if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
-    memcpy(tmp, path, len + 1);
-    /* Strip trailing slash */
-    if (tmp[len - 1] == '/') tmp[--len] = '\0';
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
-            *p = '/';
-        }
-    }
-    if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
-    return 0;
-}
+
 
 /* Check if a directory is empty (no files other than . and ..).
  * Returns 1 if empty, 0 if not empty or on error. */
@@ -1276,8 +1260,7 @@ int main(int argc, char **argv) {
                         char *cpj = cJSON_Print(cp);
                         char cp_path[NASH_PATH_MAX];
                         snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", new_dir);
-                        FILE *cpf = fopen(cp_path, "w");
-                        if (cpf) { fputs(cpj, cpf); fclose(cpf); }
+                        write_file(cp_path, cpj, strlen(cpj));
                         free(cpj);
                         cJSON_Delete(cp);
                         /* Switch to forked session */
@@ -1883,11 +1866,8 @@ int main(int argc, char **argv) {
                     if (idx >= 0) {
                         char rpath[NASH_PATH_MAX];
                         snprintf(rpath, sizeof(rpath), "%s/result.txt", session_dir);
-                        FILE *rf = fopen(rpath, "w");
-                        if (rf) {
-                            fputs(tools.scratch.sections[idx].content, rf);
-                            fclose(rf);
-                        }
+                        write_file(rpath, tools.scratch.sections[idx].content,
+                                   strlen(tools.scratch.sections[idx].content));
                     }
                 }
 

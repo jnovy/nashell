@@ -1066,20 +1066,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
             snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", ui->session_dir);
             if (access(cp_path, F_OK) == 0) {
                 /* Checkpoint exists — read original query and return it */
-                char *buf = NULL;
-                { FILE *f = fopen(cp_path, "r");
-                  long sz;
-                  if (f) {
-                      fseek(f, 0, SEEK_END);
-                      sz = ftell(f);
-                      fseek(f, 0, SEEK_SET);
-                      if (sz > 0 && sz < NASH_FILE_READ_MAX) {
-                          buf = malloc((size_t)sz + 1);
-                          if (buf) fread(buf, 1, (size_t)sz, f);
-                      }
-                      fclose(f);
-                  }
-                }
+                char *buf = slurp_file(cp_path, NULL);
                 if (buf) {
                     cJSON *cp = cJSON_Parse(buf);
                     free(buf);

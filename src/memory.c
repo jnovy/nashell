@@ -20,7 +20,7 @@
 
 /* Sanitize key for filename: replace : and / with _, append extension.
  * ext should include the dot, e.g. ".json" or ".emb". */
-static void key_to_path(const char *key, const char *ext, char *out, size_t out_sz) {
+void key_to_path(const char *key, const char *ext, char *out, size_t out_sz) {
     size_t ext_len = strlen(ext);
     /* FIX B5: Guard against small out_sz — if out_sz < ext_len+2, the
      * subtraction wraps around (size_t is unsigned), causing a massive loop. */

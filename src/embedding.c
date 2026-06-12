@@ -245,36 +245,13 @@ static embed_vec_t call_api(embed_ctx_t *ctx, const char *text) {
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
     str_t response = str_new(8192);
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        str_free(&response);
-        curl_slist_free_all(headers);
-        free(url);
-        free(body);
-        return result;
-    }
+    int rc = http_post(url, body, headers, 30, &response);
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
-
-    if (res == CURLE_OK && response.len > 0) {
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        if (http_code == 200) {
-            result = parse_response(ctx, response.data);
-        }
-    }
+    if (rc == 0 && response.len > 0)
+        result = parse_response(ctx, response.data);
 
     str_free(&response);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
     free(url);
     free(body);
 
@@ -421,38 +398,15 @@ static embed_vec_t *call_api_batch(embed_ctx_t *ctx, const char **texts,
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
     str_t response = str_new(16384);
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        str_free(&response);
-        curl_slist_free_all(headers);
-        free(url);
-        free(body);
-        return NULL;
-    }
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     /* Longer timeout for batch requests — may have many texts */
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
-
-    CURLcode res = curl_easy_perform(curl);
+    int rc = http_post(url, body, headers, 120, &response);
 
     embed_vec_t *results = NULL;
-    if (res == CURLE_OK && response.len > 0) {
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        if (http_code == 200) {
-            results = parse_response_batch(ctx, response.data, n_texts, out_count);
-        }
-    }
+    if (rc == 0 && response.len > 0)
+        results = parse_response_batch(ctx, response.data, n_texts, out_count);
 
     str_free(&response);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
     free(url);
     free(body);
 

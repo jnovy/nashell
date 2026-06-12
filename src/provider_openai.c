@@ -73,8 +73,7 @@ static const char *openai_get_endpoint(provider_t *p) {
 /* ── Build tools ────────────────────────────────────────────────── */
 
 static cJSON *openai_build_tools_vtable(provider_t *p) {
-    (void)p;
-    return build_tools_from_registry(PROVIDER_OPENAI);
+    return build_tools_from_registry_filtered(PROVIDER_OPENAI, p->tool_filter);
 }
 
 /* ── Model info ─────────────────────────────────────────────────── */

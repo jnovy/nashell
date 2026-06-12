@@ -88,6 +88,9 @@ struct provider {
     char *_cached_auth_token;   /* cached OAuth2 token (Vertex) */
     long  _auth_token_expiry;   /* token expiry time (Vertex) */
 
+    /* ── Tool filter (set by caller before provider_complete) ── */
+    const void *tool_filter;    /* points to tool_filter_t; NULL = all tools */
+
     /* ── Error diagnostics (populated on error, read by react.c) ── */
     char *last_error;           /* error message (curl error, HTTP error, etc.) */
     char *last_error_request;   /* raw request body that caused the error */

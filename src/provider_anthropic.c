@@ -448,8 +448,8 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
 
     cJSON_Delete(converted);
 
-    /* Tools */
-    cJSON *tools = build_tools_from_registry(PROVIDER_ANTHROPIC);
+    /* Tools — use filter if set on provider */
+    cJSON *tools = build_tools_from_registry_filtered(PROVIDER_ANTHROPIC, p->tool_filter);
     cJSON_AddItemToObject(req, "tools", tools);
 
     /* Force tool use — the agent always expects a tool call response.
@@ -674,8 +674,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
 /* ── Build tools ────────────────────────────────────────────────── */
 
 static cJSON *anthropic_build_tools_vtable(provider_t *p) {
-    (void)p;
-    return build_tools_from_registry(PROVIDER_ANTHROPIC);
+    return build_tools_from_registry_filtered(PROVIDER_ANTHROPIC, p->tool_filter);
 }
 
 /* ── Model info ─────────────────────────────────────────────────── */

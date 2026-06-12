@@ -4,6 +4,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <curl/curl.h>
 #include <dirent.h>
 
@@ -156,6 +158,24 @@ int utf8_truncate(char *dst, const char *src, int max_bytes) {
 
 /* ── file I/O ───────────────────────────────────────────────────── */
 
+int mkdir_p(const char *path, mode_t mode) {
+    char tmp[4096];
+    size_t len = strlen(path);
+    if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, path, len + 1);
+    /* Strip trailing slash */
+    if (tmp[len - 1] == '/') tmp[--len] = '\0';
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
+    return 0;
+}
+
 char *slurp_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
@@ -179,13 +199,15 @@ void for_each_dir_entry(const char *dirpath, const char *suffix,
     DIR *dir = opendir(dirpath);
     if (!dir) return;
 
-    size_t sfx_len = strlen(suffix);
+    size_t sfx_len = suffix ? strlen(suffix) : 0;
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
         if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len <= sfx_len) continue;
-        if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
+        if (suffix) {
+            size_t len = strlen(de->d_name);
+            if (len <= sfx_len) continue;
+            if (strcmp(de->d_name + len - sfx_len, suffix) != 0) continue;
+        }
 
         char path[NASH_PATH_MAX];
         snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);

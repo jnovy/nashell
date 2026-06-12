@@ -183,6 +183,10 @@ void provider_free(provider_t *p) {
     if (p->destroy) p->destroy(p);
     free(p->_cached_endpoint);
     free(p->_cached_auth_token);
+    /* Free error diagnostic strings (heap-allocated on provider errors) */
+    free(p->last_error);
+    free(p->last_error_request);
+    free(p->last_error_response);
     /* Free model_id if it was strdup'd (provider_create uses shallow copy,
      * but callers like main.c may strdup into cfg.model_id after creation) */
     free((char *)p->cfg.model_id);
@@ -311,8 +315,8 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
         cJSON_AddItemToObject(req, "stream_options", so);
     }
 
-    /* Tools */
-    cJSON *tools = build_tools_from_registry(provider_type);
+    /* Tools — use filter if set on provider (allows model profile tool restrictions) */
+    cJSON *tools = build_tools_from_registry_filtered(provider_type, p->tool_filter);
     cJSON_AddItemToObject(req, "tools", tools);
 
     /* Messages — use shared helper */

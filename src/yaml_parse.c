@@ -15,6 +15,7 @@
  */
 
 #include "yaml_parse.h"
+#include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -507,19 +508,9 @@ yaml_node_t *yaml_parse(const char *input) {
 }
 
 yaml_node_t *yaml_parse_file(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (sz <= 0 || sz > 1024 * 1024) { fclose(f); return NULL; }
-
-    char *buf = malloc(sz + 1);
-    size_t rd = fread(buf, 1, sz, f);
-    buf[rd] = '\0';
-    fclose(f);
+    size_t len = 0;
+    char *buf = slurp_file(path, &len);
+    if (!buf || len == 0) { free(buf); return NULL; }
 
     yaml_node_t *root = yaml_parse(buf);
     free(buf);

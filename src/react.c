@@ -850,7 +850,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, max_skills);
         INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, max_lessons);
-        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 10, max_strategies, max_strategies);
+        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, max_strategies);
         INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, max_antipatterns);
 
         #undef INJECT_TYPE
@@ -1222,6 +1222,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         stream_ctx_t sctx = { on_event, userdata, step + 1 };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
+        /* Propagate tool filter so provider builds schema with only allowed tools */
+        ctx->provider->tool_filter = &ctx->tools->tool_filter;
         char *response = provider_complete_stream(ctx->provider, chat, &stats,
                 on_event ? stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh);
@@ -1734,11 +1736,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 char rpath[NASH_PATH_MAX];
                 snprintf(rpath, sizeof(rpath), "%s/result.txt",
                          ctx->tools->session_dir);
-                FILE *rf = fopen(rpath, "w");
-                if (rf) {
-                    fputs(final_result, rf);
-                    fclose(rf);
-                }
+                write_file(rpath, final_result, strlen(final_result));
             }
 
             /* Store result for full audit trail (journal + store/) */

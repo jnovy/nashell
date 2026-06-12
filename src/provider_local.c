@@ -55,8 +55,7 @@ static const char *local_get_endpoint(provider_t *p) {
 /* ── Build tools ────────────────────────────────────────────────── */
 
 static cJSON *local_build_tools(provider_t *p) {
-    (void)p;
-    return build_tools_from_registry(PROVIDER_LOCAL);
+    return build_tools_from_registry_filtered(PROVIDER_LOCAL, p->tool_filter);
 }
 
 /* ── Fetch model info (local server only) ───────────────────────── */

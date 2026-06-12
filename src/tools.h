@@ -38,67 +38,7 @@ void         alias_map_clear(alias_map_t *map);  /* keep allocated buckets */
 void        *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
 const char  *alias_map_lookup(alias_map_t *map, const char *alias);
 
-/* ── Section-based scratchpad (GDN-2 inspired) ──────────── */
-/* Each section has independent name, content, and priority.
- * Operations: write, append, read, clear, list.
- * Priority determines compression/eviction order under context pressure. */
-
-#define SCRATCHPAD_MAX_SECTIONS 32
-
-typedef struct {
-    char *name;       /* section name (e.g. "findings", "plan", "status") */
-    char *content;    /* section content (owned) */
-    int   priority;   /* 1 = highest priority, 9 = lowest. Default: 5 */
-} scratchpad_section_t;
-
-typedef struct {
-    scratchpad_section_t sections[SCRATCHPAD_MAX_SECTIONS];
-    int count;
-} scratchpad_t;
-
-/* Scratchpad lifecycle */
-void scratchpad_init(scratchpad_t *sp);
-void scratchpad_free(scratchpad_t *sp);
-
-/* Move ownership: dst takes all sections from src, src is zeroed.
- * Any existing sections in dst are freed first. */
-void scratchpad_move(scratchpad_t *dst, scratchpad_t *src);
-
-/* Find section by name. Returns index or -1. */
-int scratchpad_find(scratchpad_t *sp, const char *name);
-
-/* Write (create/overwrite) a section. Returns 0 on success. */
-int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, int priority);
-
-/* Append to a section (creates if not exists). Returns 0 on success. */
-int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, int priority);
-
-/* Clear (delete) a section. Returns 0 on success, -1 if not found. */
-int scratchpad_clear(scratchpad_t *sp, const char *name);
-
-/* Serialize all sections to a single string for context injection.
- * Format: "## section_name\ncontent\n\n## section2\ncontent2\n"
- * Sections are ordered by priority (1 first, 9 last).
- * Caller must free. Returns NULL if empty. */
-char *scratchpad_serialize(scratchpad_t *sp);
-
-/* Serialize with a max_chars budget. Low-priority sections are truncated/dropped first.
- * Caller must free. Returns NULL if empty. */
-char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars);
-
-/* Persist scratchpad to disk (session_dir/scratchpad.md). */
-int scratchpad_save(scratchpad_t *sp, const char *session_dir);
-
-/* Load scratchpad from disk. Returns 0 on success. */
-int scratchpad_load(scratchpad_t *sp, const char *session_dir);
-
-/* Parse serialized scratchpad text (## section headers) into sections.
- * Clears any existing sections in sp first. If the text contains "## "
- * section headers, parses them into individual sections. Otherwise stores
- * the entire text as a single section named fallback_name.
- * default_priority is used when priority can't be determined from text. */
-int scratchpad_parse(scratchpad_t *sp, const char *text,
-                     const char *fallback_name, int default_priority);
+#include "scratchpad.h"
 
 /* Tool filter: whitelist or blacklist tool access per-pass.
  * If allowed is non-NULL, only those tools can be called (whitelist mode).

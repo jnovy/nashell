@@ -321,18 +321,7 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
         char sp_path[NASH_PATH_MAX];
         snprintf(sp_path, sizeof(sp_path), "%s/playbooks/.state/%s/scratchpad.md",
                  nash_dir, pb->name);
-        FILE *spf = fopen(sp_path, "r");
-        if (spf) {
-            fseek(spf, 0, SEEK_END);
-            long sz = ftell(spf);
-            if (sz > 0) {
-                fseek(spf, 0, SEEK_SET);
-                prev_scratch_text = malloc((size_t)sz + 1);
-                size_t rd = fread(prev_scratch_text, 1, (size_t)sz, spf);
-                prev_scratch_text[rd] = '\0';
-            }
-            fclose(spf);
-        }
+        prev_scratch_text = slurp_file(sp_path, NULL);
     }
 
     struct { const char *key; const char *val; } builtins[] = {
@@ -413,12 +402,7 @@ int playbook_write_default_dream(const char *path) {
         mkdir(dir, 0755);
     }
 
-    FILE *f = fopen(path, "w");
-    if (!f) return -1;
-
-    fwrite(playbooks_dream_yaml, 1, playbooks_dream_yaml_len, f);
-    fclose(f);
-    return 0;
+    return write_file(path, (const char *)playbooks_dream_yaml, playbooks_dream_yaml_len);
 }
 
 /* ── Worker thread ───────────────────────────────────── */

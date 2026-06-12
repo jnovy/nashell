@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <sys/types.h>
 #include <curl/curl.h>
 
 typedef struct {
@@ -31,6 +32,10 @@ char *slurp_file(const char *path, size_t *out_len);
 
 /* Write data to a file. Returns 0 on success, -1 on failure. */
 int write_file(const char *path, const char *data, size_t len);
+
+/* Create directory path recursively (like mkdir -p).
+ * Returns 0 on success, -1 on failure. */
+int mkdir_p(const char *path, mode_t mode);
 
 /* ── HTTP helpers (libcurl) ─────────────────────────────────────────
  * Perform a simple HTTP GET.  Stores response body into *out (str_t).
