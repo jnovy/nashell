@@ -2034,24 +2034,21 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
         tool_track_recalled_key(ctx, e->key);
     }
 
-    char *hash = NULL;
-    char *alias = NULL;
-    if (out.len > 0) {
-        hash = store_save(ctx->store, out.data);
-        alias = tool_register_alias(ctx, hash ? hash : "");
-    }
+    /* Always store result (even empty) so journal gets a ref and the
+     * reactRX.md renderer can produce a clickable hyperlink. */
+    char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(no matches)");
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "matches", results.count);
-    /* Content stored to .store/ — model reads via file_read(ref) */
-    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    cJSON_AddStringToObject(meta, "ref", alias);
 
     inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
                    params, alias, out.len, results.count, NULL, NULL);
 
     memory_results_free(&results);
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    char *ref_copy = strdup(alias);
     free(alias);
     free(hash);
     str_free(&out);
