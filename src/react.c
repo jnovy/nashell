@@ -277,18 +277,14 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     int saved_loop = (int)cJSON_GetNumberValue(
         cJSON_GetObjectItem(cp, "react_loop"));
 
-    /* Restore scratchpad — try section-based first, fall back to legacy string */
+    /* Restore scratchpad (section-based; handles legacy plain-text format too) */
     scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
-    if (ctx->tools->scratch.count > 0) {
-        /* Sections loaded from disk — regenerate legacy string */
-        free(ctx->tools->scratchpad);
-        ctx->tools->scratchpad = scratchpad_serialize(&ctx->tools->scratch);
-    } else {
-        /* Fall back to checkpoint string (legacy format) */
+    if (ctx->tools->scratch.count == 0) {
+        /* Try checkpoint JSON as last resort (very old sessions) */
         cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
         if (sp && sp->valuestring && sp->valuestring[0]) {
-            free(ctx->tools->scratchpad);
-            ctx->tools->scratchpad = strdup(sp->valuestring);
+            scratchpad_parse(&ctx->tools->scratch, sp->valuestring,
+                             "default", 5);
         }
     }
 
@@ -348,8 +344,6 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         char *sp_text = NULL;
         if (ctx->tools->scratch.count > 0) {
             sp_text = scratchpad_serialize(&ctx->tools->scratch);
-        } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
-            sp_text = strdup(ctx->tools->scratchpad);
         }
         if (sp_text && sp_text[0]) {
             size_t slen = strlen(sp_text);
@@ -626,18 +620,14 @@ static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
     snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
     snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
 
-    /* FIX #7: Persist section-based scratchpad alongside checkpoint */
-    if (ctx->tools->scratch.count > 0) {
-        scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
-    }
+    /* Persist scratchpad to disk alongside checkpoint */
+    scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
 
     cJSON *cp = cJSON_CreateObject();
     cJSON_AddNumberToObject(cp, "version", 1);
     cJSON_AddNumberToObject(cp, "step", step);
     cJSON_AddNumberToObject(cp, "react_loop", ctx->tools->react_loop);
     if (user_query) cJSON_AddStringToObject(cp, "user_query", user_query);
-    if (ctx->tools->scratchpad)
-        cJSON_AddStringToObject(cp, "scratchpad", ctx->tools->scratchpad);
     if (last_tc_id)
         cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
 
@@ -879,9 +869,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * The scratchpad is the SOLE cross-loop persistence mechanism, so it
      * gets a generous budget. All limits scale linearly with context_size. */
     size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
-    if (ctx->llm->context_size > 0) {
+    if (ctx->provider->cfg.context_size > 0) {
         float cpt = get_chars_per_token(ctx);
-        max_scratchpad = (size_t)(ctx->llm->context_size * cpt * 15 / 100);  /* 15% in chars */
+        max_scratchpad = (size_t)(ctx->provider->cfg.context_size * cpt * 15 / 100);  /* 15% in chars */
     }
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
@@ -961,12 +951,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Normal (linear) — serialize all sections */
                 serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
             }
-        } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
-            /* Legacy fallback */
-            size_t slen = strlen(ctx->tools->scratchpad);
-            if (slen > max_scratchpad) slen = max_scratchpad;
-            serialized = malloc(slen + 1);
-            if (serialized) { memcpy(serialized, ctx->tools->scratchpad, slen); serialized[slen] = '\0'; }
         }
         if (serialized && serialized[0]) {
             size_t slen = strlen(serialized);
@@ -1155,7 +1139,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_STEP_START;
             ev.step = step + 1;
             ev.max_steps = ctx->max_steps;
-            ev.context_size = ctx->llm->context_size;
+            ev.context_size = ctx->provider->cfg.context_size;
             emit(on_event, userdata, &ev);
         }
 
@@ -1181,16 +1165,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             if (mode == THINKING_ON) {
-                ctx->llm->enable_thinking = 1;
                 ctx->provider->cfg.enable_thinking = 1;
             } else if (mode == THINKING_OFF) {
-                ctx->llm->enable_thinking = 0;
                 ctx->provider->cfg.enable_thinking = 0;
             } else if (mode == THINKING_EDRM) {
                 /* Build probe prompt from user query.
                  * #7: Use /apply-template for correct template, fallback to ChatML. */
                 str_t probe = str_new(8192);
-                char *templated = llm_apply_template(ctx->llm->api_base, user_query);
+                char *templated = llm_apply_template(ctx->provider->cfg.api_base, user_query);
                 if (templated) {
                     str_append_cstr(&probe, templated);
                     free(templated);
@@ -1202,13 +1184,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                 thinking_config_t *tc = &ctx->tools->cfg->thinking;
                 edrm_result_t edrm = llm_edrm_probe(
-                    ctx->llm->api_base, probe.data,
+                    ctx->provider->cfg.api_base, probe.data,
                     tc->probe_tokens, tc->probe_n_probs,
                     tc->probe_temperature,
                     tc->tau_rho, tc->tau_vnr, tc->tau_h);
                 str_free(&probe);
 
-                ctx->llm->enable_thinking = edrm.route;
                 ctx->provider->cfg.enable_thinking = edrm.route;
 
                 /* Log the routing decision */
@@ -1226,7 +1207,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 }
             }
             /* Propagate thinking budget from config */
-            ctx->llm->thinking_budget = ctx->tools->cfg->thinking.budget;
             ctx->provider->cfg.thinking_budget = ctx->tools->cfg->thinking.budget;
         }
 
@@ -1253,8 +1233,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     const char *srv_err = NULL;
                     if (ctx->provider && ctx->provider->last_error)
                         srv_err = ctx->provider->last_error;
-                    else if (ctx->llm->last_error)
-                        srv_err = ctx->llm->last_error;
+                    else if (ctx->provider->last_error)
+                        srv_err = ctx->provider->last_error;
 
                     if (consecutive_null_responses >= 2) {
                         if (srv_err) {
@@ -1287,22 +1267,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddNumberToObject(err_params, "context_chars", total_chars);
                 cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
-                /* Include the actual server error message if available.
-                 * Check both llm_config_t (direct llm path) and provider_t
-                 * (provider path) for error details. */
-                const char *err_msg = ctx->llm->last_error;
-                const char *err_req = ctx->llm->last_error_request;
-                const char *err_resp = ctx->llm->last_error_response;
-
-                /* Provider path: if provider was used, check its error fields */
-                if (ctx->provider) {
-                    if (!err_msg && ctx->provider->last_error)
-                        err_msg = ctx->provider->last_error;
-                    if (!err_req && ctx->provider->last_error_request)
-                        err_req = ctx->provider->last_error_request;
-                    if (!err_resp && ctx->provider->last_error_response)
-                        err_resp = ctx->provider->last_error_response;
-                }
+                /* Include the actual server error message if available. */
+                const char *err_msg = ctx->provider ? ctx->provider->last_error : NULL;
+                const char *err_req = ctx->provider ? ctx->provider->last_error_request : NULL;
+                const char *err_resp = ctx->provider ? ctx->provider->last_error_response : NULL;
 
                 if (err_msg) {
                     cJSON_AddStringToObject(err_params, "server_message", err_msg);
@@ -1598,7 +1566,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.action = "thinking";
                     ev.description = thought;
                     ev.stats = stats;
-                    ev.context_size = ctx->llm->context_size;
+                    ev.context_size = ctx->provider->cfg.context_size;
                     emit(on_event, userdata, &ev);
                 }
 
@@ -1771,7 +1739,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.description = desc;
             ev.result = final_result;
             ev.stats = stats;
-            ev.context_size = ctx->llm->context_size;
+            ev.context_size = ctx->provider->cfg.context_size;
             emit(on_event, userdata, &ev);
 
             cJSON_Delete(action);
@@ -1973,7 +1941,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.action = action_name;
             ev.description = desc ? desc : "";
             ev.stats = stats;
-            ev.context_size = ctx->llm->context_size;
+            ev.context_size = ctx->provider->cfg.context_size;
             emit(on_event, userdata, &ev);
         }
 
@@ -2066,12 +2034,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
 
         /* Within-loop context management: evict old messages when context gets full */
-        if (ctx->flags.enable_compaction && ctx->llm->context_size > 0) {
+        if (ctx->flags.enable_compaction && ctx->provider->cfg.context_size > 0) {
             int total_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
                 total_chars += (int)strlen(chat->msgs[i].content);
             float cpt_ev = get_chars_per_token(ctx);
-            int usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * cpt_ev));
+            int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > 6) {
                 /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
                 for (int i = 3; i < chat->n_msgs - 4; i++) {
@@ -2091,7 +2059,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 total_chars = 0;
                 for (int i = 0; i < chat->n_msgs; i++)
                     total_chars += (int)strlen(chat->msgs[i].content);
-                usage_pct = (int)(100.0 * total_chars / (ctx->llm->context_size * cpt_ev));
+                usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
 
                 /* If still over threshold, do standard eviction */
                 int keep_head = 3;
@@ -2141,7 +2109,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     /* Step 2: LLM summarization call */
                     char *summary = NULL;
                     if (evicted_text.len > 0) {
-                        size_t sp_budget = (size_t)(ctx->llm->context_size * cpt_ev * 15 / 100);
+                        size_t sp_budget = (size_t)(ctx->provider->cfg.context_size * cpt_ev * 15 / 100);
                         char *current_sp = (ctx->tools->scratch.count > 0)
                             ? scratchpad_serialize(&ctx->tools->scratch) : strdup("");
 
@@ -2211,8 +2179,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                     /* Step 4: Re-inject updated scratchpad at evict_start */
                     {
-                        size_t sp_max = (ctx->llm->context_size > 0)
-                            ? (size_t)(ctx->llm->context_size * get_chars_per_token(ctx) * 15 / 100) : 8192;
+                        size_t sp_max = (ctx->provider->cfg.context_size > 0)
+                            ? (size_t)(ctx->provider->cfg.context_size * get_chars_per_token(ctx) * 15 / 100) : 8192;
                         char *fresh_sp = scratchpad_serialize_budget(
                             &ctx->tools->scratch, sp_max);
                         if (fresh_sp && fresh_sp[0]) {
@@ -2423,8 +2391,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             char *sp_text = NULL;
             if (ctx->tools->scratch.count > 0) {
                 sp_text = scratchpad_serialize(&ctx->tools->scratch);
-            } else if (ctx->tools->scratchpad && ctx->tools->scratchpad[0]) {
-                sp_text = strdup(ctx->tools->scratchpad);
             }
             if (sp_text && sp_text[0]) {
                 size_t slen = strlen(sp_text);

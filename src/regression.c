@@ -419,7 +419,6 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
 
 static query_result_t run_single_query(const test_query_t *tq,
                                         provider_t *provider,
-                                        llm_config_t *llm,
                                         config_t *cfg,
                                         memory_t *memory,
                                         store_t *store,
@@ -437,9 +436,7 @@ static query_result_t run_single_query(const test_query_t *tq,
         .journal = journal,
         .memory = memory,
         .session_dir = NULL,
-        .scratchpad = NULL,
         .cfg = cfg,
-        .llm = llm,
         .provider = provider,
         .react_loop = 0,
         .aliases = alias_map_new(),
@@ -454,7 +451,6 @@ static query_result_t run_single_query(const test_query_t *tq,
 
     react_ctx_t react = {
         .provider = provider,
-        .llm = llm,
         .tools = &tools,
         .max_steps = tq->max_turns > 0 ? tq->max_turns : cfg->max_react_steps,
         .verbose = 0,
@@ -506,7 +502,6 @@ static query_result_t run_single_query(const test_query_t *tq,
     free(result);
     alias_map_free(tools.aliases);
     scratchpad_free(&tools.scratch);
-    free(tools.scratchpad);
     journal_free(journal);
 
     return qr;
@@ -515,7 +510,6 @@ static query_result_t run_single_query(const test_query_t *tq,
 regression_report_t *regression_run(query_bank_t *banks, int n_banks,
                                      int split_filter,
                                      provider_t *provider,
-                                     llm_config_t *llm,
                                      config_t *cfg,
                                      memory_t *memory,
                                      store_t *store,
@@ -557,7 +551,7 @@ regression_report_t *regression_run(query_bank_t *banks, int n_banks,
         double bank_score = 0;
         for (int j = 0; j < bank->n_queries; j++) {
             br->results[j] = run_single_query(&bank->queries[j],
-                                               provider, llm, cfg,
+                                               provider, cfg,
                                                memory, store, nash_dir);
             if (br->results[j].passed) br->passed++;
             bank_score += br->results[j].score;

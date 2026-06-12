@@ -24,8 +24,7 @@ typedef struct {
 #define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0 }
 
 typedef struct {
-    provider_t   *provider;  /* provider abstraction (replaces llm_config_t) */
-    llm_config_t *llm;       /* kept for backward compat (EDRM probe, etc.) */
+    provider_t   *provider;  /* provider abstraction (single source of truth) */
     tool_ctx_t   *tools;
     int           max_steps;
     int           verbose;

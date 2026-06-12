@@ -26,7 +26,6 @@
 #include "memory.h"
 #include "store.h"
 #include "regression.h"
-#include "llm.h"
 
 /* ── Budget presets ─────────────────────────────────── */
 
@@ -54,7 +53,6 @@ typedef struct {
     int         max_rounds;       /* budget: number of reflection rounds */
     provider_t *student;          /* model being optimized */
     provider_t *reflection;       /* model doing the reflecting (can be same as student) */
-    llm_config_t *llm;            /* LLM config for regression runs */
     const char *profile_path;     /* model profile .toml to update (NULL = don't write) */
     int         split_filter;     /* -1=all, SPLIT_HELD_IN, SPLIT_HELD_OUT */
     int         verbose;          /* print detailed progress */

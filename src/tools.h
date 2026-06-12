@@ -63,9 +63,7 @@ typedef struct {
     memory_t      *memory;        /* long-term memory store (.memory/) */
     config_t      *cfg;           /* configuration (tool limits, etc.) */
     char          *session_dir;   /* .sessions/<id>/ */
-    char          *scratchpad;    /* legacy: serialized scratchpad (owned, auto-generated) */
-    scratchpad_t   scratch;       /* section-based scratchpad (GDN-2 inspired) */
-    llm_config_t  *llm;          /* LLM config for inline consolidation (P2) */
+    scratchpad_t   scratch;       /* section-based scratchpad */
     provider_t    *provider;     /* provider abstraction (FIX #3: for consolidation) */
     int            step;          /* current step number (within react loop) */
     int            react_loop;    /* react loop counter (0-based, increments per query) */

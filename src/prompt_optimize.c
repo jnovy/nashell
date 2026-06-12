@@ -270,7 +270,7 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
     /* Run regression */
     regression_report_t *report = regression_run(
         banks, n_banks, opt->split_filter,
-        opt->student, opt->llm, cfg, memory, store, nash_dir);
+        opt->student, cfg, memory, store, nash_dir);
 
     /* Restore original */
     cfg->system_prompt_extra = saved_extra;
@@ -432,7 +432,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     /* For the baseline, run regression with current prompt */
     regression_report_t *baseline_report = regression_run(
         banks, n_banks, opt->split_filter,
-        opt->student, opt->llm, cfg, memory, store, nash_dir);
+        opt->student, cfg, memory, store, nash_dir);
 
     if (!baseline_report) {
         fprintf(stderr, "[optimize] baseline regression run failed\n");

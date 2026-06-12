@@ -1267,11 +1267,7 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── notes (section-based scratchpad) ────────────────── */
 
-static void scratchpad_sync_legacy(tool_ctx_t *ctx) {
-    /* Update legacy scratchpad string from sections */
-    if (ctx->scratchpad) { free(ctx->scratchpad); ctx->scratchpad = NULL; }
-    ctx->scratchpad = scratchpad_serialize(&ctx->scratch);
-    /* Persist to disk */
+static void scratchpad_persist(tool_ctx_t *ctx) {
     scratchpad_save(&ctx->scratch, ctx->session_dir);
 }
 
@@ -1343,7 +1339,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
             scratchpad_write(&ctx->scratch, "default", text, 5);
         }
 
-        scratchpad_sync_legacy(ctx);
+        scratchpad_persist(ctx);
 
         char *full = scratchpad_serialize(&ctx->scratch);
         char *hash = store_save(ctx->store, full ? full : "");
@@ -1383,7 +1379,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         int rc = scratchpad_write(&ctx->scratch, section, content, priority);
         if (rc != 0) return make_error("scratchpad full (max 32 sections)");
 
-        scratchpad_sync_legacy(ctx);
+        scratchpad_persist(ctx);
 
         cJSON *meta = cJSON_CreateObject();
         cJSON_AddStringToObject(meta, "status", "ok");
@@ -1407,7 +1403,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         int rc = scratchpad_append(&ctx->scratch, section, content, priority);
         if (rc != 0) return make_error("scratchpad full");
 
-        scratchpad_sync_legacy(ctx);
+        scratchpad_persist(ctx);
 
         int idx = scratchpad_find(&ctx->scratch, section);
         cJSON *meta = cJSON_CreateObject();
@@ -1457,7 +1453,7 @@ static tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         int rc = scratchpad_clear(&ctx->scratch, section);
         if (rc != 0) return make_error("section not found");
 
-        scratchpad_sync_legacy(ctx);
+        scratchpad_persist(ctx);
 
         cJSON *meta = cJSON_CreateObject();
         cJSON_AddStringToObject(meta, "status", "ok");
@@ -1558,7 +1554,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
      * The plan survives context eviction and is visible to the model
      * throughout the react loop via the scratchpad injection. */
     scratchpad_write(&ctx->scratch, "plan", result, 1);  /* priority 1 = high */
-    scratchpad_sync_legacy(ctx);
+    scratchpad_persist(ctx);
     scratchpad_save(&ctx->scratch, ctx->session_dir);
 
     /* Store in content-addressed store for audit trail */
@@ -1701,7 +1697,7 @@ static void consolidation_carry_scores(memory_t *m,
 
 static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                     const char *new_value) {
-    if (!ctx->llm || !ctx->memory) return;
+    if (!ctx->provider || !ctx->memory) return;
     if (!ctx->memory->embed || !ctx->memory->embed->available) return;
 
     /* Load the multi-vec embedding for the new entry (just stored by

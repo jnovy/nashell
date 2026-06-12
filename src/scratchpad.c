@@ -275,6 +275,16 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
         while (*pos == '\n' || *pos == ' ') pos++;
     }
 
+    /* If file was non-empty but no sections were parsed, treat the entire
+     * content as a single "default" section (legacy plain-text scratchpad). */
+    if (sp->count == 0) {
+        char *raw = slurp_file(path, NULL);
+        if (raw && raw[0]) {
+            scratchpad_write(sp, "default", raw, 5);
+        }
+        free(raw);
+    }
+
     free(buf);
     return 0;
 }

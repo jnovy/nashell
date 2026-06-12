@@ -30,18 +30,7 @@
 #include "postmortem.h"
 #include "prompt_optimize.h"
 
-/* Load a legacy scratchpad.md file. Returns malloc'd string or NULL.
- * Caps at 32KB to prevent memory explosion. */
-static char *load_legacy_scratchpad(const char *session_dir) {
-    char sp_path[NASH_PATH_MAX];
-    snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-    char *buf = slurp_file(sp_path, NULL);
-    if (!buf || strlen(buf) >= NASH_INITIAL_BUF) {
-        free(buf);
-        return NULL;
-    }
-    return buf;
-}
+/* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
 
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
@@ -522,14 +511,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Build LLM config (kept for backward compat: EDRM probe, etc.) */
-    llm_config_t llm_cfg = {
-        .api_base     = cfg->api_base,
-        .model        = server_model,
-        .max_tokens   = cfg->max_tokens,
-        .temperature  = cfg->temperature,
-        .context_size = context_size,
-    };
+    /* llm_config_t removed — provider_t is the single source of truth. */
 
     /* ── Spec mode: dump resolved config and exit ── */
     if (spec_mode) {
@@ -628,7 +610,7 @@ int main(int argc, char **argv) {
         /* Run tests */
         regression_report_t *report = regression_run(
             banks, n_banks, regression_split,
-            provider, &llm_cfg, cfg, memory, shared_store, nash_dir);
+            provider, cfg, memory, shared_store, nash_dir);
 
         regression_print_report(report);
 
@@ -757,7 +739,6 @@ int main(int argc, char **argv) {
             .max_rounds   = rounds,
             .student      = provider,
             .reflection   = reflection_provider,
-            .llm          = &llm_cfg,
             .profile_path = profile_path,
             .split_filter = regression_split,
             .verbose      = 1,
@@ -819,7 +800,6 @@ int main(int argc, char **argv) {
             .store = shared_store,
             .memory = memory,
             .cfg = cfg,
-            .llm = &llm_cfg,
             .provider = provider,
             .server_model = server_model,
             .ui = NULL,  /* headless — no TUI */
@@ -877,27 +857,21 @@ int main(int argc, char **argv) {
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
-            .session_dir = NULL, .scratchpad = NULL,
-            .cfg = cfg, .llm = &llm_cfg, .provider = provider,
+            .session_dir = NULL,
+            .cfg = cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
         scratchpad_init(&tools.scratch);
         /* Load scratchpad from previous session if it exists (session_dir may be NULL for lazy sessions) */
         if (session_dir) {
-            if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
-                /* Section-based scratchpad loaded — generate legacy string */
-                tools.scratchpad = scratchpad_serialize(&tools.scratch);
-            } else {
-                /* Try legacy format */
-                tools.scratchpad = load_legacy_scratchpad(session_dir);
-            }
+            scratchpad_load(&tools.scratch, session_dir);
         }
         react_flags_t default_flags = REACT_FLAGS_DEFAULT;
         apply_profile_flags(&default_flags, cfg);
         tools.tool_filter = build_profile_tool_filter(cfg);
         react_ctx_t react = {
-            .provider = provider, .llm = &llm_cfg, .tools = &tools,
+            .provider = provider, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
             .flags = default_flags, .parent_loop = -1,
         };
@@ -920,7 +894,6 @@ int main(int argc, char **argv) {
             scratchpad_save(&tools.scratch, sp_path);
         }
         tools.react_loop++;  /* increment for next query */
-        if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         free(tools.last_spec_hash);
@@ -974,23 +947,19 @@ int main(int argc, char **argv) {
         tool_ctx_t tools = {
             .store = shared_store, .journal = journal,
             .memory = memory,
-            .session_dir = session_dir, .scratchpad = NULL,
-            .cfg = cfg, .llm = &llm_cfg, .provider = provider,
+            .session_dir = session_dir,
+            .cfg = cfg, .provider = provider,
             .react_loop = start_loop,
             .aliases = alias_map_new(),
         };
         scratchpad_init(&tools.scratch);
         /* Load scratchpad from previous session if it exists */
-        if (scratchpad_load(&tools.scratch, session_dir) == 0 && tools.scratch.count > 0) {
-            tools.scratchpad = scratchpad_serialize(&tools.scratch);
-        } else {
-            tools.scratchpad = load_legacy_scratchpad(session_dir);
-        }
+        scratchpad_load(&tools.scratch, session_dir);
         react_flags_t tui_default_flags = REACT_FLAGS_DEFAULT;
         apply_profile_flags(&tui_default_flags, cfg);
         tools.tool_filter = build_profile_tool_filter(cfg);
         react_ctx_t react = {
-            .provider = provider, .llm = &llm_cfg, .tools = &tools,
+            .provider = provider, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
             .flags = tui_default_flags, .parent_loop = -1,
         };
@@ -1193,8 +1162,9 @@ int main(int argc, char **argv) {
                         cJSON_AddNumberToObject(cp, "react_loop", tools.react_loop);
                         if (react.last_query)
                             cJSON_AddStringToObject(cp, "user_query", react.last_query);
-                        if (tools.scratchpad)
-                            cJSON_AddStringToObject(cp, "scratchpad", tools.scratchpad);
+                        /* Legacy scratchpad string removed — checkpoint restore
+                         * falls back to scratchpad_parse from checkpoint JSON
+                         * if section files don't exist (very old sessions). */
                         char *cpj = cJSON_Print(cp);
                         char cp_path[NASH_PATH_MAX];
                         snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", new_dir);
@@ -1353,7 +1323,6 @@ int main(int argc, char **argv) {
                         .store = shared_store,
                         .memory = memory,
                         .cfg = cfg,
-                        .llm = &llm_cfg,
                         .provider = provider,
                         .server_model = server_model,
                         .ui = ui,
@@ -1437,7 +1406,6 @@ int main(int argc, char **argv) {
                         .store = shared_store,
                         .memory = memory,
                         .cfg = cfg,
-                        .llm = &llm_cfg,
                         .provider = provider,
                         .server_model = server_model,
                         .ui = ui,
@@ -1902,7 +1870,6 @@ int main(int argc, char **argv) {
             snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
             scratchpad_save(&tools.scratch, sp_path);
         }
-        if (tools.scratchpad) free(tools.scratchpad);
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         free(tools.last_spec_hash);
@@ -1921,9 +1888,6 @@ int main(int argc, char **argv) {
     free(nash_dir);
     free(props_json);
     free(server_model);
-    free(llm_cfg.last_error);
-    free(llm_cfg.last_error_response);
-    free(llm_cfg.last_error_request);
     config_free(cfg);
     return 0;
 }

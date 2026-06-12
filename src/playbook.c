@@ -540,7 +540,6 @@ void *playbook_worker(void *arg) {
 
         /* Setup per-pass tool_ctx */
         journal_t *pass_journal = journal_new(pass_dir);
-        llm_config_t llm_copy = *pa->llm;
         tool_filter_t tf = playbook_resolve_tools(pb, pass, pa->cfg);
         /* Change 4: correct react_loop numbering for shared sessions */
         int pass_react_loop = 0;
@@ -554,9 +553,7 @@ void *playbook_worker(void *arg) {
             .journal = pass_journal,
             .memory = pa->memory,
             .session_dir = pass_dir,
-            .scratchpad = NULL,
             .cfg = pa->cfg,
-            .llm = &llm_copy,
             .provider = pa->provider,
             .react_loop = pass_react_loop,
             .aliases = alias_map_new(),
@@ -580,7 +577,6 @@ void *playbook_worker(void *arg) {
 
         react_ctx_t pass_react = {
             .provider = pa->provider,
-            .llm = &llm_copy,
             .tools = &pass_tools,
             .max_steps = max_steps,
             .verbose = 1,
@@ -618,7 +614,7 @@ void *playbook_worker(void *arg) {
         free(prev_result);
         prev_result = result;
         free(prompt);
-        if (pass_tools.scratchpad) free(pass_tools.scratchpad);
+
         /* Free section-based scratchpad.
          * For PB_SCRATCH_SHARED: already moved back to shared_scratch
          * (struct zeroed by scratchpad_move), so this is a no-op.

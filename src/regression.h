@@ -19,7 +19,6 @@
 #include "provider.h"
 #include "memory.h"
 #include "store.h"
-#include "llm.h"
 
 /* ── Criterion types ─────────────────────────────────── */
 
@@ -127,7 +126,6 @@ void regression_free_banks(query_bank_t *banks, int count);
 regression_report_t *regression_run(query_bank_t *banks, int n_banks,
                                      int split_filter,
                                      provider_t *provider,
-                                     llm_config_t *llm,
                                      config_t *cfg,
                                      memory_t *memory,
                                      store_t *store,

@@ -79,7 +79,6 @@ typedef struct {
     store_t         *store;
     memory_t        *memory;
     config_t        *cfg;
-    llm_config_t    *llm;
     provider_t      *provider;
     char            *server_model;
     ui_state_t      *ui;
