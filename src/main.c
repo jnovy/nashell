@@ -935,6 +935,7 @@ int main(int argc, char **argv) {
         pthread_t infer_tid;
         static infer_args_t iargs;
         static playbook_args_t pargs_tui;
+        char *pending_redirect = NULL;  /* stashed query when user types during inference */
         while (running) {
             /* Check if playbook thread completed */
             if (inferring == 3 && pargs_tui.done) {
@@ -999,6 +1000,15 @@ int main(int argc, char **argv) {
                 /* Quit requested */
                 running = 0;
                 break;
+            }
+
+            /* Auto-dispatch stashed redirect: when inference was paused
+             * by user input (pending_redirect != NULL) and the thread
+             * has now joined, inject the stashed query so it gets
+             * processed immediately without waiting for another keypress. */
+            if (!submitted_query && pending_redirect && !inferring) {
+                submitted_query = pending_redirect;
+                pending_redirect = NULL;
             }
 
             if (submitted_query) {
@@ -1637,15 +1647,19 @@ int main(int argc, char **argv) {
 
                 /* Regular query — spawn inference in background thread */
                 if (inferring) {
-                    /* Previous inference still running — reject new query.
-                     * react_ctx_t and tools are shared state that can't
-                     * support concurrent react loops. */
+                    /* User typed while inference is running — auto-pause and
+                     * stash the query.  When the react loop breaks at the next
+                     * step boundary the stashed query is dispatched immediately,
+                     * eliminating the two-step "Space then type" dance. */
+                    free(pending_redirect);  /* replace any earlier stash */
+                    pending_redirect = submitted_query;
+                    submitted_query = NULL;  /* ownership transferred */
+                    react.pause_requested = 1;
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING,
-                        "Still running — wait for completion");
+                        "Pausing after current step…");
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
-                    free(submitted_query);
                     continue;
                 }
                 /* ── Tree branching: determine parent_loop ── */
@@ -1774,6 +1788,7 @@ int main(int argc, char **argv) {
             { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms */
         }
 
+        free(pending_redirect);  /* clean up any un-dispatched redirect */
         tui_shutdown();
         nash_log_set_ui(NULL);  /* disable TUI error routing */
         ui_state_free(ui);

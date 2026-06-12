@@ -1,6 +1,6 @@
 # nash — Autonomous Coding Agent in C
 
-**nash** is a fully autonomous coding agent implemented in ~34,000 lines of C. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+**nash** is a fully autonomous coding agent implemented in ~42,000 lines of C (~28K original, plus vendored cJSON and ONNX Runtime headers). It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
 
 Unlike wrapper-based agents, nash is a single compiled binary with zero Python dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
@@ -17,11 +17,13 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 │  Plan → Tool Call → Observe → Reflect → Done            │
 ├──────────┬──────────┬───────────┬───────────────────────┤
 │ Provider │  Memory  │   Tools   │   Journal + Store     │
-│ local    │ semantic │ 16 tools  │ content-addressed     │
+│ local    │ semantic │ 18 tools  │ content-addressed     │
 │ openai   │ Bayesian │ registry  │ full audit trail      │
 │ anthropic│ pruning  │ dispatch  │ checkpoint/resume     │
-│ vertex   │ pinning  │           │                       │
+│ vertex   │ pinning  │ filtering │                       │
 ├──────────┴──────────┴───────────┴───────────────────────┤
+│           Playbooks · Self-Harness · Model Profiles     │
+├─────────────────────────────────────────────────────────┤
 │              LLM Server (llama.cpp / API)                │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -39,11 +41,13 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 ```
 
 - **Native OpenAI tool_calls API** — uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
-- **16 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_recall, memory_pin, memory_unpin, user_ask
+- **18 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_recall, memory_pin, memory_unpin, memory_delete, memory_list, user_ask
 - **Shared tool registry** (`tools_registry.h`) — tool definitions defined once, formatted per-provider (local/OpenAI/Anthropic)
 - **Dispatch table** — tool execution via function pointer table, not strcmp chains
-- **Cycling detection** — detects repeated identical tool calls, injects corrective guidance, refuses after 4+ repetitions
-- **Unknown tool recovery** — when the model generates a garbled tool name (e.g., `shell_execshell_exec`), injects a corrective message listing available tools and lets the model retry
+- **Tool filtering** — per-playbook-pass whitelist/blacklist restricts available tools
+- **Cycling detection** — detects repeated identical tool calls, injects corrective guidance, refuses after repeated failures
+- **Concatenated tool name recovery** — when the model emits garbled names (e.g., `shell_execshell_exec`), automatically extracts the longest matching prefix and dispatches correctly
+- **Unknown tool recovery** — when the model generates a non-existent tool name, injects a corrective message listing available tools and lets the model retry
 
 ### 2. Multi-Provider Support
 
@@ -54,23 +58,23 @@ Nash supports four LLM providers through a unified vtable interface:
 | **Local** (llama.cpp) | Any OpenAI-compatible server | `chat_template_kwargs`, `reasoning_budget`, EDRM probing |
 | **OpenAI** | `api.openai.com` | Strict mode (`additionalProperties: false`), prompt caching |
 | **Anthropic** | `api.anthropic.com` | `input_schema` format, extended thinking, prompt caching |
-| **Vertex AI** | Google Cloud | OAuth2 token management, Anthropic-on-Vertex |
+| **Vertex AI** | Google Cloud | Anthropic-on-Vertex via `gcloud auth` token |
 
 All providers share the same tool registry and SSE streaming infrastructure. Provider-specific differences (JSON structure, auth headers, error formats) are encapsulated in the vtable.
 
 ### 3. Persistent Memory System
 
-Nash maintains a persistent, git-backed memory system that survives across sessions. Memories are categorized as **lessons** (what went wrong/right), **strategies** (reusable procedures), **skills** (domain-specific knowledge), and **anti-patterns** (what not to do).
+Nash maintains a persistent, git-backed memory system that survives across sessions. Memories are categorized as **lessons** (what went wrong/right), **strategies** (reusable procedures), **skills** (domain-specific knowledge), **facts** (concrete data), **tasks** (ongoing work), **anti-patterns** (what not to do), and **other**.
 
 #### Hybrid Scoring — Semantic + Substring + Bayesian Validation
 
 Memory recall uses a composite scoring function that blends three signals:
 
 ```
-relevance = semantic_similarity * 0.7 + substring_match * 0.3   (normalized to [0, 1])
+relevance = semantic_similarity * blend_semantic + substring_match * blend_substring
 importance = log(1 + access_count) / 5.0                        (normalized to [0, 1])
 composite = relevance * 0.8 + importance * 0.2
-final_score = composite * vscore
+final_score = composite * pow(vscore, vscore_exponent)
 ```
 
 Where `vscore` is a **Bayesian validation score** using Beta posterior mean with Laplace smoothing:
@@ -79,11 +83,19 @@ Where `vscore` is a **Bayesian validation score** using Beta posterior mean with
 vscore = (recall_hits + 1) / (recall_hits + recall_misses + 2)
 ```
 
+Blend weights (`blend_semantic`, `blend_substring`) and `vscore_exponent` are exposed as self-harness tunable surfaces.
+
 New memories start at vscore=0.5 (maximum entropy). Memories that consistently correlate with task failures get demoted. This is inspired by:
 
 - **MemFail** [arXiv:2605.26667] — diagnostic benchmark showing that injecting weakly-relevant memories *hurts* performance. Bayesian scoring provides the data-driven signal to identify which memories are genuinely useful.
 - **Generative Agents** [Park et al., 2023] — composite scoring (recency × importance × relevance) as the foundation for memory retrieval ranking.
 - **Memory Survey** [arXiv:2404.13501] — comprehensive survey identifying five critical memory operations, including validation/reflection as essential for memory quality.
+
+#### Memory Abstention Gate
+
+Memories scoring below `recall_min_score` are **not injected**, implementing "abstention" — the system stays silent when no stored experience is relevant. This prevents noise injection that hurts performance.
+
+- **Mem-π** [arXiv:2605.21463] — generative memory policy that learns to abstain 30-40% of the time, yielding +22% avg improvement.
 
 #### Semantic Embeddings
 
@@ -120,6 +132,14 @@ Inspired by:
 - **CODESKILL** [arXiv:2605.25430] — RL-trained skill extraction from task completions
 - **MUSE-Autoskill** [arXiv:2605.27366] — self-evolving skill library
 - **TriMem** [arXiv:2605.19952] — three-tier memory architecture (working/episodic/semantic)
+
+#### Dream Reminder
+
+At startup, nash counts memory entries created since the last dream (using `created_at` timestamps vs `.last_dream` file mtime). If the count exceeds `dream_reminder_threshold`, a warning appears in the TUI status bar. This is usage-based, not calendar-based — adapts to burst vs. quiet periods.
+
+#### Error-Triggered Reactive Retrieval
+
+When a tool fails, nash queries memory with the error text to surface relevant lessons. Controlled by `error_recall_*` config parameters.
 
 ### 4. Scratchpad-Only Architecture (v5)
 
@@ -188,7 +208,7 @@ Nash provides a full ncurses-based TUI with:
 - **Inline formatting in links** — tool names rendered in bold, descriptions as inline code
 - **Step expansion** — click/Enter on a step to expand its full content from the store
 - **Streaming output** — real-time token display during LLM generation
-- **Status bar** — model name, context usage percentage (`ctx 42%`), background jobs count
+- **Status bar** — model name, context usage percentage (`ctx 42%`), background jobs count, dream reminder
 - **Journal view** — full session history with react loop headers, step markers (+/x), thoughts (💭)
 - **Keyboard navigation** — arrow keys, Page Up/Down, Home/End, Enter to expand/collapse
 
@@ -241,7 +261,128 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
 
-### 10. Error Recovery
+### 10. Playbooks — Multi-Pass Task Orchestration
+
+Playbooks are YAML-defined multi-pass workflows that orchestrate sequences of react loops with fine-grained control over each pass:
+
+```yaml
+name: dream
+description: "Memory consolidation - 4-pass cognitive maintenance"
+session_mode: per-pass      # fresh session per pass | shared
+scratchpad_mode: shared      # carry scratchpad across passes | isolated
+pause_between: false
+
+react:                       # defaults for all passes
+  max_steps: 0
+  inject_memory: false
+  enable_reflection: false
+
+passes:
+  - label: "Inventory & scan"
+    react:
+      tools_block: [memory_store, memory_delete]  # per-pass tool filter
+    prompt: |
+      Scan and catalog all memories at: {{memory_dir}}
+```
+
+Features:
+- **Per-pass react overrides** — max_steps, memory injection, reflection, compaction, scoring
+- **Tool filtering** — whitelist (`tools_allow`) or blacklist (`tools_block`) per pass
+- **Template variables** — `{{memory_dir}}`, `{{model}}`, `{{session_dir}}`, `{{nash_dir}}`, custom vars
+- **Session modes** — `per-pass` (fresh session each pass) or `shared` (one session)
+- **Scratchpad modes** — `shared` (carry across passes) or `isolated` (fresh each pass)
+- **Post hooks** — `prune_memory`, `commit`
+- **Inter-pass pause** — optionally wait for user confirmation between passes
+
+Bundled playbooks: `dream`, `reflect`, `digest`, `health`, `prune`, `retrospect`, `self-harness`
+
+Run with `--play NAME` or from the TUI.
+
+### 11. Self-Harness — Automated Weakness Mining & Validation
+
+Inspired by [Self-Harness, arXiv:2606.09498], nash includes a full self-improvement loop:
+
+#### Postmortem Analysis (Weakness Mining)
+
+Scans session journals to identify recurring failure patterns:
+
+```bash
+nash --postmortem                    # analyze last 50 sessions
+nash --postmortem-sessions 100       # analyze last 100 sessions
+```
+
+Failure signatures are clustered by `(terminal_cause, mechanism, tool)`:
+- **Terminal causes**: tool_error, step_limit, null_result, cycling, empty_result
+- **Mechanisms**: file_edit_mismatch, unread_ref, shell_retry, context_eviction, wrong_tool, hallucination, spec_violation
+
+Produces evidence bundles for LLM-driven proposal generation.
+
+#### Regression Testing (Validation Gate)
+
+Query banks in `~/.nash/regression/` (YAML) define test queries with criteria:
+
+```yaml
+name: core-tools
+split: held-in
+queries:
+  - id: file-read-basic
+    query: "Read the first 10 lines of README.md"
+    criteria:
+      - type: status
+      - type: tool_used
+        expect: file_read
+      - type: max_steps
+        expect: "5"
+```
+
+Criterion types: `status`, `contains`, `not_contains`, `regex`, `tool_used`, `tool_not_used`, `max_steps`, `no_error`, `exit_code`
+
+Validation gate implements the Self-Harness acceptance rule:
+```
+Δ_in ≥ 0 AND Δ_ho ≥ 0 AND max(Δ_in, Δ_ho) > 0
+```
+
+```bash
+nash --regression                              # run all tests
+nash --regression --split held-in              # held-in only
+nash --validate-harness baseline               # save baseline
+nash --validate-harness compare                # compare against baseline
+```
+
+#### Tunable Surfaces
+
+Self-harness tunable parameters exposed in config:
+- `recall_blend_semantic` / `recall_blend_substring` — memory scoring blend weights
+- `vscore_exponent` — Bayesian validation power-law exponent
+- `tool_retry_limit` — max consecutive errors before forced strategy switch
+- `cycling_window` / `cycling_threshold` — cycling detection sensitivity
+
+### 12. Model Profiles
+
+Per-model configuration loaded from `~/.nash/models/*.toml`:
+
+```toml
+match = "qwen3"                    # case-insensitive substring match against model ID
+chars_per_token = 3.2
+native_context = 131072
+
+[thinking]
+mode = "edrm"
+budget = -1
+
+system_prompt_extra = """
+Prefer file_read over shell_exec for reading files.
+"""
+```
+
+Features:
+- **Longest-match priority** — `qwen3-32b` matches before `qwen3`
+- **chars_per_token** — model-specific tokenization ratio
+- **Thinking overrides** — per-model thinking mode and budget
+- **System prompt injection** — model-specific harness rules appended to system prompt
+- **Native context warnings** — alerts when server n_ctx is much smaller than model capacity
+
+### 13. Error Recovery
 
 #### HTTP 500 — 4-Tier Retry Strategy
 
@@ -262,10 +403,10 @@ Each tier logs a `server_error` entry to the journal with full diagnostics:
 #### Unknown Tool Recovery
 
 When the model generates a non-existent tool name (e.g., `shell_execshell_exec`):
-1. `tool_execute()` returns error with available tools list
-2. React loop injects corrective user message: "The tool 'X' does not exist. Available tools: ..."
-3. Model retries with correct tool name
-4. No raw error sent to the model (prevents confusion cascade)
+1. `tool_execute()` tries longest-prefix match against the dispatch table
+2. If a prefix matches, dispatches to that tool automatically
+3. Otherwise returns error with available tools list
+4. React loop injects corrective user message and lets the model retry
 
 #### Done Result Fallback
 
@@ -276,7 +417,7 @@ if ((!result || !result[0]) && thought && thought[0]) {
 }
 ```
 
-### 11. file_read with Line Ranges
+### 14. file_read with Line Ranges
 
 Nash's `file_read` tool supports `start_line` and `end_line` parameters to eliminate the need for `shell_exec sed/head/tail` hacks:
 
@@ -289,8 +430,6 @@ Nash's `file_read` tool supports `start_line` and `end_line` parameters to elimi
 - **Line numbers in output** — each line prefixed with its number (`100: static void ...`)
 - **total_lines in response** — helps model decide whether to use ranges on next call
 - **Backward compatible** — no parameters = full file read
-
-Empirical data from nash sessions showed **66% of all shell_exec calls** (1,643 out of 2,484) were `sed -n`/`head`/`tail` file reading hacks. This feature eliminates them.
 
 ---
 
@@ -325,10 +464,12 @@ model_path = "~/models/all-MiniLM-L6-v2"  # ONNX model directory
 shell_timeout = 30                        # seconds
 shell_max_output = 1048576                # bytes
 file_max_size = 52428800                  # 50MB
+max_react_steps = 100                     # steps per react loop
+llm_timeout = 300                         # seconds per LLM call
 
 [memory]
-recall_min_score = 0.25                   # normalized [0, 1] threshold (empirically calibrated)
-vscore_exponent = 0.3                     # power-law exponent for validation score (0=disabled, 1=full)
+recall_min_score = 0.25                   # normalized [0, 1] threshold
+vscore_exponent = 0.3                     # power-law exponent for validation score
 memory_index_max = 50                     # max entries in memory index
 max_skills_per_query = 2                  # skills loaded per query
 max_lessons_per_query = 2                 # lessons loaded per query
@@ -337,6 +478,15 @@ max_antipatterns_per_query = 1            # anti-patterns loaded per query
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning
 consolidation_threshold = 0.82            # cosine threshold for dedup
+recall_blend_semantic = 0.7               # semantic similarity weight
+recall_blend_substring = 0.3              # substring match weight
+dream_reminder_threshold = 50            # new entries before dream reminder
+
+# Error-triggered reactive retrieval
+error_recall_min_length = 10
+error_recall_candidates = 3
+error_recall_max_inject = 1
+error_recall_min_relevance = 0.25
 
 [context]
 context_eviction_pct = 70                 # evict when context > 70% full
@@ -357,6 +507,7 @@ engine = "duckduckgo"                     # duckduckgo | searxng
 - **OpenSSL** (libcrypto) — SHA-256 for content-addressed store
 - **readline** — command-line input
 - **ncursesw** — TUI rendering (wide-char support)
+- **pthreads** — concurrent inference and TUI threads
 - **ONNX Runtime** (optional) — local embedding inference
 
 ### Build
@@ -372,11 +523,42 @@ make
 # Interactive TUI mode
 ./nash
 
-# Single query mode
+# Single query mode (headless)
 ./nash -p "fix the memory leak in tools.c"
 
 # With custom API endpoint
 ./nash --api http://localhost:8080
+
+# Run a playbook (e.g., memory consolidation)
+./nash --play dream
+
+# Resume an existing session
+./nash --session ~/.nash/sessions/1779970830.40871
+
+# Custom data directory
+./nash --data-dir /path/to/nash-data
+```
+
+### Self-Harness Commands
+
+```bash
+# Run regression test suite
+./nash --regression
+./nash --regression --split held-in
+
+# Validate harness changes
+./nash --validate-harness baseline
+./nash --validate-harness compare
+
+# Postmortem failure analysis
+./nash --postmortem
+./nash --postmortem-sessions 100
+```
+
+### Testing
+
+```bash
+make test    # runs unit tests: test_memory, test_store, test_config, test_str, test_journal, test_memory_context
 ```
 
 ---
@@ -390,8 +572,23 @@ make
 │   ├── lesson:*.json        # Lessons learned
 │   ├── strategy:*.json      # Reusable procedures
 │   ├── skill:*.json         # Domain knowledge
+│   ├── fact:*.json          # Concrete data
+│   ├── task:*.json          # Ongoing work
 │   ├── anti-pattern:*.json  # What not to do
+│   ├── .last_dream          # Timestamp of last dream consolidation
 │   └── .git/                # Full history
+├── models/                  # Per-model profiles
+│   └── *.toml               # e.g., qwen3.toml, claude.toml
+├── playbooks/               # Custom playbooks (auto-seeded with defaults)
+│   ├── dream.yaml
+│   ├── reflect.yaml
+│   ├── digest.yaml
+│   ├── health.yaml
+│   ├── prune.yaml
+│   ├── retrospect.yaml
+│   └── self-harness.yaml
+├── regression/              # Regression test query banks
+│   └── *.yaml               # held-in / held-out query banks
 ├── store/                   # Content-addressed artifacts (SHA-256)
 │   ├── a1b2c3d4...          # Tool outputs, errors, etc.
 │   └── ...
@@ -420,7 +617,7 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [Mem-π](https://arxiv.org/abs/2605.21463) | 2026 | Generative memory policy, learned abstention +59% | Query-time synthesis with semantic abstention ("NONE") |
 | [DeferMem](https://arxiv.org/abs/2605.22411) | 2026 | Query-time evidence distillation | Memory synthesis produces faithful, self-contained guidance |
 | [MemForest](https://arxiv.org/abs/2605.23986) | 2026 | Temporal indexing, memory relevance changes over time | Adaptive memory refresh during react loop |
-| [MemFail](https://arxiv.org/abs/2605.26667) | 2026 | Weak memory injection hurts performance | Bayesian scoring filters low-quality memories |
+| [MemFail](https://arxiv.org/abs/2605.26667) | 2026 | Weak memory injection hurts performance | Bayesian scoring + abstention gate filters low-quality memories |
 | [MemMorph](https://arxiv.org/abs/2605.26154) | 2026 | Raw storage insufficient, needs active management | Post-loop pruning + consolidation |
 
 ### Cognitive Architecture
@@ -429,12 +626,19 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [EDRM / Entropy Phase Transitions](https://arxiv.org/abs/2605.22873) | 2026 | Entropy dynamics predict reasoning need | EDRM routing for thinking mode (probe → route → generate) |
 | [TriMem](https://arxiv.org/abs/2605.19952) | 2026 | Three-tier memory (working/episodic/semantic) | Scratchpad (working) + journal (episodic) + memory (semantic) |
 | ["Language Models Need Sleep"](https://arxiv.org/abs/2605.26099) | 2026 | Dreaming/consolidation essential for memory health | Post-loop Bayesian pruning + dedup + consolidation |
+| [MMPO](https://arxiv.org/abs/2605.30159) | 2026 | Belief Entropy ℋ_BE measures memory clarity | Belief Entropy monitoring for memory quality signal |
 
 ### Skill Extraction
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
 | [CODESKILL](https://arxiv.org/abs/2605.25430) | 2026 | RL-trained skill extraction from completions | Post-task reflection extracts reusable lessons/strategies |
 | [MUSE-Autoskill](https://arxiv.org/abs/2605.27366) | 2026 | Self-evolving skill library | Skills recalled semantically per query, refined via validation |
+
+### Self-Improvement
+| Paper | Year | Key Insight | Nash Implementation |
+|-------|------|-------------|---------------------|
+| [Self-Harness](https://arxiv.org/abs/2606.09498) | 2026 | Weakness mining + proposal + validation gate | Postmortem analysis + regression testing + validation gate |
+| [DCPM](https://arxiv.org/abs/2606.09483) | 2026 | Dual-process cognitive memory with async consolidation | Auto-dream: usage-based memory consolidation trigger |
 
 ### Additional References
 | Paper | Year | Key Insight | Nash Implementation |
@@ -452,7 +656,7 @@ MIT
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~34K lines of C) and self-contained.
+Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~28K lines of original C, plus vendored dependencies) and self-contained.
 
 Key design principles:
 - **No Python dependencies** — single compiled binary
