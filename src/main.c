@@ -123,6 +123,41 @@ static int jbool(cJSON *obj, const char *key, int def) {
     return item ? cJSON_IsTrue(item) : def;
 }
 
+/* Apply model profile react_flags overrides to a react_flags_t.
+ * Profile values of -1 mean "inherit" (no override). */
+static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
+    if (cfg->profile_inject_memory >= 0)
+        flags->inject_memory = cfg->profile_inject_memory;
+    if (cfg->profile_inject_prev_result >= 0)
+        flags->inject_prev_result = cfg->profile_inject_prev_result;
+    if (cfg->profile_enable_reflection >= 0)
+        flags->enable_reflection = cfg->profile_enable_reflection;
+    if (cfg->profile_enable_compaction >= 0)
+        flags->enable_compaction = cfg->profile_enable_compaction;
+    if (cfg->profile_enable_scoring >= 0)
+        flags->enable_scoring = cfg->profile_enable_scoring;
+}
+
+/* Build a tool_filter_t from profile-level tool filter on config.
+ * Returns a filter with pointers into cfg (no allocation needed). */
+static tool_filter_t build_profile_tool_filter(const config_t *cfg) {
+    tool_filter_t tf = {0};
+    if (cfg->n_profile_tools_allow > 0) {
+        tf.allowed = (const char **)cfg->profile_tools_allow;
+        tf.n_allowed = cfg->n_profile_tools_allow;
+    }
+    if (cfg->n_profile_tools_block > 0) {
+        tf.blocked = (const char **)cfg->profile_tools_block;
+        tf.n_blocked = cfg->n_profile_tools_block;
+    }
+    if (cfg->n_profile_tool_descs > 0) {
+        tf.desc_names = cfg->profile_tool_desc_names;
+        tf.desc_values = cfg->profile_tool_desc_values;
+        tf.n_descs = cfg->n_profile_tool_descs;
+    }
+    return tf;
+}
+
 /* Print banner: header art + server props + client overrides */
 static void print_banner(const config_t *cfg, const char *props_json,
                          const char *nash_dir, const char *profile_file) {
@@ -363,6 +398,7 @@ int main(int argc, char **argv) {
     int regression_split = -1;           /* -1 = all, 0 = held-in, 1 = held-out */
     int postmortem_mode = 0;
     int postmortem_sessions = 50;        /* default: scan last 50 sessions */
+    int spec_mode = 0;                   /* --spec: dump resolved spec and exit */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -395,6 +431,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--postmortem-sessions") == 0 && i + 1 < argc) {
             postmortem_sessions = atoi(argv[++i]);
             postmortem_mode = 1;
+        } else if (strcmp(argv[i], "--spec") == 0) {
+            spec_mode = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -409,6 +447,8 @@ int main(int argc, char **argv) {
             printf("  --validate-harness MODE  baseline or compare\n");
             printf("  --postmortem          Analyze session failures\n");
             printf("  --postmortem-sessions N  Sessions to scan (default 50)\n");
+            printf("\nSpec:\n");
+            printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -507,7 +547,7 @@ int main(int argc, char **argv) {
         provider->cfg.model_id = strdup(server_model);  /* replace with server-reported model */
     }
 
-    /* ── Apply model profile ── */
+    /* ── Apply model profile (Unified Spec) ── */
     const char *matched_profile_file = NULL;
     if (server_model) {
         const model_profile_t *profile = config_match_model(cfg, server_model);
@@ -516,23 +556,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[model-profile] matched '%s' from %s\n",
                     profile->match, profile->source_file);
 
-            /* chars_per_token: profile overrides default, but explicit [provider] wins */
-            if (profile->chars_per_token > 0 && cfg->provider.chars_per_token <= 0) {
-                if (provider) provider->cfg.chars_per_token = profile->chars_per_token;
-                cfg->provider.chars_per_token = profile->chars_per_token;
-            }
+            /* Apply all profile overrides via unified config_apply_profile() */
+            config_apply_profile(cfg, profile);
 
-            /* thinking: profile sets defaults only if config didn't explicitly set them */
-            if (!cfg->thinking_explicit) {
-                if (profile->thinking.mode != THINKING_UNSET)
-                    cfg->thinking.mode = profile->thinking.mode;
-            }
-            if (profile->thinking.budget != 0)
-                cfg->thinking.budget = profile->thinking.budget;
-
-            /* system_prompt_extra: store for react.c to use */
-            if (profile->system_prompt_extra)
-                cfg->system_prompt_extra = profile->system_prompt_extra;
+            /* Sync chars_per_token to provider vtable (provider has its own copy) */
+            if (provider && cfg->provider.chars_per_token > 0)
+                provider->cfg.chars_per_token = cfg->provider.chars_per_token;
 
             /* native_context warning */
             if (profile->native_context > 0 && context_size > 0 &&
@@ -551,6 +580,17 @@ int main(int argc, char **argv) {
         .temperature  = cfg->temperature,
         .context_size = context_size,
     };
+
+    /* ── Spec mode: dump resolved config and exit ── */
+    if (spec_mode) {
+        config_dump_spec(cfg, stdout, matched_profile_file);
+        provider_free(provider);
+        free(nash_dir);
+        free(props_json);
+        free(server_model);
+        config_free(cfg);
+        return 0;
+    }
 
     /* Print banner (skip in headless playbook mode) */
     if (!play_arg)
@@ -792,6 +832,8 @@ int main(int argc, char **argv) {
             }
         }
         react_flags_t default_flags = REACT_FLAGS_DEFAULT;
+        apply_profile_flags(&default_flags, cfg);
+        tools.tool_filter = build_profile_tool_filter(cfg);
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,
@@ -882,6 +924,8 @@ int main(int argc, char **argv) {
             tools.scratchpad = load_legacy_scratchpad(session_dir);
         }
         react_flags_t tui_default_flags = REACT_FLAGS_DEFAULT;
+        apply_profile_flags(&tui_default_flags, cfg);
+        tools.tool_filter = build_profile_tool_filter(cfg);
         react_ctx_t react = {
             .provider = provider, .llm = &llm_cfg, .tools = &tools,
             .max_steps = cfg->max_react_steps, .verbose = 1,

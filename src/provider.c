@@ -239,13 +239,24 @@ cJSON *build_tools_from_registry_filtered(provider_type_t type,
             }
         }
 
+        /* Check for per-tool description override from model profile */
+        const char *desc = td->description;
+        if (filter && filter->n_descs > 0) {
+            for (int j = 0; j < filter->n_descs; j++) {
+                if (strcmp(td->name, filter->desc_names[j]) == 0) {
+                    desc = filter->desc_values[j];
+                    break;
+                }
+            }
+        }
+
         cJSON *params = cJSON_Parse(td->params_json);
 
         if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
             /* Anthropic format: {"name":"X","description":"Y","input_schema":{...}} */
             cJSON *t = cJSON_CreateObject();
             cJSON_AddStringToObject(t, "name", td->name);
-            cJSON_AddStringToObject(t, "description", td->description);
+            cJSON_AddStringToObject(t, "description", desc);
             if (params) cJSON_AddItemToObject(t, "input_schema", params);
             cJSON_AddItemToArray(tools, t);
         } else {
@@ -254,7 +265,7 @@ cJSON *build_tools_from_registry_filtered(provider_type_t type,
             cJSON_AddStringToObject(t, "type", "function");
             cJSON *fn = cJSON_CreateObject();
             cJSON_AddStringToObject(fn, "name", td->name);
-            cJSON_AddStringToObject(fn, "description", td->description);
+            cJSON_AddStringToObject(fn, "description", desc);
             if (params) {
                 if (type == PROVIDER_OPENAI) strict_object(params);
                 cJSON_AddItemToObject(fn, "parameters", params);

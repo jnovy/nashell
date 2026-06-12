@@ -1,6 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <stdio.h>
+
 /* Nash configuration — loaded from ~/.nash/config.toml */
 
 /* Thinking mode: off=0, on=1, edrm=2
@@ -85,6 +87,53 @@ typedef struct {
 
     /* Informational only: */
     int    native_context;      /* model's training context size — for warnings */
+
+    /* ── Unified Spec: per-model overrides (OpenJarvis-inspired) ──
+     * All fields use sentinel values to mean "inherit from config.toml":
+     *   int: 0 = inherit (unless noted), -1 = inherit for booleans
+     *   float/double: 0.0 = inherit (unless noted)
+     *   pointers: NULL = inherit
+     * This enables model profiles to carry the full "tuned configuration"
+     * so switching models auto-adjusts everything. */
+
+    /* [client] overrides */
+    float  temperature;         /* 0.0 = inherit */
+    int    max_tokens;          /* 0 = inherit */
+
+    /* [react] subsystem overrides (same sentinel pattern as playbooks) */
+    int    inject_memory;       /* -1 = inherit, 0 = off, 1 = on */
+    int    inject_prev_result;  /* -1 = inherit */
+    int    enable_reflection;   /* -1 = inherit */
+    int    enable_compaction;   /* -1 = inherit */
+    int    enable_scoring;      /* -1 = inherit */
+
+    /* [limits] overrides */
+    int    max_react_steps;     /* 0 = inherit */
+    int    context_eviction_pct;/* 0 = inherit */
+    double recall_min_score;    /* 0.0 = inherit */
+    float  recall_blend_semantic;  /* 0.0 = inherit */
+    float  recall_blend_substring; /* 0.0 = inherit */
+    float  vscore_exponent;     /* -2.0 = inherit (since -1.0 and 0.0 are valid values) */
+    int    tool_retry_limit;    /* 0 = inherit */
+    int    cycling_detection;   /* -1 = inherit */
+    int    max_reflection_steps;/* 0 = inherit */
+    int    memory_index_max;    /* 0 = inherit */
+    int    max_skills_per_query;    /* 0 = inherit */
+    int    max_lessons_per_query;   /* 0 = inherit */
+    int    max_strategies_per_query;/* 0 = inherit */
+    int    max_antipatterns_per_query; /* 0 = inherit */
+
+    /* [tools] filter (restrict tools for weaker models) */
+    char **tools_allow;         /* NULL = inherit (all) */
+    int    n_tools_allow;
+    char **tools_block;         /* NULL = inherit (none) */
+    int    n_tools_block;
+
+    /* [tools.<name>] description overrides — per-tool description rewrites.
+     * Parallel arrays: tool_desc_names[i] → tool_desc_values[i] */
+    char **tool_desc_names;     /* tool names to override */
+    char **tool_desc_values;    /* replacement descriptions */
+    int    n_tool_descs;
 } model_profile_t;
 
 typedef struct {
@@ -220,6 +269,25 @@ typedef struct {
 
     /* Was [thinking] section explicitly present in config.toml? */
     int              thinking_explicit;    /* 1 = yes, model profile won't override */
+
+    /* ── Unified Spec: active tool filter + description overrides ──
+     * Set by config_apply_profile() from matched model profile.
+     * Used by build_tools_from_registry_filtered() during LLM requests. */
+    char **profile_tools_allow;    /* tool whitelist from profile (NULL = all) */
+    int    n_profile_tools_allow;
+    char **profile_tools_block;    /* tool blacklist from profile (NULL = none) */
+    int    n_profile_tools_block;
+    char **profile_tool_desc_names;   /* tool description override names */
+    char **profile_tool_desc_values;  /* tool description override values */
+    int    n_profile_tool_descs;
+
+    /* Active react_flags overrides from matched model profile.
+     * Applied as defaults in main.c when constructing react_ctx_t. */
+    int    profile_inject_memory;      /* -1 = not set */
+    int    profile_inject_prev_result; /* -1 = not set */
+    int    profile_enable_reflection;  /* -1 = not set */
+    int    profile_enable_compaction;  /* -1 = not set */
+    int    profile_enable_scoring;     /* -1 = not set */
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.
@@ -245,5 +313,15 @@ const model_profile_t *config_match_model(const config_t *cfg, const char *model
 
 /* Free model profiles array */
 void config_free_model_profiles(config_t *cfg);
+
+/* Apply a matched model profile as an overlay on cfg.
+ * Handles all unified spec fields: client, react, limits, tools, descriptions.
+ * Call after config_match_model() finds the best profile. */
+void config_apply_profile(config_t *cfg, const model_profile_t *profile);
+
+/* Dump the fully-resolved spec as TOML to the given file descriptor.
+ * Serializes config_t after all layers (defaults + config.toml + profile)
+ * have been applied. If profile_file is non-NULL, includes it in header. */
+void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file);
 
 #endif

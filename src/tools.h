@@ -103,12 +103,17 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
 /* Tool filter: whitelist or blacklist tool access per-pass.
  * If allowed is non-NULL, only those tools can be called (whitelist mode).
  * If blocked is non-NULL, those tools are denied (blacklist mode).
- * Both NULL = all tools available (default). */
+ * Both NULL = all tools available (default).
+ * desc_names/desc_values: per-tool description overrides (Unified Spec). */
 typedef struct {
     const char **allowed;    /* NULL = all allowed; non-NULL = whitelist */
     int          n_allowed;
     const char **blocked;    /* NULL = none blocked; non-NULL = blacklist */
     int          n_blocked;
+    /* Per-tool description overrides (parallel arrays, NULL = no overrides) */
+    char       **desc_names;   /* tool names with overridden descriptions */
+    char       **desc_values;  /* replacement description strings */
+    int          n_descs;
 } tool_filter_t;
 
 /* Session context passed to all tools */

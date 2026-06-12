@@ -1,11 +1,13 @@
 #include "config.h"
 #include "toml.h"
+#include "tools_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 
 /* Helper: read TOML string, return strdup or NULL */
 static char *toml_str(toml_table_t *tbl, const char *key) {
@@ -168,6 +170,12 @@ config_t *config_load(const char *path) {
     config_t *cfg = calloc(1, sizeof(*cfg));
     if (!cfg) return NULL;
     cfg->vscore_exponent = -1.0f;  /* sentinel: 0 is valid (disables vscore) */
+    /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
+    cfg->profile_inject_memory = -1;
+    cfg->profile_inject_prev_result = -1;
+    cfg->profile_enable_reflection = -1;
+    cfg->profile_enable_compaction = -1;
+    cfg->profile_enable_scoring = -1;
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -456,6 +464,124 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
             parse_thinking_from_toml(think_tbl, &p->thinking);
         }
 
+        /* ── Unified Spec: extended profile fields ── */
+
+        /* Initialize sentinel values for boolean overrides */
+        p->inject_memory = -1;
+        p->inject_prev_result = -1;
+        p->enable_reflection = -1;
+        p->enable_compaction = -1;
+        p->enable_scoring = -1;
+        p->cycling_detection = -1;
+        p->vscore_exponent = -2.0f;  /* -2 = inherit (0 and -1 are valid) */
+
+        /* [client] subtable */
+        toml_table_t *client_tbl = toml_table_in(root, "client");
+        if (client_tbl) {
+            p->temperature = (float)toml_dbl(client_tbl, "temperature", 0);
+            p->max_tokens = toml_int(client_tbl, "max_tokens", 0);
+        }
+
+        /* [react] subtable */
+        toml_table_t *react_tbl = toml_table_in(root, "react");
+        if (react_tbl) {
+            p->max_react_steps = toml_int(react_tbl, "max_react_steps", 0);
+            p->max_reflection_steps = toml_int(react_tbl, "max_reflection_steps", 0);
+            p->tool_retry_limit = toml_int(react_tbl, "tool_retry_limit", 0);
+            { toml_datum_t d = toml_bool_in(react_tbl, "cycling_detection");
+              if (d.ok) p->cycling_detection = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "inject_memory");
+              if (d.ok) p->inject_memory = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "inject_prev_result");
+              if (d.ok) p->inject_prev_result = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "enable_reflection");
+              if (d.ok) p->enable_reflection = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "enable_compaction");
+              if (d.ok) p->enable_compaction = d.u.b ? 1 : 0; }
+            { toml_datum_t d = toml_bool_in(react_tbl, "enable_scoring");
+              if (d.ok) p->enable_scoring = d.u.b ? 1 : 0; }
+        }
+
+        /* [memory] subtable */
+        toml_table_t *mem_tbl = toml_table_in(root, "memory");
+        if (mem_tbl) {
+            p->recall_min_score = toml_dbl(mem_tbl, "recall_min_score", 0);
+            p->recall_blend_semantic = (float)toml_dbl(mem_tbl, "recall_blend_semantic", 0);
+            p->recall_blend_substring = (float)toml_dbl(mem_tbl, "recall_blend_substring", 0);
+            { double v = toml_dbl(mem_tbl, "vscore_exponent", -2);
+              if (v > -2) p->vscore_exponent = (float)v; }
+            p->memory_index_max = toml_int(mem_tbl, "memory_index_max", 0);
+            p->max_skills_per_query = toml_int(mem_tbl, "max_skills_per_query", 0);
+            p->max_lessons_per_query = toml_int(mem_tbl, "max_lessons_per_query", 0);
+            p->max_strategies_per_query = toml_int(mem_tbl, "max_strategies_per_query", 0);
+            p->max_antipatterns_per_query = toml_int(mem_tbl, "max_antipatterns_per_query", 0);
+            p->context_eviction_pct = toml_int(mem_tbl, "context_eviction_pct", 0);
+        }
+
+        /* [tools] subtable — allow/block arrays */
+        toml_table_t *tools_tbl = toml_table_in(root, "tools");
+        if (tools_tbl) {
+            toml_array_t *allow_arr = toml_array_in(tools_tbl, "allow");
+            if (allow_arr) {
+                int n = toml_array_nelem(allow_arr);
+                if (n > 0) {
+                    p->tools_allow = calloc(n, sizeof(char *));
+                    p->n_tools_allow = n;
+                    for (int j = 0; j < n; j++) {
+                        toml_datum_t d = toml_string_at(allow_arr, j);
+                        p->tools_allow[j] = d.ok ? d.u.s : strdup("");
+                    }
+                }
+            }
+            toml_array_t *block_arr = toml_array_in(tools_tbl, "block");
+            if (block_arr) {
+                int n = toml_array_nelem(block_arr);
+                if (n > 0) {
+                    p->tools_block = calloc(n, sizeof(char *));
+                    p->n_tools_block = n;
+                    for (int j = 0; j < n; j++) {
+                        toml_datum_t d = toml_string_at(block_arr, j);
+                        p->tools_block[j] = d.ok ? d.u.s : strdup("");
+                    }
+                }
+            }
+        }
+
+        /* [tools.<name>] subtables — per-tool description overrides.
+         * We iterate over all keys in [tools] and check which are sub-tables.
+         * Each sub-table must have a "description" key. */
+        if (tools_tbl) {
+            int ntabs = toml_table_ntab(tools_tbl);
+            if (ntabs > 0) {
+                p->tool_desc_names = calloc(ntabs, sizeof(char *));
+                p->tool_desc_values = calloc(ntabs, sizeof(char *));
+                int nd = 0;
+                /* toml_key_in indexes over ALL keys (kval+arr+tab).
+                 * Total = nkval + narr + ntab. We iterate all and
+                 * filter for sub-tables via toml_table_in(). */
+                int nkeys = toml_table_nkval(tools_tbl)
+                          + toml_table_narr(tools_tbl)
+                          + toml_table_ntab(tools_tbl);
+                for (int j = 0; j < nkeys; j++) {
+                    const char *subkey = toml_key_in(tools_tbl, j);
+                    if (!subkey) continue;
+                    toml_table_t *sub = toml_table_in(tools_tbl, subkey);
+                    if (!sub) continue;
+                    char *desc = toml_str(sub, "description");
+                    if (desc) {
+                        p->tool_desc_names[nd] = strdup(subkey);
+                        p->tool_desc_values[nd] = desc;
+                        nd++;
+                    }
+                }
+                p->n_tool_descs = nd;
+                if (nd == 0) {
+                    free(p->tool_desc_names); p->tool_desc_names = NULL;
+                    free(p->tool_desc_values); p->tool_desc_values = NULL;
+                }
+            }
+        }
+
         cfg->n_model_profiles++;
         toml_free(root);
     }
@@ -487,13 +613,246 @@ const model_profile_t *config_match_model(const config_t *cfg, const char *model
 void config_free_model_profiles(config_t *cfg) {
     if (!cfg || !cfg->model_profiles) return;
     for (int i = 0; i < cfg->n_model_profiles; i++) {
-        free(cfg->model_profiles[i].match);
-        free(cfg->model_profiles[i].source_file);
-        free(cfg->model_profiles[i].system_prompt_extra);
+        model_profile_t *p = &cfg->model_profiles[i];
+        free(p->match);
+        free(p->source_file);
+        free(p->system_prompt_extra);
+        /* Unified Spec: free extended fields */
+        for (int j = 0; j < p->n_tools_allow; j++) free(p->tools_allow[j]);
+        free(p->tools_allow);
+        for (int j = 0; j < p->n_tools_block; j++) free(p->tools_block[j]);
+        free(p->tools_block);
+        for (int j = 0; j < p->n_tool_descs; j++) {
+            free(p->tool_desc_names[j]);
+            free(p->tool_desc_values[j]);
+        }
+        free(p->tool_desc_names);
+        free(p->tool_desc_values);
     }
     free(cfg->model_profiles);
     cfg->model_profiles = NULL;
     cfg->n_model_profiles = 0;
+}
+
+/* ── Unified Spec: apply model profile as overlay ── */
+
+void config_apply_profile(config_t *cfg, const model_profile_t *p) {
+    if (!cfg || !p) return;
+
+    /* chars_per_token: profile overrides default, but explicit [provider] wins */
+    if (p->chars_per_token > 0 && cfg->provider.chars_per_token <= 0)
+        cfg->provider.chars_per_token = p->chars_per_token;
+
+    /* thinking: profile sets defaults only if config didn't explicitly set them */
+    if (!cfg->thinking_explicit) {
+        if (p->thinking.mode != THINKING_UNSET)
+            cfg->thinking.mode = p->thinking.mode;
+    }
+    if (p->thinking.budget != 0)
+        cfg->thinking.budget = p->thinking.budget;
+
+    /* system_prompt_extra: store for react.c to use */
+    if (p->system_prompt_extra)
+        cfg->system_prompt_extra = p->system_prompt_extra;
+
+    /* [client] overrides */
+    if (p->temperature > 0)     cfg->temperature = p->temperature;
+    if (p->max_tokens > 0)      cfg->max_tokens = p->max_tokens;
+
+    /* [react] limits overrides */
+    if (p->max_react_steps > 0)      cfg->max_react_steps = p->max_react_steps;
+    if (p->max_reflection_steps > 0) cfg->max_reflection_steps = p->max_reflection_steps;
+    if (p->tool_retry_limit > 0)     cfg->tool_retry_limit = p->tool_retry_limit;
+    if (p->cycling_detection >= 0)   cfg->cycling_detection = p->cycling_detection;
+
+    /* [memory] overrides */
+    if (p->recall_min_score > 0)       cfg->recall_min_score = p->recall_min_score;
+    if (p->recall_blend_semantic > 0)  cfg->recall_blend_semantic = p->recall_blend_semantic;
+    if (p->recall_blend_substring > 0) cfg->recall_blend_substring = p->recall_blend_substring;
+    if (p->vscore_exponent > -2.0f)    cfg->vscore_exponent = p->vscore_exponent;
+    if (p->memory_index_max > 0)       cfg->memory_index_max = p->memory_index_max;
+    if (p->max_skills_per_query > 0)   cfg->max_skills_per_query = p->max_skills_per_query;
+    if (p->max_lessons_per_query > 0)  cfg->max_lessons_per_query = p->max_lessons_per_query;
+    if (p->max_strategies_per_query > 0) cfg->max_strategies_per_query = p->max_strategies_per_query;
+    if (p->max_antipatterns_per_query > 0) cfg->max_antipatterns_per_query = p->max_antipatterns_per_query;
+    if (p->context_eviction_pct > 0)   cfg->context_eviction_pct = p->context_eviction_pct;
+
+    /* [react] flags → store on cfg for main.c to apply to react_flags_t */
+    cfg->profile_inject_memory = p->inject_memory;
+    cfg->profile_inject_prev_result = p->inject_prev_result;
+    cfg->profile_enable_reflection = p->enable_reflection;
+    cfg->profile_enable_compaction = p->enable_compaction;
+    cfg->profile_enable_scoring = p->enable_scoring;
+
+    /* [tools] filter → store on cfg for main.c/react.c to use.
+     * These point into the profile's arrays (no copy needed — profile
+     * lives as long as cfg). */
+    cfg->profile_tools_allow = p->tools_allow;
+    cfg->n_profile_tools_allow = p->n_tools_allow;
+    cfg->profile_tools_block = p->tools_block;
+    cfg->n_profile_tools_block = p->n_tools_block;
+
+    /* [tools.<name>] description overrides */
+    cfg->profile_tool_desc_names = p->tool_desc_names;
+    cfg->profile_tool_desc_values = p->tool_desc_values;
+    cfg->n_profile_tool_descs = p->n_tool_descs;
+}
+
+/* ── Unified Spec: dump resolved spec as TOML ── */
+
+void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) {
+    if (!cfg || !out) return;
+
+    time_t now = time(NULL);
+    struct tm *tm = gmtime(&now);
+    char ts[64];
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm);
+
+    fprintf(out, "# Nash Spec (fully resolved)\n");
+    if (cfg->provider.model_id)
+        fprintf(out, "# Model: %s via %s\n",
+                cfg->provider.model_id,
+                cfg->provider.type ? cfg->provider.type : "local");
+    if (profile_file)
+        fprintf(out, "# Profile: %s\n", profile_file);
+    fprintf(out, "# Generated: %s\n\n", ts);
+
+    fprintf(out, "[provider]\n");
+    fprintf(out, "type = \"%s\"\n", cfg->provider.type ? cfg->provider.type : "local");
+    if (cfg->provider.model_id)
+        fprintf(out, "model_id = \"%s\"\n", cfg->provider.model_id);
+    fprintf(out, "context_size = %d\n", cfg->provider.context_size);
+    fprintf(out, "chars_per_token = %.1f\n", cfg->provider.chars_per_token > 0
+            ? cfg->provider.chars_per_token : 3.5f);
+    if (cfg->provider.caching)
+        fprintf(out, "caching = true\n");
+    fprintf(out, "\n");
+
+    fprintf(out, "[client]\n");
+    fprintf(out, "temperature = %.1f\n", cfg->temperature);
+    fprintf(out, "max_tokens = %d\n", cfg->max_tokens);
+    fprintf(out, "stream = %s\n\n", cfg->stream ? "true" : "false");
+
+    fprintf(out, "[thinking]\n");
+    const char *mode_str = cfg->thinking.mode == THINKING_ON ? "yes"
+                         : cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
+    fprintf(out, "mode = \"%s\"\n", mode_str);
+    fprintf(out, "budget = %d\n\n", cfg->thinking.budget);
+
+    fprintf(out, "[react]\n");
+    fprintf(out, "max_react_steps = %d\n", cfg->max_react_steps);
+    fprintf(out, "max_reflection_steps = %d\n", cfg->max_reflection_steps);
+    fprintf(out, "tool_retry_limit = %d\n", cfg->tool_retry_limit);
+    fprintf(out, "cycling_detection = %s\n", cfg->cycling_detection ? "true" : "false");
+    fprintf(out, "inject_memory = %s\n",
+            cfg->profile_inject_memory == 0 ? "false" : "true");
+    fprintf(out, "inject_prev_result = %s\n",
+            cfg->profile_inject_prev_result == 0 ? "false" : "true");
+    fprintf(out, "enable_reflection = %s\n",
+            cfg->profile_enable_reflection == 0 ? "false" : "true");
+    fprintf(out, "enable_compaction = %s\n",
+            cfg->profile_enable_compaction == 0 ? "false" : "true");
+    fprintf(out, "enable_scoring = %s\n\n",
+            cfg->profile_enable_scoring == 0 ? "false" : "true");
+
+    fprintf(out, "[memory]\n");
+    fprintf(out, "recall_min_score = %.2f\n", cfg->recall_min_score);
+    fprintf(out, "recall_blend_semantic = %.1f\n", cfg->recall_blend_semantic);
+    fprintf(out, "recall_blend_substring = %.1f\n", cfg->recall_blend_substring);
+    fprintf(out, "vscore_exponent = %.1f\n", cfg->vscore_exponent);
+    fprintf(out, "memory_index_max = %d\n", cfg->memory_index_max);
+    fprintf(out, "max_skills_per_query = %d\n", cfg->max_skills_per_query);
+    fprintf(out, "max_lessons_per_query = %d\n", cfg->max_lessons_per_query);
+    fprintf(out, "max_strategies_per_query = %d\n", cfg->max_strategies_per_query);
+    fprintf(out, "max_antipatterns_per_query = %d\n", cfg->max_antipatterns_per_query);
+    fprintf(out, "context_eviction_pct = %d\n\n", cfg->context_eviction_pct);
+
+    fprintf(out, "[tools]\n");
+    if (cfg->n_profile_tools_allow > 0) {
+        fprintf(out, "allow = [");
+        for (int i = 0; i < cfg->n_profile_tools_allow; i++)
+            fprintf(out, "%s\"%s\"", i ? ", " : "",
+                    cfg->profile_tools_allow[i]);
+        fprintf(out, "]\n");
+    }
+    if (cfg->n_profile_tools_block > 0) {
+        fprintf(out, "block = [");
+        for (int i = 0; i < cfg->n_profile_tools_block; i++)
+            fprintf(out, "%s\"%s\"", i ? ", " : "",
+                    cfg->profile_tools_block[i]);
+        fprintf(out, "]\n");
+    }
+    /* List active tools from the registry */
+    fprintf(out, "active = [");
+    {
+        int first = 1;
+        for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+            const char *tname = TOOL_REGISTRY[i].name;
+            if (!tname) continue;
+            /* Check if blocked */
+            int blocked = 0;
+            for (int j = 0; j < cfg->n_profile_tools_block; j++) {
+                if (strcmp(tname, cfg->profile_tools_block[j]) == 0) {
+                    blocked = 1;
+                    break;
+                }
+            }
+            if (blocked) continue;
+            /* If allow list exists, check if tool is in it */
+            if (cfg->n_profile_tools_allow > 0) {
+                int allowed = 0;
+                for (int j = 0; j < cfg->n_profile_tools_allow; j++) {
+                    if (strcmp(tname, cfg->profile_tools_allow[j]) == 0) {
+                        allowed = 1;
+                        break;
+                    }
+                }
+                if (!allowed) continue;
+            }
+            fprintf(out, "%s\"%s\"", first ? "" : ", ", tname);
+            first = 0;
+        }
+    }
+    fprintf(out, "]\n");
+    fprintf(out, "\n");
+
+    /* Tool description overrides */
+    for (int i = 0; i < cfg->n_profile_tool_descs; i++) {
+        fprintf(out, "[tools.%s]\n", cfg->profile_tool_desc_names[i]);
+        /* Use triple-quoted string for multi-line descriptions */
+        fprintf(out, "description = \"\"\"\n%s\"\"\"\n\n",
+                cfg->profile_tool_desc_values[i]);
+    }
+
+    fprintf(out, "[embedding]\n");
+    fprintf(out, "type = \"%s\"\n",
+            cfg->embedding.type ? cfg->embedding.type : "none");
+    if (cfg->embedding.model_path)
+        fprintf(out, "model_path = \"%s\"\n", cfg->embedding.model_path);
+    if (cfg->embedding.model)
+        fprintf(out, "model = \"%s\"\n", cfg->embedding.model);
+    fprintf(out, "\n");
+
+    fprintf(out, "[limits]\n");
+    fprintf(out, "shell_timeout = %d\n", cfg->shell_timeout);
+    fprintf(out, "shell_max_output = %d\n", cfg->shell_max_output);
+    fprintf(out, "file_max_size = %d\n", cfg->file_max_size);
+    fprintf(out, "llm_timeout = %d\n", cfg->llm_timeout);
+    fprintf(out, "llm_max_response = %d\n", cfg->llm_max_response);
+    fprintf(out, "llm_repeat_threshold = %d\n", cfg->llm_repeat_threshold);
+    fprintf(out, "file_read_max_inline = %d\n", cfg->file_read_max_inline);
+    fprintf(out, "prune_min_score = %.2f\n", cfg->prune_min_score);
+    fprintf(out, "prune_min_evidence = %d\n", cfg->prune_min_evidence);
+    fprintf(out, "consolidation_threshold = %.2f\n", cfg->consolidation_threshold);
+    fprintf(out, "dream_reminder_threshold = %d\n", cfg->dream_reminder_threshold);
+    fprintf(out, "\n");
+
+    if (cfg->system_prompt_extra) {
+        fprintf(out, "# System prompt extra (from profile):\n");
+        fprintf(out, "# system_prompt_extra = \"\"\"\n");
+        fprintf(out, "# %s\n", cfg->system_prompt_extra);
+        fprintf(out, "# \"\"\"\n");
+    }
 }
 
 int config_write_default(const char *path) {
