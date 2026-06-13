@@ -203,6 +203,8 @@ typedef struct {
     float  consolidation_threshold; /* MaxSim cosine threshold for near-duplicate
                                      * consolidation (default 0.82). Range 0.80-0.90
                                      * in IR literature; model-specific. */
+    float  dedup_threshold;          /* MaxSim cosine threshold for reflection
+                                     * deduplication (default 0.90). Higher = stricter. */
 
     /* P0: Memory recall quality gate — score threshold for injection.
      * Memories scoring below this threshold are NOT injected, implementing

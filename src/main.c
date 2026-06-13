@@ -963,6 +963,9 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
             .flags = tui_default_flags, .parent_loop = -1,
         };
+        /* P7: Initialize condition variable for user_ask handoff */
+        pthread_mutex_init(&react.user_ask_mutex, NULL);
+        pthread_cond_init(&react.user_ask_cond, NULL);
 
         /* Initialize logging subsystem for TUI error routing */
         nash_log_init(journal, shared_store);
@@ -1095,6 +1098,10 @@ int main(int argc, char **argv) {
                     react.user_ask_answer = submitted_query;
                     submitted_query = NULL;  /* ownership transferred */
                     react.user_ask_pending = 0;  /* unblock the react loop */
+                    /* P7: Signal condition variable so inference thread wakes immediately */
+                    pthread_mutex_lock(&react.user_ask_mutex);
+                    pthread_cond_signal(&react.user_ask_cond);
+                    pthread_mutex_unlock(&react.user_ask_mutex);
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING, "Running...");
                     pthread_mutex_unlock(&ui->mtx);
@@ -1862,6 +1869,9 @@ int main(int argc, char **argv) {
         free(pending_redirect);  /* clean up any un-dispatched redirect */
         tui_shutdown();
         nash_log_set_ui(NULL);  /* disable TUI error routing */
+        /* P7: Destroy condition variable resources */
+        pthread_mutex_destroy(&react.user_ask_mutex);
+        pthread_cond_destroy(&react.user_ask_cond);
         ui_state_free(ui);
 
         /* Save scratchpad */

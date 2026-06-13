@@ -32,7 +32,7 @@ char *sha256_hex(const char *data, size_t len) {
     char *hex = malloc(65);
     if (!hex) return NULL;
     for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
-        sprintf(hex + i * 2, "%02x", hash[i]);
+        snprintf(hex + i * 2, 3, "%02x", hash[i]);
     hex[64] = '\0';
     return hex;
 }

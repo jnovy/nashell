@@ -6,6 +6,7 @@
 #include "tools.h"
 #include "react_event.h"
 #include <stdatomic.h>
+#include <pthread.h>
 
 /* React loop subsystem flags — controls which subsystems fire per react_run().
  * Default: all enabled (1). Playbooks/dream can selectively disable. */
@@ -35,10 +36,12 @@ typedef struct {
 
     /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
-     * then polls user_ask_pending until the TUI thread sets the answer. */
+     * then waits on user_ask_cond until the TUI thread sets the answer. */
     atomic_int    user_ask_pending;   /* 1 = waiting for answer, 0 = idle */
     char         *user_ask_question;  /* question text (set by inference thread) */
     char         *user_ask_answer;    /* answer text (set by TUI thread, freed by inference) */
+    pthread_mutex_t user_ask_mutex;   /* P7: protects user_ask handoff */
+    pthread_cond_t  user_ask_cond;    /* P7: signaled when answer is ready */
 
     /* Cross-query context inheritance (set by caller between react_run calls) */
     char         *last_query;    /* previous query text (NULL for first query) */

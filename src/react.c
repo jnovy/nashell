@@ -1,32 +1,16 @@
-#include "react.h"
-#include "nash_limits.h"
-#include "config.h"
-#include "memory.h"
-#include "journal.h"
-#include "store.h"
-#include "nash_log.h"
-#include "tools_registry.h"
-#include "cJSON.h"
-#include "str.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-#include <dirent.h>
-#include <stdint.h>
+#include "react_internal.h"
 
 /* ── helpers ─────────────────────────────────────────── */
 
 /* Get chars-per-token ratio from provider config, defaulting to 3.5.
  * Used for context budget calculations instead of hardcoded 4. */
-static float get_chars_per_token(const react_ctx_t *ctx) {
+float react_get_chars_per_token(const react_ctx_t *ctx) {
     if (ctx->provider && ctx->provider->cfg.chars_per_token > 0)
         return ctx->provider->cfg.chars_per_token;
     return 3.5f;
 }
 
-static const char *json_get_str(cJSON *obj, const char *key) {
+const char *react_json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
     return NULL;
@@ -34,7 +18,7 @@ static const char *json_get_str(cJSON *obj, const char *key) {
 
 /* Add system prompt to chat, appending model-specific rules if configured.
  * Avoids 3x duplication of the same logic at each call site. */
-static void add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
+void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
     char *base = tools_system_prompt();
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
@@ -53,72 +37,11 @@ static void add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
     free(base);
 }
 
-/* ── reflection deduplication callback ───────────────── */
-
-typedef struct {
-    react_ctx_t *ctx;
-    cJSON *rkey_j;
-    embed_multi_vec_t *new_emb;  /* multi-vec for consistent similarity metric */
-    int *should_store;
-    int task_succeeded;
-} reflection_scan_t;
-
-static int reflection_dedup_cb(const char *dirpath, const char *filename,
-                               const char *fullpath, void *user_data) {
-    reflection_scan_t *s = (reflection_scan_t *)user_data;
-    (void)dirpath; (void)filename;
-
-    /* FIX BUG2: Use multi-vec × multi-vec (MaxSim) similarity, consistent
-     * with consolidation_cb in tools.c. Previously used single-vec × multi-vec
-     * which computes a different metric, making the 0.90 threshold here and
-     * the 0.82 threshold in consolidation incomparable. */
-    embed_multi_vec_t exist_emb = embed_multi_vec_load(fullpath);
-    if (!exist_emb.data) return 0;
-    if (exist_emb.dim != s->new_emb->dim) {
-        embed_multi_vec_free(&exist_emb);
-        return 0;
-    }
-    float sim = embed_cosine_sim_multi_multi(s->new_emb, &exist_emb);
-    embed_multi_vec_free(&exist_emb);
-    if (sim > 0.90f) {
-        /* When a task FAILED, the reflection may produce a corrective insight
-         * that contradicts an existing entry. Since contradictions have high
-         * embedding similarity (same topic, opposite conclusion), we must
-         * allow the store — memory_try_consolidate will classify it as
-         * SUPERSEDES and delete the old entry. Only block for successes. */
-        if (!s->task_succeeded) {
-            /* Log but allow — let consolidation handle contradiction */
-            cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
-            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
-            cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
-            journal_append(s->ctx->tools->journal,
-                s->ctx->tools->react_loop, s->ctx->tools->step,
-                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
-            cJSON_Delete(dup_p);
-            return 1;  /* stop iterating, but should_store stays 1 */
-        }
-        *s->should_store = 0;
-        /* Log to journal instead of stderr (TUI mode) */
-        {
-            cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
-            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
-            cJSON_AddStringToObject(dup_p, "action", "skipped");
-            journal_append(s->ctx->tools->journal,
-                s->ctx->tools->react_loop, s->ctx->tools->step,
-                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
-            cJSON_Delete(dup_p);
-        }
-        return 1;  /* stop iterating */
-    }
-    return 0;
-}
 
 /* Log memory context injection to the journal for debugging.
  * Captures: index summary (total + type counts), pinned keys, skills recalled.
  * Called at both the checkpoint-restore path and the main react_run path. */
-static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
+void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                                const char *mem_index,
                                const char *pinned,
                                memory_results_t *all_memories,
@@ -231,7 +154,7 @@ static void log_memory_context(tool_ctx_t *tools, int react_loop, int step,
 
 /* Recursively unwrap nested JSON in the "thought" field.
  * Delegates to the shared unwrap_thought() in journal.c. */
-static void sanitize_thought(cJSON *action) {
+void react_sanitize_thought(cJSON *action) {
     cJSON *th = cJSON_GetObjectItemCaseSensitive(action, "thought");
     if (!th || !cJSON_IsString(th) || !th->valuestring || th->valuestring[0] != '{')
         return;
@@ -248,332 +171,11 @@ static void sanitize_thought(cJSON *action) {
     }
 }
 
-/* Streaming token callback context — bridges llm_token_fn to react_event_fn */
-typedef struct {
-    react_event_fn on_event;
-    void          *userdata;
-    int            step;
-} stream_ctx_t;
-/* Checkpoint restore function — to be inserted into react.c after checkpoint_remove() */
+/* Checkpoint restore, save, remove are in react_checkpoint.c */
 
-/* Restore conversation state from checkpoint.json + journal.jsonl + .store/
- * Returns the step number to resume from, or -1 if no checkpoint exists.
- * Populates chat with reconstructed messages. */
-static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
-                               const char *user_query) {
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json",
-             ctx->tools->session_dir);
 
-    cJSON *cp = slurp_json(path);
-    if (!cp) return -1;  /* no checkpoint — start fresh */
-
-    int saved_step = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(cp, "step"));
-    int saved_loop = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(cp, "react_loop"));
-
-    /* Restore scratchpad (section-based; handles legacy plain-text format too) */
-    scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
-    if (ctx->tools->scratch.count == 0) {
-        /* Try checkpoint JSON as last resort (very old sessions) */
-        cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
-        if (sp && sp->valuestring && sp->valuestring[0]) {
-            scratchpad_parse(&ctx->tools->scratch, sp->valuestring,
-                             "default", 5);
-        }
-    }
-
-    /* Restore last_tc_id for tool_calls threading */
-    char *restored_tc_id = NULL;
-    cJSON *tc_id_j = cJSON_GetObjectItem(cp, "last_tc_id");
-    if (tc_id_j && tc_id_j->valuestring)
-        restored_tc_id = strdup(tc_id_j->valuestring);
-
-    /* Restore aliases from journal symlinks */
-    /* (aliases are re-derived from journal refs below) */
-
-    cJSON_Delete(cp);
-
-    /* Step 1: Add system prompt (fresh — may have changed) */
-    add_system_prompt(chat, ctx->tools->cfg);
-
-    /* v5: No manifest injection — scratchpad carries all cross-loop state. */
-
-    /* Step 2: Add memory context (fresh) */
-    if (ctx->tools->memory) {
-        char *mem_summary = memory_build_index(ctx->tools->memory);
-        if (mem_summary && strlen(mem_summary) > 0) {
-            char *mem_msg = malloc(strlen(mem_summary) + 512);
-            if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\n"
-                        "Call memory_recall when the answer may depend on user preferences, "
-                        "prior decisions, ongoing projects, or historical context not visible "
-                        "in the current conversation.\n"
-                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
-                llm_chat_add(chat, "user", mem_msg);
-                free(mem_msg);
-            }
-        }
-
-        char *pinned = memory_load_pinned(ctx->tools->memory);
-        if (pinned && strlen(pinned) > 0) {
-            char *pin_msg = malloc(strlen(pinned) + 64);
-            if (pin_msg) {
-                sprintf(pin_msg, "[PINNED KNOWLEDGE]\n%s", pinned);
-                llm_chat_add(chat, "user", pin_msg);
-                free(pin_msg);
-            }
-        }
-
-        /* Log memory context for debugging (checkpoint restore path) */
-        log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_summary, pinned,
-                           NULL, user_query);
-
-        free(mem_summary);
-        free(pinned);
-    }
-
-    /* Step 4: Add scratchpad if exists (section-based or legacy) */
-    {
-        char *sp_text = NULL;
-        if (ctx->tools->scratch.count > 0) {
-            sp_text = scratchpad_serialize(&ctx->tools->scratch);
-        }
-        if (sp_text && sp_text[0]) {
-            size_t slen = strlen(sp_text);
-            char *scratch_msg = malloc(slen + 32);
-            if (scratch_msg) {
-                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
-                llm_chat_add(chat, "user", scratch_msg);
-                free(scratch_msg);
-            }
-        }
-        free(sp_text);
-    }
-
-    /* Step 5: Add user query */
-    llm_chat_add(chat, "user", user_query);
-
-    /* Step 6: Replay tool calls from journal to rebuild conversation history */
-    char jpath[NASH_PATH_MAX];
-    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
-             ctx->tools->session_dir);
-    FILE *f = fopen(jpath, "r");
-    if (!f) {
-        /* Restore last_tc_id even without journal replay */
-        if (restored_tc_id) {
-            free(chat->last_tool_call_id);
-            chat->last_tool_call_id = restored_tc_id;
-        }
-        return saved_step;
-    }
-
-    char line[NASH_LINE_MAX];
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-
-        int loop = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "react_loop"));
-        int step = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "step"));
-        const char *tool = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "tool"));
-        const char *ref = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "ref"));
-        const char *tc_id = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "tc_id"));
-        cJSON *params = cJSON_GetObjectItem(entry, "params");
-
-        /* Only replay entries from the current react loop */
-        if (loop != saved_loop) { cJSON_Delete(entry); continue; }
-
-        /* Skip system, query, parse_error entries */
-        if (!tool || strcmp(tool, "system") == 0 ||
-            strcmp(tool, "query") == 0 ||
-            strcmp(tool, "parse_error") == 0) {
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        /* Re-register alias and track the hash for this entry */
-        const char *entry_hash = NULL;
-        char entry_hash_buf[128] = "";
-        if (ref) {
-            /* Extract hash from ref by resolving the symlink */
-            char ref_path[NASH_PATH_MAX];
-            snprintf(ref_path, sizeof(ref_path), "%s/%s",
-                     ctx->tools->session_dir, ref);
-            char link_target[NASH_PATH_MAX];
-            ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
-            if (llen > 0) {
-                link_target[llen] = '\0';
-                /* Extract hash from "../../store/<hash>" */
-                const char *slash = strrchr(link_target, '/');
-                if (slash) {
-                    slash++;  /* skip the '/' */
-                    snprintf(entry_hash_buf, sizeof(entry_hash_buf), "%s", slash);
-                    entry_hash = entry_hash_buf;
-                    /* Register in alias hash map */
-                    alias_map_insert(ctx->tools->aliases, ref, slash);
-                }
-            }
-        }
-
-        /* Handle thinking steps */
-        if (strcmp(tool, "thinking") == 0) {
-            const char *thought = NULL;
-            if (params) {
-                cJSON *t = cJSON_GetObjectItem(params, "thought");
-                if (t && t->valuestring) thought = t->valuestring;
-            }
-            if (thought) {
-                /* Read the stored response for the full thinking content */
-                if (ref && entry_hash) {
-                    char *store_path = store_resolve(ctx->tools->store,
-                        entry_hash);
-                    if (store_path) {
-                        char *content = slurp_file(store_path, NULL);
-                        if (content) {
-                            llm_chat_add(chat, "assistant", content);
-                            free(content);
-                        }
-                        free(store_path);
-                    }
-                }
-            }
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        /* Regular tool call — reconstruct assistant + tool result messages */
-        const char *thought = "";
-        const char *action_name = tool;
-        if (params) {
-            cJSON *t = cJSON_GetObjectItem(params, "thought");
-            if (t && t->valuestring) thought = t->valuestring;
-        }
-
-        if (tc_id) {
-            /* Native tool_calls API format */
-            /* Build tool_calls JSON */
-            cJSON *tc_arr = cJSON_CreateArray();
-            cJSON *tc = cJSON_CreateObject();
-            cJSON_AddStringToObject(tc, "id", tc_id);
-            cJSON_AddStringToObject(tc, "type", "function");
-            cJSON *fn = cJSON_CreateObject();
-            cJSON_AddStringToObject(fn, "name", action_name);
-
-            /* Build arguments from params (exclude thought and action) */
-            cJSON *args = cJSON_CreateObject();
-            if (params) {
-                cJSON *child = params->child;
-                while (child) {
-                    if (strcmp(child->string, "thought") != 0 &&
-                        strcmp(child->string, "action") != 0) {
-                        cJSON_AddItemToObject(args, child->string,
-                            cJSON_Duplicate(child, 1));
-                    }
-                    child = child->next;
-                }
-            }
-            char *args_str = cJSON_PrintUnformatted(args);
-            cJSON_AddStringToObject(fn, "arguments", args_str ? args_str : "{}");
-            free(args_str);
-            cJSON_Delete(args);
-
-            cJSON_AddItemToObject(tc, "function", fn);
-            cJSON_AddItemToArray(tc_arr, tc);
-
-            char *tc_json = cJSON_PrintUnformatted(tc_arr);
-            cJSON_Delete(tc_arr);
-
-            /* Add assistant message with tool_calls */
-            llm_chat_add_assistant_tool_call(chat,
-                (thought && thought[0]) ? thought : NULL,
-                tc_json);
-
-            /* Build tool result content */
-            char result_content[1024];
-            int rsize = (int)cJSON_GetNumberValue(
-                cJSON_GetObjectItem(entry, "size"));
-            snprintf(result_content, sizeof(result_content),
-                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
-                     ref ? ref : "?", rsize, step);
-
-            llm_chat_add_tool_result(chat, tc_id, result_content);
-            free(tc_json);
-        } else {
-            /* Legacy JSON-in-content format (no tc_id) */
-            /* Build a unified JSON response */
-            cJSON *unified = cJSON_CreateObject();
-            cJSON_AddStringToObject(unified, "thought", thought);
-            cJSON_AddStringToObject(unified, "action", action_name);
-            if (params) {
-                cJSON *child = params->child;
-                while (child) {
-                    if (strcmp(child->string, "thought") != 0 &&
-                        strcmp(child->string, "action") != 0) {
-                        cJSON_AddItemToObject(unified, child->string,
-                            cJSON_Duplicate(child, 1));
-                    }
-                    child = child->next;
-                }
-            }
-            char *resp = cJSON_PrintUnformatted(unified);
-            cJSON_Delete(unified);
-
-            llm_chat_add(chat, "assistant", resp ? resp : "{}");
-
-            char result_content[1024];
-            int rsize = (int)cJSON_GetNumberValue(
-                cJSON_GetObjectItem(entry, "size"));
-            snprintf(result_content, sizeof(result_content),
-                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
-                     ref ? ref : "?", rsize, step);
-            llm_chat_add(chat, "user", result_content);
-            free(resp);
-        }
-
-        cJSON_Delete(entry);
-    }
-    fclose(f);
-
-    /* Set step counter to resume position */
-    ctx->tools->step = saved_step;
-    ctx->tools->react_loop = saved_loop;
-
-    /* Log checkpoint restore to journal (not stderr — corrupts TUI) */
-    {
-        cJSON *cp_params = cJSON_CreateObject();
-        cJSON_AddNumberToObject(cp_params, "restored_step", saved_step);
-        cJSON_AddNumberToObject(cp_params, "react_loop", saved_loop);
-        cJSON_AddStringToObject(cp_params, "status", "checkpoint restored");
-        char *cp_json = cJSON_PrintUnformatted(cp_params);
-        char *cp_hash = store_save(ctx->tools->store, cp_json ? cp_json : "{}");
-        char *cp_alias = cp_hash ? tool_register_alias(ctx->tools, cp_hash) : NULL;
-        journal_append(ctx->tools->journal, saved_loop, saved_step,
-                       "checkpoint_restore", cp_params, cp_alias,
-                       cp_json ? strlen(cp_json) : 0, 0, NULL, NULL);
-        free(cp_json);
-        free(cp_hash);
-        free(cp_alias);
-        cJSON_Delete(cp_params);
-    }
-
-    /* Restore last_tc_id for tool_calls threading after crash */
-    if (restored_tc_id) {
-        free(chat->last_tool_call_id);
-        chat->last_tool_call_id = restored_tc_id;
-    }
-
-    return saved_step;
-}
-
-static void stream_token_cb(const char *token, void *userdata) {
-    stream_ctx_t *sctx = userdata;
+void react_stream_token_cb(const char *token, void *userdata) {
+    react_stream_ctx_t *sctx = userdata;
     if (!sctx->on_event) return;
     react_event_t ev = {0};
     ev.type  = REACT_EVENT_LLM_TOKEN;
@@ -582,67 +184,26 @@ static void stream_token_cb(const char *token, void *userdata) {
     sctx->on_event(&ev, sctx->userdata);
 }
 
-static void emit(react_event_fn fn, void *ud, react_event_t *ev) {
+void react_emit(react_event_fn fn, void *ud, react_event_t *ev) {
     if (fn) fn(ev, ud);
 }
 
 /* Extract the key display parameter for a tool action */
-static const char *get_action_desc(cJSON *action, const char *action_name,
+const char *react_get_action_desc(cJSON *action, const char *action_name,
                                    const char *thought) {
     if (strcmp(action_name, "shell_exec") == 0)
-        return json_get_str(action, "command");
+        return react_json_get_str(action, "command");
     if (strcmp(action_name, "file_read") == 0 ||
         strcmp(action_name, "file_write") == 0 ||
         strcmp(action_name, "file_edit") == 0)
-        return json_get_str(action, "path");
+        return react_json_get_str(action, "path");
     if (strcmp(action_name, "grep_search") == 0)
-        return json_get_str(action, "pattern");
+        return react_json_get_str(action, "pattern");
     if (strcmp(action_name, "notes") == 0)
         return "[saving notes]";
     if (strcmp(action_name, "done") == 0)
         return thought;
     return thought;
-}
-
-
-/* ── checkpoint ──────────────────────────────────────────── */
-
-/* Save minimal checkpoint after each tool execution.
- * The journal + store contain the actual data; this just records
- * the ephemeral state needed to resume: step, scratchpad, evicted steps. */
-static void checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
-                            const char *last_tc_id) {
-    char path[NASH_PATH_MAX], tmp_path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
-    snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
-
-    /* Persist scratchpad to disk alongside checkpoint */
-    scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
-
-    cJSON *cp = cJSON_CreateObject();
-    cJSON_AddNumberToObject(cp, "version", 1);
-    cJSON_AddNumberToObject(cp, "step", step);
-    cJSON_AddNumberToObject(cp, "react_loop", ctx->tools->react_loop);
-    if (user_query) cJSON_AddStringToObject(cp, "user_query", user_query);
-    if (last_tc_id)
-        cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
-
-    char *json = cJSON_Print(cp);
-    FILE *f = fopen(tmp_path, "w");
-    if (f) {
-        fputs(json, f);
-        fclose(f);
-        rename(tmp_path, path);  /* atomic write */
-    }
-    free(json);
-    cJSON_Delete(cp);
-}
-
-/* Remove checkpoint on successful completion (task done, no resume needed) */
-static void checkpoint_remove(react_ctx_t *ctx) {
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
-    unlink(path);
 }
 
 /* Read the original user_query from a checkpoint without restoring full state.
@@ -669,7 +230,7 @@ char *checkpoint_read_query(const char *session_dir) {
  *   - If output is wrapped in ```markdown code fences → strip them
  *   - Otherwise → return as-is
  * Returns a new allocation (caller must free). Returns NULL on empty/NULL input. */
-static char *extract_llm_text_output(const char *raw) {
+char *react_extract_llm_text_output(const char *raw) {
     if (!raw || !raw[0]) return NULL;
 
     /* Skip leading whitespace */
@@ -732,16 +293,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Check for checkpoint — resume interrupted task */
     int resume_step = 0;
-    resume_step = checkpoint_restore(ctx, chat, user_query);
+    resume_step = react_checkpoint_restore(ctx, chat, user_query, on_event, userdata);
     int restored = (resume_step >= 0);
-    if (restored) {
-        /* Emit event instead of fprintf — TUI will display it */
-        react_event_t ev = {0};
-        ev.type = REACT_EVENT_WARNING;
-        ev.step = resume_step;
-        ev.message = "Resuming from checkpoint";
-        emit(on_event, userdata, &ev);
-    }
 
 
     if (!restored) {
@@ -751,7 +304,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->tools->step = 0;
 
     /* System message */
-    add_system_prompt(chat, ctx->tools->cfg);
+    react_add_system_prompt(chat, ctx->tools->cfg);
 
     /* v5: No manifest injection — scratchpad is the sole persistence mechanism.
      * Cross-loop state is carried via scratchpad (auto-saved done results +
@@ -762,9 +315,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (ctx->flags.inject_memory && ctx->tools->memory) {
         char *mem_summary = memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
-            char *mem_msg = malloc(strlen(mem_summary) + 512);
+            size_t mem_msg_sz = strlen(mem_summary) + 512;
+            char *mem_msg = malloc(mem_msg_sz);
             if (mem_msg) {
-                sprintf(mem_msg, "[MEMORY INDEX]\n%s\n\n"
+                snprintf(mem_msg, mem_msg_sz, "[MEMORY INDEX]\n%s\n\n"
                         "Call memory_recall when the answer may depend on user preferences, "
                         "prior decisions, ongoing projects, or historical context not visible "
                         "in the current conversation.\n"
@@ -777,9 +331,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Inject pinned memories (always-active knowledge) */
         char *pinned = memory_load_pinned(ctx->tools->memory);
         if (pinned && strlen(pinned) > 0) {
-            char *pin_msg = malloc(strlen(pinned) + 64);
+            size_t pin_msg_sz = strlen(pinned) + 64;
+            char *pin_msg = malloc(pin_msg_sz);
             if (pin_msg) {
-                sprintf(pin_msg, "[PINNED KNOWLEDGE]\n%s", pinned);
+                snprintf(pin_msg, pin_msg_sz, "[PINNED KNOWLEDGE]\n%s", pinned);
                 llm_chat_add(chat, "user", pin_msg);
                 free(pin_msg);
             }
@@ -849,7 +404,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         #undef INJECT_TYPE
 
         /* Log memory context for debugging — before freeing mem_summary/pinned */
-        log_memory_context(ctx->tools, ctx->tools->react_loop,
+        react_log_memory_context(ctx->tools, ctx->tools->react_loop,
                            ctx->tools->step, mem_summary, pinned,
                            &all_memories, user_query);
 
@@ -863,7 +418,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * gets a generous budget. All limits scale linearly with context_size. */
     size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
     if (ctx->provider->cfg.context_size > 0) {
-        float cpt = get_chars_per_token(ctx);
+        float cpt = react_get_chars_per_token(ctx);
         max_scratchpad = (size_t)(ctx->provider->cfg.context_size * cpt * 15 / 100);  /* 15% in chars */
     }
 
@@ -1133,7 +688,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.step = step + 1;
             ev.max_steps = ctx->max_steps;
             ev.context_size = ctx->provider->cfg.context_size;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
         }
 
         /* Call LLM */
@@ -1196,7 +751,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.type = REACT_EVENT_WARNING;
                     ev.step = step + 1;
                     ev.message = msg;
-                    emit(on_event, userdata, &ev);
+                    react_emit(on_event, userdata, &ev);
                 }
             }
             /* Propagate thinking budget from config */
@@ -1204,13 +759,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
 
         llm_stats_t stats = {0};
-        stream_ctx_t sctx = { on_event, userdata, step + 1 };
+        react_stream_ctx_t sctx = { on_event, userdata, step + 1 };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
         /* Propagate tool filter so provider builds schema with only allowed tools */
         ctx->provider->tool_filter = &ctx->tools->tool_filter;
         char *response = provider_complete_stream(ctx->provider, chat, &stats,
-                on_event ? stream_token_cb : NULL, &sctx,
+                on_event ? react_stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh);
         if (!response) {
             consecutive_null_responses++;
@@ -1322,7 +877,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (perr && (strstr(perr, "HTTP 401") || strstr(perr, "HTTP 403"))) {
                     ev.message = "Authentication failed — token expired or invalid, "
                                  "please re-authenticate (e.g. gcloud auth login)";
-                    emit(on_event, userdata, &ev);
+                    react_emit(on_event, userdata, &ev);
                     break;
                 }
             }
@@ -1341,7 +896,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     if (total_400_errors >= 6) {
                         ev.message = "HTTP 400 — context still too large after "
                                      "repeated eviction, giving up";
-                        emit(on_event, userdata, &ev);
+                        react_emit(on_event, userdata, &ev);
                         break;
                     }
                     /* Aggressive eviction: remove half of middle messages */
@@ -1368,7 +923,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             "HTTP 400 — evicted %d messages to reduce context "
                             "(attempt %d/6)", n_evict, total_400_errors);
                         ev.message = emsg;
-                        emit(on_event, userdata, &ev);
+                        react_emit(on_event, userdata, &ev);
                     }
                     /* HTTP 400 is a client error (context too large), not a
                      * transient server error. Don't let it poison the HTTP 500
@@ -1387,7 +942,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              *   Tier 4+: Give up */
             if (consecutive_null_responses >= 4) {
                 ev.message = "LLM server error — all recovery tiers exhausted, giving up";
-                emit(on_event, userdata, &ev);
+                react_emit(on_event, userdata, &ev);
                 break;
             }
 
@@ -1397,7 +952,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * "shell_execshell_exec"). Removing it gives the model a
                  * clean slate to regenerate from the previous context. */
                 ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
-                emit(on_event, userdata, &ev);
+                react_emit(on_event, userdata, &ev);
 
                 /* Remove last 2 messages (assistant + tool_result) if they exist */
                 if (chat->n_msgs >= 2) {
@@ -1424,45 +979,68 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 }
 
                 if (sp_idx >= 0) {
-                    ev.message = "LLM server error — reformulating scratchpad (tier 2)";
-                    emit(on_event, userdata, &ev);
+                    ev.message = "LLM server error — stripping code blocks from scratchpad (tier 2)";
+                    react_emit(on_event, userdata, &ev);
 
-                    llm_chat_t *rewrite = llm_chat_new();
-                    llm_chat_add(rewrite, "system",
-                        "You are a text sanitiser. Rewrite the user's notes "
-                        "into plain prose. Remove ALL code blocks, JSON "
-                        "snippets, backtick-fenced sections, and deeply "
-                        "escaped strings. Keep the semantic meaning and key "
-                        "facts but express everything in simple sentences. "
-                        "Output ONLY the rewritten text, nothing else.");
-                    llm_chat_add(rewrite, "user", chat->msgs[sp_idx].content + 13);
+                    /* P6: Local code-block stripping instead of LLM call.
+                     * The LLM server may be overloaded (common cause of 500s),
+                     * so making another LLM call during recovery adds load.
+                     * Strip ```...``` code blocks and inline `code` locally. */
+                    const char *src = chat->msgs[sp_idx].content + 13;
+                    size_t src_len = strlen(src);
+                    char *cleaned = malloc(src_len + 1);
+                    if (cleaned) {
+                        size_t di = 0;
+                        for (size_t si = 0; si < src_len; ) {
+                            /* Strip fenced code blocks: ```...``` */
+                            if (si + 3 <= src_len && strncmp(src + si, "```", 3) == 0) {
+                                /* Skip to closing ``` */
+                                const char *end = strstr(src + si + 3, "```");
+                                if (end) {
+                                    si = (size_t)(end - src) + 3;
+                                    /* Skip trailing newline */
+                                    if (si < src_len && src[si] == '\n') si++;
+                                } else {
+                                    si += 3; /* no closing fence — skip opening */
+                                }
+                                continue;
+                            }
+                            /* Strip inline backtick code: `...` */
+                            if (src[si] == '`') {
+                                const char *end = strchr(src + si + 1, '`');
+                                if (end && end - (src + si) < 200) {
+                                    /* Copy content without backticks */
+                                    si++;
+                                    while (src + si < end) {
+                                        cleaned[di++] = src[si++];
+                                    }
+                                    si++; /* skip closing backtick */
+                                    continue;
+                                }
+                            }
+                            cleaned[di++] = src[si++];
+                        }
+                        cleaned[di] = '\0';
 
-                    char *reformulated = provider_complete(ctx->provider, rewrite, NULL);
-                    llm_chat_free(rewrite);
-
-                    if (reformulated && strlen(reformulated) > 0) {
-                        size_t rlen = strlen(reformulated);
-                        char *new_sp = malloc(rlen + 32);
+                        size_t clen = strlen(cleaned);
+                        char *new_sp = malloc(clen + 32);
                         if (new_sp) {
-                            snprintf(new_sp, rlen + 32, "[SCRATCHPAD]\n%s",
-                                     reformulated);
+                            snprintf(new_sp, clen + 32, "[SCRATCHPAD]\n%s", cleaned);
                             free(chat->msgs[sp_idx].content);
                             chat->msgs[sp_idx].content = new_sp;
                         }
-                        free(reformulated);
-                    } else {
-                        free(reformulated);
+                        free(cleaned);
                     }
                 } else {
                     ev.message = "LLM server error — no scratchpad, skipping tier 2";
-                    emit(on_event, userdata, &ev);
+                    react_emit(on_event, userdata, &ev);
                 }
             } else if (consecutive_null_responses == 3) {
                 /* Tier 3: Strip scratchpad entirely (nuclear option).
                  * If reformulation didn't help, the scratchpad itself
                  * may be the problem. Remove it completely. */
                 ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
-                emit(on_event, userdata, &ev);
+                react_emit(on_event, userdata, &ev);
 
                 for (int i = 0; i < chat->n_msgs; i++) {
                     if (chat->msgs[i].content &&
@@ -1481,6 +1059,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             continue;
         }
         consecutive_null_responses = 0;  /* Reset on successful LLM response */
+        /* P4: Decay HTTP 400 error counter on success. Without this, 5
+         * unrelated 400s across a long session would exhaust the budget
+         * and the 6th would give up unconditionally. Decay instead of
+         * hard reset retains some caution about recurring issues. */
+        if (total_400_errors > 0) total_400_errors--;
 
         struct timespec step_end;
         clock_gettime(CLOCK_MONOTONIC, &step_end);
@@ -1495,7 +1078,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
             ev.message = "Failed to parse LLM response as JSON";
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
 
             /* Log the invalid response to journal for analysis */
             char *err_hash = store_save(ctx->tools->store, response);
@@ -1525,10 +1108,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Sanitize thought field: unwrap nested JSON if the LLM echoed
          * back a full action object as its content/thought. */
-        sanitize_thought(action);
+        react_sanitize_thought(action);
 
-        const char *thought = json_get_str(action, "thought");
-        const char *action_name = json_get_str(action, "action");
+        const char *thought = react_json_get_str(action, "thought");
+        const char *action_name = react_json_get_str(action, "action");
 
         if (!action_name) {
             if (thought && thought[0]) {
@@ -1559,7 +1142,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.description = thought;
                     ev.stats = stats;
                     ev.context_size = ctx->provider->cfg.context_size;
-                    emit(on_event, userdata, &ev);
+                    react_emit(on_event, userdata, &ev);
                 }
 
                 /* Add thought to conversation as assistant message,
@@ -1574,7 +1157,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.type = REACT_EVENT_ERROR;
                 ev.step = step + 1;
                 ev.message = "No 'action' field in response";
-                emit(on_event, userdata, &ev);
+                react_emit(on_event, userdata, &ev);
 
                 char *err_hash = store_save(ctx->tools->store, response);
                 char *err_alias = tool_register_alias(ctx->tools,
@@ -1603,11 +1186,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             continue;
         }
 
-        const char *desc = get_action_desc(action, action_name, thought);
+        const char *desc = react_get_action_desc(action, action_name, thought);
 
         /* Check for user_ask — pause react loop and wait for user input */
         if (strcmp(action_name, "user_ask") == 0) {
-            const char *question = json_get_str(action, "question");
+            const char *question = react_json_get_str(action, "question");
             if (!question || !question[0]) {
                 /* Model called user_ask without a question — nudge it to retry */
                 const char *errmsg =
@@ -1640,12 +1223,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_USER_ASK;
             ev.step = step + 1;
             ev.message = question;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
 
-            /* Poll until TUI provides the answer (set by main.c) */
+            /* P7: Wait on condition variable instead of polling.
+             * The TUI thread signals user_ask_cond after setting the answer. */
+            pthread_mutex_lock(&ctx->user_ask_mutex);
             while (ctx->user_ask_pending) {
-                { struct timespec ts = {0, 100000000}; nanosleep(&ts, NULL); }  /* 100ms */
+                pthread_cond_wait(&ctx->user_ask_cond, &ctx->user_ask_mutex);
             }
+            pthread_mutex_unlock(&ctx->user_ask_mutex);
 
             /* Build tool result from user's answer */
             const char *answer = ctx->user_ask_answer;
@@ -1699,7 +1285,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
-            const char *result = json_get_str(action, "result");
+            const char *result = react_json_get_str(action, "result");
             /* Fallback: if result is empty but thought has content, use thought.
              * Local models sometimes put the summary in "thought" and leave
              * "result" empty — the thought IS the answer for done calls. */
@@ -1707,7 +1293,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 result = thought;
             }
             final_result = result ? strdup(result) : strdup("(no result)");
-            checkpoint_remove(ctx);
+            react_checkpoint_remove(ctx);
 
             /* Auto-save done result for cross-loop inheritance.
              * Two mechanisms:
@@ -1750,7 +1336,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.result = final_result;
             ev.stats = stats;
             ev.context_size = ctx->provider->cfg.context_size;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
 
             cJSON_Delete(action);
             free(response);
@@ -1766,15 +1352,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * of the same file, running similar commands). */
         int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
         char sig[512];
-        const char *cmd = json_get_str(action, "command");
-        const char *path = json_get_str(action, "path");
-        const char *pattern = json_get_str(action, "pattern");
-        const char *content = json_get_str(action, "content");
-        const char *old_text = json_get_str(action, "old_text");
-        const char *new_text = json_get_str(action, "new_text");
-        const char *query = json_get_str(action, "query");
-        const char *question = json_get_str(action, "question");
-        const char *url = json_get_str(action, "url");
+        const char *cmd = react_json_get_str(action, "command");
+        const char *path = react_json_get_str(action, "path");
+        const char *pattern = react_json_get_str(action, "pattern");
+        const char *content = react_json_get_str(action, "content");
+        const char *old_text = react_json_get_str(action, "old_text");
+        const char *new_text = react_json_get_str(action, "new_text");
+        const char *query = react_json_get_str(action, "query");
+        const char *question = react_json_get_str(action, "question");
+        const char *url = react_json_get_str(action, "url");
         /* Include start_line/end_line in signature so that reading different
          * line ranges of the same file is NOT detected as cycling.
          * file_read("react.c", 1, 50) and file_read("react.c", 50, 100)
@@ -1822,7 +1408,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
             ev.message = warn_msg;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
 
             /* Fix 1: Inject warning into chat so the model KNOWS it's cycling */
             llm_chat_add(chat, "user",
@@ -1952,7 +1538,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.description = desc ? desc : "";
             ev.stats = stats;
             ev.context_size = ctx->provider->cfg.context_size;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
         }
 
         /* Emit tool output */
@@ -1962,7 +1548,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.step = step + 1;
             ev.tool_meta = tr.meta;
             ev.store_ref = tr.store_ref;
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
         }
 
         /* Build tool result string for context */
@@ -2049,7 +1635,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             for (int i = 0; i < chat->n_msgs; i++)
                 if (chat->msgs[i].content)
                     total_chars += (int)strlen(chat->msgs[i].content);
-            float cpt_ev = get_chars_per_token(ctx);
+            float cpt_ev = react_get_chars_per_token(ctx);
             int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
             int keep_head = 3;
             int keep_tail = 4;
@@ -2151,7 +1737,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                         /* Extract text from LLM output — accepts both plain markdown
                          * and JSON tool-call format (extracts "content" field). */
-                        summary = extract_llm_text_output(raw_summary);
+                        summary = react_extract_llm_text_output(raw_summary);
                         free(raw_summary);
                         if (summary) {
                             scratchpad_write(&ctx->tools->scratch, "context_summary",
@@ -2192,7 +1778,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     /* Step 4: Re-inject updated scratchpad at evict_start */
                     {
                         size_t sp_max = (ctx->provider->cfg.context_size > 0)
-                            ? (size_t)(ctx->provider->cfg.context_size * get_chars_per_token(ctx) * 15 / 100) : 8192;
+                            ? (size_t)(ctx->provider->cfg.context_size * react_get_chars_per_token(ctx) * 15 / 100) : 8192;
                         char *fresh_sp = scratchpad_serialize_budget(
                             &ctx->tools->scratch, sp_max);
                         if (fresh_sp && fresh_sp[0]) {
@@ -2224,7 +1810,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.type = REACT_EVENT_WARNING;
                     ev.step = step + 1;
                     ev.message = "Context compacted — evicted messages summarized into scratchpad";
-                    emit(on_event, userdata, &ev);
+                    react_emit(on_event, userdata, &ev);
                 }
             }
         }
@@ -2235,7 +1821,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         tool_result_free(&tr);
 
         /* Save checkpoint after each tool execution (atomic write) */
-        if (!final_result) checkpoint_save(ctx, step + 1, user_query,
+        if (!final_result) react_checkpoint_save(ctx, step + 1, user_query,
                         chat->last_tool_call_id);
 
         /* Check for pause request (Space pressed in TUI — toggle pause/resume).
@@ -2245,7 +1831,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
             ev.message = "Paused (Space to resume, type query to redirect)";
-            emit(on_event, userdata, &ev);
+            react_emit(on_event, userdata, &ev);
             /* Checkpoint already saved above — just break out of the loop */
             cJSON_Delete(action);
             free(response);
@@ -2262,459 +1848,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * Only needed for non-done exits (max steps, errors);
      * the done handler already removes it on success. */
     if (!final_result)
-        checkpoint_remove(ctx);
+        react_checkpoint_remove(ctx);
 
-    /* Post-task reflection: ask LLM to extract reusable lessons/strategies.
-     * Fires for BOTH successful and failed tasks — failures are often more
-     * valuable for learning (what went wrong, what to avoid next time). */
-    int task_succeeded = (final_result != NULL);
-
-    /* Validation scoring: update recall_hits for all recalled memories.
-     * Counter bumps are written to JSON files but NOT git-committed —
-     * these are high-frequency, low-value changes that pollute the git log
-     * (access_count, recall_hits, recall_misses). Git history is reserved
-     * for meaningful content changes (store, delete, prune, consolidate).
-     *
-     * FIX DESIGN1: Only increment hits on success, NOT blanket misses on
-     * failure.  Previously, ALL recalled memories got a miss on failure,
-     * but failure is rarely caused by the recalled memories — it's usually
-     * task difficulty or model error.  Blanket miss attribution creates
-     * noise that degrades vscore of high-recall, high-value memories
-     * (their vscore converges to the background success rate rather than
-     * the memory's actual contribution).  Corrective insights for truly
-     * harmful memories are handled by reflection → SUPERSEDES.
-     *
-     * Future: the reflection phase could identify specific harmful memories
-     * and increment misses only for those (targeted attribution). */
-    if (ctx->flags.enable_scoring && ctx->tools->memory &&
-        ctx->tools->n_recalled_keys > 0 && task_succeeded) {
-        for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
-            memory_increment_hits(ctx->tools->memory,
-                                  ctx->tools->recalled_keys[i]);
-        }
-    }
-
-    /* FIX D2: Skip reflection when max_reflection_steps == 0 */
-    int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
-    if (ctx->flags.enable_reflection && ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {
-        llm_chat_t *reflect = llm_chat_new();
-        if (task_succeeded) {
-            llm_chat_add(reflect, "system",
-                "You just completed a task successfully. Perform CAUSAL ANALYSIS "
-                "(not narrative summary) by answering these questions:\n"
-                "1. What assumptions held or almost failed?\n"
-                "2. What hidden variables or context mattered most?\n"
-                "3. What observations were initially ignored or underweighted?\n"
-                "4. What search branches were pruned — correctly or incorrectly?\n"
-                "5. What representation or mental model was key to success?\n"
-                "6. What reusable invariant or principle generalizes beyond this task?\n\n"
-                "Extract 0-3 reusable lessons, strategies, or skills. Each MUST identify "
-                "a causal mechanism (X because Y), not just a narrative (I learned X).\n"
-                "For each, call memory_store with:\n"
-                "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
-                "- value: the causal insight — state the assumption/variable/invariant "
-                "explicitly (for skills: include approach, pitfalls, verification)\n"
-""
-                "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
-                "\n"
-                "P5: SKILL EXTRACTION — if this task involved 5+ tool calls, extract a\n"
-                "reusable skill with this structure:\n"
-                "## When to apply\n"
-                "<trigger condition — when should this skill be used?>\n"
-                "## Steps\n"
-                "1. step (tool) — WHY: rationale for this step\n"
-                "2. step (tool) — WHY: rationale\n"
-                "## Pitfalls\n"
-                "- pitfall: what to do instead\n"
-                "## Verification\n"
-                "- how to confirm success\n"
-                "\n"
-                "Research basis for skill structure:\n"
-                "  Letta Skill Learning [May 2026] — +36.8%% improvement on Terminal-Bench\n"
-                "    from learned skills with approach, pitfalls, verification.\n"
-                "  CODESKILL [arXiv:2605.25430, May 2026] — skill extraction from\n"
-                "    trajectories with pitfalls as key component.\n"
-                "  Bayesian-Agent [arXiv:2606.08348, Jun 2026] — posterior-guided\n"
-                "    skill evolution from experience.\n"
-                "\n"
-                "If nothing worth storing, call done immediately.\n"
-                "Respond with ONE JSON object per turn: "
-                "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
-        } else {
-            /* P5: Negative memory / anti-patterns — extract what NOT to do
-             * from task failures. Anti-patterns are the defensive complement
-             * to positive lessons: 3 well-placed warnings can prevent 85%
-             * of repeated mistakes.
-             *
-             * Research basis:
-             *   MemMorph [arXiv:2605.26154, May 2026] — showed that just
-             *     3 injected records can redirect agent behavior 85.9% of
-             *     the time. Anti-patterns use this same mechanism
-             *     defensively to prevent repeated mistakes.
-             *   MemFail [arXiv:2605.26667, May 2026] — diagnostic benchmark
-             *     formalizing memory as summarization + storage + retrieval.
-             *     Anti-patterns address the summarization failure mode by
-             *     explicitly capturing what went wrong.
-             *   Reflexion [Shinn et al., 2023] — trajectory memory storing
-             *     failed attempts + reflections. Anti-patterns are the
-             *     persistent, cross-session version of this.
-             *   CODESKILL [arXiv:2605.25430, May 2026] — skill extraction
-             *     includes "pitfalls" as a key component. Anti-patterns
-             *     are standalone pitfall memories. */
-            llm_chat_add(reflect, "system",
-                "The task FAILED or was not completed (hit max steps, error, or timeout). "
-                "Perform CAUSAL ANALYSIS (not narrative) by answering:\n"
-                "1. What assumption failed? (the root cause, not the symptom)\n"
-                "2. What hidden variable mattered that was not accounted for?\n"
-                "3. What observation was available but ignored or misinterpreted?\n"
-                "4. What search branch was pruned incorrectly? (wrong tool, wrong approach)\n"
-                "5. What representation or mental model was insufficient?\n"
-                "6. What reusable invariant would prevent this class of failure?\n\n"
-                "Extract 1-3 items. For each, decide if it is:\n"
-                "  (a) A LESSON (positive insight: \"do X because Y\"), or\n"
-                "  (b) An ANTI-PATTERN (negative warning: \"NEVER do X because Y\").\n\n"
-                "For lessons, call memory_store with:\n"
-                "- key: lesson:short-name\n"
-                "- value: the causal chain — root assumption, what broke it, the fix\n"
-"\n"
-                "For anti-patterns, call memory_store with:\n"
-                "- key: anti-pattern:short-name (e.g. anti-pattern:never-grep-binary-files)\n"
-                "- value: Start with 'NEVER' or 'AVOID'. State: what NOT to do, WHY it "
-                "fails, and what to do INSTEAD. Include the trigger condition "
-                "(when_NOT_to_apply).\n"
-"\n"
-                "Anti-patterns are MORE VALUABLE than lessons for preventing repeated "
-                "mistakes. Prefer anti-patterns when the failure has a clear 'never do X' "
-                "pattern. If nothing worth storing, call done immediately.\n"
-                "Respond with ONE JSON object per turn: "
-                "{\"thought\":\"...\",\"action\":\"memory_store\"|\"done\",...}");
-        }
-
-        /* Inject journal manifest as context for reflection */
-        char *manifest = journal_manifest(ctx->tools->journal, 50);
-        if (manifest) {
-            llm_chat_add(reflect, "user", manifest);
-            free(manifest);
-        }
-
-        /* FIX #10: Include scratchpad in reflection context — it often
-         * contains the most important findings from the task */
-        {
-            char *sp_text = NULL;
-            if (ctx->tools->scratch.count > 0) {
-                sp_text = scratchpad_serialize(&ctx->tools->scratch);
-            }
-            if (sp_text && sp_text[0]) {
-                size_t slen = strlen(sp_text);
-                char *sp_msg = malloc(slen + 32);
-                if (sp_msg) {
-                    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
-                    llm_chat_add(reflect, "user", sp_msg);
-                    free(sp_msg);
-                }
-            }
-            free(sp_text);
-        }
-
-        /* FIX B3: Inject final_result into reflection context.
-         * Without this, the reflection LLM doesn't know what the task
-         * actually produced - it can only infer from tool call sequences.
-         * This degrades reflection quality significantly. */
-        if (final_result) {
-            size_t fr_len = strlen(final_result);
-            size_t show_len = fr_len > 2000 ? 2000 : fr_len;
-            char *fr_msg = malloc(show_len + 64);
-            if (fr_msg) {
-                snprintf(fr_msg, show_len + 64, "[TASK RESULT]\n%.*s%s",
-                         (int)show_len, final_result,
-                         fr_len > 2000 ? "\n[truncated]" : "");
-                llm_chat_add(reflect, "user", fr_msg);
-                free(fr_msg);
-            }
-        }
-
-        llm_chat_add(reflect, "user",
-            task_succeeded
-                ? "Analyze the causal chain of this task. What assumptions held? "
-                  "What hidden variables mattered? What invariant generalizes? "
-                  "Store 0-3 causal lessons via memory_store, or call done if none."
-                : "Trace the causal chain of this failure. What root assumption broke? "
-                  "What was the hidden variable? What invariant would prevent this "
-                  "class of failure? Store 1-3 causal lessons via memory_store, or "
-                  "call done if none.");
-
-        /* Mini react loop for reflection (max 4 steps) */
-        for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
-            llm_stats_t rstats = {0};
-            int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
-            int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-            char *rresp = provider_complete_stream(ctx->provider, reflect, &rstats,
-                    NULL, NULL, max_resp, rep_thresh);
-            if (!rresp) break;
-
-            cJSON *raction = llm_parse_action(rresp);
-            if (!raction) { free(rresp); break; }
-
-            const char *ract = NULL;
-            cJSON *act_item = cJSON_GetObjectItemCaseSensitive(raction, "action");
-            if (act_item && cJSON_IsString(act_item)) ract = act_item->valuestring;
-
-            if (!ract || strcmp(ract, "done") == 0) {
-                cJSON_Delete(raction);
-                free(rresp);
-                break;
-            }
-
-            int should_store = 1;  /* declared outside if-block for use in feedback message */
-            if (strcmp(ract, "memory_store") == 0) {
-                /* FIX #4+B4: Deduplication guard — check if a very similar memory
-                 * already exists before storing. This prevents reflection from
-                 * creating near-duplicate entries on every task.
-                 * B4 fix: Load existing entry's cached .emb file directly instead
-                 * of calling memory_recall() (which generates a query embedding)
-                 * and then re-embedding the existing entry. Saves 2 API calls. */
-                cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
-                cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
-                if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
-                    ctx->tools->memory && ctx->tools->memory->embed &&
-                    ctx->tools->memory->embed->available) {
-                    /* FIX BUG2: Generate a multi-vec embedding (1 chunk) so the
-                     * dedup guard uses embed_cosine_sim_multi_multi — the same
-                     * similarity function as consolidation_cb in tools.c.
-                     * Previously used embed_text (single vec) which produces a
-                     * different similarity metric than consolidation. */
-                    int mic = embed_max_input_chars(
-                                  ctx->tools->memory->embed);
-                    char *prep = embed_prepare_text(rkey_j->valuestring,
-                                                     rval_j->valuestring,
-                                                     mic);
-                    if (prep) {
-                        embed_vec_t single = embed_text(
-                            ctx->tools->memory->embed, prep);
-                        free(prep);
-                        if (single.data) {
-                            /* Wrap single vec into 1-chunk multi-vec */
-                            embed_multi_vec_t new_emb = {
-                                .data = single.data,
-                                .dim = single.dim,
-                                .n_chunks = 1,
-                            };
-                            /* Scan existing .emb files for high similarity
-                             * instead of calling memory_recall + re-embedding */
-                            reflection_scan_t rscan = {
-                                .ctx = ctx,
-                                .rkey_j = rkey_j,
-                                .new_emb = &new_emb,
-                                .should_store = &should_store,
-                                .task_succeeded = task_succeeded,
-                            };
-                            for_each_dir_entry(ctx->tools->memory->dir, ".emb",
-                                              reflection_dedup_cb, &rscan);
-                            embed_vec_free(&single);
-                        }
-                    }
-                }
-
-                if (should_store) {
-                    tool_result_t tr = tool_execute(ctx->tools, "memory_store", raction);
-                    /* Emit event so frontend can show it */
-                    react_event_t ev = {0};
-                    ev.type = REACT_EVENT_STEP_COMPLETE;
-                    ev.action = "memory_store";
-                    ev.description = "[reflection]";
-                    emit(on_event, userdata, &ev);
-                    tool_result_free(&tr);
-                }
-            }
-
-            llm_chat_add(reflect, "assistant", rresp);
-            llm_chat_add(reflect, "user",
-                should_store
-                    ? "Stored. Any more causal insights? What other assumptions, "
-                      "hidden variables, or invariants should be captured? "
-                      "Call memory_store or done."
-                    : "Skipped (too similar to existing memory). Any other "
-                      "causal insights? Call memory_store or done.");
-            cJSON_Delete(raction);
-            free(rresp);
-        }
-        llm_chat_free(reflect);
-    }
-
-    /* P4: Scratchpad-to-memory promotion — auto-promote high-priority
-     * scratchpad sections to long-term memory before they're lost.
-     *
-     * Research basis:
-     *   DCPM [arXiv:2606.09483, Jun 2026] — cognitive capability hierarchy
-     *     ascending from raw inputs through belief trajectories to schemas.
-     *     Promotion moves working knowledge UP the hierarchy.
-     *   Letta Skill Learning [May 2026] — agents that learn from past
-     *     experience improve +36.8%. Promotion captures experience that
-     *     the LLM didn't explicitly memory_store.
-     *   MemoPilot [arXiv:2606.08656, ICML 2026] — RL-trained memory
-     *     copilot that optimizes WHAT to store. Promotion is the heuristic
-     *     equivalent: high-priority sections that survived compaction are
-     *     worth persisting.
-     *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed memory with
-     *     active control. Promotion gives the system active control over
-     *     what crosses from working memory to long-term memory.
-     *
-     * Heuristic: sections with priority <= 1 and content > 200 chars
-     * are promoted to fact:<section-name> memories. Deduplication via
-     * embedding similarity prevents redundant storage. */
-    if (ctx->tools->scratch.count > 0 && ctx->tools->memory && task_succeeded) {
-        for (int si = 0; si < ctx->tools->scratch.count; si++) {
-            scratchpad_section_t *sec = &ctx->tools->scratch.sections[si];
-            if (!sec->name || !sec->content) continue;
-            if (sec->priority > 1) continue;  /* only high-priority sections */
-            if (strlen(sec->content) < 200) continue;  /* skip trivial content */
-
-            /* Skip result sections (R<N>_result) — those are handled separately */
-            if (sec->name[0] == 'R' && strstr(sec->name, "_result")) continue;
-
-            /* Check if a similar memory already exists (dedup via recall) */
-            char pkey[256];
-            snprintf(pkey, sizeof(pkey), "fact:%s", sec->name);
-            memory_results_t check = memory_recall(ctx->tools->memory, pkey, 1);
-            int already_exists = 0;
-            if (check.count > 0 && check.entries[0].relevance > 0.8)
-                already_exists = 1;
-            memory_results_free(&check);
-            if (already_exists) continue;
-
-            /* FIX BUG4: Promote via tool_execute (not direct memory_store)
-             * so the entry flows through memory_try_consolidate. Previously,
-             * promoted fact: entries could be near-duplicates of existing
-             * lesson:/strategy: entries but would never be merged. */
-            {
-                cJSON *pp = cJSON_CreateObject();
-                cJSON_AddStringToObject(pp, "key", pkey);
-                cJSON_AddStringToObject(pp, "value", sec->content);
-                tool_result_t tr = tool_execute(ctx->tools,
-                                               "memory_store", pp);
-                tool_result_free(&tr);
-                cJSON_Delete(pp);
-            }
-        }
-    }
-
-    /* Post-reflection scratchpad pruning — remove solved/stale data so the
-     * next react loop starts with a clean, focused scratchpad. Uses an LLM call
-     * to intelligently merge and prune instead of blind accumulation.
-     *
-     * NOTE: The done result (R<N>_result section) is excluded from pruning.
-     * It is preserved for cross-loop follow-ups via result.txt. The LLM pruning
-     * should only remove task-specific working notes, not the final result. */
-    if (ctx->flags.enable_pruning && final_result && ctx->tools->scratch.count > 0) {
-        /* Extract the R<N>_result section to preserve it across pruning */
-        char result_sec_name[32];
-        snprintf(result_sec_name, sizeof(result_sec_name), "R%d_result",
-                 ctx->tools->react_loop);
-        char *preserved_result = NULL;
-        int preserved_priority = 1;
-
-        /* Save original priorities so we can restore them after LLM pruning.
-         * The LLM sees serialized text (## headers) but not the priority
-         * metadata, so we must reattach priorities after parsing its output. */
-        typedef struct { char name[256]; int priority; } sec_pri_t;
-        int n_orig = ctx->tools->scratch.count;
-        sec_pri_t *orig_priorities = calloc((size_t)(n_orig > 0 ? n_orig : 1), sizeof(sec_pri_t));
-        for (int i = 0; i < n_orig; i++) {
-            size_t nlen = strlen(ctx->tools->scratch.sections[i].name);
-            if (nlen >= sizeof(orig_priorities[0].name))
-                nlen = sizeof(orig_priorities[0].name) - 1;
-            memcpy(orig_priorities[i].name,
-                   ctx->tools->scratch.sections[i].name, nlen);
-            orig_priorities[i].name[nlen] = '\0';
-            orig_priorities[i].priority = ctx->tools->scratch.sections[i].priority;
-        }
-
-        for (int i = 0; i < ctx->tools->scratch.count; i++) {
-            if (strcmp(ctx->tools->scratch.sections[i].name, result_sec_name) == 0) {
-                preserved_result = strdup(ctx->tools->scratch.sections[i].content);
-                preserved_priority = ctx->tools->scratch.sections[i].priority;
-                break;
-            }
-        }
-
-        char *full_sp = scratchpad_serialize(&ctx->tools->scratch);
-
-        if (full_sp && strlen(full_sp) > 0) {
-            str_t prune_prompt = str_new(strlen(full_sp) + strlen(final_result) + 2048);
-            str_appendf(&prune_prompt,
-                "A task just completed. Remove ONLY information from the scratchpad "
-                "that was resolved or completed by this task. Keep everything else "
-                "exactly as-is — do not rewrite, merge, summarize, or reformat.\n\n"
-                "Task result:\n"
-                "---\n%s\n---\n\n"
-                "Current scratchpad:\n"
-                "---\n%s\n---\n\n"
-                "IMPORTANT: Preserve the section named \"%s\" (the task result). "
-                "Do NOT remove or modify it.\n"
-                "Preserve ALL \"## section_name\" headers for sections you keep. "
-                "Remove an entire section (header + body) only if fully resolved.\n"
-                "Output the scratchpad with resolved items removed, nothing else changed.\n",
-                final_result, full_sp, result_sec_name);
-
-            llm_chat_t *prune_chat = llm_chat_new();
-            llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
-            char *raw_cleaned = provider_complete(ctx->provider, prune_chat, NULL);
-            llm_chat_free(prune_chat);
-            str_free(&prune_prompt);
-
-            /* Extract text from LLM output — accepts both plain markdown
-             * and JSON tool-call format (extracts "content" field). */
-            char *cleaned = extract_llm_text_output(raw_cleaned);
-            free(raw_cleaned);
-
-            if (cleaned) {
-                /* BUG FIX: Parse the LLM output back into individual sections
-                 * instead of merging everything into a single "pruned" blob.
-                 * scratchpad_parse() splits on "## " headers (the format
-                 * scratchpad_serialize() produces), preserving the section-based
-                 * API contract. If the LLM stripped all headers, falls back to
-                 * a single "pruned" section. */
-                scratchpad_parse(&ctx->tools->scratch, cleaned, "pruned", 5);
-
-                /* FIX DESIGN2: Validate LLM output preserved section structure.
-                 * If the LLM dropped all ## headers, scratchpad_parse collapses
-                 * everything into a single "pruned" section — destroying the
-                 * original section boundaries. When this happens (original had
-                 * multiple sections but result is 1 "pruned" blob), revert to
-                 * the original scratchpad to prevent data loss. */
-                if (ctx->tools->scratch.count == 1 && n_orig > 1 &&
-                    strcmp(ctx->tools->scratch.sections[0].name, "pruned") == 0) {
-                    /* LLM stripped all headers — revert to original */
-                    scratchpad_parse(&ctx->tools->scratch, full_sp, "pruned", 5);
-                }
-
-                /* Restore original priorities for sections that survived.
-                 * The LLM doesn't see priority metadata, so we reattach it. */
-                for (int i = 0; i < ctx->tools->scratch.count; i++) {
-                    for (int j = 0; j < n_orig; j++) {
-                        if (strcmp(ctx->tools->scratch.sections[i].name,
-                                   orig_priorities[j].name) == 0) {
-                            ctx->tools->scratch.sections[i].priority =
-                                orig_priorities[j].priority;
-                            break;
-                        }
-                    }
-                }
-                /* Re-add the preserved result section so it survives pruning.
-                 * If scratchpad_parse() already parsed it from LLM output,
-                 * scratchpad_write() will overwrite with the original content
-                 * (safer than trusting the LLM's copy). */
-                if (preserved_result) {
-                    scratchpad_write(&ctx->tools->scratch, result_sec_name,
-                                     preserved_result, preserved_priority);
-                }
-                scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
-            }
-            free(cleaned);
-        }
-        free(orig_priorities);
-        free(preserved_result);
-        free(full_sp);
+    /* Post-loop: validation scoring, reflection, promotion, pruning */
+    {
+        int task_succeeded = (final_result != NULL);
+        react_post_loop(ctx, user_query, final_result, task_succeeded,
+                        on_event, userdata);
     }
 
     /* Don't free last_query/last_result here — the caller (main.c) manages them.
