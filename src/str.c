@@ -1,5 +1,6 @@
 #include "str.h"
 #include "nash_limits.h"
+#include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -242,6 +243,28 @@ int http_get(const char *url, long timeout_sec, str_t *out) {
     return (res == CURLE_OK) ? 0 : -1;
 }
 
+int http_get_web(const char *url, long timeout_sec, str_t *out, long *http_code) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+
+    CURLcode res = curl_easy_perform(curl);
+    if (http_code)
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, http_code);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK) ? 0 : -1;
+}
+
 int http_post(const char *url, const char *body,
               struct curl_slist *headers, long timeout_sec, str_t *out) {
     CURL *curl = curl_easy_init();
@@ -267,6 +290,14 @@ int write_file(const char *path, const char *data, size_t len) {
     size_t n = fwrite(data, 1, len, f);
     fclose(f);
     return (n == len) ? 0 : -1;
+}
+
+cJSON *slurp_json(const char *path) {
+    char *buf = slurp_file(path, NULL);
+    if (!buf) return NULL;
+    cJSON *json = cJSON_Parse(buf);
+    free(buf);
+    return json;
 }
 
 /* ── counting ───────────────────────────────────────────────────── */

@@ -673,11 +673,7 @@ int regression_save_report(const regression_report_t *report, const char *path) 
 }
 
 regression_report_t *regression_load_report(const char *path) {
-    char *data = slurp_file(path, NULL);
-    if (!data) return NULL;
-
-    cJSON *root = cJSON_Parse(data);
-    free(data);
+    cJSON *root = slurp_json(path);
     if (!root) return NULL;
 
     regression_report_t *report = calloc(1, sizeof(regression_report_t));

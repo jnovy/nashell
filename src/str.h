@@ -33,6 +33,12 @@ char *slurp_file(const char *path, size_t *out_len);
 /* Write data to a file. Returns 0 on success, -1 on failure. */
 int write_file(const char *path, const char *data, size_t len);
 
+/* Read a JSON file and return parsed cJSON object.
+ * Combines slurp_file + cJSON_Parse + free(buf).
+ * Returns NULL on failure. Caller must cJSON_Delete() the result. */
+struct cJSON;
+struct cJSON *slurp_json(const char *path);
+
 /* Create directory path recursively (like mkdir -p).
  * Returns 0 on success, -1 on failure. */
 int mkdir_p(const char *path, mode_t mode);
@@ -42,6 +48,11 @@ int mkdir_p(const char *path, mode_t mode);
  * Caller must str_free(*out) on success.
  * Returns 0 on success, -1 on failure. */
 int http_get(const char *url, long timeout_sec, str_t *out);
+
+/* Like http_get but with web-browsing defaults: follow redirects, user-agent,
+ * protocol restrictions. Stores HTTP status code in *http_code if non-NULL.
+ * Returns 0 on success, -1 on curl failure. */
+int http_get_web(const char *url, long timeout_sec, str_t *out, long *http_code);
 
 /* Perform an HTTP POST with a JSON body.
  * headers is a curl_slist (caller frees after call).

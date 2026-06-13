@@ -70,11 +70,7 @@ static int json_entry_wrapper(const char *dirpath, const char *filename,
     (void)filename;
     json_entry_ctx_t *ctx = (json_entry_ctx_t *)user_data;
 
-    char *buf = slurp_file(fullpath, NULL);
-    if (!buf) return 0;
-
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *entry = slurp_json(fullpath);
     if (!entry) return 0;
 
     int rc = ctx->cb(dirpath, entry, ctx->user_data);
@@ -327,10 +323,7 @@ static int index_load_cb(const char *dirpath, const char *filename,
     index_load_ctx_t *ctx = (index_load_ctx_t *)user_data;
     (void)dirpath; (void)filename;
 
-    char *buf = slurp_file(fullpath, NULL);
-    if (!buf) return 0;
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *entry = slurp_json(fullpath);
     if (!entry) return 0;
 
     mem_index_grow(ctx->idx);
@@ -409,11 +402,7 @@ static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
     key_to_path(key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
-    char *buf = slurp_file(path, NULL);
-    if (!buf) return NULL;
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
-    return entry;
+    return slurp_json(path);
 }
 
 /* ── store ───────────────────────────────────────────── */
@@ -451,29 +440,25 @@ int memory_store(memory_t *m, const char *key, const char *value,
     char *old_supersedes = NULL;
     int old_version = 0;
     {
-        char *buf = slurp_file(path, NULL);
-        if (buf) {
-            cJSON *old = cJSON_Parse(buf);
-            if (old) {
-                cJSON *ac = cJSON_GetObjectItem(old, "access_count");
-                if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
-                cJSON *ca = cJSON_GetObjectItem(old, "created_at");
-                if (ca && ca->valuestring) created_at = atof(ca->valuestring);
-                else if (ca) created_at = cJSON_GetNumberValue(ca);
-                cJSON *rh = cJSON_GetObjectItem(old, "recall_hits");
-                if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
-                cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
-                if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
-                cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
-                if (be) belief_entropy = cJSON_GetNumberValue(be);
-                /* P2: Preserve lineage fields */
-                cJSON *ss = cJSON_GetObjectItem(old, "supersedes");
-                if (ss && ss->valuestring) old_supersedes = strdup(ss->valuestring);
-                cJSON *vn = cJSON_GetObjectItem(old, "version");
-                if (vn) old_version = (int)cJSON_GetNumberValue(vn);
-                cJSON_Delete(old);
-            }
-            free(buf);
+        cJSON *old = slurp_json(path);
+        if (old) {
+            cJSON *ac = cJSON_GetObjectItem(old, "access_count");
+            if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
+            cJSON *ca = cJSON_GetObjectItem(old, "created_at");
+            if (ca && ca->valuestring) created_at = atof(ca->valuestring);
+            else if (ca) created_at = cJSON_GetNumberValue(ca);
+            cJSON *rh = cJSON_GetObjectItem(old, "recall_hits");
+            if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
+            cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
+            if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
+            cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
+            if (be) belief_entropy = cJSON_GetNumberValue(be);
+            /* P2: Preserve lineage fields */
+            cJSON *ss = cJSON_GetObjectItem(old, "supersedes");
+            if (ss && ss->valuestring) old_supersedes = strdup(ss->valuestring);
+            cJSON *vn = cJSON_GetObjectItem(old, "version");
+            if (vn) old_version = (int)cJSON_GetNumberValue(vn);
+            cJSON_Delete(old);
         }
     }
 
@@ -1688,11 +1673,7 @@ int memory_embed_all(memory_t *m) {
         }
 
         /* Load JSON entry to get key/value for chunked embedding */
-        char *buf = slurp_file(json_path, NULL);
-        if (!buf) continue;
-
-        cJSON *entry = cJSON_Parse(buf);
-        free(buf);
+        cJSON *entry = slurp_json(json_path);
         if (!entry) continue;
 
         cJSON *k = cJSON_GetObjectItem(entry, "key");

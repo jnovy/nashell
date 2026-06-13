@@ -63,7 +63,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/yaml_parse.c src/playbook.c \
           src/regression.c src/postmortem.c \
           src/prompt_optimize.c \
-          src/scratchpad.c
+          src/scratchpad.c \
+          src/tools_registry.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

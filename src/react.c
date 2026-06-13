@@ -265,12 +265,8 @@ static int checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     snprintf(path, sizeof(path), "%s/checkpoint.json",
              ctx->tools->session_dir);
 
-    char *buf = slurp_file(path, NULL);
-    if (!buf) return -1;  /* no checkpoint — start fresh */
-
-    cJSON *cp = cJSON_Parse(buf);
-    free(buf);
-    if (!cp) return -1;
+    cJSON *cp = slurp_json(path);
+    if (!cp) return -1;  /* no checkpoint — start fresh */
 
     int saved_step = (int)cJSON_GetNumberValue(
         cJSON_GetObjectItem(cp, "step"));
@@ -656,10 +652,7 @@ char *checkpoint_read_query(const char *session_dir) {
     if (!session_dir) return NULL;
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json", session_dir);
-    char *buf = slurp_file(path, NULL);
-    if (!buf) return NULL;
-    cJSON *cp = cJSON_Parse(buf);
-    free(buf);
+    cJSON *cp = slurp_json(path);
     if (!cp) return NULL;
     cJSON *q = cJSON_GetObjectItem(cp, "user_query");
     char *result = NULL;
