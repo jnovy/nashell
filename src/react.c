@@ -16,9 +16,10 @@ const char *react_json_get_str(cJSON *obj, const char *key) {
     return NULL;
 }
 
-/* Add system prompt to chat, appending model-specific rules if configured.
- * Avoids 3x duplication of the same logic at each call site. */
-void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
+/* Build the full system prompt string (base + model-specific rules).
+ * Returns malloc'd string — caller must free.
+ * Used for both chat injection and journal logging (Fix #12). */
+char *react_build_system_prompt(const config_t *cfg) {
     char *base = tools_system_prompt();
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
@@ -26,15 +27,19 @@ void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
         char *full = malloc(len);
         if (full) {
             snprintf(full, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base, extra);
-            llm_chat_add(chat, "system", full);
-            free(full);
-        } else {
-            llm_chat_add(chat, "system", base);
+            free(base);
+            return full;
         }
-    } else {
-        llm_chat_add(chat, "system", base);
     }
-    free(base);
+    return base;
+}
+
+/* Add system prompt to chat, appending model-specific rules if configured.
+ * Uses react_build_system_prompt() to avoid duplication (Fix #12). */
+void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
+    char *prompt = react_build_system_prompt(cfg);
+    llm_chat_add_typed(chat, "system", prompt, LLM_MSG_SYSTEM);
+    free(prompt);
 }
 
 
@@ -299,324 +304,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
 
     if (!restored) {
-    /* Reset per-loop counters FIRST — before any journal logging that uses step.
-     * Previously this was done after memory injection, causing memory_context
-     * journal entries to inherit the step value from the previous react loop. */
-    ctx->tools->step = 0;
-
-    /* System message */
-    react_add_system_prompt(chat, ctx->tools->cfg);
-
-    /* v5: No manifest injection — scratchpad is the sole persistence mechanism.
-     * Cross-loop state is carried via scratchpad (auto-saved done results +
-     * LLM-pruned summaries). Within-loop recovery uses LLM summarization
-     * instead of manifest re-injection. */
-
-    /* Inject memory summary (counts only — no alphabetical listing) */
-    if (ctx->flags.inject_memory && ctx->tools->memory) {
-        char *mem_summary = memory_build_index(ctx->tools->memory);
-        if (mem_summary && strlen(mem_summary) > 0) {
-            size_t mem_msg_sz = strlen(mem_summary) + 512;
-            char *mem_msg = malloc(mem_msg_sz);
-            if (mem_msg) {
-                snprintf(mem_msg, mem_msg_sz, "[MEMORY INDEX]\n%s\n\n"
-                        "Call memory_recall when the answer may depend on user preferences, "
-                        "prior decisions, ongoing projects, or historical context not visible "
-                        "in the current conversation.\n"
-                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
-                llm_chat_add(chat, "user", mem_msg);
-                free(mem_msg);
-            }
-        }
-
-        /* Inject pinned memories (always-active knowledge) */
-        char *pinned = memory_load_pinned(ctx->tools->memory);
-        if (pinned && strlen(pinned) > 0) {
-            size_t pin_msg_sz = strlen(pinned) + 64;
-            char *pin_msg = malloc(pin_msg_sz);
-            if (pin_msg) {
-                snprintf(pin_msg, pin_msg_sz, "[PINNED KNOWLEDGE]\n%s", pinned);
-                llm_chat_add(chat, "user", pin_msg);
-                free(pin_msg);
-            }
-        }
-
-        /* Inject relevant memories by type — semantic recall filtered by prefix.
-         * FIX B1/D1: Use user_query for semantic recall, then filter by type prefix.
-         * Previously used "skill:" as the query, which matched ALL skills by type
-         * prefix rather than finding skills semantically relevant to the task.
-         * Now recalls skills, lessons, strategies, and anti-patterns separately.
-         * Each type has its own limit to control context budget. */
-        int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
-        int max_lessons = ctx->tools->cfg ? ctx->tools->cfg->max_lessons_per_query : 2;
-        int max_strategies = ctx->tools->cfg ? ctx->tools->cfg->max_strategies_per_query : 2;
-        int max_antipatterns = ctx->tools->cfg ? ctx->tools->cfg->max_antipatterns_per_query : 1;
-        /* Request enough candidates to cover all types after filtering */
-        int max_candidates = (max_skills + max_lessons + max_strategies + max_antipatterns) * 3;
-
-        /* Build enriched recall query: user_query + scratchpad content.
-         * The scratchpad carries accumulated working memory across loops,
-         * so including it helps retrieve memories relevant to the current
-         * task context, not just the raw user query. memory_recall handles
-         * capacity overflow via multi-vec chunking internally. */
-        str_t recall_query = str_new(1024);
-        str_append_cstr(&recall_query, user_query);
-        if (ctx->tools->scratch.count > 0) {
-            char *sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, SIZE_MAX);
-            if (sp_text && sp_text[0]) {
-                str_append_cstr(&recall_query, "\n");
-                str_append_cstr(&recall_query, sp_text);
-            }
-            free(sp_text);
-        }
-        memory_results_t all_memories = memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
-        str_free(&recall_query);
-
-        /* Helper macro: inject entries of a given type prefix */
-        // NOLINTNEXTLINE(bugprone-macro-parentheses)
-        #define INJECT_TYPE(label, prefix, plen, max_count, type_count) \
-            do { \
-                if (type_count > 0) { \
-                    str_t msg = str_new(4096); \
-                    str_appendf(&msg, "%s\n", label); \
-                    for (int j = 0; j < all_memories.count; j++) { \
-                        if (all_memories.entries[j].key && \
-                            strncmp(all_memories.entries[j].key, prefix, plen) == 0) { \
-                            str_appendf(&msg, "\n--- %s ---\n%s\n", \
-                                all_memories.entries[j].key, \
-                                all_memories.entries[j].value ? all_memories.entries[j].value : ""); \
-                            tool_track_recalled_key(ctx->tools, all_memories.entries[j].key); \
-                            type_count--; \
-                        } \
-                        if (type_count <= 0) break; \
-                    } \
-                    if (msg.len > strlen(label) + 5) { \
-                        llm_chat_add(chat, "user", str_cstr(&msg)); \
-                    } \
-                    str_free(&msg); \
-                } \
-            } while(0)
-
-        INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, max_skills);
-        INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, max_lessons);
-        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, max_strategies);
-        INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, max_antipatterns);
-
-        #undef INJECT_TYPE
-
-        /* Log memory context for debugging — before freeing mem_summary/pinned */
-        react_log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_summary, pinned,
-                           &all_memories, user_query);
-
-        free(mem_summary);
-        free(pinned);
-        memory_results_free(&all_memories);
-    }
-
-    /* v5: Scratchpad budget = 15% of context size, no min/max caps.
-     * The scratchpad is the SOLE cross-loop persistence mechanism, so it
-     * gets a generous budget. All limits scale linearly with context_size. */
-    size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
-    if (ctx->provider->cfg.context_size > 0) {
-        float cpt = react_get_chars_per_token(ctx);
-        max_scratchpad = (size_t)(ctx->provider->cfg.context_size * cpt * 15 / 100);  /* 15% in chars */
-    }
-
-    /* Inject scratchpad if exists (budget-aware, priority-ordered).
-     * When branching (parent_loop != previous loop), filter R*_result
-     * sections to only include ancestors in the branch path. */
-    {
-        char *serialized = NULL;
-        int is_branch = (ctx->parent_loop >= 0 &&
-                         ctx->tools->react_loop > 0 &&
-                         ctx->parent_loop != ctx->tools->react_loop - 1);
-
-        if (ctx->tools->scratch.count > 0) {
-            if (is_branch) {
-                /* Build ancestor set by walking parent chain in journal */
-                int ancestors[256];
-                int n_ancestors = 0;
-                ancestors[n_ancestors++] = ctx->parent_loop;
-
-                char jpath[NASH_PATH_MAX];
-                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
-                         ctx->tools->session_dir);
-                FILE *jf = fopen(jpath, "r");
-                if (jf) {
-                    int pmap[1024];
-                    memset(pmap, -1, sizeof(pmap));
-                    char jline[32768];
-                    while (fgets(jline, sizeof(jline), jf)) {
-                        cJSON *entry = cJSON_Parse(jline);
-                        if (!entry) continue;
-                        const char *jtool = cJSON_GetStringValue(
-                            cJSON_GetObjectItem(entry, "tool"));
-                        if (jtool && strcmp(jtool, "query") == 0) {
-                            int rl = (int)cJSON_GetNumberValue(
-                                cJSON_GetObjectItem(entry, "react_loop"));
-                            cJSON *pp = cJSON_GetObjectItem(
-                                cJSON_GetObjectItem(entry, "params"),
-                                "parent_loop");
-                            if (pp && cJSON_IsNumber(pp) && rl >= 0 && rl < 1024)
-                                pmap[rl] = (int)pp->valuedouble;
-                        }
-                        cJSON_Delete(entry);
-                    }
-                    fclose(jf);
-                    int cur = ctx->parent_loop;
-                    while (cur >= 0 && cur < 1024 && pmap[cur] >= 0
-                           && n_ancestors < 256) {
-                        cur = pmap[cur];
-                        ancestors[n_ancestors++] = cur;
-                    }
-                }
-
-                /* Build a temporary filtered scratchpad copy */
-                scratchpad_t filtered;
-                scratchpad_init(&filtered);
-                for (int si = 0; si < ctx->tools->scratch.count; si++) {
-                    const char *sname = ctx->tools->scratch.sections[si].name;
-                    int rloop = -1;
-                    if (sname && sscanf(sname, "R%d_result", &rloop) == 1) {
-                        /* Only include R*_result if it's an ancestor */
-                        int is_ancestor = 0;
-                        for (int ai = 0; ai < n_ancestors; ai++) {
-                            if (ancestors[ai] == rloop) {
-                                is_ancestor = 1;
-                                break;
-                            }
-                        }
-                        if (!is_ancestor) continue;  /* skip non-ancestor results */
-                    }
-                    /* Include this section (non-R*_result or ancestor R*_result) */
-                    scratchpad_write(&filtered, sname,
-                                     ctx->tools->scratch.sections[si].content,
-                                     ctx->tools->scratch.sections[si].priority);
-                }
-                serialized = scratchpad_serialize_budget(&filtered, max_scratchpad);
-                scratchpad_free(&filtered);
-            } else {
-                /* Normal (linear) — serialize all sections */
-                serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
-            }
-        }
-        if (serialized && serialized[0]) {
-            size_t slen = strlen(serialized);
-            char *scratch_msg = malloc(slen + 32);
-            if (scratch_msg) {
-                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", serialized);
-                llm_chat_add(chat, "user", scratch_msg);
-                free(scratch_msg);
-            }
-            free(serialized);
-        } else {
-            free(serialized);
-        }
-    }
-
-    /* Inject previous result — loaded from session_dir/result.txt.
-     * This survives post-reflection scratchpad pruning (which removes
-     * resolved info including the R<N>_result section). Provides a
-     * reliable cross-loop fallback so user follow-ups can reference
-     * the previous task's output. */
-    if (ctx->flags.inject_prev_result) {
-        char rpath[NASH_PATH_MAX];
-        snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
-        char *prev_result = slurp_file(rpath, NULL);
-        if (prev_result && strlen(prev_result) > 0) {
-            /* Include the full previous result — no truncation.
-             * The LLM needs the complete output to make informed decisions
-             * about follow-up queries. */
-            size_t rlen = strlen(prev_result);
-            char *prev_msg = malloc(rlen + 128);
-            if (prev_msg) {
-                snprintf(prev_msg, rlen + 128,
-                    "[PREVIOUS RESULT]\n%s\n"
-                    "The above is the result of the previous task. "
-                    "You can reference it for follow-up queries.",
-                    prev_result);
-                llm_chat_add(chat, "user", prev_msg);
-                free(prev_msg);
-            }
-        }
-        free(prev_result);
-    }
-
-    /* User query */
-    llm_chat_add(chat, "user", user_query);
-
-    /* Record system prompt and user query in journal (step 0) */
-    {
-        char *base_prompt = tools_system_prompt();
-        const char *extra = ctx->tools->cfg ? ctx->tools->cfg->system_prompt_extra : NULL;
-        char *full_prompt = NULL;
-        const char *sys_prompt;
-        if (extra && extra[0]) {
-            size_t len = strlen(base_prompt) + strlen(extra) + 64;
-            full_prompt = malloc(len);
-            if (full_prompt) {
-                snprintf(full_prompt, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base_prompt, extra);
-                sys_prompt = full_prompt;
-            } else {
-                sys_prompt = base_prompt;
-            }
-        } else {
-            sys_prompt = base_prompt;
-        }
-        char *sys_hash = store_save(ctx->tools->store, sys_prompt);
-        /* Register alias for system prompt (function auto-generates S0, S1, ...) */
-        char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
-        cJSON *sys_p = cJSON_CreateObject();
-        cJSON_AddStringToObject(sys_p, "type", "system_prompt");
-        /* Layer 1: model identity on every react loop (for postmortem/regression) */
-        if (ctx->provider && ctx->provider->cfg.model_id)
-            cJSON_AddStringToObject(sys_p, "model", ctx->provider->cfg.model_id);
-        if (ctx->tools->cfg && ctx->tools->cfg->provider.type)
-            cJSON_AddStringToObject(sys_p, "provider", ctx->tools->cfg->provider.type);
-        if (ctx->tools->cfg && ctx->tools->cfg->matched_profile_file)
-            cJSON_AddStringToObject(sys_p, "profile", ctx->tools->cfg->matched_profile_file);
-        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
-                       strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL);
-        cJSON_Delete(sys_p);
-        free(sys_alias);
-        free(sys_hash);
-        free(full_prompt);
-        free(base_prompt);
-
-        cJSON *q_p = cJSON_CreateObject();
-        cJSON_AddStringToObject(q_p, "text", user_query);
-        cJSON_AddNumberToObject(q_p, "parent_loop", ctx->parent_loop);
-        char *q_hash = store_save(ctx->tools->store, user_query);
-        char *q_alias = q_hash ? tool_register_alias(ctx->tools, q_hash) : NULL;
-        journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, q_alias,
-                       strlen(user_query), 0, NULL, NULL);
-        cJSON_Delete(q_p);
-        free(q_alias);
-        free(q_hash);
-    }
-
-    /* Log the full initial LLM context (all messages) as a single
-     * journal entry so the TUI can show exactly what the LLM received. */
-    {
-        char *ctx_text = llm_chat_serialize(chat);
-        if (ctx_text && ctx_text[0]) {
-            char *ctx_hash = store_save(ctx->tools->store, ctx_text);
-            char *ctx_alias = ctx_hash ? tool_register_alias(ctx->tools, ctx_hash) : NULL;
-            cJSON *ctx_p = cJSON_CreateObject();
-            cJSON_AddNumberToObject(ctx_p, "n_messages", chat->n_msgs);
-            journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
-                           "context", ctx_p, ctx_alias,
-                           strlen(ctx_text), count_lines(ctx_text), NULL, NULL);
-            cJSON_Delete(ctx_p);
-            free(ctx_alias);
-            free(ctx_hash);
-        }
-        free(ctx_text);
-    }
-
-    } /* end if (!restored) */
-
+        react_build_context(ctx, chat, user_query, on_event, userdata);
+    } /* end if (!restored) — context building */
     /* Layer 2: full spec snapshot on change (content-addressed, deduplicated).
      * Emitted once at session start and again whenever the spec hash changes
      * (e.g., model switch, hot-reload, --load-spec).  The full resolved spec
@@ -910,19 +599,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     int evict_start = keep_head;
                     int evict_end = chat->n_msgs - keep_tail;
                     if (evict_end > evict_start + 2) {
-                        /* Evict the older half of the evictable range */
+                        /* Evict the older half of the evictable range
+                         * Fix #9: use llm_chat_remove_range instead of manual free/memmove */
                         int mid = evict_start + (evict_end - evict_start) / 2;
                         int n_evict = mid - evict_start;
-                        for (int i = evict_start; i < mid; i++) {
-                            free(chat->msgs[i].role);
-                            free(chat->msgs[i].content);
-                            free(chat->msgs[i].tool_call_id);
-                            free(chat->msgs[i].tool_calls_json);
-                        }
-                        memmove(&chat->msgs[evict_start],
-                                &chat->msgs[mid],
-                                (chat->n_msgs - mid) * sizeof(llm_msg_t));
-                        chat->n_msgs -= n_evict;
+                        llm_chat_remove_range(chat, evict_start, mid);
                         char emsg[128];
                         snprintf(emsg, sizeof(emsg),
                             "HTTP 400 — evicted %d messages to reduce context "
@@ -959,29 +640,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
                 react_emit(on_event, userdata, &ev);
 
-                /* Remove last 2 messages (assistant + tool_result) if they exist */
+                /* Remove last 2 messages (assistant + tool_result) if they exist.
+                 * Fix #9: use llm_chat_remove_range instead of manual free. */
                 if (chat->n_msgs >= 2) {
-                    for (int r = 0; r < 2 && chat->n_msgs > 3; r++) {
-                        int last = chat->n_msgs - 1;
-                        free(chat->msgs[last].role);
-                        free(chat->msgs[last].content);
-                        free(chat->msgs[last].tool_call_id);
-                        free(chat->msgs[last].tool_calls_json);
-                        chat->n_msgs--;
-                    }
+                    int remove_from = chat->n_msgs - 2;
+                    if (remove_from < 3) remove_from = 3;
+                    if (remove_from < chat->n_msgs)
+                        llm_chat_remove_range(chat, remove_from, chat->n_msgs);
                 }
             } else if (consecutive_null_responses == 2) {
                 /* Tier 2: Reformulate scratchpad into plain prose.
                  * Code blocks and JSON in the scratchpad can confuse
-                 * the model's JSON generation. */
-                int sp_idx = -1;
-                for (int i = 0; i < chat->n_msgs; i++) {
-                    if (chat->msgs[i].content &&
-                        strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
-                        sp_idx = i;
-                        break;
-                    }
-                }
+                 * the model's JSON generation.
+                 * Fix #3: Use msg_type instead of content-prefix scanning. */
+                int sp_idx = llm_chat_find_by_type(chat, LLM_MSG_SCRATCHPAD);
 
                 if (sp_idx >= 0) {
                     ev.message = "LLM server error — stripping code blocks from scratchpad (tier 2)";
@@ -1043,23 +715,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             } else if (consecutive_null_responses == 3) {
                 /* Tier 3: Strip scratchpad entirely (nuclear option).
                  * If reformulation didn't help, the scratchpad itself
-                 * may be the problem. Remove it completely. */
+                 * may be the problem. Remove it completely.
+                 * Fix #3: Use msg_type instead of content-prefix scanning. */
                 ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
                 react_emit(on_event, userdata, &ev);
-
-                for (int i = 0; i < chat->n_msgs; i++) {
-                    if (chat->msgs[i].content &&
-                        strncmp(chat->msgs[i].content, "[SCRATCHPAD]", 12) == 0) {
-                        free(chat->msgs[i].role);
-                        free(chat->msgs[i].content);
-                        free(chat->msgs[i].tool_call_id);
-                        free(chat->msgs[i].tool_calls_json);
-                        memmove(&chat->msgs[i], &chat->msgs[i + 1],
-                                (chat->n_msgs - i - 1) * sizeof(llm_msg_t));
-                        chat->n_msgs--;
-                        break;
-                    }
-                }
+                llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
             }
             continue;
         }
@@ -1632,7 +1292,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             "--- %s ---\n%s",
                             err_mem.entries[j].key,
                             err_mem.entries[j].value);
-                        llm_chat_add(chat, "user", hint);
+                        llm_chat_add_typed(chat, "user", hint, LLM_MSG_MEMORY_HINT);
                         tool_track_recalled_key(ctx->tools,
                                                  err_mem.entries[j].key);
                         injected++;
@@ -1653,16 +1313,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             int keep_head = 3;
             int keep_tail = 4;
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > keep_head + keep_tail + 1) {
-                /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
+                /* Priority eviction: remove error messages first (research: errors in context degrade performance).
+                 * Fix #3: Use msg_type for type-safe eviction instead of strstr("ERROR:"). */
                 for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
-                    if (chat->msgs[i].content && strstr(chat->msgs[i].content, "ERROR:")) {
-                        free(chat->msgs[i].role);
-                        free(chat->msgs[i].content);
-                        free(chat->msgs[i].tool_call_id);    /* #8 */
-                        free(chat->msgs[i].tool_calls_json); /* #8 */
-                        memmove(&chat->msgs[i], &chat->msgs[i + 1],
-                                (chat->n_msgs - i - 1) * sizeof(llm_msg_t));
-                        chat->n_msgs--;
+                    if (chat->msgs[i].msg_type == LLM_MSG_ERROR) {
+                        llm_chat_remove_range(chat, i, i + 1);
                         i--;  /* re-check this position */
                     }
                 }
@@ -1769,18 +1424,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                     str_free(&evicted_text);
 
-                    /* Step 3: Free evicted messages */
-                    for (int i = evict_start; i < evict_end; i++) {
-                        free(chat->msgs[i].role);
-                        free(chat->msgs[i].content);
-                        free(chat->msgs[i].tool_call_id);
-                        free(chat->msgs[i].tool_calls_json);
-                    }
-                    /* Shift tail messages down */
-                    int tail_count = chat->n_msgs - evict_end;
-                    memmove(&chat->msgs[evict_start], &chat->msgs[evict_end],
-                            tail_count * sizeof(llm_msg_t));
-                    chat->n_msgs = evict_start + tail_count;
+                    /* Step 3: Free evicted messages (Fix #9: use llm_chat_remove_range) */
+                    llm_chat_remove_range(chat, evict_start, evict_end);
 
                     /* Recover tool_call threading from surviving messages */
                     free(chat->last_tool_call_id);
@@ -1820,6 +1465,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 chat->msgs[evict_start].content = sp_msg;
                                 chat->msgs[evict_start].tool_call_id = NULL;
                                 chat->msgs[evict_start].tool_calls_json = NULL;
+                                chat->msgs[evict_start].msg_type = LLM_MSG_EVICTION_SUMMARY;
                                 chat->n_msgs++;
                             }
                         }

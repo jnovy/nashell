@@ -12,6 +12,7 @@ LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm $(ORT_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
+          src/react_context.c \
           src/react_checkpoint.c src/react_reflection.c \
           src/config.c src/toml.c \
           src/provider.c src/provider_local.c \
@@ -56,7 +57,8 @@ src/%.o: src/%.c $(HDRS)
 
 # Library objects (everything except main.c for linking with tests)
 LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
-          src/llm.c src/tools.c src/react.c src/react_checkpoint.c \
+          src/llm.c src/tools.c src/react.c src/react_context.c \
+          src/react_checkpoint.c \
           src/react_reflection.c \
           src/config.c src/toml.c \
           src/provider.c src/provider_local.c \

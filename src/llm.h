@@ -58,12 +58,35 @@ belief_entropy_result_t llm_belief_entropy_probe(const char *api_base,
                                                    int n_predict, int n_probs,
                                                    float temperature);
 
+/* Message type — typed alternative to content-prefix scanning.
+ * Enables type-safe eviction policies and eliminates brittle
+ * strncmp("[SCRATCHPAD]",...) / strstr("ERROR:") routing. */
+typedef enum {
+    LLM_MSG_GENERIC = 0,     /* untyped (legacy, assistant responses, user queries) */
+    LLM_MSG_SYSTEM,          /* system prompt */
+    LLM_MSG_MEMORY_INDEX,    /* [MEMORY INDEX] injection */
+    LLM_MSG_PINNED,          /* [PINNED KNOWLEDGE] injection */
+    LLM_MSG_SKILLS,          /* [RELEVANT SKILLS] injection */
+    LLM_MSG_LESSONS,         /* [RELEVANT LESSONS] injection */
+    LLM_MSG_STRATEGIES,      /* [RELEVANT STRATEGIES] injection */
+    LLM_MSG_ANTIPATTERNS,    /* [RELEVANT ANTI-PATTERNS] injection */
+    LLM_MSG_SCRATCHPAD,      /* [SCRATCHPAD] injection */
+    LLM_MSG_PREV_RESULT,     /* [PREVIOUS RESULT] injection */
+    LLM_MSG_USER_QUERY,      /* the actual user query */
+    LLM_MSG_TOOL_RESULT,     /* tool execution result */
+    LLM_MSG_ERROR,           /* error message (tool failure, parse error) */
+    LLM_MSG_MEMORY_HINT,     /* [MEMORY HINT] error-triggered retrieval */
+    LLM_MSG_THINKING,        /* thought-only assistant response */
+    LLM_MSG_EVICTION_SUMMARY,/* scratchpad re-injection after eviction */
+} llm_msg_type_t;
+
 /* A single chat message — supports tool_calls API threading */
 typedef struct {
     char *role;              /* "system", "user", "assistant", "tool" */
     char *content;
     char *tool_call_id;      /* for role:"tool" — the ID of the tool call being responded to */
     char *tool_calls_json;   /* for role:"assistant" — raw JSON of tool_calls array */
+    llm_msg_type_t msg_type; /* typed message category (0 = generic/legacy) */
 } llm_msg_t;
 
 /* Chat completion request/response */
@@ -81,6 +104,11 @@ llm_chat_t *llm_chat_new(void);
 void        llm_chat_free(llm_chat_t *chat);
 void        llm_chat_add(llm_chat_t *chat, const char *role, const char *content);
 
+/* Add a typed message — sets msg_type for structured routing.
+ * Replaces content-prefix scanning with type-safe dispatch. */
+void        llm_chat_add_typed(llm_chat_t *chat, const char *role,
+                               const char *content, llm_msg_type_t type);
+
 /* Serialize entire chat into a human-readable markdown document.
  * Returns malloc'd string. Caller must free. */
 char       *llm_chat_serialize(llm_chat_t *chat);
@@ -88,6 +116,20 @@ char       *llm_chat_serialize(llm_chat_t *chat);
 /* Remove all messages whose content starts with the given prefix.
  * Used for progressive context stripping on LLM failures. */
 int         llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix);
+
+/* Remove all messages of a given type.
+ * Returns the number of messages removed.
+ * Type-safe alternative to llm_chat_remove_by_prefix(). */
+int         llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type);
+
+/* Find the first message of a given type.
+ * Returns index, or -1 if not found.
+ * Type-safe alternative to scanning content prefixes. */
+int         llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type);
+
+/* Remove a range of messages [start, end).
+ * Properly frees all fields. Encapsulates the manual memmove pattern. */
+void        llm_chat_remove_range(llm_chat_t *chat, int start, int end);
 
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,

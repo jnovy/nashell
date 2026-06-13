@@ -1,4 +1,5 @@
 #include "tools.h"
+#include "tools_registry.h"
 #include "nash_limits.h"
 #include "memory.h"
 #include "str.h"
@@ -3106,36 +3107,45 @@ void web_search_cleanup(void) {
 
 
 /* Tool dispatch table — maps tool names to handler functions.
- * Adding a new tool requires: (1) add handler function above,
- * (2) add entry here, (3) add to TOOL_REGISTRY in tools_registry.h.
- * The dispatch table is separate from TOOL_REGISTRY because handler
- * functions are static to this file and can't be in a shared header. */
+ * Fix #11: Handlers are listed in the SAME ORDER as TOOL_REGISTRY
+ * entries in tools_registry.c.  A compile-time assertion ensures the
+ * counts stay in sync, so adding a new tool to TOOL_REGISTRY without
+ * adding a handler here (or vice versa) is a build error.
+ *
+ * Adding a new tool:
+ *   1. Add handler function above (static tool_result_t tool_xxx(...))
+ *   2. Add entry to TOOL_HANDLERS[] below  (same position as in TOOL_REGISTRY)
+ *   3. Add entry to TOOL_REGISTRY[] in tools_registry.c (same position)
+ *   4. Increment TOOL_REGISTRY_COUNT in tools_registry.c */
 typedef tool_result_t (*tool_handler_fn)(tool_ctx_t *, cJSON *);
 
-static const struct {
-    const char *name;
-    tool_handler_fn handler;
-} TOOL_DISPATCH[] = {
-    {"shell_exec",    tool_shell_exec},
-    {"file_read",     tool_file_read},
-    {"file_write",    tool_file_write},
-    {"file_edit",     tool_file_edit},
-    {"grep_search",   tool_grep_search},
-    {"glob_search",   tool_glob_search},
-    {"web_fetch",     tool_web_fetch},
-    {"web_search",    tool_web_search},
-    {"notes",         tool_notes},
-    {"done",          tool_done},
-    {"plan",          tool_plan},
-    {"user_ask",      tool_user_ask_stub},  /* actual logic is in react.c (special-cased before tool_execute) */
-    {"memory_store",  tool_memory_store},
-    {"memory_recall", tool_memory_recall},
-    {"memory_pin",    tool_memory_pin},
-    {"memory_unpin",  tool_memory_unpin},
-    {"memory_delete", tool_memory_delete},
-    {"memory_list",   tool_memory_list},
-    {NULL, NULL}  /* sentinel */
+/* Handlers only — names come from TOOL_REGISTRY[i].name at dispatch time.
+ * Order must match TOOL_REGISTRY exactly. */
+static const tool_handler_fn TOOL_HANDLERS[] = {
+    tool_shell_exec,       /* shell_exec    */
+    tool_file_read,        /* file_read     */
+    tool_file_write,       /* file_write    */
+    tool_file_edit,        /* file_edit     */
+    tool_grep_search,      /* grep_search   */
+    tool_web_fetch,        /* web_fetch     */
+    tool_web_search,       /* web_search    */
+    tool_glob_search,      /* glob_search   */
+    tool_memory_store,     /* memory_store  */
+    tool_memory_recall,    /* memory_recall */
+    tool_memory_pin,       /* memory_pin    */
+    tool_memory_unpin,     /* memory_unpin  */
+    tool_done,             /* done          */
+    tool_plan,             /* plan          */
+    tool_notes,            /* notes         */
+    tool_user_ask_stub,    /* user_ask      */
+    tool_memory_delete,    /* memory_delete */
+    tool_memory_list,      /* memory_list   */
 };
+
+/* Compile-time assertion: handler count must match registry count.
+ * If this fails, you added a tool to one table but not the other. */
+_Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == 18,
+               "TOOL_HANDLERS count must match TOOL_REGISTRY_COUNT (18)");
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     /* Tool filter: check whitelist/blacklist before dispatch */
@@ -3151,51 +3161,47 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                 return make_error("tool not available in this context");
     }
 
-    /* Dispatch via table lookup */
-    for (int i = 0; TOOL_DISPATCH[i].name; i++) {
-        if (strcmp(action, TOOL_DISPATCH[i].name) == 0)
-            return TOOL_DISPATCH[i].handler(ctx, params);
+    /* Dispatch via unified registry lookup (Fix #11).
+     * TOOL_REGISTRY[i].name provides the name, TOOL_HANDLERS[i] the handler. */
+    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+        if (strcmp(action, TOOL_REGISTRY[i].name) == 0)
+            return TOOL_HANDLERS[i](ctx, params);
     }
 
     /* Concatenated tool name recovery: when the model emits a garbled name
      * like "file_readfile_read" or "shell_execmemory_recall", try to find
      * a known tool name as a prefix.  Pick the longest matching prefix to
-     * avoid false positives (e.g. "done" matching "donefile_read").
-     * This eliminates the retry loop that wastes steps and often never
-     * converges because the model keeps producing the same concatenation. */
+     * avoid false positives (e.g. "done" matching "donefile_read"). */
     {
         const char *best_name = NULL;
-        tool_handler_fn best_handler = NULL;
+        int best_idx = -1;
         size_t best_len = 0;
         size_t action_len = strlen(action);
 
-        for (int i = 0; TOOL_DISPATCH[i].name; i++) {
-            size_t nlen = strlen(TOOL_DISPATCH[i].name);
+        for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+            size_t nlen = strlen(TOOL_REGISTRY[i].name);
             if (nlen < action_len && nlen > best_len &&
-                strncmp(action, TOOL_DISPATCH[i].name, nlen) == 0) {
-                best_name = TOOL_DISPATCH[i].name;
-                best_handler = TOOL_DISPATCH[i].handler;
+                strncmp(action, TOOL_REGISTRY[i].name, nlen) == 0) {
+                best_name = TOOL_REGISTRY[i].name;
+                best_idx = i;
                 best_len = nlen;
             }
         }
 
-        if (best_handler) {
-            /* Log the recovery so postmortem can track how often this fires */
+        if (best_idx >= 0) {
             fprintf(stderr, "[tool] recovered concatenated tool name: "
                     "'%s' → '%s' (dropped suffix: '%s')\n",
                     action, best_name, action + best_len);
-            return best_handler(ctx, params);
+            return TOOL_HANDLERS[best_idx](ctx, params);
         }
     }
 
-    /* Truly unknown tool — build available tools list dynamically from the
-     * dispatch table (no hardcoded list to keep in sync). react.c handles
-     * this by injecting a corrective message and letting the model retry. */
+    /* Truly unknown tool — build available tools list from the unified registry. */
     char msg[1024];
     int pos = snprintf(msg, sizeof(msg), "unknown tool: '%.100s'. Available: ", action);
-    for (int i = 0; TOOL_DISPATCH[i].name && pos < (int)sizeof(msg) - 32; i++) {
+    for (int i = 0; i < TOOL_REGISTRY_COUNT && pos < (int)sizeof(msg) - 32; i++) {
         if (i > 0) pos += snprintf(msg + pos, sizeof(msg) - pos, ", ");
-        pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_DISPATCH[i].name);
+        pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_REGISTRY[i].name);
     }
     return make_error(msg);
 }

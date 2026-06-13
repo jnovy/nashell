@@ -68,6 +68,69 @@ int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
     return removed;
 }
 
+/* Add a typed message — sets msg_type for structured routing. */
+void llm_chat_add_typed(llm_chat_t *chat, const char *role,
+                         const char *content, llm_msg_type_t type) {
+    if (chat->n_msgs >= chat->cap_msgs) {
+        chat->cap_msgs *= 2;
+        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+    }
+    llm_msg_t *m = &chat->msgs[chat->n_msgs];
+    memset(m, 0, sizeof(*m));
+    m->role = strdup(role);
+    m->content = strdup(content);
+    m->msg_type = type;
+    chat->n_msgs++;
+}
+
+/* Remove all messages of a given type. Returns count removed. */
+int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
+    if (!chat) return 0;
+    int removed = 0;
+    int dst = 0;
+    for (int src = 0; src < chat->n_msgs; src++) {
+        if (chat->msgs[src].msg_type == type) {
+            free(chat->msgs[src].role);
+            free(chat->msgs[src].content);
+            free(chat->msgs[src].tool_call_id);
+            free(chat->msgs[src].tool_calls_json);
+            removed++;
+        } else {
+            if (dst != src)
+                chat->msgs[dst] = chat->msgs[src];
+            dst++;
+        }
+    }
+    chat->n_msgs = dst;
+    return removed;
+}
+
+/* Find the first message of a given type. Returns index or -1. */
+int llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type) {
+    if (!chat) return -1;
+    for (int i = 0; i < chat->n_msgs; i++) {
+        if (chat->msgs[i].msg_type == type)
+            return i;
+    }
+    return -1;
+}
+
+/* Remove a range of messages [start, end). Frees all fields. */
+void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
+    if (!chat || start < 0 || end > chat->n_msgs || start >= end) return;
+    for (int i = start; i < end; i++) {
+        free(chat->msgs[i].role);
+        free(chat->msgs[i].content);
+        free(chat->msgs[i].tool_call_id);
+        free(chat->msgs[i].tool_calls_json);
+    }
+    int tail = chat->n_msgs - end;
+    if (tail > 0)
+        memmove(&chat->msgs[start], &chat->msgs[end],
+                tail * sizeof(llm_msg_t));
+    chat->n_msgs -= (end - start);
+}
+
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content) {

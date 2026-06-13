@@ -29,6 +29,10 @@ float react_get_chars_per_token(const react_ctx_t *ctx);
 /* Safe JSON string accessor */
 const char *react_json_get_str(cJSON *obj, const char *key);
 
+/* Build the full system prompt string. Returns malloc'd string — caller frees.
+ * Used for both chat injection and journal logging (Fix #12). */
+char *react_build_system_prompt(const config_t *cfg);
+
 /* Add system prompt to chat, appending model-specific rules if configured. */
 void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg);
 
