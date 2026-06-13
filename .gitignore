@@ -25,3 +25,4 @@ fixed_point_sin.c
 *~
 .vscode/
 .idea/
+__pycache__/
