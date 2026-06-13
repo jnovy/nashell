@@ -737,10 +737,21 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         char tool_pad[64];
         snprintf(tool_pad, sizeof(tool_pad), "%-*s", max_tool_len, si->tool);
 
+        /* Format HH:MM from timestamp (first column) */
+        #define TIME_COL_WIDTH 6  /* "HH:MM " */
+        char time_col[8] = "     ";  /* 5 spaces fallback */
+        if (si->ts > 0) {
+            time_t tt = (time_t)si->ts;
+            struct tm *tm = localtime(&tt);
+            if (tm)
+                snprintf(time_col, sizeof(time_col), "%02d:%02d",
+                         tm->tm_hour, tm->tm_min);
+        }
+
         /* Available display columns for inline text after the prefix.
-         * Prefix (rendered): "RXSY_pad tool_pad " = REF_COL_WIDTH + 1 + max_tool_len */
+         * Prefix (rendered): "HH:MM RXSY_pad tool_pad " */
         int term_cols = ui->visible_cols > 0 ? ui->visible_cols : 120;
-        int prefix_cols = REF_COL_WIDTH + 1 + max_tool_len + 1;
+        int prefix_cols = TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len + 1;
         int suffix_cols = (int)strlen(elapsed_str);
         int avail = term_cols - prefix_cols - suffix_cols;
         if (avail < 10) avail = 10;
@@ -750,13 +761,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Helper: emit the tool header line (without any text content) */
         #define EMIT_TOOL_HEADER(with_elapsed) do { \
             if (si->ref) { \
-                str_appendf(&md, "%s [%s](%s)%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s [%s](%s)%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, link_uri, \
                             (with_elapsed) ? elapsed_str : ""); \
             } else { \
-                str_appendf(&md, "%s %s%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s %s%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, \
                             (with_elapsed) ? elapsed_str : ""); \
             } \
@@ -765,13 +776,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Helper: emit the tool header with inline text */
         #define EMIT_TOOL_WITH_TEXT(text, with_elapsed) do { \
             if (si->ref) { \
-                str_appendf(&md, "%s [%s](%s) `%s`%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s [%s](%s) `%s`%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, link_uri, \
                             (text), (with_elapsed) ? elapsed_str : ""); \
             } else { \
-                str_appendf(&md, "%s %s `%s`%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s %s `%s`%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, (text), \
                             (with_elapsed) ? elapsed_str : ""); \
             } \
@@ -780,20 +791,20 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Helper: emit continuation line with text (indented to match tool column) */
         #define EMIT_CONTINUATION(text, with_elapsed) do { \
             str_appendf(&md, "%*s `%s`%s\n", \
-                        REF_COL_WIDTH + 1 + max_tool_len, "", \
+                        TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len, "", \
                         (text), (with_elapsed) ? elapsed_str : ""); \
         } while (0)
 
         /* Helper: emit the tool header with inline thought (plain text, no backticks) */
         #define EMIT_TOOL_WITH_THOUGHT(text, with_elapsed) do { \
             if (si->ref) { \
-                str_appendf(&md, "%s [%s](%s) %s%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s [%s](%s) %s%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, link_uri, \
                             (text), (with_elapsed) ? elapsed_str : ""); \
             } else { \
-                str_appendf(&md, "%s %s %s%s\n", \
-                            ref_pad, \
+                str_appendf(&md, "%s %s %s %s%s\n", \
+                            time_col, ref_pad, \
                             tool_pad, (text), \
                             (with_elapsed) ? elapsed_str : ""); \
             } \
@@ -802,7 +813,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Helper: emit continuation line with thought (plain text, no backticks) */
         #define EMIT_THOUGHT_CONTINUATION(text, with_elapsed) do { \
             str_appendf(&md, "%*s %s%s\n", \
-                        REF_COL_WIDTH + 1 + max_tool_len, "", \
+                        TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len, "", \
                         (text), (with_elapsed) ? elapsed_str : ""); \
         } while (0)
 
@@ -866,6 +877,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         #undef EMIT_CONTINUATION
         #undef EMIT_TOOL_WITH_THOUGHT
         #undef EMIT_THOUGHT_CONTINUATION
+        #undef TIME_COL_WIDTH
 
         free(desc_clean);
 
