@@ -352,8 +352,9 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
 
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON *cmd_j = cJSON_GetObjectItem(params, "command");
-    if (!cmd_j || !cmd_j->valuestring)
-        return make_error("missing 'command' parameter");
+    if (!cmd_j || !cmd_j->valuestring || !cmd_j->valuestring[0])
+        return make_error("shell_exec requires a non-empty 'command' string. "
+                          "Provide the shell command to execute.");
 
     const char *command = cmd_j->valuestring;
 
@@ -417,8 +418,9 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
 static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
-    if (!path_j || !path_j->valuestring)
-        return make_error("missing 'path' parameter");
+    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
+        return make_error("file_read requires a non-empty 'path' string. "
+                          "Provide the file path to read.");
 
     const char *path = path_j->valuestring;
 
@@ -567,8 +569,10 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
 static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
     cJSON *content_j = cJSON_GetObjectItem(params, "content");
-    if (!path_j || !path_j->valuestring || !content_j || !content_j->valuestring)
-        return make_error("missing 'path' or 'content' parameter");
+    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
+        return make_error("file_write requires a non-empty 'path' string.");
+    if (!content_j || !content_j->valuestring)
+        return make_error("file_write requires a 'content' parameter.");
 
     const char *path = path_j->valuestring;
     const char *content = content_j->valuestring;
@@ -606,10 +610,14 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON *path_j     = cJSON_GetObjectItem(params, "path");
     cJSON *old_text_j = cJSON_GetObjectItem(params, "old_text");
     cJSON *new_text_j = cJSON_GetObjectItem(params, "new_text");
-    if (!path_j || !path_j->valuestring ||
-        !old_text_j || !old_text_j->valuestring ||
-        !new_text_j || !new_text_j->valuestring)
-        return make_error("missing 'path', 'old_text', or 'new_text' parameter");
+    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
+        return make_error("file_edit requires a non-empty 'path' string.");
+    if (!old_text_j || !old_text_j->valuestring || !old_text_j->valuestring[0])
+        return make_error("file_edit requires a non-empty 'old_text' string. "
+                          "Copy the exact text to replace from the file. "
+                          "Use file_read first to see the current content.");
+    if (!new_text_j || !new_text_j->valuestring)
+        return make_error("file_edit requires a 'new_text' parameter.");
 
     const char *path = path_j->valuestring;
     const char *old_text = old_text_j->valuestring;
@@ -919,11 +927,13 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
     cJSON *path_j    = cJSON_GetObjectItem(params, "path");
-    if (!pattern_j || !pattern_j->valuestring)
-        return make_error("missing 'pattern' parameter");
+    if (!pattern_j || !pattern_j->valuestring || !pattern_j->valuestring[0])
+        return make_error("grep_search requires a non-empty 'pattern' string. "
+                          "Provide a regex pattern to search for.");
 
     const char *pattern = pattern_j->valuestring;
-    const char *path = path_j && path_j->valuestring ? path_j->valuestring : ".";
+    const char *path = path_j && path_j->valuestring && path_j->valuestring[0]
+                       ? path_j->valuestring : ".";
 
     /* Resolve step aliases (returns heap-allocated string, caller must free) */
     char *resolved = tool_resolve_alias(ctx, path);
@@ -1106,8 +1116,9 @@ static void parse_glob_pattern(const char *pattern,
 
 static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
-    if (!pattern_j || !pattern_j->valuestring)
-        return make_error("missing 'pattern' parameter");
+    if (!pattern_j || !pattern_j->valuestring || !pattern_j->valuestring[0])
+        return make_error("glob_search requires a non-empty 'pattern' string. "
+                          "Use wildcards like **/*.c or src/**/*.h");
 
     const char *pattern = pattern_j->valuestring;
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
@@ -1661,12 +1672,7 @@ static void consolidation_carry_scores(memory_t *m,
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
-    size_t buf_len = 0;
-    char *buf = slurp_file(path, &buf_len);
-    if (!buf || buf_len == 0) { free(buf); return; }
-
-    cJSON *entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *entry = slurp_json(path);
     if (!entry) return;
 
     cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
@@ -1735,12 +1741,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (scan.best_key[0] == '\0') return;  /* no similar memory found */
 
     /* Load the similar memory's value */
-    size_t buf_len = 0;
-    char *buf = slurp_file(scan.best_path, &buf_len);
-    if (!buf || buf_len == 0 || buf_len > NASH_LINE_MAX) { free(buf); return; }
-
-    cJSON *old_entry = cJSON_Parse(buf);
-    free(buf);
+    cJSON *old_entry = slurp_json(scan.best_path);
     if (!old_entry) return;
 
     cJSON *old_key_j = cJSON_GetObjectItem(old_entry, "key");
@@ -1884,18 +1885,10 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                  ctx->memory->dir, new_fname);
 
         const char *new_jref = NULL;
-        cJSON *new_entry_json = NULL;
-        {
-            size_t nbuf_len = 0;
-            char *nbuf = slurp_file(new_json_path, &nbuf_len);
-            if (nbuf && nbuf_len > 0 && nbuf_len < NASH_LINE_MAX) {
-                new_entry_json = cJSON_Parse(nbuf);
-            }
-            free(nbuf);
-            if (new_entry_json) {
-                cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
-                if (jr && jr->valuestring) new_jref = jr->valuestring;
-            }
+        cJSON *new_entry_json = slurp_json(new_json_path);
+        if (new_entry_json) {
+            cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
+            if (jr && jr->valuestring) new_jref = jr->valuestring;
         }
 
         /* Store merged version under the new key */
@@ -1926,8 +1919,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     cJSON *key_j = cJSON_GetObjectItem(params, "key");
     cJSON *val_j = cJSON_GetObjectItem(params, "value");
-    if (!key_j || !key_j->valuestring || !val_j || !val_j->valuestring)
-        return make_error("missing 'key' or 'value' parameter");
+    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
+        return make_error("memory_store requires a non-empty 'key' string. "
+                          "Use format 'type:descriptive-name' (e.g. lesson:config-sentinel-values).");
+    if (!val_j || !val_j->valuestring || !val_j->valuestring[0])
+        return make_error("memory_store requires a non-empty 'value' string. "
+                          "Provide the knowledge to store.");
 
     const char *key = key_j->valuestring;
     const char *value = val_j->valuestring;
@@ -2020,8 +2017,9 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
 static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring)
-        return make_error("missing 'query' parameter");
+    if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
+        return make_error("memory_recall requires a non-empty 'query' string. "
+                          "Describe what you're looking for.");
 
     const char *query = query_j->valuestring;
     memory_results_t results = memory_recall(ctx->memory, query, 5);
@@ -2061,8 +2059,9 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
 
 static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
     cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring)
-        return make_error("missing 'key' parameter");
+    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
+        return make_error("memory_pin requires a non-empty 'key' string. "
+                          "Use memory_list to see available keys.");
 
     int rc = memory_pin(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
@@ -2093,8 +2092,8 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
 
 static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
     cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring)
-        return make_error("missing 'key' parameter");
+    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
+        return make_error("memory_unpin requires a non-empty 'key' string.");
 
     int rc = memory_unpin(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
@@ -2120,8 +2119,8 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
 
 static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
     cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring)
-        return make_error("missing 'key' parameter");
+    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
+        return make_error("memory_delete requires a non-empty 'key' string.");
 
     int rc = memory_delete(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
@@ -2507,8 +2506,9 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 
 static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     cJSON *url_j = cJSON_GetObjectItem(params, "url");
-    if (!url_j || !url_j->valuestring)
-        return make_error("missing 'url' parameter");
+    if (!url_j || !url_j->valuestring || !url_j->valuestring[0])
+        return make_error("web_fetch requires a non-empty 'url' string. "
+                          "Provide the full URL (https://...) to fetch.");
 
     const char *url = url_j->valuestring;
 
@@ -2779,30 +2779,20 @@ static int ensure_searxng(const char *searxng_url) {
  * *out_count receives the number of results. */
 static char *searxng_search(const char *searxng_url, const char *query,
                             int *out_count, long timeout) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
+    /* URL-encode the query using a temporary curl handle */
+    CURL *enc = curl_easy_init();
+    if (!enc) return NULL;
+    char *encoded_q = curl_easy_escape(enc, query, 0);
+    curl_easy_cleanup(enc);
 
-    char *encoded_q = curl_easy_escape(curl, query, 0);
     char url[2048];
     snprintf(url, sizeof(url), "%s?q=%s&format=json&categories=general",
              searxng_url, encoded_q);
     curl_free(encoded_q);
 
     str_t body = str_new(NASH_INITIAL_BUF);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
-
-    CURLcode res = curl_easy_perform(curl);
     long http_code = 0;
-    if (res == CURLE_OK)
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
+    if (http_get_web(url, timeout, &body, &http_code) != 0) {
         str_free(&body);
         return NULL;
     }
@@ -2871,10 +2861,12 @@ static char *searxng_search(const char *searxng_url, const char *query,
  * Returns formatted markdown results string (caller frees) or NULL.
  * *out_count receives number of results. */
 static char *ddg_search(const char *query, int *out_count, long timeout) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
+    /* URL-encode the query using a temporary curl handle */
+    CURL *enc = curl_easy_init();
+    if (!enc) return NULL;
+    char *encoded_q = curl_easy_escape(enc, query, 0);
+    curl_easy_cleanup(enc);
 
-    char *encoded_q = curl_easy_escape(curl, query, 0);
     char url[2048];
     snprintf(url, sizeof(url),
              "https://api.duckduckgo.com/?q=%s&format=json&no_html=1",
@@ -2882,19 +2874,7 @@ static char *ddg_search(const char *query, int *out_count, long timeout) {
     curl_free(encoded_q);
 
     str_t body = str_new(NASH_INITIAL_BUF);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, web_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
+    if (http_get_web(url, timeout, &body, NULL) != 0) {
         str_free(&body);
         return NULL;
     }
@@ -2980,8 +2960,9 @@ static char *ddg_search(const char *query, int *out_count, long timeout) {
 
 static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring)
-        return make_error("missing 'query' parameter");
+    if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
+        return make_error("web_search requires a non-empty 'query' string. "
+                          "Provide specific search terms.");
 
     const char *query = query_j->valuestring;
     const char *engine = (ctx->cfg) ? ctx->cfg->search_engine : NULL;
