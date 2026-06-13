@@ -9,24 +9,31 @@
 
 /* ── Global state ─────────────────────────────────────────── */
 
-static journal_t *g_log_journal;
-static store_t   *g_log_store;
+static journal_t  *g_log_journal;
+static store_t    *g_log_store;
 static ui_state_t *g_log_ui;
 static int         g_log_react_loop;
 static int         g_log_step;
+static pthread_mutex_t g_log_mtx = PTHREAD_MUTEX_INITIALIZER;  /* FIX CRIT2 */
 
 void nash_log_init(journal_t *journal, store_t *store) {
+    pthread_mutex_lock(&g_log_mtx);
     g_log_journal = journal;
     g_log_store   = store;
+    pthread_mutex_unlock(&g_log_mtx);
 }
 
 void nash_log_set_context(int react_loop, int step) {
+    pthread_mutex_lock(&g_log_mtx);
     g_log_react_loop = react_loop;
     g_log_step       = step;
+    pthread_mutex_unlock(&g_log_mtx);
 }
 
 void nash_log_set_ui(void *ui) {
+    pthread_mutex_lock(&g_log_mtx);
     g_log_ui = (ui_state_t *)ui;
+    pthread_mutex_unlock(&g_log_mtx);
 }
 
 void nash_log(const char *fmt, ...) {
@@ -48,19 +55,28 @@ void nash_log(const char *fmt, ...) {
         return;
     }
 
+    /* FIX CRIT2: snapshot globals under lock, use local copies outside */
+    pthread_mutex_lock(&g_log_mtx);
+    journal_t  *lj  = g_log_journal;
+    store_t    *ls  = g_log_store;
+    ui_state_t *lui = g_log_ui;
+    int         lrl = g_log_react_loop;
+    int         lst = g_log_step;
+    pthread_mutex_unlock(&g_log_mtx);
+
     /* TUI mode: store + journal + refresh */
 
     /* 1. Save message to .store/ for audit trail */
     char *ref = NULL;
-    if (g_log_store) {
-        ref = store_save(g_log_store, buf);
+    if (ls) {
+        ref = store_save(ls, buf);
     }
 
     /* 2. Append journal entry so it appears in reactRx.md */
-    if (g_log_journal) {
+    if (lj) {
         cJSON *params = cJSON_CreateObject();
         cJSON_AddStringToObject(params, "message", buf);
-        journal_append(g_log_journal, g_log_react_loop, g_log_step,
+        journal_append(lj, lrl, lst,
                        "log", params, ref,
                        (size_t)len, 1, buf,  /* error = message text */
                        NULL);
@@ -68,11 +84,11 @@ void nash_log(const char *fmt, ...) {
     }
 
     /* 3. Trigger TUI refresh so error is visible immediately */
-    if (g_log_ui) {
-        pthread_mutex_lock(&g_log_ui->mtx);
-        ui_state_generate_react_md(g_log_ui, g_log_ui->current_react_loop);
-        g_log_ui->dirty = 1;
-        pthread_mutex_unlock(&g_log_ui->mtx);
+    if (lui) {
+        pthread_mutex_lock(&lui->mtx);
+        ui_state_generate_react_md(lui, lui->current_react_loop);
+        lui->dirty = 1;
+        pthread_mutex_unlock(&lui->mtx);
     }
 
     free(ref);

@@ -1704,47 +1704,55 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                     }
 
-                    /* Step 2: LLM summarization call */
-                    char *summary = NULL;
+                    /* FIX CRIT1: Heuristic extraction replaces synchronous LLM call.
+                     * Previously, this made a blocking provider_complete() call to
+                     * summarize evicted messages — circular because eviction is triggered
+                     * by context pressure, and the LLM call adds to that pressure.
+                     * Now we extract key content (assistant thoughts, tool results,
+                     * findings) heuristically — zero latency, no API call. */
                     if (evicted_text.len > 0) {
                         size_t sp_budget = (size_t)(ctx->provider->cfg.context_size * cpt_ev * 15 / 100);
-                        char *current_sp = (ctx->tools->scratch.count > 0)
-                            ? scratchpad_serialize(&ctx->tools->scratch) : strdup("");
+                        str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
 
-                        str_t summ_prompt = str_new(evicted_text.len + 2048);
-                        str_appendf(&summ_prompt,
-                            "Summarize a portion of an agentic work session being "
-                            "evicted from context to free space.\n"
-                            "Extract ALL key findings, decisions, file paths, code changes, "
-                            "errors, and conclusions.\n"
-                            "Preserve specific details (line numbers, variable names, exact "
-                            "error messages).\n"
-                            "Omit tool call mechanics and navigation steps.\n\n"
-                            "Messages being evicted:\n---\n%s\n---\n\n"
-                            "Current scratchpad:\n---\n%s\n---\n\n"
-                            "Write a MERGED scratchpad combining existing content with key "
-                            "findings from evicted messages.\n"
-                            "Use structured sections with ## headers.\n"
-                            "Keep under %d characters.\n",
-                            str_cstr(&evicted_text), current_sp, (int)sp_budget);
-                        free(current_sp);
+                        /* Extract substantive content from evicted messages:
+                         * - Assistant messages (contain reasoning/findings)
+                         * - Tool results that contain actual data (skip boilerplate)
+                         * Truncate each message to preserve breadth over depth. */
+                        int max_per_msg = (int)(sp_budget / (unsigned)(evict_end - evict_start + 1));
+                        if (max_per_msg < 200) max_per_msg = 200;
+                        if (max_per_msg > 2000) max_per_msg = 2000;
 
-                        llm_chat_t *summ_chat = llm_chat_new();
-                        llm_chat_add(summ_chat, "user", str_cstr(&summ_prompt));
-                        char *raw_summary = provider_complete(ctx->provider, summ_chat, NULL);
-                        llm_chat_free(summ_chat);
-                        str_free(&summ_prompt);
+                        for (int i = evict_start; i < evict_end; i++) {
+                            const char *content = chat->msgs[i].content;
+                            const char *role = chat->msgs[i].role;
+                            if (!content || !content[0] || !role) continue;
 
-                        /* Extract text from LLM output — accepts both plain markdown
-                         * and JSON tool-call format (extracts "content" field). */
-                        summary = react_extract_llm_text_output(raw_summary);
-                        free(raw_summary);
-                        if (summary) {
-                            scratchpad_write(&ctx->tools->scratch, "context_summary",
-                                             summary, 1);  /* priority 1 = highest */
-                            scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+                            /* Skip system messages and short tool results */
+                            if (strcmp(role, "system") == 0) continue;
+                            if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
+
+                            /* Truncate to budget per message */
+                            int clen = (int)strlen(content);
+                            if (clen > max_per_msg) clen = max_per_msg;
+                            str_appendf(&summary, "[%s]: ", role);
+                            str_append(&summary, content, (size_t)clen);
+                            if ((int)strlen(content) > max_per_msg)
+                                str_append_cstr(&summary, "...[truncated]");
+                            str_append_cstr(&summary, "\n");
+
+                            /* Stop if we've hit the budget */
+                            if (summary.len >= sp_budget) break;
                         }
-                        free(summary);
+
+                        if (summary.len > 0) {
+                            char *summ_str = str_steal(&summary);
+                            scratchpad_write(&ctx->tools->scratch, "evicted_context",
+                                             summ_str, 2);  /* priority 2 = high but below manual */
+                            scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+                            free(summ_str);
+                        } else {
+                            str_free(&summary);
+                        }
                     }
                     str_free(&evicted_text);
 

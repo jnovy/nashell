@@ -58,6 +58,7 @@ char *unwrap_thought(const char *thought) {
 journal_t *journal_new(const char *session_dir) {
     journal_t *j = calloc(1, sizeof(*j));
     if (!j) return NULL;
+    pthread_mutex_init(&j->mtx, NULL);  /* FIX CRIT2: thread-safe journal */
     j->session_dir = strdup(session_dir);
     if (!j->session_dir) { free(j); return NULL; }
     char path[NASH_PATH_MAX];
@@ -73,6 +74,7 @@ journal_t *journal_new(const char *session_dir) {
 journal_t *journal_new_lazy(const char *nash_dir) {
     journal_t *j = calloc(1, sizeof(*j));
     if (!j) return NULL;
+    pthread_mutex_init(&j->mtx, NULL);  /* FIX CRIT2: thread-safe journal */
     j->nash_dir = strdup(nash_dir);
     j->lazy_created = 0;
     return j;
@@ -80,6 +82,7 @@ journal_t *journal_new_lazy(const char *nash_dir) {
 
 void journal_free(journal_t *j) {
     if (!j) return;
+    pthread_mutex_destroy(&j->mtx);  /* FIX CRIT2 */
     free(j->path);
     free(j->session_dir);
     free(j->nash_dir);
@@ -119,13 +122,17 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error,
                    const char *tool_call_id) {
+    /* FIX CRIT2: mutex protects all journal state (lazy_created, path, file I/O)
+     * against concurrent calls from inference thread and nash_log(). */
+    pthread_mutex_lock(&j->mtx);
+
     /* Lazy session creation: create directory on first write */
     if (j->nash_dir && !j->lazy_created) {
         journal_create_lazy_session(j);
     }
-    if (!j->path) return -1;
+    if (!j->path) { pthread_mutex_unlock(&j->mtx); return -1; }
     FILE *f = fopen(j->path, "a");
-    if (!f) return -1;
+    if (!f) { pthread_mutex_unlock(&j->mtx); return -1; }
 
     /* Exclusive lock for writes — prevents torn reads from TUI thread */
     flock(fileno(f), LOCK_EX);
@@ -154,6 +161,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     free(json);
     cJSON_Delete(entry);
     fclose(f);
+    pthread_mutex_unlock(&j->mtx);  /* FIX CRIT2 */
     return 0;
 }
 
@@ -169,7 +177,14 @@ char *journal_manifest(journal_t *j, int max_steps) {
  * the model from trying to reference detailed step info that was evicted. */
 char *journal_manifest_filtered(journal_t *j, int max_steps,
                                  int target_loop, int min_step) {
+    /* FIX CRIT2: mutex protects j->path from concurrent lazy creation */
+    pthread_mutex_lock(&j->mtx);
+    if (!j->path) {
+        pthread_mutex_unlock(&j->mtx);
+        return strdup("Session history: (empty — new session)");
+    }
     FILE *f = fopen(j->path, "r");
+    pthread_mutex_unlock(&j->mtx);  /* path is stable after lazy init */
     if (!f) return strdup("Session history: (empty — new session)");
     flock(fileno(f), LOCK_SH);
 

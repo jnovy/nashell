@@ -191,6 +191,12 @@ char *memory_load_pinned(memory_t *m);
  * Returns 0 on success, -1 if not found. */
 int memory_delete(memory_t *m, const char *key);
 
+/* Batch delete: delete multiple keys with a single gc_refs pass and
+ * a single git commit.  Reduces O(K×N) to O(K+N) for K deletes across
+ * N remaining entries.  Used by memory_prune() and playbook fact cleanup.
+ * Returns the number of entries actually deleted (keys that existed). */
+int memory_delete_batch(memory_t *m, const char **keys, int n_keys);
+
 /* Free a memory_results_t */
 void memory_results_free(memory_results_t *r);
 

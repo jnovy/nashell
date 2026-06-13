@@ -3,6 +3,7 @@
 
 #include "cJSON.h"
 #include <stddef.h>
+#include <pthread.h>
 
 /* Journal handle — wraps the path to journal.jsonl */
 typedef struct {
@@ -10,6 +11,7 @@ typedef struct {
     char *session_dir;/* resolved session directory (NULL until created) */
     char *nash_dir;   /* base dir for lazy session creation (NULL if not lazy) */
     int   lazy_created;/* 0=directory not yet created, 1=created */
+    pthread_mutex_t mtx;  /* FIX CRIT2: thread-safe append/read */
 } journal_t;
 
 journal_t *journal_new(const char *session_dir);

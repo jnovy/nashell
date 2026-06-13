@@ -884,9 +884,8 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 
         if (res != CURLE_OK) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (res != CURLE_SSL_CONNECT_ERROR)
-                nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                         curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
+            nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
@@ -1109,9 +1108,8 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 goto cleanup;
             }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-            if (res != CURLE_SSL_CONNECT_ERROR)
-                nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                         curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
+            nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
             if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
             /* Populate error diagnostics for react.c journal entry */
             free(p->last_error);

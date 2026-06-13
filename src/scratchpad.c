@@ -7,6 +7,7 @@
 
 void scratchpad_init(scratchpad_t *sp) {
     memset(sp, 0, sizeof(*sp));
+    pthread_mutex_init(&sp->mtx, NULL);  /* FIX CRIT2: thread-safe scratchpad */
     sp->cap = SCRATCHPAD_INIT_CAP;
     sp->sections = calloc((size_t)sp->cap, sizeof(scratchpad_section_t));
 }
@@ -20,6 +21,7 @@ void scratchpad_free(scratchpad_t *sp) {
     sp->sections = NULL;
     sp->count = 0;
     sp->cap = 0;
+    pthread_mutex_destroy(&sp->mtx);  /* FIX CRIT2 */
 }
 
 void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
@@ -53,47 +55,56 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
     if (priority < 1) priority = 1;
     if (priority > 9) priority = 9;
 
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     int idx = scratchpad_find(sp, name);
     if (idx >= 0) {
         /* Overwrite existing section */
         free(sp->sections[idx].content);
         sp->sections[idx].content = strdup(content);
         sp->sections[idx].priority = priority;
+        pthread_mutex_unlock(&sp->mtx);
         return 0;
     }
-    if (scratchpad_grow(sp) < 0)
+    if (scratchpad_grow(sp) < 0) {
+        pthread_mutex_unlock(&sp->mtx);
         return -1;  /* allocation failed */
+    }
 
     sp->sections[sp->count].name = strdup(name);
     sp->sections[sp->count].content = strdup(content);
     sp->sections[sp->count].priority = priority;
     sp->count++;
+    pthread_mutex_unlock(&sp->mtx);
     return 0;
 }
 
 int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, int priority) {
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     int idx = scratchpad_find(sp, name);
     if (idx >= 0) {
         /* Append to existing */
         size_t old_len = strlen(sp->sections[idx].content);
         size_t add_len = strlen(content);
         char *combined = malloc(old_len + add_len + 2);  /* +newline+nul */
-        if (!combined) return -1;
+        if (!combined) { pthread_mutex_unlock(&sp->mtx); return -1; }
         memcpy(combined, sp->sections[idx].content, old_len);
         combined[old_len] = '\n';
         memcpy(combined + old_len + 1, content, add_len);
         combined[old_len + 1 + add_len] = '\0';
         free(sp->sections[idx].content);
         sp->sections[idx].content = combined;
+        pthread_mutex_unlock(&sp->mtx);
         return 0;
     }
-    /* Create new section */
+    pthread_mutex_unlock(&sp->mtx);
+    /* Create new section — scratchpad_write acquires its own lock */
     return scratchpad_write(sp, name, content, priority);
 }
 
 int scratchpad_clear(scratchpad_t *sp, const char *name) {
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     int idx = scratchpad_find(sp, name);
-    if (idx < 0) return -1;
+    if (idx < 0) { pthread_mutex_unlock(&sp->mtx); return -1; }
 
     free(sp->sections[idx].name);
     free(sp->sections[idx].content);
@@ -102,6 +113,7 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
     for (int i = idx; i < sp->count - 1; i++)
         sp->sections[i] = sp->sections[i + 1];
     sp->count--;
+    pthread_mutex_unlock(&sp->mtx);
     return 0;
 }
 
@@ -113,16 +125,20 @@ static int section_cmp(const void *a, const void *b) {
 }
 
 char *scratchpad_serialize(scratchpad_t *sp) {
-    if (sp->count == 0) return NULL;
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
+    if (sp->count == 0) { pthread_mutex_unlock(&sp->mtx); return NULL; }
 
     /* Sort a copy by priority */
     scratchpad_section_t *sorted = malloc((size_t)sp->count * sizeof(scratchpad_section_t));
-    if (!sorted) return NULL;
+    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
     memcpy(sorted, sp->sections, (size_t)sp->count * sizeof(scratchpad_section_t));
-    qsort(sorted, (size_t)sp->count, sizeof(scratchpad_section_t), section_cmp);
+    int n = sp->count;
+    pthread_mutex_unlock(&sp->mtx);  /* unlocked — working on local copy */
+
+    qsort(sorted, (size_t)n, sizeof(scratchpad_section_t), section_cmp);
 
     str_t out = str_new(2048);
-    for (int i = 0; i < sp->count; i++) {
+    for (int i = 0; i < n; i++) {
         str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
     }
     free(sorted);
@@ -130,16 +146,20 @@ char *scratchpad_serialize(scratchpad_t *sp) {
 }
 
 char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
-    if (sp->count == 0) return NULL;
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
+    if (sp->count == 0) { pthread_mutex_unlock(&sp->mtx); return NULL; }
 
     /* Sort a copy by priority (ascending = highest priority first) */
-    scratchpad_section_t *sorted = malloc((size_t)sp->count * sizeof(scratchpad_section_t));
-    if (!sorted) return NULL;
-    memcpy(sorted, sp->sections, (size_t)sp->count * sizeof(scratchpad_section_t));
-    qsort(sorted, sp->count, sizeof(scratchpad_section_t), section_cmp);
+    int n = sp->count;
+    scratchpad_section_t *sorted = malloc((size_t)n * sizeof(scratchpad_section_t));
+    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
+    memcpy(sorted, sp->sections, (size_t)n * sizeof(scratchpad_section_t));
+    pthread_mutex_unlock(&sp->mtx);  /* unlocked — working on local copy */
+
+    qsort(sorted, (size_t)n, sizeof(scratchpad_section_t), section_cmp);
 
     str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
-    for (int i = 0; i < sp->count; i++) {
+    for (int i = 0; i < n; i++) {
         /* Calculate how much space this section needs */
         size_t header_len = strlen(sorted[i].name) + 6;  /* "## " + name + "\n" + trailing "\n\n" */
         size_t content_len = strlen(sorted[i].content);
@@ -179,8 +199,9 @@ int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
     char path[512];
     snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
 
+    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     FILE *f = fopen(path, "w");
-    if (!f) return -1;
+    if (!f) { pthread_mutex_unlock(&sp->mtx); return -1; }
 
     for (int i = 0; i < sp->count; i++) {
         fprintf(f, "<!-- priority:%d -->\n## %s\n%s\n\n",
@@ -188,6 +209,7 @@ int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
                 sp->sections[i].content);
     }
     fclose(f);
+    pthread_mutex_unlock(&sp->mtx);
     return 0;
 }
 

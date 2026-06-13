@@ -526,8 +526,12 @@ int memory_store(memory_t *m, const char *key, const char *value,
     free(json);
     cJSON_Delete(entry);
 
-    /* Generate embedding for semantic matching (if enabled) */
-    if (m->embed && m->embed->available) {
+    /* Generate embedding for semantic matching (if enabled).
+     * Skip during batch operations (consolidating flag) — embeddings
+     * will be regenerated in bulk via memory_embed_all() after the
+     * batch completes.  This avoids generating throwaway embeddings
+     * for entries that are about to be merged/deleted in the same pass. */
+    if (m->embed && m->embed->available && !m->consolidating) {
         memory_embed_entry(m, key, value);
     }
 
@@ -1171,6 +1175,54 @@ static int gc_refs_cb(const char *dirpath, cJSON *entry, void *user_data) {
     return JSON_CB_CONTINUE;
 }
 
+/* ── batch delete ──────────────────────────────────────── */
+
+/* Batch gc_refs context: removes ANY of the deleted keys from refs arrays.
+ * Reduces O(K×N) to O(N) for K deletes across N entries. */
+typedef struct {
+    const char **deleted_keys;
+    int n_deleted;
+    int cleaned;
+} gc_refs_multi_ctx_t;
+
+/* Remove any of deleted_keys[] from the refs array of a single entry. */
+static int gc_refs_multi_cb(const char *dirpath, cJSON *entry, void *user_data) {
+    gc_refs_multi_ctx_t *ctx = (gc_refs_multi_ctx_t *)user_data;
+    cJSON *refs = cJSON_GetObjectItem(entry, "refs");
+    if (!refs || !cJSON_IsArray(refs)) return JSON_CB_CONTINUE;
+
+    int sz = cJSON_GetArraySize(refs);
+    int found = 0;
+    for (int i = sz - 1; i >= 0; i--) {
+        cJSON *item = cJSON_GetArrayItem(refs, i);
+        if (!item || !item->valuestring) continue;
+        for (int d = 0; d < ctx->n_deleted; d++) {
+            if (strcmp(item->valuestring, ctx->deleted_keys[d]) == 0) {
+                cJSON_DeleteItemFromArray(refs, i);
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    if (found) {
+        cJSON *k = cJSON_GetObjectItem(entry, "key");
+        if (k && k->valuestring) {
+            char fname[512];
+            key_to_path(k->valuestring, ".json", fname, sizeof(fname));
+            char path[NASH_PATH_MAX];
+            snprintf(path, sizeof(path), "%s/%s", dirpath, fname);
+            char *json = cJSON_Print(entry);
+            if (json) {
+                write_file(path, json, strlen(json));
+                free(json);
+            }
+        }
+        ctx->cleaned++;
+    }
+    return JSON_CB_CONTINUE;
+}
+
 int memory_delete(memory_t *m, const char *key) {
     if (!m || !key) return -1;
 
@@ -1209,6 +1261,78 @@ int memory_delete(memory_t *m, const char *key) {
     memory_git_commit(m, msg);
 
     return 0;
+}
+
+/* Batch delete: delete multiple keys with a SINGLE gc_refs pass and
+ * a single git commit.  Reduces O(K×N) to O(K+N) for K deletes across
+ * N remaining entries.  Used by memory_prune() and playbook fact cleanup.
+ *
+ * Each key's .json and .emb files are removed, and the key is removed
+ * from the in-memory index.  Then a single scan of all remaining JSON
+ * files removes dangling refs for ALL deleted keys at once.  Finally,
+ * a single git commit records all deletions.
+ *
+ * Returns the number of entries actually deleted (keys that existed). */
+int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
+    if (!m || !keys || n_keys <= 0) return 0;
+
+    /* Phase 1: Remove files and index entries for each key.
+     * Track which keys were actually found (for the commit message). */
+    const char **found_keys = malloc(sizeof(const char *) * (size_t)n_keys);
+    int n_found = 0;
+
+    for (int k = 0; k < n_keys; k++) {
+        if (!keys[k]) continue;
+
+        char fname[512];
+        key_to_path(keys[k], ".json", fname, sizeof(fname));
+        char path[NASH_PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+        struct stat st;
+        if (stat(path, &st) != 0) continue;  /* not found — skip */
+
+        unlink(path);
+
+        /* Remove embedding file if it exists */
+        char emb_fname[512];
+        key_to_path(keys[k], ".emb", emb_fname, sizeof(emb_fname));
+        char emb_path[NASH_PATH_MAX];
+        snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+        unlink(emb_path);  /* ignore error if not exists */
+
+        /* Remove from in-memory index */
+        mem_index_remove(&m->idx, keys[k]);
+
+        found_keys[n_found++] = keys[k];
+    }
+
+    if (n_found == 0) {
+        free(found_keys);
+        return 0;
+    }
+
+    /* Phase 2: Single gc_refs pass — remove ALL deleted keys from
+     * refs arrays across all remaining entries.  O(N×K) string
+     * comparisons but only O(N) file reads/writes. */
+    gc_refs_multi_ctx_t gc = {
+        .deleted_keys = found_keys,
+        .n_deleted = n_found,
+        .cleaned = 0
+    };
+    for_each_json_entry(m->dir, gc_refs_multi_cb, &gc);
+
+    /* Phase 3: Single git commit for all deletions */
+    char msg[1024];
+    if (n_found == 1) {
+        snprintf(msg, sizeof(msg), "memory: delete %s", found_keys[0]);
+    } else {
+        snprintf(msg, sizeof(msg), "memory: batch delete %d entries", n_found);
+    }
+    memory_git_commit(m, msg);
+
+    free(found_keys);
+    return n_found;
 }
 
 /* ── free results ────────────────────────────────────── */
@@ -1324,16 +1448,15 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
 
     for_each_json_entry(m->dir, prune_cb, &ctx);
 
-    /* Phase 2: Delete collected entries via memory_delete().
-     * This properly handles: index removal (mem_index_remove),
-     * dangling ref cleanup (gc_refs_cb), .emb file deletion,
-     * and git commit per entry. Previously, prune_cb used direct
-     * unlink() which bypassed all of these — leaving ghost entries
-     * in the in-memory index that continued to be recalled. */
-    for (int i = 0; i < ctx.count; i++) {
-        memory_delete(m, ctx.keys[i]);
-        free(ctx.keys[i]);
+    /* Phase 2: Batch delete collected entries.
+     * Uses memory_delete_batch() for O(N) gc_refs instead of O(K×N)
+     * when pruning K entries.  Also produces a single git commit
+     * instead of K individual commits. */
+    if (ctx.count > 0) {
+        memory_delete_batch(m, (const char **)ctx.keys, ctx.count);
     }
+    for (int i = 0; i < ctx.count; i++)
+        free(ctx.keys[i]);
     free(ctx.keys);
 
     /* Sweep for orphan .emb files (no matching .json).

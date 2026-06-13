@@ -97,6 +97,14 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         }
     }
 
+    /* FIX CRIT1: Flush deferred memory consolidations AFTER scoring
+     * but BEFORE reflection. This runs the LLM-based consolidation calls
+     * that were queued during the react loop, outside the hot path.
+     * Reflection may create new memories that also get consolidated. */
+    if (ctx->tools->memory && ctx->tools->n_deferred_consol > 0) {
+        tool_flush_deferred_consolidations(ctx->tools);
+    }
+
     /* FIX D2: Skip reflection when max_reflection_steps == 0 */
     int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
     if (ctx->flags.enable_reflection && ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {

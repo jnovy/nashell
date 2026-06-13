@@ -79,6 +79,14 @@ typedef struct {
     tool_filter_t  tool_filter;
     /* Spec journal tracking: last spec hash for change detection */
     char          *last_spec_hash;
+    /* FIX CRIT1: Deferred consolidation queue — populated during react loop,
+     * flushed after task completion to avoid blocking LLM calls mid-task. */
+    struct {
+        char *key;
+        char *value;
+    }             *deferred_consol;
+    int            n_deferred_consol;
+    int            cap_deferred_consol;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */
@@ -102,6 +110,14 @@ void tool_result_free(tool_result_t *r);
 
 /* System prompt with tool descriptions */
 char *tools_system_prompt(void);  /* caller must free() */
+
+/* FIX CRIT1: Process deferred memory consolidations after task completion.
+ * Runs the LLM-based consolidation that was queued during memory_store calls,
+ * outside the hot path of the react loop. */
+void tool_flush_deferred_consolidations(tool_ctx_t *ctx);
+
+/* FIX CRIT1: Free the deferred consolidation queue (call before tool_ctx cleanup) */
+void tool_free_deferred_consolidations(tool_ctx_t *ctx);
 
 /* Tear down auto-started SearXNG container (called on nash exit) */
 void web_search_cleanup(void);

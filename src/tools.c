@@ -206,14 +206,22 @@ char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
 
 /* ── recalled key tracking (validation scoring) ──────────────── */
 
+/* Cap recalled keys to prevent unbounded growth in long sessions.
+ * 512 keys is generous — typical sessions recall <50 distinct memories. */
+#define RECALLED_KEYS_MAX 512
+
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
     if (!ctx || !key) return;
     /* Deduplicate: don't track the same key twice */
     for (int i = 0; i < ctx->n_recalled_keys; i++)
         if (strcmp(ctx->recalled_keys[i], key) == 0) return;
+    /* Cap: stop tracking new keys once we reach the limit.
+     * The most important keys (recalled earliest) are already tracked. */
+    if (ctx->n_recalled_keys >= RECALLED_KEYS_MAX) return;
     /* Grow if needed */
     if (ctx->n_recalled_keys >= ctx->recalled_keys_cap) {
         int new_cap = ctx->recalled_keys_cap ? ctx->recalled_keys_cap * 2 : 16;
+        if (new_cap > RECALLED_KEYS_MAX) new_cap = RECALLED_KEYS_MAX;
         char **new_keys = realloc(ctx->recalled_keys,
                                    (size_t)new_cap * sizeof(char *));
         if (!new_keys) return;
@@ -1606,54 +1614,6 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
  * version. This implements the "subtract-before-write" principle from GDN-2:
  * related content is merged rather than duplicated. */
 
-typedef struct {
-    embed_multi_vec_t *new_emb;
-    const char *new_emb_fname;
-    const char *dir;
-    float consolidation_threshold;
-    char best_key[512];
-    char best_path[NASH_PATH_MAX];
-    float best_sim;
-} consolidation_scan_t;
-
-static int consolidation_cb(const char *dirpath, const char *filename,
-                             const char *fullpath, void *user_data) {
-    consolidation_scan_t *s = (consolidation_scan_t *)user_data;
-    (void)dirpath;
-
-    size_t len = strlen(filename);
-    /* Derive key from filename: strip .emb suffix */
-    char emb_base[512];
-    snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), filename);
-
-    /* Skip self — the entry we just stored. */
-    if (strcmp(emb_base, s->new_emb_fname) == 0) return 0;
-
-    embed_multi_vec_t other_emb = embed_multi_vec_load(fullpath);
-    if (!other_emb.data) return 0;
-
-    /* Dimension check: skip stale embeddings from a different model.
-     * Mismatched dims give 0.0 from cosine_sim anyway, but deleting
-     * the stale file lets memory_embed_all() regenerate it. */
-    if (other_emb.dim != s->new_emb->dim) {
-        unlink(fullpath);
-        embed_multi_vec_free(&other_emb);
-        return 0;
-    }
-
-    /* MaxSim across all chunk pairs */
-    float sim = embed_cosine_sim_multi_multi(s->new_emb, &other_emb);
-    embed_multi_vec_free(&other_emb);
-
-    if (sim > s->best_sim && sim > s->consolidation_threshold) {
-        s->best_sim = sim;
-        snprintf(s->best_key, sizeof(s->best_key), "%s", emb_base);
-        /* Derive JSON path from emb path */
-        snprintf(s->best_path, sizeof(s->best_path), "%s/%s.json",
-                 s->dir, emb_base);
-    }
-    return 0;
-}
 
 /* Carry forward validation scores from a deleted/old entry to the surviving
  * entry.  When consolidation merges or replaces entries, the old entry's
@@ -1715,18 +1675,16 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return;
 
-    /* Scan all memory .emb files for high similarity */
-    consolidation_scan_t scan = {
-        .new_emb = &new_emb,
-        .new_emb_fname = new_emb_fname,
-        .dir = ctx->memory->dir,
-        .consolidation_threshold =
-            ctx->cfg ? ctx->cfg->consolidation_threshold : 0.82f,
-        .best_key = {0},
-        .best_path = {0},
-        .best_sim = 0.0f,
-    };
-    /* Consolidation threshold: cosine similarity above which two memories
+    /* Scan in-memory index for high similarity (FIX P1-3).
+     *
+     * Previous: for_each_dir_entry() scanned .emb files on disk, creating
+     * a consistency window where deleted-but-not-flushed entries could match,
+     * or newly-stored entries without embeddings would be missed.
+     *
+     * Now: iterate over the authoritative in-memory index (m->idx), using
+     * cached embeddings when available, falling back to disk load.
+     *
+     * Consolidation threshold: cosine similarity above which two memories
      * are considered near-duplicates and merged. 0.82 is conservative —
      * only genuinely redundant entries trigger consolidation.
      * Configurable via config.toml [limits] consolidation_threshold.
@@ -1734,14 +1692,67 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * Research basis: IR literature places "semantically equivalent"
      * text at cosine similarity 0.80-0.90 depending on embedding model.
      * See also: MemForest [arXiv:2605.23986] for temporal dedup. */
+    float cons_threshold = ctx->cfg ? ctx->cfg->consolidation_threshold : 0.82f;
+    char best_key[512] = {0};
+    char best_path[NASH_PATH_MAX] = {0};
+    float best_sim = 0.0f;
 
-    for_each_dir_entry(ctx->memory->dir, ".emb", consolidation_cb, &scan);
+    memory_t *m = ctx->memory;
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *e = &m->idx.entries[i];
+
+        /* Skip self — the entry we just stored */
+        if (strcmp(e->key, new_key) == 0) continue;
+
+        /* Get embedding: prefer cached, fall back to disk */
+        embed_multi_vec_t *emb_ptr = NULL;
+        embed_multi_vec_t loaded_emb = {0};
+        if (e->has_emb && e->emb.data) {
+            emb_ptr = &e->emb;
+        } else if (e->path) {
+            char emb_path[NASH_PATH_MAX];
+            snprintf(emb_path, sizeof(emb_path), "%s", e->path);
+            size_t plen = strlen(emb_path);
+            if (plen >= 5 && strcmp(emb_path + plen - 5, ".json") == 0)
+                strcpy(emb_path + plen - 5, ".emb");
+            loaded_emb = embed_multi_vec_load(emb_path);
+            if (loaded_emb.data) emb_ptr = &loaded_emb;
+        }
+        if (!emb_ptr) continue;
+
+        /* Dimension check: skip stale embeddings from a different model */
+        if (emb_ptr->dim != new_emb.dim) {
+            if (loaded_emb.data) {
+                /* Delete stale .emb file so memory_embed_all() regenerates it */
+                char emb_path[NASH_PATH_MAX];
+                snprintf(emb_path, sizeof(emb_path), "%s", e->path);
+                size_t plen = strlen(emb_path);
+                if (plen >= 5 && strcmp(emb_path + plen - 5, ".json") == 0)
+                    strcpy(emb_path + plen - 5, ".emb");
+                unlink(emb_path);
+                embed_multi_vec_free(&loaded_emb);
+            }
+            continue;
+        }
+
+        /* MaxSim across all chunk pairs */
+        float sim = embed_cosine_sim_multi_multi(&new_emb, emb_ptr);
+        if (loaded_emb.data) embed_multi_vec_free(&loaded_emb);
+
+        if (sim > best_sim && sim > cons_threshold) {
+            best_sim = sim;
+            snprintf(best_key, sizeof(best_key), "%s", e->key);
+            if (e->path)
+                snprintf(best_path, sizeof(best_path), "%s", e->path);
+        }
+    }
+
     embed_multi_vec_free(&new_emb);
 
-    if (scan.best_key[0] == '\0') return;  /* no similar memory found */
+    if (best_key[0] == '\0') return;  /* no similar memory found */
 
     /* Load the similar memory's value */
-    cJSON *old_entry = slurp_json(scan.best_path);
+    cJSON *old_entry = slurp_json(best_path);
     if (!old_entry) return;
 
     cJSON *old_key_j = cJSON_GetObjectItem(old_entry, "key");
@@ -1985,13 +1996,27 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
     }
 
-    /* GDN-2 P2: Try to consolidate with similar existing memories.
-     * FIX B2: Guard against recursive consolidation — memory_try_consolidate
-     * calls memory_store() which could trigger another consolidation cycle. */
+    /* FIX CRIT1: Defer consolidation to post-task instead of blocking inline.
+     * Previously, memory_try_consolidate() ran a synchronous LLM call here,
+     * adding 5-30s latency on the hot path. Now we queue the key+value pair
+     * and process them all in tool_flush_deferred_consolidations() after
+     * the react loop completes. */
     if (!pinned && !ctx->memory->consolidating) {
-        ctx->memory->consolidating = 1;
-        memory_try_consolidate(ctx, key, value);
-        ctx->memory->consolidating = 0;
+        /* Grow deferred queue if needed */
+        if (ctx->n_deferred_consol >= ctx->cap_deferred_consol) {
+            int new_cap = ctx->cap_deferred_consol ? ctx->cap_deferred_consol * 2 : 16;
+            void *tmp = realloc(ctx->deferred_consol,
+                                (size_t)new_cap * sizeof(ctx->deferred_consol[0]));
+            if (tmp) {
+                ctx->deferred_consol = tmp;
+                ctx->cap_deferred_consol = new_cap;
+            }
+        }
+        if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
+            ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
+            ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
+            ctx->n_deferred_consol++;
+        }
     }
 
     /* Store for audit */
@@ -3027,6 +3052,38 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     free(hash);
     free(results_text);
     return make_result(1, meta, ref_copy);
+}
+
+/* FIX CRIT1: Process all deferred consolidations after task completion.
+ * This moves the LLM-based classification + merge calls out of the hot path.
+ * Each queued entry gets consolidated against existing memories. */
+void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
+    if (!ctx || ctx->n_deferred_consol == 0) return;
+
+    ctx->memory->consolidating = 1;  /* prevent recursive consolidation */
+    for (int i = 0; i < ctx->n_deferred_consol; i++) {
+        if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
+            memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
+                                   ctx->deferred_consol[i].value);
+        }
+    }
+    ctx->memory->consolidating = 0;
+
+    /* Free the queue */
+    tool_free_deferred_consolidations(ctx);
+}
+
+/* FIX CRIT1: Free the deferred consolidation queue without processing. */
+void tool_free_deferred_consolidations(tool_ctx_t *ctx) {
+    if (!ctx) return;
+    for (int i = 0; i < ctx->n_deferred_consol; i++) {
+        free(ctx->deferred_consol[i].key);
+        free(ctx->deferred_consol[i].value);
+    }
+    free(ctx->deferred_consol);
+    ctx->deferred_consol = NULL;
+    ctx->n_deferred_consol = 0;
+    ctx->cap_deferred_consol = 0;
 }
 
 /* Tear down auto-started SearXNG container. Called on nash exit. */

@@ -894,6 +894,8 @@ int main(int argc, char **argv) {
             scratchpad_save(&tools.scratch, sp_path);
         }
         tools.react_loop++;  /* increment for next query */
+        tool_free_deferred_consolidations(&tools);  /* FIX CRIT1 */
+        tool_free_deferred_consolidations(&tools);  /* FIX CRIT1 */
         scratchpad_free(&tools.scratch);
         alias_map_free(tools.aliases);
         free(tools.last_spec_hash);

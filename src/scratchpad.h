@@ -2,6 +2,7 @@
 #define SCRATCHPAD_H
 
 #include <stddef.h>
+#include <pthread.h>
 
 /* ── Section-based scratchpad (GDN-2 inspired) ──────────── */
 /* Each section has independent name, content, and priority.
@@ -20,6 +21,7 @@ typedef struct {
     scratchpad_section_t *sections;  /* dynamically allocated array */
     int count;
     int cap;                         /* allocated capacity */
+    pthread_mutex_t mtx;             /* FIX CRIT2: thread-safe scratchpad */
 } scratchpad_t;
 
 /* Scratchpad lifecycle */

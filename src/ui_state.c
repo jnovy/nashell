@@ -580,10 +580,19 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         /* Skip internal provider log entries — they clutter the TUI
          * with debug info (token counts, timing) that belongs in the
-         * journal audit trail but not in the user-facing display. */
+         * journal audit trail but not in the user-facing display.
+         * Exception: error/failure messages ARE shown so the user
+         * can see connection problems, auth failures, etc. */
         if (strcmp(tool, "log") == 0) {
-            cJSON_Delete(entry);
-            continue;
+            cJSON *params_log = cJSON_GetObjectItem(entry, "params");
+            cJSON *msg = params_log ? cJSON_GetObjectItem(params_log, "message") : NULL;
+            const char *m = (msg && msg->valuestring) ? msg->valuestring : "";
+            if (!ci_strstr(m, "error") && !ci_strstr(m, "failed") &&
+                !ci_strstr(m, "timed out")) {
+                cJSON_Delete(entry);
+                continue;
+            }
+            /* Fall through: error log entries are displayed as steps */
         }
 
         /* Collect step info */

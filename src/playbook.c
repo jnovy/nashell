@@ -463,6 +463,20 @@ void *playbook_worker(void *arg) {
 
     int playbook_ok = 1;
 
+    /* Suppress inline consolidation and defer embeddings during dream.
+     * Dream IS the consolidation — triggering inline consolidation on
+     * each memory_store during dream passes would:
+     *   (a) fire redundant LLM calls for entries being merged in the same pass
+     *   (b) generate embeddings that are immediately invalidated by the next merge
+     * The consolidating flag is checked by tool_memory_store() (skips
+     * memory_try_consolidate) and memory_store() (skips memory_embed_entry).
+     * Embeddings are regenerated in bulk via memory_embed_all() after
+     * all passes complete (below). */
+    int suppress_consolidation = (pa->memory && pb->name &&
+                                   strcmp(pb->name, "dream") == 0);
+    if (suppress_consolidation)
+        pa->memory->consolidating = 1;
+
     /* ── Run log: append-only JSONL tracking orchestration ── */
     char runs_dir[NASH_PATH_MAX];
     snprintf(runs_dir, sizeof(runs_dir), "%s/runs", pa->nash_dir);
@@ -641,6 +655,17 @@ void *playbook_worker(void *arg) {
         fclose(run_log);
     }
 
+    /* Restore consolidation guard and regenerate embeddings.
+     * Inline consolidation was suppressed during dream passes to avoid
+     * redundant LLM calls and throwaway embedding generation.  Now that
+     * all merges are complete, regenerate embeddings for entries that
+     * were stored without them (memory_embed_all is idempotent — skips
+     * entries that already have up-to-date .emb files). */
+    if (suppress_consolidation) {
+        pa->memory->consolidating = 0;
+        memory_embed_all(pa->memory);
+    }
+
     /* Post-playbook hooks */
     if (pb->post_prune && pa->memory) {
         memory_prune(pa->memory, pa->cfg->prune_min_score,
@@ -714,13 +739,29 @@ void *playbook_worker(void *arg) {
             }
             closedir(mdir);
 
-            /* Phase 2: delete collected keys */
-            for (int i = 0; i < n_del; i++) {
-                memory_delete(pa->memory, del_keys[i]);
-                free(del_keys[i]);
+            /* Phase 2: batch delete collected keys.
+             * Uses memory_delete_batch() for a single gc_refs pass
+             * and single git commit instead of N individual deletes. */
+            if (n_del > 0) {
+                memory_delete_batch(pa->memory,
+                                    (const char **)del_keys, n_del);
             }
+            for (int i = 0; i < n_del; i++)
+                free(del_keys[i]);
             free(del_keys);
         }
+    }
+
+    /* Touch .last_dream timestamp file after successful dream run.
+     * The dream reminder (main.c) counts entries created since this file's
+     * mtime.  Without this touch, the reminder counter never resets. */
+    if (playbook_ok && pa->memory && pa->memory->dir &&
+        pb->name && strcmp(pb->name, "dream") == 0) {
+        char dream_ts[NASH_PATH_MAX];
+        snprintf(dream_ts, sizeof(dream_ts), "%s/.last_dream",
+                 pa->memory->dir);
+        FILE *fp = fopen(dream_ts, "w");
+        if (fp) fclose(fp);  /* creates or updates mtime */
     }
 
     /* Change 5: Persist scratchpad for next run */
