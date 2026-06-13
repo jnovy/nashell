@@ -1812,15 +1812,18 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     llm_stats_t stats = {0};
     char *response = NULL;
 
-    /* Override provider config for consolidation (low temp, short output).
-     * Save/restore as a block to be signal-safe and clear. */
-    provider_config_t saved_cfg = ctx->provider->cfg;
-    ctx->provider->cfg.max_tokens = 2048;
-    ctx->provider->cfg.temperature = 0.1f;
-    ctx->provider->cfg.enable_thinking = 0;
-    ctx->provider->cfg.thinking_budget = 0;
-    response = provider_complete(ctx->provider, chat, &stats);
-    ctx->provider->cfg = saved_cfg;
+    /* Use a separate provider for consolidation to avoid mutating the
+     * shared provider config (thread-safety + signal-safety). */
+    provider_config_t cons_cfg = ctx->provider->cfg;
+    cons_cfg.max_tokens = 2048;
+    cons_cfg.temperature = 0.1f;
+    cons_cfg.enable_thinking = 0;
+    cons_cfg.thinking_budget = 0;
+    provider_t *cons_provider = provider_create(&cons_cfg);
+    if (cons_provider) {
+        response = provider_complete(cons_provider, chat, &stats);
+        provider_free(cons_provider);
+    }
     llm_chat_free(chat);
 
     if (!response || strlen(response) < 5) {
@@ -1875,11 +1878,9 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         /* Preserve journal_ref provenance from the new entry.
          * FIX B1: Without this, consolidated memories lose provenance. */
         char new_fname[512];
-        snprintf(new_fname, sizeof(new_fname), "%s", new_key);
-        for (char *p = new_fname; *p; p++)
-            if (*p == ':' || *p == '/') *p = '_';
+        key_to_path(new_key, ".json", new_fname, sizeof(new_fname));
         char new_json_path[NASH_PATH_MAX];
-        snprintf(new_json_path, sizeof(new_json_path), "%s/%s.json",
+        snprintf(new_json_path, sizeof(new_json_path), "%s/%s",
                  ctx->memory->dir, new_fname);
 
         const char *new_jref = NULL;

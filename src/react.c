@@ -1615,7 +1615,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Check for user_ask — pause react loop and wait for user input */
         if (strcmp(action_name, "user_ask") == 0) {
             const char *question = json_get_str(action, "question");
-            if (!question || !question[0]) question = "(no question specified)";
+            if (!question || !question[0]) {
+                /* Model called user_ask without a question — nudge it to retry */
+                const char *errmsg =
+                    "ERROR: user_ask requires a 'question' parameter with a "
+                    "non-empty string. Re-call user_ask with a specific question, "
+                    "or use a different tool if no question is needed.";
+                if (chat->last_tool_call_id) {
+                    llm_chat_add_assistant_tool_call(chat, response,
+                        chat->last_tool_calls_json);
+                    llm_chat_add_tool_result(chat, chat->last_tool_call_id,
+                                              errmsg);
+                } else {
+                    llm_chat_add(chat, "assistant", response);
+                    llm_chat_add(chat, "user", errmsg);
+                }
+                cJSON_Delete(action);
+                free(response);
+                continue;
+            }
 
             /* Store question in shared state for TUI to read */
             free(ctx->user_ask_question);
@@ -2040,9 +2058,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     total_chars += (int)strlen(chat->msgs[i].content);
             float cpt_ev = get_chars_per_token(ctx);
             int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
-            if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > 6) {
+            int keep_head = 3;
+            int keep_tail = 4;
+            if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > keep_head + keep_tail + 1) {
                 /* Priority eviction: remove error messages first (research: errors in context degrade performance) */
-                for (int i = 3; i < chat->n_msgs - 4; i++) {
+                for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
                     if (chat->msgs[i].content && strstr(chat->msgs[i].content, "ERROR:")) {
                         free(chat->msgs[i].role);
                         free(chat->msgs[i].content);
@@ -2063,8 +2083,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
 
                 /* If still over threshold, do standard eviction */
-                int keep_head = 3;
-                int keep_tail = 4;
                 int evict_start = keep_head;
                 int evict_end = chat->n_msgs - keep_tail;
 

@@ -152,14 +152,18 @@ provider_t *provider_create(const provider_config_t *cfg) {
 
     p->type = cfg->type;
     p->cfg = *cfg;  /* shallow copy of scalars */
-    /* Deep-copy model_id so provider owns its own string.
-     * This avoids aliasing hazards when callers free the original. */
-    p->cfg.model_id = cfg->model_id ? strdup(cfg->model_id) : NULL;
+    /* Deep-copy all string fields so provider owns its own strings.
+     * This avoids aliasing/dangling-pointer hazards when callers free the original. */
+    p->cfg.model_id    = cfg->model_id    ? strdup(cfg->model_id)    : NULL;
+    p->cfg.api_base    = cfg->api_base    ? strdup(cfg->api_base)    : NULL;
+    p->cfg.api_key_env = cfg->api_key_env ? strdup(cfg->api_key_env) : NULL;
+    p->cfg.project_id  = cfg->project_id  ? strdup(cfg->project_id)  : NULL;
+    p->cfg.region      = cfg->region      ? strdup(cfg->region)      : NULL;
 
     /* Set defaults */
     if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
     if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 16384;
-    if (p->cfg.temperature <= 0) p->cfg.temperature = 0.7f;
+    if (p->cfg.temperature < 0) p->cfg.temperature = 0.7f;
 
     /* Initialize provider-specific vtable */
     switch (cfg->type) {
@@ -187,9 +191,12 @@ void provider_free(provider_t *p) {
     free(p->last_error);
     free(p->last_error_request);
     free(p->last_error_response);
-    /* Free model_id if it was strdup'd (provider_create uses shallow copy,
-     * but callers like main.c may strdup into cfg.model_id after creation) */
+    /* Free all deep-copied string fields from provider_create */
     free((char *)p->cfg.model_id);
+    free((char *)p->cfg.api_base);
+    free((char *)p->cfg.api_key_env);
+    free((char *)p->cfg.project_id);
+    free((char *)p->cfg.region);
     free(p);
 }
 

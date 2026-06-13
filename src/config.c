@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <errno.h>
+#include <math.h>
+#include <limits.h>
 
 /* Helper: read TOML string, return strdup or NULL */
 static char *toml_str(toml_table_t *tbl, const char *key) {
@@ -114,20 +116,20 @@ void config_set_defaults(config_t *cfg) {
     cfg->stream = 1;     /* always on for now */
 
     /* [thinking] defaults — EDRM is the default mode.
-     * After calloc, all fields are 0. We check multiple fields to distinguish
-     * "nothing configured" from explicit mode="no" (THINKING_OFF=0). */
+     * Float fields use NAN as sentinel (0.0 is valid for all of them).
+     * budget uses INT_MIN as sentinel (0=no-thinking and -1=unrestricted are both valid). */
     if (cfg->thinking.mode == THINKING_OFF && cfg->thinking.probe_tokens == 0
-        && cfg->thinking.tau_vnr == 0 && cfg->thinking.tau_h == 0) {
+        && isnan(cfg->thinking.tau_vnr) && isnan(cfg->thinking.tau_h)) {
         /* Nothing was set by TOML parsing — default to EDRM */
         cfg->thinking.mode = THINKING_EDRM;
     }
-    if (cfg->thinking.probe_tokens == 0)     cfg->thinking.probe_tokens = 30;
-    if (cfg->thinking.probe_n_probs == 0)    cfg->thinking.probe_n_probs = 10;
-    if (cfg->thinking.probe_temperature == 0) cfg->thinking.probe_temperature = 0.6f;
-    if (cfg->thinking.tau_rho == 0)          cfg->thinking.tau_rho = -0.1f;
-    if (cfg->thinking.tau_vnr == 0)          cfg->thinking.tau_vnr = 1.5f;
-    if (cfg->thinking.tau_h == 0)            cfg->thinking.tau_h = 4.0f;
-    if (cfg->thinking.budget == 0)           cfg->thinking.budget = -1; /* -1 = unrestricted */
+    if (cfg->thinking.probe_tokens == 0)      cfg->thinking.probe_tokens = 30;
+    if (cfg->thinking.probe_n_probs == 0)     cfg->thinking.probe_n_probs = 10;
+    if (isnan(cfg->thinking.probe_temperature)) cfg->thinking.probe_temperature = 0.6f;
+    if (isnan(cfg->thinking.tau_rho))          cfg->thinking.tau_rho = -0.1f;
+    if (isnan(cfg->thinking.tau_vnr))          cfg->thinking.tau_vnr = 1.5f;
+    if (isnan(cfg->thinking.tau_h))            cfg->thinking.tau_h = 4.0f;
+    if (cfg->thinking.budget == INT_MIN)       cfg->thinking.budget = -1; /* -1 = unrestricted */
     if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
 
@@ -179,6 +181,16 @@ config_t *config_load(const char *path) {
     cfg->profile_enable_pruning = -1;
     cfg->profile_enable_compaction = -1;
     cfg->profile_enable_scoring = -1;
+    /* Thinking config sentinels: 0.0 is a valid value for these float
+     * fields (e.g. probe_temperature=0 means greedy, tau_rho=0 is a valid
+     * threshold). Use NAN so config_set_defaults can distinguish "not set"
+     * from "explicitly set to 0". budget uses INT_MIN since 0 means
+     * "no thinking tokens" (valid) and -1 means "unrestricted" (also valid). */
+    cfg->thinking.probe_temperature = NAN;
+    cfg->thinking.tau_rho = NAN;
+    cfg->thinking.tau_vnr = NAN;
+    cfg->thinking.tau_h = NAN;
+    cfg->thinking.budget = INT_MIN;
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -321,11 +333,11 @@ config_t *config_load(const char *path) {
         }
         cfg->thinking.probe_tokens     = toml_int(thinking, "probe_tokens", 0);
         cfg->thinking.probe_n_probs    = toml_int(thinking, "probe_n_probs", 0);
-        cfg->thinking.probe_temperature = (float)toml_dbl(thinking, "probe_temperature", 0);
-        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", 0);
-        cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", 0);
-        cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", 0);
-        cfg->thinking.budget           = toml_int(thinking, "budget", -1);
+        cfg->thinking.probe_temperature = (float)toml_dbl(thinking, "probe_temperature", NAN);
+        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", NAN);
+        cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", NAN);
+        cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", NAN);
+        cfg->thinking.budget           = toml_int(thinking, "budget", INT_MIN);
     }
 
     /* [memory_belief_entropy] — Belief Entropy quality signal */
@@ -394,8 +406,8 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
             tc->mode = THINKING_OFF;
         free(mode_str);
     }
-    int b = toml_int(tbl, "budget", 0);
-    if (b != 0) tc->budget = b;
+    int b = toml_int(tbl, "budget", INT_MIN);
+    if (b != INT_MIN) tc->budget = b;
     int pt = toml_int(tbl, "probe_tokens", 0);
     if (pt > 0) tc->probe_tokens = pt;
 }
@@ -463,6 +475,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
 
         /* [thinking] subtable */
         p->thinking.mode = THINKING_UNSET;  /* sentinel: defer */
+        p->thinking.budget = INT_MIN;       /* sentinel: inherit */
         toml_table_t *think_tbl = toml_table_in(root, "thinking");
         if (think_tbl) {
             parse_thinking_from_toml(think_tbl, &p->thinking);
@@ -657,7 +670,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         if (p->thinking.mode != THINKING_UNSET)
             cfg->thinking.mode = p->thinking.mode;
     }
-    if (p->thinking.budget != 0)
+    if (p->thinking.budget != INT_MIN)
         cfg->thinking.budget = p->thinking.budget;
 
     /* system_prompt_extra: store for react.c to use */
@@ -962,8 +975,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 cfg->thinking.mode = THINKING_OFF;
             free(mode_str);
         }
-        int b = toml_int(thinking, "budget", 0);
-        if (b != 0) cfg->thinking.budget = b;
+        int b = toml_int(thinking, "budget", INT_MIN);
+        if (b != INT_MIN) cfg->thinking.budget = b;
     }
 
     /* [react] overlay — includes flags + limits that live in [react] in spec format */

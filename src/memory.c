@@ -896,10 +896,8 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 s = 0;
         }
 
-        /* P0: Abstention gate */
+        /* P0: Abstention gate — skip entries below min_score */
         double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
-        if (s > 0.01 && s < min_score) s = 0;
-
         if (s >= min_score) {
             scored[n_scored].idx_pos = i;
             scored[n_scored].score = s;
