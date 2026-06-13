@@ -118,6 +118,13 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         return saved_step;
     }
 
+    /* Track highest alias sequence number seen during replay so we can
+     * set next_seq after the loop to avoid collisions with restored aliases.
+     * Without this, next_seq stays at 0 (reset in react_run) and new
+     * tool_register_alias() calls would create R<N>S0, R<N>S1, etc.
+     * that overwrite the in-memory map entries for restored aliases. */
+    int max_restored_seq = -1;
+
     char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
@@ -166,6 +173,14 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                     entry_hash = entry_hash_buf;
                     /* Register in alias hash map */
                     alias_map_insert(ctx->tools->aliases, ref, slash);
+
+                    /* Track highest seq number to set next_seq after replay.
+                     * Alias format: R<loop>S<seq> */
+                    int ref_seq = -1;
+                    if (sscanf(ref, "R%*dS%d", &ref_seq) == 1 &&
+                        ref_seq > max_restored_seq) {
+                        max_restored_seq = ref_seq;
+                    }
                 }
             }
         }
@@ -287,6 +302,13 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     }
     fclose(f);
 
+    /* Advance next_seq past all restored aliases so new tool_register_alias()
+     * calls don't collide with existing R<N>S0..R<N>S<max> aliases.
+     * The +1 is because next_seq is the NEXT sequence to use. */
+    if (max_restored_seq >= 0) {
+        ctx->tools->aliases->next_seq = max_restored_seq + 1;
+    }
+
     /* Set step counter to resume position */
     ctx->tools->step = saved_step;
     ctx->tools->react_loop = saved_loop;
@@ -315,9 +337,10 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         chat->last_tool_call_id = restored_tc_id;
     }
 
-    /* Emit restore event */
+    /* Emit restore event — include react_loop so UI tracks the correct loop */
     {
         react_event_t ev = {0};
+        ev.react_loop = saved_loop;
         ev.type = REACT_EVENT_WARNING;
         ev.step = saved_step;
         ev.message = "Resuming from checkpoint";

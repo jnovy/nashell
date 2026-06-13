@@ -781,9 +781,13 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
     if (st->has_tool_call && st->tool_call_name.len > 0) {
         /* Build unified JSON: {"thought":"...", "action":"tool_name", ...params} */
         cJSON *unified = cJSON_CreateObject();
-        cJSON_AddStringToObject(unified, "thought",
-                                st->full_content.len > 0 ?
-                                str_cstr(&st->full_content) : "");
+        /* Skip whitespace-only text content (e.g. "\n\n" before tool_use) —
+         * treating it as thought would cause misaligned display in reactRX.md */
+        const char *thought_text = "";
+        if (st->full_content.len > 0 &&
+            !is_whitespace_only(str_cstr(&st->full_content)))
+            thought_text = str_cstr(&st->full_content);
+        cJSON_AddStringToObject(unified, "thought", thought_text);
         cJSON_AddStringToObject(unified, "action",
                                 str_cstr(&st->tool_call_name));
 

@@ -180,6 +180,7 @@ void react_stream_token_cb(const char *token, void *userdata) {
     react_event_t ev = {0};
     ev.type  = REACT_EVENT_LLM_TOKEN;
     ev.step  = sctx->step;
+    ev.react_loop = sctx->react_loop;
     ev.token = token;
     sctx->on_event(&ev, sctx->userdata);
 }
@@ -234,7 +235,7 @@ char *react_extract_llm_text_output(const char *raw) {
     if (!raw || !raw[0]) return NULL;
 
     /* Skip leading whitespace */
-    while (*raw == ' ' || *raw == '\n' || *raw == '\r' || *raw == '\t') raw++;
+    raw = skip_whitespace(raw);
     if (!*raw) return NULL;
 
     /* Case 1: JSON tool call — extract "content" field */
@@ -684,6 +685,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Emit step start */
         {
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_STEP_START;
             ev.step = step + 1;
             ev.max_steps = ctx->max_steps;
@@ -748,6 +750,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         edrm.h_mean, edrm.rho_s, edrm.vnr,
                         edrm.route ? "thinking ON" : "thinking OFF");
                     react_event_t ev = {0};
+                    ev.react_loop = ctx->tools->react_loop;
                     ev.type = REACT_EVENT_WARNING;
                     ev.step = step + 1;
                     ev.message = msg;
@@ -759,7 +762,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
 
         llm_stats_t stats = {0};
-        react_stream_ctx_t sctx = { on_event, userdata, step + 1 };
+        react_stream_ctx_t sctx = { on_event, userdata, step + 1,
+                                     ctx->tools->react_loop };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
         /* Propagate tool filter so provider builds schema with only allowed tools */
@@ -865,6 +869,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
 
@@ -1075,6 +1080,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         if (!action) {
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_ERROR;
             ev.step = step + 1;
             ev.message = "Failed to parse LLM response as JSON";
@@ -1134,6 +1140,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Emit as a step complete (not error) so TUI shows it */
                 {
                     react_event_t ev = {0};
+                    ev.react_loop = ctx->tools->react_loop;
                     ev.type = REACT_EVENT_STEP_COMPLETE;
                     ev.step = step + 1;
                     ev.max_steps = ctx->max_steps;
@@ -1154,6 +1161,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             } else {
                 /* No thought AND no action — genuine parse error */
                 react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
                 ev.type = REACT_EVENT_ERROR;
                 ev.step = step + 1;
                 ev.message = "No 'action' field in response";
@@ -1220,6 +1228,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             /* Emit event so TUI shows the question */
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_USER_ASK;
             ev.step = step + 1;
             ev.message = question;
@@ -1327,6 +1336,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                            (now.tv_nsec - task_start.tv_nsec) / 1e9;
 
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_DONE;
             ev.step = step + 1;
             ev.step_elapsed = step_elapsed;
@@ -1405,6 +1415,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             snprintf(warn_msg, sizeof(warn_msg),
                      "Cycling detected — same action repeated %d times", repeated + 1);
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
             ev.message = warn_msg;
@@ -1529,6 +1540,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Emit step complete */
         {
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_STEP_COMPLETE;
             ev.step = step + 1;
             ev.max_steps = ctx->max_steps;
@@ -1544,6 +1556,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Emit tool output */
         {
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_TOOL_OUTPUT;
             ev.step = step + 1;
             ev.tool_meta = tr.meta;
@@ -1815,6 +1828,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                     /* Emit warning */
                     react_event_t ev = {0};
+                    ev.react_loop = ctx->tools->react_loop;
                     ev.type = REACT_EVENT_WARNING;
                     ev.step = step + 1;
                     ev.message = "Context compacted — evicted messages summarized into scratchpad";
@@ -1836,6 +1850,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * Save checkpoint and exit cleanly so the task can be resumed later. */
         if (!final_result && ctx->pause_requested) {
             react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
             ev.message = "Paused (Space to resume, type query to redirect)";

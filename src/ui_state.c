@@ -185,6 +185,9 @@ static char *extract_thought(cJSON *params) {
     cJSON *th = cJSON_GetObjectItem(params, "thought");
     if (!th || !th->valuestring || !th->valuestring[0]) return NULL;
 
+    /* Skip whitespace-only thoughts (e.g. "\n\n" emitted before tool calls) */
+    if (is_whitespace_only(th->valuestring)) return NULL;
+
     char *clean = unwrap_thought(th->valuestring);
     if (clean) return clean;
     /* unwrap_thought returned NULL — if the raw value is JSON (starts with
@@ -574,6 +577,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         }
 
         if (strcmp(tool, "system") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Skip internal-only entries that belong in the journal audit
+         * trail but not in the user-facing reactRX.md display. */
+        if (strcmp(tool, "checkpoint_restore") == 0 ||
+            strcmp(tool, "spec") == 0) {
             cJSON_Delete(entry);
             continue;
         }
@@ -1702,6 +1713,15 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->current_react_loop = ev->react_loop;
     }
 
+    /* Sync current_react_loop from event — critical after checkpoint restore
+     * which may change the react loop on the inference thread while the UI
+     * still tracks the pre-restore loop number set by main.c. */
+    int loop_changed = 0;
+    if (ev->react_loop > 0 && ev->react_loop != ui->current_react_loop) {
+        ui->current_react_loop = ev->react_loop;
+        loop_changed = 1;
+    }
+
     /* Effective session dir: use playbook's if active, else main */
     const char *eff_session_dir = ui->playbook_session_dir
                                 ? ui->playbook_session_dir
@@ -1739,8 +1759,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui_state_generate_react_md(ui, ui->current_react_loop);
 
         /* Reset cumulative stats and user_scrolled on first step of a
-         * new react loop so stats start fresh and auto-scroll is active. */
-        if (ev->step == 0) {
+         * new react loop (or after checkpoint restore changed the loop)
+         * so stats start fresh and auto-scroll is active. */
+        if (ev->step == 0 || loop_changed) {
             ui->user_scrolled = 0;
             ui->cum_prompt_tokens = 0;
             ui->cum_completion_tokens = 0;
@@ -1751,10 +1772,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->react_done = 0;
         }
 
-        /* Auto-navigate into reactRX.md on first step so user sees
-         * streaming tokens in real-time instead of just the preview
-         * in session.md. Push current view onto nav stack. */
-        if (ev->step == 0 && !viewing_react_file(ui, ui->current_react_loop)) {
+        /* Auto-navigate into reactRX.md on first step (or after checkpoint
+         * restore changed the loop) so user sees streaming tokens in
+         * real-time instead of just the preview in session.md. */
+        if ((ev->step == 0 || loop_changed) &&
+            !viewing_react_file(ui, ui->current_react_loop)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
                 ui->nav_stack = realloc(ui->nav_stack,

@@ -40,6 +40,7 @@ typedef struct {
     react_event_fn on_event;
     void          *userdata;
     int            step;
+    int            react_loop;
 } react_stream_ctx_t;
 
 /* Streaming token callback — bridges llm_token_fn to react_event_fn */

@@ -614,8 +614,11 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
 
         /* Build unified response */
         cJSON *unified = cJSON_CreateObject();
-        cJSON_AddStringToObject(unified, "thought",
-                                thought.len > 0 ? thought.data : "");
+        /* Skip whitespace-only thought text (e.g. "\n\n" before tool_use) */
+        const char *thought_val = "";
+        if (thought.len > 0 && !is_whitespace_only(thought.data))
+            thought_val = thought.data;
+        cJSON_AddStringToObject(unified, "thought", thought_val);
         cJSON_AddStringToObject(unified, "action",
                                 name ? name->valuestring : "");
 

@@ -21,11 +21,15 @@
 /* ── helpers ─────────────────────────────────────────── */
 
 /* Inject the current step's thought into a params cJSON before journal_append.
- * The thought is stored in ctx->thought by react.c before calling tool_execute. */
+ * The thought is stored in ctx->thought by react.c before calling tool_execute.
+ * Skip whitespace-only thoughts (e.g. "\n\n" emitted before tool calls). */
 static inline void inject_thought(tool_ctx_t *ctx, cJSON *params) {
-    if (ctx->thought && ctx->thought[0] && params &&
-        !cJSON_GetObjectItem(params, "thought"))
-        cJSON_AddStringToObject(params, "thought", ctx->thought);
+    if (!ctx->thought || !ctx->thought[0] || !params ||
+        cJSON_GetObjectItem(params, "thought"))
+        return;
+    /* Skip whitespace-only thoughts */
+    if (is_whitespace_only(ctx->thought)) return;
+    cJSON_AddStringToObject(params, "thought", ctx->thought);
 }
 
 static tool_result_t make_result(int success, cJSON *meta, char *ref) {

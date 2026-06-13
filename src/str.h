@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <string.h>
 #include <sys/types.h>
 #include <curl/curl.h>
 
@@ -64,6 +65,34 @@ int http_post(const char *url, const char *body,
 /* Curl write callback that appends to a str_t.
  * Exported so callers can use str_t with custom curl setups. */
 size_t str_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
+
+/* Check if a string is NULL, empty, or whitespace-only (spaces, tabs, newlines) */
+static inline int is_whitespace_only(const char *s) {
+    if (!s) return 1;
+    while (*s) {
+        if (*s != ' ' && *s != '\n' && *s != '\r' && *s != '\t')
+            return 0;
+        s++;
+    }
+    return 1;
+}
+
+/* Skip leading whitespace (spaces, tabs, newlines).
+ * Returns pointer to first non-whitespace char, or to the NUL terminator. */
+static inline const char *skip_whitespace(const char *s) {
+    while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t')
+        s++;
+    return s;
+}
+
+/* Trim trailing whitespace in-place by writing a NUL terminator.
+ * Safe on empty strings. */
+static inline void rtrim_whitespace(char *s) {
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\t'))
+        end--;
+    *end = '\0';
+}
 
 /* Count newline characters in a string. */
 int count_lines(const char *s);

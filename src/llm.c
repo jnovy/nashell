@@ -169,8 +169,7 @@ cJSON *llm_parse_action(const char *response) {
     const char *start = response;
 
     /* Skip leading whitespace and markdown fences */
-    while (*start == ' ' || *start == '\n' || *start == '\r' || *start == '\t')
-        start++;
+    start = skip_whitespace(start);
     if (strncmp(start, "```json", 7) == 0) {
         start += 7;
         while (*start == '\n' || *start == '\r') start++;

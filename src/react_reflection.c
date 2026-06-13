@@ -330,6 +330,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                     tool_result_t tr = tool_execute(ctx->tools, "memory_store", raction);
                     /* Emit event so frontend can show it */
                     react_event_t ev = {0};
+                    ev.react_loop = ctx->tools->react_loop;
                     ev.type = REACT_EVENT_STEP_COMPLETE;
                     ev.action = "memory_store";
                     ev.description = "[reflection]";

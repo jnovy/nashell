@@ -31,7 +31,7 @@ static char *extract_text_from_response(const char *raw) {
     if (!raw || !raw[0]) return NULL;
 
     /* Skip leading whitespace */
-    while (*raw == ' ' || *raw == '\n' || *raw == '\r' || *raw == '\t') raw++;
+    raw = skip_whitespace(raw);
     if (!*raw) return NULL;
 
     /* Case 1: JSON with "content" field */
@@ -229,11 +229,8 @@ char *optimize_reflect(provider_t *reflection_lm,
     }
 
     /* Trim leading/trailing whitespace */
-    char *start = text;
-    while (*start == ' ' || *start == '\n' || *start == '\r' || *start == '\t') start++;
-    char *end = start + strlen(start) - 1;
-    while (end > start && (*end == ' ' || *end == '\n' || *end == '\r' || *end == '\t')) end--;
-    *(end + 1) = '\0';
+    char *start = (char *)skip_whitespace(text);
+    rtrim_whitespace(start);
 
     char *result = strdup(start);
     free(text);
