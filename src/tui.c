@@ -12,7 +12,7 @@
 
 /* ── Windows ─────────────────────────────────────────── */
 
-int g_tui_active = 0;  /* set by tui_init(), cleared by tui_shutdown() */
+atomic_int g_tui_active = 0;  /* set by tui_init(), cleared by tui_shutdown() */
 
 static WINDOW *win_main   = NULL;   /* top pane: MD rendered content */
 static WINDOW *win_bottom = NULL;   /* bottom pane: status + input */
@@ -187,7 +187,7 @@ void tui_init(void) {
     printf("\033[?2004h");
     fflush(stdout);
 
-    g_tui_active = 1;
+    atomic_store(&g_tui_active, 1);
 }
 
 /* Free all stored clipboard entries */
@@ -295,7 +295,7 @@ static char *expand_clipboard_tokens(const char *input, int input_len) {
 }
 
 void tui_shutdown(void) {
-    g_tui_active = 0;
+    atomic_store(&g_tui_active, 0);
 
     /* Disable bracketed paste mode */
     printf("\033[?2004l");

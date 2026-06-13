@@ -1,12 +1,17 @@
 #ifndef TUI_H
 #define TUI_H
 
+#include <stdatomic.h>
 #include "ui_state.h"
 
 /* Global flag: 1 when ncurses TUI is active, 0 otherwise.
  * Library code must check this before writing to stderr/stdout
- * to avoid corrupting the ncurses display. */
-extern int g_tui_active;
+ * to avoid corrupting the ncurses display.
+ *
+ * Thread safety: written by main thread (tui_init/tui_shutdown),
+ * read by inference thread (nash_log). Uses atomic_int to avoid
+ * data races without requiring a mutex for this single flag. */
+extern atomic_int g_tui_active;
 
 /* Initialize ncurses TUI — creates windows, sets up colors */
 void tui_init(void);

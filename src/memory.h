@@ -1,6 +1,7 @@
 #ifndef MEMORY_H
 #define MEMORY_H
 
+#include <pthread.h>
 #include "cJSON.h"
 #include "embedding.h"
 
@@ -64,6 +65,12 @@ typedef struct {
     /* Guard against recursive consolidation — set during
      * memory_try_consolidate to prevent consolidation→store→consolidation loops. */
     int consolidating;
+
+    /* Thread safety: protects idx and all index-dependent operations.
+     * The inference thread (react_run → tools) and the main thread
+     * (/memory_recall command) can both access memory concurrently.
+     * All public memory_*() functions acquire this lock internally. */
+    pthread_mutex_t mtx;
 
     /* P1: In-memory index — populated by memory_new(), updated by
      * memory_store()/memory_delete(). Used by memory_recall() and

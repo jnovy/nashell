@@ -29,6 +29,7 @@
 #include "regression.h"
 #include "postmortem.h"
 #include "prompt_optimize.h"
+#include "mailbox.h"
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
 
@@ -317,6 +318,9 @@ int main(int argc, char **argv) {
     const char *load_spec_path = NULL;    /* --load-spec FILE: overlay spec on config */
     const char *optimize_budget = NULL;   /* --optimize BUDGET: GEPA prompt optimization */
     const char *reflect_model_arg = NULL; /* --reflect-model MODEL: reflection LM for optimization */
+    int mailbox_mode = 0;                 /* --mailbox: enable file-based mailbox for user_ask */
+    int daemon_mode = 0;                  /* --daemon: watch mailbox inbox for tasks */
+    int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -357,6 +361,14 @@ int main(int argc, char **argv) {
             optimize_budget = argv[++i];
         } else if (strcmp(argv[i], "--reflect-model") == 0 && i + 1 < argc) {
             reflect_model_arg = argv[++i];
+        } else if (strcmp(argv[i], "--mailbox") == 0) {
+            mailbox_mode = 1;
+        } else if (strcmp(argv[i], "--daemon") == 0) {
+            daemon_mode = 1;
+            mailbox_mode = 1;  /* daemon implies mailbox */
+        } else if (strcmp(argv[i], "--mailbox-timeout") == 0 && i + 1 < argc) {
+            mailbox_timeout = atoi(argv[++i]);
+            mailbox_mode = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -376,6 +388,10 @@ int main(int argc, char **argv) {
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
+            printf("\nMailbox (headless communication):\n");
+            printf("  --mailbox             Enable file-based mailbox for user_ask in -p mode\n");
+            printf("  --daemon              Watch mailbox inbox for task files (implies --mailbox)\n");
+            printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -825,6 +841,92 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
+    /* Daemon mode: watch mailbox inbox for tasks, process them sequentially */
+    if (daemon_mode) {
+        char mbox_dir[NASH_PATH_MAX];
+        if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
+            fprintf(stderr, "[error] failed to initialize mailbox\n");
+            return 1;
+        }
+        fprintf(stderr, "[daemon] nash mailbox daemon started\n");
+        fprintf(stderr, "[daemon] inbox: %s/inbox/  (drop task_* files here)\n", mbox_dir);
+        fprintf(stderr, "[daemon] outbox: %s/outbox/ (results appear here)\n", mbox_dir);
+
+        while (1) {
+            char *task_id = NULL;
+            char *task_query = mailbox_wait_task(mbox_dir, &task_id, 0);
+            if (!task_query) {
+                fprintf(stderr, "[daemon] wait_task returned NULL, retrying...\n");
+                sleep(1);
+                continue;
+            }
+
+            fprintf(stderr, "\n[daemon] === new task: %s ===\n", task_id ? task_id : "unknown");
+            fprintf(stderr, "[daemon] query: %.200s%s\n", task_query,
+                    strlen(task_query) > 200 ? "..." : "");
+
+            /* Set up a fresh session for each task */
+            journal_t *journal = journal_new_lazy(nash_dir);
+            int start_loop = journal_max_react_loop(journal) + 1;
+            tool_ctx_t tools = {
+                .store = shared_store, .journal = journal,
+                .memory = memory,
+                .session_dir = NULL,
+                .cfg = cfg, .provider = provider,
+                .react_loop = start_loop,
+                .aliases = alias_map_new(),
+            };
+            scratchpad_init(&tools.scratch);
+            react_flags_t default_flags = REACT_FLAGS_DEFAULT;
+            apply_profile_flags(&default_flags, cfg);
+            tools.tool_filter = build_profile_tool_filter(cfg);
+            react_ctx_t react = {
+                .provider = provider, .tools = &tools,
+                .max_steps = cfg->max_react_steps, .verbose = 1,
+                .flags = default_flags, .parent_loop = -1,
+            };
+            pthread_mutex_init(&react.user_ask_mutex, NULL);
+            pthread_cond_init(&react.user_ask_cond, NULL);
+
+            mailbox_ctx_t mbox = {
+                .react_ctx = &react,
+                .mailbox_dir = mbox_dir,
+                .session_dir = NULL,
+                .timeout_sec = mailbox_timeout,
+            };
+
+            char *result = react_run(&react, task_query, mailbox_on_event, &mbox);
+
+            /* Write result to outbox */
+            if (task_id) {
+                mailbox_write_result(mbox_dir, task_id, result);
+            }
+
+            if (result) {
+                fprintf(stderr, "[daemon] task %s completed\n", task_id ? task_id : "unknown");
+                printf("%s\n", result);
+                free(result);
+            } else {
+                fprintf(stderr, "[daemon] task %s failed (no result)\n", task_id ? task_id : "unknown");
+            }
+
+            /* Tier 1 dreaming */
+            memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
+
+            /* Cleanup */
+            pthread_mutex_destroy(&react.user_ask_mutex);
+            pthread_cond_destroy(&react.user_ask_cond);
+            tool_free_deferred_consolidations(&tools);
+            scratchpad_free(&tools.scratch);
+            alias_map_free(tools.aliases);
+            free(tools.last_spec_hash);
+            journal_free(journal);
+            free(task_id);
+            free(task_query);
+        }
+        /* Not reached (runs forever) */
+    }
+
     /* One-shot headless mode */
     if (query) {
         /* Detect existing session: --session arg, or CWD with journal.jsonl */
@@ -875,7 +977,31 @@ int main(int argc, char **argv) {
             .max_steps = cfg->max_react_steps, .verbose = 1,
             .flags = default_flags, .parent_loop = -1,
         };
-        char *result = react_run(&react, query, tui_on_event, NULL);
+
+        /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
+        char *result;
+        if (mailbox_mode) {
+            char mbox_dir[NASH_PATH_MAX];
+            if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
+                fprintf(stderr, "[error] failed to initialize mailbox\n");
+                return 1;
+            }
+            pthread_mutex_init(&react.user_ask_mutex, NULL);
+            pthread_cond_init(&react.user_ask_cond, NULL);
+            mailbox_ctx_t mbox = {
+                .react_ctx = &react,
+                .mailbox_dir = mbox_dir,
+                .session_dir = session_dir,
+                .timeout_sec = mailbox_timeout,
+            };
+            fprintf(stderr, "[mailbox] enabled — questions in %s/outbox/, answers in %s/inbox/\n",
+                    mbox_dir, mbox_dir);
+            result = react_run(&react, query, mailbox_on_event, &mbox);
+            pthread_mutex_destroy(&react.user_ask_mutex);
+            pthread_cond_destroy(&react.user_ask_cond);
+        } else {
+            result = react_run(&react, query, tui_on_event, NULL);
+        }
         /* Resolve session_dir from journal for lazy sessions.
          * journal_session_dir returns internal pointer — must strdup
          * because journal_free() will free the original. */
@@ -1011,8 +1137,17 @@ int main(int argc, char **argv) {
 
         /* Main TUI event loop */
         int running = 1;
+        /* State machine: 0=idle (main thread only), 1=inference running,
+         * 3=playbook running. Values 1 and 3 mean infer_tid is joinable.
+         * Only the main thread reads/writes this variable. */
         int inferring = 0;
         pthread_t infer_tid;
+        /* Thread-shared args: static lifetime so they survive across loop
+         * iterations.  Thread ownership contract:
+         *   Written by main thread BEFORE pthread_create (happens-before).
+         *   Read by inference thread during react_run.
+         *   .done is atomic_int — polled by main thread, set by infer thread.
+         *   Main thread only touches these again AFTER pthread_join. */
         static infer_args_t iargs;
         static playbook_args_t pargs_tui;
         char *pending_redirect = NULL;  /* stashed query when user types during inference */

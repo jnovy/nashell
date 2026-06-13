@@ -351,6 +351,15 @@ memory_t *memory_new(const char *project_root) {
     mkdir(path, 0755);
     m->dir = strdup(path);
 
+    /* Recursive mutex: memory_prune() → memory_delete_batch() nesting. */
+    {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&m->mtx, &attr);
+        pthread_mutexattr_destroy(&attr);
+    }
+
     /* P1: Load in-memory index from disk at startup.
      * This is the only full directory scan — all subsequent operations
      * (recall, build_index, load_pinned) use the cached index.
@@ -368,6 +377,7 @@ memory_t *memory_new(const char *project_root) {
 void memory_free(memory_t *m) {
     if (!m) return;
     mem_index_free(&m->idx);
+    pthread_mutex_destroy(&m->mtx);
     embed_free(m->embed);
     free(m->dir);
     free(m->model);
@@ -411,6 +421,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
                  int pinned, const char *journal_ref,
                  const char **refs, int n_refs) {
     if (!m || !key || !value) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     /* Initialize git repo on first store */
     memory_git_init(m);
@@ -559,6 +570,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
     memory_git_commit(m, commit_msg);
 
+    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 
@@ -568,6 +580,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
 /* Helper: load entry JSON from file, modify pinned flag, write back */
 static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     if (!m || !key) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
@@ -576,7 +589,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
-    if (!entry) return -1;
+    if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
 
     /* Replace or add the pinned field */
     cJSON *p = cJSON_GetObjectItem(entry, "pinned");
@@ -605,6 +618,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
              pinned ? "pin" : "unpin", key);
     memory_git_commit(m, msg);
 
+    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 
@@ -783,6 +797,7 @@ static int memory_increment_field(memory_t *m, const char *key,
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
     memory_results_t results = {0};
     if (!m || !query || m->idx.count == 0) return results;
+    pthread_mutex_lock(&m->mtx);
 
     /* FIX B1: Type prefix extraction for filtering */
     const char *type_filter = NULL;
@@ -919,7 +934,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
     /* Build results from top-k index entries */
     int n = n_scored < max_results ? n_scored : max_results;
-    if (n <= 0) { free(scored); return results; }
+    if (n <= 0) { free(scored); pthread_mutex_unlock(&m->mtx); return results; }
     results.entries = calloc((size_t)n, sizeof(memory_entry_t));
     results.count = 0;
 
@@ -956,6 +971,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     }
 
     free(scored);
+    pthread_mutex_unlock(&m->mtx);
     return results;
 }
 
@@ -980,6 +996,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
  * Caller must free. Returns NULL if no memories. */
 char *memory_build_index(memory_t *m) {
     if (!m || m->idx.count == 0) return NULL;
+    pthread_mutex_lock(&m->mtx);
 
     /* Count by type */
     int n_lessons = 0, n_strategies = 0, n_facts = 0;
@@ -1009,6 +1026,7 @@ char *memory_build_index(memory_t *m) {
     if (n_other)        { str_appendf(&result, "%s%d other", sep, n_other); sep = ", "; }
     if (sep[0] == ',') str_append_cstr(&result, ")");  /* close paren if we emitted any */
 
+    pthread_mutex_unlock(&m->mtx);
     return str_steal(&result);
 }
 
@@ -1016,6 +1034,7 @@ char *memory_build_index(memory_t *m) {
 
 char *memory_build_listing(memory_t *m, const char *type_filter) {
     if (!m || m->idx.count == 0) return NULL;
+    pthread_mutex_lock(&m->mtx);
 
     static const struct { const char *prefix; const char *label; } types[] = {
         { "lesson:",        "Lessons" },
@@ -1101,8 +1120,10 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
 
     if (result.len == 0) {
         str_free(&result);
+        pthread_mutex_unlock(&m->mtx);
         return NULL;
     }
+    pthread_mutex_unlock(&m->mtx);
     return str_steal(&result);
 }
 
@@ -1112,6 +1133,7 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
  * Caller must free. Returns NULL if no pinned memories. */
 char *memory_load_pinned(memory_t *m) {
     if (!m) return NULL;
+    pthread_mutex_lock(&m->mtx);
 
     str_t out = str_new(1024);
     int count = 0;
@@ -1126,8 +1148,10 @@ char *memory_load_pinned(memory_t *m) {
 
     if (count == 0) {
         str_free(&out);
+        pthread_mutex_unlock(&m->mtx);
         return NULL;
     }
+    pthread_mutex_unlock(&m->mtx);
     return str_steal(&out);
 }
 
@@ -1225,6 +1249,7 @@ static int gc_refs_multi_cb(const char *dirpath, cJSON *entry, void *user_data) 
 
 int memory_delete(memory_t *m, const char *key) {
     if (!m || !key) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
@@ -1234,7 +1259,7 @@ int memory_delete(memory_t *m, const char *key) {
 
     /* Check if entry exists */
     struct stat st;
-    if (stat(path, &st) != 0) return -1;  /* not found */
+    if (stat(path, &st) != 0) { pthread_mutex_unlock(&m->mtx); return -1; }  /* not found */
 
     /* Remove JSON file */
     unlink(path);
@@ -1260,6 +1285,7 @@ int memory_delete(memory_t *m, const char *key) {
     snprintf(msg, sizeof(msg), "memory: delete %s", key);
     memory_git_commit(m, msg);
 
+    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 
@@ -1275,6 +1301,7 @@ int memory_delete(memory_t *m, const char *key) {
  * Returns the number of entries actually deleted (keys that existed). */
 int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
     if (!m || !keys || n_keys <= 0) return 0;
+    pthread_mutex_lock(&m->mtx);
 
     /* Phase 1: Remove files and index entries for each key.
      * Track which keys were actually found (for the commit message). */
@@ -1309,6 +1336,7 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
 
     if (n_found == 0) {
         free(found_keys);
+        pthread_mutex_unlock(&m->mtx);
         return 0;
     }
 
@@ -1332,6 +1360,7 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
     memory_git_commit(m, msg);
 
     free(found_keys);
+    pthread_mutex_unlock(&m->mtx);
     return n_found;
 }
 
@@ -1437,6 +1466,7 @@ static int orphan_emb_cb(const char *dirpath, const char *filename,
 
 int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (!m) return 0;
+    pthread_mutex_lock(&m->mtx);
 
     /* Phase 1: Collect keys to prune (scan-only, no mutation).
      * Can't call memory_delete() inside for_each_json_entry because
@@ -1469,6 +1499,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         /* No git commit needed — .emb files are not tracked by git */
     }
 
+    pthread_mutex_unlock(&m->mtx);
     return ctx.count;
 }
 
@@ -1478,6 +1509,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
 static int memory_increment_field(memory_t *m, const char *key,
                                    const char *field) {
     if (!m || !key || !field) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
@@ -1486,7 +1518,7 @@ static int memory_increment_field(memory_t *m, const char *key,
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
-    if (!entry) return -1;
+    if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
 
     /* Increment the field (create if missing) */
     cJSON *fld = cJSON_GetObjectItem(entry, field);
@@ -1517,6 +1549,7 @@ static int memory_increment_field(memory_t *m, const char *key,
      * that pollute the git log. The JSON files are updated on disk
      * but git history is reserved for content changes. */
 
+    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 
@@ -1531,6 +1564,7 @@ int memory_increment_misses(memory_t *m, const char *key) {
 int memory_update_scores(memory_t *m, const char *key,
                          int add_hits, int add_misses) {
     if (!m || !key || (add_hits == 0 && add_misses == 0)) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     /* Update in-memory index so recall scoring sees the new values
      * immediately (without requiring a restart). */
@@ -1539,6 +1573,7 @@ int memory_update_scores(memory_t *m, const char *key,
         ie->recall_hits += add_hits;
         ie->recall_misses += add_misses;
     }
+    pthread_mutex_unlock(&m->mtx);
     return ie ? 0 : -1;
 }
 
@@ -1546,10 +1581,11 @@ int memory_update_scores(memory_t *m, const char *key,
 
 int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key) {
     if (!m || !new_key || !old_key) return -1;
+    pthread_mutex_lock(&m->mtx);
 
     /* Load the new entry's JSON */
     cJSON *entry = memory_load_entry_json(m, new_key);
-    if (!entry) return -1;
+    if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
 
     /* Determine version from the old entry */
     int old_version = 1;
@@ -1580,6 +1616,7 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     free(json);
     cJSON_Delete(entry);
 
+    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 

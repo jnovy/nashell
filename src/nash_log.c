@@ -49,7 +49,7 @@ void nash_log(const char *fmt, ...) {
     while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
         buf[--len] = '\0';
 
-    if (!g_tui_active) {
+    if (!atomic_load(&g_tui_active)) {
         /* Not in TUI mode — print to stderr as before */
         fprintf(stderr, "%s\n", buf);
         return;

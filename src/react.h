@@ -25,32 +25,52 @@ typedef struct {
 /* Bare mode: all subsystems disabled (for dream/playbook passes) */
 #define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0 }
 
+/* Thread ownership contract for react_ctx_t:
+ *
+ *   INIT-ONLY (set before pthread_create, never modified during react_run):
+ *     provider, tools, max_steps, verbose, flags, parent_loop
+ *
+ *   MAIN→INFER (set by main thread, read by inference thread):
+ *     pause_requested  — atomic_int, safe for cross-thread signaling
+ *     user_ask_answer  — protected by user_ask_mutex
+ *
+ *   INFER→MAIN (set by inference thread, read by main thread):
+ *     user_ask_pending  — atomic_int, safe for cross-thread polling
+ *     user_ask_question — protected by user_ask_mutex
+ *     paused            — set by inference thread inside react_run ONLY,
+ *                         read by main thread after pthread_join (happens-before)
+ *
+ *   BETWEEN-RUNS (set by main thread between react_run calls, after join):
+ *     last_query, last_result — safe by happens-before (pthread_join → next setup)
+ */
 typedef struct {
-    provider_t   *provider;  /* provider abstraction (single source of truth) */
-    tool_ctx_t   *tools;
-    int           max_steps;
-    int           verbose;
-    react_flags_t flags;          /* controls which subsystems fire */
-    atomic_int    pause_requested;  /* set by TUI (Space) to pause after current step */
-    int           paused;           /* 1 when paused with checkpoint saved (toggle state) */
+    provider_t   *provider;  /* [INIT-ONLY] provider abstraction */
+    tool_ctx_t   *tools;     /* [INIT-ONLY] tool context */
+    int           max_steps; /* [INIT-ONLY] max react loop iterations */
+    int           verbose;   /* [INIT-ONLY] verbosity level */
+    react_flags_t flags;     /* [INIT-ONLY] controls which subsystems fire */
+    atomic_int    pause_requested;  /* [MAIN→INFER] set by TUI (Space) to pause */
+    int           paused;           /* [INFER→MAIN] 1 when paused (read after join) */
 
     /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
-     * then waits on user_ask_cond until the TUI thread sets the answer. */
-    atomic_int    user_ask_pending;   /* 1 = waiting for answer, 0 = idle */
-    char         *user_ask_question;  /* question text (set by inference thread) */
-    char         *user_ask_answer;    /* answer text (set by TUI thread, freed by inference) */
-    pthread_mutex_t user_ask_mutex;   /* P7: protects user_ask handoff */
-    pthread_cond_t  user_ask_cond;    /* P7: signaled when answer is ready */
+     * then waits on user_ask_cond until the TUI thread sets the answer.
+     * All fields protected by user_ask_mutex except user_ask_pending (atomic). */
+    atomic_int    user_ask_pending;   /* [INFER→MAIN] 1 = waiting for answer */
+    char         *user_ask_question;  /* [INFER, guarded by user_ask_mutex] */
+    char         *user_ask_answer;    /* [MAIN, guarded by user_ask_mutex] */
+    pthread_mutex_t user_ask_mutex;   /* protects user_ask handoff */
+    pthread_cond_t  user_ask_cond;    /* signaled when answer is ready */
 
-    /* Cross-query context inheritance (set by caller between react_run calls) */
+    /* Cross-query context inheritance.
+     * [BETWEEN-RUNS] set by main thread after pthread_join, before next react_run.
+     * Safe by happens-before guarantee of pthread_join → pthread_create. */
     char         *last_query;    /* previous query text (NULL for first query) */
     char         *last_result;   /* previous result text (NULL for first query) */
 
-    /* Tree-based branching: parent of the current react loop.
+    /* [INIT-ONLY] Tree-based branching: parent of the current react loop.
      * -1 = root (no parent), otherwise the react_loop ID of the parent.
-     * Set by the TUI before spawning the inference thread, based on
-     * which reactRX.md the user is currently viewing. */
+     * Set by main thread before pthread_create. */
     int           parent_loop;
 } react_ctx_t;
 
