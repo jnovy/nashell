@@ -774,6 +774,10 @@ static int scored_cmp_desc(const void *a, const void *b) {
     return 0;
 }
 
+/* Forward declaration — used by memory_recall to persist access_count. */
+static int memory_increment_field(memory_t *m, const char *key,
+                                   const char *field);
+
 /* P1: memory_recall rewritten to use in-memory index cache.
  * Eliminates O(n) filesystem reads per recall — iterates the cached
  * index array instead of scanning the directory.
@@ -953,10 +957,10 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 e->refs[ri] = strdup(ie->refs[ri]);
         }
 
-        /* Update access_count in index only (deferred disk write).
-         * Avoids O(k) file I/O per recall — access_count is persisted
-         * when the entry is next memory_store'd or on memory_flush(). */
-        ie->access_count++;
+        /* Persist access_count to disk and update in-memory index.
+         * O(k) file I/O per recall (k ≈ 5–10), acceptable given that
+         * embedding lookups already dominate recall cost. */
+        memory_increment_field(m, ie->key, "access_count");
 
         e->relevance = scored[i].score;
         e->raw_relevance = scored[i].relevance;
@@ -992,7 +996,7 @@ char *memory_build_index(memory_t *m) {
 
     /* Count by type */
     int n_lessons = 0, n_strategies = 0, n_facts = 0;
-    int n_tasks = 0, n_skills = 0, n_other = 0;
+    int n_tasks = 0, n_skills = 0, n_antipatterns = 0, n_other = 0;
     for (int i = 0; i < m->idx.count; i++) {
         const char *k = m->idx.entries[i].key;
         if (!k) continue;
@@ -1001,6 +1005,7 @@ char *memory_build_index(memory_t *m) {
         else if (strncmp(k, "fact:", 5) == 0) n_facts++;
         else if (strncmp(k, "task:", 5) == 0) n_tasks++;
         else if (strncmp(k, "skill:", 6) == 0) n_skills++;
+        else if (strncmp(k, "anti-pattern:", 13) == 0) n_antipatterns++;
         else n_other++;
     }
 
@@ -1008,12 +1013,13 @@ char *memory_build_index(memory_t *m) {
     str_t result = str_new(256);
     str_appendf(&result, "Memory: %d entries", m->idx.count);
     const char *sep = " (";
-    if (n_lessons)    { str_appendf(&result, "%s%d lessons", sep, n_lessons); sep = ", "; }
-    if (n_strategies) { str_appendf(&result, "%s%d strategies", sep, n_strategies); sep = ", "; }
-    if (n_skills)     { str_appendf(&result, "%s%d skills", sep, n_skills); sep = ", "; }
-    if (n_facts)      { str_appendf(&result, "%s%d facts", sep, n_facts); sep = ", "; }
-    if (n_tasks)      { str_appendf(&result, "%s%d tasks", sep, n_tasks); sep = ", "; }
-    if (n_other)      { str_appendf(&result, "%s%d other", sep, n_other); sep = ", "; }
+    if (n_lessons)      { str_appendf(&result, "%s%d lessons", sep, n_lessons); sep = ", "; }
+    if (n_strategies)   { str_appendf(&result, "%s%d strategies", sep, n_strategies); sep = ", "; }
+    if (n_skills)       { str_appendf(&result, "%s%d skills", sep, n_skills); sep = ", "; }
+    if (n_facts)        { str_appendf(&result, "%s%d facts", sep, n_facts); sep = ", "; }
+    if (n_tasks)        { str_appendf(&result, "%s%d tasks", sep, n_tasks); sep = ", "; }
+    if (n_antipatterns) { str_appendf(&result, "%s%d anti-patterns", sep, n_antipatterns); sep = ", "; }
+    if (n_other)        { str_appendf(&result, "%s%d other", sep, n_other); sep = ", "; }
     if (sep[0] == ',') str_append_cstr(&result, ")");  /* close paren if we emitted any */
 
     return str_steal(&result);

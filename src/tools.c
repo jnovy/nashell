@@ -1555,7 +1555,6 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
      * throughout the react loop via the scratchpad injection. */
     scratchpad_write(&ctx->scratch, "plan", result, 1);  /* priority 1 = high */
     scratchpad_persist(ctx);
-    scratchpad_save(&ctx->scratch, ctx->session_dir);
 
     /* Store in content-addressed store for audit trail */
     char *hash = store_save(ctx->store, result);
@@ -1601,7 +1600,7 @@ typedef struct {
     const char *new_emb_fname;
     const char *dir;
     float consolidation_threshold;
-    char best_key[256];
+    char best_key[512];
     char best_path[NASH_PATH_MAX];
     float best_sim;
 } consolidation_scan_t;
@@ -1613,7 +1612,7 @@ static int consolidation_cb(const char *dirpath, const char *filename,
 
     size_t len = strlen(filename);
     /* Derive key from filename: strip .emb suffix */
-    char emb_base[256];
+    char emb_base[512];
     snprintf(emb_base, sizeof(emb_base), "%.*s", (int)(len - 4), filename);
 
     /* Skip self — the entry we just stored. */
@@ -2649,9 +2648,7 @@ static const char *ensure_searxng_config_dir(void) {
     snprintf(cfg_dir, sizeof(cfg_dir), "%s/.nash/searxng", home);
 
     /* Create the directory */
-    char mkdir_cmd[600];
-    snprintf(mkdir_cmd, sizeof(mkdir_cmd), "mkdir -p '%s'", cfg_dir);
-    system(mkdir_cmd);
+    mkdir_p(cfg_dir, 0755);
 
     /* Write settings.yml if it doesn't exist or is missing json format */
     char settings_path[600];
@@ -2986,7 +2983,8 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
         return make_error("missing 'query' parameter");
 
     const char *query = query_j->valuestring;
-    const char *engine = ctx->cfg->search_engine;
+    const char *engine = (ctx->cfg) ? ctx->cfg->search_engine : NULL;
+    const char *searxng_url = (ctx->cfg) ? ctx->cfg->searxng_url : NULL;
     char *results_text = NULL;
     int result_count = 0;
     long search_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
@@ -2994,20 +2992,20 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
 
     if (engine && strcmp(engine, "searxng") == 0) {
         /* SearXNG mode — ensure server is running, then search */
-        if (ensure_searxng(ctx->cfg->searxng_url) != 0) {
+        if (ensure_searxng(searxng_url) != 0) {
             return make_error("SearXNG not available and could not be auto-started. "
                               "Install podman/docker or configure a running SearXNG instance "
                               "in ~/.nash/config.toml [search] section.");
         }
-        results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count, search_timeout);
+        results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
     } else {
         /* DuckDuckGo mode — try DDG first, fall back to SearXNG */
         results_text = ddg_search(query, &result_count, search_timeout);
 
         if (!results_text) {
             /* DDG failed — try SearXNG as fallback */
-            if (ensure_searxng(ctx->cfg->searxng_url) == 0) {
-                results_text = searxng_search(ctx->cfg->searxng_url, query, &result_count, search_timeout);
+            if (ensure_searxng(searxng_url) == 0) {
+                results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
             }
         }
     }
@@ -3184,7 +3182,7 @@ char *tools_system_prompt(void) {
         snprintf(cwdbuf, sizeof(cwdbuf), "(unknown)");
 
     char *buf = malloc(NASH_PATH_MAX);
-    if (!buf) return "";
+    if (!buf) return strdup("");
 
     snprintf(buf, NASH_PATH_MAX,
         "You are an autonomous coding agent. Solve the user's task step by step "
