@@ -365,6 +365,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (!last_sigs) { cw = 4; last_sigs = calloc(cw, 1024); }
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
+    int total_null_responses = 0;        /* Total NULL responses (never reset — catches alternating patterns) */
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
@@ -462,6 +463,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 max_resp, rep_thresh);
         if (!response) {
             consecutive_null_responses++;
+            total_null_responses++;
 
             /* Write server error to journal so it's visible in TUI and
              * preserved for post-mortem analysis. The journal entry uses
@@ -498,6 +500,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                 }
                 cJSON_AddNumberToObject(err_params, "attempt", consecutive_null_responses);
+                cJSON_AddNumberToObject(err_params, "total_null_responses", total_null_responses);
+                cJSON_AddNumberToObject(err_params, "completion_tokens", stats.completion_tokens);
 
                 /* Capture context size for diagnostics */
                 int total_chars = 0;
@@ -618,6 +622,47 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     consecutive_null_responses = 0;
                     continue;
                 }
+            }
+
+            /* FIX: Detect max-token exhaustion as a distinct error class.
+             * When completion_tokens == max_tokens, the model hit the output
+             * ceiling — this is deterministic, not transient. Typically happens
+             * after aggressive compaction leaves too little context, causing
+             * the model to generate a massive response trying to reconstruct
+             * everything. Recovery: aggressive context eviction (same as 400). */
+            if (stats.completion_tokens > 0 && ctx->provider &&
+                stats.completion_tokens >= ctx->provider->cfg.max_tokens) {
+                char mtmsg[256];
+                snprintf(mtmsg, sizeof(mtmsg),
+                    "Max-token exhaustion (%d/%d tokens) — "
+                    "evicting context to recover",
+                    stats.completion_tokens, ctx->provider->cfg.max_tokens);
+                ev.message = mtmsg;
+                react_emit(on_event, userdata, &ev);
+
+                /* Aggressive eviction like HTTP 400 handler */
+                int keep_head = REACT_EVICT_KEEP_HEAD;
+                int keep_tail = REACT_EVICT_KEEP_TAIL;
+                int evict_start = keep_head;
+                int evict_end = chat->n_msgs - keep_tail;
+                if (evict_end > evict_start + 2) {
+                    int mid = evict_start + (evict_end - evict_start) / 2;
+                    llm_chat_remove_range(chat, evict_start, mid);
+                }
+                /* Don't count as consecutive (recovery may work) */
+                consecutive_null_responses = 0;
+                continue;
+            }
+
+            /* Death spiral circuit breaker: catch alternating success/failure
+             * patterns where consecutive_null_responses resets on success but
+             * the model keeps failing on the next attempt. This burned 86 min
+             * and 311K tokens in session 1781416620.46346. */
+            if (total_null_responses >= 8) {
+                ev.message = "LLM server error — total NULL response limit reached "
+                             "(possible death spiral), giving up";
+                react_emit(on_event, userdata, &ev);
+                break;
             }
 
             /* 3-tier retry strategy for HTTP 500 / NULL responses.
@@ -1369,6 +1414,35 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         continue;
                     }
                     break;  /* clean boundary found */
+                }
+
+                /* FIX: Compaction floor — never evict so aggressively that
+                 * remaining context drops below 20% of the context window.
+                 * Without this floor, eviction can reduce context from 128K
+                 * chars to ~720 tokens, leaving the model with no context
+                 * and causing it to generate max_tokens trying to reconstruct
+                 * everything (the death spiral from session 1781416620.46346). */
+                {
+                    int context_budget = (int)(ctx->provider->cfg.context_size * cpt_ev);
+                    int floor_chars = context_budget / 5;  /* 20% minimum */
+                    if (floor_chars < 4000) floor_chars = 4000;
+
+                    /* Calculate chars in kept messages (head + tail) */
+                    int kept_chars = 0;
+                    for (int ki = 0; ki < evict_start; ki++)
+                        if (chat->msgs[ki].content)
+                            kept_chars += (int)strlen(chat->msgs[ki].content);
+                    for (int ki = evict_end; ki < chat->n_msgs; ki++)
+                        if (chat->msgs[ki].content)
+                            kept_chars += (int)strlen(chat->msgs[ki].content);
+
+                    /* If kept chars would be below floor, pull evict_end back
+                     * to retain more messages until we're above the floor */
+                    while (kept_chars < floor_chars && evict_end > evict_start + 1) {
+                        evict_end--;
+                        if (chat->msgs[evict_end].content)
+                            kept_chars += (int)strlen(chat->msgs[evict_end].content);
+                    }
                 }
 
                 if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
