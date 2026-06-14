@@ -1,6 +1,7 @@
 #ifndef TOOLS_H
 #define TOOLS_H
 
+#include <stdint.h>
 #include "cJSON.h"
 #include "store.h"
 #include "journal.h"
@@ -14,6 +15,7 @@ typedef struct {
     cJSON  *meta;       /* metadata JSON returned to model context */
     char   *store_ref;  /* hash in shared store (caller frees) */
     int     success;    /* 1 = ok, 0 = error */
+    int     importance; /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 §3.2) */
 } tool_result_t;
 
 /* Dynamic hash map for step aliases (R1S0 → store hash).
@@ -87,6 +89,14 @@ typedef struct {
     }             *deferred_consol;
     int            n_deferred_consol;
     int            cap_deferred_consol;
+    /* Harness-1 §3.3: Context-level deduplication — CRC32 hashes of recent
+     * tool result content to detect near-duplicate injections. */
+    uint32_t       dedup_hashes[64]; /* rolling buffer of content hashes */
+    int            dedup_steps[64];  /* step number for each hash */
+    int            dedup_count;      /* entries in dedup buffer */
+    /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
+    int            tool_use_counts[32]; /* indexed by tool_registry order */
+    int            n_tool_uses;     /* total tool invocations this loop */
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

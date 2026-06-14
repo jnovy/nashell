@@ -30,7 +30,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
           src/tools_registry.c \
-          src/mailbox.c
+          src/mailbox.c \
+          src/compress.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -71,7 +72,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
           src/tools_registry.c \
-          src/mailbox.c
+          src/mailbox.c \
+          src/compress.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

@@ -1,4 +1,5 @@
 #include "react_internal.h"
+#include "compress.h"
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -284,6 +285,39 @@ char *react_extract_llm_text_output(const char *raw) {
 
     /* Case 3: Plain text — return as-is */
     return strdup(raw);
+}
+
+/* ── Harness-1 helpers (arXiv 2606.02373) ─────────────── */
+
+/* Auto-assign importance to a tool result based on tool name and success.
+ * Harness-1 §3.2: different tools produce outputs of different value. */
+static int react_tool_importance(const char *tool_name, int success) {
+    if (!success) return LLM_MSG_IMPORTANCE_LOW;
+    if (!tool_name) return LLM_MSG_IMPORTANCE_NORMAL;
+    /* Search/analysis tools produce higher-value results */
+    if (strcmp(tool_name, "grep_search") == 0 ||
+        strcmp(tool_name, "web_search") == 0 ||
+        strcmp(tool_name, "web_fetch") == 0 ||
+        strcmp(tool_name, "memory_recall") == 0)
+        return LLM_MSG_IMPORTANCE_HIGH;
+    /* Done is critical — never evict the final result */
+    if (strcmp(tool_name, "done") == 0)
+        return LLM_MSG_IMPORTANCE_CRITICAL;
+    /* Notes/plan results are important (scratchpad state) */
+    if (strcmp(tool_name, "notes") == 0 || strcmp(tool_name, "plan") == 0)
+        return LLM_MSG_IMPORTANCE_HIGH;
+    return LLM_MSG_IMPORTANCE_NORMAL;
+}
+
+/* Find tool index in TOOL_REGISTRY by name (for diversity tracking).
+ * Returns -1 if not found. */
+static int react_tool_index(const char *name) {
+    if (!name) return -1;
+    for (int i = 0; i < TOOL_REGISTRY_COUNT && i < 32; i++) {
+        if (TOOL_REGISTRY[i].name && strcmp(TOOL_REGISTRY[i].name, name) == 0)
+            return i;
+    }
+    return -1;
 }
 
 /* ── main react loop ─────────────────────────────────── */
@@ -1288,6 +1322,55 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         snprintf(result_msg, result_len, "%s\n[step %d | %s]",
                  meta_str, step + 1, _dur); }
 
+        /* Harness-1 §3.2: Assign importance to tool result messages */
+        int tool_imp = react_tool_importance(action_name, tr.success);
+
+        /* Harness-1 §3.3: Context-level deduplication — detect and skip
+         * near-duplicate tool results to avoid wasting context budget.
+         * Uses CRC32 hash of the result content. */
+        int is_dedup = 0;
+        if (result_msg && result_msg[0] && tr.success) {
+            uint32_t content_hash = compress_crc32(meta_str, strlen(meta_str));
+            if (compress_is_duplicate(content_hash,
+                    ctx->tools->dedup_hashes, ctx->tools->dedup_count)) {
+                is_dedup = 1;
+                /* Replace with a short reference */
+                int dedup_step = -1;
+                for (int di = 0; di < ctx->tools->dedup_count; di++) {
+                    if (ctx->tools->dedup_hashes[di] == content_hash) {
+                        dedup_step = ctx->tools->dedup_steps[di];
+                        break;
+                    }
+                }
+                free(result_msg);
+                result_len = 128;
+                result_msg = malloc(result_len);
+                if (dedup_step >= 0)
+                    snprintf(result_msg, result_len,
+                        "{\"note\":\"Same content as step %d — see earlier result\"}\n[step %d | dedup]",
+                        dedup_step, step + 1);
+                else
+                    snprintf(result_msg, result_len,
+                        "{\"note\":\"Duplicate content — see earlier result\"}\n[step %d | dedup]",
+                        step + 1);
+                tool_imp = LLM_MSG_IMPORTANCE_LOW;  /* deduped results are low priority */
+            } else {
+                /* Record hash for future dedup checks */
+                int idx = ctx->tools->dedup_count < 64
+                    ? ctx->tools->dedup_count++ : (ctx->tools->dedup_count - 1);
+                if (idx >= 63) {
+                    /* Shift rolling buffer */
+                    memmove(ctx->tools->dedup_hashes, ctx->tools->dedup_hashes + 1,
+                            63 * sizeof(uint32_t));
+                    memmove(ctx->tools->dedup_steps, ctx->tools->dedup_steps + 1,
+                            63 * sizeof(int));
+                    idx = 63;
+                }
+                ctx->tools->dedup_hashes[idx] = content_hash;
+                ctx->tools->dedup_steps[idx] = step + 1;
+            }
+        }
+
         /* Add assistant + tool result to chat (with tool_calls threading if available) */
         if (chat->last_tool_call_id) {
             /* Tool calls API: add assistant with tool_calls, then tool result */
@@ -1298,6 +1381,43 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             /* Fallback: legacy JSON-in-content format */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user", result_msg);
+        }
+
+        /* Harness-1 §3.2: Tag the newly added messages with importance.
+         * The assistant message gets NORMAL, the tool result gets tool-specific importance. */
+        if (chat->n_msgs >= 2) {
+            chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
+            chat->msgs[chat->n_msgs - 1].importance = (llm_msg_importance_t)tool_imp;
+            chat->msgs[chat->n_msgs - 1].msg_type = tr.success ? LLM_MSG_TOOL_RESULT : LLM_MSG_ERROR;
+        }
+
+        /* Harness-1 §4.2: Track tool usage for diversity nudging */
+        {
+            int tidx = react_tool_index(action_name);
+            if (tidx >= 0 && tidx < 32)
+                ctx->tools->tool_use_counts[tidx]++;
+            ctx->tools->n_tool_uses++;
+        }
+
+        /* Harness-1 §3.4: Auto-seed scratchpad from first successful tool result.
+         * Ensures scratchpad is never empty when eviction kicks in.
+         * Like Harness-1's auto-seeding of the curated set at "fair" importance. */
+        if (step == 0 && tr.success && !is_dedup && meta_str) {
+            int sp_exists = scratchpad_find(&ctx->tools->scratch, "auto_seed");
+            if (sp_exists < 0) {
+                /* Extract first 500 chars of tool output as seed */
+                int seed_len = (int)strlen(meta_str);
+                if (seed_len > 500) seed_len = 500;
+                char *seed = malloc((size_t)(seed_len + 64));
+                if (seed) {
+                    snprintf(seed, (size_t)(seed_len + 64),
+                        "First result (%s): %.*s%s",
+                        action_name, seed_len, meta_str,
+                        (int)strlen(meta_str) > 500 ? "..." : "");
+                    scratchpad_write(&ctx->tools->scratch, "auto_seed", seed, 3);
+                    free(seed);
+                }
+            }
         }
 
         /* P3: Error-triggered reactive retrieval — when a tool fails, query
@@ -1358,206 +1478,212 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
-        /* Within-loop context management: evict old messages when context gets full */
+        /* ── Harness-1 §3.5: Multi-pass progressive context rendering ──────
+         * Instead of binary eviction (keep/delete), use 5-pass progressive
+         * degradation: LOW evict → NORMAL compress → NORMAL summarize →
+         * NORMAL evict + HIGH truncate → nuclear eviction.
+         * See: arXiv 2606.02373 "Harness-1" §3.5 budget-safe context rendering.
+         *
+         * Preserves the existing compaction floor and pair-safe boundary logic,
+         * but adds importance-aware decision-making at each pass. */
         if (ctx->flags.enable_compaction && ctx->provider->cfg.context_size > 0) {
+            float cpt_ev = react_get_chars_per_token(ctx);
+            int context_budget = (int)(ctx->provider->cfg.context_size * cpt_ev);
+            int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
+            int keep_head = REACT_EVICT_KEEP_HEAD;
+            int keep_tail = REACT_EVICT_KEEP_TAIL;
+
+            /* Recalculate total chars */
             int total_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
                 if (chat->msgs[i].content)
                     total_chars += (int)strlen(chat->msgs[i].content);
-            float cpt_ev = react_get_chars_per_token(ctx);
-            int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
-            int keep_head = REACT_EVICT_KEEP_HEAD;
-            int keep_tail = REACT_EVICT_KEEP_TAIL;
-            if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > keep_head + keep_tail + 1) {
-                /* Priority eviction: remove error and memory-hint messages first.
-                 * Research: errors in context degrade performance.  Memory hints
-                 * from past tool failures become stale and consume context budget
-                 * unboundedly — evict them alongside errors.
-                 * Fix #3: Use msg_type for type-safe eviction instead of strstr("ERROR:"). */
+            int usage_pct = (int)(100.0 * total_chars / context_budget);
+
+            if (usage_pct > eviction_pct && chat->n_msgs > keep_head + keep_tail + 1) {
+                int did_evict = 0;
+
+                /* ── Pass 1: Strip LOW importance messages (errors, stale hints, deduped)
+                 * These have the least value and may actively degrade performance. */
                 for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
-                    if (chat->msgs[i].msg_type == LLM_MSG_ERROR ||
-                        chat->msgs[i].msg_type == LLM_MSG_MEMORY_HINT) {
+                    if (chat->msgs[i].importance == LLM_MSG_IMPORTANCE_LOW) {
                         llm_chat_remove_range(chat, i, i + 1);
-                        i--;  /* re-check this position */
+                        i--;
+                        did_evict = 1;
                     }
                 }
-
-                /* Recalculate after error eviction */
-                total_chars = 0;
-                for (int i = 0; i < chat->n_msgs; i++)
-                    if (chat->msgs[i].content)
-                        total_chars += (int)strlen(chat->msgs[i].content);
-                usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
-
-                /* If still over threshold, do standard eviction */
-                int evict_start = keep_head;
-                int evict_end = chat->n_msgs - keep_tail;
-
-                /* FIX B5: Adjust eviction boundary to not split tool_call/tool_result pairs.
-                 * A pair is: assistant(tool_calls_json) immediately followed by
-                 * tool_result(tool_call_id). Never evict one without the other.
-                 * Single-loop approach: scan backward from evict_end to find a clean
-                 * boundary where no pair straddles the cut. */
-                for (int adj_iter = 0; evict_end > evict_start && evict_end < chat->n_msgs && adj_iter < 20; adj_iter++) {
-                    /* If boundary lands on a tool_result, its assistant call
-                     * is at evict_end-1. Include it → move forward. */
-                    if (chat->msgs[evict_end].tool_call_id) {
-                        evict_end++;
-                        continue;
-                    }
-                    /* If the last evicted message (evict_end-1) is an assistant
-                     * with tool_calls_json, its result at evict_end would be
-                     * orphaned in the tail. Pull boundary back. */
-                    if (evict_end - 1 >= evict_start &&
-                        chat->msgs[evict_end - 1].tool_calls_json) {
-                        evict_end--;
-                        continue;
-                    }
-                    break;  /* clean boundary found */
+                if (did_evict) {
+                    total_chars = 0;
+                    for (int i = 0; i < chat->n_msgs; i++)
+                        if (chat->msgs[i].content)
+                            total_chars += (int)strlen(chat->msgs[i].content);
+                    usage_pct = (int)(100.0 * total_chars / context_budget);
                 }
 
-                /* FIX: Compaction floor — never evict so aggressively that
-                 * remaining context drops below 20% of the context window.
-                 * Without this floor, eviction can reduce context from 128K
-                 * chars to ~720 tokens, leaving the model with no context
-                 * and causing it to generate max_tokens trying to reconstruct
-                 * everything (the death spiral from session 1781416620.46346). */
-                {
-                    int context_budget = (int)(ctx->provider->cfg.context_size * cpt_ev);
-                    int floor_chars = context_budget / 5;  /* 20% minimum */
-                    if (floor_chars < 4000) floor_chars = 4000;
-
-                    /* Calculate chars in kept messages (head + tail) */
-                    int kept_chars = 0;
-                    for (int ki = 0; ki < evict_start; ki++)
-                        if (chat->msgs[ki].content)
-                            kept_chars += (int)strlen(chat->msgs[ki].content);
-                    for (int ki = evict_end; ki < chat->n_msgs; ki++)
-                        if (chat->msgs[ki].content)
-                            kept_chars += (int)strlen(chat->msgs[ki].content);
-
-                    /* If kept chars would be below floor, pull evict_end back
-                     * to retain more messages until we're above the floor */
-                    while (kept_chars < floor_chars && evict_end > evict_start + 1) {
-                        evict_end--;
-                        if (chat->msgs[evict_end].content)
-                            kept_chars += (int)strlen(chat->msgs[evict_end].content);
-                    }
-                }
-
-                if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && evict_end > evict_start) {
-                    /* v5: LLM-based semantic summarization replaces destructive eviction.
-                     * Instead of deleting messages and re-injecting a navigation manifest,
-                     * we ask the LLM to summarize the evicted messages and merge the
-                     * summary into the scratchpad — preserving semantic knowledge. */
-
-                    /* Step 1: Collect evicted messages into a single string for summarization */
-                    str_t evicted_text = str_new(4096);
-                    for (int i = evict_start; i < evict_end; i++) {
-                        if (chat->msgs[i].content && chat->msgs[i].content[0]) {
-                            str_appendf(&evicted_text, "[%s]: %s\n\n",
-                                        chat->msgs[i].role ? chat->msgs[i].role : "?",
-                                        chat->msgs[i].content);
-                        }
-                    }
-
-                    /* FIX CRIT1: Heuristic extraction replaces synchronous LLM call.
-                     * Previously, this made a blocking provider_complete() call to
-                     * summarize evicted messages — circular because eviction is triggered
-                     * by context pressure, and the LLM call adds to that pressure.
-                     * Now we extract key content (assistant thoughts, tool results,
-                     * findings) heuristically — zero latency, no API call. */
-                    if (evicted_text.len > 0) {
-                        size_t sp_budget = (size_t)(ctx->provider->cfg.context_size * cpt_ev * REACT_SCRATCHPAD_BUDGET_PCT / 100);
-                        str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
-
-                        /* Extract substantive content from evicted messages:
-                         * - Assistant messages (contain reasoning/findings)
-                         * - Tool results that contain actual data (skip boilerplate)
-                         * Truncate each message to preserve breadth over depth. */
-                        int max_per_msg = (int)(sp_budget / (unsigned)(evict_end - evict_start + 1));
-                        if (max_per_msg < 200) max_per_msg = 200;
-                        if (max_per_msg > 2000) max_per_msg = 2000;
-
-                        for (int i = evict_start; i < evict_end; i++) {
-                            const char *content = chat->msgs[i].content;
-                            const char *role = chat->msgs[i].role;
-                            if (!content || !content[0] || !role) continue;
-
-                            /* Skip system messages and short tool results */
-                            if (strcmp(role, "system") == 0) continue;
-                            if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
-
-                            /* Truncate to budget per message */
-                            int clen = (int)strlen(content);
-                            if (clen > max_per_msg) clen = max_per_msg;
-                            str_appendf(&summary, "[%s]: ", role);
-                            str_append(&summary, content, (size_t)clen);
-                            if ((int)strlen(content) > max_per_msg)
-                                str_append_cstr(&summary, "...[truncated]");
-                            str_append_cstr(&summary, "\n");
-
-                            /* Stop if we've hit the budget */
-                            if (summary.len >= sp_budget) break;
-                        }
-
-                        if (summary.len > 0) {
-                            char *summ_str = str_steal(&summary);
-                            scratchpad_write(&ctx->tools->scratch, "evicted_context",
-                                             summ_str, 2);  /* priority 2 = high but below manual */
-                            scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
-                            free(summ_str);
-                        } else {
-                            str_free(&summary);
-                        }
-                    }
-                    str_free(&evicted_text);
-
-                    /* Step 3: Free evicted messages (Fix #9: use llm_chat_remove_range) */
-                    llm_chat_remove_range(chat, evict_start, evict_end);
-
-                    /* Recover tool_call threading from surviving messages */
-                    free(chat->last_tool_call_id);
-                    chat->last_tool_call_id = NULL;
-                    free(chat->last_tool_calls_json);
-                    chat->last_tool_calls_json = NULL;
-                    for (int ri = chat->n_msgs - 1; ri >= 0; ri--) {
-                        if (chat->msgs[ri].tool_calls_json) {
-                            chat->last_tool_calls_json = strdup(chat->msgs[ri].tool_calls_json);
-                            if (ri + 1 < chat->n_msgs && chat->msgs[ri + 1].tool_call_id)
-                                chat->last_tool_call_id = strdup(chat->msgs[ri + 1].tool_call_id);
-                            break;
-                        }
-                    }
-
-                    /* Step 4: Re-inject updated scratchpad at evict_start.
-                     * FIX D5: Use llm_chat_insert_typed() instead of manual
-                     * realloc+memmove to maintain invariants. */
-                    {
-                        size_t sp_max = (ctx->provider->cfg.context_size > 0)
-                            ? (size_t)(ctx->provider->cfg.context_size * react_get_chars_per_token(ctx) * 15 / 100) : 8192;
-                        char *fresh_sp = scratchpad_serialize_budget(
-                            &ctx->tools->scratch, sp_max);
-                        if (fresh_sp && fresh_sp[0]) {
-                            size_t slen = strlen(fresh_sp);
-                            char *sp_msg = malloc(slen + 32);
-                            if (sp_msg) {
-                                snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
-                                llm_chat_insert_typed(chat, evict_start,
-                                    "user", sp_msg, LLM_MSG_EVICTION_SUMMARY);
-                                free(sp_msg);
+                /* ── Pass 2: Compress NORMAL messages to top-4 sentences.
+                 * Uses sentence-BM25 relevance scoring (Harness-1 §3.1).
+                 * Only compresses messages longer than 500 chars. */
+                if (usage_pct > eviction_pct) {
+                    for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
+                        if (chat->msgs[i].importance <= LLM_MSG_IMPORTANCE_NORMAL &&
+                            chat->msgs[i].content &&
+                            (int)strlen(chat->msgs[i].content) > 500) {
+                            char *compressed = compress_to_relevant(
+                                chat->msgs[i].content, user_query, 4, 400);
+                            if (compressed) {
+                                free(chat->msgs[i].content);
+                                chat->msgs[i].content = compressed;
+                                did_evict = 1;
                             }
                         }
-                        free(fresh_sp);
+                    }
+                    if (did_evict) {
+                        total_chars = 0;
+                        for (int i = 0; i < chat->n_msgs; i++)
+                            if (chat->msgs[i].content)
+                                total_chars += (int)strlen(chat->msgs[i].content);
+                        usage_pct = (int)(100.0 * total_chars / context_budget);
+                    }
+                }
+
+                /* ── Pass 3: Evict NORMAL middle messages entirely.
+                 * Standard eviction of the evictable range, but now only NORMAL
+                 * messages have survived (LOW already gone, HIGH preserved). */
+                if (usage_pct > eviction_pct) {
+                    int evict_start = keep_head;
+                    int evict_end = chat->n_msgs - keep_tail;
+
+                    /* FIX B5: Adjust eviction boundary to not split tool_call/tool_result pairs */
+                    for (int adj_iter = 0; evict_end > evict_start && evict_end < chat->n_msgs && adj_iter < 20; adj_iter++) {
+                        if (chat->msgs[evict_end].tool_call_id) {
+                            evict_end++;
+                            continue;
+                        }
+                        if (evict_end - 1 >= evict_start &&
+                            chat->msgs[evict_end - 1].tool_calls_json) {
+                            evict_end--;
+                            continue;
+                        }
+                        break;
                     }
 
-                    /* Emit warning */
-                    react_event_t ev = {0};
-                    ev.react_loop = ctx->tools->react_loop;
-                    ev.type = REACT_EVENT_WARNING;
-                    ev.step = step + 1;
-                    ev.message = "Context compacted — evicted messages summarized into scratchpad";
-                    react_emit(on_event, userdata, &ev);
+                    /* Compaction floor — never drop below 20% of context window */
+                    {
+                        int floor_chars = context_budget / 5;
+                        if (floor_chars < 4000) floor_chars = 4000;
+                        int kept_chars = 0;
+                        for (int ki = 0; ki < evict_start; ki++)
+                            if (chat->msgs[ki].content)
+                                kept_chars += (int)strlen(chat->msgs[ki].content);
+                        for (int ki = evict_end; ki < chat->n_msgs; ki++)
+                            if (chat->msgs[ki].content)
+                                kept_chars += (int)strlen(chat->msgs[ki].content);
+                        while (kept_chars < floor_chars && evict_end > evict_start + 1) {
+                            evict_end--;
+                            if (chat->msgs[evict_end].content)
+                                kept_chars += (int)strlen(chat->msgs[evict_end].content);
+                        }
+                    }
+
+                    if (evict_end > evict_start) {
+                        /* Heuristic extraction into scratchpad before eviction */
+                        {
+                            size_t sp_budget = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
+                            str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
+                            int max_per_msg = (int)(sp_budget / (unsigned)(evict_end - evict_start + 1));
+                            if (max_per_msg < 200) max_per_msg = 200;
+                            if (max_per_msg > 2000) max_per_msg = 2000;
+
+                            for (int i = evict_start; i < evict_end; i++) {
+                                const char *content = chat->msgs[i].content;
+                                const char *role = chat->msgs[i].role;
+                                if (!content || !content[0] || !role) continue;
+                                if (strcmp(role, "system") == 0) continue;
+                                if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
+
+                                int clen = (int)strlen(content);
+                                if (clen > max_per_msg) clen = max_per_msg;
+                                str_appendf(&summary, "[%s]: ", role);
+                                str_append(&summary, content, (size_t)clen);
+                                if ((int)strlen(content) > max_per_msg)
+                                    str_append_cstr(&summary, "...[truncated]");
+                                str_append_cstr(&summary, "\n");
+                                if (summary.len >= sp_budget) break;
+                            }
+
+                            if (summary.len > 0) {
+                                char *summ_str = str_steal(&summary);
+                                scratchpad_write(&ctx->tools->scratch, "evicted_context",
+                                                 summ_str, 2);
+                                scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+                                free(summ_str);
+                            } else {
+                                str_free(&summary);
+                            }
+                        }
+
+                        /* Remove evicted messages */
+                        llm_chat_remove_range(chat, evict_start, evict_end);
+
+                        /* Recover tool_call threading from surviving messages */
+                        free(chat->last_tool_call_id);
+                        chat->last_tool_call_id = NULL;
+                        free(chat->last_tool_calls_json);
+                        chat->last_tool_calls_json = NULL;
+                        for (int ri = chat->n_msgs - 1; ri >= 0; ri--) {
+                            if (chat->msgs[ri].tool_calls_json) {
+                                chat->last_tool_calls_json = strdup(chat->msgs[ri].tool_calls_json);
+                                if (ri + 1 < chat->n_msgs && chat->msgs[ri + 1].tool_call_id)
+                                    chat->last_tool_call_id = strdup(chat->msgs[ri + 1].tool_call_id);
+                                break;
+                            }
+                        }
+
+                        /* Re-inject scratchpad at eviction point */
+                        {
+                            size_t sp_max = (ctx->provider->cfg.context_size > 0)
+                                ? (size_t)(ctx->provider->cfg.context_size * react_get_chars_per_token(ctx) * 15 / 100) : 8192;
+                            char *fresh_sp = scratchpad_serialize_budget(
+                                &ctx->tools->scratch, sp_max);
+                            if (fresh_sp && fresh_sp[0]) {
+                                size_t slen = strlen(fresh_sp);
+                                char *sp_msg = malloc(slen + 32);
+                                if (sp_msg) {
+                                    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
+                                    llm_chat_insert_typed(chat, evict_start,
+                                        "user", sp_msg, LLM_MSG_EVICTION_SUMMARY);
+                                    free(sp_msg);
+                                }
+                            }
+                            free(fresh_sp);
+                        }
+
+                        react_event_t ev = {0};
+                        ev.react_loop = ctx->tools->react_loop;
+                        ev.type = REACT_EVENT_WARNING;
+                        ev.step = step + 1;
+                        ev.message = "Context compacted (multi-pass) — evicted messages summarized into scratchpad";
+                        react_emit(on_event, userdata, &ev);
+                    }
+                }
+
+                /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
+                 * only 1-2 tools for 10+ steps, inject a soft reminder to use
+                 * notes for saving findings. */
+                if (ctx->tools->n_tool_uses >= 10) {
+                    int notes_idx = react_tool_index("notes");
+                    int notes_used = (notes_idx >= 0 && notes_idx < 32)
+                        ? ctx->tools->tool_use_counts[notes_idx] : 0;
+                    if (notes_used == 0) {
+                        llm_chat_add_typed(chat, "user",
+                            "[HINT] You have not used notes() to save key findings. "
+                            "Consider saving important discoveries to scratchpad sections "
+                            "to preserve them across context compaction.",
+                            LLM_MSG_MEMORY_HINT);
+                        /* Mark as having been nudged (set a fake count so we don't re-nudge) */
+                        if (notes_idx >= 0 && notes_idx < 32)
+                            ctx->tools->tool_use_counts[notes_idx] = -1;
+                    }
                 }
             }
         }

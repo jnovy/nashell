@@ -73,6 +73,34 @@ int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
     return removed;
 }
 
+/* Auto-assign importance based on message type (Harness-1 §3.2).
+ * Called by all message-adding functions to ensure consistent tagging. */
+static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
+    switch (type) {
+        case LLM_MSG_SYSTEM:
+        case LLM_MSG_USER_QUERY:
+        case LLM_MSG_SCRATCHPAD:
+        case LLM_MSG_EVICTION_SUMMARY:
+            return LLM_MSG_IMPORTANCE_CRITICAL;
+        case LLM_MSG_MEMORY_INDEX:
+        case LLM_MSG_PINNED:
+        case LLM_MSG_SKILLS:
+        case LLM_MSG_LESSONS:
+        case LLM_MSG_STRATEGIES:
+        case LLM_MSG_ANTIPATTERNS:
+        case LLM_MSG_PREV_RESULT:
+            return LLM_MSG_IMPORTANCE_HIGH;
+        case LLM_MSG_ERROR:
+        case LLM_MSG_MEMORY_HINT:
+            return LLM_MSG_IMPORTANCE_LOW;
+        case LLM_MSG_TOOL_RESULT:
+        case LLM_MSG_GENERIC:
+        case LLM_MSG_THINKING:
+        default:
+            return LLM_MSG_IMPORTANCE_NORMAL;
+    }
+}
+
 /* Add a typed message — sets msg_type for structured routing. */
 void llm_chat_add_typed(llm_chat_t *chat, const char *role,
                          const char *content, llm_msg_type_t type) {
@@ -88,6 +116,7 @@ void llm_chat_add_typed(llm_chat_t *chat, const char *role,
     m->role = strdup(role);
     m->content = strdup(content);
     m->msg_type = type;
+    m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
 }
 
@@ -162,6 +191,7 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
     m->role = strdup(role);
     m->content = strdup(content);
     m->msg_type = type;
+    m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
 }
 

@@ -80,6 +80,16 @@ typedef enum {
     LLM_MSG_EVICTION_SUMMARY,/* scratchpad re-injection after eviction */
 } llm_msg_type_t;
 
+/* Message importance level — controls eviction priority.
+ * Inspired by Harness-1's 4-level importance tagging for curated documents.
+ * See: arXiv 2606.02373 "Harness-1: RL for Search Agents with State-Externalizing Harnesses" */
+typedef enum {
+    LLM_MSG_IMPORTANCE_LOW = 0,     /* errors, stale hints — evict first */
+    LLM_MSG_IMPORTANCE_NORMAL = 1,  /* regular tool results — default */
+    LLM_MSG_IMPORTANCE_HIGH = 2,    /* recent results, grep matches — compress before evict */
+    LLM_MSG_IMPORTANCE_CRITICAL = 3 /* system, user query, scratchpad — never evict */
+} llm_msg_importance_t;
+
 /* A single chat message — supports tool_calls API threading */
 typedef struct {
     char *role;              /* "system", "user", "assistant", "tool" */
@@ -87,6 +97,7 @@ typedef struct {
     char *tool_call_id;      /* for role:"tool" — the ID of the tool call being responded to */
     char *tool_calls_json;   /* for role:"assistant" — raw JSON of tool_calls array */
     llm_msg_type_t msg_type; /* typed message category (0 = generic/legacy) */
+    llm_msg_importance_t importance; /* eviction priority (Harness-1 §3.2) */
 } llm_msg_t;
 
 /* Chat completion request/response */
