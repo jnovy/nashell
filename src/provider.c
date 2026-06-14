@@ -43,7 +43,7 @@ static const struct {
     { "o1-mini",     128000 },
     { "o1",          200000 },
     /* OpenAI GPT-4.1 */
-    { "gpt-4.1",    1047576 },
+    { "gpt-4.1",    1048576 },  /* FIX BUG#7: was 1047576 (off by 1000) */
     /* OpenAI GPT-4o */
     { "gpt-4o",      128000 },
     /* OpenAI GPT-4 turbo */

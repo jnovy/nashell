@@ -26,7 +26,14 @@ void scratchpad_free(scratchpad_t *sp) {
 
 void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
     scratchpad_free(dst);
-    *dst = *src;
+    /* FIX BUG#8: Don't bitwise-copy pthread_mutex_t (undefined behavior).
+     * Copy data fields individually, then init a fresh mutex on dst. */
+    dst->sections = src->sections;
+    dst->count = src->count;
+    dst->cap = src->cap;
+    pthread_mutex_init(&dst->mtx, NULL);
+    /* Destroy src's mutex properly before zeroing */
+    pthread_mutex_destroy(&src->mtx);
     memset(src, 0, sizeof(*src));
 }
 
@@ -128,18 +135,27 @@ char *scratchpad_serialize(scratchpad_t *sp) {
     pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     if (sp->count == 0) { pthread_mutex_unlock(&sp->mtx); return NULL; }
 
-    /* Sort a copy by priority */
-    scratchpad_section_t *sorted = malloc((size_t)sp->count * sizeof(scratchpad_section_t));
-    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
-    memcpy(sorted, sp->sections, (size_t)sp->count * sizeof(scratchpad_section_t));
+    /* Deep-copy sections so we can safely unlock before serializing.
+     * FIX BUG#1: shallow memcpy left dangling pointers after unlock. */
     int n = sp->count;
-    pthread_mutex_unlock(&sp->mtx);  /* unlocked — working on local copy */
+    scratchpad_section_t *sorted = malloc((size_t)n * sizeof(scratchpad_section_t));
+    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
+    for (int i = 0; i < n; i++) {
+        sorted[i].name = strdup(sp->sections[i].name);
+        sorted[i].content = strdup(sp->sections[i].content);
+        sorted[i].priority = sp->sections[i].priority;
+    }
+    pthread_mutex_unlock(&sp->mtx);  /* safe — working on deep copies */
 
     qsort(sorted, (size_t)n, sizeof(scratchpad_section_t), section_cmp);
 
     str_t out = str_new(2048);
     for (int i = 0; i < n; i++) {
         str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
+    }
+    for (int i = 0; i < n; i++) {
+        free(sorted[i].name);
+        free(sorted[i].content);
     }
     free(sorted);
     return str_steal(&out);
@@ -149,12 +165,17 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     if (sp->count == 0) { pthread_mutex_unlock(&sp->mtx); return NULL; }
 
-    /* Sort a copy by priority (ascending = highest priority first) */
+    /* Deep-copy sections so we can safely unlock before serializing.
+     * FIX BUG#1: shallow memcpy left dangling pointers after unlock. */
     int n = sp->count;
     scratchpad_section_t *sorted = malloc((size_t)n * sizeof(scratchpad_section_t));
     if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
-    memcpy(sorted, sp->sections, (size_t)n * sizeof(scratchpad_section_t));
-    pthread_mutex_unlock(&sp->mtx);  /* unlocked — working on local copy */
+    for (int i = 0; i < n; i++) {
+        sorted[i].name = strdup(sp->sections[i].name);
+        sorted[i].content = strdup(sp->sections[i].content);
+        sorted[i].priority = sp->sections[i].priority;
+    }
+    pthread_mutex_unlock(&sp->mtx);  /* safe — working on deep copies */
 
     qsort(sorted, (size_t)n, sizeof(scratchpad_section_t), section_cmp);
 
@@ -185,6 +206,10 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
         str_append_cstr(&out, "\n\n");
     }
 
+    for (int i = 0; i < n; i++) {
+        free(sorted[i].name);
+        free(sorted[i].content);
+    }
     free(sorted);
     if (out.len == 0) {
         str_free(&out);

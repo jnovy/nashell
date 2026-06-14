@@ -34,8 +34,11 @@ void llm_chat_free(llm_chat_t *chat) {
 
 void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
     if (chat->n_msgs >= chat->cap_msgs) {
-        chat->cap_msgs *= 2;
-        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+        int new_cap = chat->cap_msgs * 2;
+        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+        if (!tmp) return;  /* FIX BUG#2: don't lose old pointer on realloc failure */
+        chat->msgs = tmp;
+        chat->cap_msgs = new_cap;
     }
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
@@ -74,8 +77,11 @@ int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
 void llm_chat_add_typed(llm_chat_t *chat, const char *role,
                          const char *content, llm_msg_type_t type) {
     if (chat->n_msgs >= chat->cap_msgs) {
-        chat->cap_msgs *= 2;
-        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+        int new_cap = chat->cap_msgs * 2;
+        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+        if (!tmp) return;  /* FIX BUG#2 */
+        chat->msgs = tmp;
+        chat->cap_msgs = new_cap;
     }
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
@@ -140,8 +146,11 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
                             llm_msg_type_t type) {
     if (!chat || pos < 0 || pos > chat->n_msgs) return;
     if (chat->n_msgs >= chat->cap_msgs) {
-        chat->cap_msgs *= 2;
-        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+        int new_cap = chat->cap_msgs * 2;
+        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+        if (!tmp) return;  /* FIX BUG#2 */
+        chat->msgs = tmp;
+        chat->cap_msgs = new_cap;
     }
     /* Shift existing messages to make room */
     int tail = chat->n_msgs - pos;
@@ -160,8 +169,11 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content) {
     if (chat->n_msgs >= chat->cap_msgs) {
-        chat->cap_msgs *= 2;
-        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+        int new_cap = chat->cap_msgs * 2;
+        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+        if (!tmp) return;  /* FIX BUG#2 */
+        chat->msgs = tmp;
+        chat->cap_msgs = new_cap;
     }
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
@@ -175,8 +187,11 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
 void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
                                        const char *tool_calls_json) {
     if (chat->n_msgs >= chat->cap_msgs) {
-        chat->cap_msgs *= 2;
-        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+        int new_cap = chat->cap_msgs * 2;
+        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+        if (!tmp) return;  /* FIX BUG#2 */
+        chat->msgs = tmp;
+        chat->cap_msgs = new_cap;
     }
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
@@ -219,15 +234,24 @@ static char *repair_json(const char *src) {
     size_t j = 0;
     int in_string = 0;
     int escape = 0;
+    int bare_value = 0;  /* FIX BUG#10: track inserted opening quote for bare values */
 
     for (size_t i = 0; src[i] && j < len * 2 - 1; i++) {
         if (escape) { buf[j++] = src[i]; escape = 0; continue; }
         if (src[i] == '\\') { buf[j++] = src[i]; escape = 1; continue; }
         if (src[i] == '"') in_string = !in_string;
 
+        /* FIX BUG#10: Close bare value quote before delimiters */
+        if (bare_value && !in_string &&
+            (src[i] == ',' || src[i] == '}' || src[i] == ']')) {
+            buf[j++] = '"';
+            bare_value = 0;
+        }
+
         /* Detect XML fragment: truncate at < outside strings */
         if (src[i] == '<' && !in_string) {
-            /* Close any open JSON structure */
+            /* Close any open bare value and JSON structure */
+            if (bare_value) buf[j++] = '"';
             buf[j++] = '}';
             break;
         }
@@ -241,12 +265,14 @@ static char *repair_json(const char *src) {
             if (src[i+1] && src[i+1] != '"' && src[i+1] != '{' &&
                 src[i+1] != '[' && src[i+1] != ' ') {
                 buf[j++] = '"';
+                bare_value = 1;  /* FIX BUG#10: remember to close it */
             }
             continue;
         }
 
         buf[j++] = src[i];
     }
+    if (bare_value) buf[j++] = '"';  /* FIX BUG#10: close trailing bare value */
     buf[j] = '\0';
     return buf;
 }

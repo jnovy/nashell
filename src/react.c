@@ -1031,6 +1031,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *query = react_json_get_str(action, "query");
         const char *question = react_json_get_str(action, "question");
         const char *url = react_json_get_str(action, "url");
+        /* FIX BUG#11: Include key and value in signature so memory_store
+         * calls with different keys aren't falsely detected as cycling. */
+        const char *key = react_json_get_str(action, "key");
+        const char *value = react_json_get_str(action, "value");
         /* Include start_line/end_line in signature so that reading different
          * line ranges of the same file is NOT detected as cycling.
          * file_read("react.c", 1, 50) and file_read("react.c", 50, 100)
@@ -1044,10 +1048,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * Use 120-char prefix to avoid false positives on edits that differ
          * only after char 30 (the previous limit). */
         char content_prefix[128] = "", old_prefix[128] = "", new_prefix[128] = "";
+        char key_prefix[128] = "", value_prefix[128] = "";
         if (content) snprintf(content_prefix, sizeof(content_prefix), "%.120s", content);
         if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.120s", old_text);
         if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.120s", new_text);
-        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s",
+        if (key) snprintf(key_prefix, sizeof(key_prefix), "%.120s", key);
+        if (value) snprintf(value_prefix, sizeof(value_prefix), "%.120s", value);
+        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s:%s:%s",
                  action_name,
                  cmd ? cmd : "",
                  path ? path : "",
@@ -1058,7 +1065,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  new_prefix,
                  query ? query : "",
                  question ? question : "",
-                 url ? url : "");
+                 url ? url : "",
+                 key_prefix,
+                 value_prefix);
 
         int repeated = 0;
         for (int i = 0; i < sig_count && i < cw; i++) {

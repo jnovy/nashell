@@ -1787,8 +1787,11 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
 int memory_embed_all(memory_t *m) {
     if (!m || !m->embed || !m->embed->available) return 0;
 
+    /* FIX BUG#5: Hold mutex during directory scan to prevent races with
+     * concurrent memory_store/memory_delete modifying files mid-scan. */
+    pthread_mutex_lock(&m->mtx);
     DIR *dir = opendir(m->dir);
-    if (!dir) return 0;
+    if (!dir) { pthread_mutex_unlock(&m->mtx); return 0; }
 
     /* FIX D7: Collect all entries needing embedding, then use batch API.
      * This reduces N HTTP round-trips to ceil(N/64) for Ollama/OpenAI. */
@@ -1866,6 +1869,7 @@ int memory_embed_all(memory_t *m) {
         cJSON_Delete(entry);
     }
     closedir(dir);
+    pthread_mutex_unlock(&m->mtx);  /* FIX BUG#5: release before expensive embedding */
 
     if (pending_count == 0) {
         free(pending);

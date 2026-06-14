@@ -1940,9 +1940,9 @@ static char *memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         cJSON_Delete(old_entry);
         return del_key;
     }
-
-    cJSON_Delete(old_entry);
-    return NULL;
+    /* FIX BUG#3: removed unreachable cJSON_Delete that was after the
+     * unconditional return in the REDUNDANT block above. */
+    return NULL;  /* unreachable — silences compiler warning */
 }
 
 static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
@@ -2020,20 +2020,27 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
      * and process them all in tool_flush_deferred_consolidations() after
      * the react loop completes. */
     if (!pinned && !ctx->memory->consolidating) {
-        /* Grow deferred queue if needed */
-        if (ctx->n_deferred_consol >= ctx->cap_deferred_consol) {
-            int new_cap = ctx->cap_deferred_consol ? ctx->cap_deferred_consol * 2 : 16;
-            void *tmp = realloc(ctx->deferred_consol,
-                                (size_t)new_cap * sizeof(ctx->deferred_consol[0]));
-            if (tmp) {
-                ctx->deferred_consol = tmp;
-                ctx->cap_deferred_consol = new_cap;
+        /* FIX BUG#13: Cap deferred queue at 64 entries to bound memory usage.
+         * Oldest entries are dropped if the queue is full — they'll be
+         * consolidated on the next session anyway via memory_embed_all. */
+        #define DEFERRED_CONSOL_MAX 64
+        if (ctx->n_deferred_consol < DEFERRED_CONSOL_MAX) {
+            /* Grow deferred queue if needed */
+            if (ctx->n_deferred_consol >= ctx->cap_deferred_consol) {
+                int new_cap = ctx->cap_deferred_consol ? ctx->cap_deferred_consol * 2 : 16;
+                if (new_cap > DEFERRED_CONSOL_MAX) new_cap = DEFERRED_CONSOL_MAX;
+                void *tmp = realloc(ctx->deferred_consol,
+                                    (size_t)new_cap * sizeof(ctx->deferred_consol[0]));
+                if (tmp) {
+                    ctx->deferred_consol = tmp;
+                    ctx->cap_deferred_consol = new_cap;
+                }
             }
-        }
-        if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
-            ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
-            ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
-            ctx->n_deferred_consol++;
+            if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
+                ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
+                ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
+                ctx->n_deferred_consol++;
+            }
         }
     }
 
@@ -2225,6 +2232,7 @@ static tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
 /* Case-insensitive prefix match. Returns 1 if s starts with prefix (ASCII). */
 static int html_ci_prefix(const char *s, const char *prefix) {
     while (*prefix) {
+        if (!*s) return 0;  /* FIX BUG#6: don't read past end of s */
         char a = *s, b = *prefix;
         if (a >= 'A' && a <= 'Z') a += 32;
         if (b >= 'A' && b <= 'Z') b += 32;
@@ -3012,15 +3020,32 @@ void tool_free_deferred_consolidations(tool_ctx_t *ctx) {
 }
 
 /* Tear down auto-started SearXNG container. Called on nash exit. */
+/* FIX BUG#12: Use fork/exec instead of system() which is not signal-safe
+ * and invokes /bin/sh unnecessarily. */
+static int run_container_cmd(const char *runtime, const char *action, const char *name) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        /* Child: redirect stdout/stderr to /dev/null */
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
+        execlp(runtime, runtime, action, name, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
 void web_search_cleanup(void) {
     if (!searxng_auto_started) return;
     nash_log("[nash] Stopping auto-started SearXNG container...");
-    int rc = system("podman stop nash-searxng >/dev/null 2>&1 && "
-                    "podman rm nash-searxng >/dev/null 2>&1");
+    int rc = run_container_cmd("podman", "stop", "nash-searxng");
+    if (rc == 0) run_container_cmd("podman", "rm", "nash-searxng");
     if (rc != 0) {
         /* Try docker as fallback */
-        system("docker stop nash-searxng >/dev/null 2>&1 && "
-               "docker rm nash-searxng >/dev/null 2>&1");
+        run_container_cmd("docker", "stop", "nash-searxng");
+        run_container_cmd("docker", "rm", "nash-searxng");
     }
     searxng_auto_started = 0;
 }

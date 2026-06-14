@@ -74,28 +74,75 @@ char *store_resolve(store_t *s, const char *hash) {
 
 #include <dirent.h>
 
-/* Simple hash set for referenced store hashes. */
-typedef struct { char **keys; int count, cap; } hashset_t;
+/* FIX BUG#4: Proper hash set with FNV-1a hashing — O(1) amortized lookup
+ * instead of O(n) linear scan. */
+
+#define HASHSET_INIT_CAP 512  /* must be power of 2 */
+
+typedef struct {
+    char **buckets;   /* open-addressing with linear probing */
+    int cap;          /* capacity (always power of 2) */
+    int count;        /* number of entries */
+} hashset_t;
+
+static unsigned int fnv1a(const char *s) {
+    unsigned int h = 2166136261u;
+    for (; *s; s++)
+        h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+static void hashset_init(hashset_t *hs) {
+    hs->cap = HASHSET_INIT_CAP;
+    hs->count = 0;
+    hs->buckets = calloc((size_t)hs->cap, sizeof(char *));
+}
+
+static void hashset_grow(hashset_t *hs) {
+    int old_cap = hs->cap;
+    char **old = hs->buckets;
+    hs->cap *= 2;
+    hs->buckets = calloc((size_t)hs->cap, sizeof(char *));
+    hs->count = 0;
+    for (int i = 0; i < old_cap; i++) {
+        if (old[i]) {
+            /* Re-insert into new table */
+            unsigned int idx = fnv1a(old[i]) & (unsigned)(hs->cap - 1);
+            while (hs->buckets[idx]) idx = (idx + 1) & (unsigned)(hs->cap - 1);
+            hs->buckets[idx] = old[i];
+            hs->count++;
+        }
+    }
+    free(old);
+}
 
 static void hashset_add(hashset_t *hs, const char *key) {
-    for (int i = 0; i < hs->count; i++)
-        if (strcmp(hs->keys[i], key) == 0) return;
-    if (hs->count >= hs->cap) {
-        hs->cap = hs->cap ? hs->cap * 2 : 256;
-        hs->keys = realloc(hs->keys, sizeof(char *) * (size_t)hs->cap);
+    if (!hs->buckets) hashset_init(hs);
+    /* Grow at 70% load factor */
+    if (hs->count * 10 >= hs->cap * 7) hashset_grow(hs);
+    unsigned int idx = fnv1a(key) & (unsigned)(hs->cap - 1);
+    while (hs->buckets[idx]) {
+        if (strcmp(hs->buckets[idx], key) == 0) return;  /* already present */
+        idx = (idx + 1) & (unsigned)(hs->cap - 1);
     }
-    hs->keys[hs->count++] = strdup(key);
+    hs->buckets[idx] = strdup(key);
+    hs->count++;
 }
 
 static int hashset_contains(hashset_t *hs, const char *key) {
-    for (int i = 0; i < hs->count; i++)
-        if (strcmp(hs->keys[i], key) == 0) return 1;
+    if (!hs->buckets || hs->count == 0) return 0;
+    unsigned int idx = fnv1a(key) & (unsigned)(hs->cap - 1);
+    while (hs->buckets[idx]) {
+        if (strcmp(hs->buckets[idx], key) == 0) return 1;
+        idx = (idx + 1) & (unsigned)(hs->cap - 1);
+    }
     return 0;
 }
 
 static void hashset_free(hashset_t *hs) {
-    for (int i = 0; i < hs->count; i++) free(hs->keys[i]);
-    free(hs->keys);
+    if (!hs->buckets) return;
+    for (int i = 0; i < hs->cap; i++) free(hs->buckets[i]);
+    free(hs->buckets);
 }
 
 /* Scan a session directory for symlinks → store. Extract the hash. */
