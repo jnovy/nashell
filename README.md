@@ -217,6 +217,71 @@ tau_h = 4.0              # mean entropy threshold
 budget = -1              # -1=unrestricted, 0=none, N>0=max tokens
 ```
 
+### Harness-1 Context Management
+
+Inspired by [Harness-1](https://arxiv.org/abs/2606.02373) (UIUC/Berkeley/Chroma, 2026), nash implements **stateful cognitive offloading** — moving context bookkeeping from the LLM to the environment. Instead of letting the model waste reasoning capacity on tracking what it has seen, managing duplicates, and deciding what to keep, the harness handles this automatically.
+
+Six mechanisms adapted from the paper:
+
+#### 1. Importance-Tagged Messages
+
+Every message in the LLM context carries an importance level (`CRITICAL` / `HIGH` / `NORMAL` / `LOW`) auto-assigned by type:
+
+| Importance | Message Types |
+|------------|---------------|
+| **CRITICAL** | System prompt, user query, scratchpad, `done` results |
+| **HIGH** | `grep_search`, `memory_recall`, recent assistant turns |
+| **NORMAL** | `file_read`, `shell_exec`, `web_fetch` |
+| **LOW** | Errors, hints, deduplicated results |
+
+Importance controls eviction priority — `LOW` messages are stripped first, `CRITICAL` messages are never evicted.
+
+#### 2. Multi-Pass Progressive Context Rendering
+
+Replaces the previous single-pass binary eviction with 3-pass progressive degradation:
+
+| Pass | Trigger | Action |
+|------|---------|--------|
+| **Pass 1** | Context > threshold | Strip `LOW` importance messages (errors, hints, deduped) |
+| **Pass 2** | Still over threshold | Compress `NORMAL` messages to top-4 sentences via sentence-BM25 |
+| **Pass 3** | Still over threshold | Standard eviction with scratchpad extraction + compaction floor |
+
+This preserves more useful context at each stage instead of dropping messages wholesale.
+
+#### 3. Sentence-BM25 Relevance Compression
+
+New `compress.c` module (301 lines) implements relevance-based text compression:
+
+- Splits text into sentences
+- Scores each sentence by BM25-like term overlap with the current query
+- Keeps top-N sentences in their original order
+
+Used in eviction Pass 2 instead of blind character-limit truncation. A `file_read` output that returned 200 lines gets compressed to the 4 most relevant sentences rather than keeping the first N characters.
+
+#### 4. Context-Level Deduplication
+
+CRC32 hash tracking in a 64-entry rolling buffer detects when the same content appears multiple times in context (e.g., reading the same file twice, overlapping `grep_search` results):
+
+```
+[dedup] Same as step 3 — see earlier result
+```
+
+Prevents wasting context on re-reading identical content.
+
+#### 5. Auto-Seeding Scratchpad
+
+The first successful tool result (step 0) automatically seeds the scratchpad at priority 3, ensuring it's never empty when eviction kicks in. This implements Harness-1's "warm-started curation" — the agent starts with something rather than a cold empty state.
+
+#### 6. Tool Diversity Nudge
+
+Tool usage tracking (`tool_use_counts[32]` in `tool_ctx_t`) monitors which tools the agent is using. After 10+ steps without calling `notes()` to save findings, a one-shot soft hint is injected:
+
+> *Consider saving key findings to your scratchpad with notes() — they survive context eviction.*
+
+This prevents the common failure mode of accumulating context without ever externalizing key findings.
+
+**Files**: `src/llm.h`, `src/llm.c`, `src/tools.h`, `src/react.c`, `src/compress.c`, `src/compress.h`
+
 ### TUI — Terminal User Interface
 
 Nash provides a full ncurses-based TUI with:
@@ -915,6 +980,7 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [TriMem](https://arxiv.org/abs/2605.19952) | 2026 | Three-tier memory (working/episodic/semantic) | Scratchpad (working) + journal (episodic) + memory (semantic) |
 | ["Language Models Need Sleep"](https://arxiv.org/abs/2605.26099) | 2026 | Dreaming/consolidation essential for memory health | Post-loop Bayesian pruning + dedup + consolidation |
 | [MMPO](https://arxiv.org/abs/2605.30159) | 2026 | Belief Entropy ℋ_BE measures memory clarity | Belief Entropy monitoring for memory quality signal |
+| [Harness-1](https://arxiv.org/abs/2606.02373) | 2026 | Stateful cognitive offloading — move bookkeeping from LLM to environment-side harness | Importance-tagged messages, multi-pass progressive eviction, sentence-BM25 compression, CRC32 context dedup, auto-seeding scratchpad, tool diversity nudge |
 
 ### Skill Extraction
 | Paper | Year | Key Insight | Nash Implementation |
