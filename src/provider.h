@@ -17,6 +17,9 @@ typedef enum {
 
 typedef struct {
     provider_type_t type;
+    /* NOTE: These are const char* because this struct is used both as a non-owning
+     * parameter bag (on stack) and as owned storage (inside provider_t, where fields
+     * are strdup'd).  provider_free() casts away const to free the owned copies. */
     const char *model_id;       /* model identifier for API calls */
     const char *api_base;       /* base URL (local server or API endpoint) */
     const char *api_key_env;    /* env var name for API key (e.g. "OPENAI_API_KEY") */

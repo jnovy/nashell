@@ -663,7 +663,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                      * The LLM server may be overloaded (common cause of 500s),
                      * so making another LLM call during recovery adds load.
                      * Strip ```...``` code blocks and inline `code` locally. */
-                    const char *src = chat->msgs[sp_idx].content + 13;
+                    const char *src = chat->msgs[sp_idx].content + (sizeof("[SCRATCHPAD]\n") - 1);
                     size_t src_len = strlen(src);
                     char *cleaned = malloc(src_len + 1);
                     if (cleaned) {
@@ -1534,7 +1534,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* Reset recalled keys for next query (each task is independent) */
     for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
         free(ctx->tools->recalled_keys[i]);
+    free(ctx->tools->recalled_keys);
+    ctx->tools->recalled_keys = NULL;
     ctx->tools->n_recalled_keys = 0;
+    ctx->tools->recalled_keys_cap = 0;
 
     free(last_sigs);
     return final_result;

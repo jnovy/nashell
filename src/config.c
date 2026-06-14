@@ -131,7 +131,7 @@ void config_set_defaults(config_t *cfg) {
     if (isnan(cfg->thinking.tau_vnr))          cfg->thinking.tau_vnr = 1.5f;
     if (isnan(cfg->thinking.tau_h))            cfg->thinking.tau_h = 4.0f;
     if (cfg->thinking.budget == INT_MIN)       cfg->thinking.budget = -1; /* -1 = unrestricted */
-    if (!cfg->search_engine) cfg->search_engine = strdup("duckduckgo");
+    if (!cfg->search_engine) cfg->search_engine = strdup("auto");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
 
     /* [provider] env var fallbacks for Vertex AI / Anthropic.

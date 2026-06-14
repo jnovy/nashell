@@ -27,6 +27,8 @@ void llm_chat_free(llm_chat_t *chat) {
         free(chat->msgs[i].tool_calls_json);
     }
     free(chat->msgs);
+    free(chat->last_tool_call_id);
+    free(chat->last_tool_calls_json);
     free(chat);
 }
 

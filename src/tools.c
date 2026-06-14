@@ -1257,8 +1257,8 @@ static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
             if (out.data[i] == '\n') {
                 seen++;
                 if (seen >= 200) {
-                    out.data[i + 1] = '\0';
                     out.len = i + 1;
+                    out.data[out.len] = '\0';  /* str_t guarantees space for NUL at data[len] */
                     break;
                 }
             }
@@ -3002,8 +3002,14 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     long search_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
                           ? (long)ctx->cfg->web_timeout : 30L;
 
-    if (engine && strcmp(engine, "searxng") == 0) {
-        /* SearXNG mode — ensure server is running, then search */
+    if (engine && strcmp(engine, "duckduckgo") == 0) {
+        /* Explicit DuckDuckGo mode — try DDG first, fall back to SearXNG */
+        results_text = ddg_search(query, &result_count, search_timeout);
+        if (!results_text && ensure_searxng(searxng_url) == 0) {
+            results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
+        }
+    } else if (engine && strcmp(engine, "searxng") == 0) {
+        /* Explicit SearXNG mode — SearXNG only, no fallback */
         if (ensure_searxng(searxng_url) != 0) {
             return make_error("SearXNG not available and could not be auto-started. "
                               "Install podman/docker or configure a running SearXNG instance "
@@ -3011,14 +3017,15 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
         }
         results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
     } else {
-        /* DuckDuckGo mode — try DDG first, fall back to SearXNG */
-        results_text = ddg_search(query, &result_count, search_timeout);
-
+        /* Auto mode (default) — try SearXNG first (real search results),
+         * fall back to DDG Instant Answer API if SearXNG is unavailable.
+         * DDG's Instant Answer API only returns topic summaries (not web
+         * search results), so it's a last resort. */
+        if (ensure_searxng(searxng_url) == 0) {
+            results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
+        }
         if (!results_text) {
-            /* DDG failed — try SearXNG as fallback */
-            if (ensure_searxng(searxng_url) == 0) {
-                results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
-            }
+            results_text = ddg_search(query, &result_count, search_timeout);
         }
     }
 

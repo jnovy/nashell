@@ -270,7 +270,7 @@ typedef struct {
     char  *data_dir;             /* empty = ~/.nash/ */
 
     /* [search] */
-    char  *search_engine;        /* "duckduckgo" or "searxng" */
+    char  *search_engine;        /* "auto" (default), "searxng", or "duckduckgo" */
     char  *searxng_url;
 
     /* [model profiles] — loaded from ~/.nash/models/ */

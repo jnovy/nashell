@@ -685,8 +685,10 @@ static double score_entry_hybrid(const char *key, const char *value,
 
         /* Blend: semantic + substring using configurable weights.
          * Default: 70% semantic + 30% substring.
-         * Max raw blended = 4.0*w_sem + 4.0*w_sub = 4.0 (when weights sum to 1). */
-        relevance = (semantic * w_sem + substring * w_sub) / 4.0;  /* [0, 1] */
+         * Normalize by actual weight sum so result is always in [0, 1]. */
+        double w_total = (double)(w_sem + w_sub);
+        if (w_total < 0.001) w_total = 1.0;  /* guard against zero weights */
+        relevance = (semantic * w_sem + substring * w_sub) / (4.0 * w_total);  /* [0, 1] */
     } else {
         /* Fallback: pure substring matching (no embeddings available).
          * Normalize to [0, 1] — same range as the embedding path.
@@ -915,21 +917,49 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
     embed_multi_vec_free(&query_mv);
 
-    /* Ref-boost using index refs (no cJSON needed) */
-    for (int i = 0; i < n_scored; i++) {
-        if (scored[i].score < 0.5) continue;
-        mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
-        for (int ri = 0; ri < ie->n_refs; ri++) {
-            if (!ie->refs[ri]) continue;
-            for (int j = 0; j < n_scored; j++) {
-                if (j == i) continue;
-                mem_index_entry_t *je = &m->idx.entries[scored[j].idx_pos];
-                if (strcmp(je->key, ie->refs[ri]) == 0) {
-                    scored[j].score += 0.3 * scored[i].score;
-                    break;
+    /* Ref-boost using index refs — O(N×R) via key→index hash map */
+    if (n_scored > 0) {
+        /* Build open-addressing hash map: key → scored index */
+        int map_cap = n_scored < 16 ? 64 : n_scored * 4;  /* power-of-2, load ≤ 0.25 */
+        /* Ensure power-of-2 */
+        { int v = map_cap - 1; v|=v>>1; v|=v>>2; v|=v>>4; v|=v>>8; v|=v>>16; map_cap = v+1; }
+        int map_mask = map_cap - 1;
+
+        struct ref_map_entry { const char *key; int idx; };
+        struct ref_map_entry *ref_map = calloc((size_t)map_cap, sizeof(*ref_map));
+
+        for (int j = 0; j < n_scored; j++) {
+            const char *k = m->idx.entries[scored[j].idx_pos].key;
+            unsigned h = 2166136261u;
+            for (const char *p = k; *p; p++)
+                h = (h ^ (unsigned char)*p) * 16777619u;
+            int slot = (int)(h & (unsigned)map_mask);
+            while (ref_map[slot].key)
+                slot = (slot + 1) & map_mask;
+            ref_map[slot].key = k;
+            ref_map[slot].idx = j;
+        }
+
+        for (int i = 0; i < n_scored; i++) {
+            if (scored[i].score < 0.5) continue;
+            mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
+            for (int ri = 0; ri < ie->n_refs; ri++) {
+                if (!ie->refs[ri]) continue;
+                unsigned h = 2166136261u;
+                for (const char *p = ie->refs[ri]; *p; p++)
+                    h = (h ^ (unsigned char)*p) * 16777619u;
+                int slot = (int)(h & (unsigned)map_mask);
+                while (ref_map[slot].key) {
+                    if (strcmp(ref_map[slot].key, ie->refs[ri]) == 0) {
+                        if (ref_map[slot].idx != i)
+                            scored[ref_map[slot].idx].score += 0.3 * scored[i].score;
+                        break;
+                    }
+                    slot = (slot + 1) & map_mask;
                 }
             }
         }
+        free(ref_map);
     }
 
     qsort(scored, (size_t)n_scored, sizeof(scored_t), scored_cmp_desc);
