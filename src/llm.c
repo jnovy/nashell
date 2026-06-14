@@ -133,6 +133,29 @@ void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
     chat->n_msgs -= (end - start);
 }
 
+/* FIX D5: Insert a typed message at a specific position.
+ * Grows array if needed, shifts messages from pos..n_msgs-1 forward. */
+void llm_chat_insert_typed(llm_chat_t *chat, int pos,
+                            const char *role, const char *content,
+                            llm_msg_type_t type) {
+    if (!chat || pos < 0 || pos > chat->n_msgs) return;
+    if (chat->n_msgs >= chat->cap_msgs) {
+        chat->cap_msgs *= 2;
+        chat->msgs = realloc(chat->msgs, chat->cap_msgs * sizeof(llm_msg_t));
+    }
+    /* Shift existing messages to make room */
+    int tail = chat->n_msgs - pos;
+    if (tail > 0)
+        memmove(&chat->msgs[pos + 1], &chat->msgs[pos],
+                tail * sizeof(llm_msg_t));
+    llm_msg_t *m = &chat->msgs[pos];
+    memset(m, 0, sizeof(*m));
+    m->role = strdup(role);
+    m->content = strdup(content);
+    m->msg_type = type;
+    chat->n_msgs++;
+}
+
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content) {

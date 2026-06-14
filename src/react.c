@@ -1447,7 +1447,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         }
                     }
 
-                    /* Step 4: Re-inject updated scratchpad at evict_start */
+                    /* Step 4: Re-inject updated scratchpad at evict_start.
+                     * FIX D5: Use llm_chat_insert_typed() instead of manual
+                     * realloc+memmove to maintain invariants. */
                     {
                         size_t sp_max = (ctx->provider->cfg.context_size > 0)
                             ? (size_t)(ctx->provider->cfg.context_size * react_get_chars_per_token(ctx) * 15 / 100) : 8192;
@@ -1458,21 +1460,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             char *sp_msg = malloc(slen + 32);
                             if (sp_msg) {
                                 snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
-                                /* Insert scratchpad as a new message at evict_start */
-                                if (chat->n_msgs >= chat->cap_msgs) {
-                                    chat->cap_msgs *= 2;
-                                    chat->msgs = realloc(chat->msgs,
-                                        chat->cap_msgs * sizeof(llm_msg_t));
-                                }
-                                memmove(&chat->msgs[evict_start + 1],
-                                        &chat->msgs[evict_start],
-                                        (chat->n_msgs - evict_start) * sizeof(llm_msg_t));
-                                chat->msgs[evict_start].role = strdup("user");
-                                chat->msgs[evict_start].content = sp_msg;
-                                chat->msgs[evict_start].tool_call_id = NULL;
-                                chat->msgs[evict_start].tool_calls_json = NULL;
-                                chat->msgs[evict_start].msg_type = LLM_MSG_EVICTION_SUMMARY;
-                                chat->n_msgs++;
+                                llm_chat_insert_typed(chat, evict_start,
+                                    "user", sp_msg, LLM_MSG_EVICTION_SUMMARY);
+                                free(sp_msg);
                             }
                         }
                         free(fresh_sp);

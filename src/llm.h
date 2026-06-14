@@ -131,6 +131,13 @@ int         llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type);
  * Properly frees all fields. Encapsulates the manual memmove pattern. */
 void        llm_chat_remove_range(llm_chat_t *chat, int start, int end);
 
+/* FIX D5: Insert a typed message at a specific position.
+ * Shifts existing messages from pos..n_msgs-1 to make room.
+ * Encapsulates the manual realloc+memmove pattern used by context eviction. */
+void        llm_chat_insert_typed(llm_chat_t *chat, int pos,
+                                  const char *role, const char *content,
+                                  llm_msg_type_t type);
+
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content);

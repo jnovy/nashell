@@ -2,6 +2,7 @@
 #define MEMORY_H
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include "cJSON.h"
 #include "embedding.h"
 
@@ -63,8 +64,9 @@ typedef struct {
     float vscore_exponent;         /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
 
     /* Guard against recursive consolidation — set during
-     * memory_try_consolidate to prevent consolidation→store→consolidation loops. */
-    int consolidating;
+     * memory_try_consolidate to prevent consolidation→store→consolidation loops.
+     * FIX B2: atomic to prevent data race between consolidation and store. */
+    atomic_int consolidating;
 
     /* Deferred git commits — when git_deferred > 0, memory_git_commit()
      * is skipped and git_deferred_count is incremented. Call

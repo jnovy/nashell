@@ -353,6 +353,12 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
         if (output_capped) {
             str_appendf(out, "\n[OUTPUT CAPPED at %d bytes]\n", max_output);
         }
+        /* FIX B1: When output was capped, the child was killed by SIGKILL,
+         * so WIFEXITED is false and WEXITSTATUS is undefined (-1).
+         * But the command was running successfully — only its output was
+         * truncated.  Return 0 (success) instead of the misleading -1. */
+        if (output_capped)
+            return 0;
         return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
 
@@ -994,7 +1000,11 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     char buf[NASH_PATH_MAX];
     ssize_t n;
 
-    /* Read with timeout + output cap */
+    /* Read with timeout + output cap.
+     * FIX B4: grep_max_matches controls line count (grep -m), while this
+     * byte cap prevents unbounded output from long-line matches.
+     * Uses shell_max_output as default; a dedicated grep_max_output config
+     * could be added if finer control is needed. */
     int grep_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
     int grep_max = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
     time_t start = time(NULL);
@@ -1665,10 +1675,14 @@ static void consolidation_carry_scores(memory_t *m,
     memory_update_scores(m, survivor_key, old_hits, old_misses);
 }
 
-static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
-                                    const char *new_value) {
-    if (!ctx->provider || !ctx->memory) return;
-    if (!ctx->memory->embed || !ctx->memory->embed->available) return;
+/* FIX D4: Returns strdup'd key to delete (caller collects for batch),
+ * or NULL if no deletion needed.  Previously called memory_delete()
+ * inline, causing O(N) gc_refs scan per delete.  Now the caller
+ * batches all deletions into a single memory_delete_batch() call. */
+static char *memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
+                                     const char *new_value) {
+    if (!ctx->provider || !ctx->memory) return NULL;
+    if (!ctx->memory->embed || !ctx->memory->embed->available) return NULL;
 
     /* Load the multi-vec embedding for the new entry (just stored by
      * memory_embed_entry, which already produced chunked embeddings). */
@@ -1678,7 +1692,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
              ctx->memory->dir, new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
-    if (!new_emb.data) return;
+    if (!new_emb.data) return NULL;
 
     /* Scan in-memory index for high similarity (FIX P1-3).
      *
@@ -1754,18 +1768,18 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
     embed_multi_vec_free(&new_emb);
 
-    if (best_key[0] == '\0') return;  /* no similar memory found */
+    if (best_key[0] == '\0') return NULL;  /* no similar memory found */
 
     /* Load the similar memory's value */
     cJSON *old_entry = slurp_json(best_path);
-    if (!old_entry) return;
+    if (!old_entry) return NULL;
 
     cJSON *old_key_j = cJSON_GetObjectItem(old_entry, "key");
     cJSON *old_val_j = cJSON_GetObjectItem(old_entry, "value");
     if (!old_key_j || !old_val_j ||
         !old_key_j->valuestring || !old_val_j->valuestring) {
         cJSON_Delete(old_entry);
-        return;
+        return NULL;
     }
 
     const char *old_key = old_key_j->valuestring;
@@ -1775,7 +1789,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     cJSON *pinned_j = cJSON_GetObjectItem(old_entry, "pinned");
     if (pinned_j && cJSON_IsTrue(pinned_j)) {
         cJSON_Delete(old_entry);
-        return;
+        return NULL;
     }
 
     /* Extract old entry's validation scores BEFORE any branch deletes it.
@@ -1799,7 +1813,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     size_t prompt_sz = strlen(new_value) + strlen(old_value) +
                      strlen(new_key) + strlen(old_key) + 2048;
     char *prompt = malloc(prompt_sz);
-    if (!prompt) { cJSON_Delete(old_entry); return; }
+    if (!prompt) { cJSON_Delete(old_entry); return NULL; }
     snprintf(prompt, prompt_sz,
         "Two memory entries are semantically similar. Classify their relationship "
         "and act accordingly.\n\n"
@@ -1846,7 +1860,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (!response || strlen(response) < 5) {
         free(response);
         cJSON_Delete(old_entry);
-        return;
+        return NULL;
     }
 
     /* Parse classification from first line of response */
@@ -1854,21 +1868,20 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         /* Entries cover different aspects — keep both, do nothing */
         free(response);
         cJSON_Delete(old_entry);
-        return;
+        return NULL;
     }
 
     if (strncmp(response, "SUPERSEDES", 10) == 0) {
-        /* New entry corrects/updates old — delete old, keep new as-is */
-        if (strcmp(old_key, new_key) != 0) {
-            memory_delete(ctx->memory, old_key);
-        }
+        /* New entry corrects/updates old — delete old, keep new as-is.
+         * FIX D4: Return key for batch deletion instead of inline delete. */
+        char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;
         /* Carry forward old entry's validation evidence to the new entry.
          * The new insight earned the old one's credibility by replacing it. */
         consolidation_carry_scores(ctx->memory, new_key,
                                    old_hits, old_misses);
         free(response);
         cJSON_Delete(old_entry);
-        return;
+        return del_key;
     }
 
     /* Default: REDUNDANT — merge (extract text after first newline) */
@@ -1888,7 +1901,7 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             /* Couldn't extract merged text — skip */
             free(response);
             cJSON_Delete(old_entry);
-            return;
+            return NULL;
         }
         free(response);
 
@@ -1913,11 +1926,8 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
         cJSON_Delete(new_entry_json);
 
-        /* Delete the old entry if it has a different key.
-         * FIX B3: Use memory_delete() for proper .json + .emb cleanup. */
-        if (strcmp(old_key, new_key) != 0) {
-            memory_delete(ctx->memory, old_key);
-        }
+        /* FIX D4: Return key for batch deletion instead of inline delete. */
+        char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;
 
         /* Carry forward old entry's validation evidence to the merged result.
          * memory_store() above preserved the new entry's counters (same key
@@ -1927,9 +1937,12 @@ static void memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                    old_hits, old_misses);
 
         free(merged);
+        cJSON_Delete(old_entry);
+        return del_key;
     }
 
     cJSON_Delete(old_entry);
+    return NULL;
 }
 
 static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
@@ -2950,14 +2963,36 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
 void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
     if (!ctx || ctx->n_deferred_consol == 0) return;
 
+    /* FIX D4: Collect keys to delete during consolidation, then batch-delete.
+     * Previously each memory_try_consolidate() called memory_delete() inline,
+     * causing O(N) gc_refs scan per delete.  Now we collect all delete keys
+     * and do a single memory_delete_batch() at the end — O(K+N) total. */
+    char **del_keys = NULL;
+    int n_del = 0, del_cap = 0;
+
     ctx->memory->consolidating = 1;  /* prevent recursive consolidation */
     for (int i = 0; i < ctx->n_deferred_consol; i++) {
         if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
-            memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
-                                   ctx->deferred_consol[i].value);
+            char *dk = memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
+                                              ctx->deferred_consol[i].value);
+            if (dk) {
+                if (n_del >= del_cap) {
+                    del_cap = del_cap ? del_cap * 2 : 16;
+                    del_keys = realloc(del_keys, sizeof(char *) * (size_t)del_cap);
+                }
+                if (del_keys) del_keys[n_del++] = dk;
+                else free(dk);
+            }
         }
     }
     ctx->memory->consolidating = 0;
+
+    /* Batch delete all keys collected during consolidation */
+    if (n_del > 0 && del_keys) {
+        memory_delete_batch(ctx->memory, (const char **)del_keys, n_del);
+        for (int i = 0; i < n_del; i++) free(del_keys[i]);
+    }
+    free(del_keys);
 
     /* Free the queue */
     tool_free_deferred_consolidations(ctx);

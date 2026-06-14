@@ -317,6 +317,9 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                 ctx, rkey_j, &new_emb,
                                 &should_store, task_succeeded);
                             embed_vec_free(&single);
+                            /* FIX B5: Nullify aliased pointer to prevent
+                             * use-after-free if new_emb is accessed later. */
+                            new_emb.data = NULL;
                         }
                     }
                 }
@@ -507,6 +510,46 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                         }
                     }
                 }
+
+                /* FIX D7: Restore high-priority sections the LLM silently dropped.
+                 * The LLM can subtly corrupt the scratchpad by omitting sections
+                 * it shouldn't remove.  Re-add any original section with priority ≤ 2
+                 * that is missing from the pruned output — these are important enough
+                 * that the LLM should never unilaterally remove them. */
+                for (int j = 0; j < n_orig; j++) {
+                    if (orig_priorities[j].priority > 2) continue;
+                    int found = 0;
+                    for (int i = 0; i < ctx->tools->scratch.count; i++) {
+                        if (strcmp(ctx->tools->scratch.sections[i].name,
+                                   orig_priorities[j].name) == 0) {
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        /* Find the original content from full_sp and restore it */
+                        char header[270];
+                        snprintf(header, sizeof(header), "## %s\n",
+                                 orig_priorities[j].name);
+                        const char *sec_start = strstr(full_sp, header);
+                        if (sec_start) {
+                            const char *body = sec_start + strlen(header);
+                            const char *sec_end = strstr(body, "\n## ");
+                            size_t blen = sec_end
+                                ? (size_t)(sec_end - body)
+                                : strlen(body);
+                            char *restored = malloc(blen + 1);
+                            if (restored) {
+                                memcpy(restored, body, blen);
+                                restored[blen] = '\0';
+                                scratchpad_write(&ctx->tools->scratch,
+                                    orig_priorities[j].name, restored,
+                                    orig_priorities[j].priority);
+                                free(restored);
+                            }
+                        }
+                    }
+                }
                 /* Re-add the preserved result section so it survives pruning.
                  * If scratchpad_parse() already parsed it from LLM output,
                  * scratchpad_write() will overwrite with the original content
@@ -524,11 +567,8 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         free(full_sp);
     }
 
-    /* Don't free last_query/last_result here — the caller (main.c) manages them.
-     * They are set after each react_run() call and used to inject previous context. */
-
-    /* Reset recalled keys for next query (each task is independent) */
-    for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
-        free(ctx->tools->recalled_keys[i]);
-    ctx->tools->n_recalled_keys = 0;
+    /* FIX D2: recalled_keys cleanup is handled exclusively by react_run()
+     * after react_post_loop() returns.  Removing the partial cleanup here
+     * (which freed keys but not the array) eliminates the split ownership
+     * ambiguity and latent double-free risk. */
 }

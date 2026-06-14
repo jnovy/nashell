@@ -438,6 +438,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddStringToObject(entry, "key", key);
     cJSON_AddStringToObject(entry, "value", value);
 
+    /* FIX D8: Tags field is reserved for future use (e.g., dreaming's
+     * SYNTHESIZE pass for auto-tagging).  Currently always empty. */
     cJSON *tags_arr = cJSON_CreateArray();
     cJSON_AddItemToObject(entry, "tags", tags_arr);
 
@@ -1426,53 +1428,10 @@ void memory_results_free(memory_results_t *r) {
 
 /* ── prune (forgetting/decay) ─────────────────────────────── */
 
-/* Phase 1: Scan entries and collect keys that should be pruned.
- * Does NOT delete anything — just builds a list of keys.
- * Phase 2 (in memory_prune) calls memory_delete() for each key AFTER
- * the scan completes, ensuring proper index removal, gc_refs cleanup,
- * and .emb deletion. */
-typedef struct {
-    double min_score;
-    int min_evidence;
-    char **keys;       /* collected keys to prune (heap-allocated strings) */
-    int count;
-    int cap;
-} prune_ctx_t;
-
-static int prune_cb(const char *dirpath, cJSON *entry, void *user_data) {
-    (void)dirpath;
-    prune_ctx_t *ctx = (prune_ctx_t *)user_data;
-
-    /* Never prune pinned memories */
-    cJSON *pin = cJSON_GetObjectItem(entry, "pinned");
-    if (pin && cJSON_IsTrue(pin)) return JSON_CB_CONTINUE;
-
-    /* Bayesian validation scoring — prune only with sufficient evidence.
-     * Age is NOT a criterion: a year-old lesson with no evidence is
-     * unknown (score 0.50), not worthless. Only prune when the data
-     * shows the memory is actively harmful (recalled in failed tasks).
-     * score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
-    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-    int hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-    int misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-    int evidence = hits + misses;
-    double vscore = (hits + 1.0) / (hits + misses + 2.0);
-
-    if (vscore < ctx->min_score && evidence >= ctx->min_evidence) {
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        if (k && k->valuestring) {
-            /* Collect key for deferred deletion */
-            if (ctx->count >= ctx->cap) {
-                ctx->cap = ctx->cap ? ctx->cap * 2 : 16;
-                ctx->keys = realloc(ctx->keys, sizeof(char *) * (size_t)ctx->cap);
-                if (!ctx->keys) return 1;  /* alloc failure — stop */
-            }
-            ctx->keys[ctx->count++] = strdup(k->valuestring);
-        }
-    }
-    return JSON_CB_CONTINUE;
-}
+/* FIX B3: prune_cb and prune_ctx_t removed — memory_prune() now iterates
+ * the in-memory index directly instead of scanning disk via for_each_json_entry.
+ * The index caches pinned, recall_hits, recall_misses — exactly the fields
+ * needed for pruning decisions. */
 
 /* Callback for orphan .emb cleanup: remove .emb files without a matching .json */
 static int orphan_emb_cb(const char *dirpath, const char *filename,
@@ -1504,26 +1463,40 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (!m) return 0;
     pthread_mutex_lock(&m->mtx);
 
-    /* Phase 1: Collect keys to prune (scan-only, no mutation).
-     * Can't call memory_delete() inside for_each_json_entry because
-     * memory_delete() calls gc_refs_cb() which also iterates the
-     * directory — concurrent directory modification is undefined. */
-    prune_ctx_t ctx = { .min_score = min_score,
-                        .min_evidence = min_evidence,
-                        .keys = NULL, .count = 0, .cap = 0 };
-
-    for_each_json_entry(m->dir, prune_cb, &ctx);
+    /* FIX B3: Phase 1 — use in-memory index instead of disk scan.
+     * The index caches pinned, recall_hits, recall_misses — exactly the
+     * fields prune needs.  Avoids O(N) JSON file reads.
+     * Can't call memory_delete() during iteration because it mutates
+     * the index, so we collect keys first, then batch-delete. */
+    char **keys = NULL;
+    int count = 0, cap = 0;
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *e = &m->idx.entries[i];
+        if (e->pinned) continue;
+        int hits = e->recall_hits;
+        int misses = e->recall_misses;
+        int evidence = hits + misses;
+        double vscore = (hits + 1.0) / (hits + misses + 2.0);
+        if (vscore < min_score && evidence >= min_evidence) {
+            if (count >= cap) {
+                cap = cap ? cap * 2 : 16;
+                keys = realloc(keys, sizeof(char *) * (size_t)cap);
+                if (!keys) break;
+            }
+            keys[count++] = strdup(e->key);
+        }
+    }
 
     /* Phase 2: Batch delete collected entries.
      * Uses memory_delete_batch() for O(N) gc_refs instead of O(K×N)
      * when pruning K entries.  Also produces a single git commit
      * instead of K individual commits. */
-    if (ctx.count > 0) {
-        memory_delete_batch(m, (const char **)ctx.keys, ctx.count);
+    if (count > 0) {
+        memory_delete_batch(m, (const char **)keys, count);
     }
-    for (int i = 0; i < ctx.count; i++)
-        free(ctx.keys[i]);
-    free(ctx.keys);
+    for (int i = 0; i < count; i++)
+        free(keys[i]);
+    free(keys);
 
     /* Sweep for orphan .emb files (no matching .json).
      * These accumulate when crashes interrupt deletion or when .json files
@@ -1536,7 +1509,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
     }
 
     pthread_mutex_unlock(&m->mtx);
-    return ctx.count;
+    return count;
 }
 
 /* ── validation scoring ─────────────────────────────────────── */
