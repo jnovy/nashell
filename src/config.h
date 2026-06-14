@@ -89,12 +89,22 @@ typedef struct {
     int    native_context;      /* model's training context size — for warnings */
 
     /* ── Unified Spec: per-model overrides (OpenJarvis-inspired) ──
-     * All fields use sentinel values to mean "inherit from config.toml":
-     *   int: 0 = inherit (unless noted), -1 = inherit for booleans
-     *   float/double: 0.0 = inherit (unless noted)
-     *   pointers: NULL = inherit
+     * All fields use sentinel values to mean "inherit from config.toml".
      * This enables model profiles to carry the full "tuned configuration"
-     * so switching models auto-adjusts everything. */
+     * so switching models auto-adjusts everything.
+     *
+     * SENTINEL REFERENCE (per-type):
+     *   int fields:       0 = inherit (for counts/limits where 0 is invalid)
+     *   bool-like ints:  -1 = inherit (because 0 = off is a valid value)
+     *   float temperature: -1.0 = inherit (0.0 is valid: deterministic sampling)
+     *   float vscore_exp:  -2.0 = inherit (0.0 = disabled and -1.0 are valid)
+     *   double/float:      0.0 = inherit (for fields where 0.0 is invalid)
+     *   pointers:         NULL = inherit
+     *
+     * WARNING: When adding new fields, verify the sentinel is OUTSIDE
+     * the field's valid range. If 0 or -1 are valid values, choose a
+     * domain-specific out-of-band sentinel (see vscore_exponent = -2.0).
+     * For fields with unrestricted domains, consider a separate is_set flag. */
 
     /* [client] overrides */
     float  temperature;         /* -1.0 = inherit (0.0 is valid: deterministic sampling) */

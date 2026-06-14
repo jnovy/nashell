@@ -936,6 +936,29 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         return -1;
     }
 
+    /* Validate top-level section names — warn on unknown sections.
+     * Typos like [memeory] or [recat] silently have no effect. */
+    {
+        static const char *valid_sections[] = {
+            "provider", "client", "thinking", "react", "memory",
+            "tools", "limits", "memory_belief_entropy", NULL
+        };
+        int n_total = toml_table_nkval(root) + toml_table_narr(root)
+                    + toml_table_ntab(root);
+        for (int i = 0; i < n_total; i++) {
+            const char *key = toml_key_in(root, i);
+            if (!key) continue;
+            int found = 0;
+            for (const char **v = valid_sections; *v; v++) {
+                if (strcmp(key, *v) == 0) { found = 1; break; }
+            }
+            if (!found) {
+                fprintf(stderr, "[spec] warning: unknown section [%s] in %s "
+                        "(typo?)\n", key, path);
+            }
+        }
+    }
+
     /* [provider] overlay */
     toml_table_t *provider = toml_table_in(root, "provider");
     if (provider) {

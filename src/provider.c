@@ -16,6 +16,16 @@
 #define PROVIDER_MAX_RETRIES    10
 #define PROVIDER_RETRY_BASE_SEC 10
 
+/* Interruptible sleep: sleeps up to `seconds` but wakes early if
+ * p->abort_retry is set. Returns 1 if aborted, 0 if full sleep. */
+static int provider_sleep(provider_t *p, int seconds) {
+    for (int i = 0; i < seconds; i++) {
+        if (p->abort_retry) return 1;
+        sleep(1);
+    }
+    return p->abort_retry ? 1 : 0;
+}
+
 /* ── Shared model context size table ────────────────────────────── */
 
 /* Unified context size lookup for all API providers (OpenAI + Anthropic).
@@ -890,7 +900,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
                      curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
         }
@@ -910,7 +920,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
                      attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
             free(req_body); free(endpoint);
             return NULL;
         }
@@ -928,7 +938,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
                      msg, attempt, PROVIDER_MAX_RETRIES, delay);
             cJSON_Delete(resp);
-            if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
             free(req_body); free(endpoint);
             return NULL;
         }
@@ -1063,7 +1073,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 nash_log("[provider] transient %ld error (attempt %d/%d, "
                          "retry in %ds)",
                          http_code, attempt, PROVIDER_MAX_RETRIES, delay);
-                sleep(delay);
+                provider_sleep(p, delay);
                 continue;
             }
             /* HTTP 401/403: auth failure — invalidate cached token and
@@ -1114,7 +1124,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
                      curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { sleep(delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
             /* Populate error diagnostics for react.c journal entry */
             free(p->last_error);
             {

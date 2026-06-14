@@ -294,7 +294,55 @@ static void *infer_worker(void *arg) {
     return NULL;
 }
 
+/* ── Session init/cleanup helpers ──────────────────────────────────
+ * Unifies the 4 duplicated initialization paths (daemon, headless,
+ * mailbox, TUI) into a single function. */
 
+static void session_init_tools(tool_ctx_t *tools, store_t *store,
+                               journal_t *journal, memory_t *memory,
+                               char *session_dir, config_t *cfg,
+                               provider_t *provider) {
+    memset(tools, 0, sizeof(*tools));
+    tools->store = store;
+    tools->journal = journal;
+    tools->memory = memory;
+    tools->session_dir = session_dir;
+    tools->cfg = cfg;
+    tools->provider = provider;
+    tools->react_loop = journal_max_react_loop(journal) + 1;
+    tools->aliases = alias_map_new();
+    scratchpad_init(&tools->scratch);
+    if (session_dir) {
+        scratchpad_load(&tools->scratch, session_dir);
+    }
+    tools->tool_filter = build_profile_tool_filter(cfg);
+}
+
+static void session_init_react(react_ctx_t *react, provider_t *provider,
+                               tool_ctx_t *tools, config_t *cfg) {
+    memset(react, 0, sizeof(*react));
+    react->provider = provider;
+    react->tools = tools;
+    react->max_steps = cfg->max_react_steps;
+    react->verbose = 1;
+    react->flags = (react_flags_t)REACT_FLAGS_DEFAULT;
+    apply_profile_flags(&react->flags, cfg);
+    react->parent_loop = -1;
+    pthread_mutex_init(&react->user_ask_mutex, NULL);
+    pthread_cond_init(&react->user_ask_cond, NULL);
+}
+
+static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
+                            journal_t *journal) {
+    pthread_mutex_destroy(&react->user_ask_mutex);
+    pthread_cond_destroy(&react->user_ask_cond);
+    tool_free_deferred_consolidations(tools);
+    scratchpad_free(&tools->scratch);
+    alias_map_free(tools->aliases);
+    free(tools->last_spec_hash);
+    tools->last_spec_hash = NULL;
+    journal_free(journal);
+}
 
 int main(int argc, char **argv) {
     /* Load config from ~/.nash/config.toml (or default) */
@@ -867,26 +915,11 @@ int main(int argc, char **argv) {
 
             /* Set up a fresh session for each task */
             journal_t *journal = journal_new_lazy(nash_dir);
-            int start_loop = journal_max_react_loop(journal) + 1;
-            tool_ctx_t tools = {
-                .store = shared_store, .journal = journal,
-                .memory = memory,
-                .session_dir = NULL,
-                .cfg = cfg, .provider = provider,
-                .react_loop = start_loop,
-                .aliases = alias_map_new(),
-            };
-            scratchpad_init(&tools.scratch);
-            react_flags_t default_flags = REACT_FLAGS_DEFAULT;
-            apply_profile_flags(&default_flags, cfg);
-            tools.tool_filter = build_profile_tool_filter(cfg);
-            react_ctx_t react = {
-                .provider = provider, .tools = &tools,
-                .max_steps = cfg->max_react_steps, .verbose = 1,
-                .flags = default_flags, .parent_loop = -1,
-            };
-            pthread_mutex_init(&react.user_ask_mutex, NULL);
-            pthread_cond_init(&react.user_ask_cond, NULL);
+            tool_ctx_t tools;
+            session_init_tools(&tools, shared_store, journal, memory,
+                               NULL, cfg, provider);
+            react_ctx_t react;
+            session_init_react(&react, provider, &tools, cfg);
 
             mailbox_ctx_t mbox = {
                 .react_ctx = &react,
@@ -914,13 +947,7 @@ int main(int argc, char **argv) {
             memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
 
             /* Cleanup */
-            pthread_mutex_destroy(&react.user_ask_mutex);
-            pthread_cond_destroy(&react.user_ask_cond);
-            tool_free_deferred_consolidations(&tools);
-            scratchpad_free(&tools.scratch);
-            alias_map_free(tools.aliases);
-            free(tools.last_spec_hash);
-            journal_free(journal);
+            session_cleanup(&tools, &react, journal);
             free(task_id);
             free(task_query);
         }
@@ -955,28 +982,11 @@ int main(int argc, char **argv) {
         } else {
             journal = journal_new(session_dir);
         }
-        int start_loop = journal_max_react_loop(journal) + 1;
-        tool_ctx_t tools = {
-            .store = shared_store, .journal = journal,
-            .memory = memory,
-            .session_dir = NULL,
-            .cfg = cfg, .provider = provider,
-            .react_loop = start_loop,
-            .aliases = alias_map_new(),
-        };
-        scratchpad_init(&tools.scratch);
-        /* Load scratchpad from previous session if it exists (session_dir may be NULL for lazy sessions) */
-        if (session_dir) {
-            scratchpad_load(&tools.scratch, session_dir);
-        }
-        react_flags_t default_flags = REACT_FLAGS_DEFAULT;
-        apply_profile_flags(&default_flags, cfg);
-        tools.tool_filter = build_profile_tool_filter(cfg);
-        react_ctx_t react = {
-            .provider = provider, .tools = &tools,
-            .max_steps = cfg->max_react_steps, .verbose = 1,
-            .flags = default_flags, .parent_loop = -1,
-        };
+        tool_ctx_t tools;
+        session_init_tools(&tools, shared_store, journal, memory,
+                           session_dir, cfg, provider);
+        react_ctx_t react;
+        session_init_react(&react, provider, &tools, cfg);
 
         /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
         char *result;
@@ -986,8 +996,6 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "[error] failed to initialize mailbox\n");
                 return 1;
             }
-            pthread_mutex_init(&react.user_ask_mutex, NULL);
-            pthread_cond_init(&react.user_ask_cond, NULL);
             mailbox_ctx_t mbox = {
                 .react_ctx = &react,
                 .mailbox_dir = mbox_dir,
@@ -997,8 +1005,6 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[mailbox] enabled — questions in %s/outbox/, answers in %s/inbox/\n",
                     mbox_dir, mbox_dir);
             result = react_run(&react, query, mailbox_on_event, &mbox);
-            pthread_mutex_destroy(&react.user_ask_mutex);
-            pthread_cond_destroy(&react.user_ask_cond);
         } else {
             result = react_run(&react, query, tui_on_event, NULL);
         }
@@ -1015,16 +1021,10 @@ int main(int argc, char **argv) {
         if (result) { printf("%s\n", result); free(result); }
         /* Save scratchpad if session was created */
         if (session_dir && tools.scratch.count > 0) {
-            char sp_path[NASH_PATH_MAX];
-            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-            scratchpad_save(&tools.scratch, sp_path);
+            scratchpad_save(&tools.scratch, session_dir);
         }
         tools.react_loop++;  /* increment for next query */
-        tool_free_deferred_consolidations(&tools);  /* FIX CRIT1 */
-        scratchpad_free(&tools.scratch);
-        alias_map_free(tools.aliases);
-        free(tools.last_spec_hash);
-        journal_free(journal);
+        session_cleanup(&tools, &react, journal);
         /* Remove session directory if it's empty (no work was done) */
         if (session_dir && is_dir_empty(session_dir)) {
             rmdir(session_dir);
@@ -1070,29 +1070,11 @@ int main(int argc, char **argv) {
             session_dir = create_session_dir(nash_dir);
         }
         journal_t *journal = journal_new(session_dir);
-        int start_loop = journal_max_react_loop(journal) + 1;
-        tool_ctx_t tools = {
-            .store = shared_store, .journal = journal,
-            .memory = memory,
-            .session_dir = session_dir,
-            .cfg = cfg, .provider = provider,
-            .react_loop = start_loop,
-            .aliases = alias_map_new(),
-        };
-        scratchpad_init(&tools.scratch);
-        /* Load scratchpad from previous session if it exists */
-        scratchpad_load(&tools.scratch, session_dir);
-        react_flags_t tui_default_flags = REACT_FLAGS_DEFAULT;
-        apply_profile_flags(&tui_default_flags, cfg);
-        tools.tool_filter = build_profile_tool_filter(cfg);
-        react_ctx_t react = {
-            .provider = provider, .tools = &tools,
-            .max_steps = cfg->max_react_steps, .verbose = 1,
-            .flags = tui_default_flags, .parent_loop = -1,
-        };
-        /* P7: Initialize condition variable for user_ask handoff */
-        pthread_mutex_init(&react.user_ask_mutex, NULL);
-        pthread_cond_init(&react.user_ask_cond, NULL);
+        tool_ctx_t tools;
+        session_init_tools(&tools, shared_store, journal, memory,
+                           session_dir, cfg, provider);
+        react_ctx_t react;
+        session_init_react(&react, provider, &tools, cfg);
 
         /* Initialize logging subsystem for TUI error routing */
         nash_log_init(journal, shared_store);
@@ -2005,21 +1987,13 @@ int main(int argc, char **argv) {
         free(pending_redirect);  /* clean up any un-dispatched redirect */
         tui_shutdown();
         nash_log_set_ui(NULL);  /* disable TUI error routing */
-        /* P7: Destroy condition variable resources */
-        pthread_mutex_destroy(&react.user_ask_mutex);
-        pthread_cond_destroy(&react.user_ask_cond);
         ui_state_free(ui);
 
         /* Save scratchpad */
         if (tools.scratch.count > 0) {
-            char sp_path[NASH_PATH_MAX];
-            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md", session_dir);
-            scratchpad_save(&tools.scratch, sp_path);
+            scratchpad_save(&tools.scratch, session_dir);
         }
-        scratchpad_free(&tools.scratch);
-        alias_map_free(tools.aliases);
-        free(tools.last_spec_hash);
-        journal_free(journal);
+        session_cleanup(&tools, &react, journal);
         /* Remove session directory if it's empty (no work was done) */
         if (session_dir && is_dir_empty(session_dir)) {
             rmdir(session_dir);

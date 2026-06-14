@@ -443,7 +443,7 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
 
     /* Resolve store/ paths relative to session directory (legacy) */
     char resolved_buf[NASH_PATH_MAX];
-    if (strncmp(path, "store/", 6) == 0) {
+    if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
         snprintf(resolved_buf, sizeof(resolved_buf), "%s/%s", ctx->session_dir, path);
         path = resolved_buf;
     }
@@ -954,7 +954,7 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
 
     /* Resolve store/ paths (legacy) */
     char resolved_path[NASH_PATH_MAX];
-    if (strncmp(path, "store/", 6) == 0) {
+    if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
         snprintf(resolved_path, sizeof(resolved_path), "%s/%s", ctx->session_dir, path);
         path = resolved_path;
     }

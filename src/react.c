@@ -361,8 +361,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int ct = (ctx->tools->cfg && ctx->tools->cfg->cycling_threshold > 0)
              ? ctx->tools->cfg->cycling_threshold : 2;
     if (cw > 64) cw = 64;  /* sanity cap */
-    char (*last_sigs)[512] = calloc(cw, 512);
-    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, 512); }
+    char (*last_sigs)[1024] = calloc(cw, 1024);
+    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, 1024); }
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
@@ -594,8 +594,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         break;
                     }
                     /* Aggressive eviction: remove half of middle messages */
-                    int keep_head = 3;
-                    int keep_tail = 4;
+                    int keep_head = REACT_EVICT_KEEP_HEAD;
+                    int keep_tail = REACT_EVICT_KEEP_TAIL;
                     int evict_start = keep_head;
                     int evict_end = chat->n_msgs - keep_tail;
                     if (evict_end > evict_start + 2) {
@@ -977,7 +977,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                  final_result, 1);  /* priority 1 = high */
                 scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
             }
-            {
+            if (ctx->tools->session_dir) {
                 char rpath[NASH_PATH_MAX];
                 snprintf(rpath, sizeof(rpath), "%s/result.txt",
                          ctx->tools->session_dir);
@@ -1021,7 +1021,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * require repeated operations (e.g., reading multiple sections
          * of the same file, running similar commands). */
         int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
-        char sig[512];
+        char sig[1024];
         const char *cmd = react_json_get_str(action, "command");
         const char *path = react_json_get_str(action, "path");
         const char *pattern = react_json_get_str(action, "pattern");
@@ -1040,11 +1040,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
         /* Build signature from all action-distinguishing parameters.
-         * Truncate long fields (content, old_text, new_text) to keep sig bounded. */
-        char content_prefix[32] = "", old_prefix[32] = "", new_prefix[32] = "";
-        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.30s", content);
-        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.30s", old_text);
-        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.30s", new_text);
+         * Truncate long fields (content, old_text, new_text) to keep sig bounded.
+         * Use 120-char prefix to avoid false positives on edits that differ
+         * only after char 30 (the previous limit). */
+        char content_prefix[128] = "", old_prefix[128] = "", new_prefix[128] = "";
+        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.120s", content);
+        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.120s", old_text);
+        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.120s", new_text);
         snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s",
                  action_name,
                  cmd ? cmd : "",
@@ -1063,11 +1065,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             if (strcmp(last_sigs[i], sig) == 0) repeated++;
         }
         if (sig_count < cw) {
-            snprintf(last_sigs[sig_count], 512, "%s", sig);
+            snprintf(last_sigs[sig_count], 1024, "%s", sig);
             sig_count++;
         } else {
-            memmove(last_sigs, last_sigs + 1, (cw - 1) * 512);
-            snprintf(last_sigs[cw - 1], 512, "%s", sig);
+            memmove(last_sigs, last_sigs + 1, (cw - 1) * 1024);
+            snprintf(last_sigs[cw - 1], 1024, "%s", sig);
         }
 
         if (cycling_enabled && repeated >= ct) {
@@ -1310,8 +1312,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     total_chars += (int)strlen(chat->msgs[i].content);
             float cpt_ev = react_get_chars_per_token(ctx);
             int usage_pct = (int)(100.0 * total_chars / (ctx->provider->cfg.context_size * cpt_ev));
-            int keep_head = 3;
-            int keep_tail = 4;
+            int keep_head = REACT_EVICT_KEEP_HEAD;
+            int keep_tail = REACT_EVICT_KEEP_TAIL;
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > keep_head + keep_tail + 1) {
                 /* Priority eviction: remove error messages first (research: errors in context degrade performance).
                  * Fix #3: Use msg_type for type-safe eviction instead of strstr("ERROR:"). */
@@ -1379,7 +1381,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                      * Now we extract key content (assistant thoughts, tool results,
                      * findings) heuristically — zero latency, no API call. */
                     if (evicted_text.len > 0) {
-                        size_t sp_budget = (size_t)(ctx->provider->cfg.context_size * cpt_ev * 15 / 100);
+                        size_t sp_budget = (size_t)(ctx->provider->cfg.context_size * cpt_ev * REACT_SCRATCHPAD_BUDGET_PCT / 100);
                         str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
 
                         /* Extract substantive content from evicted messages:

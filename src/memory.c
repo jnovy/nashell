@@ -134,6 +134,8 @@ static void memory_git_init(memory_t *m) {
  * No-op if nothing changed (git commit will exit 1, which we ignore). */
 static void memory_git_commit(memory_t *m, const char *msg) {
     if (!m || !msg) return;
+    /* In deferred mode, skip individual commits — they'll be batched. */
+    if (m->git_deferred) { m->git_deferred_count++; return; }
     char git_path[NASH_PATH_MAX];
     snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
     struct stat st;
@@ -959,11 +961,6 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 e->refs[ri] = strdup(ie->refs[ri]);
         }
 
-        /* Persist access_count to disk and update in-memory index.
-         * O(k) file I/O per recall (k ≈ 5–10), acceptable given that
-         * embedding lookups already dominate recall cost. */
-        memory_increment_field(m, ie->key, "access_count");
-
         e->relevance = scored[i].score;
         e->raw_relevance = scored[i].relevance;
         e->importance = scored[i].importance;
@@ -972,6 +969,15 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
     free(scored);
     pthread_mutex_unlock(&m->mtx);
+
+    /* Persist access_count to disk AFTER releasing the mutex.
+     * Each increment call re-acquires the mutex briefly for its own I/O,
+     * but doesn't block other threads for the entire batch duration.
+     * This reduces mutex hold time from O(k * disk_io) to O(scoring). */
+    for (int i = 0; i < results.count; i++) {
+        memory_increment_field(m, results.entries[i].key, "access_count");
+    }
+
     return results;
 }
 
@@ -1881,4 +1887,21 @@ int memory_embed_all(memory_t *m) {
     free(pending);
 
     return embedded;
+}
+
+/* ── Deferred git commit API ────────────────────────────── */
+
+void memory_git_defer(memory_t *m) {
+    if (!m) return;
+    m->git_deferred = 1;
+    m->git_deferred_count = 0;
+}
+
+void memory_git_flush(memory_t *m, const char *msg) {
+    if (!m) return;
+    m->git_deferred = 0;
+    if (m->git_deferred_count == 0) return;
+    m->git_deferred_count = 0;
+    /* Single batch commit for all deferred changes */
+    memory_git_commit(m, msg ? msg : "memory: batch update");
 }

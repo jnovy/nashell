@@ -118,11 +118,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         memory_results_free(&all_memories);
     }
 
-    /* v5: Scratchpad budget = 15% of context size, no min/max caps. */
+    /* Scratchpad budget = REACT_SCRATCHPAD_BUDGET_PCT% of context size, no min/max caps. */
     size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
     if (ctx->provider->cfg.context_size > 0) {
         float cpt = react_get_chars_per_token(ctx);
-        max_scratchpad = (size_t)(ctx->provider->cfg.context_size * cpt * 15 / 100);
+        max_scratchpad = (size_t)(ctx->provider->cfg.context_size * cpt * REACT_SCRATCHPAD_BUDGET_PCT / 100);
     }
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
@@ -142,9 +142,12 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 ancestors[n_ancestors++] = ctx->parent_loop;
 
                 char jpath[NASH_PATH_MAX];
-                snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
-                         ctx->tools->session_dir);
-                FILE *jf = fopen(jpath, "r");
+                FILE *jf = NULL;
+                if (ctx->tools->session_dir) {
+                    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
+                             ctx->tools->session_dir);
+                    jf = fopen(jpath, "r");
+                }
                 if (jf) {
                     int pmap[1024];
                     memset(pmap, -1, sizeof(pmap));
@@ -216,7 +219,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     }
 
     /* Inject previous result — loaded from session_dir/result.txt. */
-    if (ctx->flags.inject_prev_result) {
+    if (ctx->flags.inject_prev_result && ctx->tools->session_dir) {
         char rpath[NASH_PATH_MAX];
         snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
         char *prev_result = slurp_file(rpath, NULL);

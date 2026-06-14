@@ -28,4 +28,11 @@ char *store_resolve(store_t *s, const char *hash);
 /* Compute SHA256 hex string (caller must free, 64 hex chars + NUL) */
 char *sha256_hex(const char *data, size_t len);
 
+/* Garbage-collect unreferenced store entries.
+ * Scans all session directories under nash_dir/sessions/ for symlinks
+ * pointing into the store. Any store entry not referenced by at least
+ * one session symlink is deleted.
+ * Returns number of entries removed, or -1 on error. */
+int store_gc(store_t *s, const char *nash_dir);
+
 #endif

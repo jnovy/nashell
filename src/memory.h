@@ -66,6 +66,12 @@ typedef struct {
      * memory_try_consolidate to prevent consolidation→store→consolidation loops. */
     int consolidating;
 
+    /* Deferred git commits — when git_deferred > 0, memory_git_commit()
+     * is skipped and git_deferred_count is incremented. Call
+     * memory_git_flush() to batch-commit all deferred changes. */
+    int git_deferred;
+    int git_deferred_count;
+
     /* Thread safety: protects idx and all index-dependent operations.
      * The inference thread (react_run → tools) and the main thread
      * (/memory_recall command) can both access memory concurrently.
@@ -257,5 +263,12 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value);
  * Useful after enabling embeddings on an existing memory store.
  * Returns number of entries embedded. */
 int memory_embed_all(memory_t *m);
+
+/* Deferred git commits for batch operations (e.g., dreaming/consolidation).
+ * Call memory_git_defer(m) before a batch, then memory_git_flush(m) after.
+ * While deferred, individual store/delete/pin operations skip git commits.
+ * memory_git_flush() does a single `git add -A && git commit` for all changes. */
+void memory_git_defer(memory_t *m);
+void memory_git_flush(memory_t *m, const char *msg);
 
 #endif

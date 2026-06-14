@@ -21,6 +21,13 @@
 #include <dirent.h>
 #include <stdint.h>
 
+/* ── Eviction Constants ─────────────────────────────── */
+/* Number of messages at head/tail of conversation to always keep during eviction. */
+#define REACT_EVICT_KEEP_HEAD  3
+#define REACT_EVICT_KEEP_TAIL  4
+/* Scratchpad budget as percentage of total context size. */
+#define REACT_SCRATCHPAD_BUDGET_PCT  15
+
 /* ── Helpers shared across react submodules ─────────── */
 
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */

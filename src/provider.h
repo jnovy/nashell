@@ -91,6 +91,9 @@ struct provider {
     /* ── Tool filter (set by caller before provider_complete) ── */
     const struct tool_filter_t *tool_filter;  /* NULL = all tools */
 
+    /* ── Abort flag for interruptible retry sleeps ── */
+    volatile int abort_retry;   /* set to 1 to cancel retry sleep early */
+
     /* ── Error diagnostics (populated on error, read by react.c) ── */
     char *last_error;           /* error message (curl error, HTTP error, etc.) */
     char *last_error_request;   /* raw request body that caused the error */
