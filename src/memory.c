@@ -908,9 +908,14 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 s = 0;
         }
 
-        /* P0: Abstention gate — skip entries below min_score */
+        /* P0: Abstention gate — skip entries below min_score.
+         * Compare against raw relevance (out_rel) instead of the
+         * vscore-damped composite (s).  Without this, new memories
+         * with vscore=0.5 and exponent=0.3 get a ×0.81 penalty that
+         * can push them below the threshold even when their raw
+         * relevance clearly qualifies (e.g. 0.30 × 0.81 = 0.24 < 0.25). */
         double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
-        if (s >= min_score) {
+        if (out_rel >= min_score) {
             scored[n_scored].idx_pos = i;
             scored[n_scored].score = s;
             scored[n_scored].relevance = out_rel;

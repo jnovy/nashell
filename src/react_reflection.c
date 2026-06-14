@@ -76,28 +76,36 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                      const char *final_result, int task_succeeded,
                      react_event_fn on_event, void *userdata) {
     (void)user_query;  /* reserved for future use */
-    /* Validation scoring: update recall_hits for all recalled memories.
+    /* Validation scoring: update recall_hits / recall_misses for recalled memories.
      * Counter bumps are written to JSON files but NOT git-committed —
      * these are high-frequency, low-value changes that pollute the git log
      * (access_count, recall_hits, recall_misses). Git history is reserved
      * for meaningful content changes (store, delete, prune, consolidate).
      *
-     * FIX DESIGN1: Only increment hits on success, NOT blanket misses on
-     * failure.  Previously, ALL recalled memories got a miss on failure,
-     * but failure is rarely caused by the recalled memories — it's usually
-     * task difficulty or model error.  Blanket miss attribution creates
-     * noise that degrades vscore of high-recall, high-value memories
-     * (their vscore converges to the background success rate rather than
-     * the memory's actual contribution).  Corrective insights for truly
-     * harmful memories are handled by reflection → SUPERSEDES.
+     * Symmetric scoring: increment hits on success, misses on failure.
+     * Without misses, vscore = (hits+1)/(hits+misses+2) can only increase
+     * monotonically, making Bayesian pruning impossible — every memory
+     * that participates in enough successful tasks converges to vscore≈1.0
+     * regardless of whether it actually contributed to success.
      *
-     * Future: the reflection phase could identify specific harmful memories
-     * and increment misses only for those (targeted attribution). */
+     * The noise objection (failure is rarely caused by recalled memories)
+     * is valid but outweighed: with symmetric scoring, vscore converges
+     * to the background success rate of tasks where the memory was recalled.
+     * This is a meaningful signal — memories recalled during consistently
+     * failing task types get demoted, while memories recalled during
+     * consistently succeeding task types get promoted. The cold-start
+     * exponent (vscore_exponent=0.3) already dampens vscore's influence
+     * to limit the impact of noisy early signals. */
     if (ctx->flags.enable_scoring && ctx->tools->memory &&
-        ctx->tools->n_recalled_keys > 0 && task_succeeded) {
+        ctx->tools->n_recalled_keys > 0) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
-            memory_increment_hits(ctx->tools->memory,
-                                  ctx->tools->recalled_keys[i]);
+            if (task_succeeded) {
+                memory_increment_hits(ctx->tools->memory,
+                                      ctx->tools->recalled_keys[i]);
+            } else {
+                memory_increment_misses(ctx->tools->memory,
+                                        ctx->tools->recalled_keys[i]);
+            }
         }
     }
 

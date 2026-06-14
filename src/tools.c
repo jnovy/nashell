@@ -3162,6 +3162,21 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
         }
 
         if (best_idx >= 0) {
+            /* Re-check tool filter for the recovered name — without this,
+             * a blocked tool could be reached by concatenating its name
+             * with another tool name (e.g. "web_searchfile_read" bypasses
+             * block=["web_search"]). */
+            if (ctx->tool_filter.allowed) {
+                int found = 0;
+                for (int i = 0; i < ctx->tool_filter.n_allowed; i++)
+                    if (strcmp(best_name, ctx->tool_filter.allowed[i]) == 0) { found = 1; break; }
+                if (!found) return make_error("tool not available in this context");
+            }
+            if (ctx->tool_filter.blocked) {
+                for (int i = 0; i < ctx->tool_filter.n_blocked; i++)
+                    if (strcmp(best_name, ctx->tool_filter.blocked[i]) == 0)
+                        return make_error("tool not available in this context");
+            }
             fprintf(stderr, "[tool] recovered concatenated tool name: "
                     "'%s' → '%s' (dropped suffix: '%s')\n",
                     action, best_name, action + best_len);

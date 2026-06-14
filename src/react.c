@@ -1128,15 +1128,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
         /* Build signature from all action-distinguishing parameters.
          * Truncate long fields (content, old_text, new_text) to keep sig bounded.
-         * Use 120-char prefix to avoid false positives on edits that differ
-         * only after char 30 (the previous limit). */
-        char content_prefix[128] = "", old_prefix[128] = "", new_prefix[128] = "";
-        char key_prefix[128] = "", value_prefix[128] = "";
-        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.120s", content);
-        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.120s", old_text);
-        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.120s", new_text);
-        if (key) snprintf(key_prefix, sizeof(key_prefix), "%.120s", key);
-        if (value) snprintf(value_prefix, sizeof(value_prefix), "%.120s", value);
+         * Use 512-char prefix — 120 was too short and caused false cycling
+         * detection for file_edit calls that differ only after char 120
+         * (common with large code blocks). The sig buffer is 2048 bytes,
+         * so 5×512 + other fields still fits comfortably. */
+        char content_prefix[520] = "", old_prefix[520] = "", new_prefix[520] = "";
+        char key_prefix[520] = "", value_prefix[520] = "";
+        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.512s", content);
+        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.512s", old_text);
+        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.512s", new_text);
+        if (key) snprintf(key_prefix, sizeof(key_prefix), "%.512s", key);
+        if (value) snprintf(value_prefix, sizeof(value_prefix), "%.512s", value);
         snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s:%s:%s",
                  action_name,
                  cmd ? cmd : "",
@@ -1654,8 +1656,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 char *sp_msg = malloc(slen + 32);
                                 if (sp_msg) {
                                     snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
+                                    /* Use LLM_MSG_SCRATCHPAD (not EVICTION_SUMMARY)
+                                     * so Tier 2 recovery can find it via
+                                     * llm_chat_find_by_type(LLM_MSG_SCRATCHPAD). */
                                     llm_chat_insert_typed(chat, evict_start,
-                                        "user", sp_msg, LLM_MSG_EVICTION_SUMMARY);
+                                        "user", sp_msg, LLM_MSG_SCRATCHPAD);
                                     free(sp_msg);
                                 }
                             }

@@ -353,6 +353,22 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
     journal_free(journal);
 }
 
+/* Unified cleanup for global resources.
+ * Replaces 8+ duplicated cleanup sequences across early-return paths.
+ * All _free functions handle NULL safely. */
+static void cleanup_globals(store_t *shared_store, memory_t *memory,
+                            provider_t *provider, char *nash_dir,
+                            char *props_json, char *server_model,
+                            config_t *cfg) {
+    store_free(shared_store);
+    memory_free(memory);
+    provider_free(provider);
+    free(nash_dir);
+    free(props_json);
+    free(server_model);
+    config_free(cfg);
+}
+
 int main(int argc, char **argv) {
     /* Load config from ~/.nash/config.toml (or default) */
     char config_path[512];
@@ -668,13 +684,7 @@ int main(int argc, char **argv) {
         query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
         if (!banks || n_banks == 0) {
             fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
-            store_free(shared_store);
-            memory_free(memory);
-            provider_free(provider);
-            free(nash_dir);
-            free(props_json);
-            free(server_model);
-            config_free(cfg);
+            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -713,13 +723,7 @@ int main(int argc, char **argv) {
 
         regression_free_report(report);
         regression_free_banks(banks, n_banks);
-        store_free(shared_store);
-        memory_free(memory);
-        provider_free(provider);
-        free(nash_dir);
-        free(props_json);
-        free(server_model);
-        config_free(cfg);
+        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
         return exit_code;
     }
 
@@ -729,13 +733,7 @@ int main(int argc, char **argv) {
         if (rounds < 0) {
             fprintf(stderr, "[optimize] invalid budget '%s' — use light, medium, heavy, or a number\n",
                     optimize_budget);
-            store_free(shared_store);
-            memory_free(memory);
-            provider_free(provider);
-            free(nash_dir);
-            free(props_json);
-            free(server_model);
-            config_free(cfg);
+            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -749,13 +747,7 @@ int main(int argc, char **argv) {
         query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
         if (!banks || n_banks == 0) {
             fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
-            store_free(shared_store);
-            memory_free(memory);
-            provider_free(provider);
-            free(nash_dir);
-            free(props_json);
-            free(server_model);
-            config_free(cfg);
+            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -825,13 +817,7 @@ int main(int argc, char **argv) {
         regression_free_banks(banks, n_banks);
         if (reflection_provider != provider)
             provider_free(reflection_provider);
-        store_free(shared_store);
-        memory_free(memory);
-        provider_free(provider);
-        free(nash_dir);
-        free(props_json);
-        free(server_model);
-        config_free(cfg);
+        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
         return 0;
     }
 
@@ -854,13 +840,7 @@ int main(int argc, char **argv) {
         }
         if (!pb) {
             fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-            store_free(shared_store);
-            memory_free(memory);
-            provider_free(provider);
-            free(nash_dir);
-            free(props_json);
-            free(server_model);
-            config_free(cfg);
+            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -888,13 +868,7 @@ int main(int argc, char **argv) {
                 pb->name, ok ? "completed successfully" : "FAILED");
 
         playbook_free(pb);
-        store_free(shared_store);
-        memory_free(memory);
-        provider_free(provider);
-        free(nash_dir);
-        free(props_json);
-        free(server_model);
-        config_free(cfg);
+        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
         return ok ? 0 : 1;
     }
 
@@ -970,11 +944,7 @@ int main(int argc, char **argv) {
         /* FIX #6: Graceful shutdown — cleanup shared resources */
         fprintf(stderr, "[daemon] shutting down...\n");
         web_search_cleanup();
-        store_free(shared_store);
-        memory_free(memory);
-        provider_free(provider);
-        free(nash_dir);
-        config_free(cfg);
+        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
         return 0;
     }
 
@@ -1054,13 +1024,7 @@ int main(int argc, char **argv) {
             rmdir(session_dir);
         }
         if (session_dir) free(session_dir);
-        store_free(shared_store);
-        memory_free(memory);
-        provider_free(provider);
-        free(nash_dir);
-        free(props_json);
-        free(server_model);
-        config_free(cfg);
+        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
         return have_result ? 0 : 1;
     }
 
@@ -1323,6 +1287,10 @@ int main(int argc, char **argv) {
                         write_file(cp_path, cpj, strlen(cpj));
                         free(cpj);
                         cJSON_Delete(cp);
+                        /* Persist scratchpad to the forked session directory
+                         * so it survives resume. Without this, the forked
+                         * session starts with an empty scratchpad. */
+                        scratchpad_save(&tools.scratch, new_dir);
                         /* Switch to forked session */
                         journal_free(journal);
                         free(session_dir);
@@ -2029,12 +1997,6 @@ int main(int argc, char **argv) {
     }
     printf("Bye.\n");
     web_search_cleanup();  /* tear down auto-started SearXNG container */
-    store_free(shared_store);
-    memory_free(memory);
-    provider_free(provider);
-    free(nash_dir);
-    free(props_json);
-    free(server_model);
-    config_free(cfg);
+    cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
     return 0;
 }
