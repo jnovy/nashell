@@ -76,11 +76,16 @@ static const struct {
 };
 
 /* Look up context window size by model ID prefix.
+ * FIX #3: Use strncmp for true prefix matching instead of strstr substring
+ * matching. strstr("my-gpt-4o-tune", "gpt-4o") would incorrectly match,
+ * and short prefixes like "o1" could match model names containing "o1"
+ * anywhere (e.g. "model-fo1low-up").
  * Returns 0 if no match found. */
 int provider_lookup_context_size(const char *model_id) {
     if (!model_id) return 0;
     for (int i = 0; MODEL_CONTEXT_SIZES[i].prefix; i++) {
-        if (strstr(model_id, MODEL_CONTEXT_SIZES[i].prefix))
+        if (strncmp(model_id, MODEL_CONTEXT_SIZES[i].prefix,
+                    strlen(MODEL_CONTEXT_SIZES[i].prefix)) == 0)
             return MODEL_CONTEXT_SIZES[i].size;
     }
     return 0;

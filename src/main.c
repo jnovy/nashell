@@ -8,6 +8,7 @@
 #include <dirent.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -32,6 +33,14 @@
 #include "mailbox.h"
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
+
+/* FIX #6: Daemon mode graceful shutdown via signal handler.
+ * SIGTERM/SIGINT set this flag; the daemon loop checks it each iteration. */
+static volatile sig_atomic_t shutdown_requested = 0;
+static void shutdown_handler(int sig) {
+    (void)sig;
+    shutdown_requested = 1;
+}
 
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
@@ -900,10 +909,17 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[daemon] inbox: %s/inbox/  (drop task_* files here)\n", mbox_dir);
         fprintf(stderr, "[daemon] outbox: %s/outbox/ (results appear here)\n", mbox_dir);
 
-        while (1) {
+        /* FIX #6: Install signal handlers for graceful daemon shutdown.
+         * SIGTERM/SIGINT set shutdown_requested; the loop checks it
+         * each iteration so in-progress tasks complete before exit. */
+        signal(SIGTERM, shutdown_handler);
+        signal(SIGINT, shutdown_handler);
+
+        while (!shutdown_requested) {
             char *task_id = NULL;
             char *task_query = mailbox_wait_task(mbox_dir, &task_id, 0);
             if (!task_query) {
+                if (shutdown_requested) break;
                 fprintf(stderr, "[daemon] wait_task returned NULL, retrying...\n");
                 sleep(1);
                 continue;
@@ -951,7 +967,15 @@ int main(int argc, char **argv) {
             free(task_id);
             free(task_query);
         }
-        /* Not reached (runs forever) */
+        /* FIX #6: Graceful shutdown — cleanup shared resources */
+        fprintf(stderr, "[daemon] shutting down...\n");
+        web_search_cleanup();
+        store_free(shared_store);
+        memory_free(memory);
+        provider_free(provider);
+        free(nash_dir);
+        config_free(cfg);
+        return 0;
     }
 
     /* One-shot headless mode */
@@ -1122,8 +1146,10 @@ int main(int argc, char **argv) {
         int running = 1;
         /* State machine: 0=idle (main thread only), 1=inference running,
          * 3=playbook running. Values 1 and 3 mean infer_tid is joinable.
-         * Only the main thread reads/writes this variable. */
-        int inferring = 0;
+         * FIX #13: Made atomic for defense in depth — currently only the
+         * main thread reads/writes, but atomic_int prevents data races
+         * if future code accesses it from another thread. */
+        atomic_int inferring = 0;
         pthread_t infer_tid;
         /* Thread-shared args: static lifetime so they survive across loop
          * iterations.  Thread ownership contract:

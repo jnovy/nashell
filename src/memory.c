@@ -28,8 +28,10 @@ void key_to_path(const char *key, const char *ext, char *out, size_t out_sz) {
     size_t i = 0;
     for (; key[i] && i < out_sz - ext_len - 1; i++)
         out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
-    out[i] = '\0';
-    strcat(out, ext);
+    /* FIX #12: Use memcpy instead of strcat — the loop already
+     * reserved exactly ext_len+1 bytes, so strcat's linear scan
+     * for NUL is unnecessary and fragile. */
+    memcpy(out + i, ext, ext_len + 1);  /* +1 copies NUL terminator */
 }
 
 /* Forward declarations for helpers used by index loading (defined later) */
@@ -953,8 +955,14 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 int slot = (int)(h & (unsigned)map_mask);
                 while (ref_map[slot].key) {
                     if (strcmp(ref_map[slot].key, ie->refs[ri]) == 0) {
-                        if (ref_map[slot].idx != i)
-                            scored[ref_map[slot].idx].score += 0.3 * scored[i].score;
+                        if (ref_map[slot].idx != i) {
+                            /* FIX #2: Cap boosted score at 1.0 to preserve
+                             * normalized scoring invariant. Without this cap,
+                             * mutually-referencing memories inflate each other
+                             * unboundedly in a single pass. */
+                            double boosted = scored[ref_map[slot].idx].score + 0.3 * scored[i].score;
+                            scored[ref_map[slot].idx].score = boosted > 1.0 ? 1.0 : boosted;
+                        }
                         break;
                     }
                     slot = (slot + 1) & map_mask;
@@ -1002,13 +1010,13 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     free(scored);
     pthread_mutex_unlock(&m->mtx);
 
-    /* Persist access_count to disk AFTER releasing the mutex.
-     * Each increment call re-acquires the mutex briefly for its own I/O,
-     * but doesn't block other threads for the entire batch duration.
-     * This reduces mutex hold time from O(k * disk_io) to O(scoring). */
-    for (int i = 0; i < results.count; i++) {
-        memory_increment_field(m, results.entries[i].key, "access_count");
-    }
+    /* FIX #7: Removed automatic access_count increment on every recall.
+     * Previously, every memory_recall() incremented access_count for ALL
+     * returned results — even those the LLM never uses. With error-triggered
+     * recall, scratchpad-enriched recall, and reflection recall happening
+     * per react loop, popular memories' access_count inflated far beyond
+     * actual utility. access_count should only be incremented when a memory
+     * is actually injected into the LLM context (done by the caller). */
 
     return results;
 }
@@ -1498,6 +1506,12 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         free(keys[i]);
     free(keys);
 
+    /* FIX #15: Release mutex before orphan .emb sweep — the sweep is pure
+     * filesystem I/O that doesn't access in-memory index state. Holding
+     * the mutex during the entire sweep blocks concurrent memory access
+     * unnecessarily for what could be several seconds with many entries. */
+    pthread_mutex_unlock(&m->mtx);
+
     /* Sweep for orphan .emb files (no matching .json).
      * These accumulate when crashes interrupt deletion or when .json files
      * are removed manually.  They waste disk space and pollute embedding
@@ -1508,7 +1522,6 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         /* No git commit needed — .emb files are not tracked by git */
     }
 
-    pthread_mutex_unlock(&m->mtx);
     return count;
 }
 

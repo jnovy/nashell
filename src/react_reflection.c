@@ -258,6 +258,12 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                   "class of failure? Store 1-3 causal lessons via memory_store, or "
                   "call done if none.");
 
+        /* FIX #9: Disable thinking mode for reflection — it's a lightweight
+         * extraction task that doesn't need chain-of-thought. Without this,
+         * EDRM thinking mode leaks from the main task into reflection. */
+        int saved_thinking = ctx->provider->cfg.enable_thinking;
+        ctx->provider->cfg.enable_thinking = 0;
+
         /* Mini react loop for reflection (max 4 steps) */
         for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
             llm_stats_t rstats = {0};
@@ -353,6 +359,9 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             free(rresp);
         }
         llm_chat_free(reflect);
+
+        /* FIX #9: Restore thinking mode after reflection */
+        ctx->provider->cfg.enable_thinking = saved_thinking;
     }
 
     /* P4: Scratchpad-to-memory promotion — auto-promote high-priority

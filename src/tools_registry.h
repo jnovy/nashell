@@ -18,7 +18,11 @@ typedef struct {
 /* The canonical tool registry — single source of truth for all tools.
  * Defined in tools_registry.c.  Terminated by a {NULL,NULL,NULL} sentinel. */
 extern const tool_def_t TOOL_REGISTRY[];
-extern const int TOOL_REGISTRY_COUNT;
+
+/* FIX #14: Changed from extern const int to #define so it can be used in
+ * _Static_assert at compile time. Previously the magic number 18 had to
+ * be duplicated in tools.c's assertion. */
+#define TOOL_REGISTRY_COUNT 18
 
 /* Build a comma-separated list of all tool names from the registry.
  * Caller must free() the returned string. */

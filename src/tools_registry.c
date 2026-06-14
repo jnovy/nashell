@@ -94,7 +94,7 @@ const tool_def_t TOOL_REGISTRY[] = {
     {NULL, NULL, NULL}  /* sentinel */
 };
 
-const int TOOL_REGISTRY_COUNT = 18;
+/* FIX #14: TOOL_REGISTRY_COUNT is now a #define in tools_registry.h */
 
 /* Build a comma-separated list of all tool names from the registry.
  * Caller must free() the returned string. */

@@ -395,8 +395,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int ct = (ctx->tools->cfg && ctx->tools->cfg->cycling_threshold > 0)
              ? ctx->tools->cfg->cycling_threshold : 2;
     if (cw > 64) cw = 64;  /* sanity cap */
-    char (*last_sigs)[1024] = calloc(cw, 1024);
-    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, 1024); }
+    /* FIX #10: Increased cycling signature buffer from 1024 to 2048 to reduce
+     * false positives/negatives for long arguments (file_edit with >120-char
+     * old_text, shell_exec with >1024-char commands). */
+    #define CYCLING_SIG_SIZE 2048
+    char (*last_sigs)[CYCLING_SIG_SIZE] = calloc(cw, CYCLING_SIG_SIZE);
+    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, CYCLING_SIG_SIZE); }
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
     int total_null_responses = 0;        /* Total NULL responses (never reset — catches alternating patterns) */
@@ -1100,7 +1104,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * require repeated operations (e.g., reading multiple sections
          * of the same file, running similar commands). */
         int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
-        char sig[1024];
+        char sig[CYCLING_SIG_SIZE];
         const char *cmd = react_json_get_str(action, "command");
         const char *path = react_json_get_str(action, "path");
         const char *pattern = react_json_get_str(action, "pattern");
@@ -1153,11 +1157,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             if (strcmp(last_sigs[i], sig) == 0) repeated++;
         }
         if (sig_count < cw) {
-            snprintf(last_sigs[sig_count], 1024, "%s", sig);
+            snprintf(last_sigs[sig_count], CYCLING_SIG_SIZE, "%s", sig);
             sig_count++;
         } else {
-            memmove(last_sigs, last_sigs + 1, (cw - 1) * 1024);
-            snprintf(last_sigs[cw - 1], 1024, "%s", sig);
+            memmove(last_sigs, last_sigs + 1, (size_t)(cw - 1) * CYCLING_SIG_SIZE);
+            snprintf(last_sigs[cw - 1], CYCLING_SIG_SIZE, "%s", sig);
         }
 
         if (cycling_enabled && repeated >= ct) {

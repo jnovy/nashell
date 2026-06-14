@@ -409,16 +409,18 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
         if (valid) {
             cJSON_AddStringToObject(meta, "preview", out.data);
         } else {
+            /* FIX #11: Use strncat with explicit size guard instead of
+             * strcat to prevent overflow if truncation limit is changed. */
             char preview[256];
             utf8_truncate(preview, out.data, 200);
-            strcat(preview, "...");
+            strncat(preview, "...", sizeof(preview) - strlen(preview) - 1);
             cJSON_AddStringToObject(meta, "preview", preview);
         }
     } else if (out.len >= 500) {
         /* Large output: first ~200 bytes with ... suffix (UTF-8 safe) */
         char preview[256];
         utf8_truncate(preview, out.data, 200);
-        strcat(preview, "...");
+        strncat(preview, "...", sizeof(preview) - strlen(preview) - 1);
         cJSON_AddStringToObject(meta, "preview", preview);
     }
 
@@ -654,6 +656,7 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     char *pre_hash = store_save(ctx->store, content);
     char *pre_alias = tool_register_alias(ctx, pre_hash ? pre_hash : "");
 
+    size_t old_len = strlen(old_text);
     char *pos = strstr(content, old_text);
     if (!pos) {
         free(content);
@@ -662,8 +665,30 @@ static tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         return make_error("old_text not found in file");
     }
 
+    /* FIX #1: Detect multiple matches — if old_text appears more than once,
+     * the caller must provide more context to disambiguate. Silently replacing
+     * only the first match causes data corruption when the intent was to edit
+     * a specific occurrence. */
+    {
+        char *second = strstr(pos + old_len, old_text);
+        if (second) {
+            /* Count total matches for a helpful error message */
+            int match_count = 2;
+            char *scan = second;
+            while ((scan = strstr(scan + old_len, old_text)) != NULL)
+                match_count++;
+            free(content);
+            free(pre_hash);
+            free(pre_alias);
+            char errmsg[256];
+            snprintf(errmsg, sizeof(errmsg),
+                     "old_text matches %d locations in %s — provide more "
+                     "surrounding context to disambiguate", match_count, path);
+            return make_error(errmsg);
+        }
+    }
+
     /* Build new content */
-    size_t old_len = strlen(old_text);
     size_t new_len = strlen(new_text);
     size_t result_len = flen - old_len + new_len;
     char *result = malloc(result_len + 1);
@@ -3089,8 +3114,11 @@ static const tool_handler_fn TOOL_HANDLERS[] = {
 
 /* Compile-time assertion: handler count must match registry count.
  * If this fails, you added a tool to one table but not the other. */
-_Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == 18,
-               "TOOL_HANDLERS count must match TOOL_REGISTRY_COUNT (18)");
+/* FIX #14: Use TOOL_REGISTRY_COUNT macro instead of magic number 18.
+ * Adding a tool to one table but not the other now produces a clear
+ * compile-time error referencing the macro name. */
+_Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == TOOL_REGISTRY_COUNT,
+               "TOOL_HANDLERS count must match TOOL_REGISTRY_COUNT");
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     /* Tool filter: check whitelist/blacklist before dispatch */
