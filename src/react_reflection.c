@@ -38,11 +38,13 @@ static int reflection_dedup_index_scan(
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
             char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_ref = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            char *dup_hash = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
             journal_append(ctx->tools->journal,
                 ctx->tools->react_loop, ctx->tools->step,
                 "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
             free(dup_str);
+            free(dup_hash);
             free(dup_ref);
             cJSON_Delete(dup_p);
             /* should_store stays 1 */
@@ -53,11 +55,13 @@ static int reflection_dedup_index_scan(
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "skipped");
             char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_ref = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            char *dup_hash = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
             journal_append(ctx->tools->journal,
                 ctx->tools->react_loop, ctx->tools->step,
                 "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
             free(dup_str);
+            free(dup_hash);
             free(dup_ref);
             cJSON_Delete(dup_p);
         }

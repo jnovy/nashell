@@ -11,6 +11,7 @@
 
 static journal_t  *g_log_journal;
 static store_t    *g_log_store;
+static tool_ctx_t *g_log_tools;
 static ui_state_t *g_log_ui;
 static int         g_log_react_loop;
 static int         g_log_step;
@@ -20,6 +21,12 @@ void nash_log_init(journal_t *journal, store_t *store) {
     pthread_mutex_lock(&g_log_mtx);
     g_log_journal = journal;
     g_log_store   = store;
+    pthread_mutex_unlock(&g_log_mtx);
+}
+
+void nash_log_set_tools(tool_ctx_t *tools) {
+    pthread_mutex_lock(&g_log_mtx);
+    g_log_tools = tools;
     pthread_mutex_unlock(&g_log_mtx);
 }
 
@@ -59,6 +66,7 @@ void nash_log(const char *fmt, ...) {
     pthread_mutex_lock(&g_log_mtx);
     journal_t  *lj  = g_log_journal;
     store_t    *ls  = g_log_store;
+    tool_ctx_t *lt  = g_log_tools;
     ui_state_t *lui = g_log_ui;
     int         lrl = g_log_react_loop;
     int         lst = g_log_step;
@@ -67,9 +75,17 @@ void nash_log(const char *fmt, ...) {
     /* TUI mode: store + journal + refresh */
 
     /* 1. Save message to .store/ for audit trail */
+    char *hash = NULL;
     char *ref = NULL;
     if (ls) {
-        ref = store_save(ls, buf);
+        hash = store_save(ls, buf);
+    }
+    /* Create RXSX alias so the ref is a clickable hyperlink in reactRx.md
+     * instead of a raw SHA256 hash. */
+    if (hash && lt) {
+        ref = tool_register_alias(lt, hash);
+    } else {
+        ref = hash ? strdup(hash) : NULL;
     }
 
     /* 2. Append journal entry so it appears in reactRx.md */
@@ -91,5 +107,6 @@ void nash_log(const char *fmt, ...) {
         pthread_mutex_unlock(&lui->mtx);
     }
 
+    free(hash);
     free(ref);
 }

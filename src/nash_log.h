@@ -3,6 +3,7 @@
 
 #include "journal.h"
 #include "store.h"
+#include "tools.h"
 
 /* Forward declaration to avoid circular include with ui_state.h */
 struct ui_state_t_tag;
@@ -10,6 +11,11 @@ struct ui_state_t_tag;
 /* Initialize the logging subsystem with journal + store handles.
  * Must be called before any nash_log() calls during TUI mode. */
 void nash_log_init(journal_t *journal, store_t *store);
+
+/* Set the tool context for alias registration.
+ * When set, nash_log() creates RXSX symlinks instead of passing
+ * raw SHA256 hashes as journal refs (which break TUI hyperlinks). */
+void nash_log_set_tools(tool_ctx_t *tools);
 
 /* Set the current react loop + step context.
  * Called by react.c before each inference step so log entries

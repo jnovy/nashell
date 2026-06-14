@@ -1078,6 +1078,7 @@ int main(int argc, char **argv) {
 
         /* Initialize logging subsystem for TUI error routing */
         nash_log_init(journal, shared_store);
+        nash_log_set_tools(&tools);
 
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
