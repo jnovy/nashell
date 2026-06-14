@@ -1315,10 +1315,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             int keep_head = REACT_EVICT_KEEP_HEAD;
             int keep_tail = REACT_EVICT_KEEP_TAIL;
             if (usage_pct > (ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70) && chat->n_msgs > keep_head + keep_tail + 1) {
-                /* Priority eviction: remove error messages first (research: errors in context degrade performance).
+                /* Priority eviction: remove error and memory-hint messages first.
+                 * Research: errors in context degrade performance.  Memory hints
+                 * from past tool failures become stale and consume context budget
+                 * unboundedly — evict them alongside errors.
                  * Fix #3: Use msg_type for type-safe eviction instead of strstr("ERROR:"). */
                 for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
-                    if (chat->msgs[i].msg_type == LLM_MSG_ERROR) {
+                    if (chat->msgs[i].msg_type == LLM_MSG_ERROR ||
+                        chat->msgs[i].msg_type == LLM_MSG_MEMORY_HINT) {
                         llm_chat_remove_range(chat, i, i + 1);
                         i--;  /* re-check this position */
                     }

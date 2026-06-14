@@ -3,75 +3,67 @@
  * Extracted from react.c (P1 decomposition). */
 #include "react_internal.h"
 
-/* ── reflection deduplication callback ───────────────── */
-typedef struct {
-    react_ctx_t *ctx;
-    cJSON *rkey_j;
-    embed_multi_vec_t *new_emb;  /* multi-vec for consistent similarity metric */
-    int *should_store;
-    int task_succeeded;
-} reflection_scan_t;
+/* ── reflection deduplication (in-memory index scan) ───── */
+/* Scans the in-memory embedding index instead of loading every .emb
+ * file from disk.  O(N) cosine comparisons with zero I/O.
+ * Returns 1 if a near-duplicate was found and should_store was updated. */
+static int reflection_dedup_index_scan(
+        react_ctx_t *ctx, cJSON *rkey_j,
+        const embed_multi_vec_t *new_emb,
+        int *should_store, int task_succeeded) {
+    memory_t *mem = ctx->tools->memory;
+    float dedup_thresh = (ctx->tools->cfg && ctx->tools->cfg->dedup_threshold > 0)
+                          ? ctx->tools->cfg->dedup_threshold : 0.90f;
+    int found = 0;
 
-static int reflection_dedup_cb(const char *dirpath, const char *filename,
-                               const char *fullpath, void *user_data) {
-    reflection_scan_t *s = (reflection_scan_t *)user_data;
-    (void)dirpath; (void)filename;
+    pthread_mutex_lock(&mem->mtx);
+    for (int ei = 0; ei < mem->idx.count && !found; ei++) {
+        mem_index_entry_t *ie = &mem->idx.entries[ei];
+        if (!ie->has_emb || ie->emb.dim != new_emb->dim)
+            continue;
+        float sim = embed_cosine_sim_multi_multi(new_emb, &ie->emb);
+        if (sim <= dedup_thresh)
+            continue;
 
-    /* FIX BUG2: Use multi-vec × multi-vec (MaxSim) similarity, consistent
-     * with consolidation_cb in tools.c. Previously used single-vec × multi-vec
-     * which computes a different metric, making the 0.90 threshold here and
-     * the 0.82 threshold in consolidation incomparable. */
-    embed_multi_vec_t exist_emb = embed_multi_vec_load(fullpath);
-    if (!exist_emb.data) return 0;
-    if (exist_emb.dim != s->new_emb->dim) {
-        embed_multi_vec_free(&exist_emb);
-        return 0;
-    }
-    float sim = embed_cosine_sim_multi_multi(s->new_emb, &exist_emb);
-    embed_multi_vec_free(&exist_emb);
-    float dedup_thresh = (s->ctx->tools->cfg && s->ctx->tools->cfg->dedup_threshold > 0)
-                          ? s->ctx->tools->cfg->dedup_threshold : 0.90f;
-    if (sim > dedup_thresh) {
+        found = 1;
         /* When a task FAILED, the reflection may produce a corrective insight
          * that contradicts an existing entry. Since contradictions have high
          * embedding similarity (same topic, opposite conclusion), we must
          * allow the store — memory_try_consolidate will classify it as
          * SUPERSEDES and delete the old entry. Only block for successes. */
-        if (!s->task_succeeded) {
+        if (!task_succeeded) {
             /* Log but allow — let consolidation handle contradiction */
             cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
+            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
             char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_ref = dup_str ? store_save(s->ctx->tools->store, dup_str) : NULL;
-            journal_append(s->ctx->tools->journal,
-                s->ctx->tools->react_loop, s->ctx->tools->step,
+            char *dup_ref = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            journal_append(ctx->tools->journal,
+                ctx->tools->react_loop, ctx->tools->step,
                 "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
             free(dup_str);
             free(dup_ref);
             cJSON_Delete(dup_p);
-            return 1;  /* stop iterating, but should_store stays 1 */
-        }
-        *s->should_store = 0;
-        /* Log to journal instead of stderr (TUI mode) */
-        {
+            /* should_store stays 1 */
+        } else {
+            *should_store = 0;
             cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
+            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "skipped");
             char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_ref = dup_str ? store_save(s->ctx->tools->store, dup_str) : NULL;
-            journal_append(s->ctx->tools->journal,
-                s->ctx->tools->react_loop, s->ctx->tools->step,
+            char *dup_ref = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+            journal_append(ctx->tools->journal,
+                ctx->tools->react_loop, ctx->tools->step,
                 "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
             free(dup_str);
             free(dup_ref);
             cJSON_Delete(dup_p);
         }
-        return 1;  /* stop iterating */
     }
-    return 0;
+    pthread_mutex_unlock(&mem->mtx);
+    return found;
 }
 
 /* ── Post-loop: scoring, reflection, promotion, pruning ── */
@@ -318,17 +310,12 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                 .dim = single.dim,
                                 .n_chunks = 1,
                             };
-                            /* Scan existing .emb files for high similarity
-                             * instead of calling memory_recall + re-embedding */
-                            reflection_scan_t rscan = {
-                                .ctx = ctx,
-                                .rkey_j = rkey_j,
-                                .new_emb = &new_emb,
-                                .should_store = &should_store,
-                                .task_succeeded = task_succeeded,
-                            };
-                            for_each_dir_entry(ctx->tools->memory->dir, ".emb",
-                                              reflection_dedup_cb, &rscan);
+                            /* Scan in-memory index for high similarity
+                             * instead of loading every .emb file from disk.
+                             * O(N) comparisons with zero I/O. */
+                            reflection_dedup_index_scan(
+                                ctx, rkey_j, &new_emb,
+                                &should_store, task_succeeded);
                             embed_vec_free(&single);
                         }
                     }

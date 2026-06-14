@@ -100,19 +100,32 @@ void config_set_defaults(config_t *cfg) {
     /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
     if (cfg->cycling_window <= 0)         cfg->cycling_window = 4;
     if (cfg->cycling_threshold <= 0)      cfg->cycling_threshold = 2;
+    /* max_react_steps: -1 sentinel from TOML parsing means "not set".
+     * 0 = unlimited (valid user value), so only replace negative sentinels. */
+    if (cfg->max_react_steps < 0)         cfg->max_react_steps = 0;
 
 
-    /* [memory_belief_entropy] defaults */
-    cfg->belief_entropy.enabled = 0;
-    cfg->belief_entropy.alpha = 1.0;
-    cfg->belief_entropy.anchor_question = strdup(
-        "Based on current memory, what is our task progress and what information is still needed?");
-    cfg->belief_entropy.probe_tokens = 30;
-    cfg->belief_entropy.probe_n_probs = 10;
-    cfg->belief_entropy.probe_temperature = 0.6f;
-    cfg->belief_entropy.eviction_gate = 0;
-    cfg->belief_entropy.best_of_n_summaries = 1;
-    cfg->belief_entropy.warn_threshold = 0.15f;
+    /* [memory_belief_entropy] defaults — sentinel-guarded like other sections.
+     * calloc gives 0/NULL; TOML parsing sets actual values.  Only apply
+     * defaults when the field is still at its calloc zero/NULL sentinel.
+     * Bool fields (enabled, eviction_gate): 0 = disabled is the correct
+     * default AND the calloc value, so no action needed — TOML can set to 1
+     * and it won't be overwritten. */
+    if (cfg->belief_entropy.alpha == 0)
+        cfg->belief_entropy.alpha = 1.0;
+    if (!cfg->belief_entropy.anchor_question)
+        cfg->belief_entropy.anchor_question = strdup(
+            "Based on current memory, what is our task progress and what information is still needed?");
+    if (cfg->belief_entropy.probe_tokens == 0)
+        cfg->belief_entropy.probe_tokens = 30;
+    if (cfg->belief_entropy.probe_n_probs == 0)
+        cfg->belief_entropy.probe_n_probs = 10;
+    if (cfg->belief_entropy.probe_temperature == 0)
+        cfg->belief_entropy.probe_temperature = 0.6f;
+    if (cfg->belief_entropy.best_of_n_summaries == 0)
+        cfg->belief_entropy.best_of_n_summaries = 1;
+    if (cfg->belief_entropy.warn_threshold == 0)
+        cfg->belief_entropy.warn_threshold = 0.15f;
 
     cfg->stream = 1;     /* always on for now */
 
