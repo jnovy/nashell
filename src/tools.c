@@ -2886,108 +2886,6 @@ static char *searxng_search(const char *searxng_url, const char *query,
     return str_steal(&results);
 }
 
-/* DuckDuckGo Instant Answer API search.
- * Uses the JSON API (no CAPTCHA issues unlike lite/html endpoints).
- * Returns formatted markdown results string (caller frees) or NULL.
- * *out_count receives number of results. */
-static char *ddg_search(const char *query, int *out_count, long timeout) {
-    /* URL-encode the query using a temporary curl handle */
-    CURL *enc = curl_easy_init();
-    if (!enc) return NULL;
-    char *encoded_q = curl_easy_escape(enc, query, 0);
-    curl_easy_cleanup(enc);
-
-    char url[2048];
-    snprintf(url, sizeof(url),
-             "https://api.duckduckgo.com/?q=%s&format=json&no_html=1",
-             encoded_q);
-    curl_free(encoded_q);
-
-    str_t body = str_new(NASH_INITIAL_BUF);
-    if (http_get_web(url, timeout, &body, NULL) != 0) {
-        str_free(&body);
-        return NULL;
-    }
-
-    /* Parse JSON response */
-    cJSON *root = cJSON_Parse(body.data);
-    str_free(&body);
-    if (!root) return NULL;
-
-    str_t results = str_new(4096);
-    int count = 0;
-
-    /* 1. Abstract — main topic result (e.g. from Wikipedia) */
-    const char *abstract = cJSON_GetStringValue(
-        cJSON_GetObjectItem(root, "AbstractText"));
-    const char *abstract_url = cJSON_GetStringValue(
-        cJSON_GetObjectItem(root, "AbstractURL"));
-    const char *heading = cJSON_GetStringValue(
-        cJSON_GetObjectItem(root, "Heading"));
-    if (abstract && abstract[0] && abstract_url && abstract_url[0]) {
-        count++;
-        str_appendf(&results, "%d. [%s](%s)\n   %s\n\n",
-                     count,
-                     (heading && heading[0]) ? heading : "Result",
-                     abstract_url, abstract);
-    }
-
-    /* 2. Results[] — official sites, direct answers */
-    cJSON *results_arr = cJSON_GetObjectItem(root, "Results");
-    if (results_arr && cJSON_IsArray(results_arr)) {
-        int arr_sz = cJSON_GetArraySize(results_arr);
-        for (int i = 0; i < arr_sz && count < 10; i++) {
-            cJSON *item = cJSON_GetArrayItem(results_arr, i);
-            if (!item) continue;
-            const char *r_url = cJSON_GetStringValue(
-                cJSON_GetObjectItem(item, "FirstURL"));
-            const char *r_text = cJSON_GetStringValue(
-                cJSON_GetObjectItem(item, "Text"));
-            if (r_url && r_url[0]) {
-                count++;
-                str_appendf(&results, "%d. [%s](%s)\n\n",
-                             count,
-                             (r_text && r_text[0]) ? r_text : r_url,
-                             r_url);
-            }
-        }
-    }
-
-    /* 3. RelatedTopics[] — related links (skip category groupings) */
-    cJSON *related = cJSON_GetObjectItem(root, "RelatedTopics");
-    if (related && cJSON_IsArray(related)) {
-        int arr_sz = cJSON_GetArraySize(related);
-        for (int i = 0; i < arr_sz && count < 10; i++) {
-            cJSON *item = cJSON_GetArrayItem(related, i);
-            if (!item) continue;
-            /* Skip category groups (they have "Topics" sub-array) */
-            if (cJSON_GetObjectItem(item, "Topics")) continue;
-            const char *r_url = cJSON_GetStringValue(
-                cJSON_GetObjectItem(item, "FirstURL"));
-            const char *r_text = cJSON_GetStringValue(
-                cJSON_GetObjectItem(item, "Text"));
-            if (r_url && r_url[0] &&
-                !strstr(r_url, "duckduckgo.com/c/")) {
-                count++;
-                str_appendf(&results, "%d. [%s](%s)\n\n",
-                             count,
-                             (r_text && r_text[0]) ? r_text : r_url,
-                             r_url);
-            }
-        }
-    }
-
-    cJSON_Delete(root);
-    *out_count = count;
-
-    if (count == 0) {
-        str_free(&results);
-        return NULL;
-    }
-
-    return str_steal(&results);
-}
-
 static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
     if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
@@ -2995,39 +2893,19 @@ static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
                           "Provide specific search terms.");
 
     const char *query = query_j->valuestring;
-    const char *engine = (ctx->cfg) ? ctx->cfg->search_engine : NULL;
     const char *searxng_url = (ctx->cfg) ? ctx->cfg->searxng_url : NULL;
     char *results_text = NULL;
     int result_count = 0;
     long search_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
                           ? (long)ctx->cfg->web_timeout : 30L;
 
-    if (engine && strcmp(engine, "duckduckgo") == 0) {
-        /* Explicit DuckDuckGo mode — try DDG first, fall back to SearXNG */
-        results_text = ddg_search(query, &result_count, search_timeout);
-        if (!results_text && ensure_searxng(searxng_url) == 0) {
-            results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
-        }
-    } else if (engine && strcmp(engine, "searxng") == 0) {
-        /* Explicit SearXNG mode — SearXNG only, no fallback */
-        if (ensure_searxng(searxng_url) != 0) {
-            return make_error("SearXNG not available and could not be auto-started. "
-                              "Install podman/docker or configure a running SearXNG instance "
-                              "in ~/.nash/config.toml [search] section.");
-        }
-        results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
-    } else {
-        /* Auto mode (default) — try SearXNG first (real search results),
-         * fall back to DDG Instant Answer API if SearXNG is unavailable.
-         * DDG's Instant Answer API only returns topic summaries (not web
-         * search results), so it's a last resort. */
-        if (ensure_searxng(searxng_url) == 0) {
-            results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
-        }
-        if (!results_text) {
-            results_text = ddg_search(query, &result_count, search_timeout);
-        }
+    /* SearXNG is the sole search backend. Auto-start if not running. */
+    if (ensure_searxng(searxng_url) != 0) {
+        return make_error("SearXNG not available and could not be auto-started. "
+                          "Install podman/docker or configure a running SearXNG instance "
+                          "in ~/.nash/config.toml [search] section.");
     }
+    results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
 
     if (!results_text || result_count == 0) {
         char errmsg[512];

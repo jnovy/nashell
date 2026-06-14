@@ -581,7 +581,7 @@ Nash's `file_read` tool supports `start_line` and `end_line` parameters to elimi
 
 ### Web Search with SearXNG Auto-Start
 
-The `web_search` tool supports two backends: **DuckDuckGo** (default, zero setup) and **SearXNG** (self-hosted, private).
+The `web_search` tool uses **SearXNG** as its search backend (self-hosted, private).
 
 When SearXNG is configured but not running, nash **automatically starts a SearXNG container** using podman (preferred) or docker:
 
@@ -764,7 +764,7 @@ error_recall_min_relevance = 0.25
 context_eviction_pct = 70                 # evict when context > 70% full
 
 [search]
-engine = "duckduckgo"                     # duckduckgo | searxng
+engine = "searxng"                        # SearXNG (auto-started via podman/docker)
 # searxng_url = "http://localhost:8080"   # custom SearXNG instance
 ```
 
