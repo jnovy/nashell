@@ -797,6 +797,12 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
         if (st->full_content.len > 0 &&
             !is_whitespace_only(str_cstr(&st->full_content)))
             thought_text = str_cstr(&st->full_content);
+        else if (st->thinking_content.len > 0) {
+            /* No visible text, but thinking content exists — use it as thought.
+             * This preserves the model's reasoning when it produced a tool call
+             * but put all its visible reasoning into the thinking stream. */
+            thought_text = str_cstr(&st->thinking_content);
+        }
         cJSON_AddStringToObject(unified, "thought", thought_text);
         cJSON_AddStringToObject(unified, "action",
                                 str_cstr(&st->tool_call_name));
@@ -845,6 +851,38 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
         }
     } else if (st->full_content.len > 0) {
         result = strdup(str_cstr(&st->full_content));
+        if (chat) {
+            free(chat->last_tool_call_id);
+            chat->last_tool_call_id = NULL;
+            free(chat->last_tool_calls_json);
+            chat->last_tool_calls_json = NULL;
+        }
+    } else if (st->thinking_content.len > 0) {
+        /* Thinking-only response: the model spent all its tokens on extended
+         * thinking (reasoning) without producing any text or tool calls.
+         * This happens when max_tokens is hit during the thinking phase.
+         *
+         * Instead of returning NULL (which discards the thinking and triggers
+         * the server-error retry loop), return a JSON object with just the
+         * thought field.  react.c's thought-only handler (no "action" field)
+         * will log it, emit it to TUI, and inject it back into context with
+         * a "Good thinking. Now call a tool." nudge — preserving the model's
+         * reasoning for the next step.
+         *
+         * Truncate to the TAIL 8000 chars — the end of thinking is usually
+         * the most actionable (conclusions/plans), and we don't want to
+         * flood context with a full 16K-token reasoning dump. */
+        cJSON *obj = cJSON_CreateObject();
+        const char *tc = str_cstr(&st->thinking_content);
+        size_t tc_len = st->thinking_content.len;
+        const size_t MAX_THINKING_CHARS = 8000;
+        if (tc_len > MAX_THINKING_CHARS) {
+            /* Skip to tail, preserving the most recent reasoning */
+            tc = tc + (tc_len - MAX_THINKING_CHARS);
+        }
+        cJSON_AddStringToObject(obj, "thought", tc);
+        result = cJSON_PrintUnformatted(obj);
+        cJSON_Delete(obj);
         if (chat) {
             free(chat->last_tool_call_id);
             chat->last_tool_call_id = NULL;
@@ -1099,7 +1137,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             req_body = NULL;
             free(p->last_error_response);
             p->last_error_response = (st.full_content.len > 0)
-                ? strdup(str_cstr(&st.full_content)) : NULL;
+                ? strdup(str_cstr(&st.full_content))
+                : (st.thinking_content.len > 0)
+                ? strdup(str_cstr(&st.thinking_content)) : NULL;
             goto cleanup;
         }
 
@@ -1118,7 +1158,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 req_body = NULL;
                 free(p->last_error_response);
                 p->last_error_response = (st.full_content.len > 0)
-                    ? strdup(str_cstr(&st.full_content)) : NULL;
+                    ? strdup(str_cstr(&st.full_content))
+                    : (st.thinking_content.len > 0)
+                    ? strdup(str_cstr(&st.thinking_content)) : NULL;
                 goto cleanup;
             }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
@@ -1136,7 +1178,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             p->last_error_request = req_body;  /* transfer ownership */
             req_body = NULL;
             free(p->last_error_response);
-            p->last_error_response = NULL;
+            p->last_error_response = (st.full_content.len > 0)
+                ? strdup(str_cstr(&st.full_content))
+                : (st.thinking_content.len > 0)
+                ? strdup(str_cstr(&st.thinking_content)) : NULL;
             goto cleanup;
         }
 
