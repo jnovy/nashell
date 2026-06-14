@@ -43,9 +43,13 @@ static int reflection_dedup_cb(const char *dirpath, const char *filename,
             cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
+            char *dup_str = cJSON_PrintUnformatted(dup_p);
+            char *dup_ref = dup_str ? store_save(s->ctx->tools->store, dup_str) : NULL;
             journal_append(s->ctx->tools->journal,
                 s->ctx->tools->react_loop, s->ctx->tools->step,
-                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
+                "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
+            free(dup_str);
+            free(dup_ref);
             cJSON_Delete(dup_p);
             return 1;  /* stop iterating, but should_store stays 1 */
         }
@@ -56,9 +60,13 @@ static int reflection_dedup_cb(const char *dirpath, const char *filename,
             cJSON_AddStringToObject(dup_p, "key", s->rkey_j->valuestring);
             cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
             cJSON_AddStringToObject(dup_p, "action", "skipped");
+            char *dup_str = cJSON_PrintUnformatted(dup_p);
+            char *dup_ref = dup_str ? store_save(s->ctx->tools->store, dup_str) : NULL;
             journal_append(s->ctx->tools->journal,
                 s->ctx->tools->react_loop, s->ctx->tools->step,
-                "reflection_dedup", dup_p, NULL, 0, 0, NULL, NULL);
+                "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
+            free(dup_str);
+            free(dup_ref);
             cJSON_Delete(dup_p);
         }
         return 1;  /* stop iterating */
