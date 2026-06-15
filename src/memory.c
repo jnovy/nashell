@@ -641,6 +641,9 @@ int memory_unpin(memory_t *m, const char *key) {
 /* Substring-based relevance scoring (fallback when embeddings unavailable) */
 static double score_entry_substring(const char *key, const char *value,
                                      const char *query) {
+    /* Guard: empty/NULL query matches everything via strcasestr on most
+     * platforms, which would give max score to every entry. */
+    if (!query || !*query) return 0;
     double relevance = 0;
     if (strcasestr(key, query)) relevance += 3.0;
     if (strcasestr(value, query)) relevance += 1.0;

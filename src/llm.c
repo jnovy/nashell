@@ -36,7 +36,10 @@ void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
     if (chat->n_msgs >= chat->cap_msgs) {
         int new_cap = chat->cap_msgs * 2;
         llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) return;  /* FIX BUG#2: don't lose old pointer on realloc failure */
+        if (!tmp) {
+            nash_log("[llm] CRITICAL: realloc failed for %d messages — context will be incomplete", new_cap);
+            return;
+        }
         chat->msgs = tmp;
         chat->cap_msgs = new_cap;
     }
@@ -44,6 +47,12 @@ void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
     m->content = strdup(content);
+    if (!m->role || !m->content) {
+        nash_log("[llm] CRITICAL: strdup failed for message role=%s — context will be incomplete", role);
+        free(m->role);
+        free(m->content);
+        return;
+    }
     chat->n_msgs++;
 }
 

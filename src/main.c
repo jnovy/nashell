@@ -877,6 +877,7 @@ int main(int argc, char **argv) {
         char mbox_dir[NASH_PATH_MAX];
         if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
             fprintf(stderr, "[error] failed to initialize mailbox\n");
+            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
         fprintf(stderr, "[daemon] nash mailbox daemon started\n");
@@ -988,6 +989,9 @@ int main(int argc, char **argv) {
             char mbox_dir[NASH_PATH_MAX];
             if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
                 fprintf(stderr, "[error] failed to initialize mailbox\n");
+                session_cleanup(&tools, &react, journal);
+                if (session_dir) free(session_dir);
+                cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
                 return 1;
             }
             mailbox_ctx_t mbox = {
@@ -1202,13 +1206,15 @@ int main(int argc, char **argv) {
             if (submitted_query) {
                 /* Check if inference thread is waiting for user_ask answer */
                 if (inferring && react.user_ask_pending) {
-                    /* Pass the user's answer to the waiting react loop */
+                    /* Pass the user's answer to the waiting react loop.
+                     * All writes to shared state (user_ask_answer, user_ask_pending)
+                     * are done inside the mutex to ensure proper happens-before
+                     * ordering with the inference thread's condvar wait. */
+                    pthread_mutex_lock(&react.user_ask_mutex);
                     free(react.user_ask_answer);
                     react.user_ask_answer = submitted_query;
                     submitted_query = NULL;  /* ownership transferred */
                     react.user_ask_pending = 0;  /* unblock the react loop */
-                    /* P7: Signal condition variable so inference thread wakes immediately */
-                    pthread_mutex_lock(&react.user_ask_mutex);
                     pthread_cond_signal(&react.user_ask_cond);
                     pthread_mutex_unlock(&react.user_ask_mutex);
                     pthread_mutex_lock(&ui->mtx);

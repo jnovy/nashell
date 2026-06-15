@@ -172,7 +172,10 @@ const char *alias_map_lookup(alias_map_t *map, const char *alias) {
 /* ── public alias API (thin wrappers over hash map) ───── */
 
 char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
-    if (!ctx || !ctx->aliases) return strdup("R?S?");
+    if (!ctx || !ctx->aliases) {
+        nash_log("[tools] CRITICAL: tool_register_alias called with NULL ctx/aliases");
+        return strdup("R?S?");
+    }
 
     char alias_buf[32];
     snprintf(alias_buf, sizeof(alias_buf), "R%dS%d", ctx->react_loop, ctx->aliases->next_seq);

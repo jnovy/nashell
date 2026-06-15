@@ -662,8 +662,10 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                     nash_log("[provider/sse] message_start: input_tokens=%d (valueint=%d, valuedouble=%.0f)",
                              st->stats->prompt_tokens, it->valueint, it->valuedouble);
                 } else {
+                    char *usage_str = cJSON_PrintUnformatted(usage);
                     nash_log("[provider/sse] message_start: no input_tokens in usage! usage=%s",
-                             cJSON_PrintUnformatted(usage));
+                             usage_str ? usage_str : "(null)");
+                    free(usage_str);
                 }
             } else {
                 nash_log("[provider/sse] message_start: no usage in message!");

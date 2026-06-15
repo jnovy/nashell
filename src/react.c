@@ -395,10 +395,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int ct = (ctx->tools->cfg && ctx->tools->cfg->cycling_threshold > 0)
              ? ctx->tools->cfg->cycling_threshold : 2;
     if (cw > 64) cw = 64;  /* sanity cap */
-    /* FIX #10: Increased cycling signature buffer from 1024 to 2048 to reduce
+    /* FIX #10: Increased cycling signature buffer from 1024 to 4096 to reduce
      * false positives/negatives for long arguments (file_edit with >120-char
-     * old_text, shell_exec with >1024-char commands). */
-    #define CYCLING_SIG_SIZE 2048
+     * old_text, shell_exec with >1024-char commands).
+     * FIX: 2048 was still too small — 5 × 512-char prefix fields alone total
+     * 2560 bytes, causing snprintf truncation and false cycling detection
+     * for memory_store/file_edit calls with long values. 4096 provides
+     * comfortable headroom. */
+    #define CYCLING_SIG_SIZE 4096
     char (*last_sigs)[CYCLING_SIG_SIZE] = calloc(cw, CYCLING_SIG_SIZE);
     if (!last_sigs) { cw = 4; last_sigs = calloc(cw, CYCLING_SIG_SIZE); }
     int sig_count = 0;
