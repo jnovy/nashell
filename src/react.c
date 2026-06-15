@@ -480,6 +480,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
+        /* Check for pause request at the TOP of the loop — this catches
+         * pause_requested set during error recovery paths that `continue`
+         * back to the loop header (parse_error, unknown_tool, server_error,
+         * user_ask).  Without this, those `continue` paths bypass the
+         * pause_requested check at the bottom of the loop (line ~1977),
+         * making the TUI appear stuck since the user's pause/redirect
+         * is ignored until a normal step completion. */
+        if (ctx->pause_requested) {
+            react_checkpoint_save(ctx, step, user_query,
+                                  chat->last_tool_call_id);
+            react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
+            ev.type = REACT_EVENT_WARNING;
+            ev.step = step;
+            ev.message = "Paused (Space to resume, type query to redirect)";
+            react_emit(on_event, userdata, &ev);
+            break;
+        }
+
         ctx->tools->step = step + 1;
         nash_log_set_context(ctx->tools->react_loop, step + 1);
 

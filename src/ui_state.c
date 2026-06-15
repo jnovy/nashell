@@ -1824,15 +1824,34 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
 
-            /* Throttle: update file every 64 bytes of tokens.
-             * 512 was too aggressive — at ~250 chars/sec typical LLM output,
-             * updates only happened every ~2 seconds, making streaming
-             * invisible. 64 bytes = ~4-5 updates/sec = smooth streaming. */
-            if (ui->stream_len % 64 < tlen) {
-                ui_state_generate_react_md(ui, ui->current_react_loop);
-                if (viewing_react_file(ui, ui->current_react_loop)) {
-                    ui_state_reload_file(ui);
-                    auto_scroll_bottom(ui);
+            /* Throttle: time-based (200ms) instead of byte-based.
+             *
+             * FIX: The previous byte-based throttle (every 64 bytes) called
+             * ui_state_generate_react_md() which re-reads and re-parses the
+             * entire journal.jsonl on every invocation — O(N) where N is the
+             * number of journal entries.  Late in the react loop (50+ steps),
+             * this held ui->mtx for tens of milliseconds per call, starving
+             * the main thread (which needs the mutex for tui_input/tui_render)
+             * and making the TUI unresponsive to keyboard input.
+             *
+             * Time-based throttle ensures the expensive I/O happens at most
+             * 5x/sec, giving the main thread ample mutex access between
+             * updates.  Streaming still looks smooth because the token buffer
+             * (ui->stream_tokens) is updated on every callback — only the
+             * file regeneration + MD parse is throttled. */
+            {
+                static struct timespec last_md_update = {0, 0};
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                long elapsed_ms = (now.tv_sec - last_md_update.tv_sec) * 1000
+                                + (now.tv_nsec - last_md_update.tv_nsec) / 1000000;
+                if (elapsed_ms >= 200 || last_md_update.tv_sec == 0) {
+                    last_md_update = now;
+                    ui_state_generate_react_md(ui, ui->current_react_loop);
+                    if (viewing_react_file(ui, ui->current_react_loop)) {
+                        ui_state_reload_file(ui);
+                        auto_scroll_bottom(ui);
+                    }
                 }
             }
         }
