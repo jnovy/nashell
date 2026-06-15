@@ -109,6 +109,48 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         }
     }
 
+    /* EvolveMem [arXiv:2605.13941]: Log memory quality telemetry.
+     * Records which memories were recalled, task outcome, and usage stats
+     * for post-hoc retrieval quality diagnosis by the self-harness. */
+    if (ctx->flags.enable_scoring && ctx->tools->memory &&
+        ctx->tools->n_recalled_keys > 0 && ctx->tools->journal) {
+        cJSON *mq = cJSON_CreateObject();
+        cJSON_AddNumberToObject(mq, "n_recalled", ctx->tools->n_recalled_keys);
+        cJSON_AddBoolToObject(mq, "task_succeeded", task_succeeded);
+
+        /* Build array of recalled keys */
+        cJSON *keys_arr = cJSON_CreateArray();
+        int cold_start_count = 0;  /* keys with vscore=0.5 (no evidence) */
+        for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
+            cJSON_AddItemToArray(keys_arr,
+                cJSON_CreateString(ctx->tools->recalled_keys[i]));
+            /* Check if this key has zero evidence */
+            if (ctx->tools->memory) {
+                pthread_mutex_lock(&ctx->tools->memory->mtx);
+                for (int j = 0; j < ctx->tools->memory->idx.count; j++) {
+                    mem_index_entry_t *ie = &ctx->tools->memory->idx.entries[j];
+                    if (ie->key && strcmp(ie->key, ctx->tools->recalled_keys[i]) == 0) {
+                        if (ie->recall_hits == 0 && ie->recall_misses == 0)
+                            cold_start_count++;
+                        break;
+                    }
+                }
+                pthread_mutex_unlock(&ctx->tools->memory->mtx);
+            }
+        }
+        cJSON_AddItemToObject(mq, "recalled_keys", keys_arr);
+        cJSON_AddNumberToObject(mq, "cold_start_count", cold_start_count);
+        double cold_start_pct = ctx->tools->n_recalled_keys > 0
+            ? (double)cold_start_count / (double)ctx->tools->n_recalled_keys
+            : 0.0;
+        cJSON_AddNumberToObject(mq, "cold_start_pct", cold_start_pct);
+
+        journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                       ctx->tools->step, "memory_quality", mq,
+                       NULL, 0, 0, NULL, NULL);
+        cJSON_Delete(mq);
+    }
+
     /* FIX CRIT1: Flush deferred memory consolidations AFTER scoring
      * but BEFORE reflection. This runs the LLM-based consolidation calls
      * that were queued during the react loop, outside the hot path.

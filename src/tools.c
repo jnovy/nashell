@@ -601,6 +601,30 @@ static tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     const char *path = path_j->valuestring;
     const char *content = content_j->valuestring;
 
+    /* FIX 5b: Create parent directories if they don't exist.
+     * Previously file_write to a non-existent directory path failed
+     * with a cryptic errno message. */
+    {
+        char parent[NASH_PATH_MAX];
+        snprintf(parent, sizeof(parent), "%s", path);
+        char *last_slash = strrchr(parent, '/');
+        if (last_slash && last_slash != parent) {
+            *last_slash = '\0';
+            struct stat st;
+            if (stat(parent, &st) != 0) {
+                /* Recursive mkdir: walk forward creating each component */
+                for (char *p = parent + 1; *p; p++) {
+                    if (*p == '/') {
+                        *p = '\0';
+                        mkdir(parent, 0755);
+                        *p = '/';
+                    }
+                }
+                mkdir(parent, 0755);
+            }
+        }
+    }
+
     size_t len = strlen(content);
     if (write_file(path, content, len) != 0) {
         char msg[512];
@@ -2782,34 +2806,51 @@ static const char *ensure_searxng_config_dir(void) {
 /* Start a SearXNG container using podman/docker.
  * Bind-mounts ~/.nash/searxng/ into the container for persistent config.
  * Returns 0 on success, -1 on failure. */
-static int searxng_start_container(int port) {
-    char cmd[2048];
+/* Forward declaration — run_container_cmd is defined below (near web_search_cleanup). */
+static int run_container_cmd(const char *runtime, const char *action, const char *name);
 
+/* FIX #1: Use fork/exec instead of system() to avoid shell injection via cfg_dir.
+ * Previously used system() with snprintf-constructed commands — if $HOME contained
+ * shell metacharacters, the command could be exploited. The cleanup function
+ * (run_container_cmd/web_search_cleanup) was already migrated; this aligns startup. */
+static int searxng_start_with_runtime(const char *runtime, int port, const char *cfg_dir,
+                                       const char *vol_suffix) {
+    char port_map[32], base_url_env[160], vol_mount[640];
+    snprintf(port_map, sizeof(port_map), "%d:8080", port);
+    snprintf(base_url_env, sizeof(base_url_env),
+             "SEARXNG_BASE_URL=http://localhost:%d/", port);
+    snprintf(vol_mount, sizeof(vol_mount), "%s:/etc/searxng%s", cfg_dir, vol_suffix);
+
+    /* Remove any existing container (ignore failure) */
+    run_container_cmd(runtime, "rm", "nash-searxng");
+
+    /* Run new container */
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
+        execlp(runtime, runtime, "run", "-d", "--name", "nash-searxng",
+               "-p", port_map,
+               "-e", base_url_env,
+               "-v", vol_mount,
+               "docker.io/searxng/searxng:latest",
+               (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+}
+
+static int searxng_start_container(int port) {
     /* Ensure persistent config directory with JSON format enabled */
     const char *cfg_dir = ensure_searxng_config_dir();
 
-    snprintf(cmd, sizeof(cmd),
-             "podman rm -f nash-searxng >/dev/null 2>&1; "
-             "podman run -d --name nash-searxng "
-             "-p %d:8080 "
-             "-e SEARXNG_BASE_URL=http://localhost:%d/ "
-             "-v %s:/etc/searxng:rw,Z "
-             "docker.io/searxng/searxng:latest "
-             ">/dev/null 2>&1",
-             port, port, cfg_dir);
-    int rc = system(cmd);
+    /* Try podman first (with :rw,Z SELinux label), then docker (without Z) */
+    int rc = searxng_start_with_runtime("podman", port, cfg_dir, ":rw,Z");
     if (rc != 0) {
-        /* Try docker as fallback */
-        snprintf(cmd, sizeof(cmd),
-                 "docker rm -f nash-searxng >/dev/null 2>&1; "
-                 "docker run -d --name nash-searxng "
-                 "-p %d:8080 "
-                 "-e SEARXNG_BASE_URL=http://localhost:%d/ "
-                 "-v %s:/etc/searxng:rw "
-                 "docker.io/searxng/searxng:latest "
-                 ">/dev/null 2>&1",
-                 port, port, cfg_dir);
-        rc = system(cmd);
+        rc = searxng_start_with_runtime("docker", port, cfg_dir, ":rw");
     }
     if (rc != 0) return -1;
 

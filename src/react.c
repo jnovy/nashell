@@ -3,6 +3,43 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
+/* FIX #14 + FIX 4a: Unified emergency eviction — proportionally removes
+ * enough of the oldest evictable messages to reach ~80% of context budget.
+ * FIX 4a: Previously always evicted the older HALF regardless of how far
+ * over budget the context was (105% over → 50% evicted, wasteful).
+ * Now calculates the target and evicts from oldest until target is reached.
+ * Falls back to evicting half if we can't determine context sizes.
+ * Returns the number of messages evicted (0 if not enough to evict). */
+static int react_emergency_evict(llm_chat_t *chat) {
+    int keep_head = REACT_EVICT_KEEP_HEAD;
+    int keep_tail = REACT_EVICT_KEEP_TAIL;
+    int evict_start = keep_head;
+    int evict_end = chat->n_msgs - keep_tail;
+    if (evict_end <= evict_start + 2) return 0;
+
+    /* Calculate total context and target (80%) */
+    int total_chars = 0;
+    for (int i = 0; i < chat->n_msgs; i++)
+        if (chat->msgs[i].content)
+            total_chars += (int)strlen(chat->msgs[i].content);
+    int target_chars = total_chars * 80 / 100;
+    int need_to_remove = total_chars - target_chars;
+
+    /* Remove oldest evictable messages until we've freed enough */
+    int removed_chars = 0;
+    int evict_to = evict_start;
+    for (int i = evict_start; i < evict_end && removed_chars < need_to_remove; i++) {
+        if (chat->msgs[i].content)
+            removed_chars += (int)strlen(chat->msgs[i].content);
+        evict_to = i + 1;
+    }
+    /* Ensure we evict at least something */
+    if (evict_to <= evict_start) evict_to = evict_start + 1;
+    int n_evict = evict_to - evict_start;
+    llm_chat_remove_range(chat, evict_start, evict_to);
+    return n_evict;
+}
+
 /* Get chars-per-token ratio from provider config, defaulting to 3.5.
  * Used for context budget calculations instead of hardcoded 4. */
 float react_get_chars_per_token(const react_ctx_t *ctx) {
@@ -326,6 +363,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
+    /* FIX 2c: Defer git commits during the react loop to batch them.
+     * Every memory_store/pin/unpin/delete during the loop skips individual
+     * git commits; a single batch commit happens after react_post_loop. */
+    if (ctx->tools->memory)
+        memory_git_defer(ctx->tools->memory);
+
     /* Reset alias sequence counter so new aliases start at R<N>S0.
      * Do NOT clear the hash map — old aliases (R0S0, R0S1, etc.) must
      * remain resolvable for cross-loop file_read("R0S5") references. */
@@ -639,17 +682,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         react_emit(on_event, userdata, &ev);
                         break;
                     }
-                    /* Aggressive eviction: remove half of middle messages */
-                    int keep_head = REACT_EVICT_KEEP_HEAD;
-                    int keep_tail = REACT_EVICT_KEEP_TAIL;
-                    int evict_start = keep_head;
-                    int evict_end = chat->n_msgs - keep_tail;
-                    if (evict_end > evict_start + 2) {
-                        /* Evict the older half of the evictable range
-                         * Fix #9: use llm_chat_remove_range instead of manual free/memmove */
-                        int mid = evict_start + (evict_end - evict_start) / 2;
-                        int n_evict = mid - evict_start;
-                        llm_chat_remove_range(chat, evict_start, mid);
+                    /* FIX #14: Use unified emergency eviction */
+                    int n_evict = react_emergency_evict(chat);
+                    if (n_evict > 0) {
                         char emsg[128];
                         snprintf(emsg, sizeof(emsg),
                             "HTTP 400 — evicted %d messages to reduce context "
@@ -682,15 +717,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = mtmsg;
                 react_emit(on_event, userdata, &ev);
 
-                /* Aggressive eviction like HTTP 400 handler */
-                int keep_head = REACT_EVICT_KEEP_HEAD;
-                int keep_tail = REACT_EVICT_KEEP_TAIL;
-                int evict_start = keep_head;
-                int evict_end = chat->n_msgs - keep_tail;
-                if (evict_end > evict_start + 2) {
-                    int mid = evict_start + (evict_end - evict_start) / 2;
-                    llm_chat_remove_range(chat, evict_start, mid);
-                }
+                /* FIX #14: Use unified emergency eviction */
+                react_emergency_evict(chat);
                 /* Don't count as consecutive (recovery may work) */
                 consecutive_null_responses = 0;
                 continue;
@@ -1130,33 +1158,38 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *el = cJSON_GetObjectItem(action, "end_line");
         int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
-        /* Build signature from all action-distinguishing parameters.
-         * Truncate long fields (content, old_text, new_text) to keep sig bounded.
-         * Use 512-char prefix — 120 was too short and caused false cycling
-         * detection for file_edit calls that differ only after char 120
-         * (common with large code blocks). The sig buffer is 2048 bytes,
-         * so 5×512 + other fields still fits comfortably. */
-        char content_prefix[520] = "", old_prefix[520] = "", new_prefix[520] = "";
-        char key_prefix[520] = "", value_prefix[520] = "";
-        if (content) snprintf(content_prefix, sizeof(content_prefix), "%.512s", content);
-        if (old_text) snprintf(old_prefix, sizeof(old_prefix), "%.512s", old_text);
-        if (new_text) snprintf(new_prefix, sizeof(new_prefix), "%.512s", new_text);
-        if (key) snprintf(key_prefix, sizeof(key_prefix), "%.512s", key);
-        if (value) snprintf(value_prefix, sizeof(value_prefix), "%.512s", value);
-        snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:%s:%s:%s:%s:%s:%s:%s:%s",
+        /* FIX #11: Use FNV-1a hash of each field instead of truncated strings.
+         * Previously, long fields were truncated to 512 chars and packed into a
+         * 4096-byte buffer. With 5×512 + other fields, the total could exceed
+         * 4096, causing snprintf truncation → false cycling detection when two
+         * different actions shared a 4096-char prefix. Content hashing eliminates
+         * both the truncation problem and the buffer size constraint. */
+        #define SIG_HASH_FIELD(s) do { \
+            unsigned _h = 2166136261u; \
+            if (s) { for (const char *_p = (s); *_p; _p++) \
+                _h = (_h ^ (unsigned char)*_p) * 16777619u; } \
+            snprintf(sig + sig_pos, sizeof(sig) - (size_t)sig_pos, \
+                     "%08x:", _h); \
+            sig_pos += 9; \
+        } while (0)
+        int sig_pos = 0;
+        /* Short fields go verbatim for debuggability */
+        sig_pos += snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:",
                  action_name,
                  cmd ? cmd : "",
                  path ? path : "",
                  pattern ? pattern : "",
-                 start_line, end_line,
-                 content_prefix,
-                 old_prefix,
-                 new_prefix,
-                 query ? query : "",
-                 question ? question : "",
-                 url ? url : "",
-                 key_prefix,
-                 value_prefix);
+                 start_line, end_line);
+        /* Long fields get hashed — no truncation, no overflow */
+        SIG_HASH_FIELD(content);
+        SIG_HASH_FIELD(old_text);
+        SIG_HASH_FIELD(new_text);
+        SIG_HASH_FIELD(query);
+        SIG_HASH_FIELD(question);
+        SIG_HASH_FIELD(url);
+        SIG_HASH_FIELD(key);
+        SIG_HASH_FIELD(value);
+        #undef SIG_HASH_FIELD
 
         int repeated = 0;
         for (int i = 0; i < sig_count && i < cw; i++) {
@@ -1399,6 +1432,33 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
             chat->msgs[chat->n_msgs - 1].importance = (llm_msg_importance_t)tool_imp;
             chat->msgs[chat->n_msgs - 1].msg_type = tr.success ? LLM_MSG_TOOL_RESULT : LLM_MSG_ERROR;
+
+            /* CWL §3 [arXiv:2606.11213]: Set recoverability based on tool type.
+             * Messages whose content is persisted elsewhere can be evicted more
+             * aggressively because the agent can recover them via file_read.
+             * LCM-Lite [arXiv:2605.04050]: Copy store ref alias to enable
+             * breadcrumb generation during eviction. */
+            llm_recoverability_t recover = LLM_RECOVER_NONE;
+            if (action_name) {
+                if (strcmp(action_name, "file_write") == 0 ||
+                    strcmp(action_name, "file_edit") == 0)
+                    recover = LLM_RECOVER_FILE;
+                else if (strcmp(action_name, "memory_store") == 0 ||
+                         strcmp(action_name, "memory_pin") == 0)
+                    recover = LLM_RECOVER_MEMORY;
+                else if (strcmp(action_name, "notes") == 0 ||
+                         strcmp(action_name, "plan") == 0)
+                    recover = LLM_RECOVER_SCRATCHPAD;
+                else if (tr.store_ref)
+                    recover = LLM_RECOVER_STORE;
+            }
+            chat->msgs[chat->n_msgs - 1].recoverability = recover;
+            /* Copy store alias for breadcrumb generation during eviction */
+            if (tr.store_ref && ctx->tools->aliases) {
+                /* Look up alias for the store ref from the alias map */
+                char *alias = tool_register_alias(ctx->tools, tr.store_ref);
+                chat->msgs[chat->n_msgs - 1].store_alias = alias; /* ownership transferred */
+            }
         }
 
         /* Harness-1 §4.2: Track tool usage for diversity nudging */
@@ -1488,6 +1548,26 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
+        /* FIX #7: Self-calibrate chars_per_token from actual API response.
+         * When the API reports prompt_tokens, compute the actual ratio from
+         * total_chars / prompt_tokens and use exponential moving average to
+         * smooth out noise. This corrects for content-type-dependent variation
+         * (JSON-heavy prompts tokenize differently than prose). */
+        if (stats.prompt_tokens > 100) {  /* need enough tokens for reliable ratio */
+            int actual_chars = 0;
+            for (int i = 0; i < chat->n_msgs; i++)
+                if (chat->msgs[i].content)
+                    actual_chars += (int)strlen(chat->msgs[i].content);
+            float actual_cpt = (float)actual_chars / (float)stats.prompt_tokens;
+            /* Clamp to reasonable range [1.5, 8.0] to avoid outliers */
+            if (actual_cpt > 1.5f && actual_cpt < 8.0f) {
+                float old_cpt = react_get_chars_per_token(ctx);
+                /* EMA with alpha=0.3: responsive but not jumpy */
+                float calibrated = old_cpt * 0.7f + actual_cpt * 0.3f;
+                ctx->provider->cfg.chars_per_token = calibrated;
+            }
+        }
+
         /* ── Harness-1 §3.5: Multi-pass progressive context rendering ──────
          * Instead of binary eviction (keep/delete), use 5-pass progressive
          * degradation: LOW evict → NORMAL compress → NORMAL summarize →
@@ -1556,9 +1636,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                 }
 
-                /* ── Pass 3: Evict NORMAL middle messages entirely.
-                 * Standard eviction of the evictable range, but now only NORMAL
-                 * messages have survived (LOW already gone, HIGH preserved). */
+                /* ── Pass 3: Recoverability-aware eviction of NORMAL middle messages.
+                 * CWL [arXiv:2606.11213]: Sort evictable messages so those with
+                 * higher recoverability (content persisted elsewhere) are evicted
+                 * FIRST — they can be recovered via file_read.
+                 * LCM-Lite [arXiv:2605.04050]: Generate a breadcrumb index of
+                 * evicted store refs so the agent knows how to recover content. */
                 if (usage_pct > eviction_pct) {
                     int evict_start = keep_head;
                     int evict_end = chat->n_msgs - keep_tail;
@@ -1577,9 +1660,64 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         break;
                     }
 
-                    /* Compaction floor — never drop below 20% of context window */
+                    /* CWL §3: Sort evictable range by eviction priority.
+                     * Lower score = evict first.
+                     * score = importance*100 - recoverability*10 + age_rank
+                     * Messages with RECOVER_STORE/FILE/MEMORY get evicted before
+                     * RECOVER_NONE at the same importance level. */
                     {
-                        int floor_chars = context_budget / 5;
+                        int n_evictable = evict_end - evict_start;
+                        if (n_evictable > 1) {
+                            typedef struct { int idx; int score; } evict_scored_t;
+                            evict_scored_t *scored = malloc((size_t)n_evictable * sizeof(evict_scored_t));
+                            if (scored) {
+                                for (int i = 0; i < n_evictable; i++) {
+                                    int mi = evict_start + i;
+                                    int imp = (int)chat->msgs[mi].importance;
+                                    int rec = (int)chat->msgs[mi].recoverability;
+                                    /* Higher recoverability → lower score (evict first).
+                                     * Higher importance → higher score (evict last).
+                                     * Earlier position → lower age_rank (evict first). */
+                                    scored[i].idx = mi;
+                                    scored[i].score = imp * 100 - rec * 10 + i;
+                                }
+                                /* Simple insertion sort (n_evictable is typically <100) */
+                                for (int i = 1; i < n_evictable; i++) {
+                                    evict_scored_t key = scored[i];
+                                    int j = i - 1;
+                                    while (j >= 0 && scored[j].score > key.score) {
+                                        scored[j + 1] = scored[j];
+                                        j--;
+                                    }
+                                    scored[j + 1] = key;
+                                }
+                                /* Reorder messages in chat according to sorted order.
+                                 * We need to physically rearrange so that the oldest-by-score
+                                 * messages are at the front of the evictable range.
+                                 * Use a temp copy to avoid in-place complexity. */
+                                llm_msg_t *tmp = malloc((size_t)n_evictable * sizeof(llm_msg_t));
+                                if (tmp) {
+                                    for (int i = 0; i < n_evictable; i++)
+                                        tmp[i] = chat->msgs[scored[i].idx];
+                                    for (int i = 0; i < n_evictable; i++)
+                                        chat->msgs[evict_start + i] = tmp[i];
+                                    free(tmp);
+                                }
+                                free(scored);
+                            }
+                        }
+                    }
+
+                    /* Compaction floor — never drop below 20% of context window.
+                     * FIX 4b: Subtract preserved head message sizes from the budget
+                     * before computing the floor, so large system prompts don't cause
+                     * under-eviction. */
+                    {
+                        int head_chars = 0;
+                        for (int ki = 0; ki < evict_start; ki++)
+                            if (chat->msgs[ki].content)
+                                head_chars += (int)strlen(chat->msgs[ki].content);
+                        int floor_chars = (context_budget - head_chars) / 5;
                         if (floor_chars < 4000) floor_chars = 4000;
                         int kept_chars = 0;
                         for (int ki = 0; ki < evict_start; ki++)
@@ -1596,7 +1734,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
 
                     if (evict_end > evict_start) {
-                        /* Heuristic extraction into scratchpad before eviction */
+                        /* LCM-Lite [arXiv:2605.04050]: Build breadcrumb index of
+                         * evicted messages that have store refs — these can be
+                         * recovered via file_read. Also extract heuristic summary
+                         * of non-recoverable messages into scratchpad. */
+                        str_t breadcrumb = str_new(512);
                         {
                             size_t sp_budget = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
                             str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
@@ -1604,13 +1746,37 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             if (max_per_msg < 200) max_per_msg = 200;
                             if (max_per_msg > 2000) max_per_msg = 2000;
 
+                            str_append_cstr(&breadcrumb,
+                                "[EVICTED CONTEXT — recoverable via file_read]\n");
+                            int n_breadcrumbs = 0;
+
                             for (int i = evict_start; i < evict_end; i++) {
                                 const char *content = chat->msgs[i].content;
                                 const char *role = chat->msgs[i].role;
                                 if (!content || !content[0] || !role) continue;
                                 if (strcmp(role, "system") == 0) continue;
-                                if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
 
+                                /* LCM-Lite: If message has store alias, add to breadcrumb */
+                                if (chat->msgs[i].store_alias) {
+                                    /* Brief description: first 80 chars of content */
+                                    char brief[81];
+                                    int blen = (int)strlen(content);
+                                    if (blen > 80) blen = 80;
+                                    memcpy(brief, content, (size_t)blen);
+                                    brief[blen] = '\0';
+                                    /* Strip newlines from brief */
+                                    for (int b = 0; brief[b]; b++)
+                                        if (brief[b] == '\n' || brief[b] == '\r')
+                                            brief[b] = ' ';
+                                    str_appendf(&breadcrumb, "- %s: %s (%s, %d chars)\n",
+                                        chat->msgs[i].store_alias, brief, role,
+                                        (int)strlen(content));
+                                    n_breadcrumbs++;
+                                    continue; /* skip scratchpad extraction for recoverable msgs */
+                                }
+
+                                /* Non-recoverable: extract into scratchpad (existing heuristic) */
+                                if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
                                 int clen = (int)strlen(content);
                                 if (clen > max_per_msg) clen = max_per_msg;
                                 str_appendf(&summary, "[%s]: ", role);
@@ -1619,6 +1785,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                     str_append_cstr(&summary, "...[truncated]");
                                 str_append_cstr(&summary, "\n");
                                 if (summary.len >= sp_budget) break;
+                            }
+
+                            /* Only use breadcrumb if we have entries */
+                            if (n_breadcrumbs == 0) {
+                                str_free(&breadcrumb);
+                                breadcrumb = str_new(0);
                             }
 
                             if (summary.len > 0) {
@@ -1671,35 +1843,50 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             free(fresh_sp);
                         }
 
+                        /* LCM-Lite: Inject breadcrumb index of evicted store refs
+                         * so the agent knows what was evicted and how to recover it. */
+                        if (breadcrumb.len > 0) {
+                            char *bc_str = str_steal(&breadcrumb);
+                            llm_chat_insert_typed(chat, evict_start + 1,
+                                "user", bc_str, LLM_MSG_EVICTION_SUMMARY);
+                            free(bc_str);
+                        } else {
+                            str_free(&breadcrumb);
+                        }
+
                         react_event_t ev = {0};
                         ev.react_loop = ctx->tools->react_loop;
                         ev.type = REACT_EVENT_WARNING;
                         ev.step = step + 1;
-                        ev.message = "Context compacted (multi-pass) — evicted messages summarized into scratchpad";
+                        ev.message = "Context compacted (CWL+LCM) — recoverable refs indexed, non-recoverable summarized";
                         react_emit(on_event, userdata, &ev);
                     }
                 }
 
-                /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
-                 * only 1-2 tools for 10+ steps, inject a soft reminder to use
-                 * notes for saving findings. */
-                if (ctx->tools->n_tool_uses >= 10) {
-                    int notes_idx = react_tool_index("notes");
-                    int notes_used = (notes_idx >= 0 && notes_idx < 32)
-                        ? ctx->tools->tool_use_counts[notes_idx] : 0;
-                    if (notes_used == 0) {
-                        llm_chat_add_typed(chat, "user",
-                            "[HINT] You have not used notes() to save key findings. "
-                            "Consider saving important discoveries to scratchpad sections "
-                            "to preserve them across context compaction.",
-                            LLM_MSG_MEMORY_HINT);
-                        /* Mark as having been nudged (set a fake count so we don't re-nudge) */
-                        if (notes_idx >= 0 && notes_idx < 32)
-                            ctx->tools->tool_use_counts[notes_idx] = -1;
-                    }
-                }
             }
         }
+
+            /* FIX 4c: Moved diversity nudge outside eviction block so it fires
+             * regardless of context pressure.  Previously only triggered when
+             * usage_pct > eviction_pct. */
+            /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
+             * only 1-2 tools for 10+ steps, inject a soft reminder to use
+             * notes for saving findings. */
+            if (ctx->tools->n_tool_uses >= 10) {
+                int notes_idx = react_tool_index("notes");
+                int notes_used = (notes_idx >= 0 && notes_idx < 32)
+                    ? ctx->tools->tool_use_counts[notes_idx] : 0;
+                if (notes_used == 0) {
+                    llm_chat_add_typed(chat, "user",
+                        "[HINT] You have not used notes() to save key findings. "
+                        "Consider saving important discoveries to scratchpad sections "
+                        "to preserve them across context compaction.",
+                        LLM_MSG_MEMORY_HINT);
+                    /* Mark as having been nudged (set a fake count so we don't re-nudge) */
+                    if (notes_idx >= 0 && notes_idx < 32)
+                        ctx->tools->tool_use_counts[notes_idx] = -1;
+                }
+            }
 
         /* Cleanup */
         free(meta_str);
@@ -1743,6 +1930,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         react_post_loop(ctx, user_query, final_result, task_succeeded,
                         on_event, userdata);
     }
+
+    /* FIX 2c: Flush all deferred git commits as a single batch. */
+    if (ctx->tools->memory)
+        memory_git_flush(ctx->tools->memory, "memory: batch update (react loop)");
 
     /* Don't free last_query/last_result here — the caller (main.c) manages them.
      * They are set after each react_run() call and used to inject previous context. */

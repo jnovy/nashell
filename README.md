@@ -171,16 +171,33 @@ Nash uses a **scratchpad-only** architecture for cross-loop state management. Ea
 
 No manifest. No last-exchange injection. No truncation. The scratchpad is the **sole** mechanism for passing state between react loops.
 
-#### Context Eviction with LLM Summarization
+#### Context Eviction — Recoverability-Aware + Lossless Breadcrumbs
 
-When context usage exceeds the eviction threshold (default 70%), nash uses **LLM-based semantic summarization** instead of destructive deletion:
+When context usage exceeds the eviction threshold (default 70%), nash uses a **multi-pass progressive eviction** pipeline inspired by two research papers:
 
-1. Collect evicted messages into a single text
-2. LLM call extracts key findings, decisions, file paths, code changes, errors, conclusions
-3. Summary merged into scratchpad as `context_summary` section (priority 0 = highest)
-4. Updated scratchpad re-injected at eviction point
+**CWL (Context Window Lifecycle)** [arXiv:2606.11213]: Messages are annotated with a **recoverability level** based on their tool type:
 
-This replaces the old approach of deleting messages and re-injecting a navigation manifest (which showed tool calls, not knowledge).
+| Recoverability | Tools | Eviction Priority |
+|---------------|-------|-------------------|
+| `RECOVER_FILE` | file_write, file_edit | Evict first (content persisted in filesystem) |
+| `RECOVER_MEMORY` | memory_store, memory_pin | Evict first (content in long-term memory) |
+| `RECOVER_SCRATCHPAD` | notes, plan | Evict early (content in scratchpad) |
+| `RECOVER_STORE` | Any tool with store ref | Evict early (recoverable via `file_read`) |
+| `RECOVER_NONE` | grep_search, web_fetch, etc. | Evict last (observations not persisted) |
+
+During Pass 3 eviction, messages are sorted by `(importance ASC, recoverability DESC, age ASC)` — recoverable messages are evicted before non-recoverable ones at the same importance level.
+
+**LCM-Lite (Lossless Context Management)** [arXiv:2605.04050]: Instead of losing evicted content, nash generates a **breadcrumb index** of evicted store refs:
+
+```
+[EVICTED CONTEXT — recoverable via file_read]
+- R0S15: {"pattern":"eviction","path":"src/","matches":50... (user, 837 chars)
+- R0S22: {"path":"src/memory.c","total_lines":1932... (user, 9915 chars)
+```
+
+The breadcrumb is injected after the scratchpad at the eviction point, giving the LLM awareness of what was evicted and how to recover it. Non-recoverable messages still get heuristic extraction into the scratchpad.
+
+This replaces the old approach of uniform scratchpad dumping with a two-track system: recoverable content gets indexed, non-recoverable content gets summarized.
 
 #### Post-Done Scratchpad Pruning
 
@@ -458,6 +475,25 @@ Failure signatures are clustered by `(terminal_cause, mechanism, tool)`:
 
 Produces evidence bundles for LLM-driven proposal generation.
 
+#### Step-Level Trajectory Scoring (SWE-Shepherd)
+
+Inspired by SWE-Shepherd [arXiv:2604.10493], the postmortem now includes **step-level productivity scoring** — each tool call in a session is classified as:
+
+| Score | Classification | Heuristic |
+|-------|---------------|----------|
+| +2 | **PRODUCTIVE** | Tool succeeded AND result was file_read'd or is inherently productive (done, notes, file_write, etc.) |
+| +1 | **NEUTRAL** | Tool succeeded, result usage unclear |
+|  0 | **WASTEFUL** | Tool succeeded but output ref was never read |
+| -1 | **HARMFUL** | Tool failed (error returned) |
+| -2 | **SPINNING** | 3+ consecutive identical tool+params (cycling) |
+
+Aggregate metrics per session:
+- **Efficiency** = productive steps / total steps
+- **Waste ratio** = wasteful steps / total steps
+- **Causal step** = earliest step in the longest harmful streak (failure attribution)
+
+The evidence bundle now includes a "Trajectory Quality" section with aggregate stats across all analyzed sessions, making it possible to track efficiency trends over time.
+
 #### Regression Testing (Validation Gate)
 
 Query banks in `~/.nash/regression/` (YAML) define test queries with criteria:
@@ -497,6 +533,22 @@ Self-harness tunable parameters exposed in config:
 - `vscore_exponent` — Bayesian validation power-law exponent
 - `tool_retry_limit` — max consecutive errors before forced strategy switch
 - `cycling_window` / `cycling_threshold` — cycling detection sensitivity
+
+#### EvolveMem — Retrieval Quality Telemetry
+
+Inspired by EvolveMem [arXiv:2605.13941], nash now logs **memory retrieval quality telemetry** after each task. A `memory_quality` journal entry records:
+
+- Which memories were recalled (keys)
+- Task outcome (success/failure)
+- Cold-start count (memories with zero evidence, vscore=0.5)
+- Cold-start percentage
+
+The self-harness playbook includes a 4th pass ("Retrieval Quality Diagnosis") that scans these telemetry entries to diagnose retrieval configuration issues:
+- High cold-start rate → decrease `vscore_exponent`
+- Low success rate with recalled memories → increase `recall_min_score`
+- Too many injections → decrease `max_*_per_query`
+
+This closes the feedback loop between memory retrieval outcomes and retrieval configuration, enabling data-driven tuning of the retrieval parameters.
 
 ### Model Profiles — Per-Model Spec Overrides
 
@@ -994,6 +1046,14 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [OpenJarvis](https://arxiv.org/abs/2605.17172) | 2026 | Personal AI = 5 typed primitives (Intelligence, Engine, Agents, Tools, Learning) in a jointly-optimizable spec. LLM-guided spec search across all primitives recovers cloud-level accuracy on-device. | Unified spec (`--spec` / `--load-spec`), layered model profiles with 30+ override fields, sentinel-based cascade (Model Profiles, Unified Spec sections) |
 | [Self-Harness](https://arxiv.org/abs/2606.09498) | 2026 | Weakness mining + proposal + validation gate | Postmortem analysis + regression testing + validation gate |
 | [DCPM](https://arxiv.org/abs/2606.09483) | 2026 | Dual-process cognitive memory with async consolidation | Auto-dream: usage-based memory consolidation trigger |
+| [SWE-Shepherd](https://arxiv.org/abs/2604.10493) | 2026 | Process Reward Models (PRMs) for step-level supervision in code agents | Step-level trajectory scoring in postmortem: productive/wasteful/harmful/spinning classification per tool call, causal step attribution for failures |
+| [EvolveMem](https://arxiv.org/abs/2605.13941) | 2026 | Self-evolving memory architecture — expose retrieval config as structured action space optimized by LLM diagnosis | Memory quality telemetry (journal `memory_quality` entries), self-harness retrieval diagnosis pass, data-driven tuning of retrieval params |
+
+### Context Management
+| Paper | Year | Key Insight | Nash Implementation |
+|-------|------|-------------|---------------------|
+| [CWL — Context Window Lifecycle](https://arxiv.org/abs/2606.11213) | 2026 | Typed, dependency-linked episodes; deterministic LLM-free eviction based on recoverability | Recoverability-aware eviction: messages annotated with `RECOVER_NONE/SCRATCHPAD/STORE/FILE/MEMORY`, sorted by recoverability during Pass 3 eviction |
+| [LCM — Lossless Context Management](https://arxiv.org/abs/2605.04050) | 2026 | Recursive context compression via hierarchical summary DAG with lossless pointers | LCM-Lite: breadcrumb index of evicted store refs injected at eviction point, making eviction lossless via `file_read` recovery |
 
 ### Additional References
 | Paper | Year | Key Insight | Nash Implementation |

@@ -166,9 +166,20 @@ provider_t *provider_create(const provider_config_t *cfg) {
     if (!p) return NULL;
 
     p->type = cfg->type;
-    p->cfg = *cfg;  /* shallow copy of scalars */
-    /* Deep-copy all string fields so provider owns its own strings.
-     * This avoids aliasing/dangling-pointer hazards when callers free the original. */
+    /* FIX 5a: Zero the struct first, then copy scalar fields explicitly,
+     * then deep-copy ALL pointer fields.  Previously used shallow struct copy
+     * which aliases any new pointer field that isn't explicitly deep-copied. */
+    memset(&p->cfg, 0, sizeof(p->cfg));
+    p->cfg.type            = cfg->type;
+    p->cfg.context_size    = cfg->context_size;
+    p->cfg.chars_per_token = cfg->chars_per_token;
+    p->cfg.caching         = cfg->caching;
+    p->cfg.max_tokens      = cfg->max_tokens;
+    p->cfg.temperature     = cfg->temperature;
+    p->cfg.enable_thinking = cfg->enable_thinking;
+    p->cfg.thinking_budget = cfg->thinking_budget;
+    p->cfg.llm_timeout     = cfg->llm_timeout;
+    /* Deep-copy all string fields so provider owns its own strings. */
     p->cfg.model_id    = cfg->model_id    ? strdup(cfg->model_id)    : NULL;
     p->cfg.api_base    = cfg->api_base    ? strdup(cfg->api_base)    : NULL;
     p->cfg.api_key_env = cfg->api_key_env ? strdup(cfg->api_key_env) : NULL;
@@ -1130,7 +1141,12 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 continue;
             }
             /* 4xx, deterministic 500, or final attempt: return NULL */
-            /* Populate error diagnostics for react.c journal entry */
+            /* Populate error diagnostics for react.c journal entry.
+             * Thread safety note (FIX #6): last_error/last_error_request/
+             * last_error_response are written here (inference thread) and
+             * read by main thread ONLY after pthread_join — the join
+             * provides a happens-before guarantee per POSIX §4.12. Do NOT
+             * read these from the main thread while inference is running. */
             free(p->last_error);
             {
                 char ebuf[512];

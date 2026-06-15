@@ -14,23 +14,23 @@
 
 /* ── CRC32 ──────────────────────────────────────────────────────── */
 
-/* CRC32 lookup table (IEEE polynomial, same as zlib) */
+/* CRC32 lookup table (IEEE polynomial, same as zlib).
+ * FIX 3a: Initialize at program startup via constructor attribute to avoid
+ * a data race when two threads call compress_crc32() simultaneously.
+ * Previously used a non-atomic flag check. */
 static uint32_t crc32_table[256];
-static int crc32_table_init = 0;
 
+__attribute__((constructor))
 static void crc32_init_table(void) {
-    if (crc32_table_init) return;
     for (uint32_t i = 0; i < 256; i++) {
         uint32_t c = i;
         for (int j = 0; j < 8; j++)
             c = (c & 1) ? (0xEDB88320 ^ (c >> 1)) : (c >> 1);
         crc32_table[i] = c;
     }
-    crc32_table_init = 1;
 }
 
 uint32_t compress_crc32(const char *data, size_t len) {
-    crc32_init_table();
     uint32_t crc = 0xFFFFFFFF;
     for (size_t i = 0; i < len; i++)
         crc = crc32_table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);

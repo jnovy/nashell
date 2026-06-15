@@ -74,3 +74,36 @@ passes:
       Call done with what was implemented.
     react:
       inject_memory: true
+
+  - label: "4. Retrieval Quality Diagnosis (EvolveMem)"
+    prompt_template: |
+      You are analyzing Nash's memory retrieval quality to identify tuning opportunities.
+      Based on: EvolveMem [arXiv:2605.13941] — self-evolving memory architecture.
+
+      Scan recent session journals for "memory_quality" entries using:
+        shell_exec: grep -h '"memory_quality"' {{nash_dir}}/sessions/*/journal.jsonl | head -50
+
+      Each entry contains:
+      - n_recalled: how many memories were injected
+      - task_succeeded: whether the task completed successfully
+      - cold_start_count: memories with zero evidence (vscore=0.5)
+      - cold_start_pct: fraction of recalled memories with no evidence
+
+      Analyze the aggregate statistics:
+      1. What percentage of recalled memories have zero evidence (cold_start)?  
+         → If >80%, suggest decreasing vscore_exponent further
+      2. What is the task success rate when memories are recalled?
+         → If low, suggest increasing recall_min_score to filter weak matches
+      3. Are too many memories being injected per query?
+         → If n_recalled is consistently high (>6), suggest decreasing max_*_per_query
+
+      Also check the trajectory quality data from --postmortem for correlation:
+      - Do sessions with more recalled memories have higher efficiency?
+      - Do cold-start-heavy sessions correlate with failures?
+
+      Write your diagnosis to scratchpad section "retrieval-diagnosis".
+      If config changes are warranted, propose specific parameter adjustments.
+      Call done with a summary of findings and recommendations.
+    react:
+      inject_memory: false
+      inject_prev_result: true

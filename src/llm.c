@@ -25,6 +25,7 @@ void llm_chat_free(llm_chat_t *chat) {
         free(chat->msgs[i].content);
         free(chat->msgs[i].tool_call_id);
         free(chat->msgs[i].tool_calls_json);
+        free(chat->msgs[i].store_alias);
     }
     free(chat->msgs);
     free(chat->last_tool_call_id);
@@ -71,6 +72,7 @@ int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
             free(chat->msgs[src].content);
             free(chat->msgs[src].tool_call_id);
             free(chat->msgs[src].tool_calls_json);
+            free(chat->msgs[src].store_alias);
             removed++;
         } else {
             if (dst != src)
@@ -140,6 +142,7 @@ int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
             free(chat->msgs[src].content);
             free(chat->msgs[src].tool_call_id);
             free(chat->msgs[src].tool_calls_json);
+            free(chat->msgs[src].store_alias);
             removed++;
         } else {
             if (dst != src)
@@ -169,6 +172,7 @@ void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
         free(chat->msgs[i].content);
         free(chat->msgs[i].tool_call_id);
         free(chat->msgs[i].tool_calls_json);
+        free(chat->msgs[i].store_alias);
     }
     int tail = chat->n_msgs - end;
     if (tail > 0)

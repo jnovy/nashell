@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <errno.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <curl/curl.h>
 #include <dirent.h>
@@ -285,11 +286,25 @@ int http_post(const char *url, const char *body,
 }
 
 int write_file(const char *path, const char *data, size_t len) {
-    FILE *f = fopen(path, "w");
+    /* FIX 3b: Atomic write via temp file + rename.  Prevents data corruption
+     * (empty/partial file) if the process crashes between open and close.
+     * Previously used fopen("w") which truncates immediately. */
+    char tmp[NASH_PATH_MAX];
+    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid());
+    FILE *f = fopen(tmp, "w");
     if (!f) return -1;
     size_t n = fwrite(data, 1, len, f);
+    if (fflush(f) != 0 || n != len) {
+        fclose(f);
+        unlink(tmp);
+        return -1;
+    }
     fclose(f);
-    return (n == len) ? 0 : -1;
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
 }
 
 cJSON *slurp_json(const char *path) {

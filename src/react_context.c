@@ -76,11 +76,15 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         memory_results_t all_memories = memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
-        /* Helper macro: inject entries of a given type prefix */
+        /* FIX 6a: Helper macro uses a local counter instead of mutating the
+         * caller's variable.  Previously max_count and type_count were the same
+         * variable passed twice, and the macro decremented type_count — fragile
+         * and confusing. */
         // NOLINTNEXTLINE(bugprone-macro-parentheses)
-        #define INJECT_TYPE(label, prefix, plen, max_count, type_count, mtype) \
+        #define INJECT_TYPE(label, prefix, plen, max_count, mtype) \
             do { \
-                if (type_count > 0) { \
+                if ((max_count) > 0) { \
+                    int _remaining = (max_count); \
                     str_t msg = str_new(4096); \
                     str_appendf(&msg, "%s\n", label); \
                     for (int j = 0; j < all_memories.count; j++) { \
@@ -90,9 +94,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                                 all_memories.entries[j].key, \
                                 all_memories.entries[j].value ? all_memories.entries[j].value : ""); \
                             tool_track_recalled_key(ctx->tools, all_memories.entries[j].key); \
-                            type_count--; \
+                            _remaining--; \
                         } \
-                        if (type_count <= 0) break; \
+                        if (_remaining <= 0) break; \
                     } \
                     if (msg.len > strlen(label) + 5) { \
                         llm_chat_add_typed(chat, "user", str_cstr(&msg), mtype); \
@@ -101,10 +105,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 } \
             } while(0)
 
-        INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, max_skills, LLM_MSG_SKILLS);
-        INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, max_lessons, LLM_MSG_LESSONS);
-        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, max_strategies, LLM_MSG_STRATEGIES);
-        INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, max_antipatterns, LLM_MSG_ANTIPATTERNS);
+        INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS);
+        INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS);
+        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, LLM_MSG_STRATEGIES);
+        INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS);
 
         #undef INJECT_TYPE
 
@@ -149,10 +153,16 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                     jf = fopen(jpath, "r");
                 }
                 if (jf) {
-                    int pmap[1024];
-                    memset(pmap, -1, sizeof(pmap));
+                    /* FIX #2: Use dynamically-sized parent map instead of fixed 1024.
+                     * Previously, react_loop IDs >= 1024 were silently dropped,
+                     * breaking ancestry tracking in long TUI sessions. */
+                    int pmap_cap = 1024;
+                    int *pmap = malloc(sizeof(int) * (size_t)pmap_cap);
+                    if (pmap) {
+                        memset(pmap, -1, sizeof(int) * (size_t)pmap_cap);
+                    }
                     char jline[32768];
-                    while (fgets(jline, sizeof(jline), jf)) {
+                    while (pmap && fgets(jline, sizeof(jline), jf)) {
                         cJSON *entry = cJSON_Parse(jline);
                         if (!entry) continue;
                         const char *jtool = cJSON_GetStringValue(
@@ -163,17 +173,37 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                             cJSON *pp = cJSON_GetObjectItem(
                                 cJSON_GetObjectItem(entry, "params"),
                                 "parent_loop");
-                            if (pp && cJSON_IsNumber(pp) && rl >= 0 && rl < 1024)
+                            if (pp && cJSON_IsNumber(pp) && rl >= 0) {
+                                /* Grow pmap if needed */
+                                if (rl >= pmap_cap) {
+                                    int new_cap = pmap_cap;
+                                    while (new_cap <= rl) new_cap *= 2;
+                                    int *tmp = realloc(pmap, sizeof(int) * (size_t)new_cap);
+                                    if (tmp) {
+                                        memset(tmp + pmap_cap, -1,
+                                               sizeof(int) * (size_t)(new_cap - pmap_cap));
+                                        pmap = tmp;
+                                        pmap_cap = new_cap;
+                                    } else {
+                                        /* realloc failed — skip this entry */
+                                        cJSON_Delete(entry);
+                                        continue;
+                                    }
+                                }
                                 pmap[rl] = (int)pp->valuedouble;
+                            }
                         }
                         cJSON_Delete(entry);
                     }
                     fclose(jf);
-                    int cur = ctx->parent_loop;
-                    while (cur >= 0 && cur < 1024 && pmap[cur] >= 0
-                           && n_ancestors < 256) {
-                        cur = pmap[cur];
-                        ancestors[n_ancestors++] = cur;
+                    if (pmap) {
+                        int cur = ctx->parent_loop;
+                        while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0
+                               && n_ancestors < 256) {
+                            cur = pmap[cur];
+                            ancestors[n_ancestors++] = cur;
+                        }
+                        free(pmap);
                     }
                 }
 

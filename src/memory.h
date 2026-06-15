@@ -45,10 +45,19 @@ typedef struct {
     char  *path;           /* full path to .json file (owned) */
 } mem_index_entry_t;
 
+/* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
+ * Without this, mem_index_find() was O(n) per call, making batch operations
+ * during dream consolidation O(n²). */
+typedef struct {
+    int *slots;       /* maps hash bucket → entries[] index, -1 = empty */
+    int cap;          /* capacity (always power of 2) */
+} mem_index_map_t;
+
 typedef struct {
     mem_index_entry_t *entries;
     int count;
     int cap;
+    mem_index_map_t map;
 } mem_index_t;
 
 typedef struct {

@@ -99,6 +99,186 @@ static void add_failure(failure_list_t *list, failure_instance_t fi) {
     list->failures[list->n_failures++] = fi;
 }
 
+/* ── SWE-Shepherd: Step-level trajectory scoring [arXiv:2604.10493] ────────
+ * Scores each step in a session as productive/neutral/wasteful/harmful/spinning.
+ * No LLM needed — pure heuristic analysis of the journal step sequence. */
+static trajectory_score_t score_session_trajectory(const char *session_dir) {
+    trajectory_score_t ts = {0};
+    ts.causal_step = -1;
+
+    char jpath[NASH_PATH_MAX];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
+
+    char *data = slurp_file(jpath, NULL);
+    if (!data) return ts;
+
+    /* Collect tool steps into arrays for forward-looking analysis */
+    int cap = 128;
+    char **tools = calloc((size_t)cap, sizeof(char *));
+    char **refs = calloc((size_t)cap, sizeof(char *));
+    int *failed = calloc((size_t)cap, sizeof(int));
+    int *steps = calloc((size_t)cap, sizeof(int));
+    char **params_str = calloc((size_t)cap, sizeof(char *));
+    int n = 0;
+    int has_done = 0;
+
+    char *line = data;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = '\0';
+
+        cJSON *entry = cJSON_Parse(line);
+        if (entry) {
+            const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+            if (tool && strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0 &&
+                strcmp(tool, "context") != 0 && strcmp(tool, "memory_context") != 0) {
+                if (n >= cap) {
+                    cap *= 2;
+                    tools = realloc(tools, (size_t)cap * sizeof(char *));
+                    refs = realloc(refs, (size_t)cap * sizeof(char *));
+                    failed = realloc(failed, (size_t)cap * sizeof(int));
+                    steps = realloc(steps, (size_t)cap * sizeof(int));
+                    params_str = realloc(params_str, (size_t)cap * sizeof(char *));
+                }
+                tools[n] = strdup(tool);
+                const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
+                refs[n] = ref ? strdup(ref) : NULL;
+                cJSON *f = cJSON_GetObjectItem(entry, "failed");
+                cJSON *err = cJSON_GetObjectItem(entry, "error");
+                const char *err_s = cJSON_GetStringValue(err);
+                failed[n] = (f && cJSON_IsTrue(f)) || (err_s && err_s[0]) ? 1 : 0;
+                steps[n] = cJSON_GetObjectItem(entry, "step")
+                           ? cJSON_GetObjectItem(entry, "step")->valueint : n;
+                cJSON *p = cJSON_GetObjectItem(entry, "params");
+                params_str[n] = p ? cJSON_PrintUnformatted(p) : NULL;
+                if (strcmp(tool, "done") == 0) has_done = 1;
+                n++;
+            }
+            cJSON_Delete(entry);
+        }
+        if (nl) line = nl + 1;
+        else break;
+    }
+    free(data);
+
+    if (n == 0) goto cleanup;
+
+    /* Score each step */
+    step_score_t *scores = calloc((size_t)n, sizeof(step_score_t));
+    for (int i = 0; i < n; i++) {
+        /* Check for spinning: 3+ consecutive identical tool+params */
+        if (i >= 2 && tools[i] && tools[i-1] && tools[i-2] &&
+            strcmp(tools[i], tools[i-1]) == 0 &&
+            strcmp(tools[i], tools[i-2]) == 0 &&
+            params_str[i] && params_str[i-1] && params_str[i-2] &&
+            strcmp(params_str[i], params_str[i-1]) == 0 &&
+            strcmp(params_str[i], params_str[i-2]) == 0) {
+            scores[i] = STEP_SPINNING;
+            continue;
+        }
+
+        /* Check for harmful: tool failed */
+        if (failed[i]) {
+            scores[i] = STEP_HARMFUL;
+            continue;
+        }
+
+        /* Check for productive: ref was read in a subsequent step,
+         * or this is a done/notes/memory_store/file_write/file_edit (inherently productive) */
+        if (strcmp(tools[i], "done") == 0 ||
+            strcmp(tools[i], "notes") == 0 ||
+            strcmp(tools[i], "plan") == 0 ||
+            strcmp(tools[i], "memory_store") == 0 ||
+            strcmp(tools[i], "memory_pin") == 0 ||
+            strcmp(tools[i], "file_write") == 0 ||
+            strcmp(tools[i], "file_edit") == 0) {
+            scores[i] = STEP_PRODUCTIVE;
+            continue;
+        }
+
+        /* Check if this step's ref was consumed later */
+        if (refs[i] && refs[i][0]) {
+            int was_read = 0;
+            for (int j = i + 1; j < n && j <= i + 5; j++) {
+                if (tools[j] && strcmp(tools[j], "file_read") == 0 &&
+                    params_str[j] && strstr(params_str[j], refs[i])) {
+                    was_read = 1;
+                    break;
+                }
+            }
+            scores[i] = was_read ? STEP_PRODUCTIVE : STEP_WASTEFUL;
+        } else {
+            scores[i] = STEP_NEUTRAL;
+        }
+    }
+
+    /* Compute aggregate metrics */
+    ts.n_steps = n;
+    int cur_prod_streak = 0, cur_harm_streak = 0;
+    for (int i = 0; i < n; i++) {
+        switch (scores[i]) {
+            case STEP_PRODUCTIVE: ts.n_productive++; break;
+            case STEP_WASTEFUL:   ts.n_wasteful++; break;
+            case STEP_HARMFUL:    ts.n_harmful++; break;
+            case STEP_SPINNING:   ts.n_spinning++; break;
+            default: break;
+        }
+        /* Track productive streaks */
+        if (scores[i] >= STEP_NEUTRAL) {
+            cur_prod_streak++;
+            cur_harm_streak = 0;
+        } else {
+            cur_harm_streak++;
+            cur_prod_streak = 0;
+        }
+        if (cur_prod_streak > ts.longest_productive_streak)
+            ts.longest_productive_streak = cur_prod_streak;
+        if (cur_harm_streak > ts.longest_harmful_streak)
+            ts.longest_harmful_streak = cur_harm_streak;
+    }
+    ts.efficiency = n > 0 ? (float)ts.n_productive / (float)n : 0.0f;
+    ts.waste_ratio = n > 0 ? (float)ts.n_wasteful / (float)n : 0.0f;
+
+    /* Causal step attribution for failures */
+    if (!has_done) {
+        /* Find the earliest harmful/spinning step in the longest harmful streak */
+        int cur_start = -1;
+        int best_start = -1, best_len = 0, cur_len = 0;
+        for (int i = 0; i < n; i++) {
+            if (scores[i] <= STEP_WASTEFUL) {
+                if (cur_start < 0) cur_start = i;
+                cur_len++;
+                if (cur_len > best_len) {
+                    best_len = cur_len;
+                    best_start = cur_start;
+                }
+            } else {
+                cur_start = -1;
+                cur_len = 0;
+            }
+        }
+        if (best_start >= 0) {
+            ts.causal_step = steps[best_start];
+            ts.causal_tool = tools[best_start] ? strdup(tools[best_start]) : NULL;
+        }
+    }
+
+    free(scores);
+
+cleanup:
+    for (int i = 0; i < n; i++) {
+        free(tools[i]);
+        free(refs[i]);
+        free(params_str[i]);
+    }
+    free(tools);
+    free(refs);
+    free(failed);
+    free(steps);
+    free(params_str);
+    return ts;
+}
+
 static void scan_session(const char *session_dir, failure_list_t *out) {
     char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
@@ -412,14 +592,31 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
     if (max_sessions > 0 && max_sessions < scan_count)
         scan_count = max_sessions;
 
-    /* Scan sessions */
+    /* Scan sessions + SWE-Shepherd trajectory scoring */
     failure_list_t failures = {0};
+    int traj_cap = scan_count > 0 ? scan_count : 16;
+    report->trajectories = calloc((size_t)traj_cap, sizeof(trajectory_score_t));
+    report->n_trajectories = 0;
+    float sum_efficiency = 0.0f, sum_waste = 0.0f;
+
     for (int i = 0; i < scan_count; i++) {
         scan_session(dirs[i], &failures);
+        /* SWE-Shepherd: score each session's trajectory */
+        trajectory_score_t ts = score_session_trajectory(dirs[i]);
+        if (ts.n_steps > 0) {
+            report->trajectories[report->n_trajectories++] = ts;
+            sum_efficiency += ts.efficiency;
+            sum_waste += ts.waste_ratio;
+        }
         report->total_sessions++;
     }
 
     report->total_failures = failures.n_failures;
+    report->trajectory_sessions = report->n_trajectories;
+    report->avg_efficiency = report->n_trajectories > 0
+        ? sum_efficiency / (float)report->n_trajectories : 0.0f;
+    report->avg_waste_ratio = report->n_trajectories > 0
+        ? sum_waste / (float)report->n_trajectories : 0.0f;
 
     /* Cluster failures */
     cluster_failures(&failures, &report->clusters, &report->n_clusters);
@@ -449,6 +646,51 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
                         fi->react_loop, fi->step);
             if (fi->error_msg)
                 str_appendf(&bundle, "    error: %s\n", fi->error_msg);
+        }
+        str_appendf(&bundle, "\n");
+    }
+
+    /* SWE-Shepherd: Trajectory Quality section in evidence bundle */
+    if (report->n_trajectories > 0) {
+        str_appendf(&bundle, "## Trajectory Quality (SWE-Shepherd)\n\n");
+        str_appendf(&bundle, "Sessions with trajectory data: %d\n",
+                    report->trajectory_sessions);
+        str_appendf(&bundle, "Average efficiency: %.1f%% (productive steps / total)\n",
+                    (double)(report->avg_efficiency * 100.0f));
+        str_appendf(&bundle, "Average waste: %.1f%% (wasteful steps / total)\n\n",
+                    (double)(report->avg_waste_ratio * 100.0f));
+
+        /* Count common waste patterns across all trajectories */
+        int total_wasteful = 0, total_harmful = 0, total_spinning = 0;
+        int n_with_causal = 0;
+        for (int i = 0; i < report->n_trajectories; i++) {
+            total_wasteful += report->trajectories[i].n_wasteful;
+            total_harmful += report->trajectories[i].n_harmful;
+            total_spinning += report->trajectories[i].n_spinning;
+            if (report->trajectories[i].causal_step >= 0)
+                n_with_causal++;
+        }
+        if (total_wasteful + total_harmful + total_spinning > 0) {
+            str_appendf(&bundle, "Step quality breakdown:\n");
+            str_appendf(&bundle, "  - Wasteful (output never read): %d instances\n",
+                        total_wasteful);
+            str_appendf(&bundle, "  - Harmful (tool failed): %d instances\n",
+                        total_harmful);
+            str_appendf(&bundle, "  - Spinning (repeated actions): %d instances\n",
+                        total_spinning);
+        }
+        if (n_with_causal > 0) {
+            str_appendf(&bundle, "\nSessions with identified causal failure step: %d\n",
+                        n_with_causal);
+            for (int i = 0; i < report->n_trajectories && i < 5; i++) {
+                if (report->trajectories[i].causal_step >= 0) {
+                    str_appendf(&bundle, "  - causal step %d (%s), efficiency %.0f%%\n",
+                                report->trajectories[i].causal_step,
+                                report->trajectories[i].causal_tool
+                                    ? report->trajectories[i].causal_tool : "?",
+                                (double)(report->trajectories[i].efficiency * 100.0f));
+                }
+            }
         }
         str_appendf(&bundle, "\n");
     }
@@ -502,6 +744,15 @@ void postmortem_print(const postmortem_report_t *report) {
 
     if (report->n_clusters == 0)
         fprintf(stderr, "  No failure patterns detected.\n\n");
+
+    /* SWE-Shepherd: Trajectory quality summary */
+    if (report->n_trajectories > 0) {
+        fprintf(stderr, "  ── Trajectory Quality (SWE-Shepherd) ──\n");
+        fprintf(stderr, "  Avg efficiency: %.1f%% | Avg waste: %.1f%%\n",
+                (double)(report->avg_efficiency * 100.0f),
+                (double)(report->avg_waste_ratio * 100.0f));
+        fprintf(stderr, "  Sessions scored: %d\n\n", report->trajectory_sessions);
+    }
 }
 
 int postmortem_save(const postmortem_report_t *report, const char *path) {
@@ -526,6 +777,10 @@ void postmortem_free(postmortem_report_t *report) {
         free(c->instances);
     }
     free(report->clusters);
+    /* SWE-Shepherd: free trajectory data */
+    for (int i = 0; i < report->n_trajectories; i++)
+        free(report->trajectories[i].causal_tool);
+    free(report->trajectories);
     free(report->evidence_bundle);
     free(report);
 }

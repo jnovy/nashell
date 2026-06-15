@@ -224,21 +224,52 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
     memset(e, 0, sizeof(*e));
 }
 
+/* ── FIX 2a: Hash map for O(1) key→index lookup ─────────────────── */
+
+static unsigned int mem_fnv1a(const char *s) {
+    unsigned int h = 2166136261u;
+    for (; *s; s++)
+        h = (h ^ (unsigned char)*s) * 16777619u;
+    return h;
+}
+
+/* Rebuild the hash map from the entries array. */
+static void mem_index_map_rebuild(mem_index_t *idx) {
+    free(idx->map.slots);
+    int new_cap = 64;
+    while (new_cap < idx->count * 2) new_cap *= 2;  /* ≤50% load factor */
+    idx->map.cap = new_cap;
+    idx->map.slots = malloc((size_t)new_cap * sizeof(int));
+    memset(idx->map.slots, -1, (size_t)new_cap * sizeof(int));
+    for (int i = 0; i < idx->count; i++) {
+        if (!idx->entries[i].key) continue;
+        unsigned int slot = mem_fnv1a(idx->entries[i].key) & (unsigned)(new_cap - 1);
+        while (idx->map.slots[slot] != -1)
+            slot = (slot + 1) & (unsigned)(new_cap - 1);
+        idx->map.slots[slot] = i;
+    }
+}
+
 /* Free the entire index */
 static void mem_index_free(mem_index_t *idx) {
     if (!idx) return;
     for (int i = 0; i < idx->count; i++)
         mem_index_entry_free(&idx->entries[i]);
     free(idx->entries);
+    free(idx->map.slots);
     memset(idx, 0, sizeof(*idx));
 }
 
-/* Find an index entry by key. Returns pointer or NULL. */
+/* Find an index entry by key. Returns pointer or NULL.
+ * FIX 2a: O(1) via hash map instead of O(n) linear scan. */
 static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
-    if (!idx || !key) return NULL;
-    for (int i = 0; i < idx->count; i++) {
-        if (idx->entries[i].key && strcmp(idx->entries[i].key, key) == 0)
-            return &idx->entries[i];
+    if (!idx || !key || !idx->map.slots || idx->count == 0) return NULL;
+    unsigned int slot = mem_fnv1a(key) & (unsigned)(idx->map.cap - 1);
+    while (idx->map.slots[slot] != -1) {
+        int ei = idx->map.slots[slot];
+        if (idx->entries[ei].key && strcmp(idx->entries[ei].key, key) == 0)
+            return &idx->entries[ei];
+        slot = (slot + 1) & (unsigned)(idx->map.cap - 1);
     }
     return NULL;
 }
@@ -252,20 +283,36 @@ static void mem_index_grow(mem_index_t *idx) {
     }
 }
 
-/* Remove an entry from the index by key */
+/* Insert a key→index mapping into the hash map (used after adding an entry) */
+static void mem_index_map_insert(mem_index_t *idx, const char *key, int entry_idx) {
+    /* Rebuild if map doesn't exist or load factor > 50% */
+    if (!idx->map.slots || idx->count * 2 >= idx->map.cap) {
+        mem_index_map_rebuild(idx);
+        return;  /* rebuild already inserts all entries */
+    }
+    unsigned int slot = mem_fnv1a(key) & (unsigned)(idx->map.cap - 1);
+    while (idx->map.slots[slot] != -1)
+        slot = (slot + 1) & (unsigned)(idx->map.cap - 1);
+    idx->map.slots[slot] = entry_idx;
+}
+
+/* Remove an entry from the index by key.
+ * FIX 2a: Uses hash map for O(1) lookup. Swaps last entry into the removed
+ * slot to avoid O(n) memmove, then rebuilds the hash map. */
 static void mem_index_remove(mem_index_t *idx, const char *key) {
     if (!idx || !key) return;
-    for (int i = 0; i < idx->count; i++) {
-        if (idx->entries[i].key && strcmp(idx->entries[i].key, key) == 0) {
-            mem_index_entry_free(&idx->entries[i]);
-            if (i < idx->count - 1) {
-                memmove(&idx->entries[i], &idx->entries[i + 1],
-                        (size_t)(idx->count - 1 - i) * sizeof(mem_index_entry_t));
-            }
-            idx->count--;
-            return;
-        }
+    /* Find the entry index via hash map */
+    mem_index_entry_t *found = mem_index_find(idx, key);
+    if (!found) return;
+    int i = (int)(found - idx->entries);
+    mem_index_entry_free(&idx->entries[i]);
+    /* Swap last entry into this slot (avoids memmove) */
+    if (i < idx->count - 1) {
+        idx->entries[i] = idx->entries[idx->count - 1];
     }
+    idx->count--;
+    /* Rebuild hash map to reflect new positions */
+    mem_index_map_rebuild(idx);
 }
 
 /* Populate an index entry from a parsed cJSON entry + file path.
@@ -343,6 +390,8 @@ static void mem_index_load(memory_t *m) {
     mem_index_free(&m->idx);
     index_load_ctx_t ctx = { .idx = &m->idx };
     for_each_dir_entry(m->dir, ".json", index_load_cb, &ctx);
+    /* FIX 2a: Build hash map after bulk load for O(1) lookups */
+    mem_index_map_rebuild(&m->idx);
 }
 
 /* ── create/free ─────────────────────────────────────── */
@@ -566,6 +615,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
                 mem_index_grow(&m->idx);
                 mem_index_entry_from_json(&m->idx.entries[m->idx.count], fresh, path);
                 m->idx.count++;
+                /* FIX 2a: Update hash map for the new entry */
+                mem_index_map_insert(&m->idx, key, m->idx.count - 1);
             }
             cJSON_Delete(fresh);
         }
@@ -808,7 +859,6 @@ static int memory_increment_field(memory_t *m, const char *key,
 memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
     memory_results_t results = {0};
     if (!m || !query || m->idx.count == 0) return results;
-    pthread_mutex_lock(&m->mtx);
 
     /* FIX B1: Type prefix extraction for filtering */
     const char *type_filter = NULL;
@@ -832,7 +882,12 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
     }
 
-    /* Generate query embedding once */
+    /* FIX #5: Compute query embedding BEFORE acquiring the mutex.
+     * Embedding computation can involve network calls (Ollama/OpenAI API)
+     * or ONNX inference — 10-200ms. Previously the mutex was held for the
+     * entire recall, blocking all concurrent memory_store/delete operations.
+     * The embedding computation only uses the query string and the embed
+     * handle (which is read-only after init), so no lock is needed. */
     embed_multi_vec_t query_mv = {0};
     int has_semantic = 0;
     if (m->embed && m->embed->available) {
@@ -876,6 +931,10 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
         }
     }
 
+    /* Acquire mutex for index access — scoring reads index entries.
+     * FIX #5: Lock scope reduced: embedding computation above runs unlocked. */
+    pthread_mutex_lock(&m->mtx);
+
     /* P1: Score all entries from in-memory index — no filesystem I/O */
     int scored_cap = m->idx.count > 64 ? m->idx.count : 64;
     scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
@@ -911,14 +970,16 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
                 s = 0;
         }
 
-        /* P0: Abstention gate — skip entries below min_score.
-         * Compare against raw relevance (out_rel) instead of the
-         * vscore-damped composite (s).  Without this, new memories
-         * with vscore=0.5 and exponent=0.3 get a ×0.81 penalty that
-         * can push them below the threshold even when their raw
-         * relevance clearly qualifies (e.g. 0.30 × 0.81 = 0.24 < 0.25). */
+        /* P0: Pre-filter gate — use a relaxed threshold to allow entries
+         * that might be promoted by ref-boost.
+         * FIX #9: Previously used min_score as a hard gate here, which meant
+         * entries that would become relevant through cross-references but
+         * started below the threshold were permanently excluded. Now we use
+         * half the min_score as a pre-filter, then apply the real threshold
+         * after ref-boost (below). */
         double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
-        if (out_rel >= min_score) {
+        double pre_filter = min_score * 0.5;  /* relaxed gate for ref-boost candidates */
+        if (out_rel >= pre_filter) {
             scored[n_scored].idx_pos = i;
             scored[n_scored].score = s;
             scored[n_scored].relevance = out_rel;
@@ -978,6 +1039,29 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             }
         }
         free(ref_map);
+    }
+
+    /* FIX #9: Apply the real abstention gate AFTER ref-boost.
+     * Entries that passed only the relaxed pre-filter but weren't boosted
+     * above min_score are now removed. This ensures ref-boosted entries
+     * that crossed the threshold are kept, while truly irrelevant entries
+     * (which only passed the relaxed 0.5× gate) are still excluded. */
+    {
+        double final_min = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
+        int write_pos = 0;
+        for (int i = 0; i < n_scored; i++) {
+            /* Keep if composite score (post-boost, vscore-adjusted) meets threshold.
+             * FIX 1a: Previously also checked raw relevance, which bypassed vscore
+             * entirely — a memory with high textual similarity but terrible
+             * validation history (vscore=0.10) would pass via the raw relevance
+             * branch, defeating the Bayesian quality signal. */
+            if (scored[i].score >= final_min) {
+                if (write_pos != i)
+                    scored[write_pos] = scored[i];
+                write_pos++;
+            }
+        }
+        n_scored = write_pos;
     }
 
     qsort(scored, (size_t)n_scored, sizeof(scored_t), scored_cmp_desc);
@@ -1211,94 +1295,110 @@ char *memory_load_pinned(memory_t *m) {
 
 /* ── delete ──────────────────────────────────────────── */
 
-/* Callback context for cleaning dangling refs after a key is deleted. */
-typedef struct {
-    const char *deleted_key;
-    int cleaned;
-} gc_refs_ctx_t;
-
-/* Remove deleted_key from the refs array of every remaining entry. */
-static int gc_refs_cb(const char *dirpath, cJSON *entry, void *user_data) {
-    gc_refs_ctx_t *ctx = (gc_refs_ctx_t *)user_data;
+/* FIX 2b: Rewrite a single entry's JSON file after modifying its refs.
+ * Reads the file, updates the refs array, and writes back. */
+static void gc_refs_rewrite_entry(const char *filepath, const char *deleted_key) {
+    cJSON *entry = slurp_json(filepath);
+    if (!entry) return;
     cJSON *refs = cJSON_GetObjectItem(entry, "refs");
-    if (!refs || !cJSON_IsArray(refs)) return JSON_CB_CONTINUE;
-
+    if (!refs || !cJSON_IsArray(refs)) { cJSON_Delete(entry); return; }
     int sz = cJSON_GetArraySize(refs);
     int found = 0;
     for (int i = sz - 1; i >= 0; i--) {
         cJSON *item = cJSON_GetArrayItem(refs, i);
         if (item && item->valuestring &&
-            strcmp(item->valuestring, ctx->deleted_key) == 0) {
+            strcmp(item->valuestring, deleted_key) == 0) {
             cJSON_DeleteItemFromArray(refs, i);
             found = 1;
         }
     }
-
     if (found) {
-        /* Rewrite the cleaned entry to disk */
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        if (k && k->valuestring) {
-            char fname[512];
-            key_to_path(k->valuestring, ".json", fname, sizeof(fname));
-            char path[NASH_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", dirpath, fname);
-            char *json = cJSON_Print(entry);
-            if (json) {
-                write_file(path, json, strlen(json));
-                free(json);
+        char *json = cJSON_Print(entry);
+        if (json) {
+            write_file(filepath, json, strlen(json));
+            free(json);
+        }
+    }
+    cJSON_Delete(entry);
+}
+
+/* FIX 2b: Remove deleted_key from refs of all entries using in-memory index.
+ * Only reads/writes JSON files that actually reference the deleted key,
+ * instead of scanning all files on disk. */
+static void gc_refs_index(memory_t *m, const char *deleted_key) {
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *ie = &m->idx.entries[i];
+        int found = 0;
+        for (int r = ie->n_refs - 1; r >= 0; r--) {
+            if (ie->refs[r] && strcmp(ie->refs[r], deleted_key) == 0) {
+                free(ie->refs[r]);
+                /* Shift remaining refs down */
+                for (int s = r; s < ie->n_refs - 1; s++)
+                    ie->refs[s] = ie->refs[s + 1];
+                ie->n_refs--;
+                found = 1;
             }
         }
-        ctx->cleaned++;
+        if (found && ie->path) {
+            gc_refs_rewrite_entry(ie->path, deleted_key);
+        }
     }
-    return JSON_CB_CONTINUE;
 }
 
 /* ── batch delete ──────────────────────────────────────── */
 
-/* Batch gc_refs context: removes ANY of the deleted keys from refs arrays.
- * Reduces O(K×N) to O(N) for K deletes across N entries. */
-typedef struct {
-    const char **deleted_keys;
-    int n_deleted;
-    int cleaned;
-} gc_refs_multi_ctx_t;
-
-/* Remove any of deleted_keys[] from the refs array of a single entry. */
-static int gc_refs_multi_cb(const char *dirpath, cJSON *entry, void *user_data) {
-    gc_refs_multi_ctx_t *ctx = (gc_refs_multi_ctx_t *)user_data;
+/* FIX 2b: Helper to rewrite a JSON file removing any of the given keys from refs. */
+static void gc_refs_rewrite_multi(const char *filepath,
+                                   const char **deleted_keys, int n_deleted) {
+    cJSON *entry = slurp_json(filepath);
+    if (!entry) return;
     cJSON *refs = cJSON_GetObjectItem(entry, "refs");
-    if (!refs || !cJSON_IsArray(refs)) return JSON_CB_CONTINUE;
-
-    int sz = cJSON_GetArraySize(refs);
-    int found = 0;
-    for (int i = sz - 1; i >= 0; i--) {
+    if (!refs || !cJSON_IsArray(refs)) { cJSON_Delete(entry); return; }
+    int modified = 0;
+    for (int i = cJSON_GetArraySize(refs) - 1; i >= 0; i--) {
         cJSON *item = cJSON_GetArrayItem(refs, i);
         if (!item || !item->valuestring) continue;
-        for (int d = 0; d < ctx->n_deleted; d++) {
-            if (strcmp(item->valuestring, ctx->deleted_keys[d]) == 0) {
+        for (int d = 0; d < n_deleted; d++) {
+            if (strcmp(item->valuestring, deleted_keys[d]) == 0) {
                 cJSON_DeleteItemFromArray(refs, i);
-                found = 1;
+                modified = 1;
                 break;
             }
         }
     }
+    if (modified) {
+        char *json = cJSON_Print(entry);
+        if (json) {
+            write_file(filepath, json, strlen(json));
+            free(json);
+        }
+    }
+    cJSON_Delete(entry);
+}
 
-    if (found) {
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        if (k && k->valuestring) {
-            char fname[512];
-            key_to_path(k->valuestring, ".json", fname, sizeof(fname));
-            char path[NASH_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", dirpath, fname);
-            char *json = cJSON_Print(entry);
-            if (json) {
-                write_file(path, json, strlen(json));
-                free(json);
+/* FIX 2b: Remove any of deleted_keys[] from refs using the in-memory index.
+ * Batch version of gc_refs_index — iterates entries once for all K deleted keys. */
+static void gc_refs_multi_index(memory_t *m, const char **deleted_keys, int n_deleted) {
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *ie = &m->idx.entries[i];
+        int modified = 0;
+        for (int r = ie->n_refs - 1; r >= 0; r--) {
+            if (!ie->refs[r]) continue;
+            for (int d = 0; d < n_deleted; d++) {
+                if (strcmp(ie->refs[r], deleted_keys[d]) == 0) {
+                    free(ie->refs[r]);
+                    for (int s = r; s < ie->n_refs - 1; s++)
+                        ie->refs[s] = ie->refs[s + 1];
+                    ie->n_refs--;
+                    modified = 1;
+                    break;
+                }
             }
         }
-        ctx->cleaned++;
+        if (modified && ie->path) {
+            gc_refs_rewrite_multi(ie->path, deleted_keys, n_deleted);
+        }
     }
-    return JSON_CB_CONTINUE;
 }
 
 int memory_delete(memory_t *m, const char *key) {
@@ -1328,11 +1428,9 @@ int memory_delete(memory_t *m, const char *key) {
     /* P1: Remove from in-memory index */
     mem_index_remove(&m->idx, key);
 
-    /* Clean dangling refs: scan all remaining entries and remove the
-     * deleted key from their refs arrays.  O(N) per delete but N < 1000
-     * and deletes are infrequent (consolidation, prune, manual). */
-    gc_refs_ctx_t gc = { .deleted_key = key, .cleaned = 0 };
-    for_each_json_entry(m->dir, gc_refs_cb, &gc);
+    /* FIX 2b: Clean dangling refs using in-memory index instead of
+     * scanning the filesystem.  Still O(N) but avoids N disk reads. */
+    gc_refs_index(m, key);
 
     /* Git commit */
     char msg[256];
@@ -1394,15 +1492,9 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
         return 0;
     }
 
-    /* Phase 2: Single gc_refs pass — remove ALL deleted keys from
-     * refs arrays across all remaining entries.  O(N×K) string
-     * comparisons but only O(N) file reads/writes. */
-    gc_refs_multi_ctx_t gc = {
-        .deleted_keys = found_keys,
-        .n_deleted = n_found,
-        .cleaned = 0
-    };
-    for_each_json_entry(m->dir, gc_refs_multi_cb, &gc);
+    /* FIX 2b: Phase 2 — remove ALL deleted keys from refs arrays
+     * using the in-memory index instead of filesystem scan. */
+    gc_refs_multi_index(m, found_keys, n_found);
 
     /* Phase 3: Single git commit for all deletions */
     char msg[1024];

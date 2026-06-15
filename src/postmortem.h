@@ -60,6 +60,33 @@ typedef struct {
     char *summary;             /* human-readable summary */
 } failure_cluster_t;
 
+/* ── SWE-Shepherd: Step-level scoring [arXiv:2604.10493] ── */
+
+/* Step productivity score — heuristic classification of each tool call.
+ * Based on SWE-Shepherd's step-level supervision for code agents. */
+typedef enum {
+    STEP_SPINNING  = -2,   /* repeated same action (cycling) */
+    STEP_HARMFUL   = -1,   /* tool failed, or caused a retry/correction */
+    STEP_WASTEFUL  =  0,   /* tool succeeded but output was never referenced */
+    STEP_NEUTRAL   =  1,   /* tool succeeded, result usage unclear */
+    STEP_PRODUCTIVE =  2,  /* tool succeeded, result was used later */
+} step_score_t;
+
+/* Per-session trajectory quality metrics */
+typedef struct {
+    int   n_steps;
+    int   n_productive;
+    int   n_wasteful;
+    int   n_harmful;
+    int   n_spinning;
+    float efficiency;              /* productive / total */
+    float waste_ratio;             /* wasteful / total */
+    int   longest_productive_streak;
+    int   longest_harmful_streak;
+    int   causal_step;             /* earliest step that caused failure (-1 if N/A) */
+    char *causal_tool;             /* tool at causal step (NULL if N/A) */
+} trajectory_score_t;
+
 /* Full postmortem report */
 typedef struct {
     int total_sessions;        /* sessions analyzed */
@@ -67,6 +94,12 @@ typedef struct {
     failure_cluster_t *clusters;
     int n_clusters;
     char *evidence_bundle;     /* formatted text for LLM consumption */
+    /* SWE-Shepherd: aggregate trajectory quality */
+    int   trajectory_sessions;     /* sessions with trajectory data */
+    float avg_efficiency;          /* mean efficiency across sessions */
+    float avg_waste_ratio;         /* mean waste ratio across sessions */
+    trajectory_score_t *trajectories;  /* per-session trajectory data */
+    int   n_trajectories;
 } postmortem_report_t;
 
 /* ── API ─────────────────────────────────────────────── */

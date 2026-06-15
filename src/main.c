@@ -42,6 +42,11 @@ static void shutdown_handler(int sig) {
     shutdown_requested = 1;
 }
 
+/* FIX #16: Comparator for qsort — descending string order (newest first) */
+static int cmp_str_desc(const void *a, const void *b) {
+    return strcmp(*(const char **)b, *(const char **)a);
+}
+
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
     if (cfg->data_dir && cfg->data_dir[0]) {
@@ -1161,14 +1166,23 @@ int main(int argc, char **argv) {
                     ui_state_set_status(ui, STATUS_DONE, "Done");
                     /* Refresh journal view to show completed query */
                     ui_state_load_journal(ui, journal);
-                } else if (react.pause_requested) {
-                    /* User pressed Space — paused with checkpoint saved (toggle) */
+                } else if (react.pause_requested && !pending_redirect) {
+                    /* FIX #3: Only enter pause path if no redirect is pending.
+                     * Race condition: if user types while inference is finishing,
+                     * the main thread may set pause_requested=1 after the inference
+                     * thread has already completed (TOCTOU on iargs.done).
+                     * When pending_redirect is set, the user intended to start a
+                     * new query, not pause — so skip the pause path and let the
+                     * redirect be dispatched on the next iteration (line 1201). */
                     react.pause_requested = 0;  /* reset for next run */
                     react.paused = 1;
                     ui_state_set_status(ui, STATUS_READY,
                         "Paused (Space to resume, type query to redirect)");
                 } else {
-                    ui_state_set_status(ui, STATUS_ERROR, "No result");
+                    /* Clear stale pause_requested if redirect will take over */
+                    react.pause_requested = 0;
+                    ui_state_set_status(ui, pending_redirect ? STATUS_READY : STATUS_ERROR,
+                        pending_redirect ? "Redirecting..." : "No result");
                 }
                 pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
@@ -1232,6 +1246,27 @@ int main(int argc, char **argv) {
                     free(submitted_query);
                     running = 0;
                     break;
+                }
+
+                /* FIX #4: Guard slash commands that access shared inference state.
+                 * During inference, only user_ask, exit/quit, and regular queries
+                 * (which get stashed as pending_redirect) are safe. Slash commands
+                 * like /fork read aliases->next_seq which is written by the inference
+                 * thread without synchronization. Defer them until inference completes. */
+                if (inferring && submitted_query[0] == '/'
+                    && strncmp(submitted_query, "/quit", 5) != 0
+                    && strncmp(submitted_query, "/exit", 5) != 0) {
+                    /* Stash as pending_redirect — will execute after join */
+                    free(pending_redirect);
+                    pending_redirect = submitted_query;
+                    submitted_query = NULL;
+                    react.pause_requested = 1;
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_RUNNING,
+                        "Pausing to handle command…");
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+                    continue;
                 }
 
                 /* Handle /fork command */
@@ -1646,23 +1681,30 @@ int main(int argc, char **argv) {
                         } else {
                             struct dirent *ent;
                             int count = 0;
-                            /* Collect filenames, sort newest first */
-                            char *names[1024];
+                            /* FIX #16: Use dynamic array instead of fixed char *names[1024].
+                             * Previously, beyond 1024 runs entries were silently dropped.
+                             * Also replaced O(N²) bubble sort with qsort. */
+                            int names_cap = 128;
+                            char **names = malloc(sizeof(char *) * (size_t)names_cap);
                             int nnames = 0;
-                            while ((ent = readdir(d)) && nnames < 1024) {
-                                int nlen = (int)strlen(ent->d_name);
-                                if (nlen > 6 && strcmp(ent->d_name + nlen - 6, ".jsonl") == 0)
-                                    names[nnames++] = strdup(ent->d_name);
+                            if (names) {
+                                while ((ent = readdir(d))) {
+                                    int nlen = (int)strlen(ent->d_name);
+                                    if (nlen > 6 && strcmp(ent->d_name + nlen - 6, ".jsonl") == 0) {
+                                        if (nnames >= names_cap) {
+                                            names_cap *= 2;
+                                            char **tmp = realloc(names, sizeof(char *) * (size_t)names_cap);
+                                            if (!tmp) break;  /* stop collecting on OOM */
+                                            names = tmp;
+                                        }
+                                        names[nnames++] = strdup(ent->d_name);
+                                    }
+                                }
                             }
                             closedir(d);
                             /* Sort descending (newest first by epoch name) */
-                            for (int i = 0; i < nnames - 1; i++)
-                                for (int j = i + 1; j < nnames; j++)
-                                    if (strcmp(names[i], names[j]) < 0) {
-                                        char *tmp = names[i];
-                                        names[i] = names[j];
-                                        names[j] = tmp;
-                                    }
+                            if (nnames > 1)
+                                qsort(names, (size_t)nnames, sizeof(char *), cmp_str_desc);
                             for (int i = 0; i < nnames; i++) {
                                 char fpath[NASH_PATH_MAX + NASH_PATH_MAX];
                                 snprintf(fpath, sizeof(fpath), "%s/%s", rdir, names[i]);
@@ -1677,7 +1719,7 @@ int main(int argc, char **argv) {
                                             int n = (int)cJSON_GetNumberValue(
                                                 cJSON_GetObjectItem(ev, "n"));
                                             /* Check if run completed by scanning for end event */
-                                            char *status_str = "running";
+                                            const char *status_str = "running";
                                             char lastline[NASH_LINE_MAX];
                                             lastline[0] = '\0';
                                             while (fgets(lastline, sizeof(lastline), rf));
@@ -1712,6 +1754,7 @@ int main(int argc, char **argv) {
                                 }
                                 free(names[i]);
                             }
+                            free(names);  /* FIX #16: free dynamic array */
                             if (count == 0)
                                 str_appendf(&display, "No runs found\n");
                             else

@@ -90,6 +90,18 @@ typedef enum {
     LLM_MSG_IMPORTANCE_CRITICAL = 3 /* system, user query, scratchpad — never evict */
 } llm_msg_importance_t;
 
+/* Message recoverability level — controls eviction priority.
+ * Messages whose content is persisted elsewhere can be evicted more aggressively
+ * because the agent can recover them via file_read.
+ * Based on CWL [arXiv:2606.11213] recoverability-aware eviction. */
+typedef enum {
+    LLM_RECOVER_NONE = 0,       /* content exists only in context — evict last */
+    LLM_RECOVER_SCRATCHPAD,     /* key findings saved to scratchpad */
+    LLM_RECOVER_STORE,          /* content saved to store (file_read can recover) */
+    LLM_RECOVER_FILE,           /* content written to a file (file_write/file_edit) */
+    LLM_RECOVER_MEMORY,         /* content stored in long-term memory */
+} llm_recoverability_t;
+
 /* A single chat message — supports tool_calls API threading */
 typedef struct {
     char *role;              /* "system", "user", "assistant", "tool" */
@@ -98,6 +110,8 @@ typedef struct {
     char *tool_calls_json;   /* for role:"assistant" — raw JSON of tool_calls array */
     llm_msg_type_t msg_type; /* typed message category (0 = generic/legacy) */
     llm_msg_importance_t importance; /* eviction priority (Harness-1 §3.2) */
+    llm_recoverability_t recoverability; /* CWL §3: how recoverable is this content? */
+    char *store_alias;       /* LCM-Lite: store ref alias (e.g. "R0S5") for breadcrumb eviction */
 } llm_msg_t;
 
 /* Chat completion request/response */
