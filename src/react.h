@@ -77,6 +77,16 @@ typedef struct {
     pthread_mutex_t user_ask_mutex;   /* protects user_ask handoff */
     pthread_cond_t  user_ask_cond;    /* signaled when answer is ready */
 
+    /* pause_wait: when the react loop is paused and waiting for user input.
+     * The inference thread sets pause_waiting=1, emits REACT_EVENT_WARNING,
+     * then waits on pause_cond until the TUI thread provides a redirect query.
+     * This keeps the llm_chat_t alive so conversation context is preserved.
+     * All fields protected by pause_mutex except pause_waiting (atomic). */
+    atomic_int    pause_waiting;    /* [INFER→MAIN] 1 = paused, waiting for query */
+    char         *pause_query;     /* [MAIN, guarded by pause_mutex] redirect query */
+    pthread_mutex_t pause_mutex;   /* protects pause handoff */
+    pthread_cond_t  pause_cond;    /* signaled when redirect query is ready */
+
     /* Cross-query context inheritance.
      * [BETWEEN-RUNS] set by main thread after pthread_join, before next react_run.
      * Safe by happens-before guarantee of pthread_join → pthread_create. */

@@ -483,19 +483,48 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * pause_requested set during error recovery paths that `continue`
          * back to the loop header (parse_error, unknown_tool, server_error,
          * user_ask).  Without this, those `continue` paths bypass the
-         * pause_requested check at the bottom of the loop (line ~1977),
+         * pause_requested check at the bottom of the loop,
          * making the TUI appear stuck since the user's pause/redirect
-         * is ignored until a normal step completion. */
+         * is ignored until a normal step completion.
+         *
+         * Instead of breaking out (which destroys the chat context),
+         * we wait on a condvar for the user to provide a redirect query.
+         * This preserves the full conversation history in the llm_chat_t. */
         if (ctx->pause_requested) {
             react_checkpoint_save(ctx, step, user_query,
                                   chat->last_tool_call_id);
-            react_event_t ev = {0};
-            ev.react_loop = ctx->tools->react_loop;
-            ev.type = REACT_EVENT_WARNING;
-            ev.step = step;
-            ev.message = "Paused (Space to resume, type query to redirect)";
-            react_emit(on_event, userdata, &ev);
-            break;
+            {
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_WARNING;
+                ev.step = step;
+                ev.message = "Paused (Space to resume, type query to redirect)";
+                react_emit(on_event, userdata, &ev);
+            }
+            /* Wait for user to provide a redirect query (or resume). */
+            ctx->pause_waiting = 1;
+            pthread_mutex_lock(&ctx->pause_mutex);
+            while (!ctx->pause_query) {
+                pthread_cond_wait(&ctx->pause_cond, &ctx->pause_mutex);
+            }
+            char *redirect = ctx->pause_query;
+            ctx->pause_query = NULL;
+            ctx->pause_waiting = 0;
+            ctx->pause_requested = 0;
+            pthread_mutex_unlock(&ctx->pause_mutex);
+
+            /* Inject the redirect query into the chat context so the model
+             * sees it as a new user message in the ongoing conversation. */
+            char *inject_msg = malloc(strlen(redirect) + 64);
+            if (inject_msg) {
+                snprintf(inject_msg, strlen(redirect) + 64,
+                         "[User redirect]\n%s", redirect);
+                llm_chat_add(chat, "user", inject_msg);
+                free(inject_msg);
+            }
+            free(redirect);
+            react_checkpoint_remove(ctx);
+            /* Fall through to continue the loop with preserved context */
         }
 
         ctx->tools->step = step + 1;
@@ -2034,18 +2063,41 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         chat->last_tool_call_id);
 
         /* Check for pause request (Space pressed in TUI — toggle pause/resume).
-         * Save checkpoint and exit cleanly so the task can be resumed later. */
+         * Instead of breaking out (which destroys chat context), wait on a
+         * condvar for the user to provide a redirect query or resume.
+         * Checkpoint was already saved above. */
         if (!final_result && ctx->pause_requested) {
-            react_event_t ev = {0};
-            ev.react_loop = ctx->tools->react_loop;
-            ev.type = REACT_EVENT_WARNING;
-            ev.step = step + 1;
-            ev.message = "Paused (Space to resume, type query to redirect)";
-            react_emit(on_event, userdata, &ev);
-            /* Checkpoint already saved above — just break out of the loop */
-            cJSON_Delete(action);
-            free(response);
-            break;
+            {
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_WARNING;
+                ev.step = step + 1;
+                ev.message = "Paused (Space to resume, type query to redirect)";
+                react_emit(on_event, userdata, &ev);
+            }
+            /* Wait for user to provide a redirect query (or resume). */
+            ctx->pause_waiting = 1;
+            pthread_mutex_lock(&ctx->pause_mutex);
+            while (!ctx->pause_query) {
+                pthread_cond_wait(&ctx->pause_cond, &ctx->pause_mutex);
+            }
+            char *redirect = ctx->pause_query;
+            ctx->pause_query = NULL;
+            ctx->pause_waiting = 0;
+            ctx->pause_requested = 0;
+            pthread_mutex_unlock(&ctx->pause_mutex);
+
+            /* Inject the redirect query into the chat context */
+            char *inject_msg = malloc(strlen(redirect) + 64);
+            if (inject_msg) {
+                snprintf(inject_msg, strlen(redirect) + 64,
+                         "[User redirect]\n%s", redirect);
+                llm_chat_add(chat, "user", inject_msg);
+                free(inject_msg);
+            }
+            free(redirect);
+            react_checkpoint_remove(ctx);
+            /* Fall through to continue the loop with preserved context */
         }
 
         cJSON_Delete(action);

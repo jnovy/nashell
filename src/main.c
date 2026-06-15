@@ -344,12 +344,18 @@ static void session_init_react(react_ctx_t *react, provider_t *provider,
     react->parent_loop = -1;
     pthread_mutex_init(&react->user_ask_mutex, NULL);
     pthread_cond_init(&react->user_ask_cond, NULL);
+    pthread_mutex_init(&react->pause_mutex, NULL);
+    pthread_cond_init(&react->pause_cond, NULL);
 }
 
 static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
                             journal_t *journal) {
     pthread_mutex_destroy(&react->user_ask_mutex);
     pthread_cond_destroy(&react->user_ask_cond);
+    pthread_mutex_destroy(&react->pause_mutex);
+    pthread_cond_destroy(&react->pause_cond);
+    free(react->pause_query);
+    react->pause_query = NULL;
     tool_free_deferred_consolidations(tools);
     scratchpad_free(&tools->scratch);
     alias_map_free(tools->aliases);
@@ -1153,6 +1159,17 @@ int main(int argc, char **argv) {
                 tui_render(ui);
             }
 
+            /* Check if inference thread is paused and waiting for redirect.
+             * Update status bar so user knows they can type a new query. */
+            if (inferring == 1 && react.pause_waiting &&
+                ui->status != STATUS_READY) {
+                pthread_mutex_lock(&ui->mtx);
+                ui_state_set_status(ui, STATUS_READY,
+                    "Paused (type query to redirect, Space to resume)");
+                pthread_mutex_unlock(&ui->mtx);
+                tui_render(ui);
+            }
+
             /* Check if inference thread completed */
             if (inferring == 1 && iargs.done) {
                 pthread_join(infer_tid, NULL);
@@ -1209,10 +1226,12 @@ int main(int argc, char **argv) {
             }
 
             /* Auto-dispatch stashed redirect: when inference was paused
-             * by user input (pending_redirect != NULL) and the thread
-             * has now joined, inject the stashed query so it gets
-             * processed immediately without waiting for another keypress. */
-            if (!submitted_query && pending_redirect && !inferring) {
+             * by user input (pending_redirect != NULL) and either:
+             * (a) the thread has joined (!inferring), or
+             * (b) the thread is paused and waiting on the condvar.
+             * In both cases, inject the stashed query immediately. */
+            if (!submitted_query && pending_redirect &&
+                (!inferring || react.pause_waiting)) {
                 submitted_query = pending_redirect;
                 pending_redirect = NULL;
             }
@@ -1233,6 +1252,23 @@ int main(int argc, char **argv) {
                     pthread_mutex_unlock(&react.user_ask_mutex);
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+                    pthread_mutex_unlock(&ui->mtx);
+                    tui_render(ui);
+                    continue;
+                }
+
+                /* Check if inference thread is paused and waiting for redirect */
+                if (inferring && react.pause_waiting) {
+                    /* Pass the user's redirect query to the waiting react loop.
+                     * This preserves the full chat context (no new react_run). */
+                    pthread_mutex_lock(&react.pause_mutex);
+                    free(react.pause_query);
+                    react.pause_query = submitted_query;
+                    submitted_query = NULL;  /* ownership transferred */
+                    pthread_cond_signal(&react.pause_cond);
+                    pthread_mutex_unlock(&react.pause_mutex);
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_RUNNING, "Resuming...");
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
                     continue;
@@ -2034,6 +2070,32 @@ int main(int argc, char **argv) {
             { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms */
         }
 
+        /* If inference thread is paused on condvar, wake it up so it can exit.
+         * Send a "quit" redirect that will cause the loop to take one more step
+         * and then exit naturally (or we just signal to unblock it). */
+        if (inferring && react.pause_waiting) {
+            pthread_mutex_lock(&react.pause_mutex);
+            free(react.pause_query);
+            react.pause_query = strdup("quit");
+            react.pause_requested = 0;  /* clear so loop doesn't re-pause */
+            pthread_cond_signal(&react.pause_cond);
+            pthread_mutex_unlock(&react.pause_mutex);
+        }
+        /* If inference thread is paused on user_ask condvar, unblock it too */
+        if (inferring && react.user_ask_pending) {
+            pthread_mutex_lock(&react.user_ask_mutex);
+            free(react.user_ask_answer);
+            react.user_ask_answer = strdup("(quit)");
+            react.user_ask_pending = 0;
+            pthread_cond_signal(&react.user_ask_cond);
+            pthread_mutex_unlock(&react.user_ask_mutex);
+        }
+        if (inferring) {
+            pthread_join(infer_tid, NULL);
+            inferring = 0;
+            free(iargs.result);
+            free(iargs.query);
+        }
         free(pending_redirect);  /* clean up any un-dispatched redirect */
         tui_shutdown();
         nash_log_set_ui(NULL);  /* disable TUI error routing */
