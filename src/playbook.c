@@ -445,6 +445,17 @@ void *playbook_worker(void *arg) {
         .pass_label = NULL,
     };
 
+    /* Clear any previous playbook pass tracking on the UI */
+    if (pa->ui) {
+        pthread_mutex_lock(&pa->ui->mtx);
+        for (int i = 0; i < pa->ui->pb_pass_count; i++) {
+            free(pa->ui->pb_passes[i].session_dir);
+            free(pa->ui->pb_passes[i].pass_label);
+        }
+        pa->ui->pb_pass_count = 0;
+        pthread_mutex_unlock(&pa->ui->mtx);
+    }
+
     scratchpad_t shared_scratch;
     scratchpad_init(&shared_scratch);
 
@@ -780,6 +791,8 @@ void *playbook_worker(void *arg) {
         pthread_mutex_lock(&pa->ui->mtx);
         free(pa->ui->playbook_session_dir);
         pa->ui->playbook_session_dir = NULL;
+        /* Regenerate session.md so completed passes show final ✓ status */
+        ui_state_generate_session_md(pa->ui);
         pthread_mutex_unlock(&pa->ui->mtx);
     }
 

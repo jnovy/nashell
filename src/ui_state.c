@@ -240,6 +240,11 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->current_filepath);
     free(ui->user_ask_question);
     free(ui->playbook_session_dir);
+    for (int i = 0; i < ui->pb_pass_count; i++) {
+        free(ui->pb_passes[i].session_dir);
+        free(ui->pb_passes[i].pass_label);
+    }
+    free(ui->pb_passes);
     free(ui->nash_dir);
     for (int i = 0; i < ui->nav_depth; i++) {
         free(ui->nav_stack[i].filepath);
@@ -288,6 +293,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         int step_count;
         char *result;
         int done;
+        char *session_dir; /* NULL = main session, else playbook pass dir */
+        char *pass_label;  /* NULL = normal query, else playbook pass label */
     } qinfo_t;
 
     qinfo_t *qinfos = NULL;
@@ -369,6 +376,78 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     }
     fclose(f);
 
+    /* ── Read playbook pass journals ──────────────────────── */
+    for (int pi = 0; pi < ui->pb_pass_count; pi++) {
+        pb_pass_info_t *pbi = &ui->pb_passes[pi];
+        if (!pbi->session_dir) continue;
+
+        char pjpath[NASH_PATH_MAX];
+        snprintf(pjpath, sizeof(pjpath), "%s/journal.jsonl", pbi->session_dir);
+        FILE *pf = fopen(pjpath, "r");
+        if (!pf) continue;
+
+        while (fgets(line, sizeof(line), pf)) {
+            cJSON *entry = cJSON_Parse(line);
+            if (!entry) continue;
+
+            const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+            int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
+
+            if (tool && strcmp(tool, "query") == 0) {
+                /* Check if already known (shared session mode: same journal) */
+                qinfo_t *qi = NULL;
+                for (int i = 0; i < qcount; i++) {
+                    if (qinfos[i].react_loop == loop &&
+                        qinfos[i].session_dir &&
+                        strcmp(qinfos[i].session_dir, pbi->session_dir) == 0) {
+                        qi = &qinfos[i]; break;
+                    }
+                }
+                if (!qi) {
+                    if (qcount >= qcap) {
+                        qcap = qcap ? qcap * 2 : 16;
+                        qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                    }
+                    qi = &qinfos[qcount++];
+                    memset(qi, 0, sizeof(*qi));
+                }
+                cJSON *params = cJSON_GetObjectItem(entry, "params");
+                cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
+                free(qi->text);
+                qi->text = (text && text->valuestring) ? strdup(text->valuestring) : strdup("?");
+                cJSON *ts = cJSON_GetObjectItem(entry, "ts");
+                qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+                qi->react_loop = loop;
+                qi->parent_loop = -1;  /* playbook passes are always roots */
+                free(qi->session_dir);
+                qi->session_dir = strdup(pbi->session_dir);
+                free(qi->pass_label);
+                qi->pass_label = pbi->pass_label ? strdup(pbi->pass_label) : NULL;
+            } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0) {
+                /* Count steps and detect done — match by session_dir + loop */
+                for (int i = qcount - 1; i >= 0; i--) {
+                    if (qinfos[i].react_loop == loop &&
+                        qinfos[i].session_dir &&
+                        strcmp(qinfos[i].session_dir, pbi->session_dir) == 0) {
+                        qinfos[i].step_count++;
+                        if (strcmp(tool, "done") == 0) {
+                            qinfos[i].done = 1;
+                            cJSON *params = cJSON_GetObjectItem(entry, "params");
+                            cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
+                            if (res && res->valuestring) {
+                                free(qinfos[i].result);
+                                qinfos[i].result = strdup(res->valuestring);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            cJSON_Delete(entry);
+        }
+        fclose(pf);
+    }
+
     str_append_cstr(&md, "## Session History\n\n");
 
     /* ── Tree-order rendering via DFS ── */
@@ -448,23 +527,51 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", tm);
             }
 
+            /* Effective session dir for this query */
+            const char *qi_dir = qi->session_dir ? qi->session_dir : ui->session_dir;
+
             /* Status icon */
             int is_active = (ui->status == STATUS_RUNNING &&
-                             qi->react_loop == ui->current_react_loop);
+                             qi->react_loop == ui->current_react_loop &&
+                             (!qi->session_dir || (ui->playbook_session_dir &&
+                              strcmp(qi->session_dir, ui->playbook_session_dir) == 0)));
             const char *icon = is_active ? "⟳" : (qi->done ? "✓" : "▶");
 
             /* Tree indentation (2 spaces per depth level) */
             for (int d = 0; d < depth; d++)
                 str_append_cstr(&md, "  ");
 
-            /* Query as hyperlink to reactRX.md */
-            str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
-                        icon, ts_buf, sanitize_md_link(qi->text), qi->react_loop);
+            /* Build display text: include pass label for playbook entries.
+             * For playbook passes, show just the label (the full prompt
+             * template is too verbose for the session overview). */
+            char display_text[512];
+            if (qi->pass_label) {
+                snprintf(display_text, sizeof(display_text), "%s",
+                         qi->pass_label);
+            } else {
+                snprintf(display_text, sizeof(display_text), "%s",
+                         sanitize_md_link(qi->text));
+            }
+
+            /* Query as hyperlink to reactRX.md.
+             * For playbook passes in different dirs, use absolute path. */
+            if (qi->session_dir) {
+                str_appendf(&md, "[%s %s  %s](%s/reactR%d.md)\n",
+                            icon, ts_buf, display_text,
+                            qi->session_dir, qi->react_loop);
+            } else {
+                str_appendf(&md, "[%s %s  %s](reactR%d.md)\n",
+                            icon, ts_buf, display_text, qi->react_loop);
+            }
 
             /* Preview: show for the ACTIVE react loop, or if user toggled
              * with 'c' key (URI in expanded_uris). */
-            char react_uri[64];
-            snprintf(react_uri, sizeof(react_uri), "reactR%d.md", qi->react_loop);
+            char react_uri[NASH_PATH_MAX];
+            if (qi->session_dir)
+                snprintf(react_uri, sizeof(react_uri), "%s/reactR%d.md",
+                         qi->session_dir, qi->react_loop);
+            else
+                snprintf(react_uri, sizeof(react_uri), "reactR%d.md", qi->react_loop);
             int is_expanded = 0;
             for (int ei = 0; ei < ui->expanded_count; ei++) {
                 if (strcmp(ui->expanded_uris[ei], react_uri) == 0) {
@@ -475,7 +582,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             if (is_active || is_expanded) {
                 char rpath[NASH_PATH_MAX];
                 snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
-                         ui->session_dir, qi->react_loop);
+                         qi_dir, qi->react_loop);
                 char *preview = read_last_lines(rpath, 10);
                 if (preview && preview[0]) {
                     str_append_cstr(&md, preview);
@@ -497,6 +604,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     for (int i = 0; i < qcount; i++) {
         free(qinfos[i].text);
         free(qinfos[i].result);
+        free(qinfos[i].session_dir);
+        free(qinfos[i].pass_label);
     }
     free(qinfos);
 
@@ -1711,6 +1820,38 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         }
         ui->playbook_react_loop = ev->react_loop;
         ui->current_react_loop = ev->react_loop;
+
+        /* Accumulate pass info for session.md rendering.
+         * Each playbook pass gets a unique (session_dir, react_loop) pair.
+         * For per-pass mode, session_dir changes each pass.
+         * For shared mode, session_dir stays the same but react_loop increments. */
+        if (ev->pass_index >= 0) {
+            int found = 0;
+            for (int i = 0; i < ui->pb_pass_count; i++) {
+                if (ui->pb_passes[i].pass_index == ev->pass_index) {
+                    /* Update existing — session_dir/react_loop may have changed */
+                    if (strcmp(ui->pb_passes[i].session_dir, ev->session_dir) != 0) {
+                        free(ui->pb_passes[i].session_dir);
+                        ui->pb_passes[i].session_dir = strdup(ev->session_dir);
+                    }
+                    ui->pb_passes[i].react_loop = ev->react_loop;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                if (ui->pb_pass_count >= ui->pb_pass_cap) {
+                    ui->pb_pass_cap = ui->pb_pass_cap ? ui->pb_pass_cap * 2 : 8;
+                    ui->pb_passes = realloc(ui->pb_passes,
+                                             (size_t)ui->pb_pass_cap * sizeof(pb_pass_info_t));
+                }
+                pb_pass_info_t *pi = &ui->pb_passes[ui->pb_pass_count++];
+                pi->session_dir = strdup(ev->session_dir);
+                pi->pass_label = ev->pass_label ? strdup(ev->pass_label) : NULL;
+                pi->react_loop = ev->react_loop;
+                pi->pass_index = ev->pass_index;
+            }
+        }
     }
 
     /* Sync current_react_loop from event — critical after checkpoint restore

@@ -30,6 +30,15 @@ typedef struct {
     md_doc_t  *saved_doc;    /* non-NULL for virtual docs (search results) */
 } nav_entry_t;
 
+/* ── Playbook pass info (for session.md rendering) ─────── */
+
+typedef struct {
+    char *session_dir;
+    char *pass_label;
+    int   react_loop;
+    int   pass_index;
+} pb_pass_info_t;
+
 /* ── Main UI state (the ViewModel) ─────────────────────── */
 
 typedef struct {
@@ -111,6 +120,11 @@ typedef struct {
     /* ── Playbook session tracking ── */
     char          *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */
     int            playbook_react_loop;  /* react loop of active playbook pass */
+
+    /* Accumulated info about all playbook passes (for session.md rendering) */
+    pb_pass_info_t *pb_passes;
+    int              pb_pass_count;
+    int              pb_pass_cap;
 
     /* ── Cross-session scratchpad search ── */
     int            search_active;     /* 1 = search results shown in main pane */
