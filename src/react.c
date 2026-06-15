@@ -481,7 +481,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (!last_sigs) { cw = 4; last_sigs = calloc(cw, CYCLING_SIG_SIZE); }
     int sig_count = 0;
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
-    int total_null_responses = 0;        /* Total NULL responses (never reset — catches alternating patterns) */
+
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
@@ -633,7 +633,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 max_resp, rep_thresh);
         if (!response) {
             consecutive_null_responses++;
-            total_null_responses++;
 
             /* Write server error to journal so it's visible in TUI and
              * preserved for post-mortem analysis. The journal entry uses
@@ -670,7 +669,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                 }
                 cJSON_AddNumberToObject(err_params, "attempt", consecutive_null_responses);
-                cJSON_AddNumberToObject(err_params, "total_null_responses", total_null_responses);
                 cJSON_AddNumberToObject(err_params, "completion_tokens", stats.completion_tokens);
 
                 /* Capture context size for diagnostics */
@@ -814,17 +812,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Don't count as consecutive (recovery may work) */
                 consecutive_null_responses = 0;
                 continue;
-            }
-
-            /* Death spiral circuit breaker: catch alternating success/failure
-             * patterns where consecutive_null_responses resets on success but
-             * the model keeps failing on the next attempt. This burned 86 min
-             * and 311K tokens in session 1781416620.46346. */
-            if (total_null_responses >= 8) {
-                ev.message = "LLM server error — total NULL response limit reached "
-                             "(possible death spiral), giving up";
-                react_emit(on_event, userdata, &ev);
-                break;
             }
 
             /* 5-tier retry strategy for HTTP 500 / NULL responses.

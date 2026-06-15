@@ -16,6 +16,7 @@
 #include "llm.h"
 #include "provider.h"
 #include "tools.h"
+#include "searxng.h"
 #include "react.h"
 #include "store.h"
 #include "journal.h"

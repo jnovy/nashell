@@ -136,7 +136,6 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx);
 /* FIX CRIT1: Free the deferred consolidation queue (call before tool_ctx cleanup) */
 void tool_free_deferred_consolidations(tool_ctx_t *ctx);
 
-/* Tear down auto-started SearXNG container (called on nash exit) */
-void web_search_cleanup(void);
+/* Tear down auto-started SearXNG container — see searxng.h */
 
 #endif

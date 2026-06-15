@@ -5,6 +5,8 @@
 #include "str.h"
 #include "tui.h"
 #include "nash_log.h"
+#include "html_extract.h"
+#include "searxng.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +43,77 @@ static tool_result_t make_error(const char *msg) {
     cJSON *m = cJSON_CreateObject();
     cJSON_AddStringToObject(m, "error", msg);
     return make_result(0, m, NULL);
+}
+
+/* Check tool filter whitelist/blacklist. Returns 1 if allowed, 0 if blocked. */
+static int tool_filter_allows(const tool_filter_t *f, const char *name) {
+    if (f->allowed) {
+        int found = 0;
+        for (int i = 0; i < f->n_allowed; i++)
+            if (strcmp(name, f->allowed[i]) == 0) { found = 1; break; }
+        if (!found) return 0;
+    }
+    if (f->blocked) {
+        for (int i = 0; i < f->n_blocked; i++)
+            if (strcmp(name, f->blocked[i]) == 0)
+                return 0;
+    }
+    return 1;
+}
+
+/* Resolve a tool path: step alias → store path, store/ prefix → session-relative.
+ * Writes resolved path into resolved_buf (size NASH_PATH_MAX).
+ * Returns the path to use (may be the original, resolved alias, or resolved_buf).
+ * *resolved_out is set to the alias resolution (caller must free if non-NULL). */
+static const char *resolve_tool_path(tool_ctx_t *ctx, const char *path,
+                                      char *resolved_buf, char **resolved_out) {
+    *resolved_out = tool_resolve_alias(ctx, path);
+    if (*resolved_out) path = *resolved_out;
+
+    if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
+        snprintf(resolved_buf, NASH_PATH_MAX, "%s/%s", ctx->session_dir, path);
+        return resolved_buf;
+    }
+    return path;
+}
+
+/* Unified memory key operation for pin/unpin/delete.
+ * ws_fn/mem_fn are the workspace/memory layer functions to call. */
+typedef int (*ws_key_fn)(workspace_t *, const char *);
+typedef int (*mem_key_fn)(memory_t *, const char *);
+
+static tool_result_t memory_key_op(tool_ctx_t *ctx, cJSON *params,
+                                    const char *tool_name, const char *err_prefix,
+                                    const char *status_str, const char *harness_note,
+                                    ws_key_fn ws_fn, mem_key_fn mem_fn) {
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    if (!key_j || !key_j->valuestring || !key_j->valuestring[0]) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "%s requires a non-empty 'key' string.", err_prefix);
+        return make_error(msg);
+    }
+
+    int rc = ctx->ws ? ws_fn(ctx->ws, key_j->valuestring)
+                      : mem_fn(ctx->memory, key_j->valuestring);
+    if (rc != 0) return make_error("memory entry not found");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", status_str);
+    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+    if (harness_note)
+        cJSON_AddStringToObject(meta, "harness_note", harness_note);
+
+    {
+        char *_p = cJSON_PrintUnformatted(params);
+        char *_h = store_save(ctx->store, _p ? _p : "{}");
+        char *_a = tool_register_alias(ctx, _h ? _h : "");
+        inject_thought(ctx, params);
+        journal_append(ctx->journal, ctx->react_loop, ctx->step, tool_name,
+                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
+        free(_a); free(_h); free(_p);
+    }
+
+    return make_result(1, meta, NULL);
 }
 
 /* ── alias hash map implementation ───────────────────────
@@ -464,16 +537,10 @@ static tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
 
     const char *path = path_j->valuestring;
 
-    /* Resolve step aliases (S0, S1, S2...) */
-    char *resolved = tool_resolve_alias(ctx, path);  /* heap-allocated, must free */
-    if (resolved) path = resolved;
-
-    /* Resolve store/ paths relative to session directory (legacy) */
+    /* Resolve aliases and store/ paths */
+    char *resolved = NULL;
     char resolved_buf[NASH_PATH_MAX];
-    if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
-        snprintf(resolved_buf, sizeof(resolved_buf), "%s/%s", ctx->session_dir, path);
-        path = resolved_buf;
-    }
+    path = resolve_tool_path(ctx, path, resolved_buf, &resolved);
 
     /* Safety: check file type and size before reading */
     struct stat st;
@@ -1022,16 +1089,10 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     const char *path = path_j && path_j->valuestring && path_j->valuestring[0]
                        ? path_j->valuestring : ".";
 
-    /* Resolve step aliases (returns heap-allocated string, caller must free) */
-    char *resolved = tool_resolve_alias(ctx, path);
-    if (resolved) path = resolved;
-
-    /* Resolve store/ paths (legacy) */
+    /* Resolve aliases and store/ paths */
+    char *resolved = NULL;
     char resolved_path[NASH_PATH_MAX];
-    if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
-        snprintf(resolved_path, sizeof(resolved_path), "%s/%s", ctx->session_dir, path);
-        path = resolved_path;
-    }
+    path = resolve_tool_path(ctx, path, resolved_path, &resolved);
 
     /* use fork/execvp to avoid shell injection */
     int pipefd[2];
@@ -2215,94 +2276,26 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
 
 
 
-/* ── memory_pin ─────────────────────────────────────────── */
+/* ── memory_pin / memory_unpin / memory_delete ─────────── */
 
 static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
-        return make_error("memory_pin requires a non-empty 'key' string. "
-                          "Use memory_list to see available keys.");
-
-    int rc = ctx->ws ? workspace_pin(ctx->ws, key_j->valuestring)
-                      : memory_pin(ctx->memory, key_j->valuestring);
-    if (rc != 0) return make_error("memory entry not found");
-
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "pinned");
-    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
-    /* P3: Regression-gated lessons advisory — pinning changes the system
-     * prompt and can degrade performance. Suggest validation. */
-    cJSON_AddStringToObject(meta, "harness_note",
+    return memory_key_op(ctx, params, "memory_pin",
+        "memory_pin", "pinned",
         "Pinned memories alter system prompt for all future sessions. "
-        "Validate with: nash --regression --validate-harness compare");
-
-    {
-        char *_p = cJSON_PrintUnformatted(params);
-        char *_h = store_save(ctx->store, _p ? _p : "{}");
-        char *_a = tool_register_alias(ctx, _h ? _h : "");
-        inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_pin",
-                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
-        free(_a); free(_h); free(_p);
-    }
-
-    return make_result(1, meta, NULL);
+        "Validate with: nash --regression --validate-harness compare",
+        workspace_pin, memory_pin);
 }
-
-/* ── memory_unpin ───────────────────────────────────────── */
 
 static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
-        return make_error("memory_unpin requires a non-empty 'key' string.");
-
-    int rc = ctx->ws ? workspace_unpin(ctx->ws, key_j->valuestring)
-                      : memory_unpin(ctx->memory, key_j->valuestring);
-    if (rc != 0) return make_error("memory entry not found");
-
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "unpinned");
-    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
-
-    {
-        char *_p = cJSON_PrintUnformatted(params);
-        char *_h = store_save(ctx->store, _p ? _p : "{}");
-        char *_a = tool_register_alias(ctx, _h ? _h : "");
-        inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_unpin",
-                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
-        free(_a); free(_h); free(_p);
-    }
-
-    return make_result(1, meta, NULL);
+    return memory_key_op(ctx, params, "memory_unpin",
+        "memory_unpin", "unpinned", NULL,
+        workspace_unpin, memory_unpin);
 }
 
-/* ── memory_delete ──────────────────────────────────────── */
-
 static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
-        return make_error("memory_delete requires a non-empty 'key' string.");
-
-    int rc = ctx->ws ? workspace_delete(ctx->ws, key_j->valuestring)
-                      : memory_delete(ctx->memory, key_j->valuestring);
-    if (rc != 0) return make_error("memory entry not found");
-
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "deleted");
-    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
-
-    {
-        char *_p = cJSON_PrintUnformatted(params);
-        char *_h = store_save(ctx->store, _p ? _p : "{}");
-        char *_a = tool_register_alias(ctx, _h ? _h : "");
-        inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_delete",
-                       params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
-        free(_a); free(_h); free(_p);
-    }
-
-    return make_result(1, meta, NULL);
+    return memory_key_op(ctx, params, "memory_delete",
+        "memory_delete", "deleted", NULL,
+        workspace_delete, memory_delete);
 }
 
 /* ── memory_list ────────────────────────────────────────── */
@@ -2342,320 +2335,8 @@ static tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── web_fetch ──────────────────────────────────────────── */
 
-/* ── HTML text extraction ──────────────────────────────── */
+/* HTML text extraction moved to html_extract.c/h */
 
-/* Case-insensitive prefix match. Returns 1 if s starts with prefix (ASCII). */
-static int html_ci_prefix(const char *s, const char *prefix) {
-    while (*prefix) {
-        if (!*s) return 0;  /* FIX BUG#6: don't read past end of s */
-        char a = *s, b = *prefix;
-        if (a >= 'A' && a <= 'Z') a += 32;
-        if (b >= 'A' && b <= 'Z') b += 32;
-        if (a != b) return 0;
-        s++; prefix++;
-    }
-    return 1;
-}
-
-/* Decode one HTML entity at &...; Returns decoded char count written to out.
- * *advance = bytes consumed from src (including & and ;). */
-static int html_decode_entity(const char *src, char *out, int *advance) {
-    const char *p = src + 1; /* skip '&' */
-    const char *semi = NULL;
-    for (const char *q = p; q < src + 12 && *q; q++) {
-        if (*q == ';') { semi = q; break; }
-    }
-    if (!semi) { *advance = 1; out[0] = '&'; return 1; }
-
-    int elen = (int)(semi - p);
-    *advance = (int)(semi - src) + 1;
-
-    if (elen == 2 && p[0] == 'l' && p[1] == 't') { out[0] = '<'; return 1; }
-    if (elen == 2 && p[0] == 'g' && p[1] == 't') { out[0] = '>'; return 1; }
-    if (elen == 3 && p[0] == 'a' && p[1] == 'm' && p[2] == 'p') { out[0] = '&'; return 1; }
-    if (elen == 4 && p[0] == 'q' && p[1] == 'u' && p[2] == 'o' && p[3] == 't') { out[0] = '"'; return 1; }
-    if (elen == 4 && p[0] == 'a' && p[1] == 'p' && p[2] == 'o' && p[3] == 's') { out[0] = '\''; return 1; }
-    if (elen == 4 && p[0] == 'n' && p[1] == 'b' && p[2] == 's' && p[3] == 'p') { out[0] = ' '; return 1; }
-
-    /* &#NNN; or &#xHHH; */
-    if (p[0] == '#') {
-        unsigned long cp = 0;
-        if (p[1] == 'x' || p[1] == 'X')
-            cp = strtoul(p + 2, NULL, 16);
-        else
-            cp = strtoul(p + 1, NULL, 10);
-        if (cp > 0 && cp < 128) { out[0] = (char)cp; return 1; }
-        if (cp >= 128 && cp <= 0x7FF) {
-            out[0] = (char)(0xC0 | (cp >> 6));
-            out[1] = (char)(0x80 | (cp & 0x3F));
-            return 2;
-        }
-        if (cp >= 0x800 && cp <= 0xFFFF) {
-            out[0] = (char)(0xE0 | (cp >> 12));
-            out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-            out[2] = (char)(0x80 | (cp & 0x3F));
-            return 3;
-        }
-        if (cp >= 0x10000 && cp <= 0x10FFFF) {
-            out[0] = (char)(0xF0 | (cp >> 18));
-            out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-            out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-            out[3] = (char)(0x80 | (cp & 0x3F));
-            return 4;
-        }
-        out[0] = '?'; return 1;
-    }
-
-    /* Unknown entity — pass through as-is */
-    out[0] = '&'; *advance = 1; return 1;
-}
-
-/* Extract readable text from HTML. Strips tags, preserves <a href> as markdown
- * links [text](url), strips <script>/<style> blocks entirely, decodes entities,
- * collapses whitespace. Returns malloc'd string; caller frees. */
-static char *html_extract_text(const char *html, size_t len) {
-    if (!html || len == 0) return NULL;
-
-    str_t out = str_new(len / 3);  /* text is typically 1/3 to 1/10 of HTML */
-    const char *p = html;
-    const char *end = html + len;
-    int in_skip = 0;       /* inside <script> or <style> block */
-    int prev_space = 0;    /* previous char was whitespace (for collapsing) */
-    int newline_count = 0; /* consecutive newlines (cap at 2) */
-    int in_pre = 0;        /* inside <pre> block (preserve whitespace) */
-
-    /* Link state: when we encounter <a href="...">, we buffer the link text
-     * and emit [text](url) when we see </a> */
-    char link_url[2048];
-    str_t link_text = {0};
-    int in_link = 0;
-
-    while (p < end) {
-        if (*p == '<') {
-            const char *tag_start = p + 1;
-
-            /* Skip HTML comments <!-- ... --> */
-            if (p + 3 < end && p[1] == '!' && p[2] == '-' && p[3] == '-') {
-                const char *cend = strstr(p + 4, "-->");
-                if (cend) { p = cend + 3; continue; }
-                else { p = end; break; }
-            }
-
-            /* Find end of tag */
-            const char *gt = memchr(p, '>', end - p);
-            if (!gt) break;
-
-            /* Check for skip blocks: <script>, <style> */
-            if (html_ci_prefix(tag_start, "script") &&
-                (tag_start[6] == '>' || tag_start[6] == ' ' || tag_start[6] == '\t')) {
-                in_skip = 1;
-                p = gt + 1;
-                continue;
-            }
-            if (html_ci_prefix(tag_start, "style") &&
-                (tag_start[5] == '>' || tag_start[5] == ' ' || tag_start[5] == '\t')) {
-                in_skip = 1;
-                p = gt + 1;
-                continue;
-            }
-            if (in_skip) {
-                if (html_ci_prefix(tag_start, "/script") || html_ci_prefix(tag_start, "/style")) {
-                    in_skip = 0;
-                }
-                p = gt + 1;
-                continue;
-            }
-
-            /* <pre> tracking */
-            if (html_ci_prefix(tag_start, "pre") &&
-                (tag_start[3] == '>' || tag_start[3] == ' '))
-                in_pre = 1;
-            if (html_ci_prefix(tag_start, "/pre"))
-                in_pre = 0;
-
-            /* <a href="..."> — start capturing link */
-            if (html_ci_prefix(tag_start, "a ") || html_ci_prefix(tag_start, "a\t")) {
-                /* Extract href */
-                const char *href = NULL;
-                for (const char *q = tag_start; q < gt - 4; q++) {
-                    if (html_ci_prefix(q, "href")) {
-                        q += 4;
-                        while (q < gt && (*q == ' ' || *q == '=')) q++;
-                        if (q < gt && (*q == '"' || *q == '\'')) {
-                            char quote = *q++;
-                            href = q;
-                            while (q < gt && *q != quote) q++;
-                            size_t hlen = (size_t)(q - href);
-                            if (hlen > 0 && hlen < sizeof(link_url)) {
-                                memcpy(link_url, href, hlen);
-                                link_url[hlen] = '\0';
-                                /* Decode entities in URL (e.g. &amp; → &) */
-                                char *rp = link_url, *wp = link_url;
-                                while (*rp) {
-                                    if (*rp == '&') {
-                                        char dec[4]; int adv = 0;
-                                        int dl = html_decode_entity(rp, dec, &adv);
-                                        for (int di = 0; di < dl; di++) *wp++ = dec[di];
-                                        rp += adv;
-                                    } else {
-                                        *wp++ = *rp++;
-                                    }
-                                }
-                                *wp = '\0';
-                                /* Free previous link_text if nested <a> (malformed HTML) */
-                                if (in_link) str_free(&link_text);
-                                in_link = 1;
-                                link_text = str_new(64);
-                            }
-                        }
-                        break;
-                    }
-                }
-                p = gt + 1;
-                continue;
-            }
-
-            /* </a> — emit markdown link */
-            if (html_ci_prefix(tag_start, "/a")) {
-                if (in_link) {
-                    /* Emit [text](url) */
-                    if (link_text.len > 0) {
-                        str_append_cstr(&out, "[");
-                        str_append(&out, link_text.data, link_text.len);
-                        str_append_cstr(&out, "](");
-                        str_append_cstr(&out, link_url);
-                        str_append_cstr(&out, ")");
-                        prev_space = 0;
-                        newline_count = 0;
-                    }
-                    str_free(&link_text);
-                    in_link = 0;
-                }
-                p = gt + 1;
-                continue;
-            }
-
-            /* Block-level tags → insert newline */
-            int is_block = 0;
-            const char *btags[] = {"p", "div", "br", "h1", "h2", "h3", "h4",
-                                   "h5", "h6", "li", "tr", "dt", "dd",
-                                   "blockquote", "section", "article",
-                                   "header", "footer", "nav", "figure",
-                                   "figcaption", "main", "aside",
-                                   "/p", "/div", "/h1", "/h2", "/h3", "/h4",
-                                   "/h5", "/h6", "/li", "/tr", "/ul", "/ol",
-                                   "/table", "/blockquote", "/section",
-                                   "/article", "/header", "/footer",
-                                   NULL};
-            for (int i = 0; btags[i]; i++) {
-                size_t blen = strlen(btags[i]);
-                if (html_ci_prefix(tag_start, btags[i]) &&
-                    (tag_start[blen] == '>' || tag_start[blen] == ' ' ||
-                     tag_start[blen] == '/' || tag_start[blen] == '\t')) {
-                    is_block = 1;
-                    break;
-                }
-            }
-
-            /* <br> and <br/> always produce a newline */
-            if (html_ci_prefix(tag_start, "br") &&
-                (tag_start[2] == '>' || tag_start[2] == ' ' ||
-                 tag_start[2] == '/' || tag_start[2] == '\t'))
-                is_block = 1;
-
-            if (is_block && out.len > 0 && newline_count < 2) {
-                str_append(&out, "\n", 1);
-                newline_count++;
-                prev_space = 1;
-            }
-
-            p = gt + 1;
-            continue;
-        }
-
-        /* Inside a skip block — ignore all text */
-        if (in_skip) { p++; continue; }
-
-        /* Entity decoding */
-        if (*p == '&') {
-            char decoded[4];
-            int advance = 0;
-            int dlen = html_decode_entity(p, decoded, &advance);
-            for (int i = 0; i < dlen; i++) {
-                char c = decoded[i];
-                int is_ws = (c == ' ' || c == '\t' || c == '\r');
-                int is_nl = (c == '\n');
-
-                if (!in_pre && (is_ws || is_nl)) {
-                    if (is_nl) {
-                        if (newline_count < 2) {
-                            if (in_link)
-                                str_append(&link_text, "\n", 1);
-                            else
-                                str_append(&out, "\n", 1);
-                            newline_count++;
-                        }
-                    } else if (!prev_space) {
-                        if (in_link)
-                            str_append(&link_text, " ", 1);
-                        else
-                            str_append(&out, " ", 1);
-                    }
-                    prev_space = 1;
-                } else {
-                    if (in_link)
-                        str_append(&link_text, &c, 1);
-                    else
-                        str_append(&out, &c, 1);
-                    prev_space = 0;
-                    newline_count = 0;
-                }
-            }
-            p += advance;
-            continue;
-        }
-
-        /* Regular text character */
-        char c = *p;
-        int is_ws = (c == ' ' || c == '\t' || c == '\r');
-        int is_nl = (c == '\n');
-
-        if (!in_pre && (is_ws || is_nl)) {
-            if (is_nl) {
-                if (newline_count < 2) {
-                    if (in_link)
-                        str_append(&link_text, "\n", 1);
-                    else
-                        str_append(&out, "\n", 1);
-                    newline_count++;
-                }
-            } else if (!prev_space) {
-                if (in_link)
-                    str_append(&link_text, " ", 1);
-                else
-                    str_append(&out, " ", 1);
-            }
-            prev_space = 1;
-        } else {
-            if (in_link)
-                str_append(&link_text, &c, 1);
-            else
-                str_append(&out, &c, 1);
-            prev_space = 0;
-            if (!is_nl) newline_count = 0;
-        }
-
-        p++;
-    }
-
-    /* Clean up any unclosed link */
-    if (in_link && link_text.len > 0)
-        str_append(&out, link_text.data, link_text.len);
-    str_free(&link_text);  /* safe even if str_new was never called ({0} → free(NULL)) */
-
-    if (out.len == 0) { str_free(&out); return NULL; }
-    return str_steal(&out);
-}
 
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     str_t *buf = userdata;
@@ -2763,329 +2444,6 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── web_search ────────────────────────────────────────── */
 
-/* Track whether we auto-started a SearXNG container so we can tear it down
- * on nash exit.  0 = not started, 1 = podman, 2 = docker.
- * FIX #15: Track which runtime was used so cleanup uses the correct one. */
-static int searxng_auto_started = 0;
-
-/* Check if a URL is reachable (HTTP GET, expect 2xx). Returns 1 if up. */
-static int searxng_is_running(const char *base_url) {
-    str_t body = str_new(256);
-    int rc = http_get(base_url, 3, &body);
-    str_free(&body);
-    return (rc == 0);
-}
-
-/* Extract host:port from a URL like "http://localhost:8888/search".
- * Returns the port number, or 8888 as default. */
-static int searxng_port_from_url(const char *url) {
-    /* Find "://", skip it, then find ":" for port */
-    const char *p = strstr(url, "://");
-    if (p) p += 3; else p = url;
-    const char *colon = strchr(p, ':');
-    if (colon) {
-        int port = atoi(colon + 1);
-        if (port > 0 && port < 65536) return port;
-    }
-    return 8888;
-}
-
-/* Build the SearXNG base URL (without /search path) from the configured URL.
- * e.g. "http://localhost:8888/search" → "http://localhost:8888"
- * Caller must free the returned string. */
-static char *searxng_base_url(const char *url) {
-    /* Find the path component after host:port */
-    const char *p = strstr(url, "://");
-    if (p) p += 3; else p = url;
-    const char *slash = strchr(p, '/');
-    if (slash) {
-        size_t len = (size_t)(slash - url);
-        char *base = malloc(len + 1);
-        memcpy(base, url, len);
-        base[len] = '\0';
-        return base;
-    }
-    return strdup(url);
-}
-
-/* Ensure the persistent SearXNG config directory exists at ~/.nash/searxng/
- * with a settings.yml that enables JSON format.  This directory is bind-mounted
- * into the container so the setting survives container recreation.
- * Returns the path to the config directory (static buffer, do not free). */
-static const char *ensure_searxng_config_dir(void) {
-    static char cfg_dir[512] = {0};
-    if (cfg_dir[0]) return cfg_dir;
-
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(cfg_dir, sizeof(cfg_dir), "%s/.nash/searxng", home);
-
-    /* Create the directory */
-    mkdir_p(cfg_dir, 0755);
-
-    /* Write settings.yml if it doesn't exist or is missing json format */
-    char settings_path[600];
-    snprintf(settings_path, sizeof(settings_path), "%s/settings.yml", cfg_dir);
-
-    /* Check if settings.yml already exists and has json format enabled */
-    int needs_write = 0;
-    FILE *f = fopen(settings_path, "r");
-    if (!f) {
-        needs_write = 1;
-    } else {
-        /* Check if it contains "- json" in formats */
-        char line[256];
-        int has_json = 0;
-        while (fgets(line, sizeof(line), f)) {
-            if (strstr(line, "- json")) { has_json = 1; break; }
-        }
-        fclose(f);
-        if (!has_json) needs_write = 1;
-    }
-
-    if (needs_write) {
-        f = fopen(settings_path, "w");
-        if (f) {
-            fprintf(f,
-                "# Nash auto-generated SearXNG settings\n"
-                "# This file is bind-mounted into the SearXNG container.\n"
-                "# It uses use_default_settings to inherit all defaults\n"
-                "# and only overrides what nash needs (JSON API format).\n"
-                "\n"
-                "use_default_settings: true\n"
-                "\n"
-                "search:\n"
-                "  formats:\n"
-                "    - html\n"
-                "    - json\n"
-                "\n"
-                "server:\n"
-                "  secret_key: \"nash-searxng-auto-generated-key\"\n"
-            );
-            fclose(f);
-            nash_log("[nash] Created SearXNG settings at %s", settings_path);
-        } else {
-            nash_log("[nash] Warning: could not write SearXNG settings to %s", settings_path);
-        }
-    }
-
-    return cfg_dir;
-}
-
-/* Start a SearXNG container using podman/docker.
- * Bind-mounts ~/.nash/searxng/ into the container for persistent config.
- * Returns 0 on success, -1 on failure. */
-/* Forward declaration — run_container_cmd is defined below (near web_search_cleanup). */
-static int run_container_cmd(const char *runtime, const char *action, const char *name);
-
-/* FIX #1: Use fork/exec instead of system() to avoid shell injection via cfg_dir.
- * Previously used system() with snprintf-constructed commands — if $HOME contained
- * shell metacharacters, the command could be exploited. The cleanup function
- * (run_container_cmd/web_search_cleanup) was already migrated; this aligns startup. */
-static int searxng_start_with_runtime(const char *runtime, int port, const char *cfg_dir,
-                                       const char *vol_suffix) {
-    char port_map[32], base_url_env[160], vol_mount[640];
-    snprintf(port_map, sizeof(port_map), "%d:8080", port);
-    snprintf(base_url_env, sizeof(base_url_env),
-             "SEARXNG_BASE_URL=http://localhost:%d/", port);
-    snprintf(vol_mount, sizeof(vol_mount), "%s:/etc/searxng%s", cfg_dir, vol_suffix);
-
-    /* Remove any existing container (ignore failure) */
-    run_container_cmd(runtime, "rm", "nash-searxng");
-
-    /* Run new container */
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
-        execlp(runtime, runtime, "run", "-d", "--name", "nash-searxng",
-               "-p", port_map,
-               "-e", base_url_env,
-               "-v", vol_mount,
-               "docker.io/searxng/searxng:latest",
-               (char *)NULL);
-        _exit(127);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
-}
-
-static int searxng_start_container(int port) {
-    /* Ensure persistent config directory with JSON format enabled */
-    const char *cfg_dir = ensure_searxng_config_dir();
-
-    /* FIX #15: Try podman first, then docker. Track which one succeeded
-     * so cleanup uses the correct runtime. */
-    int rc = searxng_start_with_runtime("podman", port, cfg_dir, ":rw,Z");
-    if (rc == 0) {
-        searxng_auto_started = 1; /* podman */
-    } else {
-        rc = searxng_start_with_runtime("docker", port, cfg_dir, ":rw");
-        if (rc == 0) searxng_auto_started = 2; /* docker */
-    }
-    if (rc != 0) return -1;
-
-    /* Wait for SearXNG to become ready (up to 30 seconds) */
-    char health_url[256];
-    snprintf(health_url, sizeof(health_url), "http://localhost:%d/", port);
-    int ready = 0;
-    for (int i = 0; i < 30; i++) {
-        sleep(1);
-        if (searxng_is_running(health_url)) { ready = 1; break; }
-    }
-    if (!ready) return -1;  /* timed out */
-
-    return 0;
-}
-
-/* Check if a running SearXNG instance supports JSON format.
- * Probes the search endpoint with format=json.
- * Returns 1 if JSON is supported, 0 if not (e.g. 403 Forbidden). */
-static int searxng_has_json_format(const char *base_url) {
-    char probe_url[512];
-    snprintf(probe_url, sizeof(probe_url),
-             "%s/search?q=test&format=json", base_url);
-    str_t body = str_new(256);
-    long http_code = 0;
-    int rc = http_get_web(probe_url, 5, &body, &http_code);
-    str_free(&body);
-    if (rc != 0) return 0;          /* connection failed */
-    if (http_code == 403) return 0;  /* JSON format disabled */
-    return 1;
-}
-
-/* Kill any existing SearXNG containers (both 'searxng' and 'nash-searxng')
- * using both podman and docker runtimes. Ignores errors from missing
- * containers or unavailable runtimes. */
-static void searxng_kill_existing(void) {
-    const char *runtimes[] = {"podman", "docker"};
-    const char *names[] = {"searxng", "nash-searxng"};
-    for (int r = 0; r < 2; r++) {
-        for (int n = 0; n < 2; n++) {
-            run_container_cmd(runtimes[r], "stop", names[n]);
-            run_container_cmd(runtimes[r], "rm", names[n]);
-        }
-    }
-}
-
-/* Ensure SearXNG is running with JSON format support.
- * If a SearXNG instance is running but lacks JSON format, it is killed
- * and restarted with the correct configuration.
- * Returns 0 if SearXNG is available, -1 on failure. */
-static int ensure_searxng(const char *searxng_url) {
-    char *base = searxng_base_url(searxng_url);
-
-    /* First check if it's already running (user-managed or previously started) */
-    if (searxng_is_running(base)) {
-        /* Verify JSON format is actually supported */
-        if (searxng_has_json_format(base)) {
-            free(base);
-            return 0;  /* Running and JSON works — all good */
-        }
-        /* Running but JSON disabled — kill it and restart with proper config */
-        nash_log("[nash] SearXNG at %s is running but lacks JSON format support "
-                 "— killing and restarting with correct config...", base);
-        searxng_kill_existing();
-        sleep(1);  /* Give the container runtime a moment to clean up */
-    }
-
-    /* Not running (or just killed) — auto-start a container */
-    int port = searxng_port_from_url(searxng_url);
-    nash_log("[nash] SearXNG not running at %s — starting container on port %d...",
-             base, port);
-    free(base);
-
-    if (searxng_start_container(port) != 0) {
-        nash_log("[nash] Failed to start SearXNG container");
-        return -1;
-    }
-    nash_log("[nash] SearXNG container started successfully");
-    return 0;
-}
-
-/* Perform a search using SearXNG JSON API.
- * Returns a formatted results string (caller frees), or NULL on failure.
- * *out_count receives the number of results. */
-static char *searxng_search(const char *searxng_url, const char *query,
-                            int *out_count, long timeout) {
-    /* URL-encode the query using a temporary curl handle */
-    CURL *enc = curl_easy_init();
-    if (!enc) return NULL;
-    char *encoded_q = curl_easy_escape(enc, query, 0);
-    curl_easy_cleanup(enc);
-
-    char url[2048];
-    snprintf(url, sizeof(url), "%s?q=%s&format=json&categories=general",
-             searxng_url, encoded_q);
-    curl_free(encoded_q);
-
-    str_t body = str_new(NASH_INITIAL_BUF);
-    long http_code = 0;
-    if (http_get_web(url, timeout, &body, &http_code) != 0) {
-        str_free(&body);
-        return NULL;
-    }
-
-    if (http_code == 403) {
-        nash_log(
-                "[nash] SearXNG returned 403 Forbidden for JSON format. "
-                "Check ~/.nash/searxng/settings.yml has 'json' in "
-                "search.formats and restart the container.");
-        str_free(&body);
-        return NULL;
-    }
-
-    /* Parse JSON response */
-    cJSON *root = cJSON_Parse(body.data);
-    str_free(&body);
-    if (!root) return NULL;
-
-    cJSON *results_arr = cJSON_GetObjectItem(root, "results");
-    if (!results_arr || !cJSON_IsArray(results_arr)) {
-        cJSON_Delete(root);
-        return NULL;
-    }
-
-    str_t results = str_new(4096);
-    int count = 0;
-    int arr_size = cJSON_GetArraySize(results_arr);
-
-    for (int i = 0; i < arr_size && count < 10; i++) {
-        cJSON *item = cJSON_GetArrayItem(results_arr, i);
-        if (!item) continue;
-
-        cJSON *title_j   = cJSON_GetObjectItem(item, "title");
-        cJSON *url_j     = cJSON_GetObjectItem(item, "url");
-        cJSON *content_j = cJSON_GetObjectItem(item, "content");
-
-        const char *title   = (title_j && title_j->valuestring) ? title_j->valuestring : "";
-        const char *item_url = (url_j && url_j->valuestring) ? url_j->valuestring : "";
-        const char *content = (content_j && content_j->valuestring) ? content_j->valuestring : "";
-
-        if (!item_url[0]) continue;
-
-        count++;
-        if (title[0] && content[0]) {
-            str_appendf(&results, "%d. [%s](%s)\n   %s\n\n", count, title, item_url, content);
-        } else if (title[0]) {
-            str_appendf(&results, "%d. [%s](%s)\n\n", count, title, item_url);
-        } else {
-            str_appendf(&results, "%d. %s\n\n", count, item_url);
-        }
-    }
-
-    cJSON_Delete(root);
-    *out_count = count;
-
-    if (count == 0) {
-        str_free(&results);
-        return NULL;
-    }
-
-    return str_steal(&results);
-}
 
 static tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
@@ -3224,35 +2582,7 @@ void tool_free_deferred_consolidations(tool_ctx_t *ctx) {
     ctx->cap_deferred_consol = 0;
 }
 
-/* Tear down auto-started SearXNG container. Called on nash exit. */
-/* FIX BUG#12: Use fork/exec instead of system() which is not signal-safe
- * and invokes /bin/sh unnecessarily. */
-static int run_container_cmd(const char *runtime, const char *action, const char *name) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        /* Child: redirect stdout/stderr to /dev/null */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
-        execlp(runtime, runtime, action, name, (char *)NULL);
-        _exit(127);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
-
-void web_search_cleanup(void) {
-    if (!searxng_auto_started) return;
-    nash_log("[nash] Stopping auto-started SearXNG container...");
-    /* FIX #15: Use the runtime that was actually used to start the container.
-     * 1 = podman, 2 = docker. Previously always tried podman first, which
-     * would fail if the container was started with docker. */
-    const char *runtime = (searxng_auto_started == 1) ? "podman" : "docker";
-    run_container_cmd(runtime, "stop", "nash-searxng");
-    run_container_cmd(runtime, "rm", "nash-searxng");
-    searxng_auto_started = 0;
-}
+/* SearXNG cleanup moved to searxng.c */
 
 
 /* Tool dispatch table — maps tool names to handler functions.
@@ -3301,17 +2631,8 @@ _Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == TOOL_REGISTRY
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     /* Tool filter: check whitelist/blacklist before dispatch */
-    if (ctx->tool_filter.allowed) {
-        int found = 0;
-        for (int i = 0; i < ctx->tool_filter.n_allowed; i++)
-            if (strcmp(action, ctx->tool_filter.allowed[i]) == 0) { found = 1; break; }
-        if (!found) return make_error("tool not available in this context");
-    }
-    if (ctx->tool_filter.blocked) {
-        for (int i = 0; i < ctx->tool_filter.n_blocked; i++)
-            if (strcmp(action, ctx->tool_filter.blocked[i]) == 0)
-                return make_error("tool not available in this context");
-    }
+    if (!tool_filter_allows(&ctx->tool_filter, action))
+        return make_error("tool not available in this context");
 
     /* Dispatch via unified registry lookup (Fix #11).
      * TOOL_REGISTRY[i].name provides the name, TOOL_HANDLERS[i] the handler. */
@@ -3341,21 +2662,9 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
         }
 
         if (best_idx >= 0) {
-            /* Re-check tool filter for the recovered name — without this,
-             * a blocked tool could be reached by concatenating its name
-             * with another tool name (e.g. "web_searchfile_read" bypasses
-             * block=["web_search"]). */
-            if (ctx->tool_filter.allowed) {
-                int found = 0;
-                for (int i = 0; i < ctx->tool_filter.n_allowed; i++)
-                    if (strcmp(best_name, ctx->tool_filter.allowed[i]) == 0) { found = 1; break; }
-                if (!found) return make_error("tool not available in this context");
-            }
-            if (ctx->tool_filter.blocked) {
-                for (int i = 0; i < ctx->tool_filter.n_blocked; i++)
-                    if (strcmp(best_name, ctx->tool_filter.blocked[i]) == 0)
-                        return make_error("tool not available in this context");
-            }
+            /* Re-check tool filter for the recovered name */
+            if (!tool_filter_allows(&ctx->tool_filter, best_name))
+                return make_error("tool not available in this context");
             fprintf(stderr, "[tool] recovered concatenated tool name: "
                     "'%s' → '%s' (dropped suffix: '%s')\n",
                     action, best_name, action + best_len);
