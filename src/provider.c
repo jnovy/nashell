@@ -434,6 +434,15 @@ char *parse_openai_response(provider_t *p, const char *response_json,
     /* Check for tool_calls */
     cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
     if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
+        /* Detect multiple tool calls (common with gemma4/qwen3.6 models).
+         * Only the first tool call is executed — store the count so react.c
+         * can inject a corrective hint. */
+        int tc_count = cJSON_GetArraySize(tool_calls);
+        if (chat && tc_count > 1) {
+            chat->multi_tool_count = tc_count;
+            nash_log("[provider] model emitted %d native tool_calls "
+                     "(only first executed)", tc_count);
+        }
         cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
         cJSON *fn = cJSON_GetObjectItem(tc, "function");
         if (fn) {
@@ -515,6 +524,7 @@ typedef struct {
     str_t          tool_call_args;
     char          *tool_call_id;
     int            has_tool_call;
+    int            multi_tool_count; /* >1 if model streamed multiple tool_calls indices */
     int            last_token_idx;
     /* Anthropic-specific SSE state */
     int            in_tool_use;       /* currently inside a tool_use block */
@@ -570,6 +580,28 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
     if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
         st->has_tool_call = 1;
         cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
+
+        /* Detect multiple tool calls via index field.
+         * In OpenAI streaming, each tool call has an "index" field.
+         * When a model emits N tool calls, chunks arrive with index 0..N-1.
+         * We only process index 0; track the max index for the corrective hint. */
+        cJSON *idx = cJSON_GetObjectItem(tc, "index");
+        int tc_idx = (idx && cJSON_IsNumber(idx)) ? idx->valueint : 0;
+
+        /* Also detect multiple entries in a single chunk's array */
+        int arr_size = cJSON_GetArraySize(tool_calls);
+        if (arr_size > 1 && arr_size > st->multi_tool_count)
+            st->multi_tool_count = arr_size;
+
+        if (tc_idx > 0) {
+            /* This chunk is for a 2nd/3rd/... tool call — skip it but record */
+            if (tc_idx + 1 > st->multi_tool_count)
+                st->multi_tool_count = tc_idx + 1;
+            /* Still count for timing but don't accumulate name/args */
+            st->streaming_token_count++;
+            cJSON_Delete(data);
+            return;
+        }
 
         /* Tool call ID (first chunk only) */
         cJSON *id = cJSON_GetObjectItem(tc, "id");
@@ -720,17 +752,24 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
             cJSON *cb_type = cJSON_GetObjectItem(cb, "type");
             if (cb_type && cJSON_IsString(cb_type)) {
                 if (strcmp(cb_type->valuestring, "tool_use") == 0) {
-                    st->in_tool_use = 1;
-                    st->has_tool_call = 1;
-                    cJSON *id = cJSON_GetObjectItem(cb, "id");
-                    if (id && cJSON_IsString(id)) {
-                        free(st->tool_call_id);
-                        st->tool_call_id = strdup(id->valuestring);
-                    }
-                    cJSON *name = cJSON_GetObjectItem(cb, "name");
-                    if (name && cJSON_IsString(name)) {
-                        str_clear(&st->tool_call_name);
-                        str_append_cstr(&st->tool_call_name, name->valuestring);
+                    st->multi_tool_count++;
+                    if (st->multi_tool_count == 1) {
+                        /* First tool_use block — process normally */
+                        st->in_tool_use = 1;
+                        st->has_tool_call = 1;
+                        cJSON *id = cJSON_GetObjectItem(cb, "id");
+                        if (id && cJSON_IsString(id)) {
+                            free(st->tool_call_id);
+                            st->tool_call_id = strdup(id->valuestring);
+                        }
+                        cJSON *name = cJSON_GetObjectItem(cb, "name");
+                        if (name && cJSON_IsString(name)) {
+                            str_clear(&st->tool_call_name);
+                            str_append_cstr(&st->tool_call_name, name->valuestring);
+                        }
+                    } else {
+                        /* 2nd+ tool_use block — skip it, don't overwrite first */
+                        st->in_tool_use = 0;
                     }
                 } else {
                     st->in_tool_use = 0;
@@ -897,6 +936,13 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
             free(chat->last_tool_calls_json);
             chat->last_tool_calls_json = cJSON_PrintUnformatted(tc_arr);
             cJSON_Delete(tc_arr);
+
+            /* Propagate multi-tool detection from SSE state to chat */
+            if (st->multi_tool_count > 1) {
+                chat->multi_tool_count = st->multi_tool_count;
+                nash_log("[provider] model streamed %d tool_calls via SSE "
+                         "(only first executed)", st->multi_tool_count);
+            }
         }
     } else if (st->full_content.len > 0) {
         result = strdup(str_cstr(&st->full_content));

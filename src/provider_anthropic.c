@@ -570,6 +570,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
 
     str_t thought = str_new(256);
     cJSON *tool_block = NULL;
+    int tool_use_count = 0;  /* count tool_use blocks for multi-tool detection */
 
     int n = cJSON_GetArraySize(content);
     for (int i = 0; i < n; i++) {
@@ -584,8 +585,16 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
                 str_append_cstr(&thought, text->valuestring);
             }
         } else if (strcmp(btype->valuestring, "tool_use") == 0) {
-            tool_block = block;
+            if (!tool_block) tool_block = block;  /* keep first, not last */
+            tool_use_count++;
         }
+    }
+
+    /* Detect multiple tool_use blocks (Anthropic models can emit parallel tool calls) */
+    if (chat && tool_use_count > 1) {
+        chat->multi_tool_count = tool_use_count;
+        nash_log("[provider_anthropic] model emitted %d tool_use blocks "
+                 "(only first executed)", tool_use_count);
     }
 
     /* Check stop reason */

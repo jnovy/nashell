@@ -329,7 +329,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                     NULL, NULL, max_resp, rep_thresh);
             if (!rresp) break;
 
-            cJSON *raction = llm_parse_action(rresp);
+            cJSON *raction = llm_parse_action(rresp, NULL);
             if (!raction) { free(rresp); break; }
 
             const char *ract = NULL;

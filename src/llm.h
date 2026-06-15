@@ -122,6 +122,7 @@ typedef struct {
     /* Last tool call info (set by provider_complete/provider_complete_stream for react.c) */
     char      *last_tool_call_id;    /* tool_call_id from last response (caller frees) */
     char      *last_tool_calls_json; /* raw tool_calls JSON from last response (caller frees) */
+    int        multi_tool_count;     /* >1 if model emitted multiple tool calls (only first executed) */
 } llm_chat_t;
 
 /* Initialize/free chat */
@@ -181,8 +182,12 @@ typedef struct {
     int    draft_accepted;
 } llm_stats_t;
 
-/* Parse the assistant's JSON response into action fields. */
-cJSON *llm_parse_action(const char *response);
+/* Parse the assistant's JSON response into action fields.
+ * If multi_count is non-NULL, detects concatenated JSON objects (common with
+ * gemma4/qwen3.6 models that emit multiple tool calls as content). Sets
+ * *multi_count to the number of JSON objects found (1 = normal). Only the
+ * first object is returned; the rest are silently discarded. */
+cJSON *llm_parse_action(const char *response, int *multi_count);
 
 /* Fetch server info */
 int llm_fetch_context_size(const char *api_base);

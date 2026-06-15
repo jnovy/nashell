@@ -320,7 +320,8 @@ static char *repair_json(const char *src) {
     return buf;
 }
 
-cJSON *llm_parse_action(const char *response) {
+cJSON *llm_parse_action(const char *response, int *multi_count) {
+    if (multi_count) *multi_count = 0;
     if (!response) return NULL;
 
     const char *start = response;
@@ -338,19 +339,55 @@ cJSON *llm_parse_action(const char *response) {
     const char *brace = strchr(start, '{');
     if (!brace) return NULL;
 
-    /* Try strict parse first */
-    cJSON *action = cJSON_Parse(brace);
-    if (action) return action;
-
-    /* Strict parse failed — try repairing common JSON errors */
-    char *repaired = repair_json(brace);
-    if (repaired) {
-        action = cJSON_Parse(repaired);
-        if (action) {
-            nash_log("[llm] repaired malformed JSON response");
+    /* Try strict parse first, tracking where parsing ended */
+    const char *parse_end = NULL;
+    cJSON *action = cJSON_ParseWithOpts(brace, &parse_end, 0);
+    if (!action) {
+        /* Strict parse failed — try repairing common JSON errors */
+        char *repaired = repair_json(brace);
+        if (repaired) {
+            action = cJSON_Parse(repaired);
+            if (action) {
+                nash_log("[llm] repaired malformed JSON response");
+            }
+            free(repaired);
         }
-        free(repaired);
+        if (multi_count && action) *multi_count = 1;
+        return action;
     }
+
+    /* Detect concatenated JSON objects (e.g., gemma4/qwen3.6 emitting
+     * multiple tool calls as content: {...}{...}).
+     * Count how many additional JSON objects follow the first one.
+     * Only the first is returned — callers use multi_count to inject
+     * a corrective hint telling the model to issue one call at a time. */
+    int count = 1;
+    if (parse_end && multi_count) {
+        const char *rest = parse_end;
+        while (rest && *rest) {
+            /* Skip whitespace between concatenated objects */
+            while (*rest == ' ' || *rest == '\t' || *rest == '\n' || *rest == '\r')
+                rest++;
+            if (*rest != '{') break;
+            /* Try parsing the next JSON object */
+            const char *next_end = NULL;
+            cJSON *next = cJSON_ParseWithOpts(rest, &next_end, 0);
+            if (!next) break;
+            /* Verify it looks like a tool call (has "action" field) */
+            if (cJSON_GetObjectItem(next, "action")) {
+                count++;
+            }
+            cJSON_Delete(next);
+            rest = next_end;
+        }
+        *multi_count = count;
+    }
+
+    if (count > 1) {
+        nash_log("[llm] detected %d concatenated tool calls in content "
+                 "(only first executed)", count);
+    }
+
     return action;
 }
 

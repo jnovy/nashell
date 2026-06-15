@@ -932,8 +932,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         double step_elapsed = (step_end.tv_sec - step_start.tv_sec) +
                               (step_end.tv_nsec - step_start.tv_nsec) / 1e9;
 
-        /* Parse JSON response */
-        cJSON *action = llm_parse_action(response);
+        /* Parse JSON response.
+         * multi_tool_count > 1 means the model emitted multiple concatenated
+         * tool calls (common with gemma4/qwen3.6). Only the first is parsed;
+         * we inject a corrective hint after execution. */
+        int multi_tool_count = 0;
+        cJSON *action = llm_parse_action(response, &multi_tool_count);
 
         if (!action) {
             react_event_t ev = {0};
@@ -1554,6 +1558,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             if (tidx >= 0 && tidx < 32)
                 ctx->tools->tool_use_counts[tidx]++;
             ctx->tools->n_tool_uses++;
+        }
+
+        /* Multi-tool detection: inject corrective hint when the model emitted
+         * multiple tool calls (concatenated JSON or native tool_calls array > 1).
+         * Common with gemma4/qwen3.6 models. Only the first tool call was executed;
+         * tell the model to issue one call at a time so no work is silently lost.
+         * The hint is injected as a LOW-importance user message to avoid wasting
+         * context on models that learn quickly. */
+        {
+            int total_multi = (multi_tool_count > 1 ? multi_tool_count : 0) +
+                              (chat->multi_tool_count > 1 ? chat->multi_tool_count : 0);
+            /* Prefer native API count (more reliable) over content-parse count */
+            int detected = chat->multi_tool_count > 1 ? chat->multi_tool_count
+                         : multi_tool_count > 1       ? multi_tool_count
+                         : 0;
+            (void)total_multi;
+            if (detected > 1) {
+                char hint[256];
+                snprintf(hint, sizeof(hint),
+                    "You attempted %d tool calls at once. Only the first was "
+                    "executed. Issue exactly ONE tool call per response.",
+                    detected);
+                llm_chat_add(chat, "user", hint);
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+
+                /* Log for postmortem analysis */
+                nash_log("[react] multi-tool corrective hint injected (%d calls)",
+                         detected);
+
+                /* Reset for next step */
+                chat->multi_tool_count = 0;
+            }
         }
 
         /* Harness-1 §3.4: Auto-seed scratchpad from first successful tool result.
