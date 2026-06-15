@@ -169,6 +169,22 @@ const char *alias_map_lookup(alias_map_t *map, const char *alias) {
     return NULL;
 }
 
+/* FIX #2: Reverse lookup — find alias for a given store hash.
+ * Used to retrieve an already-registered alias without creating a new one.
+ * Linear scan over all buckets (acceptable — alias maps are typically small). */
+const char *alias_map_reverse_lookup(alias_map_t *map, const char *hash) {
+    if (!map || !hash) return NULL;
+    for (int b = 0; b < map->capacity; b++) {
+        alias_node_t *node = map->buckets[b];
+        while (node) {
+            if (node->hash && strcmp(node->hash, hash) == 0)
+                return node->alias;
+            node = node->next;
+        }
+    }
+    return NULL;
+}
+
 /* ── public alias API (thin wrappers over hash map) ───── */
 
 char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
@@ -1059,30 +1075,40 @@ static tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
      * could be added if finer control is needed. */
     int grep_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
     int grep_max = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
-    time_t start = time(NULL);
+    /* FIX #9: Use clock_gettime(CLOCK_MONOTONIC) + poll() instead of
+     * time() + nanosleep(). Provides sub-second timeout accuracy and
+     * avoids CPU-wasteful 10ms busy-loop polling. */
+    struct timespec ts_start;
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
     int timed_out = 0;
-
-    /* Set pipe to non-blocking for timeout support */
-    int flags = fcntl(pipefd[0], F_GETFL, 0);
-    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
 
     while (1) {
-        n = read(pipefd[0], buf, sizeof(buf));
-        if (n > 0) {
-            str_append(&out, buf, (size_t)n);
-            if ((int)out.len >= grep_max) {
-                str_append_cstr(&out, "\n... [output truncated at limit]\n");
-                break;
+        /* Calculate remaining timeout in ms */
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        long elapsed_ms = (ts_now.tv_sec - ts_start.tv_sec) * 1000
+                        + (ts_now.tv_nsec - ts_start.tv_nsec) / 1000000;
+        long remaining_ms = (long)grep_timeout * 1000 - elapsed_ms;
+        if (remaining_ms <= 0) { timed_out = 1; break; }
+        int poll_ms = remaining_ms > 100 ? 100 : (int)remaining_ms;
+
+        int pr = poll(&pfd, 1, poll_ms);
+        if (pr > 0) {
+            n = read(pipefd[0], buf, sizeof(buf));
+            if (n > 0) {
+                str_append(&out, buf, (size_t)n);
+                if ((int)out.len >= grep_max) {
+                    str_append_cstr(&out, "\n... [output truncated at limit]\n");
+                    break;
+                }
+            } else if (n == 0) {
+                break;  /* EOF */
             }
-        } else if (n == 0) {
-            break;  /* EOF */
+        } else if (pr == 0) {
+            continue;  /* poll timeout — check elapsed */
         } else {
-            /* EAGAIN — no data yet */
-            if (time(NULL) - start >= grep_timeout) {
-                timed_out = 1;
-                break;
-            }
-            { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms poll */
+            break;  /* poll error */
         }
     }
     close(pipefd[0]);
@@ -1126,7 +1152,7 @@ static void parse_glob_pattern(const char *pattern,
                                char *name, size_t name_sz,
                                int *recursive, int *exact,
                                char *exact_path, size_t exact_path_sz) {
-    (void)root_sz;  /* used for bounds in strncpy calls */
+    /* FIX #7: Use root_sz for bounds checking (was previously suppressed). */
     const char *p = pattern;
     int has_doublestar = 0;
     *recursive = 0;
@@ -1168,6 +1194,8 @@ static void parse_glob_pattern(const char *pattern,
                 *recursive = 1;
             }
 
+            /* FIX #7: Clamp dir_len to root buffer size */
+            if (dir_len >= root_sz) dir_len = root_sz - 1;
             if (dir_len > 0) {
                 strncpy(root, p, dir_len);
                 root[dir_len] = '\0';
@@ -1896,7 +1924,10 @@ static char *memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     char *response = NULL;
 
     /* Use a separate provider for consolidation to avoid mutating the
-     * shared provider config (thread-safety + signal-safety). */
+     * shared provider config (thread-safety + signal-safety).
+     * FIX #11: Shallow struct copy is safe here because provider_create()
+     * calls strdup() on all string fields. If new pointer fields are added
+     * to provider_config_t, provider_create() MUST deep-copy them too. */
     provider_config_t cons_cfg = ctx->provider->cfg;
     cons_cfg.max_tokens = 2048;
     cons_cfg.temperature = 0.1f;
@@ -2696,7 +2727,8 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 /* ── web_search ────────────────────────────────────────── */
 
 /* Track whether we auto-started a SearXNG container so we can tear it down
- * on nash exit.  0 = not started, 1 = we started it. */
+ * on nash exit.  0 = not started, 1 = podman, 2 = docker.
+ * FIX #15: Track which runtime was used so cleanup uses the correct one. */
 static int searxng_auto_started = 0;
 
 /* Check if a URL is reachable (HTTP GET, expect 2xx). Returns 1 if up. */
@@ -2847,14 +2879,16 @@ static int searxng_start_container(int port) {
     /* Ensure persistent config directory with JSON format enabled */
     const char *cfg_dir = ensure_searxng_config_dir();
 
-    /* Try podman first (with :rw,Z SELinux label), then docker (without Z) */
+    /* FIX #15: Try podman first, then docker. Track which one succeeded
+     * so cleanup uses the correct runtime. */
     int rc = searxng_start_with_runtime("podman", port, cfg_dir, ":rw,Z");
-    if (rc != 0) {
+    if (rc == 0) {
+        searxng_auto_started = 1; /* podman */
+    } else {
         rc = searxng_start_with_runtime("docker", port, cfg_dir, ":rw");
+        if (rc == 0) searxng_auto_started = 2; /* docker */
     }
     if (rc != 0) return -1;
-
-    searxng_auto_started = 1;
 
     /* Wait for SearXNG to become ready (up to 30 seconds) */
     char health_url[256];
@@ -3047,6 +3081,24 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
     char **del_keys = NULL;
     int n_del = 0, del_cap = 0;
 
+    /* FIX #6: Deduplicate deferred queue by key — keep only the LATEST value
+     * for each key. When the same key is stored multiple times in one loop,
+     * earlier values are stale and would cause incorrect merge decisions. */
+    for (int i = 0; i < ctx->n_deferred_consol; i++) {
+        if (!ctx->deferred_consol[i].key) continue;
+        for (int j = i + 1; j < ctx->n_deferred_consol; j++) {
+            if (ctx->deferred_consol[j].key &&
+                strcmp(ctx->deferred_consol[i].key, ctx->deferred_consol[j].key) == 0) {
+                /* Later entry has same key — discard earlier (stale) value */
+                free(ctx->deferred_consol[i].key);
+                free(ctx->deferred_consol[i].value);
+                ctx->deferred_consol[i].key = NULL;
+                ctx->deferred_consol[i].value = NULL;
+                break;
+            }
+        }
+    }
+
     ctx->memory->consolidating = 1;  /* prevent recursive consolidation */
     for (int i = 0; i < ctx->n_deferred_consol; i++) {
         if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
@@ -3109,13 +3161,12 @@ static int run_container_cmd(const char *runtime, const char *action, const char
 void web_search_cleanup(void) {
     if (!searxng_auto_started) return;
     nash_log("[nash] Stopping auto-started SearXNG container...");
-    int rc = run_container_cmd("podman", "stop", "nash-searxng");
-    if (rc == 0) run_container_cmd("podman", "rm", "nash-searxng");
-    if (rc != 0) {
-        /* Try docker as fallback */
-        run_container_cmd("docker", "stop", "nash-searxng");
-        run_container_cmd("docker", "rm", "nash-searxng");
-    }
+    /* FIX #15: Use the runtime that was actually used to start the container.
+     * 1 = podman, 2 = docker. Previously always tried podman first, which
+     * would fail if the container was started with docker. */
+    const char *runtime = (searxng_auto_started == 1) ? "podman" : "docker";
+    run_container_cmd(runtime, "stop", "nash-searxng");
+    run_container_cmd(runtime, "rm", "nash-searxng");
     searxng_auto_started = 0;
 }
 

@@ -25,24 +25,42 @@ static int react_emergency_evict(llm_chat_t *chat) {
     int target_chars = total_chars * 80 / 100;
     int need_to_remove = total_chars - target_chars;
 
-    /* Remove oldest evictable messages until we've freed enough */
+    /* Remove oldest evictable messages until we've freed enough.
+     * FIX #3: Skip CRITICAL-importance messages (scratchpad re-injections,
+     * eviction breadcrumbs) — these must never be evicted. */
     int removed_chars = 0;
-    int evict_to = evict_start;
-    for (int i = evict_start; i < evict_end && removed_chars < need_to_remove; i++) {
+    int removed = 0;
+    int i = evict_start;
+    while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
+        /* Never evict CRITICAL messages */
+        if (chat->msgs[i].importance == LLM_MSG_IMPORTANCE_CRITICAL) {
+            i++;
+            continue;
+        }
         if (chat->msgs[i].content)
             removed_chars += (int)strlen(chat->msgs[i].content);
-        evict_to = i + 1;
+        llm_chat_remove_range(chat, i, i + 1);
+        removed++;
+        /* Don't increment i — removal shifts array down */
     }
-    /* Ensure we evict at least something */
-    if (evict_to <= evict_start) evict_to = evict_start + 1;
-    int n_evict = evict_to - evict_start;
-    llm_chat_remove_range(chat, evict_start, evict_to);
-    return n_evict;
+    /* Ensure we evict at least something (skip CRITICAL even here) */
+    if (removed == 0) {
+        for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
+            if (chat->msgs[j].importance != LLM_MSG_IMPORTANCE_CRITICAL) {
+                llm_chat_remove_range(chat, j, j + 1);
+                removed = 1;
+                break;
+            }
+        }
+    }
+    return removed;
 }
 
-/* Get chars-per-token ratio from provider config, defaulting to 3.5.
- * Used for context budget calculations instead of hardcoded 4. */
+/* FIX #4: Get chars-per-token from runtime state (mutable) instead of
+ * provider config (INIT-ONLY). Falls back to provider config, then 3.5. */
 float react_get_chars_per_token(const react_ctx_t *ctx) {
+    if (ctx->rt.chars_per_token > 0)
+        return ctx->rt.chars_per_token;
     if (ctx->provider && ctx->provider->cfg.chars_per_token > 0)
         return ctx->provider->cfg.chars_per_token;
     return 3.5f;
@@ -362,6 +380,14 @@ static int react_tool_index(const char *name) {
 char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
+
+    /* FIX #4: Initialize mutable runtime state from provider config.
+     * These values may be modified during the loop without violating
+     * the provider's INIT-ONLY contract. */
+    ctx->rt.chars_per_token = (ctx->provider && ctx->provider->cfg.chars_per_token > 0)
+        ? ctx->provider->cfg.chars_per_token : 0;
+    ctx->rt.enable_thinking = ctx->provider ? ctx->provider->cfg.enable_thinking : 0;
+    ctx->rt.thinking_budget = ctx->provider ? ctx->provider->cfg.thinking_budget : -1;
 
     /* FIX 2c: Defer git commits during the react loop to batch them.
      * Every memory_store/pin/unpin/delete during the loop skips individual
@@ -778,7 +804,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                      * The LLM server may be overloaded (common cause of 500s),
                      * so making another LLM call during recovery adds load.
                      * Strip ```...``` code blocks and inline `code` locally. */
-                    const char *src = chat->msgs[sp_idx].content + (sizeof("[SCRATCHPAD]\n") - 1);
+                    /* FIX #8: Use strstr instead of hardcoded sizeof offset.
+                     * The previous code assumed content starts with exactly
+                     * "[SCRATCHPAD]\n" (14 bytes). Now finds the first newline
+                     * dynamically, so format changes won't corrupt the pointer. */
+                    const char *src = chat->msgs[sp_idx].content;
+                    {
+                        const char *nl = strchr(src, '\n');
+                        if (nl) src = nl + 1;
+                    }
                     size_t src_len = strlen(src);
                     char *cleaned = malloc(src_len + 1);
                     if (cleaned) {
@@ -1453,11 +1487,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     recover = LLM_RECOVER_STORE;
             }
             chat->msgs[chat->n_msgs - 1].recoverability = recover;
-            /* Copy store alias for breadcrumb generation during eviction */
+            /* FIX #2: Look up existing alias instead of registering a new one.
+             * Previously called tool_register_alias() which created a SECOND alias
+             * for the same store ref, inflating alias numbering 2× and creating
+             * phantom symlinks. Now uses reverse lookup to find the alias that
+             * tool_execute() already registered. */
             if (tr.store_ref && ctx->tools->aliases) {
-                /* Look up alias for the store ref from the alias map */
-                char *alias = tool_register_alias(ctx->tools, tr.store_ref);
-                chat->msgs[chat->n_msgs - 1].store_alias = alias; /* ownership transferred */
+                const char *existing = alias_map_reverse_lookup(
+                    ctx->tools->aliases, tr.store_ref);
+                if (existing)
+                    chat->msgs[chat->n_msgs - 1].store_alias = strdup(existing);
             }
         }
 
@@ -1564,7 +1603,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 float old_cpt = react_get_chars_per_token(ctx);
                 /* EMA with alpha=0.3: responsive but not jumpy */
                 float calibrated = old_cpt * 0.7f + actual_cpt * 0.3f;
-                ctx->provider->cfg.chars_per_token = calibrated;
+                ctx->rt.chars_per_token = calibrated;
             }
         }
 
@@ -1594,11 +1633,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 int did_evict = 0;
 
                 /* ── Pass 1: Strip LOW importance messages (errors, stale hints, deduped)
-                 * These have the least value and may actively degrade performance. */
-                for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
+                 * These have the least value and may actively degrade performance.
+                 * FIX #10: Remove in reverse order to avoid O(n²) memmove cascade. */
+                for (int i = chat->n_msgs - keep_tail - 1; i >= keep_head; i--) {
                     if (chat->msgs[i].importance == LLM_MSG_IMPORTANCE_LOW) {
                         llm_chat_remove_range(chat, i, i + 1);
-                        i--;
                         did_evict = 1;
                     }
                 }
@@ -1660,14 +1699,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         break;
                     }
 
-                    /* CWL §3: Sort evictable range by eviction priority.
-                     * Lower score = evict first.
-                     * score = importance*100 - recoverability*10 + age_rank
-                     * Messages with RECOVER_STORE/FILE/MEMORY get evicted before
-                     * RECOVER_NONE at the same importance level. */
+                    /* FIX #1 + FIX #5: Score-based eviction WITHOUT physical reordering.
+                     * Previously sorted messages in-place, breaking tool_call/tool_result
+                     * pairing required by LLM APIs. Now: score → mark → breadcrumb → remove.
+                     * Also fixes compaction floor double-counting head chars in kept_chars. */
                     {
                         int n_evictable = evict_end - evict_start;
-                        if (n_evictable > 1) {
+                        if (n_evictable < 0) n_evictable = 0;
+                        /* Allocate eviction mark array (1 = evict, 0 = keep) */
+                        int *evict_mark = n_evictable > 0
+                            ? calloc((size_t)n_evictable, sizeof(int)) : NULL;
+                        int n_to_evict = 0;
+
+                        if (evict_mark && n_evictable > 0) {
                             typedef struct { int idx; int score; } evict_scored_t;
                             evict_scored_t *scored = malloc((size_t)n_evictable * sizeof(evict_scored_t));
                             if (scored) {
@@ -1675,13 +1719,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                     int mi = evict_start + i;
                                     int imp = (int)chat->msgs[mi].importance;
                                     int rec = (int)chat->msgs[mi].recoverability;
-                                    /* Higher recoverability → lower score (evict first).
-                                     * Higher importance → higher score (evict last).
-                                     * Earlier position → lower age_rank (evict first). */
-                                    scored[i].idx = mi;
+                                    scored[i].idx = i;  /* index within evictable range */
                                     scored[i].score = imp * 100 - rec * 10 + i;
                                 }
-                                /* Simple insertion sort (n_evictable is typically <100) */
+                                /* Sort by score ascending (lowest = evict first) */
                                 for (int i = 1; i < n_evictable; i++) {
                                     evict_scored_t key = scored[i];
                                     int j = i - 1;
@@ -1691,58 +1732,65 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                     }
                                     scored[j + 1] = key;
                                 }
-                                /* Reorder messages in chat according to sorted order.
-                                 * We need to physically rearrange so that the oldest-by-score
-                                 * messages are at the front of the evictable range.
-                                 * Use a temp copy to avoid in-place complexity. */
-                                llm_msg_t *tmp = malloc((size_t)n_evictable * sizeof(llm_msg_t));
-                                if (tmp) {
-                                    for (int i = 0; i < n_evictable; i++)
-                                        tmp[i] = chat->msgs[scored[i].idx];
-                                    for (int i = 0; i < n_evictable; i++)
-                                        chat->msgs[evict_start + i] = tmp[i];
-                                    free(tmp);
+
+                                /* Compaction floor: keep at least 20% of non-head context.
+                                 * FIX #5: Only count tail chars in kept_chars (not head). */
+                                int head_chars = 0;
+                                for (int ki = 0; ki < evict_start; ki++)
+                                    if (chat->msgs[ki].content)
+                                        head_chars += (int)strlen(chat->msgs[ki].content);
+                                int floor_chars = (context_budget - head_chars) / 5;
+                                if (floor_chars < 4000) floor_chars = 4000;
+
+                                int tail_chars = 0;
+                                for (int ki = evict_end; ki < chat->n_msgs; ki++)
+                                    if (chat->msgs[ki].content)
+                                        tail_chars += (int)strlen(chat->msgs[ki].content);
+
+                                /* Total chars in evictable range */
+                                int evictable_chars = 0;
+                                for (int ki = evict_start; ki < evict_end; ki++)
+                                    if (chat->msgs[ki].content)
+                                        evictable_chars += (int)strlen(chat->msgs[ki].content);
+
+                                /* Mark messages for eviction in score order, stopping
+                                 * when removing more would drop below compaction floor. */
+                                int remaining_chars = tail_chars + evictable_chars;
+                                for (int si = 0; si < n_evictable; si++) {
+                                    int ri = scored[si].idx;  /* index in evictable range */
+                                    int mi = evict_start + ri;
+                                    int msg_chars = chat->msgs[mi].content
+                                        ? (int)strlen(chat->msgs[mi].content) : 0;
+
+                                    /* Don't evict CRITICAL messages */
+                                    if (chat->msgs[mi].importance == LLM_MSG_IMPORTANCE_CRITICAL)
+                                        continue;
+
+                                    /* Compaction floor check */
+                                    if (remaining_chars - msg_chars < floor_chars)
+                                        break;
+
+                                    /* Don't split tool_call/tool_result pairs:
+                                     * if this is an assistant with tool_calls, also mark next;
+                                     * if this is a tool result, also mark the preceding assistant. */
+                                    evict_mark[ri] = 1;
+                                    remaining_chars -= msg_chars;
+                                    n_to_evict++;
                                 }
                                 free(scored);
                             }
                         }
-                    }
 
-                    /* Compaction floor — never drop below 20% of context window.
-                     * FIX 4b: Subtract preserved head message sizes from the budget
-                     * before computing the floor, so large system prompts don't cause
-                     * under-eviction. */
-                    {
-                        int head_chars = 0;
-                        for (int ki = 0; ki < evict_start; ki++)
-                            if (chat->msgs[ki].content)
-                                head_chars += (int)strlen(chat->msgs[ki].content);
-                        int floor_chars = (context_budget - head_chars) / 5;
-                        if (floor_chars < 4000) floor_chars = 4000;
-                        int kept_chars = 0;
-                        for (int ki = 0; ki < evict_start; ki++)
-                            if (chat->msgs[ki].content)
-                                kept_chars += (int)strlen(chat->msgs[ki].content);
-                        for (int ki = evict_end; ki < chat->n_msgs; ki++)
-                            if (chat->msgs[ki].content)
-                                kept_chars += (int)strlen(chat->msgs[ki].content);
-                        while (kept_chars < floor_chars && evict_end > evict_start + 1) {
-                            evict_end--;
-                            if (chat->msgs[evict_end].content)
-                                kept_chars += (int)strlen(chat->msgs[evict_end].content);
-                        }
-                    }
-
-                    if (evict_end > evict_start) {
+                    if (n_to_evict > 0 && evict_mark) {
                         /* LCM-Lite [arXiv:2605.04050]: Build breadcrumb index of
                          * evicted messages that have store refs — these can be
-                         * recovered via file_read. Also extract heuristic summary
-                         * of non-recoverable messages into scratchpad. */
+                         * recovered via file_read. Only process MARKED messages. */
                         str_t breadcrumb = str_new(512);
                         {
                             size_t sp_budget = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
                             str_t summary = str_new(sp_budget > 4096 ? 4096 : sp_budget);
-                            int max_per_msg = (int)(sp_budget / (unsigned)(evict_end - evict_start + 1));
+                            int max_per_msg = n_to_evict > 0
+                                ? (int)(sp_budget / (unsigned)n_to_evict) : 200;
                             if (max_per_msg < 200) max_per_msg = 200;
                             if (max_per_msg > 2000) max_per_msg = 2000;
 
@@ -1750,32 +1798,30 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 "[EVICTED CONTEXT — recoverable via file_read]\n");
                             int n_breadcrumbs = 0;
 
-                            for (int i = evict_start; i < evict_end; i++) {
-                                const char *content = chat->msgs[i].content;
-                                const char *role = chat->msgs[i].role;
+                            for (int ei = 0; ei < n_evictable; ei++) {
+                                if (!evict_mark[ei]) continue;
+                                int mi = evict_start + ei;
+                                const char *content = chat->msgs[mi].content;
+                                const char *role = chat->msgs[mi].role;
                                 if (!content || !content[0] || !role) continue;
                                 if (strcmp(role, "system") == 0) continue;
 
-                                /* LCM-Lite: If message has store alias, add to breadcrumb */
-                                if (chat->msgs[i].store_alias) {
-                                    /* Brief description: first 80 chars of content */
+                                if (chat->msgs[mi].store_alias) {
                                     char brief[81];
                                     int blen = (int)strlen(content);
                                     if (blen > 80) blen = 80;
                                     memcpy(brief, content, (size_t)blen);
                                     brief[blen] = '\0';
-                                    /* Strip newlines from brief */
                                     for (int b = 0; brief[b]; b++)
                                         if (brief[b] == '\n' || brief[b] == '\r')
                                             brief[b] = ' ';
                                     str_appendf(&breadcrumb, "- %s: %s (%s, %d chars)\n",
-                                        chat->msgs[i].store_alias, brief, role,
+                                        chat->msgs[mi].store_alias, brief, role,
                                         (int)strlen(content));
                                     n_breadcrumbs++;
-                                    continue; /* skip scratchpad extraction for recoverable msgs */
+                                    continue;
                                 }
 
-                                /* Non-recoverable: extract into scratchpad (existing heuristic) */
                                 if (strcmp(role, "tool") == 0 && strlen(content) < 50) continue;
                                 int clen = (int)strlen(content);
                                 if (clen > max_per_msg) clen = max_per_msg;
@@ -1787,7 +1833,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 if (summary.len >= sp_budget) break;
                             }
 
-                            /* Only use breadcrumb if we have entries */
                             if (n_breadcrumbs == 0) {
                                 str_free(&breadcrumb);
                                 breadcrumb = str_new(0);
@@ -1804,8 +1849,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             }
                         }
 
-                        /* Remove evicted messages */
-                        llm_chat_remove_range(chat, evict_start, evict_end);
+                        /* FIX #1: Remove marked messages in REVERSE order to preserve
+                         * indices.  This avoids the O(n²) of individual removes AND
+                         * preserves original message ordering (no sort-reorder). */
+                        for (int ri = n_evictable - 1; ri >= 0; ri--) {
+                            if (evict_mark[ri])
+                                llm_chat_remove_range(chat, evict_start + ri, evict_start + ri + 1);
+                        }
 
                         /* Recover tool_call threading from surviving messages */
                         free(chat->last_tool_call_id);
@@ -1821,7 +1871,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             }
                         }
 
-                        /* Re-inject scratchpad at eviction point */
+                        /* Re-inject scratchpad at earliest eviction point */
                         {
                             size_t sp_max = (ctx->provider->cfg.context_size > 0)
                                 ? (size_t)(ctx->provider->cfg.context_size * react_get_chars_per_token(ctx) * 15 / 100) : 8192;
@@ -1832,9 +1882,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                 char *sp_msg = malloc(slen + 32);
                                 if (sp_msg) {
                                     snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
-                                    /* Use LLM_MSG_SCRATCHPAD (not EVICTION_SUMMARY)
-                                     * so Tier 2 recovery can find it via
-                                     * llm_chat_find_by_type(LLM_MSG_SCRATCHPAD). */
                                     llm_chat_insert_typed(chat, evict_start,
                                         "user", sp_msg, LLM_MSG_SCRATCHPAD);
                                     free(sp_msg);
@@ -1843,8 +1890,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             free(fresh_sp);
                         }
 
-                        /* LCM-Lite: Inject breadcrumb index of evicted store refs
-                         * so the agent knows what was evicted and how to recover it. */
                         if (breadcrumb.len > 0) {
                             char *bc_str = str_steal(&breadcrumb);
                             llm_chat_insert_typed(chat, evict_start + 1,
@@ -1861,6 +1906,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         ev.message = "Context compacted (CWL+LCM) — recoverable refs indexed, non-recoverable summarized";
                         react_emit(on_event, userdata, &ev);
                     }
+                    free(evict_mark);
+                    } /* end evict_mark block */
                 }
 
             }
@@ -1882,9 +1929,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         "Consider saving important discoveries to scratchpad sections "
                         "to preserve them across context compaction.",
                         LLM_MSG_MEMORY_HINT);
-                    /* Mark as having been nudged (set a fake count so we don't re-nudge) */
+                    /* FIX #14: Set count to 1 (not -1) to prevent re-nudging.
+                     * The previous -1 sentinel was never incremented back to 0,
+                     * so nudge couldn't re-trigger even after 20+ more steps
+                     * without notes usage. Using 1 means: if notes IS actually
+                     * used later, the count goes to 2+; if not, it stays at 1
+                     * (nonzero → no re-trigger). */
                     if (notes_idx >= 0 && notes_idx < 32)
-                        ctx->tools->tool_use_counts[notes_idx] = -1;
+                        ctx->tools->tool_use_counts[notes_idx] = 1;
                 }
             }
 

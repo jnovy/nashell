@@ -145,9 +145,15 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             : 0.0;
         cJSON_AddNumberToObject(mq, "cold_start_pct", cold_start_pct);
 
+        char *mq_str = cJSON_PrintUnformatted(mq);
+        char *mq_hash = mq_str ? store_save(ctx->tools->store, mq_str) : NULL;
+        char *mq_ref = mq_hash ? tool_register_alias(ctx->tools, mq_hash) : NULL;
         journal_append(ctx->tools->journal, ctx->tools->react_loop,
                        ctx->tools->step, "memory_quality", mq,
-                       NULL, 0, 0, NULL, NULL);
+                       mq_ref, 0, 0, NULL, NULL);
+        free(mq_str);
+        free(mq_hash);
+        free(mq_ref);
         cJSON_Delete(mq);
     }
 

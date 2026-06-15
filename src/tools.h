@@ -39,6 +39,7 @@ void         alias_map_free(alias_map_t *map);
 void         alias_map_clear(alias_map_t *map);  /* keep allocated buckets */
 void        *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
 const char  *alias_map_lookup(alias_map_t *map, const char *alias);
+const char  *alias_map_reverse_lookup(alias_map_t *map, const char *hash);
 
 #include "scratchpad.h"
 

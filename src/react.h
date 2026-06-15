@@ -29,6 +29,10 @@ typedef struct {
  *
  *   INIT-ONLY (set before pthread_create, never modified during react_run):
  *     provider, tools, max_steps, verbose, flags, parent_loop
+ *     Note: provider->cfg.enable_thinking and thinking_budget are set per-call
+ *     by the inference thread before provider_complete_stream(), which is safe
+ *     because no other thread reads them concurrently.
+ *     FIX #4: chars_per_token is now in ctx->rt (not provider->cfg).
  *
  *   MAIN→INFER (set by main thread, read by inference thread):
  *     pause_requested  — atomic_int, safe for cross-thread signaling
@@ -43,12 +47,22 @@ typedef struct {
  *   BETWEEN-RUNS (set by main thread between react_run calls, after join):
  *     last_query, last_result — safe by happens-before (pthread_join → next setup)
  */
+/* FIX #4: Mutable per-loop runtime state.
+ * These values change during react_run() and must NOT live in provider->cfg
+ * (which is documented as INIT-ONLY). */
+typedef struct {
+    float chars_per_token;   /* EMA-calibrated chars/token ratio */
+    int   enable_thinking;   /* EDRM routing result (0/1) */
+    int   thinking_budget;   /* thinking token budget */
+} react_runtime_t;
+
 typedef struct {
     provider_t   *provider;  /* [INIT-ONLY] provider abstraction */
     tool_ctx_t   *tools;     /* [INIT-ONLY] tool context */
     int           max_steps; /* [INIT-ONLY] max react loop iterations */
     int           verbose;   /* [INIT-ONLY] verbosity level */
     react_flags_t flags;     /* [INIT-ONLY] controls which subsystems fire */
+    react_runtime_t rt;      /* [INFER-ONLY] mutable per-loop runtime state */
     atomic_int    pause_requested;  /* [MAIN→INFER] set by TUI (Space) to pause */
     int           paused;           /* [INFER→MAIN] 1 when paused (read after join) */
 

@@ -39,6 +39,10 @@ char *sha256_hex(const char *data, size_t len) {
 
 char *store_save(store_t *s, const char *content) {
     if (!s || !content) return NULL;
+    /* FIX #12: Reject empty strings — they all hash to the same SHA-256
+     * (e3b0c44...), making it impossible to distinguish which tool produced
+     * which empty result. Return NULL so callers know nothing was stored. */
+    if (!content[0]) return NULL;
     size_t clen = strlen(content);
     char *hex = sha256_hex(content, clen);
     if (!hex) return NULL;
