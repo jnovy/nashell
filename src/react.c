@@ -137,11 +137,10 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                     key[klen] = '\0';
                     cJSON_AddItemToArray(pinned_keys, cJSON_CreateString(key));
                     p = end + 1;
-                    /* Skip to next line after value */
-                    while (*p && *p != '\n') p++;
-                    if (*p == '\n') p++;
-                    /* Skip blank line separator */
-                    if (*p == '\n') p++;
+                    /* Skip to the start of the next pinned tag or end of string */
+                    const char *next_tag = strstr(p, "[PINNED: ");
+                    if (next_tag) p = next_tag;
+                    else p = *p ? p + 1 : p;
                 } else {
                     break;
                 }
@@ -330,7 +329,7 @@ char *react_extract_llm_text_output(const char *raw) {
         while (*start && *start != '\n') start++;
         if (*start == '\n') start++;
         /* Find closing ``` */
-        const char *end = strstr(start, "\n```");
+        const char *end = strstr(start, "```");
         if (end) {
             return strndup(start, end - start);
         }
@@ -966,9 +965,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             /* Retry — tell model to use tool_calls */
             llm_chat_add(chat, "assistant", response);
             llm_chat_add(chat, "user",
-                "Your response could not be parsed. "
-                "You must call one of the available tools. "
-                "Do not write free-form text.");
+                "Your response was plain text, not a JSON tool call. "
+                "If you are finished, call the `done` tool with your result. "
+                "If you have more work to do, call the appropriate tool.");
             free(response);
             continue;
         }
@@ -1046,9 +1045,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Retry — tell model to use tool_calls */
                 llm_chat_add(chat, "assistant", response);
                 llm_chat_add(chat, "user",
-                    "Your response could not be parsed. "
-                    "You must call one of the available tools. "
-                    "Do not write free-form text.");
+                    "Your response was plain text, not a JSON tool call. "
+                    "If you are finished, call the `done` tool with your result. "
+                    "If you have more work to do, call the appropriate tool.");
             }
             cJSON_Delete(action);
             free(response);
