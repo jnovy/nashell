@@ -1154,7 +1154,6 @@ static void parse_glob_pattern(const char *pattern,
                                char *exact_path, size_t exact_path_sz) {
     /* FIX #7: Use root_sz for bounds checking (was previously suppressed). */
     const char *p = pattern;
-    int has_doublestar = 0;
     *recursive = 0;
     *exact = 0;
     root[0] = '.';
@@ -1168,7 +1167,6 @@ static void parse_glob_pattern(const char *pattern,
 
     /* Handle doublestar/ prefix (recursive from root) */
     if (p[0] == '*' && p[1] == '*' && p[2] == '/') {
-        has_doublestar = 1;
         *recursive = 1;
         p += 3;
     }
@@ -1214,7 +1212,6 @@ static void parse_glob_pattern(const char *pattern,
         strncpy(name, p, name_sz - 1);
         name[name_sz - 1] = '\0';
     }
-    (void)has_doublestar;
 }
 
 static tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
@@ -2708,6 +2705,11 @@ static tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
     if (extracted)
         cJSON_AddNumberToObject(meta, "original_chars", (double)body.len);
+    /* Notify model when response was truncated by web_write_cb's 512KB cap */
+    if (body.len >= 512000)
+        cJSON_AddStringToObject(meta, "truncated",
+            "Response exceeded 512KB and was truncated. "
+            "Content may be incomplete.");
 
     /* Content stored to .store/ — model reads via file_read(ref) */
 

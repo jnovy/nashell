@@ -22,8 +22,13 @@
 #include <stdint.h>
 
 /* ── Eviction Constants ─────────────────────────────── */
-/* Number of messages at head/tail of conversation to always keep during eviction. */
+/* Number of messages at HEAD of conversation to always keep during eviction.
+ * Protects: [0] system prompt, [1] memory index, [2] pinned knowledge.
+ * These are CRITICAL messages that anchor the agent's identity and memory. */
 #define REACT_EVICT_KEEP_HEAD  3
+/* Number of messages at TAIL of conversation to always keep during eviction.
+ * Protects the most recent 2 exchange pairs (assistant+tool_result × 2).
+ * Ensures the agent always sees its latest actions and their results. */
 #define REACT_EVICT_KEEP_TAIL  4
 /* Scratchpad budget as percentage of total context size. */
 #define REACT_SCRATCHPAD_BUDGET_PCT  15

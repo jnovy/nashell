@@ -535,9 +535,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
 
             if (mode == THINKING_ON) {
-                ctx->provider->cfg.enable_thinking = 1;
+                ctx->rt.enable_thinking = 1;
             } else if (mode == THINKING_OFF) {
-                ctx->provider->cfg.enable_thinking = 0;
+                ctx->rt.enable_thinking = 0;
             } else if (mode == THINKING_EDRM) {
                 /* Build probe prompt from user query.
                  * #7: Use /apply-template for correct template, fallback to ChatML. */
@@ -560,7 +560,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     tc->tau_rho, tc->tau_vnr, tc->tau_h);
                 str_free(&probe);
 
-                ctx->provider->cfg.enable_thinking = edrm.route;
+                ctx->rt.enable_thinking = edrm.route;
 
                 /* Log the routing decision */
                 {
@@ -578,7 +578,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 }
             }
             /* Propagate thinking budget from config */
-            ctx->provider->cfg.thinking_budget = ctx->tools->cfg->thinking.budget;
+            ctx->rt.thinking_budget = ctx->tools->cfg->thinking.budget;
         }
 
         llm_stats_t stats = {0};
@@ -588,6 +588,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
         /* Propagate tool filter so provider builds schema with only allowed tools */
         ctx->provider->tool_filter = &ctx->tools->tool_filter;
+        /* FIX: Copy runtime thinking state to provider->cfg just before the
+         * provider call.  This is the ONLY place cfg.enable_thinking and
+         * cfg.thinking_budget are written during the loop — safe because
+         * no other thread reads them between here and provider_complete_stream(). */
+        ctx->provider->cfg.enable_thinking = ctx->rt.enable_thinking;
+        ctx->provider->cfg.thinking_budget = ctx->rt.thinking_budget;
         char *response = provider_complete_stream(ctx->provider, chat, &stats,
                 on_event ? react_stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh);
@@ -1948,39 +1954,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         ev.message = "Context compacted (CWL+LCM) — recoverable refs indexed, non-recoverable summarized";
                         react_emit(on_event, userdata, &ev);
                     }
-                    free(evict_mark);
+                        free(evict_mark);
                     } /* end evict_mark block */
                 }
 
             }
         }
 
-            /* FIX 4c: Moved diversity nudge outside eviction block so it fires
-             * regardless of context pressure.  Previously only triggered when
-             * usage_pct > eviction_pct. */
-            /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
-             * only 1-2 tools for 10+ steps, inject a soft reminder to use
-             * notes for saving findings. */
-            if (ctx->tools->n_tool_uses >= 10) {
-                int notes_idx = react_tool_index("notes");
-                int notes_used = (notes_idx >= 0 && notes_idx < 32)
-                    ? ctx->tools->tool_use_counts[notes_idx] : 0;
-                if (notes_used == 0) {
-                    llm_chat_add_typed(chat, "user",
-                        "[HINT] You have not used notes() to save key findings. "
-                        "Consider saving important discoveries to scratchpad sections "
-                        "to preserve them across context compaction.",
-                        LLM_MSG_MEMORY_HINT);
-                    /* FIX #14: Set count to 1 (not -1) to prevent re-nudging.
-                     * The previous -1 sentinel was never incremented back to 0,
-                     * so nudge couldn't re-trigger even after 20+ more steps
-                     * without notes usage. Using 1 means: if notes IS actually
-                     * used later, the count goes to 2+; if not, it stays at 1
-                     * (nonzero → no re-trigger). */
-                    if (notes_idx >= 0 && notes_idx < 32)
-                        ctx->tools->tool_use_counts[notes_idx] = 1;
-                }
+        /* FIX 4c: Moved diversity nudge outside eviction block so it fires
+         * regardless of context pressure.  Previously only triggered when
+         * usage_pct > eviction_pct. */
+        /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
+         * only 1-2 tools for 10+ steps, inject a soft reminder to use
+         * notes for saving findings. */
+        if (ctx->tools->n_tool_uses >= 10) {
+            int notes_idx = react_tool_index("notes");
+            int notes_used = (notes_idx >= 0 && notes_idx < 32)
+                ? ctx->tools->tool_use_counts[notes_idx] : 0;
+            if (notes_used == 0) {
+                llm_chat_add_typed(chat, "user",
+                    "[HINT] You have not used notes() to save key findings. "
+                    "Consider saving important discoveries to scratchpad sections "
+                    "to preserve them across context compaction.",
+                    LLM_MSG_MEMORY_HINT);
+                /* FIX #14: Set count to 1 (not -1) to prevent re-nudging.
+                 * The previous -1 sentinel was never incremented back to 0,
+                 * so nudge couldn't re-trigger even after 20+ more steps
+                 * without notes usage. Using 1 means: if notes IS actually
+                 * used later, the count goes to 2+; if not, it stays at 1
+                 * (nonzero → no re-trigger). */
+                if (notes_idx >= 0 && notes_idx < 32)
+                    ctx->tools->tool_use_counts[notes_idx] = 1;
             }
+        }
 
         /* Cleanup */
         free(meta_str);

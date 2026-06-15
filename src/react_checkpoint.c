@@ -59,7 +59,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                         "prior decisions, ongoing projects, or historical context not visible "
                         "in the current conversation.\n"
                         "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
-                llm_chat_add(chat, "user", mem_msg);
+                llm_chat_add_typed(chat, "user", mem_msg, LLM_MSG_MEMORY_INDEX);
                 free(mem_msg);
             }
         }
@@ -70,7 +70,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             char *pin_msg = malloc(pin_msg_sz);
             if (pin_msg) {
                 snprintf(pin_msg, pin_msg_sz, "[PINNED KNOWLEDGE]\n%s", pinned);
-                llm_chat_add(chat, "user", pin_msg);
+                llm_chat_add_typed(chat, "user", pin_msg, LLM_MSG_PINNED);
                 free(pin_msg);
             }
         }
@@ -95,7 +95,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             char *scratch_msg = malloc(slen + 32);
             if (scratch_msg) {
                 snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
-                llm_chat_add(chat, "user", scratch_msg);
+                llm_chat_add_typed(chat, "user", scratch_msg, LLM_MSG_SCRATCHPAD);
                 free(scratch_msg);
             }
         }
@@ -103,7 +103,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     }
 
     /* Step 5: Add user query */
-    llm_chat_add(chat, "user", user_query);
+    llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
 
     /* Step 6: Replay tool calls from journal to rebuild conversation history */
     char jpath[NASH_PATH_MAX];

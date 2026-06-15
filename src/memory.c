@@ -315,6 +315,29 @@ static void mem_index_remove(mem_index_t *idx, const char *key) {
     mem_index_map_rebuild(idx);
 }
 
+/* Remove an entry without rebuilding the hash map.
+ * Used by memory_delete_batch() to defer the O(N) rebuild until all
+ * removals are done — turning O(K×N) into O(K+N).
+ * IMPORTANT: The hash map is INVALID after this call.  Caller MUST
+ * call mem_index_map_rebuild() before any find/insert operations. */
+static void mem_index_remove_norebuild(mem_index_t *idx, const char *key) {
+    if (!idx || !key) return;
+    /* Linear scan since hash map may already be stale from prior removes */
+    int i = -1;
+    for (int j = 0; j < idx->count; j++) {
+        if (idx->entries[j].key && strcmp(idx->entries[j].key, key) == 0) {
+            i = j;
+            break;
+        }
+    }
+    if (i < 0) return;
+    mem_index_entry_free(&idx->entries[i]);
+    if (i < idx->count - 1) {
+        idx->entries[i] = idx->entries[idx->count - 1];
+    }
+    idx->count--;
+}
+
 /* Populate an index entry from a parsed cJSON entry + file path.
  * Also loads the embedding if available. */
 static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
@@ -1480,11 +1503,15 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
         snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
         unlink(emb_path);  /* ignore error if not exists */
 
-        /* Remove from in-memory index */
-        mem_index_remove(&m->idx, keys[k]);
+        /* Remove from in-memory index (deferred rebuild) */
+        mem_index_remove_norebuild(&m->idx, keys[k]);
 
         found_keys[n_found++] = keys[k];
     }
+
+    /* Rebuild hash map once after all removals — O(N) instead of O(K×N). */
+    if (n_found > 0)
+        mem_index_map_rebuild(&m->idx);
 
     if (n_found == 0) {
         free(found_keys);

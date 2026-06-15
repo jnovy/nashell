@@ -29,9 +29,10 @@ typedef struct {
  *
  *   INIT-ONLY (set before pthread_create, never modified during react_run):
  *     provider, tools, max_steps, verbose, flags, parent_loop
- *     Note: provider->cfg.enable_thinking and thinking_budget are set per-call
- *     by the inference thread before provider_complete_stream(), which is safe
- *     because no other thread reads them concurrently.
+ *     Note: provider->cfg.enable_thinking and thinking_budget are copied
+ *     from ctx->rt just before each provider_complete_stream() call.
+ *     The authoritative values live in ctx->rt (INFER-ONLY); cfg is only
+ *     written as a transfer mechanism immediately before the provider call.
  *     FIX #4: chars_per_token is now in ctx->rt (not provider->cfg).
  *
  *   MAIN→INFER (set by main thread, read by inference thread):
