@@ -1005,6 +1005,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 
     str_t response = str_new(4096);
     cJSON *resp = NULL;
+    int auth_refreshed = 0;
 
     for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES; attempt++) {
         str_clear(&response);
@@ -1039,11 +1040,25 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         }
 
         /* HTTP 401/403: auth failure — invalidate cached token and
-         * retry once with a fresh token (Vertex AI OAuth2). */
+         * retry with a fresh token (Vertex AI OAuth2).
+         * Only do this once to avoid infinite refresh loops. */
         if ((http_code == 401 || http_code == 403) &&
-            p->type == PROVIDER_VERTEX && attempt == 1) {
+            p->type == PROVIDER_VERTEX && !auth_refreshed) {
             p->_auth_token_expiry = 0;  /* force token refresh */
+            auth_refreshed = 1;
+            nash_log("[provider] auth error %ld — refreshing token and retrying",
+                     http_code);
             str_clear(&response);
+            continue;
+        }
+
+        /* Retry any HTTP error with backoff */
+        if (http_code >= 400 && attempt < PROVIDER_MAX_RETRIES) {
+            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
+                     http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+            str_clear(&response);
+            provider_sleep(p, delay);
             continue;
         }
 
@@ -1134,6 +1149,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     };
 
     char *result = NULL;
+    int auth_refreshed = 0;
     for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES; attempt++) {
         str_clear(&st.line_buf);
         str_clear(&st.full_content);
@@ -1186,38 +1202,34 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             }
         }
 
-        /* Handle HTTP errors: 4xx = fatal, 5xx = return NULL immediately.
-         * Don't retry 500s at the provider level — the same request body
-         * produces the same malformed output (near-deterministic with
-         * grammar-constrained generation). Let react.c handle recovery
-         * by stripping context and retrying with a modified prompt. */
+        /* Handle HTTP errors: retry ALL server errors with backoff.
+         * HTTP 401/403 on Vertex AI gets a token refresh first.
+         * After exhausting retries, return NULL for react.c to handle. */
         if (http_code >= 400) {
             nash_log("[provider] HTTP %ld error: %.2000s",
                      http_code,
                      st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
-            if (http_code > 500 && attempt < PROVIDER_MAX_RETRIES) {
-                /* Only retry on transient gateway/overload errors (502/503/504).
-                 * HTTP 500 from llama.cpp is almost always deterministic —
-                 * the same request body produces the same malformed output.
-                 * Retrying wastes up to 550 seconds (10 retries × linear backoff)
-                 * while the user sees a "stuck" process. Let react.c handle
-                 * recovery by reformulating the scratchpad/context. */
+            /* HTTP 401/403: auth failure — invalidate cached token and
+             * retry with a fresh token.  Only applies to Vertex AI
+             * (OAuth2 tokens expire and can be refreshed via gcloud).
+             * Only do this once to avoid infinite refresh loops. */
+            if ((http_code == 401 || http_code == 403) &&
+                p->type == PROVIDER_VERTEX && !auth_refreshed) {
+                p->_auth_token_expiry = 0;  /* force token refresh */
+                auth_refreshed = 1;
+                nash_log("[provider] auth error %ld — refreshing token and retrying",
+                         http_code);
+                continue;
+            }
+            if (attempt < PROVIDER_MAX_RETRIES) {
                 int delay = attempt * PROVIDER_RETRY_BASE_SEC;
-                nash_log("[provider] transient %ld error (attempt %d/%d, "
+                nash_log("[provider] HTTP %ld error (attempt %d/%d, "
                          "retry in %ds)",
                          http_code, attempt, PROVIDER_MAX_RETRIES, delay);
                 provider_sleep(p, delay);
                 continue;
             }
-            /* HTTP 401/403: auth failure — invalidate cached token and
-             * retry once with a fresh token.  Only applies to Vertex AI
-             * (OAuth2 tokens expire and can be refreshed via gcloud). */
-            if ((http_code == 401 || http_code == 403) &&
-                p->type == PROVIDER_VERTEX && attempt == 1) {
-                p->_auth_token_expiry = 0;  /* force token refresh */
-                continue;
-            }
-            /* 4xx, deterministic 500, or final attempt: return NULL */
+            /* All retries exhausted: return NULL */
             /* Populate error diagnostics for react.c journal entry.
              * Thread safety note (FIX #6): last_error/last_error_request/
              * last_error_response are written here (inference thread) and
