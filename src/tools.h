@@ -6,6 +6,7 @@
 #include "store.h"
 #include "journal.h"
 #include "memory.h"
+#include "workspace.h"
 #include "config.h"
 #include "llm.h"
 #include "provider.h"
@@ -63,7 +64,8 @@ typedef struct tool_filter_t {
 typedef struct {
     store_t       *store;
     journal_t     *journal;
-    memory_t      *memory;        /* long-term memory store (.memory/) */
+    memory_t      *memory;        /* long-term memory store (.memory/) — points to active layer */
+    workspace_t   *ws;            /* workspace: two-layer memory (global + workspace) */
     config_t      *cfg;           /* configuration (tool limits, etc.) */
     char          *session_dir;   /* .sessions/<id>/ */
     scratchpad_t   scratch;       /* section-based scratchpad */

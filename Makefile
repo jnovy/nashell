@@ -20,6 +20,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/frontend_tui.c \
           src/ui_state.c src/tui.c src/md_render.c \
           src/memory.c \
+          src/workspace.c \
           src/embedding.c \
           src/embedding_onnx.c \
           src/nash_log.c \
@@ -65,6 +66,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
           src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c \
+          src/workspace.c \
           src/embedding.c src/embedding_onnx.c \
           src/nash_log.c \
           src/yaml_parse.c src/playbook.c \

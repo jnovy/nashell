@@ -22,6 +22,7 @@
 #include "frontend_tui.h"
 #include "nash_limits.h"
 #include "memory.h"
+#include "workspace.h"
 #include "ui_state.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -314,12 +315,14 @@ static void *infer_worker(void *arg) {
 
 static void session_init_tools(tool_ctx_t *tools, store_t *store,
                                journal_t *journal, memory_t *memory,
+                               workspace_t *ws,
                                char *session_dir, config_t *cfg,
                                provider_t *provider) {
     memset(tools, 0, sizeof(*tools));
     tools->store = store;
     tools->journal = journal;
     tools->memory = memory;
+    tools->ws = ws;
     tools->session_dir = session_dir;
     tools->cfg = cfg;
     tools->provider = provider;
@@ -367,12 +370,12 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
 /* Unified cleanup for global resources.
  * Replaces 8+ duplicated cleanup sequences across early-return paths.
  * All _free functions handle NULL safely. */
-static void cleanup_globals(store_t *shared_store, memory_t *memory,
+static void cleanup_globals(store_t *shared_store, workspace_t *ws,
                             provider_t *provider, char *nash_dir,
                             char *props_json, char *server_model,
                             config_t *cfg) {
     store_free(shared_store);
-    memory_free(memory);
+    workspace_free(ws);
     provider_free(provider);
     free(nash_dir);
     free(props_json);
@@ -453,6 +456,11 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--mailbox-timeout") == 0 && i + 1 < argc) {
             mailbox_timeout = atoi(argv[++i]);
             mailbox_mode = 1;
+        } else if (strcmp(argv[i], "--workspace") == 0 && i + 1 < argc) {
+            free(cfg->workspace);
+            cfg->workspace = strdup(argv[++i]);
+        } else if (strcmp(argv[i], "--isolated") == 0) {
+            cfg->workspace_isolated = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -472,6 +480,9 @@ int main(int argc, char **argv) {
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
+            printf("\nWorkspace (memory segregation):\n");
+            printf("  --workspace NAME      Activate a named workspace\n");
+            printf("  --isolated            Fully isolate workspace (no global recall)\n");
             printf("\nMailbox (headless communication):\n");
             printf("  --mailbox             Enable file-based mailbox for user_ask in -p mode\n");
             printf("  --daemon              Watch mailbox inbox for task files (implies --mailbox)\n");
@@ -628,30 +639,49 @@ int main(int argc, char **argv) {
     if (!play_arg)
         print_banner(cfg, props_json, nash_dir, matched_profile_file);
 
-    /* Shared store + memory */
+    /* Shared store + memory (workspace-aware) */
     store_t *shared_store = store_new(nash_dir);
-    memory_t *memory = memory_new(nash_dir);
-    if (server_model)
-        memory->model = strdup(server_model);
-    /* Set recall tuning parameters from config (centralized sync) */
-    memory_set_recall_config(memory, cfg->recall_min_score,
-                             cfg->recall_blend_semantic,
-                             cfg->recall_blend_substring,
-                             cfg->vscore_exponent);
 
-    /* Prune stale memories at startup (90 days, access_count < 2) */
-    int pruned = memory_prune(memory,
-                              cfg->prune_min_score, cfg->prune_min_evidence);
+    /* Create workspace: two-layer memory (global + optional workspace).
+     * If no workspace is configured, workspace_t wraps just the global
+     * memory — backward compatible with single-pool behavior. */
+    int ws_isolated = cfg->workspace_isolated ||
+                      (cfg->workspace_global_recall == 0);
+    workspace_t *ws = workspace_new(nash_dir, cfg->workspace,
+                                    ws_isolated, cfg->workspace_global_weight);
+    /* For backward compatibility, 'memory' points to global layer.
+     * Code that hasn't been migrated to workspace_* yet (e.g., consolidation)
+     * continues to use ctx->memory which points here. */
+    memory_t *memory = ws ? ws->global : NULL;
+    if (server_model && memory)
+        memory->model = strdup(server_model);
+    /* Also set model on workspace memory if it exists */
+    if (server_model && ws && ws->workspace)
+        ws->workspace->model = strdup(server_model);
+
+    if (cfg->workspace && cfg->workspace[0])
+        fprintf(stderr, "[info] workspace: %s%s\n", cfg->workspace,
+                ws_isolated ? " (isolated)" : "");
+
+    /* Set recall tuning parameters from config (centralized sync) */
+    workspace_set_recall_config(ws, cfg->recall_min_score,
+                                cfg->recall_blend_semantic,
+                                cfg->recall_blend_substring,
+                                cfg->vscore_exponent);
+
+    /* Prune stale memories at startup */
+    int pruned = workspace_prune(ws,
+                                 cfg->prune_min_score, cfg->prune_min_evidence);
     if (pruned > 0)
         fprintf(stderr, "[info] pruned %d stale memories\n", pruned);
 
     /* Initialize semantic embeddings for memory matching (if configured) */
     if (cfg->embedding.type && strcmp(cfg->embedding.type, "none") != 0) {
-        memory_init_embeddings(memory, cfg->embedding.type,
-                               cfg->embedding.model, cfg->embedding.api_base,
-                               cfg->embedding.model_path,
-                               cfg->embedding.dimension,
-                               cfg->embedding.max_input_chars);
+        workspace_init_embeddings(ws, cfg->embedding.type,
+                                  cfg->embedding.model, cfg->embedding.api_base,
+                                  cfg->embedding.model_path,
+                                  cfg->embedding.dimension,
+                                  cfg->embedding.max_input_chars);
     }
 
     /* Dream reminder — usage-based memory consolidation reminder.
@@ -695,7 +725,7 @@ int main(int argc, char **argv) {
         query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
         if (!banks || n_banks == 0) {
             fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
-            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -734,7 +764,7 @@ int main(int argc, char **argv) {
 
         regression_free_report(report);
         regression_free_banks(banks, n_banks);
-        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return exit_code;
     }
 
@@ -744,7 +774,7 @@ int main(int argc, char **argv) {
         if (rounds < 0) {
             fprintf(stderr, "[optimize] invalid budget '%s' — use light, medium, heavy, or a number\n",
                     optimize_budget);
-            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -758,7 +788,7 @@ int main(int argc, char **argv) {
         query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
         if (!banks || n_banks == 0) {
             fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
-            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -828,7 +858,7 @@ int main(int argc, char **argv) {
         regression_free_banks(banks, n_banks);
         if (reflection_provider != provider)
             provider_free(reflection_provider);
-        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return 0;
     }
 
@@ -851,7 +881,7 @@ int main(int argc, char **argv) {
         }
         if (!pb) {
             fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
 
@@ -879,7 +909,7 @@ int main(int argc, char **argv) {
                 pb->name, ok ? "completed successfully" : "FAILED");
 
         playbook_free(pb);
-        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return ok ? 0 : 1;
     }
 
@@ -888,7 +918,7 @@ int main(int argc, char **argv) {
         char mbox_dir[NASH_PATH_MAX];
         if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
             fprintf(stderr, "[error] failed to initialize mailbox\n");
-            cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
         fprintf(stderr, "[daemon] nash mailbox daemon started\n");
@@ -919,7 +949,7 @@ int main(int argc, char **argv) {
             journal_t *journal = journal_new_lazy(nash_dir);
             tool_ctx_t tools;
             session_init_tools(&tools, shared_store, journal, memory,
-                               NULL, cfg, provider);
+                               ws, NULL, cfg, provider);
             react_ctx_t react;
             session_init_react(&react, provider, &tools, cfg);
 
@@ -956,7 +986,7 @@ int main(int argc, char **argv) {
         /* FIX #6: Graceful shutdown — cleanup shared resources */
         fprintf(stderr, "[daemon] shutting down...\n");
         web_search_cleanup();
-        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return 0;
     }
 
@@ -990,7 +1020,7 @@ int main(int argc, char **argv) {
         }
         tool_ctx_t tools;
         session_init_tools(&tools, shared_store, journal, memory,
-                           session_dir, cfg, provider);
+                           ws, session_dir, cfg, provider);
         react_ctx_t react;
         session_init_react(&react, provider, &tools, cfg);
 
@@ -1002,7 +1032,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "[error] failed to initialize mailbox\n");
                 session_cleanup(&tools, &react, journal);
                 if (session_dir) free(session_dir);
-                cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+                cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
                 return 1;
             }
             mailbox_ctx_t mbox = {
@@ -1039,7 +1069,7 @@ int main(int argc, char **argv) {
             rmdir(session_dir);
         }
         if (session_dir) free(session_dir);
-        cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return have_result ? 0 : 1;
     }
 
@@ -1075,7 +1105,7 @@ int main(int argc, char **argv) {
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools;
         session_init_tools(&tools, shared_store, journal, memory,
-                           session_dir, cfg, provider);
+                           ws, session_dir, cfg, provider);
         react_ctx_t react;
         session_init_react(&react, provider, &tools, cfg);
 
@@ -1842,7 +1872,9 @@ int main(int argc, char **argv) {
                     memcpy(qbuf, q_start, q_len);
                     qbuf[q_len] = '\0';
 
-                    memory_results_t results = memory_recall(memory, qbuf, 10);
+                    memory_results_t results = ws
+                        ? workspace_recall(ws, qbuf, 10)
+                        : memory_recall(memory, qbuf, 10);
                     if (results.count == 0) {
                         pthread_mutex_lock(&ui->mtx);
                         ui_state_set_status(ui, STATUS_READY,
@@ -2114,6 +2146,6 @@ int main(int argc, char **argv) {
     }
     printf("Bye.\n");
     web_search_cleanup();  /* tear down auto-started SearXNG container */
-    cleanup_globals(shared_store, memory, provider, nash_dir, props_json, server_model, cfg);
+    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
     return 0;
 }

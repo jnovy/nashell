@@ -147,6 +147,13 @@ void config_set_defaults(config_t *cfg) {
     if (!cfg->search_engine) cfg->search_engine = strdup("searxng");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
 
+    /* [workspace] defaults */
+    if (cfg->workspace_global_weight <= 0)
+        cfg->workspace_global_weight = 0.8;
+    /* workspace_global_recall: 0 = not set (calloc), default to 1 (enabled) */
+    if (cfg->workspace_global_recall == 0)
+        cfg->workspace_global_recall = 1;
+
     /* [provider] env var fallbacks for Vertex AI / Anthropic.
      * When provider type is "vertex" or "anthropic" and a config field is
      * unset, fall back to well-known environment variables (same ones used
@@ -332,6 +339,15 @@ config_t *config_load(const char *path) {
         cfg->searxng_url   = toml_str(search, "searxng_url");
     }
 
+    /* [workspace] — memory segregation */
+    toml_table_t *ws_tbl = toml_table_in(root, "workspace");
+    if (ws_tbl) {
+        cfg->workspace = toml_str(ws_tbl, "active");
+        cfg->workspace_global_recall = toml_int(ws_tbl, "global_recall", 0);
+        cfg->workspace_global_weight = toml_dbl(ws_tbl, "global_recall_weight", 0);
+        cfg->workspace_isolated = toml_int(ws_tbl, "isolated", 0);
+    }
+
     /* [thinking] — overrides old [client].thinking if both present */
     toml_table_t *thinking = toml_table_in(root, "thinking");
     if (thinking) {
@@ -387,6 +403,7 @@ void config_free(config_t *cfg) {
     free(cfg->embedding.api_base);
     free(cfg->embedding.model_path);
     free(cfg->data_dir);
+    free(cfg->workspace);
     free(cfg->search_engine);
     free(cfg->searxng_url);
     free(cfg->belief_entropy.anchor_question);

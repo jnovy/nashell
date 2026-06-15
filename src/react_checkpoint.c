@@ -48,8 +48,10 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     /* v5: No manifest injection — scratchpad carries all cross-loop state. */
 
     /* Step 2: Add memory context (fresh) */
-    if (ctx->tools->memory) {
-        char *mem_summary = memory_build_index(ctx->tools->memory);
+    if (ctx->tools->memory || ctx->tools->ws) {
+        char *mem_summary = ctx->tools->ws
+            ? workspace_build_index(ctx->tools->ws)
+            : memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
             size_t mem_msg_sz = strlen(mem_summary) + 512;
             char *mem_msg = malloc(mem_msg_sz);
@@ -64,7 +66,9 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             }
         }
 
-        char *pinned = memory_load_pinned(ctx->tools->memory);
+        char *pinned = ctx->tools->ws
+            ? workspace_load_pinned(ctx->tools->ws)
+            : memory_load_pinned(ctx->tools->memory);
         if (pinned && strlen(pinned) > 0) {
             size_t pin_msg_sz = strlen(pinned) + 64;
             char *pin_msg = malloc(pin_msg_sz);

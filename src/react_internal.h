@@ -7,6 +7,7 @@
 #include "nash_limits.h"
 #include "config.h"
 #include "memory.h"
+#include "workspace.h"
 #include "journal.h"
 #include "store.h"
 #include "nash_log.h"

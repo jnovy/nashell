@@ -395,7 +395,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* FIX 2c: Defer git commits during the react loop to batch them.
      * Every memory_store/pin/unpin/delete during the loop skips individual
      * git commits; a single batch commit happens after react_post_loop. */
-    if (ctx->tools->memory)
+    if (ctx->tools->ws)
+        workspace_git_defer(ctx->tools->ws);
+    else if (ctx->tools->memory)
         memory_git_defer(ctx->tools->memory);
 
     /* Reset alias sequence counter so new aliases start at R<N>S0.
@@ -1678,7 +1680,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          *   error_recall_candidates    — candidates to retrieve (default 3)
          *   error_recall_max_inject    — max entries to inject (default 1)
          *   error_recall_min_relevance — relevance floor for injection (default 0.25) */
-        if (!tr.success && ctx->tools->memory && ctx->flags.inject_memory) {
+        if (!tr.success && (ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory) {
             cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
             const char *err_text = err_j ? err_j->valuestring : NULL;
             int err_min_len = ctx->tools->cfg
@@ -1690,8 +1692,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                          err_text, action_name);
                 int err_candidates = ctx->tools->cfg
                     ? ctx->tools->cfg->error_recall_candidates : 3;
-                memory_results_t err_mem = memory_recall(ctx->tools->memory,
-                                                          err_query, err_candidates);
+                memory_results_t err_mem = ctx->tools->ws
+                    ? workspace_recall(ctx->tools->ws, err_query, err_candidates)
+                    : memory_recall(ctx->tools->memory, err_query, err_candidates);
                 int err_max_inject = ctx->tools->cfg
                     ? ctx->tools->cfg->error_recall_max_inject : 1;
                 double err_min_rel = ctx->tools->cfg
@@ -2144,7 +2147,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     /* FIX 2c: Flush all deferred git commits as a single batch. */
-    if (ctx->tools->memory)
+    if (ctx->tools->ws)
+        workspace_git_flush(ctx->tools->ws, "memory: batch update (react loop)");
+    else if (ctx->tools->memory)
         memory_git_flush(ctx->tools->memory, "memory: batch update (react loop)");
 
     /* Don't free last_query/last_result here — the caller (main.c) manages them.

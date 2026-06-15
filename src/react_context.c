@@ -27,8 +27,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
      * instead of manifest re-injection. */
 
     /* Inject memory summary (counts only — no alphabetical listing) */
-    if (ctx->flags.inject_memory && ctx->tools->memory) {
-        char *mem_summary = memory_build_index(ctx->tools->memory);
+    if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
+        char *mem_summary = ctx->tools->ws
+            ? workspace_build_index(ctx->tools->ws)
+            : memory_build_index(ctx->tools->memory);
         if (mem_summary && strlen(mem_summary) > 0) {
             size_t mem_msg_sz = strlen(mem_summary) + 512;
             char *mem_msg = malloc(mem_msg_sz);
@@ -44,7 +46,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         }
 
         /* Inject pinned memories (always-active knowledge) */
-        char *pinned = memory_load_pinned(ctx->tools->memory);
+        char *pinned = ctx->tools->ws
+            ? workspace_load_pinned(ctx->tools->ws)
+            : memory_load_pinned(ctx->tools->memory);
         if (pinned && strlen(pinned) > 0) {
             size_t pin_msg_sz = strlen(pinned) + 64;
             char *pin_msg = malloc(pin_msg_sz);
@@ -73,7 +77,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             }
             free(sp_text);
         }
-        memory_results_t all_memories = memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
+        memory_results_t all_memories = ctx->tools->ws
+            ? workspace_recall(ctx->tools->ws, str_cstr(&recall_query), max_candidates)
+            : memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
         /* FIX 6a: Helper macro uses a local counter instead of mutating the

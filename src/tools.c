@@ -2092,9 +2092,22 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
-    int rc = memory_store(ctx->memory, key, value, pinned,
+    /* Workspace routing: 'global' parameter forces store to global memory */
+    int force_global = 0;
+    cJSON *glob_j = cJSON_GetObjectItem(params, "global");
+    if (glob_j && cJSON_IsTrue(glob_j)) force_global = 1;
+
+    int rc;
+    if (ctx->ws) {
+        rc = workspace_store(ctx->ws, key, value, pinned,
+                             jref[0] ? jref : NULL,
+                             n_refs > 0 ? refs_arr : NULL, n_refs,
+                             force_global);
+    } else {
+        rc = memory_store(ctx->memory, key, value, pinned,
                           jref[0] ? jref : NULL,
                           n_refs > 0 ? refs_arr : NULL, n_refs);
+    }
     free(refs_copy);
 
     if (rc != 0) return make_error("failed to store memory");
@@ -2103,7 +2116,10 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
      * Self-Harness [arXiv:2606.09498] — harness lineage h₀→h₁→h₂. */
     cJSON *sup_j = cJSON_GetObjectItem(params, "supersedes");
     if (sup_j && sup_j->valuestring && sup_j->valuestring[0]) {
-        memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
+        if (ctx->ws)
+            workspace_set_supersedes(ctx->ws, key, sup_j->valuestring);
+        else
+            memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
     }
 
     /* FIX CRIT1: Defer consolidation to post-task instead of blocking inline.
@@ -2164,7 +2180,9 @@ static tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
                           "Describe what you're looking for.");
 
     const char *query = query_j->valuestring;
-    memory_results_t results = memory_recall(ctx->memory, query, 5);
+    memory_results_t results = ctx->ws
+        ? workspace_recall(ctx->ws, query, 5)
+        : memory_recall(ctx->memory, query, 5);
 
     /* Build result string + track recalled keys for validation scoring */
     str_t out = str_new(1024);
@@ -2205,7 +2223,8 @@ static tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params) {
         return make_error("memory_pin requires a non-empty 'key' string. "
                           "Use memory_list to see available keys.");
 
-    int rc = memory_pin(ctx->memory, key_j->valuestring);
+    int rc = ctx->ws ? workspace_pin(ctx->ws, key_j->valuestring)
+                      : memory_pin(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
 
     cJSON *meta = cJSON_CreateObject();
@@ -2237,7 +2256,8 @@ static tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params) {
     if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
         return make_error("memory_unpin requires a non-empty 'key' string.");
 
-    int rc = memory_unpin(ctx->memory, key_j->valuestring);
+    int rc = ctx->ws ? workspace_unpin(ctx->ws, key_j->valuestring)
+                      : memory_unpin(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
 
     cJSON *meta = cJSON_CreateObject();
@@ -2264,7 +2284,8 @@ static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
     if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
         return make_error("memory_delete requires a non-empty 'key' string.");
 
-    int rc = memory_delete(ctx->memory, key_j->valuestring);
+    int rc = ctx->ws ? workspace_delete(ctx->ws, key_j->valuestring)
+                      : memory_delete(ctx->memory, key_j->valuestring);
     if (rc != 0) return make_error("memory entry not found");
 
     cJSON *meta = cJSON_CreateObject();
@@ -2287,7 +2308,7 @@ static tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
 /* ── memory_list ────────────────────────────────────────── */
 
 static tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
-    if (!ctx->memory)
+    if (!ctx->memory && !ctx->ws)
         return make_error("memory not available");
 
     const char *type_filter = NULL;
@@ -2295,7 +2316,9 @@ static tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
     if (type_j && type_j->valuestring && type_j->valuestring[0])
         type_filter = type_j->valuestring;
 
-    char *listing = memory_build_listing(ctx->memory, type_filter);
+    char *listing = ctx->ws
+        ? workspace_build_listing(ctx->ws, type_filter)
+        : memory_build_listing(ctx->memory, type_filter);
     if (!listing)
         return make_error("no memory entries found");
 

@@ -269,6 +269,14 @@ typedef struct {
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
 
+    /* [workspace] — memory segregation via layered workspaces.
+     * Global memory (~/.nash/memory/) always exists.
+     * Workspace memory (~/.nash/workspaces/<name>/memory/) is optional. */
+    char  *workspace;            /* active workspace name (NULL = global-only mode) */
+    int    workspace_global_recall;  /* also search global memory during recall (default 1) */
+    double workspace_global_weight;  /* score multiplier for global results (default 0.8) */
+    int    workspace_isolated;       /* fully isolated — no global leakage (default 0) */
+
     /* [search] */
     char  *search_engine;        /* "searxng" (default) — kept for config compat */
     char  *searxng_url;
