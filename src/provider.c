@@ -530,6 +530,7 @@ typedef struct {
     int            in_tool_use;       /* currently inside a tool_use block */
     str_t          thinking_content;  /* accumulated thinking text */
     provider_t    *provider;          /* back-pointer for vtable dispatch */
+    str_t          raw_body;           /* raw HTTP response body for error diagnostics */
     /* Wall-clock streaming timing (fallback when server doesn't report t/s) */
     struct timespec first_token_time;   /* timestamp of first content token */
     struct timespec request_start_time; /* timestamp when HTTP request started */
@@ -853,6 +854,10 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 
     if (st->stopped) return 0;  /* abort transfer */
 
+    /* Capture raw HTTP body for error diagnostics (max 8KB) */
+    if (st->raw_body.len < 8192)
+        str_append(&st->raw_body, data, total < 8192 - st->raw_body.len ? total : 8192 - st->raw_body.len);
+
     for (size_t i = 0; i < total; i++) {
         if (data[i] == '\n') {
             const char *line = str_cstr(&st->line_buf);
@@ -1055,6 +1060,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         /* Retry any HTTP error with backoff */
         if (http_code >= 400 && attempt < PROVIDER_MAX_RETRIES) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            nash_log("[provider] HTTP %ld error: %.2000s",
+                     http_code,
+                     response.len > 0 ? str_cstr(&response) : "(empty)");
             nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
                      http_code, attempt, PROVIDER_MAX_RETRIES, delay);
             str_clear(&response);
@@ -1141,6 +1149,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         .last_token_idx   = 0,
         .in_tool_use      = 0,
         .thinking_content = str_new(256),
+        .raw_body         = str_new(1024),
         .provider         = p,
         .first_token_time    = {0, 0},
         .request_start_time  = {0, 0},
@@ -1156,6 +1165,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         str_clear(&st.tool_call_name);
         str_clear(&st.tool_call_args);
         str_clear(&st.thinking_content);
+        str_clear(&st.raw_body);
         free(st.tool_call_id); st.tool_call_id = NULL;
         st.has_tool_call = 0;
         st.in_tool_use = 0;
@@ -1206,9 +1216,14 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
          * HTTP 401/403 on Vertex AI gets a token refresh first.
          * After exhausting retries, return NULL for react.c to handle. */
         if (http_code >= 400) {
+            /* Use raw_body for error diagnostics — full_content stays empty
+             * when the server returns a non-SSE error body (e.g. JSON error
+             * from llama.cpp like "ill-formed UTF-8"). */
+            const char *err_body = st.full_content.len > 0 ? str_cstr(&st.full_content)
+                                 : st.raw_body.len > 0    ? str_cstr(&st.raw_body)
+                                 : "(empty)";
             nash_log("[provider] HTTP %ld error: %.2000s",
-                     http_code,
-                     st.full_content.len > 0 ? str_cstr(&st.full_content) : "(empty)");
+                     http_code, err_body);
             /* HTTP 401/403: auth failure — invalidate cached token and
              * retry with a fresh token.  Only applies to Vertex AI
              * (OAuth2 tokens expire and can be refreshed via gcloud).
@@ -1239,9 +1254,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             free(p->last_error);
             {
                 char ebuf[512];
-                const char *body = st.full_content.len > 0 ?
-                                   str_cstr(&st.full_content) : "(empty)";
-                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, body);
+                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, err_body);
                 p->last_error = strdup(ebuf);
             }
             free(p->last_error_request);
@@ -1250,6 +1263,8 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             free(p->last_error_response);
             p->last_error_response = (st.full_content.len > 0)
                 ? strdup(str_cstr(&st.full_content))
+                : (st.raw_body.len > 0)
+                ? strdup(str_cstr(&st.raw_body))
                 : (st.thinking_content.len > 0)
                 ? strdup(str_cstr(&st.thinking_content)) : NULL;
             goto cleanup;
@@ -1352,6 +1367,7 @@ cleanup:
     str_free(&st.tool_call_name);
     str_free(&st.tool_call_args);
     str_free(&st.thinking_content);
+    str_free(&st.raw_body);
     free(st.tool_call_id);
     return result;
 }
