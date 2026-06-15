@@ -615,15 +615,6 @@ int memory_store(memory_t *m, const char *key, const char *value,
     free(json);
     cJSON_Delete(entry);
 
-    /* Generate embedding for semantic matching (if enabled).
-     * Skip during batch operations (consolidating flag) — embeddings
-     * will be regenerated in bulk via memory_embed_all() after the
-     * batch completes.  This avoids generating throwaway embeddings
-     * for entries that are about to be merged/deleted in the same pass. */
-    if (m->embed && m->embed->available && !m->consolidating) {
-        memory_embed_entry(m, key, value);
-    }
-
     /* P1: Update in-memory index — either update existing entry or add new.
      * Re-reads the just-written JSON to populate the index entry with all
      * fields including the auto-generated description. */
@@ -643,6 +634,15 @@ int memory_store(memory_t *m, const char *key, const char *value,
             }
             cJSON_Delete(fresh);
         }
+    }
+
+    /* Generate embedding for semantic matching (if enabled).
+     * Skip during batch operations (consolidating flag) — embeddings
+     * will be regenerated in bulk via memory_embed_all() after the
+     * batch completes.  This avoids generating throwaway embeddings
+     * for entries that are about to be merged/deleted in the same pass. */
+    if (m->embed && m->embed->available && !m->consolidating) {
+        memory_embed_entry(m, key, value);
     }
 
     /* Git commit: track memory creation/update */
