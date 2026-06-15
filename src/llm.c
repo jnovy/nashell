@@ -126,6 +126,12 @@ void llm_chat_add_typed(llm_chat_t *chat, const char *role,
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
     m->content = strdup(content);
+    if (!m->role || !m->content) {
+        nash_log("[llm] CRITICAL: strdup failed for typed message role=%s", role);
+        free(m->role);
+        free(m->content);
+        return;
+    }
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
@@ -203,6 +209,12 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
     m->content = strdup(content);
+    if (!m->role || !m->content) {
+        nash_log("[llm] CRITICAL: strdup failed for inserted typed message role=%s", role);
+        free(m->role);
+        free(m->content);
+        return;
+    }
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
@@ -223,6 +235,15 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
     m->role = strdup("tool");
     m->content = strdup(content);
     m->tool_call_id = tool_call_id ? strdup(tool_call_id) : NULL;
+    if (!m->role || !m->content) {
+        nash_log("[llm] CRITICAL: strdup failed for tool result");
+        free(m->role);
+        free(m->content);
+        free(m->tool_call_id);
+        return;
+    }
+    m->msg_type = LLM_MSG_TOOL_RESULT;
+    m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
 }
 
@@ -241,6 +262,15 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     m->role = strdup("assistant");
     m->content = content ? strdup(content) : strdup("");
     m->tool_calls_json = tool_calls_json ? strdup(tool_calls_json) : NULL;
+    if (!m->role || !m->content) {
+        nash_log("[llm] CRITICAL: strdup failed for assistant tool call");
+        free(m->role);
+        free(m->content);
+        free(m->tool_calls_json);
+        return;
+    }
+    m->msg_type = LLM_MSG_GENERIC; // Assistant tool calls are generally generic context
+    m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
 }
 
@@ -538,22 +568,25 @@ static float spearman_corr(const float *x, const float *y, int n) {
     float *ry = calloc(n, sizeof(float));
     if (!rx || !ry) { free(rx); free(ry); return 0.0f; }
 
-    /* Rank by sorting indices */
-    int *idx = calloc(n, sizeof(int));
-    for (int i = 0; i < n; i++) idx[i] = i;
+    typedef struct { int idx; float val; } pair_t;
+    pair_t *px = malloc(n * sizeof(pair_t));
+    pair_t *py = malloc(n * sizeof(pair_t));
+    if (!px || !py) { free(rx); free(ry); free(px); free(py); return 0.0f; }
 
-    /* Rank x */
-    for (int i = 0; i < n - 1; i++)
-        for (int j = i + 1; j < n; j++)
-            if (x[idx[i]] > x[idx[j]]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-    for (int i = 0; i < n; i++) rx[idx[i]] = (float)(i + 1);
+    for (int i = 0; i < n; i++) { px[i] = (pair_t){i, x[i]}; py[i] = (pair_t){i, y[i]}; }
 
-    /* Rank y */
-    for (int i = 0; i < n; i++) idx[i] = i;
-    for (int i = 0; i < n - 1; i++)
-        for (int j = i + 1; j < n; j++)
-            if (y[idx[i]] > y[idx[j]]) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-    for (int i = 0; i < n; i++) ry[idx[i]] = (float)(i + 1);
+    int cmp_float(const void *a, const void *b) {
+        float diff = ((pair_t *)a)->val - ((pair_t *)b)->val;
+        return (diff > 0) - (diff < 0);
+    }
+
+    qsort(px, n, sizeof(pair_t), cmp_float);
+    for (int i = 0; i < n; i++) rx[px[i].idx] = (float)(i + 1);
+
+    qsort(py, n, sizeof(pair_t), cmp_float);
+    for (int i = 0; i < n; i++) ry[py[i].idx] = (float)(i + 1);
+
+    free(px); free(py);
 
     /* Pearson correlation on ranks */
     float mx = 0, my = 0;
@@ -567,7 +600,7 @@ static float spearman_corr(const float *x, const float *y, int n) {
         dx += a * a;
         dy += b * b;
     }
-    free(rx); free(ry); free(idx);
+    free(rx); free(ry);
     if (dx == 0 || dy == 0) return 0.0f;
     return num / sqrtf(dx * dy);
 }

@@ -13,10 +13,13 @@
 store_t *store_new(const char *project_root) {
     store_t *s = calloc(1, sizeof(*s));
     if (!s) return NULL;
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/store", project_root);
+    char *path = NULL;
+    if (asprintf(&path, "%s/store", project_root) < 0) {
+        free(s);
+        return NULL;
+    }
     mkdir(path, 0755);  /* ignore EEXIST */
-    s->dir = strdup(path);
+    s->dir = path;
     return s;
 }
 
@@ -39,10 +42,7 @@ char *sha256_hex(const char *data, size_t len) {
 
 char *store_save(store_t *s, const char *content) {
     if (!s || !content) return NULL;
-    /* FIX #12: Reject empty strings — they all hash to the same SHA-256
-     * (e3b0c44...), making it impossible to distinguish which tool produced
-     * which empty result. Return NULL so callers know nothing was stored. */
-    if (!content[0]) return NULL;
+    
     size_t clen = strlen(content);
     char *hex = sha256_hex(content, clen);
     if (!hex) return NULL;
@@ -62,6 +62,10 @@ char *store_save(store_t *s, const char *content) {
             return NULL;
         }
         close(fd);
+    } else if (errno != EEXIST) {
+        /* System error (ENOSPC, EACCES, etc.) - do not return hash */
+        free(hex);
+        return NULL;
     }
 
     return hex;  /* caller gets the hash */
