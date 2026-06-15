@@ -547,6 +547,16 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
             if (pt) st->stats->prompt_tokens = pt->valueint;
             if (ct) st->stats->completion_tokens = ct->valueint;
         }
+        /* llama.cpp includes timings alongside usage in the final chunk */
+        cJSON *timings = cJSON_GetObjectItem(data, "timings");
+        if (timings && st->stats) {
+            cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
+            cJSON *tps = cJSON_GetObjectItem(timings, "predicted_per_second");
+            if (pps && pps->valuedouble > 0)
+                st->stats->prompt_per_second = pps->valuedouble;
+            if (tps && tps->valuedouble > 0)
+                st->stats->predicted_per_second = tps->valuedouble;
+        }
         cJSON_Delete(data);
         return;
     }
@@ -575,6 +585,14 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
             cJSON *args = cJSON_GetObjectItem(fn, "arguments");
             if (args && cJSON_IsString(args))
                 str_append_cstr(&st->tool_call_args, args->valuestring);
+        }
+
+        /* Count tool call chunks for wall-clock t/s timing
+         * (matches Anthropic handler which counts input_json_delta) */
+        st->streaming_token_count++;
+        if (!st->first_token_seen) {
+            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+            st->first_token_seen = 1;
         }
     }
 
@@ -635,6 +653,19 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
         if (ct) st->stats->completion_tokens = ct->valueint;
         if (pps) st->stats->prompt_per_second = pps->valuedouble;
         if (tps) st->stats->predicted_per_second = tps->valuedouble;
+    }
+
+    /* llama.cpp server reports speed in a top-level "timings" object
+     * (separate from "usage") in the final streaming chunk.
+     * Fields: predicted_per_second, prompt_per_second, etc. */
+    cJSON *timings = cJSON_GetObjectItem(data, "timings");
+    if (timings && st->stats) {
+        cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
+        cJSON *tps = cJSON_GetObjectItem(timings, "predicted_per_second");
+        if (pps && pps->valuedouble > 0)
+            st->stats->prompt_per_second = pps->valuedouble;
+        if (tps && tps->valuedouble > 0)
+            st->stats->predicted_per_second = tps->valuedouble;
     }
 
     cJSON_Delete(data);
