@@ -588,7 +588,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     if (ctx->provider && ctx->provider->last_error)
                         srv_err = ctx->provider->last_error;
 
-                    if (consecutive_null_responses >= 2) {
+                    if (consecutive_null_responses >= 3) {
                         if (srv_err) {
                             char emsg[512];
                             snprintf(emsg, sizeof(emsg),
@@ -761,19 +761,38 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 break;
             }
 
-            /* 3-tier retry strategy for HTTP 500 / NULL responses.
-             * Each tier addresses a different root cause:
-             *   Tier 1: Remove last assistant+tool_result pair (model confusion)
-             *   Tier 2: Reformulate scratchpad (context pollution)
-             *   Tier 3: Strip scratchpad entirely (nuclear option)
-             *   Tier 4+: Give up */
-            if (consecutive_null_responses >= 4) {
+            /* 5-tier retry strategy for HTTP 500 / NULL responses.
+             * Tiers 0a/0b: Plain retry with backoff (transient server errors)
+             * Tier 1: Remove last assistant+tool_result pair (model confusion)
+             * Tier 2: Reformulate scratchpad (context pollution)
+             * Tier 3: Strip scratchpad entirely (nuclear option)
+             * Tier 4+: Give up
+             *
+             * FIX: Previously, the first failure immediately removed the last
+             * exchange (destructive). For intermittent server errors (e.g.,
+             * llama.cpp returning sporadic HTTP 500s), this wastes the previous
+             * tool result and forces the agent to re-execute the same tool.
+             * Now we do 2 plain retries with backoff first. */
+            if (consecutive_null_responses >= 6) {
                 ev.message = "LLM server error — all recovery tiers exhausted, giving up";
                 react_emit(on_event, userdata, &ev);
                 break;
             }
 
-            if (consecutive_null_responses == 1) {
+            if (consecutive_null_responses <= 2) {
+                /* Tier 0: Plain retry with backoff — no context modification.
+                 * Most HTTP 500s from local servers (llama.cpp) are transient.
+                 * Retrying without destroying context avoids wasting tool results
+                 * and forcing the agent to re-execute the same operations. */
+                int backoff_ms = consecutive_null_responses * 2000; /* 2s, 4s */
+                char rmsg[128];
+                snprintf(rmsg, sizeof(rmsg),
+                    "LLM server error — plain retry %d/2 (backoff %dms)",
+                    consecutive_null_responses, backoff_ms);
+                ev.message = rmsg;
+                react_emit(on_event, userdata, &ev);
+                usleep(backoff_ms * 1000);
+            } else if (consecutive_null_responses == 3) {
                 /* Tier 1: Remove the last assistant+tool_result pair.
                  * The model's previous output was likely malformed (e.g.,
                  * "shell_execshell_exec"). Removing it gives the model a
@@ -789,7 +808,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     if (remove_from < chat->n_msgs)
                         llm_chat_remove_range(chat, remove_from, chat->n_msgs);
                 }
-            } else if (consecutive_null_responses == 2) {
+            } else if (consecutive_null_responses == 4) {
                 /* Tier 2: Reformulate scratchpad into plain prose.
                  * Code blocks and JSON in the scratchpad can confuse
                  * the model's JSON generation.
@@ -861,7 +880,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.message = "LLM server error — no scratchpad, skipping tier 2";
                     react_emit(on_event, userdata, &ev);
                 }
-            } else if (consecutive_null_responses == 3) {
+            } else if (consecutive_null_responses == 5) {
                 /* Tier 3: Strip scratchpad entirely (nuclear option).
                  * If reformulation didn't help, the scratchpad itself
                  * may be the problem. Remove it completely.
