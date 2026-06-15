@@ -158,6 +158,37 @@ At startup, nash counts memory entries created since the last dream (using `crea
 
 When a tool fails, nash queries memory with the error text to surface relevant lessons. Controlled by `error_recall_*` config parameters.
 
+#### Layered Workspaces — Memory Segregation
+
+Nash supports **workspace-based memory isolation** to prevent cross-contamination between different contexts (work, personal, hobby projects). The architecture uses two layers:
+
+```
+~/.nash/
+├── memory/                     ← GLOBAL layer (shared knowledge)
+│   ├── skill:git-rebase.json
+│   └── lesson:file-edit.json
+└── workspaces/
+    ├── work-acme/
+    │   └── memory/             ← WORKSPACE layer (work-only)
+    └── personal/
+        └── memory/             ← WORKSPACE layer (personal-only)
+```
+
+| Layer | Scope | Recall Behavior |
+|-------|-------|-----------------|
+| **Global** (`~/.nash/memory/`) | Universal skills & lessons | Always searched (unless `--isolated`) |
+| **Workspace** (`~/.nash/workspaces/<name>/memory/`) | Project/context-specific | Only searched when that workspace is active |
+
+**Two `memory_t` instances, not one with filtering.** Each workspace layer has its own index, mutex, git repo, and embedding cache — providing hard filesystem isolation rather than soft prefix-based filtering.
+
+**Recall merging:** Workspace results are scored first. If not isolated, global results are also retrieved and discounted by `global_recall_weight` (default 0.8), then merged and re-sorted by relevance.
+
+**Store routing:** New memories go to the workspace by default. The `memory_store` tool accepts an optional `global` parameter to store directly to the global layer.
+
+**Promotion/demotion:** `memory_promote` moves an entry from workspace → global (for universally useful lessons). `memory_demote` moves from global → current workspace.
+
+**Backward compatible:** With no workspace configured, nash behaves exactly as before — global-only mode with a single memory pool.
+
 ### Scratchpad-Only Architecture (v5)
 
 Nash uses a **scratchpad-only** architecture for cross-loop state management. Each react loop starts with a fresh context containing only:
@@ -327,6 +358,7 @@ Nash provides a full ncurses-based TUI with:
 | `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
 | `/runs show ID` | Display details of a specific playbook run |
 | `/memory_recall QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
+| `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
 | `/?query` | Cross-session scratchpad search (live incremental results) |
 | `/continue` | Resume from checkpoint with the original query |
 | `quit` / `exit` | Exit nash |
@@ -880,6 +912,12 @@ error_recall_min_relevance = 0.25
 [context]
 context_eviction_pct = 70                 # evict when context > 70% full
 
+[workspace]
+# active = "work-acme"                    # current workspace (empty = global-only)
+# global_recall = true                    # also search global memory during recall
+# global_recall_weight = 0.8              # score multiplier for global results
+# isolated = false                        # fully isolated — no global memory access
+
 [search]
 engine = "searxng"                        # SearXNG (auto-started via podman/docker)
 # searxng_url = "http://localhost:8080"   # custom SearXNG instance
@@ -933,6 +971,12 @@ make
 
 # Load a spec overlay and run
 ./nash --load-spec my-tuned-spec.toml -p "fix the bug"
+
+# Named workspace (memories isolated from other workspaces)
+./nash -w work-acme                   # or --workspace work-acme
+
+# Fully isolated workspace (no global memory recall)
+./nash -w personal --isolated
 ```
 
 ### Self-Harness Commands
@@ -967,7 +1011,7 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 ```
 ~/.nash/
 ├── config.toml              # Configuration
-├── memory/                  # Persistent memory (git-backed)
+├── memory/                  # Persistent memory — GLOBAL layer (git-backed)
 │   ├── lesson:*.json        # Lessons learned
 │   ├── strategy:*.json      # Reusable procedures
 │   ├── skill:*.json         # Domain knowledge
@@ -976,6 +1020,11 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 │   ├── anti-pattern:*.json  # What not to do
 │   ├── .last_dream          # Timestamp of last dream consolidation
 │   └── .git/                # Full history
+├── workspaces/              # Per-workspace memory isolation
+│   ├── work-acme/
+│   │   └── memory/          # WORKSPACE layer (work-only, git-backed)
+│   └── personal/
+│       └── memory/          # WORKSPACE layer (personal-only)
 ├── models/                  # Per-model profiles
 │   └── *.toml               # e.g., qwen3.toml, claude.toml
 ├── playbooks/               # Custom playbooks (dream.yaml auto-seeded)
