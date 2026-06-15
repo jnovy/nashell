@@ -91,8 +91,12 @@ typedef struct {
     int            n_deferred_consol;
     int            cap_deferred_consol;
     /* Harness-1 §3.3: Context-level deduplication — CRC32 hashes of recent
-     * tool result content to detect near-duplicate injections. */
+     * tool result content to detect near-duplicate injections.
+     * FIX MED#7: Added dedup_lens as secondary collision guard — CRC32's
+     * 32-bit hash space has high collision rates for structured JSON data.
+     * Requiring both hash AND length match reduces false positives. */
     uint32_t       dedup_hashes[64]; /* rolling buffer of content hashes */
+    uint32_t       dedup_lens[64];   /* content length for each hash (collision guard) */
     int            dedup_steps[64];  /* step number for each hash */
     int            dedup_count;      /* entries in dedup buffer */
     /* Harness-1 §4.2: Tool usage tracking for diversity nudging */

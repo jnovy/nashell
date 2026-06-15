@@ -1920,17 +1920,29 @@ static char *memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     llm_stats_t stats = {0};
     char *response = NULL;
 
-    /* Use a separate provider for consolidation to avoid mutating the
-     * shared provider config (thread-safety + signal-safety).
-     * FIX #11: Shallow struct copy is safe here because provider_create()
-     * calls strdup() on all string fields. If new pointer fields are added
-     * to provider_config_t, provider_create() MUST deep-copy them too. */
+    /* FIX CRIT#2: Deep-copy string fields to prevent dangling pointers if
+     * the original provider is freed/modified concurrently (e.g. model switch
+     * during playbook pass). provider_create() strdup's its input, but the
+     * input itself must be valid at the time of the call.
+     * FIX MED#10: Inherit llm_timeout to prevent indefinite blocking. */
     provider_config_t cons_cfg = ctx->provider->cfg;
+    cons_cfg.model_id    = cons_cfg.model_id    ? strdup(cons_cfg.model_id)    : NULL;
+    cons_cfg.api_base    = cons_cfg.api_base    ? strdup(cons_cfg.api_base)    : NULL;
+    cons_cfg.api_key_env = cons_cfg.api_key_env ? strdup(cons_cfg.api_key_env) : NULL;
+    cons_cfg.project_id  = cons_cfg.project_id  ? strdup(cons_cfg.project_id)  : NULL;
+    cons_cfg.region      = cons_cfg.region      ? strdup(cons_cfg.region)      : NULL;
     cons_cfg.max_tokens = 2048;
     cons_cfg.temperature = 0.1f;
     cons_cfg.enable_thinking = 0;
     cons_cfg.thinking_budget = 0;
+    if (cons_cfg.llm_timeout == 0) cons_cfg.llm_timeout = 120; /* FIX MED#10: default 2min timeout */
     provider_t *cons_provider = provider_create(&cons_cfg);
+    /* Free our temporary strdup'd copies (provider_create strdup's again) */
+    free((void *)cons_cfg.model_id);
+    free((void *)cons_cfg.api_base);
+    free((void *)cons_cfg.api_key_env);
+    free((void *)cons_cfg.project_id);
+    free((void *)cons_cfg.region);
     if (cons_provider) {
         response = provider_complete(cons_provider, chat, &stats);
         provider_free(cons_provider);
@@ -2099,7 +2111,7 @@ static tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
      * adding 5-30s latency on the hot path. Now we queue the key+value pair
      * and process them all in tool_flush_deferred_consolidations() after
      * the react loop completes. */
-    if (!pinned && !ctx->memory->consolidating) {
+    if (!pinned && !atomic_load(&ctx->memory->consolidating)) {
         /* FIX BUG#13: Cap deferred queue at 64 entries to bound memory usage.
          * Oldest entries are dropped if the queue is full — they'll be
          * consolidated on the next session anyway via memory_embed_all. */
@@ -3141,7 +3153,14 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
         }
     }
 
-    ctx->memory->consolidating = 1;  /* prevent recursive consolidation */
+    /* FIX CRIT#1: Use atomic CAS to prevent TOCTOU race — two threads
+     * could both see consolidating==0 and both proceed without CAS. */
+    int expected = 0;
+    if (!atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
+        /* Another thread is already consolidating — skip */
+        tool_free_deferred_consolidations(ctx);
+        return;
+    }
     for (int i = 0; i < ctx->n_deferred_consol; i++) {
         if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
             char *dk = memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
@@ -3156,7 +3175,7 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
             }
         }
     }
-    ctx->memory->consolidating = 0;
+    atomic_store(&ctx->memory->consolidating, 0);
 
     /* Batch delete all keys collected during consolidation */
     if (n_del > 0 && del_keys) {

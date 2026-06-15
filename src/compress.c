@@ -137,9 +137,38 @@ static char **split_sentences(const char *text, int *n_sentences) {
         if (!*p) break;
 
         const char *start = p;
-        /* Find sentence end */
+        /* Find sentence end.
+         * FIX MED#9: Don't treat '.' as sentence boundary when it appears
+         * inside filenames (file.c), version numbers (v2.0), IP addresses
+         * (127.0.0.1), or abbreviations (e.g., i.e.). A '.' is a sentence
+         * boundary only if the char before it is not a digit/slash and the
+         * char after it is whitespace-then-uppercase, end of string, or
+         * a newline. This is critical for a coding agent where tool outputs
+         * contain pervasive dotted identifiers. */
         while (*p) {
-            if (*p == '.' || *p == '!' || *p == '?') {
+            if (*p == '!' || *p == '?') {
+                p++;
+                while (*p == ' ') p++;
+                break;
+            }
+            if (*p == '.') {
+                /* Check if this dot is a real sentence boundary:
+                 * NOT a boundary if preceded by a digit or followed by
+                 * an alphanumeric char (covers filenames, versions, IPs) */
+                int prev_is_alnum = (p > start && (isalnum((unsigned char)*(p-1)) || *(p-1) == '/'));
+                int next_is_alnum = (*(p+1) && isalnum((unsigned char)*(p+1)));
+                if (prev_is_alnum && next_is_alnum) {
+                    /* Dot inside identifier — skip */
+                    p++;
+                    continue;
+                }
+                /* Also skip single-letter abbreviations like e.g. i.e. */
+                if (p > start && isalpha((unsigned char)*(p-1)) &&
+                    p - start >= 1 && (p - 1 == start || !isalpha((unsigned char)*(p-2))) &&
+                    *(p+1) && isalpha((unsigned char)*(p+1))) {
+                    p++;
+                    continue;
+                }
                 p++;
                 /* Skip trailing dots/spaces */
                 while (*p == '.' || *p == ' ') p++;

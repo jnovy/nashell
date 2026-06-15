@@ -277,9 +277,14 @@ static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
 /* Ensure capacity for at least one more entry */
 static void mem_index_grow(mem_index_t *idx) {
     if (idx->count >= idx->cap) {
-        idx->cap = idx->cap ? idx->cap * 2 : 64;
-        idx->entries = realloc(idx->entries,
-                               (size_t)idx->cap * sizeof(mem_index_entry_t));
+        int new_cap = idx->cap ? idx->cap * 2 : 64;
+        /* FIX CRIT#3: Check realloc failure — NULL return would lose all
+         * existing entries (memory leak) and crash on next access. */
+        void *tmp = realloc(idx->entries,
+                            (size_t)new_cap * sizeof(mem_index_entry_t));
+        if (!tmp) return;  /* keep existing allocation, caller will retry */
+        idx->entries = tmp;
+        idx->cap = new_cap;
     }
 }
 
@@ -641,7 +646,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * will be regenerated in bulk via memory_embed_all() after the
      * batch completes.  This avoids generating throwaway embeddings
      * for entries that are about to be merged/deleted in the same pass. */
-    if (m->embed && m->embed->available && !m->consolidating) {
+    if (m->embed && m->embed->available && !atomic_load(&m->consolidating)) {
         memory_embed_entry(m, key, value);
     }
 
@@ -766,10 +771,18 @@ static double score_entry_hybrid(const char *key, const char *value,
 
         /* Blend: semantic + substring using configurable weights.
          * Default: 70% semantic + 30% substring.
-         * Normalize by actual weight sum so result is always in [0, 1]. */
+         * Normalize by actual weight sum so result is always in [0, 1].
+         *
+         * FIX HIGH#5: Exact key match floor — when substring score is high
+         * (≥3.0, indicating exact key match), use the maximum of the blended
+         * score and the pure substring score. This prevents enabling embeddings
+         * from degrading exact-key recall (e.g. memory_recall("lesson:foo")
+         * where key matches perfectly but semantic similarity is low). */
         double w_total = (double)(w_sem + w_sub);
         if (w_total < 0.001) w_total = 1.0;  /* guard against zero weights */
         relevance = (semantic * w_sem + substring * w_sub) / (4.0 * w_total);  /* [0, 1] */
+        double sub_only = substring / 4.0;
+        if (sub_only > relevance) relevance = sub_only;
     } else {
         /* Fallback: pure substring matching (no embeddings available).
          * Normalize to [0, 1] — same range as the embedding path.

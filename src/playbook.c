@@ -486,7 +486,7 @@ void *playbook_worker(void *arg) {
     int suppress_consolidation = (pa->memory && pb->name &&
                                    strcmp(pb->name, "dream") == 0);
     if (suppress_consolidation)
-        pa->memory->consolidating = 1;
+        atomic_store(&pa->memory->consolidating, 1);
 
     /* ── Run log: append-only JSONL tracking orchestration ── */
     char runs_dir[NASH_PATH_MAX];
@@ -673,7 +673,7 @@ void *playbook_worker(void *arg) {
      * were stored without them (memory_embed_all is idempotent — skips
      * entries that already have up-to-date .emb files). */
     if (suppress_consolidation) {
-        pa->memory->consolidating = 0;
+        atomic_store(&pa->memory->consolidating, 0);
         memory_embed_all(pa->memory);
     }
 

@@ -27,13 +27,17 @@ static int react_emergency_evict(llm_chat_t *chat) {
 
     /* Remove oldest evictable messages until we've freed enough.
      * FIX #3: Skip CRITICAL-importance messages (scratchpad re-injections,
-     * eviction breadcrumbs) — these must never be evicted. */
+     * eviction breadcrumbs) — these must never be evicted.
+     * FIX MED#8: Also skip HIGH-importance messages (skills, lessons,
+     * strategies, anti-patterns, pinned, memory index) — these represent
+     * the agent's knowledge base and should survive emergency eviction.
+     * Only evict NORMAL and LOW importance messages (tool results, errors). */
     int removed_chars = 0;
     int removed = 0;
     int i = evict_start;
     while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
-        /* Never evict CRITICAL messages */
-        if (chat->msgs[i].importance == LLM_MSG_IMPORTANCE_CRITICAL) {
+        /* Never evict CRITICAL or HIGH messages */
+        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
             i++;
             continue;
         }
@@ -43,10 +47,10 @@ static int react_emergency_evict(llm_chat_t *chat) {
         removed++;
         /* Don't increment i — removal shifts array down */
     }
-    /* Ensure we evict at least something (skip CRITICAL even here) */
+    /* Ensure we evict at least something (skip CRITICAL+HIGH even here) */
     if (removed == 0) {
         for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
-            if (chat->msgs[j].importance != LLM_MSG_IMPORTANCE_CRITICAL) {
+            if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
                 llm_chat_remove_range(chat, j, j + 1);
                 removed = 1;
                 break;
@@ -770,6 +774,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                             "(attempt %d/6)", n_evict, total_400_errors);
                         ev.message = emsg;
                         react_emit(on_event, userdata, &ev);
+                    } else {
+                        /* FIX HIGH#6: No messages were evictable (all CRITICAL or
+                         * too few remaining). Break instead of retrying — without
+                         * eviction, subsequent attempts will produce the same 400. */
+                        ev.message = "HTTP 400 — no evictable messages remain, giving up";
+                        react_emit(on_event, userdata, &ev);
+                        break;
                     }
                     /* HTTP 400 is a client error (context too large), not a
                      * transient server error. Don't let it poison the HTTP 500
@@ -1484,21 +1495,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Harness-1 §3.3: Context-level deduplication — detect and skip
          * near-duplicate tool results to avoid wasting context budget.
-         * Uses CRC32 hash of the result content. */
+         * FIX MED#7: Check both CRC32 hash AND content length to reduce
+         * false positives from hash collisions on structured JSON data. */
         int is_dedup = 0;
         if (result_msg && result_msg[0] && tr.success) {
-            uint32_t content_hash = compress_crc32(meta_str, strlen(meta_str));
-            if (compress_is_duplicate(content_hash,
-                    ctx->tools->dedup_hashes, ctx->tools->dedup_count)) {
-                is_dedup = 1;
-                /* Replace with a short reference */
-                int dedup_step = -1;
-                for (int di = 0; di < ctx->tools->dedup_count; di++) {
-                    if (ctx->tools->dedup_hashes[di] == content_hash) {
-                        dedup_step = ctx->tools->dedup_steps[di];
-                        break;
-                    }
+            size_t meta_len = strlen(meta_str);
+            uint32_t content_hash = compress_crc32(meta_str, meta_len);
+            uint32_t content_len = (uint32_t)meta_len;
+            /* Check for duplicate: require BOTH hash AND length match */
+            int dedup_step = -1;
+            for (int di = 0; di < ctx->tools->dedup_count; di++) {
+                if (ctx->tools->dedup_hashes[di] == content_hash &&
+                    ctx->tools->dedup_lens[di] == content_len) {
+                    dedup_step = ctx->tools->dedup_steps[di];
+                    is_dedup = 1;
+                    break;
                 }
+            }
+            if (is_dedup) {
+                /* Replace with a short reference */
                 free(result_msg);
                 result_len = 128;
                 result_msg = malloc(result_len);
@@ -1512,18 +1527,27 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         step + 1);
                 tool_imp = LLM_MSG_IMPORTANCE_LOW;  /* deduped results are low priority */
             } else {
-                /* Record hash for future dedup checks */
-                int idx = ctx->tools->dedup_count < 64
-                    ? ctx->tools->dedup_count++ : (ctx->tools->dedup_count - 1);
-                if (idx >= 63) {
-                    /* Shift rolling buffer */
+                /* Record hash + length for future dedup checks.
+                 * FIX HIGH#4: Separate fill vs. full cases to avoid off-by-one.
+                 * Previously, when dedup_count was 63 the post-increment set it
+                 * to 64 AND triggered the memmove, which read uninitialized
+                 * slot 63 into slot 62. Now: fill phase (count<64) just appends,
+                 * full phase (count==64) shifts then writes to slot 63. */
+                int idx;
+                if (ctx->tools->dedup_count < 64) {
+                    idx = ctx->tools->dedup_count++;
+                } else {
+                    /* Rolling buffer full — evict oldest entry */
                     memmove(ctx->tools->dedup_hashes, ctx->tools->dedup_hashes + 1,
+                            63 * sizeof(uint32_t));
+                    memmove(ctx->tools->dedup_lens, ctx->tools->dedup_lens + 1,
                             63 * sizeof(uint32_t));
                     memmove(ctx->tools->dedup_steps, ctx->tools->dedup_steps + 1,
                             63 * sizeof(int));
                     idx = 63;
                 }
                 ctx->tools->dedup_hashes[idx] = content_hash;
+                ctx->tools->dedup_lens[idx] = content_len;
                 ctx->tools->dedup_steps[idx] = step + 1;
             }
         }
