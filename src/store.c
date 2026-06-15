@@ -162,7 +162,8 @@ static void scan_session_refs(const char *sess_dir, const char *store_dir,
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
         char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", sess_dir, de->d_name);
+        if ((size_t)snprintf(path, sizeof(path), "%s/%s", sess_dir, de->d_name) >= sizeof(path))
+            continue;
         char target[NASH_PATH_MAX];
         ssize_t len = readlink(path, target, sizeof(target) - 1);
         if (len <= 0) continue;
@@ -189,8 +190,9 @@ int store_gc(store_t *s, const char *nash_dir) {
         while ((de = readdir(sd))) {
             if (de->d_name[0] == '.') continue;
             char sess_dir[NASH_PATH_MAX];
-            snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
-                     sessions_path, de->d_name);
+            if ((size_t)snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
+                     sessions_path, de->d_name) >= sizeof(sess_dir))
+                continue;
             scan_session_refs(sess_dir, s->dir, &refs);
         }
         closedir(sd);

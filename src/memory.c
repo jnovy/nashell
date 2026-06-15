@@ -81,7 +81,7 @@ static int json_entry_wrapper(const char *dirpath, const char *filename,
     return rc;
 }
 
-static void for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
+static void __attribute__((unused)) for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
     json_entry_ctx_t ctx = { .cb = cb, .user_data = user_data };
     for_each_dir_entry(dirpath, ".json", json_entry_wrapper, &ctx);
 }

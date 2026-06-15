@@ -274,7 +274,8 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
             /* Skip .tmp files (partial writes) */
             if (strstr(de->d_name, ".tmp")) continue;
             char path[NASH_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name);
+            if ((size_t)snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name) >= sizeof(path))
+                continue;
             char *query = read_file(path);
             if (query) {
                 /* Extract task ID from filename: task_{id} */
@@ -334,8 +335,9 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                         strncmp(iev->name, "task_", 5) == 0 &&
                         !strstr(iev->name, ".tmp")) {
                         char path[NASH_PATH_MAX];
-                        snprintf(path, sizeof(path), "%s/%s",
-                                 inbox_dir, iev->name);
+                        if ((size_t)snprintf(path, sizeof(path), "%s/%s",
+                                 inbox_dir, iev->name) >= sizeof(path))
+                            continue;
                         /* Small delay for atomic write */
                         usleep(50000);
                         char *query = read_file(path);
@@ -362,7 +364,8 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                 if (strncmp(de->d_name, "task_", 5) != 0) continue;
                 if (strstr(de->d_name, ".tmp")) continue;
                 char path[NASH_PATH_MAX];
-                snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name);
+                if ((size_t)snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name) >= sizeof(path))
+                    continue;
                 char *query = read_file(path);
                 if (query) {
                     char *tid = strdup(de->d_name + 5);
