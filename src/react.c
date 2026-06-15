@@ -784,6 +784,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  * Most HTTP 500s from local servers (llama.cpp) are transient.
                  * Retrying without destroying context avoids wasting tool results
                  * and forcing the agent to re-execute the same operations. */
+                if (ctx->pause_requested) break;  /* honor TUI pause immediately */
                 int backoff_ms = consecutive_null_responses * 2000; /* 2s, 4s */
                 char rmsg[128];
                 snprintf(rmsg, sizeof(rmsg),
@@ -791,7 +792,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     consecutive_null_responses, backoff_ms);
                 ev.message = rmsg;
                 react_emit(on_event, userdata, &ev);
-                usleep(backoff_ms * 1000);
+                /* Interruptible sleep: check pause_requested every 100ms
+                 * instead of blocking for the full backoff duration. */
+                for (int ms = 0; ms < backoff_ms && !ctx->pause_requested; ms += 100)
+                    usleep(100000);
             } else if (consecutive_null_responses == 3) {
                 /* Tier 1: Remove the last assistant+tool_result pair.
                  * The model's previous output was likely malformed (e.g.,

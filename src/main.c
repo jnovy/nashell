@@ -1261,6 +1261,7 @@ int main(int argc, char **argv) {
                     pending_redirect = submitted_query;
                     submitted_query = NULL;
                     react.pause_requested = 1;
+                    provider->abort_retry = 1;  /* wake provider_sleep early */
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING,
                         "Pausing to handle command…");
@@ -1490,6 +1491,7 @@ int main(int argc, char **argv) {
                         .playbook_ok = 0,
                         .done = 0,
                     };
+                    provider->abort_retry = 0;  /* reset before new inference */
                     pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
                     inferring = 3;
                     tui_render(ui);
@@ -1573,6 +1575,7 @@ int main(int argc, char **argv) {
                         .playbook_ok = 0,
                         .done = 0,
                     };
+                    provider->abort_retry = 0;  /* reset before new inference */
                     pthread_create(&infer_tid, NULL, playbook_worker, &pargs_tui);
                     inferring = 3;
                     tui_render(ui);
@@ -1898,6 +1901,7 @@ int main(int argc, char **argv) {
                     pending_redirect = submitted_query;
                     submitted_query = NULL;  /* ownership transferred */
                     react.pause_requested = 1;
+                    provider->abort_retry = 1;  /* wake provider_sleep early */
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING,
                         "Pausing after current step…");
@@ -2000,6 +2004,7 @@ int main(int argc, char **argv) {
                     .react = &react, .query = final_query,
                     .ui = ui, .result = NULL, .done = 0,
                 };
+                provider->abort_retry = 0;  /* reset before new inference */
                 free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
                 pthread_create(&infer_tid, NULL, infer_worker, &iargs);
                 inferring = 1;
