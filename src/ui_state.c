@@ -1936,6 +1936,13 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui_state_reload_file(ui);
         break;
     }
+
+    /* Every event modifies UI state (status, stream tokens, react MD, etc.)
+     * so mark dirty to ensure tui_render() actually redraws.
+     * Without this, the main loop's `if (ui->dirty) tui_render(ui)` and
+     * the 100ms auto-refresh both skip rendering because dirty stays 0,
+     * causing the TUI to appear completely frozen during and after inference. */
+    ui->dirty = 1;
 }
 
 /* ── Status & data updates ─────────────────────────────── */

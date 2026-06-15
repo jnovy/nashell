@@ -2026,6 +2026,7 @@ int main(int argc, char **argv) {
                     last_refresh = now;
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_reload_file(ui);
+                    ui->dirty = 1;
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
                 }
