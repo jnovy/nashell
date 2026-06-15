@@ -2903,18 +2903,58 @@ static int searxng_start_container(int port) {
     return 0;
 }
 
-/* Ensure SearXNG is running. Starts container if needed.
+/* Check if a running SearXNG instance supports JSON format.
+ * Probes the search endpoint with format=json.
+ * Returns 1 if JSON is supported, 0 if not (e.g. 403 Forbidden). */
+static int searxng_has_json_format(const char *base_url) {
+    char probe_url[512];
+    snprintf(probe_url, sizeof(probe_url),
+             "%s/search?q=test&format=json", base_url);
+    str_t body = str_new(256);
+    long http_code = 0;
+    int rc = http_get_web(probe_url, 5, &body, &http_code);
+    str_free(&body);
+    if (rc != 0) return 0;          /* connection failed */
+    if (http_code == 403) return 0;  /* JSON format disabled */
+    return 1;
+}
+
+/* Kill any existing SearXNG containers (both 'searxng' and 'nash-searxng')
+ * using both podman and docker runtimes. Ignores errors from missing
+ * containers or unavailable runtimes. */
+static void searxng_kill_existing(void) {
+    const char *runtimes[] = {"podman", "docker"};
+    const char *names[] = {"searxng", "nash-searxng"};
+    for (int r = 0; r < 2; r++) {
+        for (int n = 0; n < 2; n++) {
+            run_container_cmd(runtimes[r], "stop", names[n]);
+            run_container_cmd(runtimes[r], "rm", names[n]);
+        }
+    }
+}
+
+/* Ensure SearXNG is running with JSON format support.
+ * If a SearXNG instance is running but lacks JSON format, it is killed
+ * and restarted with the correct configuration.
  * Returns 0 if SearXNG is available, -1 on failure. */
 static int ensure_searxng(const char *searxng_url) {
     char *base = searxng_base_url(searxng_url);
 
     /* First check if it's already running (user-managed or previously started) */
     if (searxng_is_running(base)) {
-        free(base);
-        return 0;
+        /* Verify JSON format is actually supported */
+        if (searxng_has_json_format(base)) {
+            free(base);
+            return 0;  /* Running and JSON works — all good */
+        }
+        /* Running but JSON disabled — kill it and restart with proper config */
+        nash_log("[nash] SearXNG at %s is running but lacks JSON format support "
+                 "— killing and restarting with correct config...", base);
+        searxng_kill_existing();
+        sleep(1);  /* Give the container runtime a moment to clean up */
     }
 
-    /* Not running — auto-start a container */
+    /* Not running (or just killed) — auto-start a container */
     int port = searxng_port_from_url(searxng_url);
     nash_log("[nash] SearXNG not running at %s — starting container on port %d...",
              base, port);
