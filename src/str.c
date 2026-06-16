@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <curl/curl.h>
 #include <dirent.h>
 
@@ -176,6 +177,22 @@ int mkdir_p(const char *path, mode_t mode) {
     }
     if (mkdir(tmp, mode) != 0 && errno != EEXIST) return -1;
     return 0;
+}
+
+/* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/ */
+char *create_session_dir(const char *nash_dir) {
+    struct timespec tp;
+    clock_gettime(CLOCK_REALTIME, &tp);
+
+    char sessions_base[1024];
+    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", nash_dir);
+    mkdir(sessions_base, 0755);
+
+    char path[1088];  /* sessions_base (1024) + "/" + epoch.nanos (~30) */
+    snprintf(path, sizeof(path), "%s/%ld.%05ld",
+             sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+    mkdir(path, 0755);
+    return strdup(path);
 }
 
 char *slurp_file(const char *path, size_t *out_len) {

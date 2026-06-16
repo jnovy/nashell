@@ -44,6 +44,10 @@ struct cJSON *slurp_json(const char *path);
  * Returns 0 on success, -1 on failure. */
 int mkdir_p(const char *path, mode_t mode);
 
+/* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/
+ * Returns strdup'd path. Caller must free. */
+char *create_session_dir(const char *nash_dir);
+
 /* ── HTTP helpers (libcurl) ─────────────────────────────────────────
  * Perform a simple HTTP GET.  Stores response body into *out (str_t).
  * Caller must str_free(*out) on success.

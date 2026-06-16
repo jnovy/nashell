@@ -28,10 +28,6 @@
 #include <regex.h>
 #include <time.h>
 #include <unistd.h>
-
-/* Forward declaration — defined in main.c */
-char *create_session_dir(const char *nash_dir) __attribute__((weak));
-
 /* ── Criterion type parsing ─────────────────────────── */
 
 static criterion_type_t parse_criterion_type(const char *s) {

@@ -20,10 +20,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
-
-/* Forward declaration — defined in main.c.\n * Weak symbol so tests can link without main.o. */
-char *create_session_dir(const char *nash_dir) __attribute__((weak));
-
 /* ── YAML → Playbook parsing ────────────────────────── */
 
 static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t *ro) {
