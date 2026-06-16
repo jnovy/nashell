@@ -104,22 +104,25 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* ── Error Recovery ──────────────────────────────────── */
 
+/* Unified emergency eviction — proportionally removes oldest evictable
+ * messages to reach ~80% of context budget. Returns count evicted. */
+int react_emergency_evict(llm_chat_t *chat);
+
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
  * Returns: 0 = continue (retry), 1 = break (give up).
  * Modifies chat in-place for recovery. */
 int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                                int *consecutive_null, int *total_400,
-                               long http_code, int step,
+                               llm_stats_t *stats, int step,
                                react_event_fn on_event, void *userdata);
 
 /* ── Context Eviction ────────────────────────────────── */
 
 /* Check context usage and evict old messages if over threshold.
- * Includes error message priority eviction, pair-safe boundaries,
- * LLM summarization, scratchpad re-injection, and reactive retrieval. */
+ * Includes importance-aware multi-pass eviction, pair-safe boundaries,
+ * scratchpad re-injection, and breadcrumb generation (LCM-Lite). */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
-                       tool_result_t *tr, cJSON *action,
-                       const char *action_name,
+                       const char *user_query,
                        react_event_fn on_event, void *userdata);
 
 /* ── Post-Loop (Reflection, Promotion, Pruning) ────── */
