@@ -1,5 +1,6 @@
 #include "mailbox.h"
 #include "nash_limits.h"
+#include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,17 +37,9 @@ const char *mailbox_gen_id(void) {
 /* Read entire file contents, strip trailing newline/whitespace.
  * Caller frees. Returns NULL on error or empty file. */
 static char *read_file(const char *path) {
-    FILE *f = fopen(path, "r");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long len = ftell(f);
-    if (len <= 0) { fclose(f); return NULL; }
-    fseek(f, 0, SEEK_SET);
-    char *buf = malloc(len + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, len, f);
-    buf[n] = '\0';
-    fclose(f);
+    size_t n = 0;
+    char *buf = slurp_file(path, &n);
+    if (!buf) return NULL;
     /* Strip trailing whitespace/newlines */
     while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' ||
                      buf[n-1] == ' '  || buf[n-1] == '\t')) {
@@ -56,16 +49,17 @@ static char *read_file(const char *path) {
     return buf;
 }
 
-/* Atomic write: write to .tmp then rename */
+/* Atomic write with trailing newline, delegates to write_file() (str.h). */
 static int write_file_atomic(const char *path, const char *content) {
-    char tmp[NASH_PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE *f = fopen(tmp, "w");
-    if (!f) return -1;
-    fputs(content, f);
-    fputc('\n', f);  /* ensure trailing newline */
-    fclose(f);
-    return rename(tmp, path);
+    size_t clen = strlen(content);
+    char *buf = malloc(clen + 2);
+    if (!buf) return -1;
+    memcpy(buf, content, clen);
+    buf[clen] = '\n';
+    buf[clen + 1] = '\0';
+    int rc = write_file(path, buf, clen + 1);
+    free(buf);
+    return rc;
 }
 
 

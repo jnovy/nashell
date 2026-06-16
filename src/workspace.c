@@ -415,23 +415,11 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     snprintf(src_path, sizeof(src_path), "%s/%s", src->dir, fname);
     snprintf(dst_path, sizeof(dst_path), "%s/%s", dst->dir, fname);
 
-    /* Read source JSON file */
-    FILE *f = fopen(src_path, "r");
-    if (!f) return -1;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *data = malloc(sz + 1);
-    if (!data) { fclose(f); return -1; }
-    fread(data, 1, sz, f);
-    data[sz] = '\0';
-    fclose(f);
-
-    /* Write to destination */
-    f = fopen(dst_path, "w");
-    if (!f) { free(data); return -1; }
-    fwrite(data, 1, sz, f);
-    fclose(f);
+    /* Read source JSON file and write to destination */
+    size_t sz = 0;
+    char *data = slurp_file(src_path, &sz);
+    if (!data) return -1;
+    if (write_file(dst_path, data, sz) != 0) { free(data); return -1; }
     free(data);
 
     /* Copy .emb file if it exists */
@@ -441,24 +429,15 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     snprintf(src_emb, sizeof(src_emb), "%s/%s", src->dir, emb_fname);
     snprintf(dst_emb, sizeof(dst_emb), "%s/%s", dst->dir, emb_fname);
 
-    f = fopen(src_emb, "rb");
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        long esz = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        char *edata = malloc(esz);
-        if (edata) {
-            fread(edata, 1, esz, f);
-            fclose(f);
-            FILE *ef = fopen(dst_emb, "wb");
-            if (ef) {
-                fwrite(edata, 1, esz, ef);
-                fclose(ef);
-            }
-            free(edata);
-        } else {
-            fclose(f);
+    size_t esz = 0;
+    void *edata = slurp_file_binary(src_emb, &esz);
+    if (edata) {
+        FILE *ef = fopen(dst_emb, "wb");
+        if (ef) {
+            fwrite(edata, 1, esz, ef);
+            fclose(ef);
         }
+        free(edata);
     }
 
     /* Delete from source (updates source index + git) */
@@ -474,23 +453,7 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
      * read the value and store through the normal API. */
 
     /* Read the value from the copied JSON */
-    cJSON *entry = NULL;
-    {
-        FILE *jf = fopen(dst_path, "r");
-        if (jf) {
-            fseek(jf, 0, SEEK_END);
-            long jsz = ftell(jf);
-            fseek(jf, 0, SEEK_SET);
-            char *jdata = malloc(jsz + 1);
-            if (jdata) {
-                fread(jdata, 1, jsz, jf);
-                jdata[jsz] = '\0';
-                entry = cJSON_Parse(jdata);
-                free(jdata);
-            }
-            fclose(jf);
-        }
-    }
+    cJSON *entry = slurp_json(dst_path);
 
     if (entry) {
         /* Extract value and pinned from JSON, store via API.

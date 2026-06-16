@@ -68,15 +68,10 @@ static char *read_last_lines(const char *path, int n_lines) {
 
 
 
-/* Write string to file atomically (write to .tmp, rename). */
+/* Write string to file atomically, delegates to write_file() (str.h). */
 static void write_md_file(const char *path, const char *content) {
-    char tmp[NASH_PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-    FILE *f = fopen(tmp, "w");
-    if (!f) return;
-    if (content) fputs(content, f);
-    fclose(f);
-    rename(tmp, path);
+    if (content)
+        write_file(path, content, strlen(content));
 }
 
 /* Extract tool description from journal params (for step display). */

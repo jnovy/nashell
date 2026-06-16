@@ -75,33 +75,6 @@ static const char *mime_from_ext(const char *path) {
     return NULL;
 }
 
-/* ── Read file as binary ─────────────────────────────────────────── */
-
-static unsigned char *slurp_binary(const char *path, size_t *out_len) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    if (sz < 0) { fclose(f); return NULL; }
-    fseek(f, 0, SEEK_SET);
-    unsigned char *buf = malloc((size_t)sz);
-    if (!buf) { fclose(f); return NULL; }
-    size_t n = fread(buf, 1, (size_t)sz, f);
-    fclose(f);
-    if (out_len) *out_len = n;
-    return buf;
-}
-
-/* ── Curl write callback ─────────────────────────────────────────── */
-
-static size_t image_write_cb(char *ptr, size_t size, size_t nmemb,
-                              void *userdata) {
-    str_t *s = (str_t *)userdata;
-    size_t total = size * nmemb;
-    str_append(s, ptr, (int)total);
-    return total;
-}
-
 /* ── Build OpenAI-format multimodal request ──────────────────────── */
 
 static char *build_openai_image_request(provider_t *p, const char *question,
@@ -310,7 +283,7 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
 
     /* Read image as binary */
     size_t img_len = 0;
-    unsigned char *img_data = slurp_binary(path, &img_len);
+    unsigned char *img_data = slurp_file_binary(path, &img_len);
     if (!img_data) {
         char msg[4224];
         snprintf(msg, sizeof(msg), "cannot read '%.4095s': %s",
@@ -374,7 +347,7 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, image_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
     /* Vision requests can be slow — use a generous timeout */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);

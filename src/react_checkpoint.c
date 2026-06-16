@@ -360,9 +360,8 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 void react_checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
                            const char *last_tc_id) {
     if (!ctx->tools->session_dir) return;  /* no session dir (e.g. daemon mode) */
-    char path[NASH_PATH_MAX], tmp_path[NASH_PATH_MAX];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
-    snprintf(tmp_path, sizeof(tmp_path), "%s/checkpoint.tmp", ctx->tools->session_dir);
 
     /* Persist scratchpad to disk alongside checkpoint */
     scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
@@ -376,12 +375,7 @@ void react_checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
         cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
 
     char *json = cJSON_Print(cp);
-    FILE *f = fopen(tmp_path, "w");
-    if (f) {
-        fputs(json, f);
-        fclose(f);
-        rename(tmp_path, path);  /* atomic write */
-    }
+    write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(cp);
 }

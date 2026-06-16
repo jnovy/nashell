@@ -31,6 +31,11 @@ const char *fmt_duration(double seconds, char *buf, size_t sz);
  * If out_len is non-NULL, stores the number of bytes read. */
 char *slurp_file(const char *path, size_t *out_len);
 
+/* Read entire file in binary mode. Returns malloc'd buffer (not NUL-terminated).
+ * If out_len is non-NULL, stores the number of bytes read.
+ * Returns NULL on failure. Caller must free. */
+void *slurp_file_binary(const char *path, size_t *out_len);
+
 /* Write data to a file. Returns 0 on success, -1 on failure. */
 int write_file(const char *path, const char *data, size_t len);
 

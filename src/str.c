@@ -211,6 +211,21 @@ char *slurp_file(const char *path, size_t *out_len) {
     return buf;
 }
 
+void *slurp_file_binary(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    void *buf = malloc((size_t)sz);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (out_len) *out_len = n;
+    return buf;
+}
+
 /* ── Directory iteration ─────────────────────────────────────────── */
 
 void for_each_dir_entry(const char *dirpath, const char *suffix,

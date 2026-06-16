@@ -18,15 +18,31 @@ llm_chat_t *llm_chat_new(void) {
     return c;
 }
 
+/* Free all heap fields of a single message (but not the struct itself). */
+static void llm_msg_free_fields(llm_msg_t *m) {
+    free(m->role);
+    free(m->content);
+    free(m->tool_call_id);
+    free(m->tool_calls_json);
+    free(m->store_alias);
+}
+
+/* Ensure the msgs array has room for at least one more entry.
+ * Returns 0 on success, -1 on allocation failure. */
+static int llm_chat_ensure_capacity(llm_chat_t *chat) {
+    if (chat->n_msgs < chat->cap_msgs) return 0;
+    int new_cap = chat->cap_msgs * 2;
+    llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
+    if (!tmp) return -1;
+    chat->msgs = tmp;
+    chat->cap_msgs = new_cap;
+    return 0;
+}
+
 void llm_chat_free(llm_chat_t *chat) {
     if (!chat) return;
-    for (int i = 0; i < chat->n_msgs; i++) {
-        free(chat->msgs[i].role);
-        free(chat->msgs[i].content);
-        free(chat->msgs[i].tool_call_id);
-        free(chat->msgs[i].tool_calls_json);
-        free(chat->msgs[i].store_alias);
-    }
+    for (int i = 0; i < chat->n_msgs; i++)
+        llm_msg_free_fields(&chat->msgs[i]);
     free(chat->msgs);
     free(chat->last_tool_call_id);
     free(chat->last_tool_calls_json);
@@ -34,16 +50,7 @@ void llm_chat_free(llm_chat_t *chat) {
 }
 
 void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
-    if (chat->n_msgs >= chat->cap_msgs) {
-        int new_cap = chat->cap_msgs * 2;
-        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) {
-            nash_log("[llm] CRITICAL: realloc failed for %d messages — context will be incomplete", new_cap);
-            return;
-        }
-        chat->msgs = tmp;
-        chat->cap_msgs = new_cap;
-    }
+    if (llm_chat_ensure_capacity(chat) != 0) return;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
@@ -67,12 +74,7 @@ int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
     for (int src = 0; src < chat->n_msgs; src++) {
         if (chat->msgs[src].content &&
             strncmp(chat->msgs[src].content, prefix, plen) == 0) {
-            /* Free this message */
-            free(chat->msgs[src].role);
-            free(chat->msgs[src].content);
-            free(chat->msgs[src].tool_call_id);
-            free(chat->msgs[src].tool_calls_json);
-            free(chat->msgs[src].store_alias);
+            llm_msg_free_fields(&chat->msgs[src]);
             removed++;
         } else {
             if (dst != src)
@@ -115,13 +117,7 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
 /* Add a typed message — sets msg_type for structured routing. */
 void llm_chat_add_typed(llm_chat_t *chat, const char *role,
                          const char *content, llm_msg_type_t type) {
-    if (chat->n_msgs >= chat->cap_msgs) {
-        int new_cap = chat->cap_msgs * 2;
-        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) return;  /* FIX BUG#2 */
-        chat->msgs = tmp;
-        chat->cap_msgs = new_cap;
-    }
+    if (llm_chat_ensure_capacity(chat) != 0) return;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
@@ -144,11 +140,7 @@ int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
     int dst = 0;
     for (int src = 0; src < chat->n_msgs; src++) {
         if (chat->msgs[src].msg_type == type) {
-            free(chat->msgs[src].role);
-            free(chat->msgs[src].content);
-            free(chat->msgs[src].tool_call_id);
-            free(chat->msgs[src].tool_calls_json);
-            free(chat->msgs[src].store_alias);
+            llm_msg_free_fields(&chat->msgs[src]);
             removed++;
         } else {
             if (dst != src)
@@ -173,13 +165,8 @@ int llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type) {
 /* Remove a range of messages [start, end). Frees all fields. */
 void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
     if (!chat || start < 0 || end > chat->n_msgs || start >= end) return;
-    for (int i = start; i < end; i++) {
-        free(chat->msgs[i].role);
-        free(chat->msgs[i].content);
-        free(chat->msgs[i].tool_call_id);
-        free(chat->msgs[i].tool_calls_json);
-        free(chat->msgs[i].store_alias);
-    }
+    for (int i = start; i < end; i++)
+        llm_msg_free_fields(&chat->msgs[i]);
     int tail = chat->n_msgs - end;
     if (tail > 0)
         memmove(&chat->msgs[start], &chat->msgs[end],
@@ -193,13 +180,7 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
                             const char *role, const char *content,
                             llm_msg_type_t type) {
     if (!chat || pos < 0 || pos > chat->n_msgs) return;
-    if (chat->n_msgs >= chat->cap_msgs) {
-        int new_cap = chat->cap_msgs * 2;
-        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) return;  /* FIX BUG#2 */
-        chat->msgs = tmp;
-        chat->cap_msgs = new_cap;
-    }
+    if (llm_chat_ensure_capacity(chat) != 0) return;
     /* Shift existing messages to make room */
     int tail = chat->n_msgs - pos;
     if (tail > 0)
@@ -223,13 +204,7 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
 /* Add a tool result message (role: "tool" with tool_call_id) */
 void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
                                const char *content) {
-    if (chat->n_msgs >= chat->cap_msgs) {
-        int new_cap = chat->cap_msgs * 2;
-        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) return;  /* FIX BUG#2 */
-        chat->msgs = tmp;
-        chat->cap_msgs = new_cap;
-    }
+    if (llm_chat_ensure_capacity(chat) != 0) return;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup("tool");
@@ -250,13 +225,7 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
 /* Add an assistant message with tool_calls (for conversation history) */
 void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
                                        const char *tool_calls_json) {
-    if (chat->n_msgs >= chat->cap_msgs) {
-        int new_cap = chat->cap_msgs * 2;
-        llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-        if (!tmp) return;  /* FIX BUG#2 */
-        chat->msgs = tmp;
-        chat->cap_msgs = new_cap;
-    }
+    if (llm_chat_ensure_capacity(chat) != 0) return;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup("assistant");
