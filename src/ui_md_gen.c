@@ -554,6 +554,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         char *desc;
         char *thought;
         char *ref;
+        char *compact_desc;  /* non-NULL = compaction separator, not a normal step */
         int   step;
         int   size;
         int   failed;
@@ -609,6 +610,40 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
          * trail but not in the user-facing reactRX.md display. */
         if (strcmp(tool, "checkpoint_restore") == 0 ||
             strcmp(tool, "spec") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Compaction entries → collect as separator (not a normal step) */
+        if (strcmp(tool, "compaction") == 0) {
+            cJSON *params = cJSON_GetObjectItem(entry, "params");
+            int bm = 0, am = 0, bp = 0, ap = 0;
+            if (params) {
+                cJSON *j;
+                j = cJSON_GetObjectItem(params, "before_msgs");
+                if (j) bm = (int)j->valuedouble;
+                j = cJSON_GetObjectItem(params, "after_msgs");
+                if (j) am = (int)j->valuedouble;
+                j = cJSON_GetObjectItem(params, "before_pct");
+                if (j) bp = (int)j->valuedouble;
+                j = cJSON_GetObjectItem(params, "after_pct");
+                if (j) ap = (int)j->valuedouble;
+            }
+            if (nsteps >= scap) {
+                scap = scap ? scap * 2 : 32;
+                steps = realloc(steps, (size_t)scap * sizeof(step_info_t));
+            }
+            step_info_t *si = &steps[nsteps++];
+            memset(si, 0, sizeof(*si));
+            si->tool = strdup(tool);
+            si->step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
+            cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
+            si->ts = (ts_j && ts_j->valuestring) ? atof(ts_j->valuestring) : 0;
+            char cdesc[128];
+            snprintf(cdesc, sizeof(cdesc),
+                "\xe2\x9c\x82 context compacted: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%%",
+                bm, am, bp, ap);
+            si->compact_desc = strdup(cdesc);
             cJSON_Delete(entry);
             continue;
         }
@@ -700,6 +735,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     for (int i = 0; i < nsteps; i++) {
         step_info_t *si = &steps[i];
         int is_last = (i == nsteps - 1);
+
+        /* Compaction separator — render as visual divider, not a step */
+        if (si->compact_desc) {
+            str_append_cstr(&md, "---\n");
+            str_append_cstr(&md, si->compact_desc);
+            str_append_cstr(&md, "\n---\n");
+            continue;
+        }
 
         /* Compute elapsed time from previous step */
         double elapsed = 0;
@@ -1059,6 +1102,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         free(steps[i].desc);
         free(steps[i].thought);
         free(steps[i].ref);
+        free(steps[i].compact_desc);
     }
     free(steps);
     free(query_text);

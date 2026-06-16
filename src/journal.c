@@ -195,6 +195,11 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     int count = 0;
     int current_loop = -1;
     int evicted_count = 0;  /* count of evicted steps in target_loop */
+    int evicted_compact_step = -1;  /* step of last compaction in evicted range */
+    int evicted_compact_before_msgs = 0;
+    int evicted_compact_after_msgs = 0;
+    int evicted_compact_before_pct = 0;
+    int evicted_compact_after_pct = 0;
 
     while (fgets(line, sizeof(line), f) && count < max_steps) {
         cJSON *entry = cJSON_Parse(line);
@@ -211,9 +216,17 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         if (loop != current_loop) {
             /* Flush evicted count from previous loop */
             if (evicted_count > 0) {
-                str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
-                            evicted_count);
+                if (evicted_compact_step >= 0)
+                    str_appendf(&out,
+                        "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
+                        evicted_count, evicted_compact_step,
+                        evicted_compact_before_msgs, evicted_compact_after_msgs,
+                        evicted_compact_before_pct, evicted_compact_after_pct);
+                else
+                    str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
+                                evicted_count);
                 evicted_count = 0;
+                evicted_compact_step = -1;
             }
             current_loop = loop;
             if (loop > 0) str_append_cstr(&out, "\n");
@@ -242,7 +255,37 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         /* FIX D8: For steps in the target loop that are below min_step,
          * just count them — they were evicted from context */
         if (loop == target_loop && step > 0 && step < min_step) {
+            /* Track compaction events within evicted range for richer summary */
+            if (tool && strcmp(tool, "compaction") == 0 && params) {
+                evicted_compact_step = step;
+                cJSON *bm = cJSON_GetObjectItem(params, "before_msgs");
+                cJSON *am = cJSON_GetObjectItem(params, "after_msgs");
+                cJSON *bp = cJSON_GetObjectItem(params, "before_pct");
+                cJSON *ap = cJSON_GetObjectItem(params, "after_pct");
+                if (bm) evicted_compact_before_msgs = (int)bm->valuedouble;
+                if (am) evicted_compact_after_msgs = (int)am->valuedouble;
+                if (bp) evicted_compact_before_pct = (int)bp->valuedouble;
+                if (ap) evicted_compact_after_pct = (int)ap->valuedouble;
+            }
             evicted_count++;
+            cJSON_Delete(entry);
+            count++;
+            continue;
+        }
+
+        /* Render compaction entries as a compact separator line */
+        if (tool && strcmp(tool, "compaction") == 0 && params) {
+            cJSON *bm = cJSON_GetObjectItem(params, "before_msgs");
+            cJSON *am = cJSON_GetObjectItem(params, "after_msgs");
+            cJSON *bp = cJSON_GetObjectItem(params, "before_pct");
+            cJSON *ap = cJSON_GetObjectItem(params, "after_pct");
+            str_appendf(&out,
+                "    \xe2\x9c\x82 context compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%%\n",
+                step,
+                bm ? (int)bm->valuedouble : 0,
+                am ? (int)am->valuedouble : 0,
+                bp ? (int)bp->valuedouble : 0,
+                ap ? (int)ap->valuedouble : 0);
             cJSON_Delete(entry);
             count++;
             continue;
@@ -310,8 +353,15 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
 
     /* Flush final evicted count */
     if (evicted_count > 0) {
-        str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
-                    evicted_count);
+        if (evicted_compact_step >= 0)
+            str_appendf(&out,
+                "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
+                evicted_count, evicted_compact_step,
+                evicted_compact_before_msgs, evicted_compact_after_msgs,
+                evicted_compact_before_pct, evicted_compact_after_pct);
+        else
+            str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
+                        evicted_count);
     }
 
     fclose(f);

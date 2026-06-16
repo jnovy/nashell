@@ -36,6 +36,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     if (usage_pct <= eviction_pct || chat->n_msgs <= keep_head + keep_tail + 1)
         return;
 
+    /* Capture pre-compaction state for journal logging */
+    int before_msgs = chat->n_msgs;
+    int before_pct = usage_pct;
+
     int did_evict = 0;
 
     /* ── Pass 1: Strip LOW importance messages (errors, stale hints, deduped)
@@ -314,5 +318,24 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             }
             free(evict_mark);
         } /* end evict_mark block */
+    }
+
+    /* Log compaction event to journal if anything changed */
+    if (did_evict && ctx->tools->journal) {
+        int after_msgs = chat->n_msgs;
+        int after_chars = 0;
+        for (int i = 0; i < chat->n_msgs; i++)
+            if (chat->msgs[i].content)
+                after_chars += (int)strlen(chat->msgs[i].content);
+        int after_pct = (int)(100.0 * after_chars / context_budget);
+
+        cJSON *params = cJSON_CreateObject();
+        cJSON_AddNumberToObject(params, "before_msgs", before_msgs);
+        cJSON_AddNumberToObject(params, "after_msgs", after_msgs);
+        cJSON_AddNumberToObject(params, "before_pct", before_pct);
+        cJSON_AddNumberToObject(params, "after_pct", after_pct);
+        journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                       step, "compaction", params, NULL, 0, 0, NULL, NULL);
+        cJSON_Delete(params);
     }
 }
