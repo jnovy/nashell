@@ -236,9 +236,58 @@ int ensure_searxng(const char *searxng_url) {
     return 0;
 }
 
-/* Perform a search using SearXNG JSON API. */
-char *searxng_search(const char *searxng_url, const char *query,
-                     int *out_count, long timeout) {
+/* Check if all engines in a SearXNG response are unresponsive (timeouts).
+ * Returns the number of unresponsive engines, 0 if none. */
+static int searxng_count_unresponsive(cJSON *root) {
+    cJSON *unresponsive = cJSON_GetObjectItem(root, "unresponsive_engines");
+    if (!unresponsive || !cJSON_IsArray(unresponsive)) return 0;
+    return cJSON_GetArraySize(unresponsive);
+}
+
+/* Log unresponsive engines for diagnostics. */
+static void searxng_log_unresponsive(cJSON *root) {
+    cJSON *unresponsive = cJSON_GetObjectItem(root, "unresponsive_engines");
+    if (!unresponsive || !cJSON_IsArray(unresponsive)) return;
+    int n = cJSON_GetArraySize(unresponsive);
+    for (int i = 0; i < n; i++) {
+        cJSON *pair = cJSON_GetArrayItem(unresponsive, i);
+        if (!pair || !cJSON_IsArray(pair) || cJSON_GetArraySize(pair) < 2)
+            continue;
+        cJSON *engine = cJSON_GetArrayItem(pair, 0);
+        cJSON *reason = cJSON_GetArrayItem(pair, 1);
+        nash_log("[nash] SearXNG engine '%s': %s",
+                 engine && engine->valuestring ? engine->valuestring : "?",
+                 reason && reason->valuestring ? reason->valuestring : "?");
+    }
+}
+
+/* Restart the SearXNG container. Returns 0 on success. */
+static int searxng_restart_container(const char *searxng_url) {
+    nash_log("[nash] All SearXNG engines unresponsive — restarting container...");
+
+    /* Kill existing containers */
+    searxng_kill_existing();
+    sleep(1);
+
+    /* Start a fresh one */
+    int port = searxng_port_from_url(searxng_url);
+    if (searxng_start_container(port) != 0) {
+        nash_log("[nash] Failed to restart SearXNG container");
+        return -1;
+    }
+    nash_log("[nash] SearXNG container restarted successfully");
+    return 0;
+}
+
+/* Internal: perform a single SearXNG query and parse results.
+ * Returns formatted text (caller frees) or NULL.
+ * Sets *out_count to number of results found.
+ * Sets *all_unresponsive to 1 if results are empty AND all engines timed out. */
+static char *searxng_search_once(const char *searxng_url, const char *query,
+                                  int *out_count, long timeout,
+                                  int *all_unresponsive) {
+    *all_unresponsive = 0;
+
     CURL *enc = curl_easy_init();
     if (!enc) return NULL;
     char *encoded_q = curl_easy_escape(enc, query, 0);
@@ -271,6 +320,12 @@ char *searxng_search(const char *searxng_url, const char *query,
 
     cJSON *results_arr = cJSON_GetObjectItem(root, "results");
     if (!results_arr || !cJSON_IsArray(results_arr)) {
+        /* Check unresponsive before bailing */
+        int n_unresponsive = searxng_count_unresponsive(root);
+        if (n_unresponsive > 0) {
+            searxng_log_unresponsive(root);
+            *all_unresponsive = 1;
+        }
         cJSON_Delete(root);
         return NULL;
     }
@@ -303,6 +358,15 @@ char *searxng_search(const char *searxng_url, const char *query,
         }
     }
 
+    /* If no results, check if all engines are down */
+    if (count == 0) {
+        int n_unresponsive = searxng_count_unresponsive(root);
+        if (n_unresponsive > 0) {
+            searxng_log_unresponsive(root);
+            *all_unresponsive = 1;
+        }
+    }
+
     cJSON_Delete(root);
     *out_count = count;
 
@@ -312,6 +376,44 @@ char *searxng_search(const char *searxng_url, const char *query,
     }
 
     return str_steal(&results);
+}
+
+/* Perform a search using SearXNG JSON API.
+ * If all engines are unresponsive (e.g. container networking broken),
+ * automatically restarts the container and retries once.
+ * Returns a formatted results string (caller frees), or NULL on failure.
+ * *out_count receives the number of results. */
+char *searxng_search(const char *searxng_url, const char *query,
+                     int *out_count, long timeout) {
+    int all_unresponsive = 0;
+    char *result = searxng_search_once(searxng_url, query, out_count, timeout,
+                                        &all_unresponsive);
+
+    /* If we got results, great — return them */
+    if (result) return result;
+
+    /* If engines are unresponsive, restart container and retry once */
+    if (all_unresponsive) {
+        nash_log("[nash] web_search: 0 results because all SearXNG engines "
+                 "timed out — auto-recovering...");
+
+        if (searxng_restart_container(searxng_url) == 0) {
+            /* Retry the search after restart */
+            int retry_unresponsive = 0;
+            result = searxng_search_once(searxng_url, query, out_count, timeout,
+                                          &retry_unresponsive);
+            if (result) {
+                nash_log("[nash] web_search: retry after container restart "
+                         "succeeded (%d results)", *out_count);
+                return result;
+            }
+            nash_log("[nash] web_search: retry after container restart "
+                     "still returned 0 results%s",
+                     retry_unresponsive ? " (engines still unresponsive)" : "");
+        }
+    }
+
+    return NULL;
 }
 
 /* Tear down auto-started SearXNG container. Called on nash exit. */
