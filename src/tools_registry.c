@@ -91,6 +91,13 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Use to browse available memories when memory_recall semantic search is too narrow.",
      "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, anti-pattern, other. Omit for all.\"}}}"},
 
+    {"image_analyze",
+     "Analyze an image file using the LLM's vision capabilities. "
+     "Reads the image, base64-encodes it, and sends it to the provider "
+     "for multimodal analysis. Returns a textual description/analysis. "
+     "Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
+     "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},\"question\":{\"type\":\"string\",\"description\":\"What to analyze or ask about the image (default: describe in detail)\"}},\"required\":[\"path\"]}"},
+
     {NULL, NULL, NULL}  /* sentinel */
 };
 

@@ -1057,17 +1057,28 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             continue;
         }
 
-        /* Retry any HTTP error with backoff */
-        if (http_code >= 400 && attempt < PROVIDER_MAX_RETRIES) {
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+        /* Retry retryable HTTP errors with backoff.
+         * 429 (rate limit) and 5xx (server errors) are transient.
+         * 4xx (except 401/403 handled above, and 429) are client errors
+         * that won't self-fix — retrying wastes time and delays error
+         * reporting (e.g., HTTP 400 from malformed JSON). */
+        if (http_code >= 400) {
             nash_log("[provider] HTTP %ld error: %.2000s",
                      http_code,
                      response.len > 0 ? str_cstr(&response) : "(empty)");
-            nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
-                     http_code, attempt, PROVIDER_MAX_RETRIES, delay);
-            str_clear(&response);
-            provider_sleep(p, delay);
-            continue;
+            int retryable = (http_code == 429 || http_code >= 500);
+            if (retryable && attempt < PROVIDER_MAX_RETRIES) {
+                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+                nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
+                         http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+                str_clear(&response);
+                provider_sleep(p, delay);
+                continue;
+            }
+            /* Non-retryable 4xx or retries exhausted — fail immediately */
+            str_free(&response);
+            free(req_body); free(endpoint);
+            return NULL;
         }
 
         resp = cJSON_Parse(response.data);
@@ -1236,7 +1247,8 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                          http_code);
                 continue;
             }
-            if (attempt < PROVIDER_MAX_RETRIES) {
+            int retryable = (http_code == 429 || http_code >= 500);
+            if (retryable && attempt < PROVIDER_MAX_RETRIES) {
                 int delay = attempt * PROVIDER_RETRY_BASE_SEC;
                 nash_log("[provider] HTTP %ld error (attempt %d/%d, "
                          "retry in %ds)",
@@ -1244,7 +1256,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 provider_sleep(p, delay);
                 continue;
             }
-            /* All retries exhausted: return NULL */
+            /* Non-retryable 4xx or retries exhausted: return NULL */
             /* Populate error diagnostics for react.c journal entry.
              * Thread safety note (FIX #6): last_error/last_error_request/
              * last_error_response are written here (inference thread) and

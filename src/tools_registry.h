@@ -22,7 +22,7 @@ extern const tool_def_t TOOL_REGISTRY[];
 /* FIX #14: Changed from extern const int to #define so it can be used in
  * _Static_assert at compile time. Previously the magic number 18 had to
  * be duplicated in tools.c's assertion. */
-#define TOOL_REGISTRY_COUNT 18
+#define TOOL_REGISTRY_COUNT 19
 
 /* Build a comma-separated list of all tool names from the registry.
  * Caller must free() the returned string. */

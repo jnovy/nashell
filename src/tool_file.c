@@ -45,6 +45,26 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error(msg);
     }
 
+    /* Detect binary files: check for null bytes in the first 8KB.
+     * Binary data (images, executables, etc.) cannot be meaningfully
+     * displayed as text and will corrupt JSON payloads when sent to
+     * the LLM provider, causing HTTP 400 errors. */
+    {
+        size_t check_len = len < 8192 ? len : 8192;
+        for (size_t i = 0; i < check_len; i++) {
+            if (content[i] == '\0') {
+                free(content);
+                free(resolved);  /* free heap-allocated alias resolution */
+                char msg[4224];
+                snprintf(msg, sizeof(msg),
+                    "'%.4060s' appears to be a binary file (not text). "
+                    "file_read only supports text files. For images, "
+                    "use image_analyze instead.", path);
+                return tools_make_error(msg);
+            }
+        }
+    }
+
     int total_lines = count_lines(content);
 
     /* Line range support: start_line and end_line parameters.

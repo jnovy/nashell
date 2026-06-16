@@ -37,6 +37,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/tool_notes.c \
           src/tool_memory.c \
           src/tool_web.c \
+          src/tool_image.c \
           src/mailbox.c \
           src/compress.c \
           src/html_extract.c \
@@ -90,6 +91,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/tool_notes.c \
           src/tool_memory.c \
           src/tool_web.c \
+          src/tool_image.c \
           src/mailbox.c \
           src/compress.c \
           src/html_extract.c \
