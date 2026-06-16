@@ -1324,8 +1324,14 @@ int main(int argc, char **argv) {
             /* Always render if dirty */
             if (ui->dirty) tui_render(ui);
 
-            /* Small sleep to avoid busy-waiting when no input */
-            /* Auto-refresh MD every 100ms during inference */
+            /* ── Deferred regeneration ─────────────────────────────
+             * The inference thread's event handler sets needs_*_regen
+             * flags instead of doing expensive file I/O under the mutex.
+             * We perform the generation here on the main thread, keeping
+             * mutex hold time bounded to short in-memory operations.
+             *
+             * Throttled to 100ms intervals to avoid redundant work when
+             * multiple events fire in rapid succession. */
             if (inferring) {
                 static struct timespec last_refresh = {0, 0};
                 struct timespec now;
@@ -1334,9 +1340,34 @@ int main(int argc, char **argv) {
                                 + (now.tv_nsec - last_refresh.tv_nsec) / 1000000;
                 if (elapsed_ms >= 100) {
                     last_refresh = now;
+                    /* Snapshot and clear the deferred flags under mutex.
+                     * The file I/O (generate + reload) is done here on the
+                     * main thread.  The key fix is that the INFERENCE thread's
+                     * event handler no longer does expensive I/O under the
+                     * mutex — it just sets these flags.  So even though we
+                     * hold the mutex during generation, the inference thread
+                     * is only blocked for its fast in-memory flag/state updates,
+                     * not the other way around (which caused the TUI freeze). */
                     pthread_mutex_lock(&ui->mtx);
-                    ui_state_reload_file(ui);
-                    ui->dirty = 1;
+                    int do_react   = ui->needs_react_regen;
+                    int do_session = ui->needs_session_regen;
+                    int do_reload  = ui->needs_file_reload;
+                    int cur_loop   = ui->current_react_loop;
+                    ui->needs_react_regen  = 0;
+                    ui->needs_session_regen = 0;
+                    ui->needs_file_reload  = 0;
+
+                    if (do_react)
+                        ui_state_generate_react_md(ui, cur_loop);
+                    if (do_session)
+                        ui_state_generate_session_md(ui);
+                    if (do_react || do_session || do_reload) {
+                        ui_state_reload_file(ui);
+                        /* Request deferred auto-scroll */
+                        if (ui->doc && !ui->user_scrolled)
+                            ui->needs_auto_scroll = 1;
+                        ui->dirty = 1;
+                    }
                     pthread_mutex_unlock(&ui->mtx);
                     tui_render(ui);
                 }

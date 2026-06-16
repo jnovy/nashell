@@ -130,6 +130,14 @@ typedef struct {
     int            search_active;     /* 1 = search results shown in main pane */
     char          *nash_dir;          /* ~/.nash (for finding sessions) */
 
+    /* ── Deferred regeneration flags ── */
+    /* Set by the inference thread's event handler (under mtx) to request
+     * expensive file I/O without holding the mutex during the actual I/O.
+     * The main loop checks these flags and performs the regeneration. */
+    int            needs_react_regen;   /* 1 = regenerate reactRX.md */
+    int            needs_session_regen; /* 1 = regenerate session.md */
+    int            needs_file_reload;   /* 1 = reload current_filepath */
+
     /* ── Dirty flag + mutex ── */
     int            dirty;
     pthread_mutex_t mtx;

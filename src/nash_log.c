@@ -99,10 +99,13 @@ void nash_log(const char *fmt, ...) {
         cJSON_Delete(params);
     }
 
-    /* 3. Trigger TUI refresh so error is visible immediately */
+    /* 3. Trigger TUI refresh so error is visible immediately.
+     * Use deferred flag instead of calling generate_react_md() here
+     * to avoid holding ui->mtx during expensive file I/O. */
     if (lui) {
         pthread_mutex_lock(&lui->mtx);
-        ui_state_generate_react_md(lui, lui->current_react_loop);
+        lui->needs_react_regen = 1;
+        lui->needs_file_reload = 1;
         lui->dirty = 1;
         pthread_mutex_unlock(&lui->mtx);
     }

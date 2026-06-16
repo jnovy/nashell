@@ -20,18 +20,6 @@ static int viewing_react_file(ui_state_t *ui, int react_loop) {
     return strcmp(base, expected) == 0;
 }
 
-/* Auto-scroll: request deferred scroll to bottom.
- * The actual scroll computation is done in render_main() (tui.c) AFTER
- * md_render() has set doc->total_lines and link render_lines.
- * Before this fix, scroll_y was computed here with stale data (total_lines=0,
- * render_line=-1) because md_parse doesn't call md_render. */
-static void auto_scroll_bottom(ui_state_t *ui) {
-    if (!ui->doc) return;
-    if (ui->user_scrolled) return;          /* user took control */
-    ui->needs_auto_scroll = 1;
-    ui->dirty = 1;
-}
-
 /* ── React event handler ─────────────────────────────────── */
 
 void ui_state_on_event(const react_event_t *ev, void *userdata) {
@@ -124,8 +112,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
 
-        /* Regenerate react MD and reload if viewing it */
-        ui_state_generate_react_md(ui, ui->current_react_loop);
+        /* Defer react MD + session MD regeneration to the main loop.
+         * Previously these expensive file I/O operations ran here under
+         * ui->mtx, causing mutex starvation that froze the TUI. */
+        ui->needs_react_regen = 1;
 
         /* Reset cumulative stats and user_scrolled on first step of a
          * new react loop (or after checkpoint restore changed the loop)
@@ -170,14 +160,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->focus = FOCUS_JOURNAL;
         }
 
-        if (viewing_react_file(ui, ui->current_react_loop)) {
-            ui_state_reload_file(ui);
-            auto_scroll_bottom(ui);
-        }
-        /* Update session.md preview */
-        ui_state_generate_session_md(ui);
-        if (viewing_session(ui))
-            ui_state_reload_file(ui);
+        /* Defer session.md update too */
+        ui->needs_session_regen = 1;
+        ui->needs_file_reload = 1;
         break;
     }
 
@@ -193,36 +178,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
 
-            /* Throttle: time-based (200ms) instead of byte-based.
-             *
-             * FIX: The previous byte-based throttle (every 64 bytes) called
-             * ui_state_generate_react_md() which re-reads and re-parses the
-             * entire journal.jsonl on every invocation — O(N) where N is the
-             * number of journal entries.  Late in the react loop (50+ steps),
-             * this held ui->mtx for tens of milliseconds per call, starving
-             * the main thread (which needs the mutex for tui_input/tui_render)
-             * and making the TUI unresponsive to keyboard input.
-             *
-             * Time-based throttle ensures the expensive I/O happens at most
-             * 5x/sec, giving the main thread ample mutex access between
-             * updates.  Streaming still looks smooth because the token buffer
-             * (ui->stream_tokens) is updated on every callback — only the
-             * file regeneration + MD parse is throttled. */
-            {
-                static struct timespec last_md_update = {0, 0};
-                struct timespec now;
-                clock_gettime(CLOCK_MONOTONIC, &now);
-                long elapsed_ms = (now.tv_sec - last_md_update.tv_sec) * 1000
-                                + (now.tv_nsec - last_md_update.tv_nsec) / 1000000;
-                if (elapsed_ms >= 200 || last_md_update.tv_sec == 0) {
-                    last_md_update = now;
-                    ui_state_generate_react_md(ui, ui->current_react_loop);
-                    if (viewing_react_file(ui, ui->current_react_loop)) {
-                        ui_state_reload_file(ui);
-                        auto_scroll_bottom(ui);
-                    }
-                }
-            }
+            /* Defer react MD regeneration to the main loop.
+             * The token buffer (ui->stream_tokens) is updated above on
+             * every callback — only the expensive file generation is
+             * deferred, keeping mutex hold time minimal. */
+            ui->needs_react_regen = 1;
+            ui->needs_file_reload = 1;
         }
         break;
 
@@ -253,14 +214,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
 
-        ui_state_generate_react_md(ui, ui->current_react_loop);
-        ui_state_generate_session_md(ui);
-        if (viewing_react_file(ui, ui->current_react_loop)) {
-            ui_state_reload_file(ui);
-            auto_scroll_bottom(ui);
-        } else if (viewing_session(ui)) {
-            ui_state_reload_file(ui);
-        }
+        /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_session_regen = 1;
+        ui->needs_file_reload = 1;
         break;
 
     case REACT_EVENT_DONE:
@@ -292,14 +249,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * auto-scroll shows the completed result. */
         ui->user_scrolled = 0;
 
-        ui_state_generate_react_md(ui, ui->current_react_loop);
-        ui_state_generate_session_md(ui);
-        if (viewing_react_file(ui, ui->current_react_loop)) {
-            ui_state_reload_file(ui);
-            auto_scroll_bottom(ui);
-        } else if (viewing_session(ui)) {
-            ui_state_reload_file(ui);
-        }
+        /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_session_regen = 1;
+        ui->needs_file_reload = 1;
         break;
 
     case REACT_EVENT_USER_ASK:
@@ -310,18 +263,16 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         free(ui->user_ask_question);
         ui->user_ask_question = (ev->message && ev->message[0])
             ? strdup(ev->message) : strdup("(no question specified)");
-        ui_state_generate_react_md(ui, ui->current_react_loop);
-        if (viewing_react_file(ui, ui->current_react_loop)) {
-            ui_state_reload_file(ui);
-            auto_scroll_bottom(ui);
-        }
+        /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_file_reload = 1;
         break;
 
     case REACT_EVENT_ERROR:
     case REACT_EVENT_WARNING:
-        ui_state_generate_react_md(ui, ui->current_react_loop);
-        if (viewing_react_file(ui, ui->current_react_loop))
-            ui_state_reload_file(ui);
+        /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_file_reload = 1;
         break;
     }
 
