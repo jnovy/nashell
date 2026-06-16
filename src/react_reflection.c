@@ -167,7 +167,14 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
     /* FIX D2: Skip reflection when max_reflection_steps == 0 */
     int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
-    if (ctx->flags.enable_reflection && ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0) {
+    int refl_gate = ctx->tools->cfg ? ctx->tools->cfg->reflection_gate : 0;
+    /* reflection_gate: 0=user_ask (only after user_ask), 1=always, 2=never.
+     * When gated on user_ask, reflection only fires if the model had to ask
+     * the user for help — indicating genuine learning opportunity. Tasks
+     * solved autonomously don't warrant persistent memory storage. */
+    int gate_ok = (refl_gate == 1) ||                   /* always */
+                  (refl_gate == 0 && ctx->user_ask_used); /* user_ask gate */
+    if (ctx->flags.enable_reflection && ctx->tools->step > 2 && ctx->tools->memory && max_refl > 0 && gate_ok) {
         llm_chat_t *reflect = llm_chat_new();
         if (task_succeeded) {
             llm_chat_add(reflect, "system",
@@ -441,7 +448,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
      * Heuristic: sections with priority <= 1 and content > 200 chars
      * are promoted to fact:<section-name> memories. Deduplication via
      * embedding similarity prevents redundant storage. */
-    if (ctx->tools->scratch.count > 0 && ctx->tools->memory && task_succeeded) {
+    if (ctx->tools->scratch.count > 0 && ctx->tools->memory && task_succeeded && gate_ok) {
         for (int si = 0; si < ctx->tools->scratch.count; si++) {
             scratchpad_section_t *sec = &ctx->tools->scratch.sections[si];
             if (!sec->name || !sec->content) continue;

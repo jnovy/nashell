@@ -189,6 +189,9 @@ typedef struct {
     int    max_antipatterns_per_query; /* max anti-patterns loaded per query */
     int    context_eviction_pct; /* context usage % that triggers eviction */
     int    max_reflection_steps; /* max steps in post-task reflection */
+    int    reflection_gate;      /* 0 = user_ask (only reflect after user_ask),
+                                  * 1 = always (reflect after every task),
+                                  * 2 = never (disable reflection) */
     int    file_read_max_inline; /* max chars for file_read content inline */
 
     /* Self-Harness tunable surfaces (P3) — exposed for automated harness evolution.

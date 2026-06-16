@@ -76,6 +76,7 @@ typedef struct {
     char         *user_ask_answer;    /* [MAIN, guarded by user_ask_mutex] */
     pthread_mutex_t user_ask_mutex;   /* protects user_ask handoff */
     pthread_cond_t  user_ask_cond;    /* signaled when answer is ready */
+    int             user_ask_used;    /* [INFER] 1 if user_ask was called this loop */
 
     /* pause_wait: when the react loop is paused and waiting for user input.
      * The inference thread sets pause_waiting=1, emits REACT_EVENT_WARNING,

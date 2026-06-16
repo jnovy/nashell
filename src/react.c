@@ -327,6 +327,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_event_fn on_event, void *userdata) {
     llm_chat_t *chat = llm_chat_new();
 
+    /* Reset per-loop state */
+    ctx->user_ask_used = 0;
+
     /* FIX #4: Initialize mutable runtime state from provider config.
      * These values may be modified during the loop without violating
      * the provider's INIT-ONLY contract. */
@@ -748,6 +751,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(ctx->user_ask_answer);
             ctx->user_ask_answer = NULL;
             ctx->user_ask_pending = 1;
+            ctx->user_ask_used = 1;
 
             /* Emit event so TUI shows the question */
             react_event_t ev = {0};

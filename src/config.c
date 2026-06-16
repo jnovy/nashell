@@ -85,6 +85,10 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->error_recall_max_inject <= 0)    cfg->error_recall_max_inject = 1;
     if (cfg->error_recall_min_relevance <= 0) cfg->error_recall_min_relevance = 0.25;
     if (cfg->dream_reminder_threshold <= 0)   cfg->dream_reminder_threshold = 50;
+    /* reflection_gate: default to user_ask (0) — only reflect when the model
+     * needed to ask the user, indicating genuine learning opportunity.
+     * -1 = not set (sentinel), 0 = user_ask, 1 = always, 2 = never */
+    if (cfg->reflection_gate < 0)             cfg->reflection_gate = 0;
 
     /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
     if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.7f;
@@ -300,6 +304,14 @@ config_t *config_load(const char *path) {
         cfg->max_antipatterns_per_query = toml_int(limits, "max_antipatterns_per_query", -1);
         cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
         cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", -1);
+        { char *rg = toml_str(limits, "reflection_gate");
+          if (rg) {
+              if (strcmp(rg, "always") == 0) cfg->reflection_gate = 1;
+              else if (strcmp(rg, "never") == 0) cfg->reflection_gate = 2;
+              else cfg->reflection_gate = 0;  /* "user_ask" or unrecognized */
+              free(rg);
+          }
+        }
         cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
         cfg->prune_min_score    = toml_dbl(limits, "prune_min_score", 0);
         cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
@@ -797,6 +809,9 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "[react]\n");
     fprintf(out, "max_react_steps = %d\n", cfg->max_react_steps);
     fprintf(out, "max_reflection_steps = %d\n", cfg->max_reflection_steps);
+    fprintf(out, "reflection_gate = \"%s\"\n",
+            cfg->reflection_gate == 2 ? "never" :
+            cfg->reflection_gate == 1 ? "always" : "user_ask");
     fprintf(out, "tool_retry_limit = %d\n", cfg->tool_retry_limit);
     fprintf(out, "cycling_detection = %s\n", cfg->cycling_detection ? "true" : "false");
     fprintf(out, "inject_memory = %s\n",
@@ -1043,6 +1058,14 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v > 0) cfg->max_react_steps = v;
         v = toml_int(react, "max_reflection_steps", 0);
         if (v > 0) cfg->max_reflection_steps = v;
+        { char *rg = toml_str(react, "reflection_gate");
+          if (rg) {
+              if (strcmp(rg, "always") == 0) cfg->reflection_gate = 1;
+              else if (strcmp(rg, "never") == 0) cfg->reflection_gate = 2;
+              else cfg->reflection_gate = 0;
+              free(rg);
+          }
+        }
         v = toml_int(react, "tool_retry_limit", 0);
         if (v > 0) cfg->tool_retry_limit = v;
         { toml_datum_t td = toml_bool_in(react, "cycling_detection");
@@ -1339,6 +1362,8 @@ int config_write_default(const char *path) {
         "max_strategies_per_query = 1 # max strategy memories loaded per query\n"
         "max_antipatterns_per_query = 1 # max anti-pattern memories loaded per query\n"
         "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
+        "reflection_gate = \"user_ask\"  # when to reflect: \"user_ask\" (only after asking user),\n"
+        "                              #   \"always\" (after every task), \"never\" (disable)\n"
         "prune_min_score = 0.35       # Bayesian validation score below which memories are prunable\n"
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
