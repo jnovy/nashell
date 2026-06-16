@@ -31,7 +31,7 @@ static void consolidation_carry_scores(memory_t *m,
     char fname[512];
     key_to_path(survivor_key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    snprintf(path, sizeof(path), "%s/%s", memory_dir(m), fname);
 
     cJSON *entry = slurp_json(path);
     if (!entry) return;
@@ -68,7 +68,7 @@ static void consolidation_carry_scores(memory_t *m,
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                    const char *new_value) {
     if (!ctx->provider || !ctx->memory) return NULL;
-    if (!ctx->memory->embed || !ctx->memory->embed->available) return NULL;
+    if (!memory_has_embeddings(ctx->memory)) return NULL;
 
     /* Load the multi-vec embedding for the new entry (just stored by
      * memory_embed_entry, which already produced chunked embeddings). */
@@ -76,7 +76,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     key_to_path(new_key, "", new_emb_fname, sizeof(new_emb_fname));
     char new_emb_path[NASH_PATH_MAX];
     snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
-             ctx->memory->dir, new_emb_fname);
+             memory_dir(ctx->memory), new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return NULL;
 
@@ -103,7 +103,10 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     float best_sim = 0.0f;
 
     memory_t *m = ctx->memory;
-    for (int i = 0; i < m->idx.count; i++) {
+    int mcount = memory_count(m);
+    for (int i = 0; i < mcount; i++) {
+        /* Note: still accesses idx directly for iteration — memory_iterate()
+         * can't be used here because we need mutable access to loaded_emb. */
         mem_index_entry_t *e = &m->idx.entries[i];
 
         /* Skip self — the entry we just stored */
@@ -312,7 +315,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         key_to_path(new_key, ".json", new_fname, sizeof(new_fname));
         char new_json_path[NASH_PATH_MAX];
         snprintf(new_json_path, sizeof(new_json_path), "%s/%s",
-                 ctx->memory->dir, new_fname);
+                 memory_dir(ctx->memory), new_fname);
 
         const char *new_jref = NULL;
         cJSON *new_entry_json = slurp_json(new_json_path);

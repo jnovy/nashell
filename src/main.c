@@ -537,10 +537,10 @@ int main(int argc, char **argv) {
 
         if (stat(dream_ts_path, &dream_st) != 0) {
             /* No .last_dream file — never dreamed, count all entries */
-            dream_new_count = memory->idx.count;
+            dream_new_count = memory_count(memory);
         } else {
             double last_dream_epoch = (double)dream_st.st_mtime;
-            for (int i = 0; i < memory->idx.count; i++) {
+            for (int i = 0; i < memory_count(memory); i++) {
                 if (memory->idx.entries[i].created_at > last_dream_epoch)
                     dream_new_count++;
             }

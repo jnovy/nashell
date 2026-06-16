@@ -282,4 +282,30 @@ int memory_embed_all(memory_t *m);
 void memory_git_defer(memory_t *m);
 void memory_git_flush(memory_t *m, const char *msg);
 
+/* ── Encapsulation accessors ──────────────────────────────────── */
+/* These replace direct access to m->idx, m->dir, m->embed from
+ * external modules (main.c, tool_memory.c, playbook.c, react_reflection.c). */
+
+/* Number of entries in memory store */
+int memory_count(memory_t *m);
+
+/* Directory path for the memory store */
+const char *memory_dir(memory_t *m);
+
+/* Whether semantic embeddings are available */
+int memory_has_embeddings(memory_t *m);
+
+/* Get the embedding context (for modules that need direct embed API access) */
+embed_ctx_t *memory_embed_ctx(memory_t *m);
+
+/* Iterate all index entries. Callback receives (entry_ptr, user_data).
+ * Return 0 to continue, non-zero to stop.
+ * Caller MUST NOT modify the index during iteration. */
+typedef int (*memory_iter_cb)(const mem_index_entry_t *entry, void *user_data);
+int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data);
+
+/* Find an index entry by key (read-only). Returns NULL if not found.
+ * The returned pointer is owned by the memory module — do NOT free. */
+const mem_index_entry_t *memory_find(memory_t *m, const char *key);
+
 #endif

@@ -11,9 +11,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <strings.h>  /* strcasestr */
-#include <unistd.h>   /* unlink, fork, execvp, dup2, chdir, _exit */
-#include <sys/wait.h> /* waitpid */
-#include <fcntl.h>    /* open, O_WRONLY */
+#include <unistd.h>   /* unlink */
 #include <math.h>     /* log */
 
 /* ── helpers ─────────────────────────────────────────── */
@@ -43,121 +41,8 @@ static double epoch_now(void) {
     return (double)tp.tv_sec + (double)tp.tv_nsec / 1e9;
 }
 
-/* ── directory traversal helpers ────────────────────────── */
-
-/* Callback-based directory iteration over .json entries.
- * Callback receives the parsed cJSON entry and user_data.
- * Return values:
- *   0  = continue iterating, helper deletes entry
- *  -1  = continue iterating, caller took ownership of entry (don't delete)
- *  >0  = stop iterating, helper deletes entry
- * This enables callers like memory_recall to cache high-scoring entries. */
-typedef int (*json_entry_cb)(const char *dirpath, cJSON *entry, void *user_data);
-
-#define JSON_CB_CONTINUE    0
-#define JSON_CB_KEEP_ENTRY -1
-
-/* ── Directory iteration wrappers (use for_each_dir_entry from str.h) ── */
-
-/* Context struct for json_entry_wrapper — avoids casting function pointers
- * through void* (which is technically undefined behavior in ISO C). */
-typedef struct {
-    json_entry_cb cb;
-    void *user_data;
-} json_entry_ctx_t;
-
-/* Wrapper to adapt json_entry_cb to dir_entry_cb signature. */
-static int json_entry_wrapper(const char *dirpath, const char *filename,
-                              const char *fullpath, void *user_data) {
-    (void)filename;
-    json_entry_ctx_t *ctx = (json_entry_ctx_t *)user_data;
-
-    cJSON *entry = slurp_json(fullpath);
-    if (!entry) return 0;
-
-    int rc = ctx->cb(dirpath, entry, ctx->user_data);
-    if (rc != JSON_CB_KEEP_ENTRY)
-        cJSON_Delete(entry);
-    return rc;
-}
-
-static void __attribute__((unused)) for_each_json_entry(const char *dirpath, json_entry_cb cb, void *user_data) {
-    json_entry_ctx_t ctx = { .cb = cb, .user_data = user_data };
-    for_each_dir_entry(dirpath, ".json", json_entry_wrapper, &ctx);
-}
-
-/* ── git version control for memory store ──────────────────────── */
-
-/* Run a git command in the memory directory. Returns 0 on success. */
-static int memory_git_run(memory_t *m, const char *const argv[]) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        /* Child: chdir to memory dir, suppress output */
-        if (chdir(m->dir) != 0) _exit(1);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
-        execvp(argv[0], (char *const *)argv);
-        _exit(127);
-    }
-    int status;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
-
-/* Initialize git repo in .memory/ if not already initialized.
- * Called on first memory_store — lazy init. */
-static void memory_git_init(memory_t *m) {
-    if (!m) return;
-    char git_path[NASH_PATH_MAX];
-    snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
-    struct stat st;
-    if (stat(git_path, &st) == 0) return;  /* already initialized */
-
-    const char *init_argv[] = {"git", "init", "-q", NULL};
-    if (memory_git_run(m, init_argv) != 0) return;
-
-    /* Configure user for commits (required by git) */
-    const char *name_argv[] = {"git", "config", "user.name", "nash", NULL};
-    memory_git_run(m, name_argv);
-    const char *email_argv[] = {"git", "config", "user.email", "nash@localhost", NULL};
-    memory_git_run(m, email_argv);
-
-    /* Initial commit with any existing files */
-    const char *add_argv[] = {"git", "add", "-A", NULL};
-    memory_git_run(m, add_argv);
-    const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty",
-                                  "-m", "memory: initialize memory store", NULL};
-    memory_git_run(m, commit_argv);
-}
-
-/* Stage all changes and commit with a descriptive message.
- * Appends "Stored-by: <model>" signoff when model is known.
- * No-op if nothing changed (git commit will exit 1, which we ignore). */
-static void memory_git_commit(memory_t *m, const char *msg) {
-    if (!m || !msg) return;
-    /* In deferred mode, skip individual commits — they'll be batched. */
-    if (m->git_deferred) { m->git_deferred_count++; return; }
-    char git_path[NASH_PATH_MAX];
-    snprintf(git_path, sizeof(git_path), "%s/.git", m->dir);
-    struct stat st;
-    if (stat(git_path, &st) != 0) return;  /* no git repo */
-
-    const char *add_argv[] = {"git", "add", "-A", NULL};
-    memory_git_run(m, add_argv);
-
-    /* Append model signoff if available (like /dream's Consolidated-by:) */
-    char full_msg[1024];
-    if (m->model) {
-        snprintf(full_msg, sizeof(full_msg), "%s\n\nStored-by: %s", msg, m->model);
-    } else {
-        snprintf(full_msg, sizeof(full_msg), "%s", msg);
-    }
-
-    const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty-message",
-                                  "-m", full_msg, NULL};
-    memory_git_run(m, commit_argv);
-}
+/* ── git version control (extracted to mem_git.c) ──────────────── */
+#include "mem_git.h"
 
 /* ── P6: description generation ────────────────────────── */
 
@@ -1039,10 +924,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 
         for (int j = 0; j < n_scored; j++) {
             const char *k = m->idx.entries[scored[j].idx_pos].key;
-            unsigned h = 2166136261u;
-            for (const char *p = k; *p; p++)
-                h = (h ^ (unsigned char)*p) * 16777619u;
-            int slot = (int)(h & (unsigned)map_mask);
+            int slot = (int)(mem_fnv1a(k) & (unsigned)map_mask);
             while (ref_map[slot].key)
                 slot = (slot + 1) & map_mask;
             ref_map[slot].key = k;
@@ -1054,10 +936,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
             mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
             for (int ri = 0; ri < ie->n_refs; ri++) {
                 if (!ie->refs[ri]) continue;
-                unsigned h = 2166136261u;
-                for (const char *p = ie->refs[ri]; *p; p++)
-                    h = (h ^ (unsigned char)*p) * 16777619u;
-                int slot = (int)(h & (unsigned)map_mask);
+                int slot = (int)(mem_fnv1a(ie->refs[ri]) & (unsigned)map_mask);
                 while (ref_map[slot].key) {
                     if (strcmp(ref_map[slot].key, ie->refs[ri]) == 0) {
                         if (ref_map[slot].idx != i) {
@@ -1150,6 +1029,39 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
 }
 
 
+/* ── Type categorization (shared table) ───────────────────────── */
+
+/* Types table used by build_index, build_listing, and "other" detection.
+ * Centralizes the prefix→label mapping in one place. */
+typedef struct {
+    const char *prefix;
+    size_t      prefix_len;
+    const char *label;       /* lowercase for compact index */
+    const char *heading;     /* capitalized for listing headings */
+} mem_type_info_t;
+
+static const mem_type_info_t mem_types[] = {
+    { "lesson:",       7,  "lessons",       "Lessons" },
+    { "strategy:",     9,  "strategies",    "Strategies" },
+    { "skill:",        6,  "skills",        "Skills" },
+    { "fact:",         5,  "facts",         "Facts" },
+    { "task:",         5,  "tasks",         "Tasks" },
+    { "anti-pattern:", 13, "anti-patterns", "Anti-Patterns" },
+    { NULL, 0, NULL, NULL }
+};
+
+#define MEM_N_TYPES 6  /* number of known types (excluding sentinel) */
+
+/* Return the type index for a key (0..MEM_N_TYPES-1), or -1 for "other" */
+static int mem_key_type(const char *key) {
+    if (!key) return -1;
+    for (int t = 0; mem_types[t].prefix; t++) {
+        if (strncmp(key, mem_types[t].prefix, mem_types[t].prefix_len) == 0)
+            return t;
+    }
+    return -1;
+}
+
 /* ── build_index (P2: progressive disclosure) ─────────────────────── */
 
 /* P2: Progressive disclosure index — structured listing with key + description.
@@ -1172,32 +1084,27 @@ char *memory_build_index(memory_t *m) {
     if (!m || m->idx.count == 0) return NULL;
     pthread_mutex_lock(&m->mtx);
 
-    /* Count by type */
-    int n_lessons = 0, n_strategies = 0, n_facts = 0;
-    int n_tasks = 0, n_skills = 0, n_antipatterns = 0, n_other = 0;
+    /* Count by type using shared table */
+    int counts[MEM_N_TYPES + 1] = {0};  /* last slot = "other" */
     for (int i = 0; i < m->idx.count; i++) {
-        const char *k = m->idx.entries[i].key;
-        if (!k) continue;
-        if (strncmp(k, "lesson:", 7) == 0) n_lessons++;
-        else if (strncmp(k, "strategy:", 9) == 0) n_strategies++;
-        else if (strncmp(k, "fact:", 5) == 0) n_facts++;
-        else if (strncmp(k, "task:", 5) == 0) n_tasks++;
-        else if (strncmp(k, "skill:", 6) == 0) n_skills++;
-        else if (strncmp(k, "anti-pattern:", 13) == 0) n_antipatterns++;
-        else n_other++;
+        int t = mem_key_type(m->idx.entries[i].key);
+        counts[t >= 0 ? t : MEM_N_TYPES]++;
     }
 
     /* Compact summary — ~30 tokens instead of ~14K for full listing */
     str_t result = str_new(256);
     str_appendf(&result, "Memory: %d entries", m->idx.count);
     const char *sep = " (";
-    if (n_lessons)      { str_appendf(&result, "%s%d lessons", sep, n_lessons); sep = ", "; }
-    if (n_strategies)   { str_appendf(&result, "%s%d strategies", sep, n_strategies); sep = ", "; }
-    if (n_skills)       { str_appendf(&result, "%s%d skills", sep, n_skills); sep = ", "; }
-    if (n_facts)        { str_appendf(&result, "%s%d facts", sep, n_facts); sep = ", "; }
-    if (n_tasks)        { str_appendf(&result, "%s%d tasks", sep, n_tasks); sep = ", "; }
-    if (n_antipatterns) { str_appendf(&result, "%s%d anti-patterns", sep, n_antipatterns); sep = ", "; }
-    if (n_other)        { str_appendf(&result, "%s%d other", sep, n_other); sep = ", "; }
+    for (int t = 0; t < MEM_N_TYPES; t++) {
+        if (counts[t]) {
+            str_appendf(&result, "%s%d %s", sep, counts[t], mem_types[t].label);
+            sep = ", ";
+        }
+    }
+    if (counts[MEM_N_TYPES]) {
+        str_appendf(&result, "%s%d other", sep, counts[MEM_N_TYPES]);
+        sep = ", ";
+    }
     if (sep[0] == ',') str_append_cstr(&result, ")");  /* close paren if we emitted any */
 
     pthread_mutex_unlock(&m->mtx);
@@ -1210,42 +1117,28 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
     if (!m || m->idx.count == 0) return NULL;
     pthread_mutex_lock(&m->mtx);
 
-    static const struct { const char *prefix; const char *label; } types[] = {
-        { "lesson:",        "Lessons" },
-        { "strategy:",      "Strategies" },
-        { "skill:",         "Skills" },
-        { "fact:",          "Facts" },
-        { "task:",          "Tasks" },
-        { "anti-pattern:",  "Anti-Patterns" },
-        { NULL, NULL }
-    };
-
     str_t result = str_new(4096);
 
-    for (int t = 0; types[t].prefix; t++) {
-        size_t plen = strlen(types[t].prefix);
-
+    for (int t = 0; mem_types[t].prefix; t++) {
         /* If type_filter is set, skip non-matching groups */
         if (type_filter && type_filter[0]) {
-            /* Match filter against label (case-insensitive first char) or prefix */
-            if (strncasecmp(type_filter, types[t].label, strlen(type_filter)) != 0 &&
-                strncmp(type_filter, types[t].prefix, strlen(type_filter)) != 0)
+            /* Match filter against heading (case-insensitive) or prefix */
+            if (strncasecmp(type_filter, mem_types[t].heading, strlen(type_filter)) != 0 &&
+                strncmp(type_filter, mem_types[t].prefix, strlen(type_filter)) != 0)
                 continue;
         }
 
         int count = 0;
         for (int i = 0; i < m->idx.count; i++) {
-            if (m->idx.entries[i].key &&
-                strncmp(m->idx.entries[i].key, types[t].prefix, plen) == 0)
+            if (m->idx.entries[i].key && mem_key_type(m->idx.entries[i].key) == t)
                 count++;
         }
         if (count == 0) continue;
 
-        str_appendf(&result, "## %s (%d)\n", types[t].label, count);
+        str_appendf(&result, "## %s (%d)\n", mem_types[t].heading, count);
         for (int i = 0; i < m->idx.count; i++) {
             mem_index_entry_t *e = &m->idx.entries[i];
-            if (!e->key || strncmp(e->key, types[t].prefix, plen) != 0)
-                continue;
+            if (!e->key || mem_key_type(e->key) != t) continue;
             const char *desc = (e->description && e->description[0])
                                ? e->description : "(no description)";
             str_appendf(&result, "- %s", e->key);
@@ -1260,30 +1153,14 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
         strncasecmp(type_filter, "Other", strlen(type_filter)) == 0) {
         int n_other = 0;
         for (int i = 0; i < m->idx.count; i++) {
-            mem_index_entry_t *e = &m->idx.entries[i];
-            if (!e->key) continue;
-            int categorized = 0;
-            for (int t = 0; types[t].prefix; t++) {
-                if (strncmp(e->key, types[t].prefix, strlen(types[t].prefix)) == 0) {
-                    categorized = 1;
-                    break;
-                }
-            }
-            if (!categorized) n_other++;
+            if (m->idx.entries[i].key && mem_key_type(m->idx.entries[i].key) < 0)
+                n_other++;
         }
         if (n_other > 0) {
             str_appendf(&result, "## Other (%d)\n", n_other);
             for (int i = 0; i < m->idx.count; i++) {
                 mem_index_entry_t *e = &m->idx.entries[i];
-                if (!e->key) continue;
-                int categorized = 0;
-                for (int t = 0; types[t].prefix; t++) {
-                    if (strncmp(e->key, types[t].prefix, strlen(types[t].prefix)) == 0) {
-                        categorized = 1;
-                        break;
-                    }
-                }
-                if (categorized) continue;
+                if (!e->key || mem_key_type(e->key) >= 0) continue;
                 const char *desc = (e->description && e->description[0])
                                    ? e->description : "(no description)";
                 str_appendf(&result, "- %s \xe2\x80\x94 %s\n", e->key, desc);
@@ -1331,59 +1208,18 @@ char *memory_load_pinned(memory_t *m) {
 
 /* ── delete ──────────────────────────────────────────── */
 
-/* FIX 2b: Rewrite a single entry's JSON file after modifying its refs.
- * Reads the file, updates the refs array, and writes back. */
-static void gc_refs_rewrite_entry(const char *filepath, const char *deleted_key) {
-    cJSON *entry = slurp_json(filepath);
-    if (!entry) return;
-    cJSON *refs = cJSON_GetObjectItem(entry, "refs");
-    if (!refs || !cJSON_IsArray(refs)) { cJSON_Delete(entry); return; }
-    int sz = cJSON_GetArraySize(refs);
-    int found = 0;
-    for (int i = sz - 1; i >= 0; i--) {
-        cJSON *item = cJSON_GetArrayItem(refs, i);
-        if (item && item->valuestring &&
-            strcmp(item->valuestring, deleted_key) == 0) {
-            cJSON_DeleteItemFromArray(refs, i);
-            found = 1;
-        }
-    }
-    if (found) {
-        char *json = cJSON_Print(entry);
-        if (json) {
-            write_file(filepath, json, strlen(json));
-            free(json);
-        }
-    }
-    cJSON_Delete(entry);
-}
+/* ── batch delete / gc_refs ──────────────────────────────── */
 
-/* FIX 2b: Remove deleted_key from refs of all entries using in-memory index.
- * Only reads/writes JSON files that actually reference the deleted key,
- * instead of scanning all files on disk. */
+/* Forward declarations */
+static void gc_refs_multi_index(memory_t *m, const char **deleted_keys, int n_deleted);
+
+/* Remove deleted_key from refs of all entries using in-memory index.
+ * Delegates to batch version with n=1 to avoid code duplication. */
 static void gc_refs_index(memory_t *m, const char *deleted_key) {
-    for (int i = 0; i < m->idx.count; i++) {
-        mem_index_entry_t *ie = &m->idx.entries[i];
-        int found = 0;
-        for (int r = ie->n_refs - 1; r >= 0; r--) {
-            if (ie->refs[r] && strcmp(ie->refs[r], deleted_key) == 0) {
-                free(ie->refs[r]);
-                /* Shift remaining refs down */
-                for (int s = r; s < ie->n_refs - 1; s++)
-                    ie->refs[s] = ie->refs[s + 1];
-                ie->n_refs--;
-                found = 1;
-            }
-        }
-        if (found && ie->path) {
-            gc_refs_rewrite_entry(ie->path, deleted_key);
-        }
-    }
+    gc_refs_multi_index(m, &deleted_key, 1);
 }
 
-/* ── batch delete ──────────────────────────────────────── */
-
-/* FIX 2b: Helper to rewrite a JSON file removing any of the given keys from refs. */
+/* Helper to rewrite a JSON file removing any of the given keys from refs. */
 static void gc_refs_rewrite_multi(const char *filepath,
                                    const char **deleted_keys, int n_deleted) {
     cJSON *entry = slurp_json(filepath);
@@ -1940,16 +1776,13 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
 int memory_embed_all(memory_t *m) {
     if (!m || !m->embed || !m->embed->available) return 0;
 
-    /* FIX BUG#5: Hold mutex during directory scan to prevent races with
-     * concurrent memory_store/memory_delete modifying files mid-scan. */
+    /* FIX BUG#5: Hold mutex during index scan to prevent races with
+     * concurrent memory_store/memory_delete modifying the index. */
     pthread_mutex_lock(&m->mtx);
-    DIR *dir = opendir(m->dir);
-    if (!dir) { pthread_mutex_unlock(&m->mtx); return 0; }
 
-    /* FIX D7: Collect all entries needing embedding, then use batch API.
-     * This reduces N HTTP round-trips to ceil(N/64) for Ollama/OpenAI. */
-
-    /* Phase 1: Scan for entries needing (re)embedding */
+    /* Phase 1: Scan index for entries needing (re)embedding.
+     * Uses the in-memory index instead of opendir() — the index already
+     * caches key, value, path, and embedding for every entry. */
     typedef struct {
         char *key;             /* memory key (strdup'd) */
         char *value;           /* memory value (strdup'd) */
@@ -1958,71 +1791,51 @@ int memory_embed_all(memory_t *m) {
     int pending_cap = 64;
     int pending_count = 0;
     pending_embed_t *pending = malloc(sizeof(pending_embed_t) * (size_t)pending_cap);
-    if (!pending) { closedir(dir); return 0; }
+    if (!pending) { pthread_mutex_unlock(&m->mtx); return 0; }
 
-    struct dirent *de;
-    while ((de = readdir(dir)) != NULL) {
-        if (de->d_name[0] == '.') continue;
-        size_t len = strlen(de->d_name);
-        if (len < 5 || strcmp(de->d_name + len - 5, ".json") != 0) continue;
+    for (int i = 0; i < m->idx.count; i++) {
+        mem_index_entry_t *ie = &m->idx.entries[i];
+        if (!ie->key || !ie->path) continue;
 
-        /* Check if .emb file already exists AND has correct dimension.
-         * Stale embeddings from a previous model (e.g., switched from
-         * MiniLM-384d to nomic-embed-768d) must be regenerated. */
-        char json_path[NASH_PATH_MAX], emb_path[NASH_PATH_MAX];
-        snprintf(json_path, sizeof(json_path), "%s/%s", m->dir, de->d_name);
-        json_to_emb_path(json_path, emb_path, sizeof(emb_path));
-
-        struct stat st;
-        if (stat(emb_path, &st) == 0) {
-            /* .emb exists — check dimension matches current model.
-             * Uses multi-vec loader which auto-detects old/new format. */
-            if (m->embed->detected_dim > 0) {
-                embed_multi_vec_t existing = embed_multi_vec_load(emb_path);
-                if (existing.data) {
-                    int stale = (existing.dim != m->embed->detected_dim);
-                    embed_multi_vec_free(&existing);
-                    if (stale) {
-                        /* Wrong dimension — delete and re-embed below */
-                        unlink(emb_path);
-                    } else {
-                        continue;  /* correct dimension, skip */
-                    }
-                } else {
-                    /* Corrupt .emb file — delete and re-embed */
-                    unlink(emb_path);
-                }
+        /* Check if embedding already exists AND has correct dimension.
+         * The index caches has_emb + emb.dim from the .emb file loaded
+         * at startup, so no disk I/O needed for already-embedded entries. */
+        if (ie->has_emb) {
+            if (m->embed->detected_dim > 0 && ie->emb.dim != m->embed->detected_dim) {
+                /* Wrong dimension (model changed) — delete stale .emb and re-embed */
+                char emb_path[NASH_PATH_MAX];
+                json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
+                unlink(emb_path);
+                embed_multi_vec_free(&ie->emb);
+                ie->has_emb = 0;
             } else {
-                continue;  /* can't check dimension, assume ok */
+                continue;  /* correct dimension, skip */
+            }
+        } else {
+            /* No embedding — check for corrupt .emb file on disk */
+            char emb_path[NASH_PATH_MAX];
+            json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
+            struct stat st;
+            if (stat(emb_path, &st) == 0) {
+                /* .emb exists but wasn't loaded (corrupt) — remove it */
+                unlink(emb_path);
             }
         }
-
-        /* Load JSON entry to get key/value for chunked embedding */
-        cJSON *entry = slurp_json(json_path);
-        if (!entry) continue;
-
-        cJSON *k = cJSON_GetObjectItem(entry, "key");
-        cJSON *v = cJSON_GetObjectItem(entry, "value");
-
-        const char *ekey = (k && k->valuestring) ? k->valuestring : "";
-        const char *eval = (v && v->valuestring) ? v->valuestring : "";
 
         /* Grow pending array if needed */
         if (pending_count >= pending_cap) {
             pending_cap *= 2;
             pending_embed_t *tmp = realloc(pending,
                 sizeof(pending_embed_t) * (size_t)pending_cap);
-            if (!tmp) { cJSON_Delete(entry); break; }
+            if (!tmp) break;
             pending = tmp;
         }
 
-        pending[pending_count].key = strdup(ekey);
-        pending[pending_count].value = strdup(eval);
+        pending[pending_count].key = strdup(ie->key);
+        pending[pending_count].value = strdup(ie->value);
         pending_count++;
-        cJSON_Delete(entry);
     }
-    closedir(dir);
-    pthread_mutex_unlock(&m->mtx);  /* FIX BUG#5: release before expensive embedding */
+    pthread_mutex_unlock(&m->mtx);  /* release before expensive embedding */
 
     if (pending_count == 0) {
         free(pending);
@@ -2049,7 +1862,43 @@ int memory_embed_all(memory_t *m) {
     return embedded;
 }
 
-/* ── Deferred git commit API ────────────────────────────── */
+/* ── Encapsulation accessors ──────────────────────────────────── */
+
+int memory_count(memory_t *m) {
+    return m ? m->idx.count : 0;
+}
+
+const char *memory_dir(memory_t *m) {
+    return m ? m->dir : NULL;
+}
+
+int memory_has_embeddings(memory_t *m) {
+    return m && m->embed && m->embed->available;
+}
+
+embed_ctx_t *memory_embed_ctx(memory_t *m) {
+    return m ? m->embed : NULL;
+}
+
+int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
+    if (!m || !cb) return 0;
+    pthread_mutex_lock(&m->mtx);
+    int count = 0;
+    for (int i = 0; i < m->idx.count; i++) {
+        if (cb(&m->idx.entries[i], user_data) != 0)
+            break;
+        count++;
+    }
+    pthread_mutex_unlock(&m->mtx);
+    return count;
+}
+
+const mem_index_entry_t *memory_find(memory_t *m, const char *key) {
+    if (!m || !key) return NULL;
+    return mem_index_find(&m->idx, key);
+}
+
+/* ── Deferred git commit API (delegates to mem_git.c) ─────────── */
 
 void memory_git_defer(memory_t *m) {
     if (!m) return;

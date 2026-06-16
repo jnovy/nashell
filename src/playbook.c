@@ -531,7 +531,7 @@ void *playbook_worker(void *arg) {
         }
 
         /* Expand template */
-        const char *mdir = pa->memory ? pa->memory->dir : "";
+        const char *mdir = pa->memory ? memory_dir(pa->memory) : "";
         const char *model = pa->server_model ? pa->server_model : "unknown";
         char *prompt = playbook_expand(pb, pb->passes[pass].prompt_template,
                                        pass, prev_result,
@@ -684,10 +684,10 @@ void *playbook_worker(void *arg) {
      * fact:* entries (inventory reports, merge plans, logs). These are
      * intermediate artifacts, not reusable knowledge, and pollute the
      * memory store. Delete any fact: entries created after the run started. */
-    if (pa->memory && pa->memory->dir) {
+    if (pa->memory && memory_dir(pa->memory)) {
         double run_ts = (double)run_tp.tv_sec +
                         (double)run_tp.tv_nsec / 1e9;
-        DIR *mdir = opendir(pa->memory->dir);
+        DIR *mdir = opendir(memory_dir(pa->memory));
         if (mdir) {
             /* Phase 1: collect keys to delete (can't delete while iterating) */
             char **del_keys = NULL;
@@ -703,7 +703,7 @@ void *playbook_worker(void *arg) {
                 /* Read created_at from the JSON file */
                 char fpath[NASH_PATH_MAX];
                 snprintf(fpath, sizeof(fpath), "%s/%s",
-                         pa->memory->dir, de->d_name);
+                         memory_dir(pa->memory), de->d_name);
                 FILE *fp = fopen(fpath, "r");
                 if (!fp) continue;
                 char buf[8192];
@@ -762,11 +762,11 @@ void *playbook_worker(void *arg) {
     /* Touch .last_dream timestamp file after successful dream run.
      * The dream reminder (main.c) counts entries created since this file's
      * mtime.  Without this touch, the reminder counter never resets. */
-    if (playbook_ok && pa->memory && pa->memory->dir &&
+    if (playbook_ok && pa->memory && memory_dir(pa->memory) &&
         pb->name && strcmp(pb->name, "dream") == 0) {
         char dream_ts[NASH_PATH_MAX];
         snprintf(dream_ts, sizeof(dream_ts), "%s/.last_dream",
-                 pa->memory->dir);
+                 memory_dir(pa->memory));
         FILE *fp = fopen(dream_ts, "w");
         if (fp) fclose(fp);  /* creates or updates mtime */
     }

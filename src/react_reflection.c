@@ -17,7 +17,7 @@ static int reflection_dedup_index_scan(
     int found = 0;
 
     pthread_mutex_lock(&mem->mtx);
-    for (int ei = 0; ei < mem->idx.count && !found; ei++) {
+    for (int ei = 0; ei < memory_count(mem) && !found; ei++) {
         mem_index_entry_t *ie = &mem->idx.entries[ei];
         if (!ie->has_emb || ie->emb.dim != new_emb->dim)
             continue;
@@ -126,16 +126,10 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 cJSON_CreateString(ctx->tools->recalled_keys[i]));
             /* Check if this key has zero evidence */
             if (ctx->tools->memory) {
-                pthread_mutex_lock(&ctx->tools->memory->mtx);
-                for (int j = 0; j < ctx->tools->memory->idx.count; j++) {
-                    mem_index_entry_t *ie = &ctx->tools->memory->idx.entries[j];
-                    if (ie->key && strcmp(ie->key, ctx->tools->recalled_keys[i]) == 0) {
-                        if (ie->recall_hits == 0 && ie->recall_misses == 0)
-                            cold_start_count++;
-                        break;
-                    }
-                }
-                pthread_mutex_unlock(&ctx->tools->memory->mtx);
+                const mem_index_entry_t *ie = memory_find(
+                    ctx->tools->memory, ctx->tools->recalled_keys[i]);
+                if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
+                    cold_start_count++;
             }
         }
         cJSON_AddItemToObject(mq, "recalled_keys", keys_arr);
@@ -360,21 +354,19 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
-                    ctx->tools->memory && ctx->tools->memory->embed &&
-                    ctx->tools->memory->embed->available) {
+                    memory_has_embeddings(ctx->tools->memory)) {
+                    embed_ctx_t *emb = memory_embed_ctx(ctx->tools->memory);
                     /* FIX BUG2: Generate a multi-vec embedding (1 chunk) so the
                      * dedup guard uses embed_cosine_sim_multi_multi — the same
                      * similarity function as consolidation_cb in tools.c.
                      * Previously used embed_text (single vec) which produces a
                      * different similarity metric than consolidation. */
-                    int mic = embed_max_input_chars(
-                                  ctx->tools->memory->embed);
+                    int mic = embed_max_input_chars(emb);
                     char *prep = embed_prepare_text(rkey_j->valuestring,
                                                      rval_j->valuestring,
                                                      mic);
                     if (prep) {
-                        embed_vec_t single = embed_text(
-                            ctx->tools->memory->embed, prep);
+                        embed_vec_t single = embed_text(emb, prep);
                         free(prep);
                         if (single.data) {
                             /* Wrap single vec into 1-chunk multi-vec */
