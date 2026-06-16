@@ -19,7 +19,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
           src/frontend_tui.c \
-          src/ui_state.c src/tui.c src/md_render.c \
+          src/ui_state.c src/ui_md_gen.c src/ui_nav.c src/ui_event.c \
+          src/tui.c src/md_render.c \
           src/memory.c \
           src/workspace.c \
           src/embedding.c \
@@ -77,7 +78,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/config.c src/toml.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
-          src/frontend_tui.c src/ui_state.c src/tui.c src/md_render.c src/memory.c \
+          src/frontend_tui.c src/ui_state.c src/ui_md_gen.c src/ui_nav.c src/ui_event.c \
+          src/tui.c src/md_render.c src/memory.c \
           src/workspace.c \
           src/embedding.c src/embedding_onnx.c \
           src/nash_log.c \
