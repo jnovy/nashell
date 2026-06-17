@@ -251,14 +251,19 @@ def escape_html(text):
             .replace(">", "&gt;"))
 
 
-def format_outbox_message(msg_type, msg_id, body):
+def format_outbox_message(msg_type, msg_id, body, original_query=None):
     """Format an outbox message for Telegram."""
     escaped = escape_html(body)
 
     if msg_type == "ask":
         return f"❓ <b>Question</b> <code>[{msg_id}]</code>\n\n{escaped}\n\n<i>Reply to this message to answer.</i>"
     elif msg_type == "result":
-        return f"📋 <b>Result</b> <code>[{msg_id}]</code>\n\n{escaped}"
+        header = f"📋 <b>Result</b> <code>[{msg_id}]</code>"
+        if original_query:
+            # Truncate long queries for the header
+            q_preview = original_query if len(original_query) <= 120 else original_query[:120] + "…"
+            header += f"\n🔎 <i>{escape_html(q_preview)}</i>"
+        return f"{header}\n\n{escaped}"
     elif msg_type == "status":
         return f"ℹ️ {escaped}"
     else:
@@ -339,18 +344,82 @@ class MessageMap:
             self._save()
 
 
+# ── Task ID → Query text mapping ────────────────────────
+
+class QueryMap:
+    """Persistent mapping between task IDs and original query text.
+    Used to include the original query when presenting results back to user."""
+
+    def __init__(self, mailbox_dir):
+        self.path = os.path.join(mailbox_dir, ".tg_query_map")
+        self.queries = {}  # task_id → query_text
+        self._load()
+
+    def _load(self):
+        """Load mapping from file (tab-separated: task_id<TAB>query)."""
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path) as f:
+                for line in f:
+                    line = line.rstrip("\n")
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2:
+                        self.queries[parts[0]] = parts[1]
+        except (OSError, IOError):
+            pass
+
+    def _save(self):
+        """Save mapping to file."""
+        try:
+            with open(self.path, "w") as f:
+                f.write("# task_id<TAB>query_text\n")
+                for task_id, query in self.queries.items():
+                    # Replace newlines in query to keep one-line-per-entry
+                    safe_query = query.replace("\n", " ").replace("\t", " ")
+                    f.write(f"{task_id}\t{safe_query}\n")
+        except (OSError, IOError) as e:
+            log.error("Failed to save query map: %s", e)
+
+    def add(self, task_id, query_text):
+        """Store the original query for a task."""
+        self.queries[task_id] = query_text
+        self._save()
+
+    def get(self, task_id):
+        """Look up original query by task_id. Returns None if not found."""
+        return self.queries.get(task_id)
+
+    def remove(self, task_id):
+        """Remove a mapping (after result delivered)."""
+        if task_id in self.queries:
+            del self.queries[task_id]
+            self._save()
+
+    def cleanup(self, max_entries=1000):
+        """Keep only the last N entries to prevent unbounded growth."""
+        if len(self.queries) > max_entries:
+            keys = list(self.queries.keys())
+            for k in keys[:len(keys) - max_entries]:
+                del self.queries[k]
+            self._save()
+
+
 # ── Outbox watcher ───────────────────────────────────────
 
 class OutboxWatcher:
     """Watch outbox/ for new files and send them as Telegram messages."""
 
-    def __init__(self, config, mailbox_dir, msg_map):
+    def __init__(self, config, mailbox_dir, msg_map, query_map=None):
         self.config = config
         self.token = config["bot_token"]
         self.chat_id = config["chat_id"]
         self.outbox = os.path.join(mailbox_dir, "outbox")
         self.sent_dir = os.path.join(self.outbox, ".sent")
         self.msg_map = msg_map
+        self.query_map = query_map
         self.seen = set()
         os.makedirs(self.sent_dir, exist_ok=True)
         self._scan_existing()
@@ -393,7 +462,13 @@ class OutboxWatcher:
             if body is None:
                 continue
 
-            text = format_outbox_message(msg_type, msg_id, body)
+            # Look up original query text for result messages
+            original_query = None
+            if msg_type == "result" and self.query_map:
+                original_query = self.query_map.get(msg_id)
+
+            text = format_outbox_message(msg_type, msg_id, body,
+                                         original_query=original_query)
             log.info("Sending %s → Telegram", filename)
 
             tg_msg_id = tg_send_message(self.token, self.chat_id, text)
@@ -405,6 +480,10 @@ class OutboxWatcher:
                     self.msg_map.add(tg_msg_id, msg_id)
                     log.info("Tracking ask_%s → msg %d for reply matching",
                              msg_id, tg_msg_id)
+
+                # Clean up query map after result is delivered
+                if msg_type == "result" and self.query_map:
+                    self.query_map.remove(msg_id)
 
                 # Move to .sent/
                 try:
@@ -422,12 +501,13 @@ class OutboxWatcher:
 class TelegramPoller:
     """Poll Telegram for replies and new messages, write to inbox."""
 
-    def __init__(self, config, mailbox_dir, msg_map):
+    def __init__(self, config, mailbox_dir, msg_map, query_map=None):
         self.config = config
         self.token = config["bot_token"]
         self.chat_id = str(config["chat_id"])
         self.inbox = os.path.join(mailbox_dir, "inbox")
         self.msg_map = msg_map
+        self.query_map = query_map
         self.update_offset = self._load_offset(mailbox_dir)
         self.offset_path = os.path.join(mailbox_dir, ".tg_update_offset")
 
@@ -508,9 +588,13 @@ class TelegramPoller:
                 task_id = f"tg_{int(time.time()):x}"
                 task_file = os.path.join(self.inbox, f"task_{task_id}")
                 atomic_write(task_file, query)
+                if self.query_map:
+                    self.query_map.add(task_id, query)
                 log.info("Task written: task_%s = %s", task_id, query[:80])
+                q_preview = query if len(query) <= 80 else query[:80] + "…"
                 tg_send_message(self.token, self.chat_id,
-                                f"📥 Task submitted: <code>{task_id}</code>",
+                                f"📥 Task submitted: <code>{task_id}</code>\n"
+                                f"🔎 <i>{escape_html(q_preview)}</i>",
                                 reply_to=msg["message_id"])
                 return
 
@@ -533,9 +617,13 @@ class TelegramPoller:
         task_id = f"tg_{int(time.time()):x}"
         task_file = os.path.join(self.inbox, f"task_{task_id}")
         atomic_write(task_file, text)
+        if self.query_map:
+            self.query_map.add(task_id, text)
         log.info("Task (plain message): task_%s = %s", task_id, text[:80])
+        q_preview = text if len(text) <= 80 else text[:80] + "…"
         tg_send_message(self.token, self.chat_id,
                         f"📥 Task submitted: <code>{task_id}</code>\n"
+                        f"🔎 <i>{escape_html(q_preview)}</i>\n"
                         f"<i>Tip: use /task to be explicit, "
                         f"or reply to ❓ messages to answer questions.</i>",
                         reply_to=msg["message_id"])
@@ -626,8 +714,9 @@ def run_loop(config, mailbox_dir):
     """Main bridge loop: watch outbox + long-poll Telegram."""
     ensure_dirs(mailbox_dir)
     msg_map = MessageMap(mailbox_dir)
-    outbox = OutboxWatcher(config, mailbox_dir, msg_map)
-    poller = TelegramPoller(config, mailbox_dir, msg_map)
+    query_map = QueryMap(mailbox_dir)
+    outbox = OutboxWatcher(config, mailbox_dir, msg_map, query_map)
+    poller = TelegramPoller(config, mailbox_dir, msg_map, query_map)
 
     log.info("Telegram bridge running")
     log.info("  Chat ID:  %s", config["chat_id"])
