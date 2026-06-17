@@ -139,13 +139,8 @@ void        llm_chat_add_typed(llm_chat_t *chat, const char *role,
  * Returns malloc'd string. Caller must free. */
 char       *llm_chat_serialize(llm_chat_t *chat);
 
-/* Remove all messages whose content starts with the given prefix.
- * Used for progressive context stripping on LLM failures. */
-int         llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix);
-
 /* Remove all messages of a given type.
- * Returns the number of messages removed.
- * Type-safe alternative to llm_chat_remove_by_prefix(). */
+ * Returns the number of messages removed. */
 int         llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type);
 
 /* Find the first message of a given type.

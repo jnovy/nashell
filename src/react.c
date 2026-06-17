@@ -1343,13 +1343,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * The hint is injected as a LOW-importance user message to avoid wasting
          * context on models that learn quickly. */
         {
-            int total_multi = (multi_tool_count > 1 ? multi_tool_count : 0) +
-                              (chat->multi_tool_count > 1 ? chat->multi_tool_count : 0);
             /* Prefer native API count (more reliable) over content-parse count */
             int detected = chat->multi_tool_count > 1 ? chat->multi_tool_count
                          : multi_tool_count > 1       ? multi_tool_count
                          : 0;
-            (void)total_multi;
             if (detected > 1) {
                 char hint[256];
                 snprintf(hint, sizeof(hint),

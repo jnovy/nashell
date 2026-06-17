@@ -1618,6 +1618,42 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     return 0;
 }
 
+/* ── belief entropy ─────────────────────────────────────────── */
+
+int memory_set_belief_entropy(memory_t *m, const char *key, double h_be) {
+    if (!m || !key) return -1;
+    pthread_mutex_lock(&m->mtx);
+
+    cJSON *entry = memory_load_entry_json(m, key);
+    if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
+
+    cJSON *be = cJSON_GetObjectItem(entry, "belief_entropy");
+    if (be) cJSON_SetNumberValue(be, h_be);
+    else cJSON_AddNumberToObject(entry, "belief_entropy", h_be);
+
+    /* Write back */
+    char fname[512];
+    key_to_path(key, ".json", fname, sizeof(fname));
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    char *json = cJSON_Print(entry);
+    write_file(path, json, strlen(json));
+    free(json);
+    cJSON_Delete(entry);
+
+    /* Update in-memory index */
+    for (int i = 0; i < m->idx.count; i++) {
+        if (strcmp(m->idx.entries[i].key, key) == 0) {
+            m->idx.entries[i].belief_entropy = h_be;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&m->mtx);
+    return 0;
+}
+
 /* ── embedding integration ──────────────────────────────────── */
 
 int memory_init_embeddings(memory_t *m, const char *type,

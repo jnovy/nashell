@@ -244,6 +244,12 @@ int memory_increment_misses(memory_t *m, const char *key);
  * Returns 0 on success, -1 if new_key not found. */
 int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key);
 
+/* Set belief entropy (ℋ_BE) on a memory entry.
+ * Called after a successful belief entropy probe.
+ * Updates both the on-disk JSON and the in-memory index.
+ * Returns 0 on success, -1 if key not found. */
+int memory_set_belief_entropy(memory_t *m, const char *key, double h_be);
+
 /* Add validation evidence to a memory's in-memory index entry.
  * Used by consolidation to carry forward recall_hits/misses from
  * deleted entries to their survivors, so merged entries don't lose

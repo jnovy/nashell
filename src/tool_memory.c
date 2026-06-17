@@ -438,6 +438,27 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
             memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
     }
 
+    /* Belief Entropy probe — compute ℋ_BE for the new memory entry.
+     * Only runs when enabled in config AND provider is local (has /completion).
+     * The probe is lightweight (~30 tokens) and non-blocking on failure. */
+    if (ctx->cfg->belief_entropy.enabled && ctx->provider &&
+        ctx->provider->type == PROVIDER_LOCAL) {
+        belief_entropy_config_t *bec = &ctx->cfg->belief_entropy;
+        belief_entropy_result_t be = llm_belief_entropy_probe(
+            ctx->provider->cfg.api_base,
+            value,  /* memory content as context */
+            bec->anchor_question,
+            bec->probe_tokens,
+            bec->probe_n_probs,
+            bec->probe_temperature);
+        if (be.ok) {
+            if (ctx->ws)
+                workspace_set_belief_entropy(ctx->ws, key, (double)be.h_mean);
+            else
+                memory_set_belief_entropy(ctx->memory, key, (double)be.h_mean);
+        }
+    }
+
     /* FIX CRIT1: Defer consolidation to post-task instead of blocking inline.
      * Previously, memory_try_consolidate() ran a synchronous LLM call here,
      * adding 5-30s latency on the hot path. Now we queue the key+value pair

@@ -64,27 +64,6 @@ void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
     chat->n_msgs++;
 }
 
-/* Remove all messages whose content starts with prefix.
- * Returns the number of messages removed. */
-int llm_chat_remove_by_prefix(llm_chat_t *chat, const char *prefix) {
-    if (!chat || !prefix) return 0;
-    size_t plen = strlen(prefix);
-    int removed = 0;
-    int dst = 0;
-    for (int src = 0; src < chat->n_msgs; src++) {
-        if (chat->msgs[src].content &&
-            strncmp(chat->msgs[src].content, prefix, plen) == 0) {
-            llm_msg_free_fields(&chat->msgs[src]);
-            removed++;
-        } else {
-            if (dst != src)
-                chat->msgs[dst] = chat->msgs[src];
-            dst++;
-        }
-    }
-    chat->n_msgs = dst;
-    return removed;
-}
 
 /* Auto-assign importance based on message type (Harness-1 §3.2).
  * Called by all message-adding functions to ensure consistent tagging. */

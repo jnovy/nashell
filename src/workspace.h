@@ -86,6 +86,9 @@ int workspace_increment_misses(workspace_t *ws, const char *key);
 int workspace_set_supersedes(workspace_t *ws, const char *new_key,
                              const char *old_key);
 
+/* Set belief entropy on the memory that contains key. */
+int workspace_set_belief_entropy(workspace_t *ws, const char *key, double h_be);
+
 /* Deferred git: defer/flush on both layers. */
 void workspace_git_defer(workspace_t *ws);
 void workspace_git_flush(workspace_t *ws, const char *msg);

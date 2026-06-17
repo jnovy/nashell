@@ -386,6 +386,14 @@ int workspace_set_supersedes(workspace_t *ws, const char *new_key,
     return memory_set_supersedes(m, new_key, old_key);
 }
 
+/* ── belief entropy ──────────────────────────────────── */
+
+int workspace_set_belief_entropy(workspace_t *ws, const char *key, double h_be) {
+    memory_t *m = workspace_find_memory(ws, key);
+    if (!m) return -1;
+    return memory_set_belief_entropy(m, key, h_be);
+}
+
 /* ── git defer/flush ─────────────────────────────────── */
 
 void workspace_git_defer(workspace_t *ws) {
