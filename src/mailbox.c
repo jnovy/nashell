@@ -259,8 +259,23 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
     char inbox_dir[NASH_PATH_MAX];
     snprintf(inbox_dir, sizeof(inbox_dir), "%s/inbox", mailbox_dir);
 
-    /* First check for existing task files */
+    /* First check for command files (cmd_*) — return immediately so
+     * the daemon loop can handle session reset before processing tasks. */
     DIR *dir = opendir(inbox_dir);
+    if (dir) {
+        struct dirent *de;
+        while ((de = readdir(dir)) != NULL) {
+            if (strncmp(de->d_name, "cmd_", 4) == 0 &&
+                !strstr(de->d_name, ".tmp")) {
+                closedir(dir);
+                return NULL;  /* signal daemon to check commands */
+            }
+        }
+        closedir(dir);
+    }
+
+    /* Check for existing task files */
+    dir = opendir(inbox_dir);
     if (dir) {
         struct dirent *de;
         while ((de = readdir(dir)) != NULL) {
@@ -326,6 +341,15 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                 for (char *ptr = evbuf; ptr < evbuf + len; ) {
                     struct inotify_event *iev = (struct inotify_event *)ptr;
                     if (iev->len > 0 &&
+                        strncmp(iev->name, "cmd_", 4) == 0 &&
+                        !strstr(iev->name, ".tmp")) {
+                        /* Command file detected — return NULL to let
+                         * the daemon loop handle it. */
+                        inotify_rm_watch(ifd, wd);
+                        close(ifd);
+                        return NULL;
+                    }
+                    if (iev->len > 0 &&
                         strncmp(iev->name, "task_", 5) == 0 &&
                         !strstr(iev->name, ".tmp")) {
                         char path[NASH_PATH_MAX];
@@ -351,6 +375,24 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
         }
 
         /* Periodic directory scan (handles edge cases) */
+        dir = opendir(inbox_dir);
+        if (dir) {
+            struct dirent *de;
+            int has_cmd = 0;
+            while ((de = readdir(dir)) != NULL) {
+                if (strncmp(de->d_name, "cmd_", 4) == 0 &&
+                    !strstr(de->d_name, ".tmp")) {
+                    has_cmd = 1;
+                    break;
+                }
+            }
+            closedir(dir);
+            if (has_cmd) {
+                inotify_rm_watch(ifd, wd);
+                close(ifd);
+                return NULL;
+            }
+        }
         dir = opendir(inbox_dir);
         if (dir) {
             struct dirent *de;

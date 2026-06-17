@@ -1215,6 +1215,40 @@ void *telegram_run(void *arg) {
                             image_file_id);
                 }
 
+                /* Handle bot commands before routing */
+                if (msg_text && msg_text[0] == '/') {
+                    if (strcmp(msg_text, "/new") == 0 ||
+                        strcmp(msg_text, "/clear") == 0) {
+                        /* Session reset command → write cmd_new to inbox */
+                        char cmd_path[512], cmd_tmp[512];
+                        snprintf(cmd_tmp, sizeof(cmd_tmp),
+                                 "%s/inbox/cmd_new.tmp", ctx->mailbox_dir);
+                        snprintf(cmd_path, sizeof(cmd_path),
+                                 "%s/inbox/cmd_new", ctx->mailbox_dir);
+                        FILE *cf = fopen(cmd_tmp, "w");
+                        if (cf) {
+                            fputs("new_session", cf);
+                            fclose(cf);
+                            rename(cmd_tmp, cmd_path);
+                        }
+                        tg_api_send_message(ctx,
+                            "🔄 Starting new session — context cleared.", NULL);
+                        fprintf(stderr, "[telegram] /new command → session reset\n");
+                        continue;
+                    }
+                    if (strcmp(msg_text, "/help") == 0) {
+                        tg_api_send_message(ctx,
+                            "🤖 <b>Nash Bot Commands</b>\n\n"
+                            "/new or /clear — Start a new session (clear context)\n"
+                            "/help — Show this help\n\n"
+                            "Just send a message to chat with the agent. "
+                            "Context is preserved across messages within a session.",
+                            "HTML");
+                        continue;
+                    }
+                    /* Other /commands: strip the slash and treat as a query */
+                }
+
                 /* Route message: answer to pending ask, or new task */
                 if (pending_ask_id[0]) {
                     /* This is an answer to a user_ask question */

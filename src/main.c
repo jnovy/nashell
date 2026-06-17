@@ -814,32 +814,104 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
         }
 
+        /* ── Persistent session state for daemon mode ──────────────────
+         * Like the TUI, we maintain ONE session across all tasks so that
+         * context (scratchpad, previous result, journal) propagates between
+         * consecutive messages.  The /new or /clear Telegram command (or a
+         * cmd_new file in the inbox) resets the session. */
+        char *session_dir = create_session_dir(nash_dir);
+        journal_t *journal = journal_new(session_dir);
+        tool_ctx_t tools;
+        session_init_tools(&tools, shared_store, journal, memory,
+                           ws, session_dir, cfg, provider);
+        react_ctx_t react;
+        session_init_react(&react, provider, &tools, cfg);
+
+        fprintf(stderr, "[daemon] session: %s\n", session_dir);
+
         while (!shutdown_requested) {
+            /* ── Check for session reset command (cmd_new in inbox) ──── */
+            {
+                char cmd_path[NASH_PATH_MAX];
+                snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
+                if (access(cmd_path, F_OK) == 0) {
+                    unlink(cmd_path);
+                    fprintf(stderr, "\n[daemon] === session reset ===\n");
+
+                    /* Save scratchpad before cleanup */
+                    if (tools.scratch.count > 0)
+                        scratchpad_save(&tools.scratch, session_dir);
+
+                    /* Cleanup old session */
+                    free(react.last_query);  react.last_query = NULL;
+                    free(react.last_result); react.last_result = NULL;
+                    session_cleanup(&tools, &react, journal);
+                    if (is_dir_empty(session_dir))
+                        rmdir(session_dir);
+                    free(session_dir);
+
+                    /* Create fresh session */
+                    session_dir = create_session_dir(nash_dir);
+                    journal = journal_new(session_dir);
+                    session_init_tools(&tools, shared_store, journal, memory,
+                                       ws, session_dir, cfg, provider);
+                    session_init_react(&react, provider, &tools, cfg);
+
+                    fprintf(stderr, "[daemon] new session: %s\n", session_dir);
+                    continue;
+                }
+            }
+
             char *task_id = NULL;
             char *task_query = mailbox_wait_task(mbox_dir, &task_id, 0);
             if (!task_query) {
                 if (shutdown_requested) break;
-                fprintf(stderr, "[daemon] wait_task returned NULL, retrying...\n");
-                sleep(1);
+                /* NULL return may be a cmd_* wakeup — loop back to
+                 * the cmd_new check without delay.  Only sleep if
+                 * no command file is pending (genuine error case). */
+                char cmd_chk[NASH_PATH_MAX];
+                snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
+                if (access(cmd_chk, F_OK) != 0) {
+                    fprintf(stderr, "[daemon] wait_task returned NULL, retrying...\n");
+                    sleep(1);
+                }
                 continue;
             }
 
-            fprintf(stderr, "\n[daemon] === new task: %s ===\n", task_id ? task_id : "unknown");
+            /* Check again for session reset (may have arrived while waiting) */
+            {
+                char cmd_path[NASH_PATH_MAX];
+                snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
+                if (access(cmd_path, F_OK) == 0) {
+                    unlink(cmd_path);
+                    fprintf(stderr, "\n[daemon] === session reset (during wait) ===\n");
+                    if (tools.scratch.count > 0)
+                        scratchpad_save(&tools.scratch, session_dir);
+                    free(react.last_query);  react.last_query = NULL;
+                    free(react.last_result); react.last_result = NULL;
+                    session_cleanup(&tools, &react, journal);
+                    if (is_dir_empty(session_dir))
+                        rmdir(session_dir);
+                    free(session_dir);
+                    session_dir = create_session_dir(nash_dir);
+                    journal = journal_new(session_dir);
+                    session_init_tools(&tools, shared_store, journal, memory,
+                                       ws, session_dir, cfg, provider);
+                    session_init_react(&react, provider, &tools, cfg);
+                    fprintf(stderr, "[daemon] new session: %s\n", session_dir);
+                    /* Re-process the task in the new session (fall through) */
+                }
+            }
+
+            fprintf(stderr, "\n[daemon] === task: %s (R%d) ===\n",
+                    task_id ? task_id : "unknown", tools.react_loop);
             fprintf(stderr, "[daemon] query: %.200s%s\n", task_query,
                     strlen(task_query) > 200 ? "..." : "");
-
-            /* Set up a fresh session for each task */
-            journal_t *journal = journal_new_lazy(nash_dir);
-            tool_ctx_t tools;
-            session_init_tools(&tools, shared_store, journal, memory,
-                               ws, NULL, cfg, provider);
-            react_ctx_t react;
-            session_init_react(&react, provider, &tools, cfg);
 
             mailbox_ctx_t mbox = {
                 .react_ctx = &react,
                 .mailbox_dir = mbox_dir,
-                .session_dir = NULL,
+                .session_dir = session_dir,
                 .timeout_sec = mailbox_timeout,
             };
 
@@ -851,23 +923,39 @@ int main(int argc, char **argv) {
             }
 
             if (result) {
-                fprintf(stderr, "[daemon] task %s completed\n", task_id ? task_id : "unknown");
+                fprintf(stderr, "[daemon] task %s completed (R%d)\n",
+                        task_id ? task_id : "unknown", tools.react_loop);
                 printf("%s\n", result);
-                free(result);
             } else {
-                fprintf(stderr, "[daemon] task %s failed (no result)\n", task_id ? task_id : "unknown");
+                fprintf(stderr, "[daemon] task %s failed (no result)\n",
+                        task_id ? task_id : "unknown");
             }
+
+            /* Propagate context to next react loop (like TUI does) */
+            if (react.last_query) free(react.last_query);
+            if (react.last_result) free(react.last_result);
+            react.last_query = strdup(task_query);
+            react.last_result = result ? strdup(result) : NULL;
+            tools.react_loop++;
 
             /* Tier 1 dreaming */
             memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
 
-            /* Cleanup */
-            session_cleanup(&tools, &react, journal);
+            free(result);
             free(task_id);
             free(task_query);
         }
-        /* FIX #6: Graceful shutdown — cleanup shared resources */
+
+        /* Graceful shutdown — cleanup persistent session */
         fprintf(stderr, "[daemon] shutting down...\n");
+        if (tools.scratch.count > 0)
+            scratchpad_save(&tools.scratch, session_dir);
+        free(react.last_query);  react.last_query = NULL;
+        free(react.last_result); react.last_result = NULL;
+        session_cleanup(&tools, &react, journal);
+        if (is_dir_empty(session_dir))
+            rmdir(session_dir);
+        free(session_dir);
         if (telegram_mode && tg_thread) {
             pthread_join(tg_thread, NULL);
             telegram_free(&tg_ctx);
