@@ -62,6 +62,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
     if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
+    if (cfg->file_read_context_pct <= 0) cfg->file_read_context_pct = 10;
     if (cfg->prune_min_score <= 0)      cfg->prune_min_score = 0.35;
     if (cfg->prune_min_evidence <= 0)   cfg->prune_min_evidence = 3;
     if (cfg->consolidation_threshold <= 0) cfg->consolidation_threshold = 0.82f;
@@ -311,6 +312,7 @@ config_t *config_load(const char *path) {
           }
         }
         cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
+        cfg->file_read_context_pct = toml_int(limits, "file_read_context_pct", -1);
         cfg->prune_min_score    = toml_dbl(limits, "prune_min_score", 0);
         cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
         cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);
@@ -913,6 +915,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "llm_max_response = %d\n", cfg->llm_max_response);
     fprintf(out, "llm_repeat_threshold = %d\n", cfg->llm_repeat_threshold);
     fprintf(out, "file_read_max_inline = %d\n", cfg->file_read_max_inline);
+    fprintf(out, "file_read_context_pct = %d\n", cfg->file_read_context_pct);
     fprintf(out, "scratchpad_max = %d\n", cfg->scratchpad_max);
     fprintf(out, "checkpoint_frequency = %d\n", cfg->checkpoint_frequency);
     fprintf(out, "prune_min_score = %.2f\n", cfg->prune_min_score);
@@ -1206,6 +1209,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v > 0) cfg->llm_repeat_threshold = v;
         v = toml_int(limits, "file_read_max_inline", 0);
         if (v > 0) cfg->file_read_max_inline = v;
+        v = toml_int(limits, "file_read_context_pct", 0);
+        if (v > 0) cfg->file_read_context_pct = v;
         v = toml_int(limits, "scratchpad_max", -1);
         if (v >= 0) cfg->scratchpad_max = v;
         v = toml_int(limits, "checkpoint_frequency", -1);
@@ -1344,6 +1349,7 @@ int config_write_default(const char *path) {
         "max_react_steps = 0          # max steps per react loop (0 = unlimited)\n"
         "context_eviction_pct = 70    # context usage %% that triggers message eviction\n"
         "file_read_max_inline = 50000 # max chars returned inline by file_read (50KB)\n"
+        "file_read_context_pct = 10   # max %% of context window for file_read inline (0 = use file_read_max_inline)\n"
         "\n"
         "# Memory\n"
         "memory_index_max = 50        # max entries shown in memory index injection\n"

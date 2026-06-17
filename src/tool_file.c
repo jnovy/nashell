@@ -143,15 +143,52 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)display_len);
     cJSON_AddStringToObject(meta, "ref", alias);
 
+    /* Compute max inline chars: % of context window, or fixed limit fallback.
+     * file_read_context_pct (default 10) caps inline content to N% of the
+     * context window in chars (context_size × chars_per_token × pct/100).
+     * Falls back to file_read_max_inline (default 50000) when context_size
+     * is unknown (e.g. auto-detect not yet resolved). */
+    int max_inline = ctx->cfg->file_read_max_inline;
+    if (ctx->cfg->file_read_context_pct > 0 && ctx->provider &&
+        ctx->provider->cfg.context_size > 0) {
+        float cpt = ctx->provider->cfg.chars_per_token > 0
+                   ? ctx->provider->cfg.chars_per_token : 3.5f;
+        int ctx_chars = (int)((double)ctx->provider->cfg.context_size * cpt
+                             * ctx->cfg->file_read_context_pct / 100.0);
+        if (ctx_chars > 0 && ctx_chars < max_inline)
+            max_inline = ctx_chars;
+    }
+
     /* file_read MUST return content — that's its purpose */
-    if (display_len <= 50000) {
+    if ((int)display_len <= max_inline) {
         cJSON_AddStringToObject(meta, "content", store_content);
     } else {
-        char *trunc = malloc(50001);
+        char *trunc = malloc(max_inline + 1);
         if (trunc) {
-            utf8_truncate(trunc, store_content, 50000);
+            utf8_truncate(trunc, store_content, max_inline);
+            /* Truncate at line boundary so we don't cut mid-line */
+            size_t trunc_len = strlen(trunc);
+            for (size_t i = trunc_len; i > 0; i--) {
+                if (trunc[i - 1] == '\n') {
+                    trunc[i] = '\0';
+                    trunc_len = i;
+                    break;
+                }
+            }
+            /* Count lines in truncated content to report truncation point */
+            int trunc_lines = 0;
+            for (size_t i = 0; i < trunc_len; i++) {
+                if (trunc[i] == '\n') trunc_lines++;
+            }
+            /* truncated_at_line: absolute file line number where content was cut.
+             * In range mode, offset by range_start; otherwise 1-based line count. */
+            int trunc_at_line = display_content
+                ? range_start + trunc_lines - 1
+                : trunc_lines;
+
             cJSON_AddStringToObject(meta, "content", trunc);
             cJSON_AddBoolToObject(meta, "truncated", 1);
+            cJSON_AddNumberToObject(meta, "truncated_at_line", trunc_at_line);
             free(trunc);
         }
     }

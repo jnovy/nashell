@@ -193,6 +193,7 @@ typedef struct {
                                   * 1 = always (reflect after every task),
                                   * 2 = never (disable reflection) */
     int    file_read_max_inline; /* max chars for file_read content inline */
+    int    file_read_context_pct; /* max % of context window for file_read inline (0=use file_read_max_inline) */
 
     /* Self-Harness tunable surfaces (P3) — exposed for automated harness evolution.
      * These parameters can be tuned by the self-harness loop and validated via
