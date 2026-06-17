@@ -408,9 +408,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Cycling detection: track last action signature and its result.
      * If the model repeats the exact same action, return the cached result
-     * instead of re-executing — no window, no threshold, just last-vs-current. */
+     * instead of re-executing — no window, no threshold, just last-vs-current.
+     * Two-stage: 1st repeat → cached result, 2nd+ repeat → refuse. */
     char *last_sig = NULL;
     char *last_result_json = NULL;  /* cached meta_str from previous action */
+    char *last_ref = NULL;          /* cached store alias (e.g. "R0S24") */
+    int repeat_count = 0;           /* consecutive repeats of last_sig */
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
 
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
@@ -929,29 +932,49 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         int is_repeat = (last_sig && strcmp(last_sig, sig) == 0);
 
-        /* Cycling: return cached result instead of re-executing */
+        /* Cycling: two-stage response to repeated identical actions.
+         * Stage 1 (repeat_count==0): return cached result — model gets real data.
+         * Stage 2 (repeat_count>=1): refuse — tell model to stop, result is above. */
         tool_result_t tr;
         if (cycling_enabled && is_repeat && last_result_json) {
-            /* Return cached result from the previous identical action.
-             * The model gets the same data without re-execution. */
+            repeat_count++;
+
             react_event_t ev = {0};
             ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
-            ev.message = "Cycling — returning cached result from previous identical action";
-            react_emit(on_event, userdata, &ev);
 
-            cJSON *cached = cJSON_Parse(last_result_json);
-            if (!cached) cached = cJSON_CreateObject();
-            cJSON_AddStringToObject(cached, "note",
-                "cached — identical action already executed, result reused");
-            tr = (tool_result_t){ .meta = cached, .store_ref = NULL, .success = 1 };
+            if (repeat_count == 1) {
+                /* Stage 1: return cached result */
+                ev.message = "Cycling — returning cached result from previous identical action";
+                react_emit(on_event, userdata, &ev);
 
-            /* Journal audit trail */
-            journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step + 1, "cycling_cached", cached, NULL,
-                           strlen(last_result_json), 0,
-                           "returned cached result", NULL);
+                cJSON *cached = cJSON_Parse(last_result_json);
+                if (!cached) cached = cJSON_CreateObject();
+                cJSON_AddStringToObject(cached, "note",
+                    "cached — identical action already executed, result reused");
+                tr = (tool_result_t){ .meta = cached, .store_ref = NULL, .success = 1 };
+
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "cycling_cached", cached, last_ref,
+                               strlen(last_result_json), 0,
+                               NULL, NULL);
+            } else {
+                /* Stage 2+: refuse — the result is already in context */
+                ev.message = "Cycling — refusing repeated action, result already in context";
+                react_emit(on_event, userdata, &ev);
+
+                cJSON *refused = cJSON_CreateObject();
+                cJSON_AddStringToObject(refused, "error",
+                    "Refused: you already executed this identical action and received "
+                    "the result above. Do NOT repeat it. Use the previous output or "
+                    "try a different approach.");
+                tr = (tool_result_t){ .meta = refused, .store_ref = NULL, .success = 0 };
+
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "cycling_refused", refused, last_ref,
+                               0, 0, "refused repeated action", NULL);
+            }
         } else {
             /* Normal execution — inject thought into tool_ctx for journal recording */
             ctx->tools->thought = thought;
@@ -1070,6 +1093,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             sig = NULL;  /* ownership transferred — don't free below */
             free(last_result_json);
             last_result_json = strdup(meta_str);
+            /* Cache the store alias for journal hyperlinks on cycling hits */
+            free(last_ref);
+            last_ref = NULL;
+            if (tr.store_ref && ctx->tools->aliases) {
+                const char *alias = alias_map_reverse_lookup(
+                    ctx->tools->aliases, tr.store_ref);
+                if (alias) last_ref = strdup(alias);
+            }
+            repeat_count = 0;
         }
         free(sig);  /* no-op if ownership was transferred above */
         size_t result_len = strlen(meta_str) + 128;
@@ -1448,5 +1480,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     free(last_sig);
     free(last_result_json);
+    free(last_ref);
     return final_result;
 }
