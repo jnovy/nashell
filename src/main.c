@@ -34,6 +34,7 @@
 #include "postmortem.h"
 #include "prompt_optimize.h"
 #include "mailbox.h"
+#include "telegram.h"
 #include "banner.h"
 #include "commands.h"
 
@@ -248,6 +249,7 @@ int main(int argc, char **argv) {
     const char *reflect_model_arg = NULL; /* --reflect-model MODEL: reflection LM for optimization */
     int mailbox_mode = 0;                 /* --mailbox: enable file-based mailbox for user_ask */
     int daemon_mode = 0;                  /* --daemon: watch mailbox inbox for tasks */
+    int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
@@ -294,6 +296,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--daemon") == 0) {
             daemon_mode = 1;
             mailbox_mode = 1;  /* daemon implies mailbox */
+        } else if (strcmp(argv[i], "--telegram") == 0) {
+            telegram_mode = 1;
+            daemon_mode = 1;   /* telegram implies daemon */
+            mailbox_mode = 1;  /* daemon implies mailbox */
         } else if (strcmp(argv[i], "--mailbox-timeout") == 0 && i + 1 < argc) {
             mailbox_timeout = atoi(argv[++i]);
             mailbox_mode = 1;
@@ -327,6 +333,7 @@ int main(int argc, char **argv) {
             printf("\nMailbox (headless communication):\n");
             printf("  --mailbox             Enable file-based mailbox for user_ask in -p mode\n");
             printf("  --daemon              Watch mailbox inbox for task files (implies --mailbox)\n");
+            printf("  --telegram            Telegram Bot bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
@@ -782,6 +789,24 @@ int main(int argc, char **argv) {
         signal(SIGTERM, shutdown_handler);
         signal(SIGINT, shutdown_handler);
 
+        /* Telegram bridge: start thread that bridges mailbox ↔ Telegram API */
+        pthread_t tg_thread = 0;
+        telegram_ctx_t tg_ctx;
+        if (telegram_mode) {
+            telegram_init(&tg_ctx, config_path, mbox_dir, &shutdown_requested);
+            if (!tg_ctx.bot_token || !tg_ctx.chat_id) {
+                /* No config — run interactive setup */
+                if (telegram_setup(&tg_ctx) != 0) {
+                    fprintf(stderr, "[telegram] setup failed, exiting\n");
+                    telegram_free(&tg_ctx);
+                    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+                    return 1;
+                }
+            }
+            pthread_create(&tg_thread, NULL, telegram_run, &tg_ctx);
+            fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
+        }
+
         while (!shutdown_requested) {
             char *task_id = NULL;
             char *task_query = mailbox_wait_task(mbox_dir, &task_id, 0);
@@ -836,6 +861,10 @@ int main(int argc, char **argv) {
         }
         /* FIX #6: Graceful shutdown — cleanup shared resources */
         fprintf(stderr, "[daemon] shutting down...\n");
+        if (telegram_mode && tg_thread) {
+            pthread_join(tg_thread, NULL);
+            telegram_free(&tg_ctx);
+        }
         web_search_cleanup();
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return 0;

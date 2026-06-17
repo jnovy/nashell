@@ -285,6 +285,10 @@ typedef struct {
     char  *search_engine;        /* "searxng" (default) — kept for config compat */
     char  *searxng_url;
 
+    /* [telegram] — native Telegram Bot bridge */
+    char     *telegram_bot_token;   /* bot token from @BotFather */
+    long long telegram_chat_id;     /* authorized chat ID */
+
     /* [model profiles] — loaded from ~/.nash/models/ */
     model_profile_t *model_profiles;
     int              n_model_profiles;

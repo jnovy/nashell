@@ -358,6 +358,14 @@ config_t *config_load(const char *path) {
         cfg->workspace_isolated = toml_int(ws_tbl, "isolated", 0);
     }
 
+    /* [telegram] — native Telegram Bot bridge */
+    toml_table_t *telegram = toml_table_in(root, "telegram");
+    if (telegram) {
+        cfg->telegram_bot_token = toml_str(telegram, "bot_token");
+        toml_datum_t d = toml_int_in(telegram, "chat_id");
+        if (d.ok) cfg->telegram_chat_id = (long long)d.u.i;
+    }
+
     /* [thinking] — overrides old [client].thinking if both present */
     toml_table_t *thinking = toml_table_in(root, "thinking");
     if (thinking) {
@@ -416,6 +424,7 @@ void config_free(config_t *cfg) {
     free(cfg->workspace);
     free(cfg->search_engine);
     free(cfg->searxng_url);
+    free(cfg->telegram_bot_token);
     free(cfg->belief_entropy.anchor_question);
     /* Free auto-generated max_tools allow list (owned by cfg, not profile) */
     if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
