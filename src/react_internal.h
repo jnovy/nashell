@@ -63,6 +63,9 @@ typedef struct {
 /* Streaming token callback — bridges llm_token_fn to react_event_fn */
 void react_stream_token_cb(const char *token, void *userdata);
 
+/* Progress callback — bridges provider_progress_fn to react_event_fn */
+void react_progress_cb(int processed, int total, void *userdata);
+
 /* Recursively unwrap nested JSON in the "thought" field. */
 void react_sanitize_thought(cJSON *action);
 

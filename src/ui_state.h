@@ -124,6 +124,10 @@ typedef struct {
     int            stream_first_token_seen; /* 1 = first token received, timing valid */
     int            stream_token_count;    /* tokens received in current step */
 
+    /* ── Server-reported prompt processing progress ── */
+    int            prompt_progress_processed; /* tokens processed so far (from server) */
+    int            prompt_progress_total;     /* total tokens to process (from server) */
+
     /* ── Playbook session tracking ── */
     char          *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */
     int            playbook_react_loop;  /* react loop of active playbook pass */

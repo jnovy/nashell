@@ -192,6 +192,18 @@ void react_stream_token_cb(const char *token, void *userdata) {
     sctx->on_event(&ev, sctx->userdata);
 }
 
+void react_progress_cb(int processed, int total, void *userdata) {
+    react_stream_ctx_t *sctx = userdata;
+    if (!sctx->on_event) return;
+    react_event_t ev = {0};
+    ev.type = REACT_EVENT_PROMPT_PROGRESS;
+    ev.step = sctx->step;
+    ev.react_loop = sctx->react_loop;
+    ev.prompt_progress_processed = processed;
+    ev.prompt_progress_total = total;
+    sctx->on_event(&ev, sctx->userdata);
+}
+
 void react_emit(react_event_fn fn, void *ud, react_event_t *ev) {
     if (fn) fn(ev, ud);
 }
@@ -564,7 +576,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         ctx->provider->cfg.thinking_budget = ctx->rt.thinking_budget;
         char *response = provider_complete_stream(ctx->provider, chat, &stats,
                 on_event ? react_stream_token_cb : NULL, &sctx,
-                max_resp, rep_thresh);
+                max_resp, rep_thresh,
+                on_event ? react_progress_cb : NULL, &sctx);
         if (!response) {
             consecutive_null_responses++;
             int rc = react_handle_null_response(ctx, chat,

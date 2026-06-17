@@ -345,6 +345,8 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
         cJSON *so = cJSON_CreateObject();
         cJSON_AddBoolToObject(so, "include_usage", 1);
         cJSON_AddItemToObject(req, "stream_options", so);
+        /* Request prompt processing progress from llama.cpp server */
+        cJSON_AddBoolToObject(req, "return_progress", 1);
     }
 
     /* Tools — use filter if set on provider (allows model profile tool restrictions) */
@@ -535,6 +537,9 @@ typedef struct {
     struct timespec first_token_time;   /* timestamp of first content token */
     int            first_token_seen;    /* 1 = first_token_time is valid */
     int            streaming_token_count; /* number of content tokens received */
+    /* Prompt processing progress callback (llama.cpp return_progress) */
+    provider_progress_fn on_progress;
+    void          *progress_userdata;
 } provider_sse_state_t;
 
 /* ── SSE line processing (OpenAI-compatible format) ─────────────── */
@@ -546,6 +551,16 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
 
     cJSON *data = cJSON_Parse(json_str);
     if (!data) return;
+
+    /* Check for prompt processing progress (llama.cpp return_progress) */
+    cJSON *pp = cJSON_GetObjectItem(data, "prompt_progress");
+    if (pp && cJSON_IsObject(pp) && st->on_progress) {
+        cJSON *pp_total = cJSON_GetObjectItem(pp, "total");
+        cJSON *pp_processed = cJSON_GetObjectItem(pp, "processed");
+        int total = pp_total ? pp_total->valueint : 0;
+        int processed = pp_processed ? pp_processed->valueint : 0;
+        st->on_progress(processed, total, st->progress_userdata);
+    }
 
     cJSON *choices = cJSON_GetObjectItem(data, "choices");
     if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
@@ -1143,7 +1158,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                                llm_stats_t *stats, provider_token_fn on_token,
                                void *userdata, int max_response_bytes,
-                               int repeat_threshold) {
+                               int repeat_threshold,
+                               provider_progress_fn on_progress,
+                               void *progress_userdata) {
     if (stats) memset(stats, 0, sizeof(*stats));
 
     const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
@@ -1175,6 +1192,8 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         .first_token_time    = {0, 0},
         .first_token_seen    = 0,
         .streaming_token_count = 0,
+        .on_progress         = on_progress,
+        .progress_userdata   = progress_userdata,
     };
 
     char *result = NULL;

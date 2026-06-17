@@ -17,6 +17,7 @@ typedef enum {
                                   * show the question and collect user's answer.
                                   * question is in event->message, answer goes to
                                   * react_ctx_t->user_ask_answer */
+    REACT_EVENT_PROMPT_PROGRESS, /* prompt processing progress from server */
 } react_event_type_t;
 
 /* Event data — all fields set to 0/NULL by default, only relevant ones populated */
@@ -37,6 +38,10 @@ typedef struct {
     cJSON       *tool_meta;   /* tool result metadata JSON (borrowed, do not free) */
     llm_stats_t  stats;       /* LLM timing/token stats */
     int          context_size; /* server's n_ctx (for computing context utilization %) */
+
+    /* Prompt processing progress (REACT_EVENT_PROMPT_PROGRESS) */
+    int          prompt_progress_processed; /* tokens processed so far */
+    int          prompt_progress_total;     /* total tokens to process */
 
     /* Provenance fields — set by playbook passes, NULL/0 for normal queries */
     const char  *session_dir; /* session directory where journal lives */

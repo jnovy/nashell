@@ -327,7 +327,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
             int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
             char *rresp = provider_complete_stream(ctx->provider, reflect, &rstats,
-                    NULL, NULL, max_resp, rep_thresh);
+                    NULL, NULL, max_resp, rep_thresh, NULL, NULL);
             if (!rresp) break;
 
             cJSON *raction = llm_parse_action(rresp, NULL);

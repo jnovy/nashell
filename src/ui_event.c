@@ -116,6 +116,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         clock_gettime(CLOCK_MONOTONIC, &ui->stream_step_start);
         ui->stream_first_token_seen = 0;
         ui->stream_token_count = 0;
+        ui->prompt_progress_processed = 0;
+        ui->prompt_progress_total = 0;
 
         /* Defer react MD + session MD regeneration to the main loop.
          * Previously these expensive file I/O operations ran here under
@@ -276,6 +278,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->user_ask_question = (ev->message && ev->message[0])
             ? strdup(ev->message) : strdup("(no question specified)");
         /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_file_reload = 1;
+        break;
+
+    case REACT_EVENT_PROMPT_PROGRESS:
+        /* Update server-reported prompt processing progress */
+        ui->prompt_progress_processed = ev->prompt_progress_processed;
+        ui->prompt_progress_total = ev->prompt_progress_total;
         ui->needs_react_regen = 1;
         ui->needs_file_reload = 1;
         break;

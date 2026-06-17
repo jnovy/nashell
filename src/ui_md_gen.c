@@ -1054,11 +1054,23 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             /* No tokens yet — prompt is being processed */
             double pp_elapsed = (now.tv_sec - ui->stream_step_start.tv_sec) +
                                 (now.tv_nsec - ui->stream_step_start.tv_nsec) / 1e9;
-            if (pp_elapsed >= 0.5)
+            if (ui->prompt_progress_total > 0) {
+                /* Server-reported progress (llama.cpp return_progress) */
+                int pct = (int)(100.0 * ui->prompt_progress_processed /
+                                ui->prompt_progress_total);
+                if (pct > 100) pct = 100;
+                if (pp_elapsed >= 0.5)
+                    snprintf(progress, sizeof(progress),
+                             "prompt processing... %d%% (%.1fs)", pct, pp_elapsed);
+                else
+                    snprintf(progress, sizeof(progress),
+                             "prompt processing... %d%%", pct);
+            } else if (pp_elapsed >= 0.5) {
                 snprintf(progress, sizeof(progress),
                          "prompt processing... (%.1fs)", pp_elapsed);
-            else
+            } else {
                 snprintf(progress, sizeof(progress), "prompt processing...");
+            }
         }
 
         if (ui->max_steps > 0)

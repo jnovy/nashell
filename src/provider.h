@@ -43,6 +43,9 @@ typedef struct provider provider_t;
 /* Token callback for streaming */
 typedef void (*provider_token_fn)(const char *token, void *userdata);
 
+/* Prompt processing progress callback (llama.cpp return_progress) */
+typedef void (*provider_progress_fn)(int processed, int total, void *userdata);
+
 /* Provider function pointers — mirrors nashell's Provider base class */
 struct provider {
     provider_type_t type;
@@ -167,7 +170,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats);
 char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                                llm_stats_t *stats, provider_token_fn on_token,
                                void *userdata, int max_response_bytes,
-                               int repeat_threshold);
+                               int repeat_threshold,
+                               provider_progress_fn on_progress,
+                               void *progress_userdata);
 
 /* ── Convenience: provider type from string ─────────────────────── */
 
