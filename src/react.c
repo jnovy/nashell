@@ -208,21 +208,38 @@ void react_emit(react_event_fn fn, void *ud, react_event_t *ev) {
     if (fn) fn(ev, ud);
 }
 
-/* Extract the key display parameter for a tool action */
+/* Extract the key display parameter for a tool action.
+ * Derives the display param from TOOL_REGISTRY[].params_json "required"[0]
+ * instead of hardcoding tool→param mappings. */
 const char *react_get_action_desc(cJSON *action, const char *action_name,
                                    const char *thought) {
-    if (strcmp(action_name, "shell_exec") == 0)
-        return react_json_get_str(action, "command");
-    if (strcmp(action_name, "file_read") == 0 ||
-        strcmp(action_name, "file_write") == 0 ||
-        strcmp(action_name, "file_edit") == 0)
-        return react_json_get_str(action, "path");
-    if (strcmp(action_name, "grep_search") == 0)
-        return react_json_get_str(action, "pattern");
+    /* Special cases that don't map to a required param */
     if (strcmp(action_name, "notes") == 0)
         return "[saving notes]";
     if (strcmp(action_name, "done") == 0)
         return thought;
+
+    /* Generic: look up first required param from the registry schema */
+    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+        if (strcmp(action_name, TOOL_REGISTRY[i].name) != 0)
+            continue;
+        if (!TOOL_REGISTRY[i].params_json)
+            break;
+        cJSON *schema = cJSON_Parse(TOOL_REGISTRY[i].params_json);
+        if (!schema) break;
+        cJSON *req = cJSON_GetObjectItem(schema, "required");
+        if (req && cJSON_IsArray(req) && cJSON_GetArraySize(req) > 0) {
+            cJSON *first = cJSON_GetArrayItem(req, 0);
+            if (first && cJSON_IsString(first)) {
+                const char *val = react_json_get_str(action,
+                                                      first->valuestring);
+                cJSON_Delete(schema);
+                return val ? val : thought;
+            }
+        }
+        cJSON_Delete(schema);
+        break;
+    }
     return thought;
 }
 
