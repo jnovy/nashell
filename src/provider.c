@@ -675,6 +675,17 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
         }
     }
 
+    /* Reasoning/thinking content (llama.cpp, Qwen, DeepSeek via OpenAI-compat) */
+    cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
+    if (reasoning && cJSON_IsString(reasoning)) {
+        str_append_cstr(&st->thinking_content, reasoning->valuestring);
+        st->streaming_token_count++;
+        if (!st->first_token_seen) {
+            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+            st->first_token_seen = 1;
+        }
+    }
+
     /* Usage stats from streaming response */
     cJSON *usage = cJSON_GetObjectItem(data, "usage");
     if (usage && st->stats) {
