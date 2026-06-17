@@ -57,6 +57,8 @@ static void tg_write_task(const char *mailbox_dir, const char *task_id,
                           const char *text);
 static void tg_write_answer(const char *mailbox_dir, const char *ask_id,
                             const char *text);
+static int  tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
+                              char *out_path, size_t out_sz);
 
 
 /* ── Initialization ──────────────────────────────────────── */
@@ -856,6 +858,173 @@ static char *tg_read_outbox(const char *path) {
 }
 
 
+/* ── Photo/image download ────────────────────────────────── */
+
+/*
+ * Download a photo from Telegram by file_id.
+ *
+ * Steps:
+ *   1. Call getFile API with file_id → get file_path
+ *   2. Download from https://api.telegram.org/file/bot<token>/<file_path>
+ *   3. Save to ~/.nash/images/<file_path basename>
+ *
+ * On success, writes the local path to out_path and returns 0.
+ * On failure, returns -1.
+ */
+static int tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
+                             char *out_path, size_t out_sz) {
+    /* Step 1: Call getFile to get the file_path */
+    char url[TG_URL_MAX];
+    snprintf(url, sizeof(url), "%s%s/getFile?file_id=%s",
+             TG_API_BASE, ctx->bot_token, file_id);
+
+    str_t resp = str_new(1024);
+    if (http_get(url, 15, &resp) != 0 || resp.len == 0) {
+        fprintf(stderr, "[telegram] getFile request failed\n");
+        str_free(&resp);
+        return -1;
+    }
+
+    cJSON *root = cJSON_Parse(resp.data);
+    str_free(&resp);
+    if (!root) {
+        fprintf(stderr, "[telegram] getFile: invalid JSON response\n");
+        return -1;
+    }
+
+    cJSON *ok = cJSON_GetObjectItem(root, "ok");
+    if (!ok || !cJSON_IsTrue(ok)) {
+        cJSON *desc = cJSON_GetObjectItem(root, "description");
+        fprintf(stderr, "[telegram] getFile error: %s\n",
+                desc ? desc->valuestring : "unknown");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON *result = cJSON_GetObjectItem(root, "result");
+    cJSON *fp = result ? cJSON_GetObjectItem(result, "file_path") : NULL;
+    if (!fp || !fp->valuestring || !fp->valuestring[0]) {
+        fprintf(stderr, "[telegram] getFile: no file_path in response\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    const char *file_path = fp->valuestring;
+
+    /* Step 2: Download the file */
+    char file_url[TG_URL_MAX * 2];
+    snprintf(file_url, sizeof(file_url), "https://api.telegram.org/file/bot%s/%s",
+             ctx->bot_token, file_path);
+
+    str_t file_data = str_new(256 * 1024);  /* 256KB initial */
+    if (http_get(file_url, 60, &file_data) != 0 || file_data.len == 0) {
+        fprintf(stderr, "[telegram] failed to download file: %s\n", file_path);
+        str_free(&file_data);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    /* Step 3: Save to ~/.nash/images/ */
+    /* Derive nash_dir from mailbox_dir (e.g. ~/.nash/mailbox → ~/.nash) */
+    char images_dir[512];
+    const char *mbox_suffix = strstr(ctx->mailbox_dir, "/mailbox");
+    if (mbox_suffix) {
+        snprintf(images_dir, sizeof(images_dir), "%.*s/images",
+                 (int)(mbox_suffix - ctx->mailbox_dir), ctx->mailbox_dir);
+    } else {
+        snprintf(images_dir, sizeof(images_dir), "%s/../images",
+                 ctx->mailbox_dir);
+    }
+    mkdir_p(images_dir, 0755);
+
+    /* Extract filename from file_path (e.g. "photos/file_123.jpg" → "file_123.jpg") */
+    const char *basename = strrchr(file_path, '/');
+    basename = basename ? basename + 1 : file_path;
+
+    /* Add timestamp prefix to avoid collisions */
+    char local_name[256];
+    snprintf(local_name, sizeof(local_name), "%ld_%s", (long)time(NULL), basename);
+
+    char local_path[768];
+    snprintf(local_path, sizeof(local_path), "%s/%s", images_dir, local_name);
+
+    /* Write file atomically */
+    char tmp_path[776];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", local_path);
+
+    FILE *f = fopen(tmp_path, "wb");
+    if (!f) {
+        fprintf(stderr, "[telegram] failed to create %s: %s\n",
+                tmp_path, strerror(errno));
+        str_free(&file_data);
+        cJSON_Delete(root);
+        return -1;
+    }
+    size_t file_sz = file_data.len;
+    size_t written = fwrite(file_data.data, 1, file_sz, f);
+    fclose(f);
+    str_free(&file_data);
+    cJSON_Delete(root);
+
+    if (written != file_sz) {
+        fprintf(stderr, "[telegram] short write to %s\n", tmp_path);
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (rename(tmp_path, local_path) != 0) {
+        fprintf(stderr, "[telegram] rename failed: %s\n", strerror(errno));
+        unlink(tmp_path);
+        return -1;
+    }
+
+    fprintf(stderr, "[telegram] saved photo: %s (%.1f KB)\n",
+            local_path, (double)written / 1024.0);
+
+    snprintf(out_path, out_sz, "%s", local_path);
+    return 0;
+}
+
+/*
+ * Extract the best file_id from a Telegram message containing a photo or
+ * image document.
+ *
+ * For photos: picks the largest PhotoSize (last in the array).
+ * For documents with image/ mime_type: uses the document's file_id.
+ *
+ * Returns the file_id string (owned by cJSON, valid while msg lives),
+ * or NULL if the message has no image.
+ */
+static const char *tg_extract_image_file_id(cJSON *msg) {
+    /* Check for photo array (sent as photo) */
+    cJSON *photo = cJSON_GetObjectItem(msg, "photo");
+    if (photo && cJSON_IsArray(photo)) {
+        int n = cJSON_GetArraySize(photo);
+        if (n > 0) {
+            /* Last element is the largest resolution */
+            cJSON *largest = cJSON_GetArrayItem(photo, n - 1);
+            cJSON *fid = largest ? cJSON_GetObjectItem(largest, "file_id") : NULL;
+            if (fid && fid->valuestring)
+                return fid->valuestring;
+        }
+    }
+
+    /* Check for document with image mime type */
+    cJSON *doc = cJSON_GetObjectItem(msg, "document");
+    if (doc) {
+        cJSON *mime = cJSON_GetObjectItem(doc, "mime_type");
+        if (mime && mime->valuestring &&
+            strncmp(mime->valuestring, "image/", 6) == 0) {
+            cJSON *fid = cJSON_GetObjectItem(doc, "file_id");
+            if (fid && fid->valuestring)
+                return fid->valuestring;
+        }
+    }
+
+    return NULL;
+}
+
+
 /* ── Outbox file processing ──────────────────────────────── */
 
 static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
@@ -1022,23 +1191,78 @@ void *telegram_run(void *arg) {
                     continue;
                 }
 
+                /* Extract text content: from text field or caption (for photos) */
                 cJSON *text = cJSON_GetObjectItem(msg, "text");
-                if (!text || !text->valuestring) continue;
+                cJSON *caption_j = cJSON_GetObjectItem(msg, "caption");
+                const char *msg_text = NULL;
+                if (text && text->valuestring)
+                    msg_text = text->valuestring;
+                else if (caption_j && caption_j->valuestring)
+                    msg_text = caption_j->valuestring;
 
-                const char *msg_text = text->valuestring;
-                fprintf(stderr, "[telegram] received: %.100s%s\n",
-                        msg_text, strlen(msg_text) > 100 ? "..." : "");
+                /* Check for photo or image document */
+                const char *image_file_id = tg_extract_image_file_id(msg);
+
+                /* Must have either text or an image */
+                if (!msg_text && !image_file_id) continue;
+
+                if (msg_text) {
+                    fprintf(stderr, "[telegram] received: %.100s%s\n",
+                            msg_text, strlen(msg_text) > 100 ? "..." : "");
+                }
+                if (image_file_id) {
+                    fprintf(stderr, "[telegram] received photo (file_id: %.40s...)\n",
+                            image_file_id);
+                }
 
                 /* Route message: answer to pending ask, or new task */
                 if (pending_ask_id[0]) {
                     /* This is an answer to a user_ask question */
+                    const char *answer = msg_text ? msg_text : "(photo)";
                     fprintf(stderr, "[telegram] routing as answer to ask_%s\n",
                             pending_ask_id);
-                    tg_write_answer(ctx->mailbox_dir, pending_ask_id, msg_text);
+                    tg_write_answer(ctx->mailbox_dir, pending_ask_id, answer);
                     pending_ask_id[0] = 0;
                     tg_api_send_message(ctx, "✓ Answer received", NULL);
+                } else if (image_file_id) {
+                    /* Photo/image message → download and create image task */
+                    char image_path[768];
+                    if (tg_download_photo(ctx, image_file_id,
+                                          image_path, sizeof(image_path)) == 0) {
+                        /* Build task text that tells the agent to analyze the image */
+                        str_t task_text = str_new(1024);
+                        if (msg_text && msg_text[0]) {
+                            /* User provided a caption — use it as the question */
+                            str_appendf(&task_text,
+                                "Analyze this image using image_analyze tool "
+                                "(path: %s): %s", image_path, msg_text);
+                        } else {
+                            /* No caption — use default prompt */
+                            str_appendf(&task_text,
+                                "Analyze this image using image_analyze tool "
+                                "(path: %s). Describe what you see in detail.",
+                                image_path);
+                        }
+
+                        char task_id[64];
+                        struct timespec ts;
+                        clock_gettime(CLOCK_REALTIME, &ts);
+                        snprintf(task_id, sizeof(task_id), "tg%lx%04lx",
+                                 (long)ts.tv_sec, ts.tv_nsec / 100000L);
+
+                        fprintf(stderr, "[telegram] creating image task_%s\n",
+                                task_id);
+                        tg_write_task(ctx->mailbox_dir, task_id, task_text.data);
+                        str_free(&task_text);
+                        tg_api_send_message(ctx, "📷 Analyzing image...", NULL);
+                    } else {
+                        tg_api_send_message(ctx,
+                            "⚠️ Failed to download image. "
+                            "Note: Telegram limits bot file downloads to 20 MB.",
+                            NULL);
+                    }
                 } else {
-                    /* New task query */
+                    /* Plain text task query */
                     char task_id[64];
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);

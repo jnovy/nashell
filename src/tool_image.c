@@ -126,8 +126,16 @@ static char *build_openai_image_request(provider_t *p, const char *question,
 static char *build_anthropic_image_request(provider_t *p, const char *question,
                                             const char *mime, const char *b64) {
     cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "model",
-                            p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+
+    /* Vertex AI: anthropic_version in body, model in URL (not body).
+     * Direct Anthropic API: model in body, anthropic_version as header
+     * (but we also add it to body for direct API calls). */
+    if (p->type == PROVIDER_VERTEX) {
+        cJSON_AddStringToObject(req, "anthropic_version", "vertex-2023-10-16");
+    } else {
+        cJSON_AddStringToObject(req, "model",
+                                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+    }
     cJSON_AddNumberToObject(req, "max_tokens", 4096);
 
     cJSON *msgs = cJSON_CreateArray();
@@ -156,9 +164,8 @@ static char *build_anthropic_image_request(provider_t *p, const char *question,
     cJSON_AddItemToArray(msgs, msg);
     cJSON_AddItemToObject(req, "messages", msgs);
 
-    /* Anthropic requires anthropic_version for direct API */
-    if (p->type == PROVIDER_ANTHROPIC)
-        cJSON_AddStringToObject(req, "anthropic_version", "2023-06-01");
+    /* anthropic_version already added at top of function for both
+     * PROVIDER_VERTEX and PROVIDER_ANTHROPIC (via the if/else block). */
 
     char *json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
