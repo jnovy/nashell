@@ -888,12 +888,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             } \
         } while (0)
 
-        /* Helper: emit continuation line with thought (plain text, no backticks) */
-        #define EMIT_THOUGHT_CONTINUATION(text, with_elapsed) do { \
-            str_appendf(&md, "%*s %s%s\n", \
-                        TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len, "", \
-                        (text), (with_elapsed) ? elapsed_str : ""); \
-        } while (0)
+
 
         if (is_shell && tlen > 0) {
             /* shell_exec with thought: thought on main line (plain text),
@@ -903,11 +898,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 memcpy(thought_text, thought_start, (size_t)tlen);
                 thought_text[tlen] = '\0';
             }
-            if (thought_text && tlen <= avail) {
+            if (thought_text) {
                 EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
-            } else if (thought_text) {
-                EMIT_TOOL_HEADER(!desc_clean);
-                EMIT_THOUGHT_CONTINUATION(thought_text, 0);
             } else {
                 EMIT_TOOL_HEADER(!desc_clean);
             }
@@ -926,11 +918,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 memcpy(thought_text, thought_start, (size_t)tlen);
                 thought_text[tlen] = '\0';
             }
-            if (thought_text && tlen <= avail) {
+            if (thought_text) {
                 EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
-            } else if (thought_text) {
-                EMIT_TOOL_HEADER(!desc_clean);
-                EMIT_THOUGHT_CONTINUATION(thought_text, 0);
             } else {
                 EMIT_TOOL_HEADER(!desc_clean);
             }
@@ -954,7 +943,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         #undef EMIT_TOOL_WITH_TEXT
         #undef EMIT_CONTINUATION
         #undef EMIT_TOOL_WITH_THOUGHT
-        #undef EMIT_THOUGHT_CONTINUATION
         #undef TIME_COL_WIDTH
 
         free(desc_clean);
