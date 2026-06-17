@@ -17,7 +17,7 @@
  *         └── existing mailbox_wait_task → react_run → mailbox_write_result
  *
  * Uses HTML parse_mode for formatting (simpler escaping than MarkdownV2).
- * Messages >4096 chars are auto-split on paragraph boundaries.
+ * Messages >4096 chars are sent as document files (.md) with caption preview.
  * No new dependencies — uses existing libcurl (http_post/http_get) and cJSON.
  */
 

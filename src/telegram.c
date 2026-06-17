@@ -47,6 +47,8 @@ static int  tg_api_send_message(telegram_ctx_t *ctx, const char *text,
                                 const char *parse_mode);
 static int  tg_send_long(telegram_ctx_t *ctx, const char *text,
                          const char *parse_mode);
+static int  tg_api_send_document(telegram_ctx_t *ctx, const char *text,
+                                 const char *caption);
 static char *md_to_html(const char *md);
 static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename);
 static int  tg_config_save(telegram_ctx_t *ctx);
@@ -442,48 +444,77 @@ static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
     return rc;
 }
 
-/* Send a long message, splitting at ~4096 chars on paragraph boundaries. */
-/* Track which HTML tags are open at a given position in the text.
- * Returns a bitmask: bit 0 = <pre>, bit 1 = <code>, bit 2 = <b>, bit 3 = <i> */
-#define TAG_PRE  1
-#define TAG_CODE 2
-#define TAG_B    4
-#define TAG_I    8
+/* Send text as a document file (.md) via sendDocument API.
+ * Used for messages that exceed TG_MSG_MAX to avoid splitting into
+ * multiple chunks where the user only sees the last part. */
+static int tg_api_send_document(telegram_ctx_t *ctx, const char *text,
+                                const char *caption) {
+    char url[TG_URL_MAX];
+    snprintf(url, sizeof(url), "%s%s/sendDocument",
+             TG_API_BASE, ctx->bot_token);
 
-static int html_open_tags(const char *text, size_t len) {
-    int tags = 0;
-    for (size_t i = 0; i < len; i++) {
-        if (text[i] != '<') continue;
-        if (i + 4 <= len && strncmp(&text[i], "<pre", 4) == 0) tags |= TAG_PRE;
-        else if (i + 6 <= len && strncmp(&text[i], "</pre>", 6) == 0) tags &= ~TAG_PRE;
-        else if (i + 5 <= len && strncmp(&text[i], "<code", 5) == 0) tags |= TAG_CODE;
-        else if (i + 7 <= len && strncmp(&text[i], "</code>", 7) == 0) tags &= ~TAG_CODE;
-        else if (i + 3 <= len && strncmp(&text[i], "<b>", 3) == 0) tags |= TAG_B;
-        else if (i + 4 <= len && strncmp(&text[i], "</b>", 4) == 0) tags &= ~TAG_B;
-        else if (i + 3 <= len && strncmp(&text[i], "<i>", 3) == 0) tags |= TAG_I;
-        else if (i + 4 <= len && strncmp(&text[i], "</i>", 4) == 0) tags &= ~TAG_I;
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    /* Build multipart form */
+    curl_mime *mime = curl_mime_init(curl);
+
+    /* chat_id field */
+    curl_mimepart *part = curl_mime_addpart(mime);
+    curl_mime_name(part, "chat_id");
+    char chat_id_str[32];
+    snprintf(chat_id_str, sizeof(chat_id_str), "%lld", ctx->chat_id);
+    curl_mime_data(part, chat_id_str, CURL_ZERO_TERMINATED);
+
+    /* document field — send text content as "result.md" */
+    part = curl_mime_addpart(mime);
+    curl_mime_name(part, "document");
+    curl_mime_data(part, text, CURL_ZERO_TERMINATED);
+    curl_mime_filename(part, "result.md");
+    curl_mime_type(part, "text/markdown");
+
+    /* caption (short preview, max 1024 chars for Telegram) */
+    if (caption && caption[0]) {
+        part = curl_mime_addpart(mime);
+        curl_mime_name(part, "caption");
+        curl_mime_data(part, caption, CURL_ZERO_TERMINATED);
     }
-    return tags;
+
+    str_t resp = str_new(1024);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+    CURLcode res = curl_easy_perform(curl);
+    int rc = (res == CURLE_OK) ? 0 : -1;
+
+    /* Check API response */
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
+            if (!ok || !cJSON_IsTrue(ok)) {
+                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
+                fprintf(stderr, "[telegram] sendDocument error: %s\n",
+                        desc ? desc->valuestring : "unknown");
+                rc = -1;
+            }
+            cJSON_Delete(rjson);
+        }
+    }
+
+    str_free(&resp);
+    curl_mime_free(mime);
+    curl_easy_cleanup(curl);
+    return rc;
 }
 
-/* Append closing tags for any open tags (inner → outer order) */
-static void html_close_tags(str_t *out, int tags) {
-    if (tags & TAG_I)    str_append_cstr(out, "</i>");
-    if (tags & TAG_B)    str_append_cstr(out, "</b>");
-    if (tags & TAG_CODE) str_append_cstr(out, "</code>");
-    if (tags & TAG_PRE)  str_append_cstr(out, "</pre>");
-}
-
-/* Append opening tags for any that need to continue (outer → inner order) */
-static void html_reopen_tags(str_t *out, int tags) {
-    if (tags & TAG_PRE)  str_append_cstr(out, "<pre>");
-    if (tags & TAG_CODE) str_append_cstr(out, "<code>");
-    if (tags & TAG_B)    str_append_cstr(out, "<b>");
-    if (tags & TAG_I)    str_append_cstr(out, "<i>");
-}
-
-/* Send a long message, splitting at ~4096 chars on paragraph boundaries.
- * When using HTML parse_mode, properly closes and reopens tags across splits. */
+/* Send a long message, splitting at ~4096 chars on paragraph boundaries. */
+/* Send a long message: if it fits in TG_MSG_MAX, send as a regular message.
+ * If it's longer, send the full text as a document file (.md) so the user
+ * gets one message instead of having to scroll through multiple chunks. */
 static int tg_send_long(telegram_ctx_t *ctx, const char *text,
                         const char *parse_mode) {
     size_t len = strlen(text);
@@ -491,83 +522,50 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
         return tg_api_send_message(ctx, text, parse_mode);
     }
 
-    int is_html = parse_mode && strcmp(parse_mode, "HTML") == 0;
+    /* For long messages, send as a document with a short caption preview.
+     * This avoids the problem where multi-part messages show only the
+     * last chunk and the user has to scroll up to read from the beginning. */
 
-    /* Split into chunks */
-    const char *p = text;
-    size_t remaining = len;
-    int part = 1;
-    int total_parts = (int)((len + TG_MSG_MAX - 1) / TG_MSG_MAX);
-    int carry_tags = 0;  /* tags open from previous chunk */
+    /* Extract first paragraph as caption preview (max ~900 chars to stay
+     * under Telegram's 1024-char caption limit with some margin) */
+    const size_t caption_max = 900;
+    char caption[1024];
+    size_t cap_len = 0;
 
-    while (remaining > 0) {
-        /* Reserve space for part indicator + possible tag close/reopen */
-        size_t reserve = 120;
-        size_t chunk = remaining > TG_MSG_MAX - reserve
-                       ? TG_MSG_MAX - reserve : remaining;
-
-        /* Find a good split point (paragraph boundary) */
-        if (chunk < remaining) {
-            /* Look for double newline first */
-            size_t best = 0;
-            for (size_t i = chunk; i > chunk / 2; i--) {
-                if (p[i] == '\n' && i > 0 && p[i-1] == '\n') {
-                    best = i + 1;
-                    break;
-                }
+    /* Find end of first paragraph (double newline) or use caption_max */
+    const char *para_end = strstr(text, "\n\n");
+    if (para_end && (size_t)(para_end - text) <= caption_max) {
+        cap_len = (size_t)(para_end - text);
+    } else {
+        /* Find last newline before caption_max */
+        cap_len = len < caption_max ? len : caption_max;
+        for (size_t i = cap_len; i > cap_len / 2; i--) {
+            if (text[i] == '\n') {
+                cap_len = i;
+                break;
             }
-            /* Fall back to single newline */
-            if (!best) {
-                for (size_t i = chunk; i > chunk / 2; i--) {
-                    if (p[i] == '\n') {
-                        best = i + 1;
-                        break;
-                    }
-                }
-            }
-            if (best) chunk = best;
         }
-
-        /* Determine which HTML tags are open at this split point
-         * by scanning from the very beginning of the text. */
-        int open_tags = 0;
-        if (is_html) {
-            open_tags = html_open_tags(text, (size_t)(p - text) + chunk);
-        }
-
-        /* Build chunk with part indicator and tag continuity */
-        str_t msg = str_new(chunk + 128);
-        if (total_parts > 1) {
-            str_appendf(&msg, "[%d/%d]\n", part, total_parts);
-        }
-
-        /* Reopen tags that were open at end of previous chunk */
-        if (carry_tags) {
-            html_reopen_tags(&msg, carry_tags);
-        }
-
-        str_append(&msg, p, chunk);
-
-        /* Close any tags that are still open at the split point */
-        if (open_tags && chunk < remaining) {
-            html_close_tags(&msg, open_tags);
-        }
-
-        tg_api_send_message(ctx, msg.data, parse_mode);
-        str_free(&msg);
-
-        /* Carry open tags to next iteration */
-        carry_tags = (chunk < remaining) ? open_tags : 0;
-
-        p += chunk;
-        remaining -= chunk;
-        part++;
-
-        /* Small delay between parts to avoid rate limits */
-        if (remaining > 0) usleep(200000); /* 200ms */
     }
 
-    return 0;
+    /* Copy caption, stripping any HTML tags for clean preview */
+    size_t j = 0;
+    for (size_t i = 0; i < cap_len && j < sizeof(caption) - 4; i++) {
+        if (text[i] == '<') {
+            /* Skip to closing > */
+            while (i < cap_len && text[i] != '>') i++;
+            continue;
+        }
+        caption[j++] = text[i];
+    }
+    /* Add ellipsis if truncated */
+    if (cap_len < len && j + 3 < sizeof(caption)) {
+        caption[j++] = '.';
+        caption[j++] = '.';
+        caption[j++] = '.';
+    }
+    caption[j] = '\0';
+
+    return tg_api_send_document(ctx, text, caption);
 }
 
 
@@ -872,10 +870,19 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
     if (!content) return;
 
     if (strncmp(filename, "result_", 7) == 0) {
-        /* Task result → convert markdown and send */
-        char *html = md_to_html(content);
-        tg_send_long(ctx, html, "HTML");
-        free(html);
+        /* Task result → convert markdown and send.
+         * For long results, send the original markdown as a document file
+         * so the user can read it top-to-bottom instead of scrolling. */
+        size_t content_len = strlen(content);
+        if (content_len > TG_MSG_MAX) {
+            /* Long: send original markdown as .md document */
+            tg_send_long(ctx, content, NULL);
+        } else {
+            /* Short: send as formatted HTML message */
+            char *html = md_to_html(content);
+            tg_send_long(ctx, html, "HTML");
+            free(html);
+        }
     } else if (strncmp(filename, "ask_", 4) == 0) {
         /* user_ask question → send and note the ask ID for reply matching */
         str_t msg = str_new(strlen(content) + 64);
