@@ -2,12 +2,14 @@
 #include "memory.h"
 #include "workspace.h"
 #include "embedding.h"
+#include "session_index.h"
 #include "provider.h"
 #include "llm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 /* ── LLM-based memory consolidation (GDN-2 P2) ──────── */
 /* After storing a memory, check for semantically similar existing memories.
@@ -485,7 +487,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
 }
 
-/* ── memory_recall ─────────────────────────────────────── */
+/* ── memory_recall (v4 unified: L4 curated + L3 sessions) ── */
 
 tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
@@ -494,16 +496,68 @@ tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
                           "Describe what you're looking for.");
 
     const char *query = query_j->valuestring;
-    memory_results_t results = ctx->ws
-        ? workspace_recall(ctx->ws, query, 5)
-        : memory_recall(ctx->memory, query, 5);
 
-    /* Build result string + track recalled keys for validation scoring */
+    /* Check optional source filter (default: "all") */
+    const char *source = "all";
+    cJSON *source_j = cJSON_GetObjectItem(params, "source");
+    if (source_j && source_j->valuestring && source_j->valuestring[0])
+        source = source_j->valuestring;
+
+    int search_memory = (strcmp(source, "all") == 0 || strcmp(source, "memory") == 0);
+    int search_sessions = (strcmp(source, "all") == 0 || strcmp(source, "sessions") == 0);
+
     str_t out = str_new(1024);
-    for (int i = 0; i < results.count; i++) {
-        memory_entry_t *e = &results.entries[i];
-        str_appendf(&out, "--- %s ---\n%s\n\n", e->key, e->value);
-        tool_track_recalled_key(ctx, e->key);
+    int total_matches = 0;
+
+    /* ── L4: Curated memory search ──────────────── */
+    memory_results_t results = {0};
+    if (search_memory && (ctx->memory || ctx->ws)) {
+        results = ctx->ws
+            ? workspace_recall(ctx->ws, query, 5)
+            : memory_recall(ctx->memory, query, 5);
+
+        for (int i = 0; i < results.count; i++) {
+            memory_entry_t *e = &results.entries[i];
+            str_appendf(&out, "[RECALLED MEMORY — %s]\n%s\n\n", e->key, e->value);
+            tool_track_recalled_key(ctx, e->key);
+        }
+        total_matches += results.count;
+    }
+
+    /* ── L3: Session history search ─────────────── */
+    if (search_sessions && ctx->session_idx && ctx->memory &&
+        memory_has_embeddings(ctx->memory)) {
+        embed_ctx_t *embed = memory_embed_ctx(ctx->memory);
+        if (embed) {
+            embed_vec_t query_emb = embed_text(embed, query);
+            if (query_emb.data) {
+                int max_ses = 3;
+                /* If L4 returned good results, fewer sessions needed */
+                if (results.count >= 3) max_ses = 1;
+
+                session_index_results_t ses = session_index_search(
+                    ctx->session_idx, &query_emb, max_ses);
+
+                for (int i = 0; i < ses.count; i++) {
+                    session_index_result_t *sr = &ses.results[i];
+                    /* Format timestamp */
+                    time_t ts = (time_t)sr->timestamp;
+                    struct tm *tm = localtime(&ts);
+                    char ts_buf[64];
+                    strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
+
+                    str_appendf(&out,
+                        "[RECALLED SESSION — %s]\n%s\n"
+                        "  -> file_read %s/journal.jsonl for details\n\n",
+                        ts_buf,
+                        sr->manifest ? sr->manifest : "(no summary)",
+                        sr->session_dir ? sr->session_dir : "");
+                }
+                total_matches += ses.count;
+                session_index_results_free(&ses);
+                embed_vec_free(&query_emb);
+            }
+        }
     }
 
     /* Always store result (even empty) so journal gets a ref and the
@@ -512,12 +566,12 @@ tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddNumberToObject(meta, "matches", results.count);
+    cJSON_AddNumberToObject(meta, "matches", total_matches);
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
     journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
-                   params, alias, out.len, results.count, NULL, NULL);
+                   params, alias, out.len, total_matches, NULL, NULL);
 
     memory_results_free(&results);
     char *ref_copy = strdup(alias);

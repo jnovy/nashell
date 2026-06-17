@@ -15,6 +15,7 @@ typedef struct {
     char *name;       /* section name (e.g. "findings", "plan", "status") */
     char *content;    /* section content (owned) */
     int   priority;   /* 1 = highest priority, 9 = lowest. Default: 5 */
+    int   dirty;      /* 1 if modified since last save (for JSONL append) */
 } scratchpad_section_t;
 
 typedef struct {
@@ -22,6 +23,10 @@ typedef struct {
     int count;
     int cap;                         /* allocated capacity */
     pthread_mutex_t mtx;             /* FIX CRIT2: thread-safe scratchpad */
+    /* Track cleared section names for JSONL op:clear entries on next save */
+    char **cleared_names;            /* names of sections cleared since last save */
+    int    n_cleared;
+    int    cleared_cap;
 } scratchpad_t;
 
 /* Scratchpad lifecycle */
@@ -57,8 +62,13 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars);
 /* Persist scratchpad to disk (session_dir/scratchpad.md). */
 int scratchpad_save(scratchpad_t *sp, const char *session_dir);
 
-/* Load scratchpad from disk. Returns 0 on success. */
+/* Load scratchpad from disk. Returns 0 on success.
+ * Tries scratchpad.jsonl first, falls back to legacy scratchpad.md. */
 int scratchpad_load(scratchpad_t *sp, const char *session_dir);
+
+/* Compact scratchpad.jsonl: rewrite with only the latest state per section.
+ * Reduces file size after many append-only updates. */
+void scratchpad_compact(scratchpad_t *sp, const char *session_dir);
 
 /* Parse serialized scratchpad text (## section headers) into sections.
  * Clears any existing sections in sp first. If the text contains "## "

@@ -11,6 +11,9 @@
 #include "llm.h"
 #include "provider.h"
 
+/* Forward declaration for session index (v4 unified memory L3 tier) */
+typedef struct session_index_t session_index_t;
+
 /* Tool result: metadata JSON + optional stored content hash */
 typedef struct {
     cJSON  *meta;       /* metadata JSON returned to model context */
@@ -104,6 +107,8 @@ typedef struct {
     /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
     int            tool_use_counts[32]; /* indexed by tool_registry order */
     int            n_tool_uses;     /* total tool invocations this loop */
+    /* v4 unified memory: session index for L3 search via memory_recall */
+    session_index_t *session_idx;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

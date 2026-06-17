@@ -309,6 +309,14 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                     str_free(&breadcrumb);
                 }
 
+                /* v4 unified memory: post-compaction hint */
+                llm_chat_insert_typed(chat, evict_start + 2,
+                    "user",
+                    "[Context compacted. Use memory_recall to recover lost "
+                    "context — it searches both stored knowledge and past "
+                    "session history.]",
+                    LLM_MSG_MEMORY_HINT);
+
                 react_event_t ev = {0};
                 ev.react_loop = ctx->tools->react_loop;
                 ev.type = REACT_EVENT_WARNING;

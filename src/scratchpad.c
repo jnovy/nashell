@@ -1,9 +1,11 @@
 #include "scratchpad.h"
 #include "str.h"
 #include "nash_limits.h"
+#include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 void scratchpad_init(scratchpad_t *sp) {
     memset(sp, 0, sizeof(*sp));
@@ -21,6 +23,12 @@ void scratchpad_free(scratchpad_t *sp) {
     sp->sections = NULL;
     sp->count = 0;
     sp->cap = 0;
+    for (int i = 0; i < sp->n_cleared; i++)
+        free(sp->cleared_names[i]);
+    free(sp->cleared_names);
+    sp->cleared_names = NULL;
+    sp->n_cleared = 0;
+    sp->cleared_cap = 0;
     pthread_mutex_destroy(&sp->mtx);  /* FIX CRIT2 */
 }
 
@@ -69,6 +77,7 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
         free(sp->sections[idx].content);
         sp->sections[idx].content = strdup(content);
         sp->sections[idx].priority = priority;
+        sp->sections[idx].dirty = 1;
         pthread_mutex_unlock(&sp->mtx);
         return 0;
     }
@@ -80,6 +89,7 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
     sp->sections[sp->count].name = strdup(name);
     sp->sections[sp->count].content = strdup(content);
     sp->sections[sp->count].priority = priority;
+    sp->sections[sp->count].dirty = 1;
     sp->count++;
     pthread_mutex_unlock(&sp->mtx);
     return 0;
@@ -100,6 +110,7 @@ int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, i
         combined[old_len + 1 + add_len] = '\0';
         free(sp->sections[idx].content);
         sp->sections[idx].content = combined;
+        sp->sections[idx].dirty = 1;
         pthread_mutex_unlock(&sp->mtx);
         return 0;
     }
@@ -112,6 +123,19 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
     pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
     int idx = scratchpad_find(sp, name);
     if (idx < 0) { pthread_mutex_unlock(&sp->mtx); return -1; }
+
+    /* Track cleared name for JSONL op:clear on next save */
+    if (sp->n_cleared >= sp->cleared_cap) {
+        int new_cap = sp->cleared_cap ? sp->cleared_cap * 2 : 8;
+        char **new_names = realloc(sp->cleared_names, (size_t)new_cap * sizeof(char *));
+        if (new_names) {
+            sp->cleared_names = new_names;
+            sp->cleared_cap = new_cap;
+        }
+    }
+    if (sp->n_cleared < sp->cleared_cap) {
+        sp->cleared_names[sp->n_cleared++] = strdup(sp->sections[idx].name);
+    }
 
     free(sp->sections[idx].name);
     free(sp->sections[idx].content);
@@ -218,30 +242,9 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     return str_steal(&out);
 }
 
-int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
-    if (!session_dir) return -1;
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
-
-    pthread_mutex_lock(&sp->mtx);  /* FIX CRIT2 */
-    FILE *f = fopen(path, "w");
-    if (!f) { pthread_mutex_unlock(&sp->mtx); return -1; }
-
-    for (int i = 0; i < sp->count; i++) {
-        fprintf(f, "<!-- priority:%d -->\n## %s\n%s\n\n",
-                sp->sections[i].priority, sp->sections[i].name,
-                sp->sections[i].content);
-    }
-    fclose(f);
-    pthread_mutex_unlock(&sp->mtx);
-    return 0;
-}
-
-int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
-    if (!session_dir) return -1;
-
-    char path[512];
+/* ── Legacy scratchpad.md loader (fallback for pre-v4 sessions) ──── */
+static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
+    char path[PATH_MAX];
     snprintf(path, sizeof(path), "%s/scratchpad.md", session_dir);
 
     char *buf = slurp_file(path, NULL);
@@ -253,8 +256,6 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
      * ## section_name
      * content...
      */
-    scratchpad_free(sp);  /* clear any existing sections */
-
     char *pos = buf;
     while (pos && *pos) {
         int priority = 5;  /* default */
@@ -334,6 +335,147 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
 
     free(buf);
     return 0;
+}
+
+/* ── JSONL scratchpad persistence (v4) ──────────────────────── */
+
+int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
+    if (!session_dir) return -1;
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/scratchpad.jsonl", session_dir);
+
+    pthread_mutex_lock(&sp->mtx);
+    FILE *f = fopen(path, "a");  /* append mode */
+    if (!f) { pthread_mutex_unlock(&sp->mtx); return -1; }
+
+    /* Write op:clear entries for sections cleared since last save */
+    for (int i = 0; i < sp->n_cleared; i++) {
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "name", sp->cleared_names[i]);
+        cJSON_AddStringToObject(obj, "op", "clear");
+        char *line = cJSON_PrintUnformatted(obj);
+        if (line) {
+            fprintf(f, "%s\n", line);
+            free(line);
+        }
+        cJSON_Delete(obj);
+        free(sp->cleared_names[i]);
+    }
+    sp->n_cleared = 0;
+
+    /* Write dirty sections (append-only — only changed sections) */
+    for (int i = 0; i < sp->count; i++) {
+        if (!sp->sections[i].dirty) continue;
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "name", sp->sections[i].name);
+        cJSON_AddNumberToObject(obj, "priority", sp->sections[i].priority);
+        cJSON_AddStringToObject(obj, "content", sp->sections[i].content);
+        char *line = cJSON_PrintUnformatted(obj);
+        if (line) {
+            fprintf(f, "%s\n", line);
+            free(line);
+        }
+        cJSON_Delete(obj);
+        sp->sections[i].dirty = 0;
+    }
+
+    fclose(f);
+    pthread_mutex_unlock(&sp->mtx);
+    return 0;
+}
+
+int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
+    if (!session_dir) return -1;
+
+    /* Try JSONL format first */
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/scratchpad.jsonl", session_dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        /* Fall back to legacy scratchpad.md */
+        return scratchpad_load_legacy(sp, session_dir);
+    }
+
+    /* Parse JSONL: last entry per section name wins */
+    char line[1024 * 1024];  /* 1MB max per line */
+    while (fgets(line, (int)sizeof(line), f)) {
+        /* Strip trailing newline */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0) continue;
+
+        cJSON *obj = cJSON_Parse(line);
+        if (!obj) continue;
+
+        cJSON *name_j = cJSON_GetObjectItem(obj, "name");
+        if (!name_j || !cJSON_IsString(name_j)) {
+            cJSON_Delete(obj);
+            continue;
+        }
+        const char *name = name_j->valuestring;
+
+        cJSON *op_j = cJSON_GetObjectItem(obj, "op");
+        if (op_j && cJSON_IsString(op_j) &&
+            strcmp(op_j->valuestring, "clear") == 0) {
+            scratchpad_clear(sp, name);
+        } else {
+            cJSON *pri_j = cJSON_GetObjectItem(obj, "priority");
+            cJSON *content_j = cJSON_GetObjectItem(obj, "content");
+            int pri = (pri_j && cJSON_IsNumber(pri_j))
+                      ? (int)cJSON_GetNumberValue(pri_j) : 5;
+            const char *content = (content_j && cJSON_IsString(content_j))
+                                  ? content_j->valuestring : "";
+            scratchpad_write(sp, name, content, pri);
+        }
+        cJSON_Delete(obj);
+    }
+    fclose(f);
+
+    /* Mark all loaded sections as not dirty (they came from disk) */
+    for (int i = 0; i < sp->count; i++)
+        sp->sections[i].dirty = 0;
+    /* Clear any clears tracked during load */
+    for (int i = 0; i < sp->n_cleared; i++)
+        free(sp->cleared_names[i]);
+    sp->n_cleared = 0;
+
+    return 0;
+}
+
+void scratchpad_compact(scratchpad_t *sp, const char *session_dir) {
+    if (!session_dir) return;
+
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/scratchpad.jsonl", session_dir);
+
+    pthread_mutex_lock(&sp->mtx);
+    FILE *f = fopen(path, "w");  /* truncate */
+    if (!f) { pthread_mutex_unlock(&sp->mtx); return; }
+
+    /* Write one line per live section (cleared sections omitted) */
+    for (int i = 0; i < sp->count; i++) {
+        cJSON *obj = cJSON_CreateObject();
+        cJSON_AddStringToObject(obj, "name", sp->sections[i].name);
+        cJSON_AddNumberToObject(obj, "priority", sp->sections[i].priority);
+        cJSON_AddStringToObject(obj, "content", sp->sections[i].content);
+        char *line = cJSON_PrintUnformatted(obj);
+        if (line) {
+            fprintf(f, "%s\n", line);
+            free(line);
+        }
+        cJSON_Delete(obj);
+        sp->sections[i].dirty = 0;
+    }
+
+    fclose(f);
+    /* Clear pending clears since we just wrote a clean snapshot */
+    for (int i = 0; i < sp->n_cleared; i++)
+        free(sp->cleared_names[i]);
+    sp->n_cleared = 0;
+    pthread_mutex_unlock(&sp->mtx);
 }
 
 int scratchpad_parse(scratchpad_t *sp, const char *text,

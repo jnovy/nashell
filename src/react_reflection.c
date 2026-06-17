@@ -419,62 +419,12 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         ctx->provider->cfg.enable_thinking = saved_thinking;
     }
 
-    /* P4: Scratchpad-to-memory promotion — auto-promote high-priority
-     * scratchpad sections to long-term memory before they're lost.
-     *
-     * Research basis:
-     *   DCPM [arXiv:2606.09483, Jun 2026] — cognitive capability hierarchy
-     *     ascending from raw inputs through belief trajectories to schemas.
-     *     Promotion moves working knowledge UP the hierarchy.
-     *   Letta Skill Learning [May 2026] — agents that learn from past
-     *     experience improve +36.8%. Promotion captures experience that
-     *     the LLM didn't explicitly memory_store.
-     *   MemoPilot [arXiv:2606.08656, ICML 2026] — RL-trained memory
-     *     copilot that optimizes WHAT to store. Promotion is the heuristic
-     *     equivalent: high-priority sections that survived compaction are
-     *     worth persisting.
-     *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed memory with
-     *     active control. Promotion gives the system active control over
-     *     what crosses from working memory to long-term memory.
-     *
-     * Heuristic: sections with priority <= 1 and content > 200 chars
-     * are promoted to fact:<section-name> memories. Deduplication via
-     * embedding similarity prevents redundant storage. */
-    if (ctx->tools->scratch.count > 0 && ctx->tools->memory && task_succeeded && gate_ok) {
-        for (int si = 0; si < ctx->tools->scratch.count; si++) {
-            scratchpad_section_t *sec = &ctx->tools->scratch.sections[si];
-            if (!sec->name || !sec->content) continue;
-            if (sec->priority > 1) continue;  /* only high-priority sections */
-            if (strlen(sec->content) < 200) continue;  /* skip trivial content */
-
-            /* Skip result sections (R<N>_result) — those are handled separately */
-            if (sec->name[0] == 'R' && strstr(sec->name, "_result")) continue;
-
-            /* Check if a similar memory already exists (dedup via recall) */
-            char pkey[256];
-            snprintf(pkey, sizeof(pkey), "fact:%s", sec->name);
-            memory_results_t check = memory_recall(ctx->tools->memory, pkey, 1);
-            int already_exists = 0;
-            if (check.count > 0 && check.entries[0].relevance > 0.8)
-                already_exists = 1;
-            memory_results_free(&check);
-            if (already_exists) continue;
-
-            /* FIX BUG4: Promote via tool_execute (not direct memory_store)
-             * so the entry flows through memory_try_consolidate. Previously,
-             * promoted fact: entries could be near-duplicates of existing
-             * lesson:/strategy: entries but would never be merged. */
-            {
-                cJSON *pp = cJSON_CreateObject();
-                cJSON_AddStringToObject(pp, "key", pkey);
-                cJSON_AddStringToObject(pp, "value", sec->content);
-                tool_result_t tr = tool_execute(ctx->tools,
-                                               "memory_store", pp);
-                tool_result_free(&tr);
-                cJSON_Delete(pp);
-            }
-        }
-    }
+    /* P4 scratchpad-to-memory promotion REMOVED (v4 unified memory).
+     * Automatic promotion was identified as a source of memory pollution —
+     * it created low-quality fact: entries from session-specific scratchpad
+     * content. In v4, memory grows only through explicit agent/user action
+     * or LLM reflection. Session history provides the "long tail" — anything
+     * not worth a permanent memory entry is still findable via session search. */
 
     /* Post-reflection scratchpad pruning — remove solved/stale data so the
      * next react loop starts with a clean, focused scratchpad. Uses an LLM call
@@ -633,6 +583,42 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         free(orig_priorities);
         free(preserved_result);
         free(full_sp);
+    }
+
+    /* ── Session summary generation (v4 unified memory) ──────────
+     * At session end, embed the journal manifest as summary.txt + summary.emb.
+     * This makes the session searchable via /? and memory_recall.
+     * Uses journal_manifest() — already exists, handles all edge cases.
+     * No new parsing code, no LLM call needed. */
+    if (ctx->tools->journal && ctx->tools->session_dir) {
+        char *manifest = journal_manifest(ctx->tools->journal, 0);
+        if (manifest && strlen(manifest) > 30) {
+            /* Write summary.txt */
+            char spath[PATH_MAX];
+            snprintf(spath, sizeof(spath), "%s/summary.txt",
+                     ctx->tools->session_dir);
+            FILE *sf = fopen(spath, "w");
+            if (sf) {
+                fputs(manifest, sf);
+                fclose(sf);
+            }
+
+            /* Embed and write summary.emb */
+            if (ctx->tools->memory && memory_has_embeddings(ctx->tools->memory)) {
+                embed_ctx_t *embed = memory_embed_ctx(ctx->tools->memory);
+                if (embed) {
+                    embed_vec_t emb = embed_text(embed, manifest);
+                    if (emb.data) {
+                        char epath[PATH_MAX];
+                        snprintf(epath, sizeof(epath), "%s/summary.emb",
+                                 ctx->tools->session_dir);
+                        embed_vec_save(&emb, epath);
+                        embed_vec_free(&emb);
+                    }
+                }
+            }
+        }
+        free(manifest);
     }
 
     /* FIX D2: recalled_keys cleanup is handled exclusively by react_run()

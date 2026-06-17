@@ -24,6 +24,7 @@
 #include "nash_limits.h"
 #include "memory.h"
 #include "workspace.h"
+#include "session_index.h"
 #include "ui_state.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -147,6 +148,9 @@ static void *infer_worker(void *arg) {
  * Unifies the 4 duplicated initialization paths (daemon, headless,
  * mailbox, TUI) into a single function. */
 
+/* session_idx is set after session_init_tools by the caller or globally */
+static session_index_t *g_session_idx = NULL;
+
 static void session_init_tools(tool_ctx_t *tools, store_t *store,
                                journal_t *journal, memory_t *memory,
                                workspace_t *ws,
@@ -162,6 +166,7 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
     tools->provider = provider;
     tools->react_loop = journal_max_react_loop(journal) + 1;
     tools->aliases = alias_map_new();
+    tools->session_idx = g_session_idx;  /* v4 unified memory L3 */
     scratchpad_init(&tools->scratch);
     if (session_dir) {
         scratchpad_load(&tools->scratch, session_dir);
@@ -208,6 +213,8 @@ static void cleanup_globals(store_t *shared_store, workspace_t *ws,
                             provider_t *provider, char *nash_dir,
                             char *props_json, char *server_model,
                             config_t *cfg) {
+    session_index_free(g_session_idx);
+    g_session_idx = NULL;
     store_free(shared_store);
     workspace_free(ws);
     provider_free(provider);
@@ -516,6 +523,16 @@ int main(int argc, char **argv) {
                                   cfg->embedding.model_path,
                                   cfg->embedding.dimension,
                                   cfg->embedding.max_input_chars);
+    }
+
+    /* v4 unified memory: load session index for L3 search via memory_recall.
+     * Scans sessions/<ts>/summary.emb files into an in-memory index. */
+    session_index_t *session_idx = NULL;
+    {
+        char sessions_dir[NASH_PATH_MAX];
+        snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
+        session_idx = session_index_load(sessions_dir);
+        g_session_idx = session_idx;  /* make available to session_init_tools */
     }
 
     /* Dream reminder — usage-based memory consolidation reminder.

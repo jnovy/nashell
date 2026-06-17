@@ -32,6 +32,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/postmortem.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
+          src/session_index.c \
           src/tools_registry.c \
           src/tool_file.c \
           src/tool_search.c \
@@ -87,6 +88,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/regression.c src/postmortem.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
+          src/session_index.c \
           src/tools_registry.c \
           src/tool_file.c \
           src/tool_search.c \
