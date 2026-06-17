@@ -600,6 +600,38 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         double step_elapsed = (step_end.tv_sec - step_start.tv_sec) +
                               (step_end.tv_nsec - step_start.tv_nsec) / 1e9;
 
+        /* Output truncation recovery: detect when the model hit max_tokens
+         * and the response was truncated. Common when the model tries to
+         * write a very large file in one call. Inject a recovery instruction
+         * telling the model to split its work into smaller chunks.
+         * Borrowed from nashell's __MAX_TOKENS__ handler. */
+        if (stats.completion_tokens > 0 && ctx->provider &&
+            ctx->provider->cfg.max_tokens > 0 &&
+            stats.completion_tokens >= ctx->provider->cfg.max_tokens) {
+            /* The response was truncated — don't try to parse it as JSON */
+            llm_chat_add(chat, "assistant", response);
+            llm_chat_add(chat, "user",
+                "Your response was truncated because it exceeded the maximum "
+                "output length. You MUST split your work into smaller steps:\n"
+                "- For file_write: write the first ~100 lines, then use "
+                "file_edit to append subsequent sections.\n"
+                "- For done: summarize key findings concisely rather than "
+                "including full file contents.\n"
+                "- For shell_exec: pipe output through head/tail/grep to "
+                "limit output size.\n"
+                "Retry your last action with a smaller scope.");
+
+            react_event_t ev = {0};
+            ev.react_loop = ctx->tools->react_loop;
+            ev.type = REACT_EVENT_WARNING;
+            ev.step = step + 1;
+            ev.message = "Output truncated at max_tokens — injected split instruction";
+            react_emit(on_event, userdata, &ev);
+
+            free(response);
+            continue;
+        }
+
         /* Parse JSON response.
          * multi_tool_count > 1 means the model emitted multiple concatenated
          * tool calls (common with gemma4/qwen3.6). Only the first is parsed;
