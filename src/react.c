@@ -967,8 +967,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON *refused = cJSON_CreateObject();
                 cJSON_AddStringToObject(refused, "error",
                     "Refused: you already executed this identical action and received "
-                    "the result above. Do NOT repeat it. Use the previous output or "
-                    "try a different approach.");
+                    "the result above. Do NOT repeat it. Read the previous output "
+                    "and continue.");
                 tr = (tool_result_t){ .meta = refused, .store_ref = NULL, .success = 0 };
 
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
