@@ -161,7 +161,7 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
 
             int ret = poll(&pfd, 1, remaining_ms > 0 ? remaining_ms : 5000);
             if (ret < 0) {
-                if (errno == EINTR) continue;
+                if (errno == EINTR) break;  /* signal received — let caller check shutdown */
                 break;
             }
 
@@ -314,7 +314,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
 
         int ret = poll(&pfd, 1, remaining_ms > 0 ? remaining_ms : 5000);
         if (ret < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) break;  /* signal received — let caller check shutdown */
             break;
         }
 
