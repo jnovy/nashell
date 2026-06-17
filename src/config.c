@@ -417,6 +417,13 @@ void config_free(config_t *cfg) {
     free(cfg->search_engine);
     free(cfg->searxng_url);
     free(cfg->belief_entropy.anchor_question);
+    /* Free auto-generated max_tools allow list (owned by cfg, not profile) */
+    if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
+        for (int i = 0; i < cfg->n_profile_tools_allow; i++)
+            free(cfg->profile_tools_allow[i]);
+        free(cfg->profile_tools_allow);
+        cfg->profile_tools_allow = NULL;
+    }
     config_free_model_profiles(cfg);
     free(cfg);
 }
@@ -582,9 +589,10 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
             p->context_eviction_pct = toml_int(mem_tbl, "context_eviction_pct", 0);
         }
 
-        /* [tools] subtable — allow/block arrays */
+        /* [tools] subtable — allow/block arrays + max_tools */
         toml_table_t *tools_tbl = toml_table_in(root, "tools");
         if (tools_tbl) {
+            p->max_tools = toml_int(tools_tbl, "max_tools", 0);
             toml_array_t *allow_arr = toml_array_in(tools_tbl, "allow");
             if (allow_arr) {
                 int n = toml_array_nelem(allow_arr);
@@ -756,6 +764,34 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     cfg->n_profile_tools_allow = p->n_tools_allow;
     cfg->profile_tools_block = p->tools_block;
     cfg->n_profile_tools_block = p->n_tools_block;
+
+    /* max_tools: auto-populate allow list with essential tools when
+     * max_tools is set but no explicit allow list is provided.
+     * Rationale: 19 tools → ~3700 tokens of FC declarations;
+     * 8 tools → ~800 tokens — crucial for small models where
+     * grammar overhead is significant. */
+    if (p->max_tools > 0 && p->n_tools_allow == 0) {
+        /* SMALL_MODEL_TOOLS: the 8 essential tools for small models.
+         * Ordered by importance. Includes done (required), notes (scratchpad),
+         * and the 6 most commonly used workspace tools. */
+        static const char *SMALL_MODEL_TOOLS[] = {
+            "shell_exec", "file_read", "file_write", "file_edit",
+            "grep_search", "glob_search", "done", "notes"
+        };
+        static const int N_SMALL_MODEL_TOOLS = 8;
+
+        /* Use the preset if max_tools >= 8, otherwise take the first max_tools */
+        int n = p->max_tools < N_SMALL_MODEL_TOOLS ? p->max_tools : N_SMALL_MODEL_TOOLS;
+        /* Allocate and copy — these are stack strings, so we need strdup.
+         * Allocated on cfg lifetime (freed in config_free). */
+        cfg->profile_tools_allow = calloc(n, sizeof(char *));
+        if (cfg->profile_tools_allow) {
+            cfg->n_profile_tools_allow = n;
+            cfg->profile_tools_allow_owned = 1; /* needs separate free */
+            for (int i = 0; i < n; i++)
+                cfg->profile_tools_allow[i] = strdup(SMALL_MODEL_TOOLS[i]);
+        }
+    }
 
     /* [tools.<name>] description overrides */
     cfg->profile_tool_desc_names = p->tool_desc_names;

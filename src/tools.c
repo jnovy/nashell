@@ -733,6 +733,44 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     if (!tool_filter_allows(&ctx->tool_filter, action))
         return tools_make_error("tool not available in this context");
 
+    /* Empty-params detection: catch tools called with {} params before they
+     * hit dispatch (which would return a generic error). Provides specific
+     * "tool_name requires parameter 'X'" messages instead.
+     * Borrowed from nashell's _TOOLS_NEEDING_PARAMS pattern. */
+    {
+        static const struct { const char *tool; const char *param; } required[] = {
+            {"shell_exec",    "command"},
+            {"file_read",     "path"},
+            {"file_write",    "path"},
+            {"file_edit",     "path"},
+            {"grep_search",   "pattern"},
+            {"web_fetch",     "url"},
+            {"web_search",    "query"},
+            {"glob_search",   "pattern"},
+            {"memory_store",  "key"},
+            {"memory_pin",    "key"},
+            {"memory_unpin",  "key"},
+            {"memory_delete", "key"},
+            {"user_ask",      "question"},
+            {"image_analyze", "path"},
+            {NULL, NULL}
+        };
+        for (int i = 0; required[i].tool; i++) {
+            if (strcmp(action, required[i].tool) == 0) {
+                cJSON *val = cJSON_GetObjectItem(params, required[i].param);
+                if (!val || (cJSON_IsString(val) && (!val->valuestring || !val->valuestring[0]))) {
+                    char err[256];
+                    snprintf(err, sizeof(err),
+                        "Reminder: %s requires \"%s\" in params. "
+                        "Re-call with the required parameter.",
+                        required[i].tool, required[i].param);
+                    return tools_make_error(err);
+                }
+                break;
+            }
+        }
+    }
+
     /* Dispatch via unified registry lookup (Fix #11).
      * TOOL_REGISTRY[i].name provides the name, TOOL_HANDLERS[i] the handler. */
     for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {

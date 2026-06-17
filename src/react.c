@@ -429,6 +429,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
 
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
+    int tools_executed = 0;              /* Hallucination guard: real tools executed */
+    int total_errors = 0;                /* Error budget: total tool errors across session */
 
     for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
         /* Check for pause request at the TOP of the loop — this catches
@@ -822,6 +824,35 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Check for done */
         if (strcmp(action_name, "done") == 0) {
+            /* Hallucination guard: reject 'done' if no real tool has been executed.
+             * Catches models that produce a plan then immediately call done with
+             * the plan text. The user_ask tool doesn't count as a real tool. */
+            if (tools_executed == 0) {
+                const char *guard_msg =
+                    "ERROR: You called 'done' without executing any real tools. "
+                    "You must actually perform the task (use file_read, shell_exec, "
+                    "grep_search, etc.) before calling done. Do NOT just plan — "
+                    "execute the plan step by step.";
+                if (chat->last_tool_call_id) {
+                    llm_chat_add_assistant_tool_call(chat, response,
+                        chat->last_tool_calls_json);
+                    llm_chat_add_tool_result(chat, chat->last_tool_call_id,
+                                              guard_msg);
+                } else {
+                    llm_chat_add(chat, "assistant", response);
+                    llm_chat_add(chat, "user", guard_msg);
+                }
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_WARNING;
+                ev.step = step + 1;
+                ev.message = "Hallucination guard: rejected premature done";
+                react_emit(on_event, userdata, &ev);
+                cJSON_Delete(action);
+                free(response);
+                continue;
+            }
+
             const char *result = react_json_get_str(action, "result");
             /* Fallback: if result is empty but thought has content, use thought.
              * Local models sometimes put the summary in "thought" and leave
@@ -993,6 +1024,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ctx->tools->thought = thought;
             tr = tool_execute(ctx->tools, action_name, action);
             ctx->tools->thought = NULL;
+
+            /* Hallucination guard: count real tool executions.
+             * "done", "plan", "notes", "user_ask" are meta-tools — don't count.
+             * Only tools that interact with the outside world count. */
+            if (strcmp(action_name, "plan") != 0 &&
+                strcmp(action_name, "notes") != 0) {
+                tools_executed++;
+            }
+
+            /* Error budget: track total errors across the session */
+            if (!tr.success) total_errors++;
 
             /* Unknown tool recovery: if the model generated a garbled tool name
              * (e.g., "shell_execshell_exec"), don't send the raw error back —
@@ -1355,6 +1397,32 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     }
                 }
                 memory_results_free(&err_mem);
+            }
+        }
+
+        /* Error budget: when total errors exceed threshold, force wrap-up.
+         * Base threshold of 15, scaled up by step count (1 extra per 5 steps).
+         * Prevents endless error-retry-error spirals that waste compute. */
+        {
+            int error_threshold = 15 + (step / 5);
+            if (total_errors >= error_threshold) {
+                char budget_msg[256];
+                snprintf(budget_msg, sizeof(budget_msg),
+                    "ERROR BUDGET EXCEEDED: %d errors in %d steps (threshold: %d). "
+                    "You must wrap up NOW. Save your findings with notes() "
+                    "and call done() with whatever partial results you have.",
+                    total_errors, step + 1, error_threshold);
+                llm_chat_add(chat, "user", budget_msg);
+
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_WARNING;
+                ev.step = step + 1;
+                ev.message = "Error budget exceeded — forcing wrap-up";
+                react_emit(on_event, userdata, &ev);
+
+                /* Reset to avoid spamming the message every step */
+                total_errors = 0;
             }
         }
 
