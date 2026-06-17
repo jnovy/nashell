@@ -30,6 +30,84 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 
 ---
 
+## Unified Memory Architecture (v4) — Session-Centric Design
+
+Nash v4 introduces a session-centric memory architecture built on three principles:
+
+1. **Sessions are memory.** Every session records queries, tool calls, thoughts, errors, and results in `journal.jsonl`. Instead of building abstraction layers on top of sessions, make sessions themselves searchable.
+2. **No automatic extraction.** Nothing enters persistent memory unless the agent or user explicitly stores it. The memory store stays small and high-quality.
+3. **Store everything once, reference everywhere.** The content-addressed store (`.store/<sha256>`) and alias system (`R0S1`, `R1S3`) provide deduplication. Scratchpad uses append-only JSONL — the same convention as `journal.jsonl`.
+
+### Four Tiers
+
+```
+┌─────────────────────────────────────────────────────┐
+│  L1: Context Window (volatile, ~128K tokens)        │
+│  Current conversation messages                      │
+│  Managed by harness-1 compaction                    │
+├─────────────────────────────────────────────────────┤
+│  L2: Scratchpad (session-persistent)                │
+│  Append-only JSONL (scratchpad.jsonl)               │
+│  Survives compaction, dies at session end            │
+├─────────────────────────────────────────────────────┤
+│  L3: Session History (searchable, evolving)         │
+│  sessions/<ts>/journal.jsonl + summary.txt + .emb   │
+│  Grows naturally, searchable via /? and memory_recall│
+├─────────────────────────────────────────────────────┤
+│  L4: Curated Memory (persistent, small)             │
+│  .memory/ — only explicitly stored entries          │
+│  Pinned entries always in context                   │
+└─────────────────────────────────────────────────────┘
+```
+
+Data moves **up** (L1→L4) through explicit agent action or natural session lifecycle. Data moves **down** (L4/L3→L1) through recall and injection. There is no automatic promotion pipeline.
+
+### Data Flow
+
+```
+User query
+    │
+    ▼
+react_build_context()
+    ├── System prompt
+    ├── Memory index + pinned + recalled (L4 + L3 → L1)
+    ├── Scratchpad (L2 → L1, loaded from scratchpad.jsonl)
+    └── Previous result
+    │
+    ▼
+React loop (tool calls)
+    ├── Tools execute, results stored in .store/ with RXSX aliases
+    ├── Scratchpad updated (in-memory sections)
+    ├── Compaction fires when context full (harness-1)
+    │   ├── Breadcrumbs for recoverable content
+    │   └── evicted_context → scratchpad
+    └── Agent may call memory_recall → searches L4 + L3
+    │
+    ▼
+done (task complete)
+    │
+    ▼
+react_post_loop()
+    ├── Validation scoring (recall_hits / recall_misses)
+    ├── LLM reflection → optional memory_store (L4)
+    ├── Scratchpad pruning + save (append to scratchpad.jsonl)
+    └── journal_manifest() → summary.txt + summary.emb
+```
+
+### Knowledge Formation
+
+Sessions provide natural knowledge formation without automated pipelines:
+
+1. Agent works on task, encounters problem X
+2. `memory_recall("problem X")` → returns session matches (L3) since no curated memory exists yet
+3. Agent reads the relevant session journal
+4. Agent extracts the pattern and calls `memory_store` explicitly
+5. Future tasks: `memory_recall("problem X")` → returns the stored pattern (L4 curated memory now ranks above raw session matches)
+
+**Experience** (sessions) → **Recognition** (search) → **Crystallization** (memory_store)
+
+---
+
 ## Features
 
 ### ReAct Loop with Native Tool Calling
@@ -189,6 +267,52 @@ Nash supports **workspace-based memory isolation** to prevent cross-contaminatio
 
 **Backward compatible:** With no workspace configured, nash behaves exactly as before — global-only mode with a single memory pool.
 
+### Session History Search (L3)
+
+Every completed session generates a searchable summary by reusing `journal_manifest()` — which already exists and handles every edge case. The manifest is a compact digest (typically 500–2000 chars) containing query text, tool names, file paths, error markers, and done results — exactly the content that embeds well for semantic search.
+
+```
+sessions/<timestamp>/
+    journal.jsonl       # every tool call, params, results, errors
+    summary.txt         # journal_manifest() output
+    summary.emb         # embedding vector for semantic search
+    scratchpad.jsonl    # append-only section data
+```
+
+At startup, nash builds an in-memory index of all sessions with embeddings (~4.5KB per session). Session search uses cosine similarity with a gentle logarithmic recency boost:
+
+```
+recency = 1.0 / (1.0 + log1p(age_days / 30.0))
+score = semantic_similarity * recency
+```
+
+#### Unified Recall
+
+There is no separate `session_search` tool. Instead, `memory_recall` queries **both** L4 (curated memory) and L3 (session history) in a single call. Results are labeled by source:
+
+```
+[RECALLED MEMORY — lesson:segfault-null-check]
+Always check return value of malloc() before dereferencing...
+
+[RECALLED SESSION — 2026-06-15 14:23, nash (claude-sonnet-4)]
+[Query R0] "fix the segfault in foo.c"
+  + R0S1: file_read "foo.c" ...
+  Result: Fixed null pointer dereference at line 73
+  → file_read sessions/1750000123.45678/journal.jsonl for details
+```
+
+The agent doesn't need to decide "should I search memory or sessions?" — one call gets the best answer from wherever it lives. An optional `source` parameter (`all`/`memory`/`sessions`) exists for rare cases where filtering is needed.
+
+#### User Command: `/? query`
+
+Users can search session history directly:
+
+```
+/? how did I fix the segfault
+```
+
+Results display in the TUI with session timestamp, model, query, result, and relevance score. The user can then navigate to that session for full details.
+
 ### Scratchpad-Only Architecture (v5)
 
 Nash uses a **scratchpad-only** architecture for cross-loop state management. Each react loop starts with a fresh context containing only:
@@ -201,6 +325,25 @@ Nash uses a **scratchpad-only** architecture for cross-loop state management. Ea
 ```
 
 No manifest. No last-exchange injection. No truncation. The scratchpad is the **sole** mechanism for passing state between react loops.
+
+#### JSONL-Backed Persistence (L2)
+
+Scratchpad sections are persisted to `scratchpad.jsonl` — an append-only JSONL file using the same convention as `journal.jsonl`. Each line is a self-contained JSON object; **last entry per section name wins**:
+
+```jsonl
+{"name":"findings","priority":1,"content":"The root cause is a null pointer..."}
+{"name":"plan","priority":3,"content":"1. Add null check\n2. Add test\n3. Run suite"}
+{"name":"findings","priority":1,"content":"Updated: confirmed null deref at line 73..."}
+{"name":"status","op":"clear"}
+```
+
+This replaces the previous `<!-- priority:X -->` HTML comment format, which was fragile (invisible to LLMs, order-dependent parsing, round-trip loss). Benefits:
+
+- **Metadata separation** — priority lives in JSONL fields, never in content. The LLM sees clean markdown; parsing is trivial `cJSON_Parse()` per line.
+- **Crash safety** — append-only writes mean a crash mid-save loses at most the last partial line. All previously written sections survive intact.
+- **History for free** — the JSONL file records every section update in order, useful for debugging or replaying scratchpad evolution.
+- **Clean round-trip** — the LLM sees clean markdown without priority markers. When pruning output is parsed back, section names match and priorities are preserved from JSONL metadata.
+- **Legacy fallback** — existing `scratchpad.md` files load via the legacy parser. New saves always use JSONL. Gradual migration with no flag day.
 
 #### Context Eviction — Recoverability-Aware + Lossless Breadcrumbs
 
@@ -343,7 +486,7 @@ Nash provides a full ncurses-based TUI with:
 - **Keyboard navigation** — arrow keys, Page Up/Down, Home/End, Enter to expand/collapse
 - **Pause/Resume** — press Space during inference to pause after the current step; Space or new query to resume
 - **Auto-redirect** — typing a new query during active inference automatically pauses the current task, stashes the new query, and dispatches it immediately when the loop yields — no "Space then type" dance required
-- **Cross-session search** — type `/?query` to search scratchpads across all sessions (newest first); results render live in the main pane as you type; press Enter to clear
+- **Cross-session search** — type `/?query` for incremental scratchpad search, or `/? query` for semantic session history search (embedding-based, searches `summary.emb` across all sessions)
 
 #### TUI Slash Commands
 
@@ -360,6 +503,7 @@ Nash provides a full ncurses-based TUI with:
 | `/memory_recall QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
 | `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
 | `/?query` | Cross-session scratchpad search (live incremental results) |
+| `/? query` | Semantic session history search (embedding-based, shows ranked results) |
 | `/continue` | Resume from checkpoint with the original query |
 | `quit` / `exit` | Exit nash |
 
@@ -450,6 +594,8 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 ```
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
+
+After reflection and scratchpad pruning, nash generates a searchable session summary by calling `journal_manifest()` and embedding the output as `summary.txt` + `summary.emb`. This is the only new post-task work (~15 lines of code) and makes the session discoverable via `memory_recall` and `/? query` for all future sessions.
 
 ### Playbooks — Multi-Pass Task Orchestration
 
@@ -896,6 +1042,7 @@ max_skills_per_query = 2                  # skills loaded per query
 max_lessons_per_query = 2                 # lessons loaded per query
 max_strategies_per_query = 1              # strategies loaded per query
 max_antipatterns_per_query = 1            # anti-patterns loaded per query
+max_recalled_per_query = 8                # unified recall limit (L4 + L3 combined)
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning
 consolidation_threshold = 0.82            # cosine threshold for dedup
@@ -917,6 +1064,9 @@ context_eviction_pct = 70                 # evict when context > 70% full
 # global_recall = true                    # also search global memory during recall
 # global_recall_weight = 0.8              # score multiplier for global results
 # isolated = false                        # fully isolated — no global memory access
+
+[session]
+# max_indexed_sessions = 0               # max sessions in memory index (0 = no limit)
 
 [search]
 engine = "searxng"                        # SearXNG (auto-started via podman/docker)
@@ -1049,7 +1199,10 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
     ├── my-project → 1779970830.40871  # Named session symlink
     └── 1779970830.40871/    # Session directory
         ├── journal.jsonl    # Full event log
-        ├── scratchpad.md    # Persistent working notes
+        ├── scratchpad.jsonl # Persistent working notes (JSONL, append-only)
+        ├── scratchpad.md    # Legacy format (loaded as fallback)
+        ├── summary.txt      # Session manifest (journal_manifest() output)
+        ├── summary.emb      # Embedding vector for semantic search
         ├── checkpoint.json  # Resume state (if interrupted)
         ├── R0S0 → ../../store/...  # Step aliases (symlinks)
         ├── R0S1 → ../../store/...
