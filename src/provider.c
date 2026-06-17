@@ -1373,6 +1373,24 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     free(req_body);
     result = build_sse_result(&st, chat);
 
+    /* Diagnostics: when build_sse_result returns NULL despite HTTP 200 + curl OK,
+     * the model streamed tokens that didn't parse into any recognized structure
+     * (no tool call, no text, no thinking).  Log the raw SSE stream so we can
+     * debug what the model actually produced instead of silently discarding it.
+     * Also populate last_error so react.c reports something useful instead of
+     * "(unknown error)". */
+    if (!result && st.raw_body.len > 0) {
+        nash_log("[provider] build_sse_result returned NULL — raw SSE body "
+                 "(%.4000s)", str_cstr(&st.raw_body));
+        free(p->last_error);
+        p->last_error = strdup("model produced unparseable response "
+                               "(no tool call, text, or thinking content)");
+        free(p->last_error_response);
+        p->last_error_response = (st.raw_body.len <= 8192)
+            ? strdup(str_cstr(&st.raw_body))
+            : strndup(str_cstr(&st.raw_body), 8192);
+    }
+
 cleanup:
     str_free(&st.line_buf);
     str_free(&st.full_content);
