@@ -785,9 +785,16 @@ int main(int argc, char **argv) {
 
         /* FIX #6: Install signal handlers for graceful daemon shutdown.
          * SIGTERM/SIGINT set shutdown_requested; the loop checks it
-         * each iteration so in-progress tasks complete before exit. */
-        signal(SIGTERM, shutdown_handler);
-        signal(SIGINT, shutdown_handler);
+         * each iteration so in-progress tasks complete before exit.
+         * Use sigaction WITHOUT SA_RESTART so that blocking calls
+         * (fgets, poll, read) return with EINTR on Ctrl-C. */
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = shutdown_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;  /* no SA_RESTART — let syscalls fail with EINTR */
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
 
         /* Telegram bridge: start thread that bridges mailbox ↔ Telegram API */
         pthread_t tg_thread = 0;

@@ -83,27 +83,102 @@ void telegram_free(telegram_ctx_t *ctx) {
 
 /* ── Config load/save ────────────────────────────────────── */
 
-static int tg_config_load(telegram_ctx_t *ctx) {
-    FILE *f = fopen(ctx->config_path, "r");
+/* Parse a simple key=value config file (e.g. ~/.nash/telegram.conf).
+ * Lines: "key = value" or "key=value", # comments, blank lines ignored.
+ * String values may or may not be quoted. */
+static int tg_config_load_simple(telegram_ctx_t *ctx, const char *path) {
+    FILE *f = fopen(path, "r");
     if (!f) return -1;
 
-    char errbuf[256];
-    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        /* Strip newline */
+        line[strcspn(line, "\r\n")] = 0;
+        /* Skip comments and blank lines */
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\0' || *p == '[') continue;
+
+        /* Split on '=' */
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+
+        /* Extract key (trim trailing spaces) */
+        char *kend = eq - 1;
+        while (kend > p && (*kend == ' ' || *kend == '\t')) kend--;
+        size_t klen = (size_t)(kend - p + 1);
+
+        /* Extract value (trim leading spaces, strip quotes) */
+        char *val = eq + 1;
+        while (*val == ' ' || *val == '\t') val++;
+        size_t vlen = strlen(val);
+        /* Strip surrounding quotes if present */
+        if (vlen >= 2 && ((val[0] == '"' && val[vlen-1] == '"') ||
+                          (val[0] == '\'' && val[vlen-1] == '\''))) {
+            val++;
+            vlen -= 2;
+        }
+        /* Trim trailing spaces from value */
+        while (vlen > 0 && (val[vlen-1] == ' ' || val[vlen-1] == '\t')) vlen--;
+
+        if (klen == 9 && strncmp(p, "bot_token", 9) == 0) {
+            free(ctx->bot_token);
+            ctx->bot_token = strndup(val, vlen);
+        } else if (klen == 7 && strncmp(p, "chat_id", 7) == 0) {
+            char tmp[64];
+            size_t cplen = vlen < sizeof(tmp)-1 ? vlen : sizeof(tmp)-1;
+            memcpy(tmp, val, cplen);
+            tmp[cplen] = 0;
+            ctx->chat_id = atoll(tmp);
+        }
+    }
     fclose(f);
-    if (!root) return -1;
+    return (ctx->bot_token && ctx->chat_id) ? 0 : -1;
+}
 
-    toml_table_t *tg = toml_table_in(root, "telegram");
-    if (tg) {
-        toml_datum_t d;
-        d = toml_string_in(tg, "bot_token");
-        if (d.ok) ctx->bot_token = d.u.s;
+static int tg_config_load(telegram_ctx_t *ctx) {
+    /* Try 1: [telegram] section in config.toml */
+    FILE *f = fopen(ctx->config_path, "r");
+    if (f) {
+        char errbuf[256];
+        toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+        fclose(f);
+        if (root) {
+            toml_table_t *tg = toml_table_in(root, "telegram");
+            if (tg) {
+                toml_datum_t d;
+                d = toml_string_in(tg, "bot_token");
+                if (d.ok) ctx->bot_token = d.u.s;
 
-        d = toml_int_in(tg, "chat_id");
-        if (d.ok) ctx->chat_id = (long long)d.u.i;
+                d = toml_int_in(tg, "chat_id");
+                if (d.ok) ctx->chat_id = (long long)d.u.i;
+            }
+            toml_free(root);
+            if (ctx->bot_token && ctx->chat_id) return 0;
+        }
     }
 
-    toml_free(root);
-    return (ctx->bot_token && ctx->chat_id) ? 0 : -1;
+    /* Try 2: standalone ~/.nash/telegram.conf (key=value format) */
+    char tg_conf[512];
+    /* Derive directory from config_path (e.g. ~/.nash/config.toml → ~/.nash/) */
+    const char *slash = strrchr(ctx->config_path, '/');
+    if (slash) {
+        size_t dirlen = (size_t)(slash - ctx->config_path);
+        snprintf(tg_conf, sizeof(tg_conf), "%.*s/telegram.conf", (int)dirlen,
+                 ctx->config_path);
+    } else {
+        snprintf(tg_conf, sizeof(tg_conf), "telegram.conf");
+    }
+
+    int rc = tg_config_load_simple(ctx, tg_conf);
+    if (rc == 0) {
+        fprintf(stderr, "[telegram] loaded config from %s\n", tg_conf);
+        /* Migrate: save to config.toml [telegram] section for future use */
+        tg_config_save(ctx);
+        fprintf(stderr, "[telegram] migrated to %s [telegram] section\n",
+                ctx->config_path);
+    }
+    return rc;
 }
 
 static int tg_config_save(telegram_ctx_t *ctx) {
@@ -162,8 +237,8 @@ int telegram_setup(telegram_ctx_t *ctx) {
     fprintf(stderr, "Paste your bot token: ");
     fflush(stderr);
 
-    if (!fgets(buf, sizeof(buf), stdin)) {
-        fprintf(stderr, "[telegram] failed to read token\n");
+    if (!fgets(buf, sizeof(buf), stdin) || *ctx->shutdown) {
+        fprintf(stderr, "\n[telegram] aborted\n");
         return -1;
     }
     /* Strip newline */
@@ -188,13 +263,16 @@ int telegram_setup(telegram_ctx_t *ctx) {
     fprintf(stderr, "Now send any message to @%s in Telegram,\n", bot_name);
     fprintf(stderr, "then press Enter here...");
     fflush(stderr);
-    fgets(buf, sizeof(buf), stdin);
+    if (!fgets(buf, sizeof(buf), stdin) || *ctx->shutdown) {
+        fprintf(stderr, "\n[telegram] aborted\n");
+        return -1;
+    }
 
     /* Poll for updates to capture chat_id */
     fprintf(stderr, "[telegram] Looking for your message...\n");
     cJSON *updates = NULL;
     int tries = 0;
-    while (tries++ < 3 && !ctx->chat_id) {
+    while (tries++ < 3 && !ctx->chat_id && !*ctx->shutdown) {
         if (tg_api_get_updates(ctx, &updates) == 0 && updates) {
             int n = cJSON_GetArraySize(updates);
             for (int i = 0; i < n; i++) {
