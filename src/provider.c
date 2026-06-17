@@ -531,9 +531,8 @@ typedef struct {
     str_t          thinking_content;  /* accumulated thinking text */
     provider_t    *provider;          /* back-pointer for vtable dispatch */
     str_t          raw_body;           /* raw HTTP response body for error diagnostics */
-    /* Wall-clock streaming timing (fallback when server doesn't report t/s) */
+    /* Wall-clock streaming timing (fallback when server doesn't report gen t/s) */
     struct timespec first_token_time;   /* timestamp of first content token */
-    struct timespec request_start_time; /* timestamp when HTTP request started */
     int            first_token_seen;    /* 1 = first_token_time is valid */
     int            streaming_token_count; /* number of content tokens received */
 } provider_sse_state_t;
@@ -1174,7 +1173,6 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         .raw_body         = str_new(1024),
         .provider         = p,
         .first_token_time    = {0, 0},
-        .request_start_time  = {0, 0},
         .first_token_seen    = 0,
         .streaming_token_count = 0,
     };
@@ -1217,7 +1215,6 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         if (p->cfg.llm_timeout > 0)
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)p->cfg.llm_timeout);
 
-        clock_gettime(CLOCK_MONOTONIC, &st.request_start_time);
         CURLcode res = curl_easy_perform(curl);
 
         long http_code = 0;
@@ -1338,9 +1335,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         break;  /* success */
     }
 
-    /* Compute wall-clock streaming t/s as fallback when server doesn't report it.
-     * This makes gen/pp t/s available for all providers (Anthropic, Vertex, OpenAI)
-     * even when the server doesn't include per_second fields in the response.
+    /* Compute wall-clock streaming gen t/s as fallback when server doesn't report it.
+     * This makes gen t/s available for providers that don't include
+     * predicted_per_second fields in the response (Anthropic, Vertex, OpenAI).
+     * Prompt processing speed (pp t/s) is NOT estimated from wall-clock time;
+     * it is only available when the server reports it (e.g. llama.cpp timings).
      *
      * For API providers (Anthropic/Vertex), streaming_token_count counts SSE
      * content_block_delta events (text_delta + input_json_delta + thinking),
@@ -1365,15 +1364,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             }
         }
 
-        /* Prompt processing speed: prompt_tokens / time_to_first_token.
-         * Time-to-first-token approximates prompt processing time. */
-        if (stats->prompt_per_second <= 0 && stats->prompt_tokens > 0) {
-            double pp_elapsed = (st.first_token_time.tv_sec - st.request_start_time.tv_sec) +
-                                (st.first_token_time.tv_nsec - st.request_start_time.tv_nsec) / 1e9;
-            if (pp_elapsed > 0.1) {
-                stats->prompt_per_second = stats->prompt_tokens / pp_elapsed;
-            }
-        }
+        /* Prompt processing speed: use server-reported value only.
+         * llama.cpp reports prompt_per_second in the timings object;
+         * other providers may not report it, in which case it stays 0. */
     }
 
     if (stats)
