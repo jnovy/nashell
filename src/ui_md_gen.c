@@ -1024,18 +1024,49 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         }
     }
 
-    /* Streaming indicator if actively running */
+    /* Streaming indicator if actively running — show live progress */
     if (ui->status == STATUS_RUNNING &&
         ui->current_react_loop == react_loop) {
         static const char spin[] = "|/-\\";
         char sc = spin[ui->spinner_phase % 4];
         ui->spinner_phase++;
+
+        /* Build progress string based on streaming state */
+        char progress[128];
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+
+        if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
+            /* Tokens are flowing — show generation progress */
+            double gen_elapsed = (now.tv_sec - ui->stream_first_token.tv_sec) +
+                                 (now.tv_nsec - ui->stream_first_token.tv_nsec) / 1e9;
+            if (gen_elapsed > 0.1 && ui->stream_token_count > 1) {
+                double tps = (ui->stream_token_count - 1) / gen_elapsed;
+                snprintf(progress, sizeof(progress),
+                         "generating... %d tokens (%.1f t/s)",
+                         ui->stream_token_count, tps);
+            } else {
+                snprintf(progress, sizeof(progress),
+                         "generating... %d tokens",
+                         ui->stream_token_count);
+            }
+        } else {
+            /* No tokens yet — prompt is being processed */
+            double pp_elapsed = (now.tv_sec - ui->stream_step_start.tv_sec) +
+                                (now.tv_nsec - ui->stream_step_start.tv_nsec) / 1e9;
+            if (pp_elapsed >= 0.5)
+                snprintf(progress, sizeof(progress),
+                         "prompt processing... (%.1fs)", pp_elapsed);
+            else
+                snprintf(progress, sizeof(progress), "prompt processing...");
+        }
+
         if (ui->max_steps > 0)
-            str_appendf(&md, "  %c %3d %s %-13s processing...\n",
-                        sc, ui->current_step, "", "");
+            str_appendf(&md, "  %c %3d %s %-13s %s\n",
+                        sc, ui->current_step, "", "", progress);
         else
-            str_appendf(&md, "  %c %3d        %-13s processing...\n",
-                        sc, ui->current_step, "");
+            str_appendf(&md, "  %c %3d        %-13s %s\n",
+                        sc, ui->current_step, "", progress);
         if (ui->stream_tokens && ui->stream_len > 0) {
             str_append_cstr(&md, "```\n");
             str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);

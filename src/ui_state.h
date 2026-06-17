@@ -8,6 +8,7 @@
 #include "md_render.h"
 #include <stddef.h>
 #include <stdatomic.h>
+#include <time.h>
 
 /* ── Focus & Status enums ──────────────────────────────── */
 
@@ -116,6 +117,12 @@ typedef struct {
 
     /* ── Spinner phase for "processing..." indicator ── */
     int            spinner_phase;
+
+    /* ── Live streaming progress (for "processing..." → actual metrics) ── */
+    struct timespec stream_step_start;    /* CLOCK_MONOTONIC when step started */
+    struct timespec stream_first_token;   /* CLOCK_MONOTONIC when first token arrived */
+    int            stream_first_token_seen; /* 1 = first token received, timing valid */
+    int            stream_token_count;    /* tokens received in current step */
 
     /* ── Playbook session tracking ── */
     char          *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */

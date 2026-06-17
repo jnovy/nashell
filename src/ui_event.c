@@ -112,6 +112,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
 
+        /* Initialize streaming progress timing for this step */
+        clock_gettime(CLOCK_MONOTONIC, &ui->stream_step_start);
+        ui->stream_first_token_seen = 0;
+        ui->stream_token_count = 0;
+
         /* Defer react MD + session MD regeneration to the main loop.
          * Previously these expensive file I/O operations ran here under
          * ui->mtx, causing mutex starvation that froze the TUI. */
@@ -177,6 +182,13 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             memcpy(ui->stream_tokens + ui->stream_len, ev->token, (size_t)tlen);
             ui->stream_len += tlen;
             ui->stream_tokens[ui->stream_len] = '\0';
+
+            /* Track streaming progress: token count + first-token timing */
+            ui->stream_token_count++;
+            if (!ui->stream_first_token_seen) {
+                clock_gettime(CLOCK_MONOTONIC, &ui->stream_first_token);
+                ui->stream_first_token_seen = 1;
+            }
 
             /* Defer react MD regeneration to the main loop.
              * The token buffer (ui->stream_tokens) is updated above on
