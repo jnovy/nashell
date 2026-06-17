@@ -381,8 +381,8 @@ static int tg_api_get_updates(telegram_ctx_t *ctx, cJSON **out) {
     return *out ? 0 : -1;
 }
 
-static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
-                               const char *parse_mode) {
+static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
+                           const char *parse_mode) {
     char url[TG_URL_MAX];
     snprintf(url, sizeof(url), "%s%s/sendMessage",
              TG_API_BASE, ctx->bot_token);
@@ -428,7 +428,62 @@ static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
     return rc;
 }
 
+/* Send message with HTML fallback: if HTML parse fails, strip tags and retry
+ * as plain text so the message is never lost */
+static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
+                               const char *parse_mode) {
+    int rc = tg_api_send_raw(ctx, text, parse_mode);
+
+    /* If HTML parse failed, retry without formatting */
+    if (rc == -1 && parse_mode && strcmp(parse_mode, "HTML") == 0) {
+        fprintf(stderr, "[telegram] HTML parse failed, retrying as plain text\n");
+        rc = tg_api_send_raw(ctx, text, NULL);
+    }
+    return rc;
+}
+
 /* Send a long message, splitting at ~4096 chars on paragraph boundaries. */
+/* Track which HTML tags are open at a given position in the text.
+ * Returns a bitmask: bit 0 = <pre>, bit 1 = <code>, bit 2 = <b>, bit 3 = <i> */
+#define TAG_PRE  1
+#define TAG_CODE 2
+#define TAG_B    4
+#define TAG_I    8
+
+static int html_open_tags(const char *text, size_t len) {
+    int tags = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] != '<') continue;
+        if (i + 4 <= len && strncmp(&text[i], "<pre", 4) == 0) tags |= TAG_PRE;
+        else if (i + 6 <= len && strncmp(&text[i], "</pre>", 6) == 0) tags &= ~TAG_PRE;
+        else if (i + 5 <= len && strncmp(&text[i], "<code", 5) == 0) tags |= TAG_CODE;
+        else if (i + 7 <= len && strncmp(&text[i], "</code>", 7) == 0) tags &= ~TAG_CODE;
+        else if (i + 3 <= len && strncmp(&text[i], "<b>", 3) == 0) tags |= TAG_B;
+        else if (i + 4 <= len && strncmp(&text[i], "</b>", 4) == 0) tags &= ~TAG_B;
+        else if (i + 3 <= len && strncmp(&text[i], "<i>", 3) == 0) tags |= TAG_I;
+        else if (i + 4 <= len && strncmp(&text[i], "</i>", 4) == 0) tags &= ~TAG_I;
+    }
+    return tags;
+}
+
+/* Append closing tags for any open tags (inner → outer order) */
+static void html_close_tags(str_t *out, int tags) {
+    if (tags & TAG_I)    str_append_cstr(out, "</i>");
+    if (tags & TAG_B)    str_append_cstr(out, "</b>");
+    if (tags & TAG_CODE) str_append_cstr(out, "</code>");
+    if (tags & TAG_PRE)  str_append_cstr(out, "</pre>");
+}
+
+/* Append opening tags for any that need to continue (outer → inner order) */
+static void html_reopen_tags(str_t *out, int tags) {
+    if (tags & TAG_PRE)  str_append_cstr(out, "<pre>");
+    if (tags & TAG_CODE) str_append_cstr(out, "<code>");
+    if (tags & TAG_B)    str_append_cstr(out, "<b>");
+    if (tags & TAG_I)    str_append_cstr(out, "<i>");
+}
+
+/* Send a long message, splitting at ~4096 chars on paragraph boundaries.
+ * When using HTML parse_mode, properly closes and reopens tags across splits. */
 static int tg_send_long(telegram_ctx_t *ctx, const char *text,
                         const char *parse_mode) {
     size_t len = strlen(text);
@@ -436,14 +491,20 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
         return tg_api_send_message(ctx, text, parse_mode);
     }
 
+    int is_html = parse_mode && strcmp(parse_mode, "HTML") == 0;
+
     /* Split into chunks */
     const char *p = text;
     size_t remaining = len;
     int part = 1;
     int total_parts = (int)((len + TG_MSG_MAX - 1) / TG_MSG_MAX);
+    int carry_tags = 0;  /* tags open from previous chunk */
 
     while (remaining > 0) {
-        size_t chunk = remaining > TG_MSG_MAX - 20 ? TG_MSG_MAX - 20 : remaining;
+        /* Reserve space for part indicator + possible tag close/reopen */
+        size_t reserve = 120;
+        size_t chunk = remaining > TG_MSG_MAX - reserve
+                       ? TG_MSG_MAX - reserve : remaining;
 
         /* Find a good split point (paragraph boundary) */
         if (chunk < remaining) {
@@ -467,15 +528,36 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
             if (best) chunk = best;
         }
 
-        /* Build chunk with part indicator */
-        str_t msg = str_new(chunk + 32);
+        /* Determine which HTML tags are open at this split point
+         * by scanning from the very beginning of the text. */
+        int open_tags = 0;
+        if (is_html) {
+            open_tags = html_open_tags(text, (size_t)(p - text) + chunk);
+        }
+
+        /* Build chunk with part indicator and tag continuity */
+        str_t msg = str_new(chunk + 128);
         if (total_parts > 1) {
             str_appendf(&msg, "[%d/%d]\n", part, total_parts);
         }
+
+        /* Reopen tags that were open at end of previous chunk */
+        if (carry_tags) {
+            html_reopen_tags(&msg, carry_tags);
+        }
+
         str_append(&msg, p, chunk);
+
+        /* Close any tags that are still open at the split point */
+        if (open_tags && chunk < remaining) {
+            html_close_tags(&msg, open_tags);
+        }
 
         tg_api_send_message(ctx, msg.data, parse_mode);
         str_free(&msg);
+
+        /* Carry open tags to next iteration */
+        carry_tags = (chunk < remaining) ? open_tags : 0;
 
         p += chunk;
         remaining -= chunk;
@@ -508,26 +590,56 @@ static void html_escape_append(str_t *out, const char *text, size_t len) {
  *
  * Supported conversions:
  *   **bold**       → <b>bold</b>
+ *   _italic_       → <i>italic</i>  (word-boundary only, not file_name)
  *   `code`         → <code>code</code>
  *   ```lang\n...\n```  → <pre><code class="language-lang">...</code></pre>
+ *   | table |      → <pre>table rows</pre>  (separator lines stripped)
  *   ## Header      → <b>Header</b>
  *   - bullet       → • bullet
  *   [text](url)    → <a href="url">text</a>
  *
  * Returns heap-allocated string. Caller frees.
  */
+/* Check if a character is a word boundary for italic detection */
+static int is_word_boundary(char c) {
+    return c == '\0' || c == ' ' || c == '\t' || c == '\n' || c == '\r'
+        || c == '.' || c == ',' || c == ':' || c == ';' || c == '!'
+        || c == '?' || c == ')' || c == ']' || c == '}' || c == '"'
+        || c == '\'';
+}
+
+/* Check if line at position i is a table line (starts with |) */
+static int is_table_line(const char *md, int i) {
+    /* Skip leading whitespace */
+    while (md[i] == ' ' || md[i] == '\t') i++;
+    return md[i] == '|';
+}
+
+/* Check if line is a table separator (|---|---| or | --- | --- |) */
+static int is_table_separator(const char *md, int i) {
+    if (!is_table_line(md, i)) return 0;
+    /* Must contain at least one - and no alphabetic chars */
+    int has_dash = 0;
+    while (md[i] && md[i] != '\n') {
+        if (md[i] == '-' || md[i] == ':') has_dash = 1;
+        else if ((md[i] >= 'a' && md[i] <= 'z') || (md[i] >= 'A' && md[i] <= 'Z'))
+            return 0;
+        i++;
+    }
+    return has_dash;
+}
+
 static char *md_to_html(const char *md) {
     if (!md) return strdup("");
 
     size_t len = strlen(md);
     str_t out = str_new(len + len / 4 + 64);
 
-    int in_code_block = 0;   /* inside ``` fenced block */
     int i = 0;
 
     while (md[i]) {
         /* Fenced code block: ```lang ... ``` */
-        if (!in_code_block && md[i] == '`' && md[i+1] == '`' && md[i+2] == '`') {
+        if (md[i] == '`' && md[i+1] == '`' && md[i+2] == '`') {
             i += 3;
             /* Extract optional language */
             int lang_start = i;
@@ -558,6 +670,31 @@ static char *md_to_html(const char *md) {
 
         /* Line-level patterns (only at start of line or start of string) */
         if (i == 0 || md[i-1] == '\n') {
+
+            /* Markdown table: consecutive lines starting with | → <pre> */
+            if (is_table_line(md, i)) {
+                str_append_cstr(&out, "<pre>");
+                while (md[i] && is_table_line(md, i)) {
+                    /* Skip separator lines (|---|---|) */
+                    if (is_table_separator(md, i)) {
+                        while (md[i] && md[i] != '\n') i++;
+                        if (md[i] == '\n') i++;
+                        continue;
+                    }
+                    /* Emit table row with HTML escaping */
+                    while (md[i] && md[i] != '\n') {
+                        html_escape_append(&out, &md[i], 1);
+                        i++;
+                    }
+                    if (md[i] == '\n') {
+                        str_append_cstr(&out, "\n");
+                        i++;
+                    }
+                }
+                str_append_cstr(&out, "</pre>");
+                continue;
+            }
+
             /* Headers: ## Text → <b>Text</b> */
             if (md[i] == '#') {
                 int hashes = 0;
@@ -584,7 +721,7 @@ static char *md_to_html(const char *md) {
                 i += 2;
                 continue;
             }
-            /* Also handle * bullets */
+            /* Also handle * bullets (but not ** which is bold) */
             if (md[i] == '*' && md[i+1] == ' ') {
                 str_append_cstr(&out, "• ");
                 i += 2;
@@ -618,16 +755,33 @@ static char *md_to_html(const char *md) {
             continue;
         }
 
-        /* Italic: _text_ (but not __text__) */
-        if (md[i] == '_' && md[i+1] != '_') {
-            i++;
-            str_append_cstr(&out, "<i>");
-            while (md[i] && md[i] != '_') {
-                html_escape_append(&out, &md[i], 1);
-                i++;
+        /* Italic: _text_ — only at word boundaries to avoid mangling
+         * identifiers like file_name or my_var */
+        if (md[i] == '_' && md[i+1] != '_' && md[i+1] != ' '
+            && md[i+1] != '\0'
+            && (i == 0 || is_word_boundary(md[i-1]))) {
+            /* Scan for closing _ at a word boundary */
+            int j = i + 1;
+            while (md[j] && md[j] != '\n') {
+                if (md[j] == '_' && is_word_boundary(md[j+1])) {
+                    /* Found valid closing _ */
+                    i++;
+                    str_append_cstr(&out, "<i>");
+                    while (i < j) {
+                        html_escape_append(&out, &md[i], 1);
+                        i++;
+                    }
+                    str_append_cstr(&out, "</i>");
+                    i++;  /* skip closing _ */
+                    goto next_char;
+                }
+                j++;
             }
-            str_append_cstr(&out, "</i>");
-            if (md[i] == '_') i++;
+            /* No valid closing _ found, output literally */
+            html_escape_append(&out, &md[i], 1);
+            i++;
+            continue;
+        next_char:
             continue;
         }
 
@@ -635,11 +789,11 @@ static char *md_to_html(const char *md) {
         if (md[i] == '[') {
             int start = i + 1;
             int j = start;
-            while (md[j] && md[j] != ']') j++;
+            while (md[j] && md[j] != ']' && md[j] != '\n') j++;
             if (md[j] == ']' && md[j+1] == '(') {
                 int url_start = j + 2;
                 int k = url_start;
-                while (md[k] && md[k] != ')') k++;
+                while (md[k] && md[k] != ')' && md[k] != '\n') k++;
                 if (md[k] == ')') {
                     str_append_cstr(&out, "<a href=\"");
                     str_append(&out, &md[url_start], (size_t)(k - url_start));
