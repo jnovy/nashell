@@ -102,8 +102,6 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->vscore_exponent < 0)         cfg->vscore_exponent = 0.3f;
     if (cfg->tool_retry_limit <= 0)       cfg->tool_retry_limit = 3;
     /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
-    if (cfg->cycling_window <= 0)         cfg->cycling_window = 4;
-    if (cfg->cycling_threshold <= 0)      cfg->cycling_threshold = 2;
     /* max_react_steps: -1 sentinel from TOML parsing means "not set".
      * 0 = unlimited (valid user value), so only replace negative sentinels. */
     if (cfg->max_react_steps < 0)         cfg->max_react_steps = 0;
@@ -294,7 +292,7 @@ config_t *config_load(const char *path) {
         cfg->llm_max_response   = toml_int(limits, "llm_max_response", -1);
         cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", -1);
         cfg->llm_timeout        = toml_int(limits, "llm_timeout", -1);
-        cfg->cycling_detection  = toml_bl(limits, "cycling_detection", 0);
+        cfg->cycling_detection  = toml_bl(limits, "cycling_detection", 1);
         cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", -1);
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
         cfg->memory_index_max   = toml_int(limits, "memory_index_max", -1);
@@ -334,8 +332,6 @@ config_t *config_load(const char *path) {
           if (v >= 0) cfg->vscore_exponent = (float)v; }
         cfg->tool_retry_limit       = toml_int(limits, "tool_retry_limit", -1);
         cfg->checkpoint_frequency   = toml_int(limits, "checkpoint_frequency", 0);
-        cfg->cycling_window         = toml_int(limits, "cycling_window", -1);
-        cfg->cycling_threshold      = toml_int(limits, "cycling_threshold", -1);
     }
 
     /* [paths] */
@@ -919,8 +915,6 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "file_read_max_inline = %d\n", cfg->file_read_max_inline);
     fprintf(out, "scratchpad_max = %d\n", cfg->scratchpad_max);
     fprintf(out, "checkpoint_frequency = %d\n", cfg->checkpoint_frequency);
-    fprintf(out, "cycling_window = %d\n", cfg->cycling_window);
-    fprintf(out, "cycling_threshold = %d\n", cfg->cycling_threshold);
     fprintf(out, "prune_min_score = %.2f\n", cfg->prune_min_score);
     fprintf(out, "prune_min_evidence = %d\n", cfg->prune_min_evidence);
     fprintf(out, "consolidation_threshold = %.2f\n", cfg->consolidation_threshold);
@@ -1216,10 +1210,6 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v >= 0) cfg->scratchpad_max = v;
         v = toml_int(limits, "checkpoint_frequency", -1);
         if (v >= 0) cfg->checkpoint_frequency = v;
-        v = toml_int(limits, "cycling_window", 0);
-        if (v > 0) cfg->cycling_window = v;
-        v = toml_int(limits, "cycling_threshold", 0);
-        if (v > 0) cfg->cycling_threshold = v;
         { double d = toml_dbl(limits, "prune_min_score", 0);
           if (d > 0) cfg->prune_min_score = d; }
         v = toml_int(limits, "prune_min_evidence", 0);
@@ -1347,7 +1337,7 @@ int config_write_default(const char *path) {
         "llm_max_response = 10485760  # max bytes from LLM response (10MB)\n"
         "llm_repeat_threshold = 100   # stop after N consecutive identical tokens\n"
         "llm_timeout = 600            # max seconds per LLM API call (0 = no limit)\n"
-        "cycling_detection = false    # detect and refuse repeated identical tool calls\n"
+        "cycling_detection = true     # detect and refuse repeated identical tool calls\n"
         "\n"
         "# Context management\n"
         "scratchpad_max = 0           # max scratchpad chars (0 = auto: 5%% of context)\n"
@@ -1387,8 +1377,6 @@ int config_write_default(const char *path) {
         "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
         "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
         "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
-        "cycling_window = 4           # recent actions to check for cycling\n"
-        "cycling_threshold = 2        # identical actions in window to trigger cycling\n"
         "\n"
         "# Belief Entropy — forward-looking memory quality signal.\n"
         "# Based on MMPO [arXiv:2605.30159]: measures how clearly the current\n"

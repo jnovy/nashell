@@ -406,26 +406,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     struct timespec task_start;
     clock_gettime(CLOCK_MONOTONIC, &task_start);
 
-    /* Action signature tracking for cycling detection.
-     * Window size and threshold are configurable via config.toml:
-     *   cycling_window    = number of recent actions to track (default 4)
-     *   cycling_threshold = identical actions in window to trigger warning (default 2) */
-    int cw = (ctx->tools->cfg && ctx->tools->cfg->cycling_window > 0)
-             ? ctx->tools->cfg->cycling_window : 4;
-    int ct = (ctx->tools->cfg && ctx->tools->cfg->cycling_threshold > 0)
-             ? ctx->tools->cfg->cycling_threshold : 2;
-    if (cw > 64) cw = 64;  /* sanity cap */
-    /* FIX #10: Increased cycling signature buffer from 1024 to 4096 to reduce
-     * false positives/negatives for long arguments (file_edit with >120-char
-     * old_text, shell_exec with >1024-char commands).
-     * FIX: 2048 was still too small — 5 × 512-char prefix fields alone total
-     * 2560 bytes, causing snprintf truncation and false cycling detection
-     * for memory_store/file_edit calls with long values. 4096 provides
-     * comfortable headroom. */
-    #define CYCLING_SIG_SIZE 4096
-    char (*last_sigs)[CYCLING_SIG_SIZE] = calloc(cw, CYCLING_SIG_SIZE);
-    if (!last_sigs) { cw = 4; last_sigs = calloc(cw, CYCLING_SIG_SIZE); }
-    int sig_count = 0;
+    /* Cycling detection: track last action signature and its result.
+     * If the model repeats the exact same action, return the cached result
+     * instead of re-executing — no window, no threshold, just last-vs-current. */
+    char *last_sig = NULL;
+    char *last_result_json = NULL;  /* cached meta_str from previous action */
     int consecutive_null_responses = 0;  /* Track LLM failures (HTTP 500 etc.) */
 
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
@@ -880,15 +865,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             break;
         }
 
-        /* Cycling detection — disabled by default, enable via config:
+        /* Cycling detection — enabled by default, disable via config:
          *   [limits]
-         *   cycling_detection = true
-         * When disabled, the model can repeat the same action without
-         * warnings or refusal. This is useful for tasks that legitimately
-         * require repeated operations (e.g., reading multiple sections
-         * of the same file, running similar commands). */
-        int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 0;
-        char sig[CYCLING_SIG_SIZE];
+         *   cycling_detection = false
+         * When enabled, if the model repeats the exact same action as the
+         * previous step, the cached result is returned without re-execution.
+         * Disable for tasks that legitimately require repeated operations. */
+        int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 1;
         const char *cmd = react_json_get_str(action, "command");
         const char *path = react_json_get_str(action, "path");
         const char *pattern = react_json_get_str(action, "pattern");
@@ -910,27 +893,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *el = cJSON_GetObjectItem(action, "end_line");
         int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
-        /* FIX #11: Use FNV-1a hash of each field instead of truncated strings.
-         * Previously, long fields were truncated to 512 chars and packed into a
-         * 4096-byte buffer. With 5×512 + other fields, the total could exceed
-         * 4096, causing snprintf truncation → false cycling detection when two
-         * different actions shared a 4096-char prefix. Content hashing eliminates
-         * both the truncation problem and the buffer size constraint. */
+        /* Build action signature dynamically — no fixed buffer, no truncation.
+         * Short fields (action_name, cmd, path, pattern) go verbatim for
+         * debuggability.  Long fields get FNV-1a hashed to 8 hex chars each
+         * (8 fields × 9 bytes = 72 bytes fixed overhead). */
+        const char *cmd_s = cmd ? cmd : "";
+        const char *path_s = path ? path : "";
+        const char *pattern_s = pattern ? pattern : "";
+        /* 72 bytes for 8 hashed fields + 6 colons + 20 for ints + 1 null */
+        size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s)
+                       + strlen(pattern_s) + 72 + 32 + 1;
+        char *sig = malloc(sig_cap);
         #define SIG_HASH_FIELD(s) do { \
             unsigned _h = 2166136261u; \
             if (s) { for (const char *_p = (s); *_p; _p++) \
                 _h = (_h ^ (unsigned char)*_p) * 16777619u; } \
-            snprintf(sig + sig_pos, sizeof(sig) - (size_t)sig_pos, \
+            sig_pos += snprintf(sig + sig_pos, sig_cap - (size_t)sig_pos, \
                      "%08x:", _h); \
-            sig_pos += 9; \
         } while (0)
         int sig_pos = 0;
         /* Short fields go verbatim for debuggability */
-        sig_pos += snprintf(sig, sizeof(sig), "%s:%s:%s:%s:%d:%d:",
-                 action_name,
-                 cmd ? cmd : "",
-                 path ? path : "",
-                 pattern ? pattern : "",
+        sig_pos += snprintf(sig, sig_cap, "%s:%s:%s:%s:%d:%d:",
+                 action_name, cmd_s, path_s, pattern_s,
                  start_line, end_line);
         /* Long fields get hashed — no truncation, no overflow */
         SIG_HASH_FIELD(content);
@@ -943,65 +927,31 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         SIG_HASH_FIELD(value);
         #undef SIG_HASH_FIELD
 
-        int repeated = 0;
-        for (int i = 0; i < sig_count && i < cw; i++) {
-            if (strcmp(last_sigs[i], sig) == 0) repeated++;
-        }
-        if (sig_count < cw) {
-            snprintf(last_sigs[sig_count], CYCLING_SIG_SIZE, "%s", sig);
-            sig_count++;
-        } else {
-            memmove(last_sigs, last_sigs + 1, (size_t)(cw - 1) * CYCLING_SIG_SIZE);
-            snprintf(last_sigs[cw - 1], CYCLING_SIG_SIZE, "%s", sig);
-        }
+        int is_repeat = (last_sig && strcmp(last_sig, sig) == 0);
 
-        if (cycling_enabled && repeated >= ct) {
-            char warn_msg[256];
-            snprintf(warn_msg, sizeof(warn_msg),
-                     "Cycling detected — same action repeated %d times", repeated + 1);
+        /* Cycling: return cached result instead of re-executing */
+        tool_result_t tr;
+        if (cycling_enabled && is_repeat && last_result_json) {
+            /* Return cached result from the previous identical action.
+             * The model gets the same data without re-execution. */
             react_event_t ev = {0};
             ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_WARNING;
             ev.step = step + 1;
-            ev.message = warn_msg;
+            ev.message = "Cycling — returning cached result from previous identical action";
             react_emit(on_event, userdata, &ev);
 
-            /* Fix 1: Inject warning into chat so the model KNOWS it's cycling */
-            llm_chat_add(chat, "user",
-                "WARNING: You are repeating the same action. "
-                "The output is already stored — use file_read(ref) to read it. "
-                "Do NOT re-run the same command.");
-        }
+            cJSON *cached = cJSON_Parse(last_result_json);
+            if (!cached) cached = cJSON_CreateObject();
+            cJSON_AddStringToObject(cached, "note",
+                "cached — identical action already executed, result reused");
+            tr = (tool_result_t){ .meta = cached, .store_ref = NULL, .success = 1 };
 
-        /* Refuse execution after threshold+1 consecutive identical actions */
-        tool_result_t tr;
-        if (cycling_enabled && repeated >= ct + 1) {
-            cJSON *err_meta = cJSON_CreateObject();
-            cJSON_AddStringToObject(err_meta, "error",
-                "Refused: same action repeated 4+ times. "
-                "Read previous results with file_read(ref) instead.");
-            tr = (tool_result_t){ .meta = err_meta, .store_ref = NULL, .success = 0 };
-
-            /* Store cycling_refused details for audit trail */
-            {
-                cJSON *cr_params = cJSON_CreateObject();
-                cJSON_AddStringToObject(cr_params, "error",
-                    "same action repeated 4+ times");
-                cJSON_AddStringToObject(cr_params, "action", action_name);
-                char *cr_json = cJSON_PrintUnformatted(cr_params);
-                char *cr_ref = (cr_json && ctx->tools->store)
-                    ? store_save(ctx->tools->store, cr_json) : NULL;
-                char *cr_alias = (cr_ref && ctx->tools->aliases)
-                    ? tool_register_alias(ctx->tools, cr_ref) : NULL;
-                journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                               step + 1, "cycling_refused", cr_params, cr_alias,
-                               cr_json ? strlen(cr_json) : 0, 0,
-                               "same action repeated 4+ times", NULL);
-                free(cr_json);
-                free(cr_ref);
-                free(cr_alias);
-                cJSON_Delete(cr_params);
-            }
+            /* Journal audit trail */
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "cycling_cached", cached, NULL,
+                           strlen(last_result_json), 0,
+                           "returned cached result", NULL);
         } else {
             /* Normal execution — inject thought into tool_ctx for journal recording */
             ctx->tools->thought = thought;
@@ -1111,6 +1061,17 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Build tool result string for context */
         char *meta_str = cJSON_PrintUnformatted(tr.meta);
+
+        /* Cache signature + result for cycling detection on next step.
+         * Only update on fresh executions, not cached hits. */
+        if (!is_repeat) {
+            free(last_sig);
+            last_sig = sig;
+            sig = NULL;  /* ownership transferred — don't free below */
+            free(last_result_json);
+            last_result_json = strdup(meta_str);
+        }
+        free(sig);  /* no-op if ownership was transferred above */
         size_t result_len = strlen(meta_str) + 128;
         char *result_msg = malloc(result_len);
         { char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
@@ -1485,6 +1446,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->tools->n_recalled_keys = 0;
     ctx->tools->recalled_keys_cap = 0;
 
-    free(last_sigs);
+    free(last_sig);
+    free(last_result_json);
     return final_result;
 }

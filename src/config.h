@@ -207,9 +207,6 @@ typedef struct {
                                     * with actual misses (vscore=0.33 → ×0.72). */
     int    tool_retry_limit;       /* max consecutive errors on same tool before forced strategy switch (default 3) */
     int    checkpoint_frequency;   /* save checkpoint every N steps (0 = every step, default 0) */
-    int    cycling_window;         /* number of recent actions to check for cycling (default 4) */
-    int    cycling_threshold;      /* number of identical actions in window to trigger cycling (default 2) */
-
     /* Memory pruning (Bayesian validation scoring) */
     double prune_min_score;      /* validation score threshold (default 0.35) */
     int    prune_min_evidence;   /* minimum recalls before pruning (default 3) */
