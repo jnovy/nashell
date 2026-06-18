@@ -593,7 +593,7 @@ static void html_escape_append(str_t *out, const char *text, size_t len) {
  *   _italic_       → <i>italic</i>  (word-boundary only, not file_name)
  *   `code`         → <code>code</code>
  *   ```lang\n...\n```  → <pre><code class="language-lang">...</code></pre>
- *   | table |      → <pre>table rows</pre>  (separator lines stripped)
+ *   | table |      → bold header + plain rows  (separator lines stripped)
  *   ## Header      → <b>Header</b>
  *   - bullet       → • bullet
  *   [text](url)    → <a href="url">text</a>
@@ -671,9 +671,9 @@ static char *md_to_html(const char *md) {
         /* Line-level patterns (only at start of line or start of string) */
         if (i == 0 || md[i-1] == '\n') {
 
-            /* Markdown table: consecutive lines starting with | → <pre> */
+            /* Markdown table: bold header, skip separators, plain rows */
             if (is_table_line(md, i)) {
-                str_append_cstr(&out, "<pre>");
+                int is_header = 1;  /* first non-separator row is header */
                 while (md[i] && is_table_line(md, i)) {
                     /* Skip separator lines (|---|---|) */
                     if (is_table_separator(md, i)) {
@@ -681,17 +681,35 @@ static char *md_to_html(const char *md) {
                         if (md[i] == '\n') i++;
                         continue;
                     }
-                    /* Emit table row with HTML escaping */
+                    /* Emit table row — header gets <b> wrapping */
+                    if (is_header)
+                        str_append_cstr(&out, "<b>");
                     while (md[i] && md[i] != '\n') {
+                        /* Handle **bold** inside data cells */
+                        if (!is_header && md[i] == '*' && md[i+1] == '*') {
+                            i += 2;
+                            str_append_cstr(&out, "<b>");
+                            while (md[i] && md[i] != '\n'
+                                   && !(md[i] == '*' && md[i+1] == '*')) {
+                                html_escape_append(&out, &md[i], 1);
+                                i++;
+                            }
+                            str_append_cstr(&out, "</b>");
+                            if (md[i] == '*' && md[i+1] == '*') i += 2;
+                            continue;
+                        }
                         html_escape_append(&out, &md[i], 1);
                         i++;
+                    }
+                    if (is_header) {
+                        str_append_cstr(&out, "</b>");
+                        is_header = 0;
                     }
                     if (md[i] == '\n') {
                         str_append_cstr(&out, "\n");
                         i++;
                     }
                 }
-                str_append_cstr(&out, "</pre>");
                 continue;
             }
 
