@@ -60,7 +60,9 @@ const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to unpin\"}},\"required\":[\"key\"]}"},
 
     {"done",
-     "Signal task completion. Include all concrete data (paths, numbers, URLs) in result.",
+     "Signal task completion. Include all concrete data (paths, numbers, URLs) in result. "
+     "The user CANNOT see notes/scratchpad — never say \"see above\" or reference data only in notes. "
+     "Copy all relevant content (tables, lists, data) directly into the result text.",
      "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Complete answer with details\"}},\"required\":[\"result\"]}"},
 
     {"plan",

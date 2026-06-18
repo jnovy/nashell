@@ -16,7 +16,10 @@
  *     └── daemon loop (main thread):
  *         └── existing mailbox_wait_task → react_run → mailbox_write_result
  *
- * Uses HTML parse_mode for formatting (simpler escaping than MarkdownV2).
+ * Uses Bot API 10.1 sendRichMessage with RichMarkdown parse_mode when
+ * available — sends agent markdown output directly with full formatting
+ * (native tables, headings, code highlighting, math).
+ * Falls back to HTML parse_mode via md_to_html() on older Bot API servers.
  * Messages >4096 chars are sent as document files (.md) with caption preview.
  * No new dependencies — uses existing libcurl (http_post/http_get) and cJSON.
  */
@@ -28,6 +31,7 @@ typedef struct {
     char     *mailbox_dir;       /* path to ~/.nash/mailbox */
     char     *config_path;       /* path to config.toml (for saving setup) */
     volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
+    int       rich_supported;    /* 1 = sendRichMessage available (Bot API 10.1+) */
 } telegram_ctx_t;
 
 /* Initialize telegram context from config.

@@ -860,7 +860,9 @@ char *tools_system_prompt(void) {
         "shell_exec equivalents (cat, grep, find, sed, head, tail). "
         "file_read supports start_line/end_line for reading specific line ranges.\n"
         "- Record key findings in notes — they survive context eviction.\n"
-        "- Call done with the final answer when finished.\n",
+        "- Call done with the final answer when finished.\n"
+        "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
+        "Never reference notes content — include all data directly in done result.\n",
         timebuf, cwdbuf);
 
     return buf;

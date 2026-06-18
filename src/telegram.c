@@ -4,9 +4,9 @@
  * Bridges the mailbox system to Telegram: incoming messages become tasks,
  * outbox results/questions are sent as formatted Telegram messages.
  *
- * Uses HTML parse_mode (not MarkdownV2) for simplicity:
- *   - Only need to escape <, >, &
- *   - <b>, <i>, <code>, <pre> for formatting
+ * Formatting strategy (Bot API 10.1+ sendRichMessage with RichMarkdown):
+ *   - Agent markdown output sent directly — native tables, headings, code
+ *   - Falls back to HTML parse_mode (md_to_html) on older Bot API servers
  *
  * Threading model:
  *   The telegram_run() function runs in its own pthread, started by main.c.
@@ -47,9 +47,9 @@ static int  tg_api_send_message(telegram_ctx_t *ctx, const char *text,
                                 const char *parse_mode);
 static int  tg_send_long(telegram_ctx_t *ctx, const char *text,
                          const char *parse_mode);
-static int  tg_api_send_document(telegram_ctx_t *ctx, const char *text,
-                                 const char *caption);
 static char *md_to_html(const char *md);
+static int  tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text);
+static int  tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text);
 static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename);
 static int  tg_config_save(telegram_ctx_t *ctx);
 static int  tg_config_load(telegram_ctx_t *ctx);
@@ -73,6 +73,7 @@ int telegram_init(telegram_ctx_t *ctx, const char *config_path,
     ctx->mailbox_dir = strdup(mailbox_dir);
     ctx->shutdown = shutdown;
     ctx->update_offset = 0;
+    ctx->rich_supported = 1;  /* optimistic; downgraded on first 404 */
 
     /* Try loading existing config */
     tg_config_load(ctx);
@@ -448,77 +449,8 @@ static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
     return rc;
 }
 
-/* Send text as a document file (.md) via sendDocument API.
- * Used for messages that exceed TG_MSG_MAX to avoid splitting into
- * multiple chunks where the user only sees the last part. */
-static int tg_api_send_document(telegram_ctx_t *ctx, const char *text,
-                                const char *caption) {
-    char url[TG_URL_MAX];
-    snprintf(url, sizeof(url), "%s%s/sendDocument",
-             TG_API_BASE, ctx->bot_token);
-
-    CURL *curl = curl_easy_init();
-    if (!curl) return -1;
-
-    /* Build multipart form */
-    curl_mime *mime = curl_mime_init(curl);
-
-    /* chat_id field */
-    curl_mimepart *part = curl_mime_addpart(mime);
-    curl_mime_name(part, "chat_id");
-    char chat_id_str[32];
-    snprintf(chat_id_str, sizeof(chat_id_str), "%lld", ctx->chat_id);
-    curl_mime_data(part, chat_id_str, CURL_ZERO_TERMINATED);
-
-    /* document field — send text content as "result.md" */
-    part = curl_mime_addpart(mime);
-    curl_mime_name(part, "document");
-    curl_mime_data(part, text, CURL_ZERO_TERMINATED);
-    curl_mime_filename(part, "result.md");
-    curl_mime_type(part, "text/markdown");
-
-    /* caption (short preview, max 1024 chars for Telegram) */
-    if (caption && caption[0]) {
-        part = curl_mime_addpart(mime);
-        curl_mime_name(part, "caption");
-        curl_mime_data(part, caption, CURL_ZERO_TERMINATED);
-    }
-
-    str_t resp = str_new(1024);
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
-
-    CURLcode res = curl_easy_perform(curl);
-    int rc = (res == CURLE_OK) ? 0 : -1;
-
-    /* Check API response */
-    if (rc == 0 && resp.len > 0) {
-        cJSON *rjson = cJSON_Parse(resp.data);
-        if (rjson) {
-            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
-            if (!ok || !cJSON_IsTrue(ok)) {
-                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
-                fprintf(stderr, "[telegram] sendDocument error: %s\n",
-                        desc ? desc->valuestring : "unknown");
-                rc = -1;
-            }
-            cJSON_Delete(rjson);
-        }
-    }
-
-    str_free(&resp);
-    curl_mime_free(mime);
-    curl_easy_cleanup(curl);
-    return rc;
-}
-
-/* Send a long message, splitting at ~4096 chars on paragraph boundaries. */
 /* Send a long message: if it fits in TG_MSG_MAX, send as a regular message.
- * If it's longer, send the full text as a document file (.md) so the user
- * gets one message instead of having to scroll through multiple chunks. */
+ * If it's longer, split into multiple messages at paragraph/line boundaries. */
 static int tg_send_long(telegram_ctx_t *ctx, const char *text,
                         const char *parse_mode) {
     size_t len = strlen(text);
@@ -526,54 +458,192 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
         return tg_api_send_message(ctx, text, parse_mode);
     }
 
-    /* For long messages, send as a document with a short caption preview.
-     * This avoids the problem where multi-part messages show only the
-     * last chunk and the user has to scroll up to read from the beginning. */
+    /* Split long messages into multiple chunks */
+    const char *pos = text;
+    size_t remaining = len;
+    int rc = 0;
 
-    /* Extract first paragraph as caption preview (max ~900 chars to stay
-     * under Telegram's 1024-char caption limit with some margin) */
-    const size_t caption_max = 900;
-    char caption[1024];
-    size_t cap_len = 0;
-
-    /* Find end of first paragraph (double newline) or use caption_max */
-    const char *para_end = strstr(text, "\n\n");
-    if (para_end && (size_t)(para_end - text) <= caption_max) {
-        cap_len = (size_t)(para_end - text);
-    } else {
-        /* Find last newline before caption_max */
-        cap_len = len < caption_max ? len : caption_max;
-        for (size_t i = cap_len; i > cap_len / 2; i--) {
-            if (text[i] == '\n') {
-                cap_len = i;
-                break;
+    while (remaining > 0) {
+        size_t chunk_len;
+        if (remaining <= TG_MSG_MAX) {
+            chunk_len = remaining;
+        } else {
+            chunk_len = TG_MSG_MAX;
+            /* Try to find last paragraph break (\n\n) within the chunk */
+            size_t best = 0;
+            for (size_t i = 0; i + 1 < chunk_len; i++) {
+                if (pos[i] == '\n' && pos[i + 1] == '\n')
+                    best = i + 2;  /* split after both newlines */
+            }
+            if (best > chunk_len / 4) {
+                chunk_len = best;
+            } else {
+                /* No paragraph break — try last line break */
+                best = 0;
+                for (size_t i = 0; i < chunk_len; i++) {
+                    if (pos[i] == '\n')
+                        best = i + 1;  /* split after the newline */
+                }
+                if (best > chunk_len / 4) {
+                    chunk_len = best;
+                }
+                /* else: hard split at TG_MSG_MAX */
             }
         }
+
+        /* Send this chunk */
+        char *chunk = malloc(chunk_len + 1);
+        if (!chunk) return -1;
+        memcpy(chunk, pos, chunk_len);
+        chunk[chunk_len] = '\0';
+
+        rc = tg_api_send_message(ctx, chunk, parse_mode);
+        free(chunk);
+        if (rc != 0) break;
+
+        pos += chunk_len;
+        remaining -= chunk_len;
+
+        /* Small delay between chunks to maintain message order */
+        if (remaining > 0) usleep(300000);  /* 300ms */
     }
 
-    /* Copy caption, stripping any HTML tags for clean preview */
-    size_t j = 0;
-    for (size_t i = 0; i < cap_len && j < sizeof(caption) - 4; i++) {
-        if (text[i] == '<') {
-            /* Skip to closing > */
-            while (i < cap_len && text[i] != '>') i++;
-            continue;
-        }
-        caption[j++] = text[i];
-    }
-    /* Add ellipsis if truncated */
-    if (cap_len < len && j + 3 < sizeof(caption)) {
-        caption[j++] = '.';
-        caption[j++] = '.';
-        caption[j++] = '.';
-    }
-    caption[j] = '\0';
-
-    return tg_api_send_document(ctx, text, caption);
+    return rc;
 }
 
 
-/* ── Markdown → Telegram HTML conversion ─────────────────── */
+/* ── Rich Message support (Bot API 10.1+) ────────────────── */
+
+/*
+ * Send a message using the Bot API 10.1 sendRichMessage endpoint.
+ * Sends the raw markdown directly with parse_mode "RichMarkdown".
+ *
+ * Returns 0 on success, -1 on error.
+ * On 404 (method not found), sets ctx->rich_supported = 0 so we
+ * never retry on older Bot API servers.
+ */
+static int tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text) {
+    char url[TG_URL_MAX];
+    snprintf(url, sizeof(url), "%s%s/sendRichMessage",
+             TG_API_BASE, ctx->bot_token);
+
+    /* Build JSON body */
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
+    cJSON_AddStringToObject(body, "rich_text", md_text);
+    cJSON_AddStringToObject(body, "parse_mode", "RichMarkdown");
+    /* Disable link previews */
+    cJSON *link_opts = cJSON_CreateObject();
+    cJSON_AddBoolToObject(link_opts, "is_disabled", 1);
+    cJSON_AddItemToObject(body, "link_preview_options", link_opts);
+
+    char *body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t resp = str_new(1024);
+    int rc = http_post(url, body_str, headers, 30, &resp);
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
+            if (!ok || !cJSON_IsTrue(ok)) {
+                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
+                cJSON *errcode = cJSON_GetObjectItem(rjson, "error_code");
+                int code = errcode ? (int)errcode->valuedouble : 0;
+                fprintf(stderr, "[telegram] sendRichMessage error %d: %s\n",
+                        code, desc ? desc->valuestring : "unknown");
+
+                /* 404 = method not found → Bot API server doesn't support
+                 * Rich Messages (pre-10.1). Disable permanently. */
+                if (code == 404 || code == 400) {
+                    fprintf(stderr, "[telegram] Rich Messages not supported, "
+                            "falling back to HTML\n");
+                    ctx->rich_supported = 0;
+                }
+                rc = -1;
+            } else {
+                fprintf(stderr, "[telegram] sent via sendRichMessage\n");
+            }
+            cJSON_Delete(rjson);
+        }
+    } else {
+        rc = -1;
+    }
+
+    str_free(&resp);
+    curl_slist_free_all(headers);
+    free(body_str);
+    return rc;
+}
+
+/* Send a (possibly long) message via Rich Messages.
+ * If the text fits in TG_MSG_MAX, sends via sendRichMessage.
+ * If longer, splits into multiple Rich Messages at paragraph/line boundaries. */
+static int tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text) {
+    size_t len = strlen(md_text);
+    if (len <= TG_MSG_MAX) {
+        return tg_api_send_rich(ctx, md_text);
+    }
+
+    /* Split long messages into multiple chunks */
+    const char *pos = md_text;
+    size_t remaining = len;
+    int rc = 0;
+
+    while (remaining > 0) {
+        size_t chunk_len;
+        if (remaining <= TG_MSG_MAX) {
+            chunk_len = remaining;
+        } else {
+            chunk_len = TG_MSG_MAX;
+            /* Try to find last paragraph break (\n\n) within the chunk */
+            size_t best = 0;
+            for (size_t i = 0; i + 1 < chunk_len; i++) {
+                if (pos[i] == '\n' && pos[i + 1] == '\n')
+                    best = i + 2;  /* split after both newlines */
+            }
+            if (best > chunk_len / 4) {
+                chunk_len = best;
+            } else {
+                /* No paragraph break — try last line break */
+                best = 0;
+                for (size_t i = 0; i < chunk_len; i++) {
+                    if (pos[i] == '\n')
+                        best = i + 1;  /* split after the newline */
+                }
+                if (best > chunk_len / 4) {
+                    chunk_len = best;
+                }
+                /* else: hard split at TG_MSG_MAX */
+            }
+        }
+
+        /* Send this chunk */
+        char *chunk = malloc(chunk_len + 1);
+        if (!chunk) return -1;
+        memcpy(chunk, pos, chunk_len);
+        chunk[chunk_len] = '\0';
+
+        rc = tg_api_send_rich(ctx, chunk);
+        free(chunk);
+        if (rc != 0) break;
+
+        pos += chunk_len;
+        remaining -= chunk_len;
+
+        /* Small delay between chunks to maintain message order */
+        if (remaining > 0) usleep(300000);  /* 300ms */
+    }
+
+    return rc;
+}
+
+
+/* ── Markdown → Telegram HTML conversion (fallback for pre-10.1 Bot API) ── */
 
 /* Escape HTML special characters: < > & */
 static void html_escape_append(str_t *out, const char *text, size_t len) {
@@ -589,13 +659,15 @@ static void html_escape_append(str_t *out, const char *text, size_t len) {
 
 /*
  * Convert nash's markdown output to Telegram HTML.
+ * This is the FALLBACK path used when sendRichMessage (Bot API 10.1+)
+ * is not available. The primary path sends markdown directly.
  *
  * Supported conversions:
  *   **bold**       → <b>bold</b>
  *   _italic_       → <i>italic</i>  (word-boundary only, not file_name)
  *   `code`         → <code>code</code>
  *   ```lang\n...\n```  → <pre><code class="language-lang">...</code></pre>
- *   | table |      → bold header + plain rows  (separator lines stripped)
+ *   | table |      → <pre>-wrapped monospace ASCII table
  *   ## Header      → <b>Header</b>
  *   - bullet       → • bullet
  *   [text](url)    → <a href="url">text</a>
@@ -673,45 +745,118 @@ static char *md_to_html(const char *md) {
         /* Line-level patterns (only at start of line or start of string) */
         if (i == 0 || md[i-1] == '\n') {
 
-            /* Markdown table: bold header, skip separators, plain rows */
+            /* Markdown table → <pre>-wrapped monospace table
+             * (Telegram HTML parse_mode doesn't support <table> tags) */
             if (is_table_line(md, i)) {
-                int is_header = 1;  /* first non-separator row is header */
-                while (md[i] && is_table_line(md, i)) {
-                    /* Skip separator lines (|---|---|) */
-                    if (is_table_separator(md, i)) {
-                        while (md[i] && md[i] != '\n') i++;
-                        if (md[i] == '\n') i++;
+                /* --- Pass 1: collect all rows & measure column widths --- */
+                #define TBL_MAX_COLS 32
+                #define TBL_MAX_ROWS 128
+                /* Store cell text as {start, len} into md */
+                struct { int s; int n; } cells[TBL_MAX_ROWS][TBL_MAX_COLS];
+                int ncols_per_row[TBL_MAX_ROWS];
+                int is_sep[TBL_MAX_ROWS];
+                int nrows = 0;
+                int max_cols = 0;
+                int col_width[TBL_MAX_COLS];
+                memset(col_width, 0, sizeof(col_width));
+
+                int scan = i;
+                while (md[scan] && is_table_line(md, scan) && nrows < TBL_MAX_ROWS) {
+                    if (is_table_separator(md, scan)) {
+                        is_sep[nrows] = 1;
+                        ncols_per_row[nrows] = 0;
+                        nrows++;
+                        while (md[scan] && md[scan] != '\n') scan++;
+                        if (md[scan] == '\n') scan++;
                         continue;
                     }
-                    /* Emit table row — header gets <b> wrapping */
-                    if (is_header)
-                        str_append_cstr(&out, "<b>");
-                    while (md[i] && md[i] != '\n') {
-                        /* Handle **bold** inside data cells */
-                        if (!is_header && md[i] == '*' && md[i+1] == '*') {
-                            i += 2;
-                            str_append_cstr(&out, "<b>");
-                            while (md[i] && md[i] != '\n'
-                                   && !(md[i] == '*' && md[i+1] == '*')) {
-                                html_escape_append(&out, &md[i], 1);
-                                i++;
+                    is_sep[nrows] = 0;
+                    int line_end = scan;
+                    while (md[line_end] && md[line_end] != '\n') line_end++;
+
+                    int p = scan;
+                    while (p < line_end && (md[p] == ' ' || md[p] == '\t')) p++;
+                    if (p < line_end && md[p] == '|') p++;
+
+                    int col = 0;
+                    while (p < line_end && col < TBL_MAX_COLS) {
+                        int cs = p, ce = p;
+                        while (ce < line_end && md[ce] != '|') ce++;
+                        /* Trim whitespace */
+                        int ts = cs, te = ce;
+                        while (ts < te && (md[ts] == ' ' || md[ts] == '\t')) ts++;
+                        while (te > ts && (md[te-1] == ' ' || md[te-1] == '\t')) te--;
+
+                        if (ts == te && ce >= line_end) break; /* trailing | */
+
+                        cells[nrows][col].s = ts;
+                        cells[nrows][col].n = te - ts;
+
+                        /* Measure display width (strip ** markers) */
+                        int dw = 0;
+                        int q = ts;
+                        while (q < te) {
+                            if (md[q] == '*' && q+1 < te && md[q+1] == '*') {
+                                q += 2;
+                            } else {
+                                dw++; q++;
                             }
-                            str_append_cstr(&out, "</b>");
-                            if (md[i] == '*' && md[i+1] == '*') i += 2;
-                            continue;
                         }
-                        html_escape_append(&out, &md[i], 1);
-                        i++;
+                        if (dw > col_width[col]) col_width[col] = dw;
+
+                        p = ce;
+                        if (p < line_end && md[p] == '|') p++;
+                        col++;
                     }
-                    if (is_header) {
-                        str_append_cstr(&out, "</b>");
-                        is_header = 0;
-                    }
-                    if (md[i] == '\n') {
-                        str_append_cstr(&out, "\n");
-                        i++;
-                    }
+                    ncols_per_row[nrows] = col;
+                    if (col > max_cols) max_cols = col;
+                    nrows++;
+                    scan = line_end;
+                    if (md[scan] == '\n') scan++;
                 }
+
+                /* --- Pass 2: render as <pre> aligned ASCII table --- */
+                str_append_cstr(&out, "<pre>\n");
+                for (int r = 0; r < nrows; r++) {
+                    if (is_sep[r]) {
+                        /* Render separator: +------+------+ */
+                        for (int c = 0; c < max_cols; c++) {
+                            str_append_cstr(&out, c == 0 ? "+" : "");
+                            for (int k = 0; k < col_width[c] + 2; k++)
+                                str_append_cstr(&out, "-");
+                            str_append_cstr(&out, "+");
+                        }
+                        str_append_cstr(&out, "\n");
+                        continue;
+                    }
+                    for (int c = 0; c < max_cols; c++) {
+                        str_append_cstr(&out, c == 0 ? "| " : " | ");
+                        int dw = 0;
+                        if (c < ncols_per_row[r]) {
+                            /* Emit cell text, stripping ** bold markers */
+                            int cs = cells[r][c].s;
+                            int ce = cs + cells[r][c].n;
+                            int q = cs;
+                            while (q < ce) {
+                                if (md[q] == '*' && q+1 < ce && md[q+1] == '*') {
+                                    q += 2;
+                                } else {
+                                    /* html_escape single char for <, >, & */
+                                    html_escape_append(&out, &md[q], 1);
+                                    dw++; q++;
+                                }
+                            }
+                        }
+                        /* Pad to column width */
+                        for (int k = dw; k < col_width[c]; k++)
+                            str_append_cstr(&out, " ");
+                    }
+                    str_append_cstr(&out, " |\n");
+                }
+                str_append_cstr(&out, "</pre>\n");
+                #undef TBL_MAX_COLS
+                #undef TBL_MAX_ROWS
+                i = scan;
                 continue;
             }
 
@@ -1091,29 +1236,46 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
     if (!content) return;
 
     if (strncmp(filename, "result_", 7) == 0) {
-        /* Task result → convert markdown and send.
-         * For long results, send the original markdown as a document file
-         * so the user can read it top-to-bottom instead of scrolling. */
-        size_t content_len = strlen(content);
-        if (content_len > TG_MSG_MAX) {
-            /* Long: send original markdown as .md document */
-            tg_send_long(ctx, content, NULL);
-        } else {
-            /* Short: send as formatted HTML message */
+        /* Task result → send as Rich Message (Bot API 10.1+) if available,
+         * otherwise fall back to md_to_html + HTML parse_mode.
+         *
+         * Rich Messages accept markdown directly — no conversion needed.
+         * The md_to_html path is kept as a fallback for older servers. */
+        int sent = 0;
+        if (ctx->rich_supported) {
+            if (tg_send_rich_long(ctx, content) == 0) {
+                sent = 1;
+            }
+            /* If rich_supported was just disabled (404/400), fall through */
+        }
+        if (!sent) {
+            /* Fallback: md_to_html + HTML parse_mode (split handles long) */
             char *html = md_to_html(content);
             tg_send_long(ctx, html, "HTML");
             free(html);
         }
     } else if (strncmp(filename, "ask_", 4) == 0) {
-        /* user_ask question → send and note the ask ID for reply matching */
-        str_t msg = str_new(strlen(content) + 64);
-        str_append_cstr(&msg, "❓ ");
-        str_append_cstr(&msg, content);
-        str_append_cstr(&msg, "\n\n<i>(Reply to this message to answer)</i>");
-        tg_api_send_message(ctx, msg.data, "HTML");
-        str_free(&msg);
+        /* user_ask question → send via Rich Message or HTML */
+        int ask_sent = 0;
+        if (ctx->rich_supported) {
+            str_t msg = str_new(strlen(content) + 64);
+            str_append_cstr(&msg, "❓ ");
+            str_append_cstr(&msg, content);
+            str_append_cstr(&msg, "\n\n_(Reply to this message to answer)_");
+            if (tg_api_send_rich(ctx, msg.data) == 0)
+                ask_sent = 1;
+            str_free(&msg);
+        }
+        if (!ask_sent) {
+            str_t msg = str_new(strlen(content) + 64);
+            str_append_cstr(&msg, "❓ ");
+            str_append_cstr(&msg, content);
+            str_append_cstr(&msg, "\n\n<i>(Reply to this message to answer)</i>");
+            tg_api_send_message(ctx, msg.data, "HTML");
+            str_free(&msg);
+        }
     } else if (strncmp(filename, "status_", 7) == 0) {
-        /* Status notification → send as-is */
+        /* Status notification → send as-is (plain text, no formatting) */
         str_t msg = str_new(strlen(content) + 16);
         str_append_cstr(&msg, "📋 ");
         str_append_cstr(&msg, content);
