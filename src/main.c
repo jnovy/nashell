@@ -226,6 +226,13 @@ static void cleanup_globals(store_t *shared_store, workspace_t *ws,
 }
 
 int main(int argc, char **argv) {
+    /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
+     * (e.g., LLM server drops connection mid-stream) or from popen/write
+     * to a defunct subprocess kills the entire process silently.
+     * curl sets CURLOPT_NOSIGNAL by default in multi-threaded code, but
+     * our popen calls (gcloud auth) and direct pipe I/O are unprotected. */
+    signal(SIGPIPE, SIG_IGN);
+
     /* Load config from ~/.nash/config.toml (or default) */
     char config_path[512];
     const char *home = getenv("HOME");

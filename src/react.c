@@ -1,5 +1,6 @@
 #include "react_internal.h"
 #include "compress.h"
+#include "tui.h"  /* g_tui_active — for condvar timeout escape hatch */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -472,11 +473,24 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = "Paused (Space to resume, type query to redirect)";
                 react_emit(on_event, userdata, &ev);
             }
-            /* Wait for user to provide a redirect query (or resume). */
+            /* Wait for user to provide a redirect query (or resume).
+             * Uses pthread_cond_timedwait with 2s timeout as an escape hatch:
+             * if the TUI thread crashes/exits without signaling, the inference
+             * thread won't block forever — it checks g_tui_active each cycle
+             * and breaks out with a synthetic "quit" redirect. */
             ctx->pause_waiting = 1;
             pthread_mutex_lock(&ctx->pause_mutex);
             while (!ctx->pause_query) {
-                pthread_cond_wait(&ctx->pause_cond, &ctx->pause_mutex);
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_sec += 2;
+                pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
+                /* Escape hatch: if TUI shut down while we were waiting,
+                 * inject a synthetic quit to unblock the loop. */
+                if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
+                    ctx->pause_query = strdup("quit");
+                    break;
+                }
             }
             char *redirect = ctx->pause_query;
             ctx->pause_query = NULL;
@@ -814,10 +828,22 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             react_emit(on_event, userdata, &ev);
 
             /* P7: Wait on condition variable instead of polling.
-             * The TUI thread signals user_ask_cond after setting the answer. */
+             * The TUI thread signals user_ask_cond after setting the answer.
+             * Uses pthread_cond_timedwait with 2s timeout as escape hatch:
+             * if the TUI exits without answering, we unblock with "(quit)". */
             pthread_mutex_lock(&ctx->user_ask_mutex);
             while (ctx->user_ask_pending) {
-                pthread_cond_wait(&ctx->user_ask_cond, &ctx->user_ask_mutex);
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_sec += 2;
+                pthread_cond_timedwait(&ctx->user_ask_cond, &ctx->user_ask_mutex, &ts);
+                /* Escape hatch: TUI gone → unblock with synthetic answer */
+                if (ctx->user_ask_pending && !atomic_load(&g_tui_active)) {
+                    free(ctx->user_ask_answer);
+                    ctx->user_ask_answer = strdup("(quit)");
+                    ctx->user_ask_pending = 0;
+                    break;
+                }
             }
             pthread_mutex_unlock(&ctx->user_ask_mutex);
 
@@ -1544,11 +1570,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = "Paused (Space to resume, type query to redirect)";
                 react_emit(on_event, userdata, &ev);
             }
-            /* Wait for user to provide a redirect query (or resume). */
+            /* Wait for user to provide a redirect query (or resume).
+             * Timed wait with escape hatch — see top-of-loop comment. */
             ctx->pause_waiting = 1;
             pthread_mutex_lock(&ctx->pause_mutex);
             while (!ctx->pause_query) {
-                pthread_cond_wait(&ctx->pause_cond, &ctx->pause_mutex);
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_sec += 2;
+                pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
+                if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
+                    ctx->pause_query = strdup("quit");
+                    break;
+                }
             }
             char *redirect = ctx->pause_query;
             ctx->pause_query = NULL;

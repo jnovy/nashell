@@ -15,15 +15,35 @@
 
 #define PROVIDER_MAX_RETRIES    10
 #define PROVIDER_RETRY_BASE_SEC 10
+#define PROVIDER_DEFAULT_TIMEOUT 600  /* 10 min default if not configured */
 
 /* Interruptible sleep: sleeps up to `seconds` but wakes early if
- * p->abort_retry is set. Returns 1 if aborted, 0 if full sleep. */
+ * p->abort_retry is set or TUI has shut down.
+ * Returns 1 if aborted, 0 if full sleep. */
 static int provider_sleep(provider_t *p, int seconds) {
     for (int i = 0; i < seconds; i++) {
         if (p->abort_retry) return 1;
+        if (!atomic_load(&g_tui_active)) return 1;  /* TUI gone — abort */
         sleep(1);
     }
     return p->abort_retry ? 1 : 0;
+}
+
+/* FIX: Curl progress callback for aborting streaming LLM calls.
+ * When the user quits the TUI or requests abort (pause/redirect),
+ * returning non-zero from this callback causes curl_easy_perform to
+ * return CURLE_ABORTED_BY_CALLBACK immediately instead of blocking
+ * until the server finishes. Without this, the TUI appears hung
+ * during shutdown or pause because pthread_join waits for the
+ * inference thread which is stuck in curl_easy_perform. */
+static int provider_curl_progress_cb(void *clientp,
+                                      curl_off_t dltotal, curl_off_t dlnow,
+                                      curl_off_t ultotal, curl_off_t ulnow) {
+    (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
+    provider_t *p = (provider_t *)clientp;
+    if (p->abort_retry) return 1;          /* user requested abort */
+    if (!atomic_load(&g_tui_active)) return 1;  /* TUI shut down */
+    return 0;  /* continue */
 }
 
 /* ── Shared model context size table ────────────────────────────── */
@@ -1050,8 +1070,16 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        if (p->cfg.llm_timeout > 0)
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)p->cfg.llm_timeout);
+        /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
+         * Also enable progress callback for abort-on-demand. */
+        {
+            long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
+                                                  : PROVIDER_DEFAULT_TIMEOUT;
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+        }
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
 
         CURLcode res = curl_easy_perform(curl);
 
@@ -1060,11 +1088,23 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
+        /* If aborted by progress callback, don't retry */
+        if (res == CURLE_ABORTED_BY_CALLBACK) {
+            free(req_body); free(endpoint); str_free(&response);
+            return NULL;
+        }
+
         if (res != CURLE_OK) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
                      curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) {
+                if (provider_sleep(p, delay)) {
+                    free(req_body); free(endpoint); str_free(&response);
+                    return NULL;  /* aborted during retry sleep */
+                }
+                continue;
+            }
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
         }
@@ -1097,7 +1137,11 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
                          http_code, attempt, PROVIDER_MAX_RETRIES, delay);
                 str_clear(&response);
-                provider_sleep(p, delay);
+                if (provider_sleep(p, delay)) {
+                    str_free(&response);
+                    free(req_body); free(endpoint);
+                    return NULL;  /* aborted */
+                }
                 continue;
             }
             /* Non-retryable 4xx or retries exhausted — fail immediately */
@@ -1112,7 +1156,13 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
                      attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) {
+                if (provider_sleep(p, delay)) {
+                    free(req_body); free(endpoint);
+                    return NULL;  /* aborted */
+                }
+                continue;
+            }
             free(req_body); free(endpoint);
             return NULL;
         }
@@ -1130,7 +1180,13 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
                      msg, attempt, PROVIDER_MAX_RETRIES, delay);
             cJSON_Delete(resp);
-            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) {
+                if (provider_sleep(p, delay)) {
+                    free(req_body); free(endpoint);
+                    return NULL;  /* aborted */
+                }
+                continue;
+            }
             free(req_body); free(endpoint);
             return NULL;
         }
@@ -1228,11 +1284,16 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-        /* Wall-clock timeout for streaming LLM calls (configurable via
-         * [limits] llm_timeout in config.toml, default 600s = 10 min).
-         * 0 = no limit. */
-        if (p->cfg.llm_timeout > 0)
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)p->cfg.llm_timeout);
+        /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
+         * Also enable progress callback for abort-on-demand during streaming. */
+        {
+            long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
+                                                  : PROVIDER_DEFAULT_TIMEOUT;
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+        }
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
 
         CURLcode res = curl_easy_perform(curl);
 
@@ -1240,6 +1301,12 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
+
+        /* If aborted by progress callback, don't retry */
+        if (res == CURLE_ABORTED_BY_CALLBACK) {
+            free(req_body);
+            goto cleanup;
+        }
 
         /* Process any remaining data in line buffer */
         if (st.line_buf.len > 0) {
@@ -1280,7 +1347,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 nash_log("[provider] HTTP %ld error (attempt %d/%d, "
                          "retry in %ds)",
                          http_code, attempt, PROVIDER_MAX_RETRIES, delay);
-                provider_sleep(p, delay);
+                if (provider_sleep(p, delay)) {
+                    free(req_body);
+                    goto cleanup;  /* aborted during retry sleep */
+                }
                 continue;
             }
             /* Non-retryable 4xx or retries exhausted: return NULL */
@@ -1332,7 +1402,13 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             int delay = attempt * PROVIDER_RETRY_BASE_SEC;
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
                      curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) { provider_sleep(p, delay); continue; }
+            if (attempt < PROVIDER_MAX_RETRIES) {
+                if (provider_sleep(p, delay)) {
+                    free(req_body);
+                    goto cleanup;  /* aborted during retry sleep */
+                }
+                continue;
+            }
             /* Populate error diagnostics for react.c journal entry */
             free(p->last_error);
             {

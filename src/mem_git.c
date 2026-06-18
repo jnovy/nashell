@@ -7,9 +7,14 @@
 #include <unistd.h>    /* fork, execvp, dup2, chdir, _exit */
 #include <sys/wait.h>  /* waitpid */
 #include <fcntl.h>     /* open, O_WRONLY */
+#include <signal.h>    /* kill, SIGKILL */
+#include <time.h>      /* clock_gettime, nanosleep */
 
 /* ── git version control for memory store ──────────────────────── */
 
+/* FIX: Added 30s timeout to prevent TUI hang when git blocks on
+ * lock contention, network (if remote), or filesystem issues.
+ * Uses WNOHANG polling with 100ms sleep intervals. */
 int memory_git_run(memory_t *m, const char *const argv[]) {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -21,9 +26,27 @@ int memory_git_run(memory_t *m, const char *const argv[]) {
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }
+    /* Wait with 30s timeout */
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     int status;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    while (1) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w > 0) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (now.tv_sec - start.tv_sec) +
+                         (now.tv_nsec - start.tv_nsec) / 1e9;
+        if (elapsed > 30.0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return -1;
+        }
+        struct timespec sl = {0, 100000000};  /* 100ms */
+        nanosleep(&sl, NULL);
+    }
 }
 
 void memory_git_init(memory_t *m) {

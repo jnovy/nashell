@@ -826,6 +826,21 @@ int tui_input(ui_state_t *ui, char **out_query) {
          * (needed to detect ESC[201~ paste-end sequence) */
     }
 
+    /* FIX: Handle terminal resize (SIGWINCH → KEY_RESIZE from ncurses).
+     * Without this, resize during operation can leave windows with stale
+     * dimensions, causing rendering corruption or out-of-bounds writes.
+     * endwin()+refresh() lets ncurses re-read terminal dimensions,
+     * then resize_panes recalculates window layout. */
+    if (ch == KEY_RESIZE) {
+        endwin();
+        refresh();
+        resize_panes_with_input_buf(ui->input_buffer, ui->input_len,
+                                     ui->cursor_pos);
+        ui->dirty = 1;
+        pthread_mutex_unlock(&ui->mtx);
+        return 1;
+    }
+
     switch (ch) {
     case '\t':
     case KEY_BTAB:

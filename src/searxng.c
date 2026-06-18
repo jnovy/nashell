@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <curl/curl.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <time.h>
 
 /* Track whether we auto-started a SearXNG container so we can tear it down
  * on nash exit.  0 = not started, 1 = podman, 2 = docker.
@@ -18,7 +20,8 @@
 static int searxng_auto_started = 0;
 
 /* Run a container command (stop, rm, etc.) via fork/exec.
- * FIX BUG#12: Use fork/exec instead of system() which is not signal-safe. */
+ * FIX BUG#12: Use fork/exec instead of system() which is not signal-safe.
+ * FIX: Added 30s timeout to prevent hang when container runtime blocks. */
 static int run_container_cmd(const char *runtime, const char *action, const char *name) {
     pid_t pid = fork();
     if (pid < 0) return -1;
@@ -29,9 +32,27 @@ static int run_container_cmd(const char *runtime, const char *action, const char
         execlp(runtime, runtime, action, name, (char *)NULL);
         _exit(127);
     }
+    /* Wait with 30s timeout */
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
     int status = 0;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    while (1) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w > 0) {
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsed = (now.tv_sec - start.tv_sec) +
+                         (now.tv_nsec - start.tv_nsec) / 1e9;
+        if (elapsed > 30.0) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return -1;
+        }
+        struct timespec sl = {0, 100000000};  /* 100ms */
+        nanosleep(&sl, NULL);
+    }
 }
 
 /* Check if a URL is reachable (HTTP GET, expect 2xx). Returns 1 if up. */
