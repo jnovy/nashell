@@ -59,6 +59,8 @@ static void tg_write_answer(const char *mailbox_dir, const char *ask_id,
                             const char *text);
 static int  tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
                               char *out_path, size_t out_sz);
+static int  tg_is_reply_to_bot(cJSON *msg);
+static void tg_write_cmd_new(const char *mailbox_dir);
 
 
 /* ── Initialization ──────────────────────────────────────── */
@@ -867,6 +869,38 @@ static void tg_write_answer(const char *mailbox_dir, const char *ask_id,
     rename(tmp_path, final_path);
 }
 
+/* Write cmd_new to mailbox inbox to trigger session reset in the daemon. */
+static void tg_write_cmd_new(const char *mailbox_dir) {
+    char cmd_tmp[512], cmd_path[512];
+    snprintf(cmd_tmp, sizeof(cmd_tmp), "%s/inbox/cmd_new.tmp", mailbox_dir);
+    snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mailbox_dir);
+    FILE *f = fopen(cmd_tmp, "w");
+    if (f) {
+        fputs("new_session", f);
+        fclose(f);
+        rename(cmd_tmp, cmd_path);
+    }
+}
+
+/*
+ * Check if a Telegram message is a reply to one of our bot's messages.
+ * Returns 1 if the message is a reply to a message sent by a bot
+ * (reply_to_message.from.is_bot == true), 0 otherwise.
+ *
+ * This is used for session routing: replies continue the current session,
+ * while new standalone messages start a fresh session.
+ */
+static int tg_is_reply_to_bot(cJSON *msg) {
+    cJSON *reply = cJSON_GetObjectItem(msg, "reply_to_message");
+    if (!reply) return 0;
+
+    cJSON *from = cJSON_GetObjectItem(reply, "from");
+    if (!from) return 0;
+
+    cJSON *is_bot = cJSON_GetObjectItem(from, "is_bot");
+    return (is_bot && cJSON_IsTrue(is_bot)) ? 1 : 0;
+}
+
 /* Read and remove a file from the outbox. Caller frees result. */
 static char *tg_read_outbox(const char *path) {
     size_t len = 0;
@@ -1237,18 +1271,8 @@ void *telegram_run(void *arg) {
                 if (msg_text && msg_text[0] == '/') {
                     if (strcmp(msg_text, "/new") == 0 ||
                         strcmp(msg_text, "/clear") == 0) {
-                        /* Session reset command → write cmd_new to inbox */
-                        char cmd_path[512], cmd_tmp[512];
-                        snprintf(cmd_tmp, sizeof(cmd_tmp),
-                                 "%s/inbox/cmd_new.tmp", ctx->mailbox_dir);
-                        snprintf(cmd_path, sizeof(cmd_path),
-                                 "%s/inbox/cmd_new", ctx->mailbox_dir);
-                        FILE *cf = fopen(cmd_tmp, "w");
-                        if (cf) {
-                            fputs("new_session", cf);
-                            fclose(cf);
-                            rename(cmd_tmp, cmd_path);
-                        }
+                        /* Session reset command */
+                        tg_write_cmd_new(ctx->mailbox_dir);
                         tg_api_send_message(ctx,
                             "🔄 Starting new session — context cleared.", NULL);
                         fprintf(stderr, "[telegram] /new command → session reset\n");
@@ -1259,15 +1283,25 @@ void *telegram_run(void *arg) {
                             "🤖 <b>Nash Bot Commands</b>\n\n"
                             "/new or /clear — Start a new session (clear context)\n"
                             "/help — Show this help\n\n"
-                            "Just send a message to chat with the agent. "
-                            "Context is preserved across messages within a session.",
+                            "<b>Session behavior:</b>\n"
+                            "• New message → starts a fresh session\n"
+                            "• Reply to a bot message → continues that session\n"
+                            "• /new or /clear → explicitly resets the session",
                             "HTML");
                         continue;
                     }
                     /* Other /commands: strip the slash and treat as a query */
                 }
 
-                /* Route message: answer to pending ask, or new task */
+                /* Route message: answer to pending ask, or new task.
+                 *
+                 * Session routing:
+                 *   - Reply to a bot message → continue current session
+                 *   - New standalone message  → start fresh session (cmd_new)
+                 *   - Reply to a pending ask   → route as answer (no session change)
+                 */
+                int is_reply = tg_is_reply_to_bot(msg);
+
                 if (pending_ask_id[0]) {
                     /* This is an answer to a user_ask question */
                     const char *answer = msg_text ? msg_text : "(photo)";
@@ -1278,6 +1312,15 @@ void *telegram_run(void *arg) {
                     tg_api_send_message(ctx, "✓ Answer received", NULL);
                 } else if (image_file_id) {
                     /* Photo/image message → download and create image task */
+                    if (!is_reply) {
+                        /* New standalone message → reset session first */
+                        tg_write_cmd_new(ctx->mailbox_dir);
+                        fprintf(stderr, "[telegram] new message → session reset\n");
+                        /* Small delay so daemon processes cmd_new before task */
+                        usleep(100000);  /* 100ms */
+                    } else {
+                        fprintf(stderr, "[telegram] reply → continuing session\n");
+                    }
                     char image_path[768];
                     if (tg_download_photo(ctx, image_file_id,
                                           image_path, sizeof(image_path)) == 0) {
@@ -1315,6 +1358,15 @@ void *telegram_run(void *arg) {
                     }
                 } else {
                     /* Plain text task query */
+                    if (!is_reply) {
+                        /* New standalone message → reset session first */
+                        tg_write_cmd_new(ctx->mailbox_dir);
+                        fprintf(stderr, "[telegram] new message → session reset\n");
+                        /* Small delay so daemon processes cmd_new before task */
+                        usleep(100000);  /* 100ms */
+                    } else {
+                        fprintf(stderr, "[telegram] reply → continuing session\n");
+                    }
                     char task_id[64];
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
@@ -1323,7 +1375,8 @@ void *telegram_run(void *arg) {
 
                     fprintf(stderr, "[telegram] creating task_%s\n", task_id);
                     tg_write_task(ctx->mailbox_dir, task_id, msg_text);
-                    tg_api_send_message(ctx, "⏳ Processing...", NULL);
+                    tg_api_send_message(ctx, is_reply
+                        ? "⏳ Continuing..." : "⏳ Processing...", NULL);
                 }
             }
             cJSON_Delete(updates);
