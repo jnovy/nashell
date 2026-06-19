@@ -81,7 +81,9 @@ const tool_def_t TOOL_REGISTRY[] = {
     {"user_ask",
      "Ask the user a clarifying question. Use when you need information "
      "that cannot be determined from the codebase or context. The react loop "
-     "pauses until the user responds.",
+     "pauses until the user responds. "
+     "Prefer calling this EARLY (step 0-2) when the task is ambiguous, rather "
+     "than guessing and discovering the wrong assumption later.",
      "{\"type\":\"object\",\"properties\":{\"question\":{\"type\":\"string\",\"description\":\"Question to ask the user\"}},\"required\":[\"question\"]}"},
 
     {"memory_delete",

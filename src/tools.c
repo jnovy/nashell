@@ -862,7 +862,15 @@ char *tools_system_prompt(void) {
         "- Record key findings in notes — they survive context eviction.\n"
         "- Call done with the final answer when finished.\n"
         "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
-        "Never reference notes content — include all data directly in done result.\n",
+        "Never reference notes content — include all data directly in done result.\n"
+        "\n"
+        "Clarification seeking:\n"
+        "- Before selecting your first action, assess request_uncertainty on a 0-1 "
+        "scale: 0 = fully specified task, 0.5 = missing parameters the user likely "
+        "has a preference about, 1 = critically ambiguous.\n"
+        "- If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
+        "other tool. Asking early is far better than discovering ambiguity mid-task.\n"
+        "- Do NOT guess when the user's intent is unclear — ask.\n",
         timebuf, cwdbuf);
 
     return buf;
