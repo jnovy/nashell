@@ -870,6 +870,7 @@ static void html_escape_append(str_t *out, const char *text, size_t len) {
  *
  * Supported conversions:
  *   **bold**       → <b>bold</b>
+ *   *italic*       → <i>italic</i>  (word-boundary only)
  *   _italic_       → <i>italic</i>  (word-boundary only, not file_name)
  *   `code`         → <code>code</code>
  *   ```lang\n...\n```  → <pre><code class="language-lang">...</code></pre>
@@ -1123,6 +1124,36 @@ char *md_to_html(const char *md) {
             }
             str_append_cstr(&out, "</b>");
             if (md[i] == '*' && md[i+1] == '*') i += 2;
+            continue;
+        }
+
+        /* Italic: *text* — single asterisk, word-boundary aware */
+        if (md[i] == '*' && md[i+1] != '*' && md[i+1] != ' '
+            && md[i+1] != '\0'
+            && (i == 0 || is_word_boundary(md[i-1]))) {
+            /* Scan for closing * at a word boundary */
+            int j = i + 1;
+            while (md[j] && md[j] != '\n') {
+                if (md[j] == '*' && md[j+1] != '*'
+                    && is_word_boundary(md[j+1])) {
+                    /* Found valid closing * */
+                    i++;
+                    str_append_cstr(&out, "<i>");
+                    while (i < j) {
+                        html_escape_append(&out, &md[i], 1);
+                        i++;
+                    }
+                    str_append_cstr(&out, "</i>");
+                    i++;  /* skip closing * */
+                    goto next_char_star;
+                }
+                j++;
+            }
+            /* No valid closing * found, output literally */
+            html_escape_append(&out, &md[i], 1);
+            i++;
+            continue;
+        next_char_star:
             continue;
         }
 
