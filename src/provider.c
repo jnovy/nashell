@@ -206,6 +206,8 @@ provider_t *provider_create(const provider_config_t *cfg) {
     p->cfg.caching         = cfg->caching;
     p->cfg.max_tokens      = cfg->max_tokens;
     p->cfg.temperature     = cfg->temperature;
+    p->cfg.top_p           = cfg->top_p;
+    p->cfg.top_k           = cfg->top_k;
     p->cfg.enable_thinking = cfg->enable_thinking;
     p->cfg.thinking_budget = cfg->thinking_budget;
     p->cfg.llm_timeout     = cfg->llm_timeout;
@@ -220,6 +222,8 @@ provider_t *provider_create(const provider_config_t *cfg) {
     if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
     if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 16384;
     if (p->cfg.temperature < 0) p->cfg.temperature = 0.7f;
+    if (p->cfg.top_p < 0) p->cfg.top_p = 1.0f;
+    if (p->cfg.top_k < 0) p->cfg.top_k = 0;
 
     /* Initialize provider-specific vtable */
     switch (cfg->type) {
@@ -369,6 +373,11 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
     cJSON_AddStringToObject(req, "model", model_id ? model_id : "gpt-4o");
     cJSON_AddNumberToObject(req, max_token_field, p->cfg.max_tokens);
     cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
+    if (p->cfg.top_p < 1.0f)
+        cJSON_AddNumberToObject(req, "top_p", p->cfg.top_p);
+    /* top_k: supported by llama.cpp but not by OpenAI API */
+    if (p->cfg.top_k > 0 && provider_type == PROVIDER_LOCAL)
+        cJSON_AddNumberToObject(req, "top_k", p->cfg.top_k);
     cJSON_AddBoolToObject(req, "stream", stream);
 
     if (stream) {

@@ -97,6 +97,8 @@ typedef struct {
      *   int fields:       0 = inherit (for counts/limits where 0 is invalid)
      *   bool-like ints:  -1 = inherit (because 0 = off is a valid value)
      *   float temperature: -1.0 = inherit (0.0 is valid: deterministic sampling)
+     *   float top_p:       -1.0 = inherit (0.0 is valid edge case, 1.0 = disabled)
+     *   int   top_k:         -1 = inherit (0 = disabled is valid)
      *   float vscore_exp:  -2.0 = inherit (0.0 = disabled and -1.0 are valid)
      *   double/float:      0.0 = inherit (for fields where 0.0 is invalid)
      *   pointers:         NULL = inherit
@@ -108,6 +110,8 @@ typedef struct {
 
     /* [client] overrides */
     float  temperature;         /* -1.0 = inherit (0.0 is valid: deterministic sampling) */
+    float  top_p;               /* -1.0 = inherit (0.0-1.0, 1.0=disabled) */
+    int    top_k;               /* -1 = inherit (0=disabled) */
     int    max_tokens;          /* 0 = inherit */
 
     /* [react] subsystem overrides (same sentinel pattern as playbooks) */
@@ -165,6 +169,8 @@ typedef struct {
 
     /* [client] */
     float  temperature;
+    float  top_p;               /* nucleus sampling threshold (0.0-1.0, 1.0=disabled) */
+    int    top_k;               /* top-k sampling (0=disabled) */
     int    max_tokens;
     int    stream;
 

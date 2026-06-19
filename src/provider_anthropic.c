@@ -471,6 +471,10 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
     }
     cJSON_AddNumberToObject(req, "max_tokens", p->cfg.max_tokens);
     cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
+    if (p->cfg.top_p < 1.0f)
+        cJSON_AddNumberToObject(req, "top_p", p->cfg.top_p);
+    if (p->cfg.top_k > 0)
+        cJSON_AddNumberToObject(req, "top_k", p->cfg.top_k);
 
     if (stream) {
         cJSON_AddBoolToObject(req, "stream", 1);
@@ -486,9 +490,14 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
         cJSON *thinking = cJSON_CreateObject();
         cJSON_AddStringToObject(thinking, "type", "adaptive");
         cJSON_AddItemToObject(req, "thinking", thinking);
-        /* Anthropic requires temperature=1 when thinking is enabled */
+        /* Anthropic requires temperature=1 when thinking is enabled.
+         * Also remove top_p/top_k — Anthropic controls sampling via the
+         * thinking mechanism itself; non-default values may cause 400
+         * errors on newer models (Opus 4.7+). */
         cJSON_ReplaceItemInObject(req, "temperature",
                                   cJSON_CreateNumber(1.0));
+        cJSON_DeleteItemFromObject(req, "top_p");
+        cJSON_DeleteItemFromObject(req, "top_k");
     }
 
     /* Move system and messages from converted */

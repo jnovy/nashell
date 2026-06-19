@@ -459,6 +459,8 @@ int main(int argc, char **argv) {
         .caching        = cfg->provider.caching,
         .max_tokens     = cfg->max_tokens,
         .temperature    = cfg->temperature,
+        .top_p          = cfg->top_p,
+        .top_k          = cfg->top_k,
         .enable_thinking = 0,
         .thinking_budget = -1,
         .llm_timeout     = cfg->llm_timeout,
@@ -731,6 +733,8 @@ int main(int argc, char **argv) {
                     .chars_per_token = cfg->provider.chars_per_token,
                     .max_tokens     = cfg->max_tokens,
                     .temperature    = 0.7f,  /* slightly creative for reflection */
+                    .top_p          = 1.0f,   /* disabled for reflection */
+                    .top_k          = 0,      /* disabled for reflection */
                     .enable_thinking = 0,
                     .thinking_budget = -1,
                     .llm_timeout     = cfg->llm_timeout,

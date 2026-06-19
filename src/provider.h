@@ -30,6 +30,8 @@ typedef struct {
     int         caching;        /* enable prompt caching (Anthropic) */
     int         max_tokens;     /* max completion tokens */
     float       temperature;    /* sampling temperature */
+    float       top_p;          /* nucleus sampling threshold (0.0-1.0, 1.0=disabled) */
+    int         top_k;          /* top-k sampling (0=disabled) */
     int         enable_thinking;/* 0=off, 1=on */
     int         thinking_budget;/* -1=unrestricted, 0=none, N>0=max */
     int         llm_timeout;    /* per-call wall-clock timeout in seconds (0=no limit) */

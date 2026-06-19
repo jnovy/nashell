@@ -36,6 +36,8 @@ static int toml_bl(toml_table_t *tbl, const char *key, int def) {
 void config_set_defaults(config_t *cfg) {
     if (!cfg->api_base)      cfg->api_base = strdup("http://localhost:8080");
     if (cfg->temperature < 0) cfg->temperature = 0.7f;
+    if (cfg->top_p < 0)       cfg->top_p = 1.0f;       /* 1.0 = disabled (no nucleus filtering) */
+    if (cfg->top_k < 0)       cfg->top_k = 0;           /* 0 = disabled (no top-k filtering) */
     if (cfg->max_tokens == 0)  cfg->max_tokens = 16384;
     /* Replace -1 (sentinel for "not set in config") with actual defaults.
      * -1 comes from TOML parsing when the field is absent.
@@ -268,6 +270,10 @@ config_t *config_load(const char *path) {
     if (client) {
         { double d = toml_dbl(client, "temperature", -1);
           if (d >= 0) cfg->temperature = (float)d; }
+        { double d = toml_dbl(client, "top_p", -1);
+          if (d >= 0) cfg->top_p = (float)d; }
+        { int v = toml_int(client, "top_k", -1);
+          if (v >= 0) cfg->top_k = v; }
         cfg->max_tokens  = toml_int(client, "max_tokens", 0);
         cfg->stream      = toml_bl(client, "stream", 1);
 
@@ -550,6 +556,8 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         p->enable_scoring = -1;
         p->cycling_detection = -1;
         p->temperature = -1.0f;      /* -1 = inherit (0.0 is valid: deterministic) */
+        p->top_p = -1.0f;            /* -1 = inherit (0.0-1.0, 1.0=disabled) */
+        p->top_k = -1;               /* -1 = inherit (0=disabled) */
         p->vscore_exponent = -2.0f;  /* -2 = inherit (0 and -1 are valid) */
 
         /* [client] subtable */
@@ -557,6 +565,10 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         if (client_tbl) {
             { double d = toml_dbl(client_tbl, "temperature", -1);
               if (d >= 0) p->temperature = (float)d; }
+            { double d = toml_dbl(client_tbl, "top_p", -1);
+              if (d >= 0) p->top_p = (float)d; }
+            { int v = toml_int(client_tbl, "top_k", -1);
+              if (v >= 0) p->top_k = v; }
             p->max_tokens = toml_int(client_tbl, "max_tokens", 0);
         }
 
@@ -738,6 +750,8 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
 
     /* [client] overrides */
     if (p->temperature >= 0)    cfg->temperature = p->temperature;
+    if (p->top_p >= 0)          cfg->top_p = p->top_p;
+    if (p->top_k >= 0)          cfg->top_k = p->top_k;
     if (p->max_tokens > 0)      cfg->max_tokens = p->max_tokens;
 
     /* [react] limits overrides */
@@ -840,6 +854,10 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
 
     fprintf(out, "[client]\n");
     fprintf(out, "temperature = %.1f\n", cfg->temperature);
+    if (cfg->top_p < 1.0f)
+        fprintf(out, "top_p = %.2f\n", cfg->top_p);
+    if (cfg->top_k > 0)
+        fprintf(out, "top_k = %d\n", cfg->top_k);
     fprintf(out, "max_tokens = %d\n", cfg->max_tokens);
     fprintf(out, "stream = %s\n\n", cfg->stream ? "true" : "false");
 
@@ -1069,6 +1087,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     if (client) {
         double d = toml_dbl(client, "temperature", -1);
         if (d >= 0) cfg->temperature = (float)d;
+        { double dp = toml_dbl(client, "top_p", -1);
+          if (dp >= 0) cfg->top_p = (float)dp; }
+        { int vk = toml_int(client, "top_k", -1);
+          if (vk >= 0) cfg->top_k = vk; }
         int v = toml_int(client, "max_tokens", 0);
         if (v > 0) cfg->max_tokens = v;
         { toml_datum_t td = toml_bool_in(client, "stream");
@@ -1340,6 +1362,8 @@ int config_write_default(const char *path) {
         "\n"
         "[client]\n"
         "temperature = 0.7\n"
+        "# top_p = 0.95                       # nucleus sampling (1.0=disabled)\n"
+        "# top_k = 0                          # top-k sampling (0=disabled)\n"
         "max_tokens = 16384\n"
         "stream = true\n"
         "\n"
