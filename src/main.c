@@ -904,8 +904,11 @@ int main(int argc, char **argv) {
                 char cmd_chk[NASH_PATH_MAX];
                 snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
                 if (access(cmd_chk, F_OK) != 0) {
-                    fprintf(stderr, "[daemon] wait_task returned NULL, retrying...\n");
-                    sleep(1);
+                    /* Brief pause — the bridge thread may be about to
+                     * write a task file (cmd_new arrives first, task
+                     * follows ~100ms later).  Don't log: this is normal
+                     * during the cmd_new → task handoff window. */
+                    usleep(200000);  /* 200ms */
                 }
                 continue;
             }

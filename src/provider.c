@@ -1058,10 +1058,21 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     if (p->get_endpoint) {
         endpoint = strdup(p->get_endpoint(p));
     }
-    if (!endpoint) return NULL;
+    if (!endpoint) {
+        free(p->last_error);
+        p->last_error = strdup("get_endpoint returned NULL "
+                               "(missing API base URL or project config)");
+        return NULL;
+    }
 
     char *req_body = p->build_request(p, chat, 0);
-    if (!req_body) { free(endpoint); return NULL; }
+    if (!req_body) {
+        free(p->last_error);
+        p->last_error = strdup("build_request returned NULL "
+                               "(message conversion failed)");
+        free(endpoint);
+        return NULL;
+    }
 
     str_t response = str_new(4096);
     cJSON *resp = NULL;
@@ -1233,6 +1244,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     if (!endpoint) {
         nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
                  (void *)p->get_endpoint);
+        free(p->last_error);
+        p->last_error = strdup("get_endpoint returned NULL "
+                               "(missing API base URL or project config)");
         return NULL;
     }
 
@@ -1240,6 +1254,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     if (!req_body) {
         nash_log("[provider] build_request returned NULL for endpoint=%s",
                  endpoint);
+        free(p->last_error);
+        p->last_error = strdup("build_request returned NULL "
+                               "(message conversion failed)");
         return NULL;
     }
 

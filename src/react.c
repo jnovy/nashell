@@ -910,8 +910,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (strcmp(action_name, "done") == 0) {
             /* Hallucination guard: reject 'done' if no real tool has been executed.
              * Catches models that produce a plan then immediately call done with
-             * the plan text. The user_ask tool doesn't count as a real tool. */
-            if (tools_executed == 0) {
+             * the plan text. The user_ask tool doesn't count as a real tool.
+             *
+             * Exception: allow done on the very first step (step == resume_step).
+             * This handles simple knowledge questions (e.g. "What is 4+4?")
+             * where the model correctly answers without needing any tools. */
+            if (tools_executed == 0 && step > resume_step) {
                 const char *guard_msg =
                     "ERROR: You called 'done' without executing any real tools. "
                     "You must actually perform the task (use file_read, shell_exec, "

@@ -464,7 +464,12 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
     }
 
     case REACT_EVENT_ERROR: {
-        /* Notify on errors */
+        /* Suppress transient retry notifications — these are expected
+         * recovery attempts that resolve on their own.  Showing them
+         * in Matrix/Telegram just creates noise for the user.
+         * Only notify on terminal / escalated errors. */
+        if (ev->message && strstr(ev->message, "plain retry"))
+            break;  /* tier 0 retry — suppress */
         mailbox_notify(mbox->mailbox_dir, "error",
                        ev->message ? ev->message : "unknown error");
         break;
