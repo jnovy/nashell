@@ -61,6 +61,8 @@ static int  tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
                               char *out_path, size_t out_sz);
 static int  tg_is_reply_to_bot(cJSON *msg);
 static void tg_write_cmd_new(const char *mailbox_dir);
+int  md_has_table(const char *md);
+char *md_tables_to_bullets(const char *md);
 
 
 /* ── Initialization ──────────────────────────────────────── */
@@ -642,6 +644,210 @@ static int tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text) {
     return rc;
 }
 
+
+/* ── Document upload (send .md file as attachment) ───────── */
+
+/* Check if markdown content contains a table (lines starting with |) */
+int md_has_table(const char *md) {
+    if (!md) return 0;
+    const char *p = md;
+    while (*p) {
+        /* Check at start of string or after newline */
+        if (p == md || *(p - 1) == '\n') {
+            /* Skip leading whitespace */
+            const char *q = p;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q == '|') {
+                /* Found a | at line start — look for a second | on same line
+                 * to confirm it's a table row, not just a shell pipe */
+                const char *r = q + 1;
+                while (*r && *r != '\n') {
+                    if (*r == '|') return 1;  /* at least two |'s → table */
+                    r++;
+                }
+            }
+        }
+        /* Advance to next char */
+        while (*p && *p != '\n') p++;
+        if (*p == '\n') p++;
+    }
+    return 0;
+}
+
+/* ── Table-to-bullets converter ──────────────────────────── */
+
+/* Check if a line is a table separator row (e.g. |---|---|---| or | --- | --- |)
+ * p points to the first '|' on the line. */
+static int is_separator_row(const char *p) {
+    if (*p != '|') return 0;
+    p++;
+    int has_dash = 0;
+    while (*p && *p != '\n') {
+        if (*p == '-' || *p == ':') has_dash = 1;
+        else if (*p == '|' || *p == ' ' || *p == '\t') { /* ok */ }
+        else return 0;  /* non-separator character */
+        p++;
+    }
+    return has_dash;
+}
+
+/* Parse pipe-delimited cells from a table row.
+ * Returns number of cells parsed. Cells are trimmed and written to cells[].
+ * Each cell points into 'buf' (a mutable copy the caller provides). */
+static int parse_table_cells(const char *line, const char *line_end,
+                             char *buf, char **cells, int max_cells) {
+    /* Copy line into buf */
+    int len = (int)(line_end - line);
+    memcpy(buf, line, len);
+    buf[len] = '\0';
+
+    int ncells = 0;
+    char *p = buf;
+
+    /* Skip leading whitespace and optional leading '|' */
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '|') p++;
+
+    while (*p && ncells < max_cells) {
+        /* Find next '|' or end */
+        char *sep = strchr(p, '|');
+        char *cell_end = sep ? sep : (buf + len);
+
+        /* Trim trailing whitespace */
+        char *te = cell_end - 1;
+        while (te >= p && (*te == ' ' || *te == '\t')) te--;
+        *(te + 1) = '\0';
+
+        /* Trim leading whitespace */
+        while (*p == ' ' || *p == '\t') p++;
+
+        /* Skip empty trailing cell (from trailing |) */
+        if (*p == '\0' && sep && !*(sep + 1)) break;
+        if (*p != '\0' || sep) {
+            cells[ncells++] = p;
+        }
+
+        if (!sep) break;
+        p = sep + 1;
+    }
+    return ncells;
+}
+
+/* Convert markdown tables in text to bullet-point lists.
+ * Non-table content is passed through unchanged.
+ * Returns a new heap-allocated string. Caller frees. */
+char *md_tables_to_bullets(const char *md) {
+    if (!md) return NULL;
+
+    size_t md_len = strlen(md);
+    /* Allocate generously — bullets are typically shorter than tables */
+    str_t out = str_new(md_len + 256);
+
+    const char *p = md;
+    while (*p) {
+        /* Find end of current line */
+        const char *eol = strchr(p, '\n');
+        if (!eol) eol = p + strlen(p);
+
+        /* Check if this line starts a table (skip whitespace, then |) */
+        const char *q = p;
+        while (*q == ' ' || *q == '\t') q++;
+
+        if (*q == '|') {
+            /* Might be a table — look for second | on same line */
+            const char *r = q + 1;
+            int second_pipe = 0;
+            while (r < eol) {
+                if (*r == '|') { second_pipe = 1; break; }
+                r++;
+            }
+
+            if (second_pipe) {
+                /* Parse header row */
+                char hdr_buf[4096];
+                char *headers[64];
+                int nhdr = parse_table_cells(q, eol, hdr_buf, headers, 64);
+
+                if (nhdr > 0) {
+                    /* Save header names (they'll be overwritten by parse_table_cells) */
+                    char *saved_headers[64];
+                    for (int i = 0; i < nhdr; i++)
+                        saved_headers[i] = strdup(headers[i]);
+
+                    /* Advance past header line */
+                    const char *next = (*eol == '\n') ? eol + 1 : eol;
+
+                    /* Check for separator row */
+                    const char *sep_start = next;
+                    while (*sep_start == ' ' || *sep_start == '\t') sep_start++;
+                    const char *sep_eol = strchr(next, '\n');
+                    if (!sep_eol) sep_eol = next + strlen(next);
+
+                    if (*sep_start == '|' && is_separator_row(sep_start)) {
+                        /* Skip separator row */
+                        next = (*sep_eol == '\n') ? sep_eol + 1 : sep_eol;
+                    }
+
+                    /* Process data rows */
+                    while (*next) {
+                        const char *row_eol = strchr(next, '\n');
+                        if (!row_eol) row_eol = next + strlen(next);
+
+                        const char *rs = next;
+                        while (*rs == ' ' || *rs == '\t') rs++;
+
+                        /* Check if still a table row */
+                        if (*rs != '|') break;
+                        int has_second = 0;
+                        for (const char *c = rs + 1; c < row_eol; c++) {
+                            if (*c == '|') { has_second = 1; break; }
+                        }
+                        if (!has_second) break;
+
+                        /* Parse data cells */
+                        char row_buf[4096];
+                        char *cells[64];
+                        int ncells = parse_table_cells(rs, row_eol,
+                                                      row_buf, cells, 64);
+
+                        /* Emit bullet point */
+                        str_append_cstr(&out, "• ");
+                        int limit = ncells < nhdr ? ncells : nhdr;
+                        for (int i = 0; i < limit; i++) {
+                            if (i > 0)
+                                str_append_cstr(&out, " · ");
+                            str_append_cstr(&out, "**");
+                            str_append_cstr(&out, saved_headers[i]);
+                            str_append_cstr(&out, ":** ");
+                            str_append_cstr(&out, cells[i]);
+                        }
+                        str_append(&out, "\n", 1);
+
+                        next = (*row_eol == '\n') ? row_eol + 1 : row_eol;
+                    }
+
+                    /* Free saved headers */
+                    for (int i = 0; i < nhdr; i++)
+                        free(saved_headers[i]);
+
+                    p = next;
+                    continue;
+                }
+            }
+        }
+
+        /* Not a table line — pass through */
+        str_append(&out, p, (size_t)(eol - p));
+        if (*eol == '\n') {
+            str_append(&out, "\n", 1);
+            p = eol + 1;
+        } else {
+            p = eol;
+        }
+    }
+
+    return str_steal(&out);
+}
 
 /* ── Markdown → Telegram HTML conversion (fallback for pre-10.1 Bot API) ── */
 
@@ -1236,24 +1442,26 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
     if (!content) return;
 
     if (strncmp(filename, "result_", 7) == 0) {
-        /* Task result → send as Rich Message (Bot API 10.1+) if available,
-         * otherwise fall back to md_to_html + HTML parse_mode.
-         *
-         * Rich Messages accept markdown directly — no conversion needed.
-         * The md_to_html path is kept as a fallback for older servers. */
+        /* Task result → convert any markdown tables to bullet-point lists
+         * for inline display, then send via Rich Message or HTML fallback. */
+        char *display = md_has_table(content)
+                        ? md_tables_to_bullets(content) : NULL;
+        const char *text = display ? display : content;
+
         int sent = 0;
         if (ctx->rich_supported) {
-            if (tg_send_rich_long(ctx, content) == 0) {
+            if (tg_send_rich_long(ctx, text) == 0) {
                 sent = 1;
             }
             /* If rich_supported was just disabled (404/400), fall through */
         }
         if (!sent) {
             /* Fallback: md_to_html + HTML parse_mode (split handles long) */
-            char *html = md_to_html(content);
+            char *html = md_to_html(text);
             tg_send_long(ctx, html, "HTML");
             free(html);
         }
+        free(display);
     } else if (strncmp(filename, "ask_", 4) == 0) {
         /* user_ask question → send via Rich Message or HTML */
         int ask_sent = 0;
@@ -1275,7 +1483,14 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
             str_free(&msg);
         }
     } else if (strncmp(filename, "status_", 7) == 0) {
-        /* Status notification → send as-is (plain text, no formatting) */
+        /* Status notification.
+         * Suppress [done] notifications — the result itself is already
+         * sent via result_* so this would just duplicate the "completed"
+         * message in the chat. */
+        if (strncmp(content, "[done]", 6) == 0) {
+            free(content);
+            return;
+        }
         str_t msg = str_new(strlen(content) + 16);
         str_append_cstr(&msg, "📋 ");
         str_append_cstr(&msg, content);
