@@ -1068,9 +1068,22 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             str_appendf(&md, "  %c %3d        %-13s %s\n",
                         sc, ui->current_step, "", progress);
         if (ui->stream_tokens && ui->stream_len > 0) {
-            str_append_cstr(&md, "```\n");
-            str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
-            str_append_cstr(&md, "\n```\n");
+            /* Suppress display of raw JSON action objects (e.g.
+             * {"thought":"","action":"file_read","path":"R1S31"}).
+             * Local models emit the entire JSON response as streamed
+             * tokens — showing it raw is ugly and distracting.
+             * The progress indicator above still shows token count
+             * and generation speed, giving the user feedback.
+             * Only suppress content that looks like a JSON object
+             * (starts with '{' after whitespace); genuine text
+             * responses (thinking, errors) are still displayed. */
+            const char *p = ui->stream_tokens;
+            while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+            if (*p != '{') {
+                str_append_cstr(&md, "```\n");
+                str_append(&md, ui->stream_tokens, (size_t)ui->stream_len);
+                str_append_cstr(&md, "\n```\n");
+            }
         }
     }
 

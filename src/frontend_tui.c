@@ -35,20 +35,38 @@ static void read_and_print_store_file(const char *session_dir, const char *ref) 
 
 void tui_on_event(const react_event_t *ev, void *userdata) {
     const char *session_dir = (const char *)userdata;
+    /* Track whether streaming content is a JSON action object.
+     * 0=undecided, 1=suppress (JSON), -1=show (text).
+     * Reset on STEP_START, decided on first non-whitespace token. */
+    static int suppress_json_stream = 0;
 
     switch (ev->type) {
 
     case REACT_EVENT_STEP_START:
+        suppress_json_stream = 0;  /* reset for new step */
         fprintf(stderr, "\r\033[K[step %d/%d] thinking...",
                 ev->step, ev->max_steps);
         fflush(stderr);
         break;
 
     case REACT_EVENT_LLM_TOKEN:
-        /* Streaming: print tokens as they arrive */
+        /* Streaming: print tokens as they arrive.
+         * Suppress raw JSON action objects (e.g. {"thought":"","action":...})
+         * that local models emit — the user doesn't need to see the raw JSON.
+         * We detect whether the first non-whitespace char is '{' and suppress
+         * all subsequent tokens for that step. */
         if (ev->token) {
-            fprintf(stderr, "%s", ev->token);
-            fflush(stderr);
+            if (suppress_json_stream == 0) {
+                /* First meaningful token — decide based on content */
+                const char *p = ev->token;
+                while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+                if (*p == '{') suppress_json_stream = 1;
+                else if (*p) suppress_json_stream = -1;
+            }
+            if (suppress_json_stream != 1) {
+                fprintf(stderr, "%s", ev->token);
+                fflush(stderr);
+            }
         }
         break;
 
