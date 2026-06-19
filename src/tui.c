@@ -12,7 +12,8 @@
 
 /* ── Windows ─────────────────────────────────────────── */
 
-atomic_int g_tui_active = 0;  /* set by tui_init(), cleared by tui_shutdown() */
+atomic_int g_tui_active = 0;      /* set by tui_init(), cleared by tui_shutdown() */
+atomic_int g_tui_was_started = 0; /* set once by tui_init(), never cleared */
 
 static WINDOW *win_main   = NULL;   /* top pane: MD rendered content */
 static WINDOW *win_bottom = NULL;   /* bottom pane: status + input */
@@ -188,6 +189,7 @@ void tui_init(void) {
     fflush(stdout);
 
     atomic_store(&g_tui_active, 1);
+    atomic_store(&g_tui_was_started, 1);
 }
 
 /* Free all stored clipboard entries */
@@ -1069,9 +1071,12 @@ int tui_input(ui_state_t *ui, char **out_query) {
     case ' ':  /* Space — toggle pause/resume */
         if (ui->focus == FOCUS_JOURNAL &&
             ui->status == STATUS_RUNNING && ui->pause_flag) {
-            /* Running → pause */
+            /* Running → pause: abort the in-progress HTTP call so the
+             * react loop reaches the pause_requested check immediately
+             * instead of waiting for the full LLM response to complete. */
             *ui->pause_flag = 1;
-            ui_state_set_status(ui, STATUS_READY, "Pausing after current step...");
+            if (ui->abort_flag) *ui->abort_flag = 1;
+            ui_state_set_status(ui, STATUS_READY, "Pausing...");
             ui->dirty = 1;
             break;
         } else if (ui->focus == FOCUS_JOURNAL &&

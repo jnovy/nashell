@@ -93,6 +93,7 @@ typedef struct {
     int            context_used;
     int            bg_jobs;
     atomic_int    *pause_flag;
+    volatile int  *abort_flag;    /* provider->abort_retry — abort HTTP call on pause */
 
     /* ── Preview toggle (expanded store refs) ── */
     char         **expanded_uris;     /* URIs toggled to show preview */

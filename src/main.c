@@ -35,6 +35,7 @@
 #include "prompt_optimize.h"
 #include "mailbox.h"
 #include "telegram.h"
+#include "matrix.h"
 #include "banner.h"
 #include "commands.h"
 
@@ -257,6 +258,7 @@ int main(int argc, char **argv) {
     int mailbox_mode = 0;                 /* --mailbox: enable file-based mailbox for user_ask */
     int daemon_mode = 0;                  /* --daemon: watch mailbox inbox for tasks */
     int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
+    int matrix_mode = 0;                  /* --matrix: Matrix bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
@@ -307,6 +309,10 @@ int main(int argc, char **argv) {
             telegram_mode = 1;
             daemon_mode = 1;   /* telegram implies daemon */
             mailbox_mode = 1;  /* daemon implies mailbox */
+        } else if (strcmp(argv[i], "--matrix") == 0) {
+            matrix_mode = 1;
+            daemon_mode = 1;   /* matrix implies daemon */
+            mailbox_mode = 1;  /* daemon implies mailbox */
         } else if (strcmp(argv[i], "--mailbox-timeout") == 0 && i + 1 < argc) {
             mailbox_timeout = atoi(argv[++i]);
             mailbox_mode = 1;
@@ -341,6 +347,7 @@ int main(int argc, char **argv) {
             printf("  --mailbox             Enable file-based mailbox for user_ask in -p mode\n");
             printf("  --daemon              Watch mailbox inbox for task files (implies --mailbox)\n");
             printf("  --telegram            Telegram Bot bridge (implies --daemon)\n");
+            printf("  --matrix              Matrix bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
@@ -821,6 +828,24 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
         }
 
+        /* Matrix bridge: start thread that bridges mailbox ↔ Matrix API */
+        pthread_t mx_thread = 0;
+        matrix_ctx_t mx_ctx;
+        if (matrix_mode) {
+            matrix_init(&mx_ctx, config_path, mbox_dir, &shutdown_requested);
+            if (!mx_ctx.access_token || !mx_ctx.room_id) {
+                /* No config — run interactive setup */
+                if (matrix_setup(&mx_ctx) != 0) {
+                    fprintf(stderr, "[matrix] setup failed, exiting\n");
+                    matrix_free(&mx_ctx);
+                    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+                    return 1;
+                }
+            }
+            pthread_create(&mx_thread, NULL, matrix_run, &mx_ctx);
+            fprintf(stderr, "[matrix] bot bridge active — send messages to the Matrix room\n");
+        }
+
         /* ── Persistent session state for daemon mode ──────────────────
          * Like the TUI, we maintain ONE session across all tasks so that
          * context (scratchpad, previous result, journal) propagates between
@@ -967,6 +992,10 @@ int main(int argc, char **argv) {
             pthread_join(tg_thread, NULL);
             telegram_free(&tg_ctx);
         }
+        if (matrix_mode && mx_thread) {
+            pthread_join(mx_thread, NULL);
+            matrix_free(&mx_ctx);
+        }
         web_search_cleanup();
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return 0;
@@ -1103,7 +1132,8 @@ int main(int argc, char **argv) {
             ui->model_name = strdup(server_model);
         ui->context_size = context_size;
         ui->context_used = 0;
-        ui->pause_flag = &react.pause_requested;  /* ESC → pause react loop */
+        ui->pause_flag = &react.pause_requested;  /* Space → pause react loop */
+        ui->abort_flag = &provider->abort_retry;    /* abort in-progress HTTP call */
         ui->bg_jobs = 0;
         /* Show dream reminder in status bar if threshold exceeded */
         if (cfg->dream_reminder_threshold > 0 && dream_new_count >= cfg->dream_reminder_threshold) {

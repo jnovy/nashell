@@ -498,6 +498,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ctx->pause_requested = 0;
             pthread_mutex_unlock(&ctx->pause_mutex);
 
+            /* Reset abort flag so next LLM call proceeds normally */
+            ctx->provider->abort_retry = 0;
+
             /* Inject the redirect query into the chat context so the model
              * sees it as a new user message in the ongoing conversation. */
             char *inject_msg = malloc(strlen(redirect) + 64);
@@ -612,6 +615,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 max_resp, rep_thresh,
                 on_event ? react_progress_cb : NULL, &sctx);
         if (!response) {
+            /* If the HTTP call was aborted because of a pause request
+             * (Space pressed), skip error handling — continue to the
+             * top-of-loop where the pause_requested condvar handles it. */
+            if (ctx->pause_requested) {
+                continue;
+            }
             consecutive_null_responses++;
             int rc = react_handle_null_response(ctx, chat,
                 &consecutive_null_responses, &total_400_errors,
@@ -1589,6 +1598,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ctx->pause_waiting = 0;
             ctx->pause_requested = 0;
             pthread_mutex_unlock(&ctx->pause_mutex);
+
+            /* Reset abort flag so next LLM call proceeds normally */
+            ctx->provider->abort_retry = 0;
 
             /* Inject the redirect query into the chat context */
             char *inject_msg = malloc(strlen(redirect) + 64);

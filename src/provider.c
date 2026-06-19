@@ -23,7 +23,11 @@
 static int provider_sleep(provider_t *p, int seconds) {
     for (int i = 0; i < seconds; i++) {
         if (p->abort_retry) return 1;
-        if (!atomic_load(&g_tui_active)) return 1;  /* TUI gone — abort */
+        /* Only abort on TUI shutdown if TUI was actually started.
+         * In daemon/headless mode, g_tui_active==0 is the normal state
+         * — not a signal to abort.  See g_tui_was_started in tui.h. */
+        if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
+            return 1;
         sleep(1);
     }
     return p->abort_retry ? 1 : 0;
@@ -35,14 +39,20 @@ static int provider_sleep(provider_t *p, int seconds) {
  * return CURLE_ABORTED_BY_CALLBACK immediately instead of blocking
  * until the server finishes. Without this, the TUI appears hung
  * during shutdown or pause because pthread_join waits for the
- * inference thread which is stuck in curl_easy_perform. */
+ * inference thread which is stuck in curl_easy_perform.
+ *
+ * FIX: Only check g_tui_active if TUI was actually started (g_tui_was_started).
+ * In daemon/telegram/matrix mode the TUI is never started, so g_tui_active
+ * stays 0 — which previously caused every LLM request to be aborted
+ * immediately with CURLE_ABORTED_BY_CALLBACK (curl error 42). */
 static int provider_curl_progress_cb(void *clientp,
                                       curl_off_t dltotal, curl_off_t dlnow,
                                       curl_off_t ultotal, curl_off_t ulnow) {
     (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
     provider_t *p = (provider_t *)clientp;
     if (p->abort_retry) return 1;          /* user requested abort */
-    if (!atomic_load(&g_tui_active)) return 1;  /* TUI shut down */
+    if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
+        return 1;  /* TUI was running but shut down — abort */
     return 0;  /* continue */
 }
 
@@ -1220,10 +1230,18 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     if (stats) memset(stats, 0, sizeof(*stats));
 
     const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
-    if (!endpoint) return NULL;
+    if (!endpoint) {
+        nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
+                 (void *)p->get_endpoint);
+        return NULL;
+    }
 
     char *req_body = p->build_request(p, chat, 1);
-    if (!req_body) return NULL;
+    if (!req_body) {
+        nash_log("[provider] build_request returned NULL for endpoint=%s",
+                 endpoint);
+        return NULL;
+    }
 
     /* Set up SSE state */
     provider_sse_state_t st = {

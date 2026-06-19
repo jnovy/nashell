@@ -47,7 +47,7 @@ static int  tg_api_send_message(telegram_ctx_t *ctx, const char *text,
                                 const char *parse_mode);
 static int  tg_send_long(telegram_ctx_t *ctx, const char *text,
                          const char *parse_mode);
-static char *md_to_html(const char *md);
+char *md_to_html(const char *md);
 static int  tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text);
 static int  tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text);
 static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename);
@@ -703,7 +703,7 @@ static int is_table_separator(const char *md, int i) {
     return has_dash;
 }
 
-static char *md_to_html(const char *md) {
+char *md_to_html(const char *md) {
     if (!md) return strdup("");
 
     size_t len = strlen(md);

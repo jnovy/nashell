@@ -13,6 +13,13 @@
  * data races without requiring a mutex for this single flag. */
 extern atomic_int g_tui_active;
 
+/* Set to 1 once tui_init() is called.  Never reset.
+ * Used by provider.c to distinguish "TUI never started" (daemon/headless)
+ * from "TUI was running but shut down" — only the latter should abort
+ * in-flight curl requests.  Without this, daemon mode aborts every LLM
+ * call because g_tui_active==0 looks like "TUI shut down". */
+extern atomic_int g_tui_was_started;
+
 /* Initialize ncurses TUI — creates windows, sets up colors */
 void tui_init(void);
 
