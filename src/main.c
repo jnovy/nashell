@@ -9,6 +9,8 @@
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
@@ -47,6 +49,51 @@ static volatile sig_atomic_t shutdown_requested = 0;
 static void shutdown_handler(int sig) {
     (void)sig;
     shutdown_requested = 1;
+}
+
+/* ── Daemon lock file ────────────────────────────────────────────────────────
+ * Prevent multiple daemon/matrix/telegram instances from running
+ * simultaneously.  Each would poll the same Matrix/Telegram room,
+ * causing duplicate "Processing..." messages.
+ * Uses flock() — automatically released when the process exits/crashes. */
+static int daemon_lock_fd = -1;
+
+static int daemon_lock_acquire(const char *nash_dir) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/daemon.lock", nash_dir);
+    daemon_lock_fd = open(path, O_CREAT | O_RDWR, 0644);
+    if (daemon_lock_fd < 0) {
+        fprintf(stderr, "[daemon] warning: cannot create lock file %s: %s\n",
+                path, strerror(errno));
+        return 0;  /* non-fatal — proceed without lock */
+    }
+    if (flock(daemon_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        /* Read PID from existing lock file for diagnostics */
+        char buf[32] = {0};
+        pread(daemon_lock_fd, buf, sizeof(buf) - 1, 0);
+        close(daemon_lock_fd);
+        daemon_lock_fd = -1;
+        fprintf(stderr,
+            "[daemon] ✗ another nash daemon is already running (PID %s)\n"
+            "[daemon]   kill it first, or use a different --data-dir\n",
+            buf[0] ? buf : "?");
+        return -1;
+    }
+    /* Write our PID */
+    if (ftruncate(daemon_lock_fd, 0) == 0) {
+        char pidbuf[24];
+        int n = snprintf(pidbuf, sizeof(pidbuf), "%d\n", (int)getpid());
+        if (write(daemon_lock_fd, pidbuf, (size_t)n) < 0) { /* ignore */ }
+    }
+    return 0;
+}
+
+static void daemon_lock_release(void) {
+    if (daemon_lock_fd >= 0) {
+        flock(daemon_lock_fd, LOCK_UN);
+        close(daemon_lock_fd);
+        daemon_lock_fd = -1;
+    }
 }
 
 /* Get the nash data directory: ~/.nash/ or config override */
@@ -787,6 +834,11 @@ int main(int argc, char **argv) {
 
     /* Daemon mode: watch mailbox inbox for tasks, process them sequentially */
     if (daemon_mode) {
+        /* Prevent multiple daemons sharing the same mailbox/room */
+        if (daemon_lock_acquire(nash_dir) != 0) {
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 1;
+        }
         char mbox_dir[NASH_PATH_MAX];
         if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
             fprintf(stderr, "[error] failed to initialize mailbox\n");
@@ -999,6 +1051,7 @@ int main(int argc, char **argv) {
             pthread_join(mx_thread, NULL);
             matrix_free(&mx_ctx);
         }
+        daemon_lock_release();
         web_search_cleanup();
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return 0;

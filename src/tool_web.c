@@ -10,6 +10,35 @@
 
 /* HTML text extraction moved to html_extract.c/h */
 
+/* Sanitize a buffer to valid UTF-8 in-place.
+ * Invalid byte sequences (e.g. Windows-1250, Latin-1) are replaced with '?'.
+ * Without this, websites using non-UTF-8 charsets produce invalid JSON
+ * when serialized for the LLM API, causing HTTP 400 errors.
+ * Returns the (unchanged) string length. */
+static size_t utf8_sanitize(char *buf, size_t len) {
+    unsigned char *p = (unsigned char *)buf;
+    unsigned char *end = p + len;
+    while (p < end) {
+        if (p[0] < 0x80) {
+            p++;  /* ASCII */
+        } else if ((p[0] & 0xE0) == 0xC0 && p + 1 < end &&
+                   (p[1] & 0xC0) == 0x80) {
+            p += 2;  /* 2-byte UTF-8 */
+        } else if ((p[0] & 0xF0) == 0xE0 && p + 2 < end &&
+                   (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+            p += 3;  /* 3-byte UTF-8 */
+        } else if ((p[0] & 0xF8) == 0xF0 && p + 3 < end &&
+                   (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80 &&
+                   (p[3] & 0xC0) == 0x80) {
+            p += 4;  /* 4-byte UTF-8 */
+        } else {
+            *p = '?';  /* Invalid byte → replace */
+            p++;
+        }
+    }
+    return len;
+}
+
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     str_t *buf = userdata;
     size_t total = size * nmemb;
@@ -78,6 +107,10 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
             store_len = strlen(extracted);
         }
     }
+
+    /* Sanitize to valid UTF-8 — websites using Windows-1250, Latin-1, etc.
+     * produce bytes that break JSON serialization to the LLM API */
+    utf8_sanitize(store_data, store_len);
 
     /* Store to shared store */
     char *hash = store_save(ctx->store, store_data);
