@@ -238,14 +238,40 @@ int session_index_add(session_index_t *idx, const char *session_dir,
     if (!idx || !session_dir) return -1;
 
     pthread_mutex_lock(&idx->mtx);
-    if (si_grow(idx) < 0) {
-        pthread_mutex_unlock(&idx->mtx);
-        return -1;
+
+    /* Check for existing entry (continued session) — update in-place */
+    session_index_entry_t *e = NULL;
+    int is_update = 0;
+    for (int i = 0; i < idx->count; i++) {
+        if (idx->entries[i].session_dir &&
+            strcmp(idx->entries[i].session_dir, session_dir) == 0) {
+            e = &idx->entries[i];
+            is_update = 1;
+            /* Free old data before overwriting */
+            free(e->manifest);
+            embed_vec_free(&e->emb);
+            embed_multi_vec_free(&e->chunks_emb);
+            free_chunk_previews(e->chunk_previews, e->n_chunk_previews);
+            /* Keep session_dir (same string), clear the rest */
+            char *kept_dir = e->session_dir;
+            memset(e, 0, sizeof(*e));
+            e->session_dir = kept_dir;
+            nash_log("session_index: updating existing entry for %s", session_dir);
+            break;
+        }
     }
 
-    session_index_entry_t *e = &idx->entries[idx->count];
-    memset(e, 0, sizeof(*e));
-    e->session_dir = strdup(session_dir);
+    if (!e) {
+        /* New entry */
+        if (si_grow(idx) < 0) {
+            pthread_mutex_unlock(&idx->mtx);
+            return -1;
+        }
+        e = &idx->entries[idx->count];
+        memset(e, 0, sizeof(*e));
+        e->session_dir = strdup(session_dir);
+    }
+
     e->manifest = manifest ? strdup(manifest) : NULL;
     e->timestamp = parse_session_timestamp(session_dir);
 
@@ -281,7 +307,8 @@ int session_index_add(session_index_t *idx, const char *session_dir,
         }
     }
 
-    idx->count++;
+    if (!is_update)
+        idx->count++;
     pthread_mutex_unlock(&idx->mtx);
     return 0;
 }
