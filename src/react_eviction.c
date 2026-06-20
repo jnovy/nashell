@@ -30,10 +30,12 @@ static int cmp_compress_desc(const void *a, const void *b) {
     return ((const compress_cand_t *)b)->len - ((const compress_cand_t *)a)->len;
 }
 
-typedef struct { int idx; int score; int len; } evict_scored_t;  /* Review B3: len cached from scoring */
+/* Review B4: Generic candidate type used by evict_mark_candidates(). */
+typedef struct { int idx; int score; long chars; } evict_candidate_t;
 
-static int cmp_evict_score_asc(const void *a, const void *b) {
-    return ((const evict_scored_t *)a)->score - ((const evict_scored_t *)b)->score;
+static int cmp_candidate_score_asc(const void *a, const void *b) {
+    return ((const evict_candidate_t *)a)->score
+         - ((const evict_candidate_t *)b)->score;
 }
 
 /* ── Proposal E: Partner Index ────────────────────────── */
@@ -230,52 +232,111 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     }
 }
 
-/* ── Mark Phase: Score all evictable messages ─────────── */
+/* ── Progressive Scoring Callback ─────────────────────── */
 
-/* Compute eviction scores for messages in [evict_start, evict_end).
- * Lower score = evict first. Score formula:
+/* Score formula for progressive (non-emergency) eviction.
  *   importance * IMP_WEIGHT - recoverability * REC_WEIGHT - size_bonus + pos_norm
- *
- * LOW-importance messages get the lowest scores (evicted first), replacing
- * the old Pass 1 which had index-corruption bugs (FLAW 1, FLAW 2).
- * Returns malloc'd array of scored entries, or NULL. Sets *n_scored. */
-static evict_scored_t *evict_score_messages(const llm_chat_t *chat,
-                                            int evict_start, int evict_end,
-                                            int *n_scored) {
-    int n = evict_end - evict_start;
-    if (n <= 0) { *n_scored = 0; return NULL; }
+ * Review A7: -rec term means recoverable content gets LOWER score
+ * (evicted first), which is the desired behavior.
+ * userdata is unused (NULL). */
+static int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
+                                   int n_evictable, void *userdata) {
+    (void)userdata;
+    int imp = (int)chat->msgs[mi].importance;
+    int rec = (int)chat->msgs[mi].recoverability;
+    int msg_len = (int)chat->msgs[mi].content_len;
+    int pos_norm = (n_evictable > 1)
+        ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
+    int size_bonus = (rec > 0 && msg_len > REACT_SCORE_SIZE_THRESH)
+        ? (msg_len / REACT_SCORE_SIZE_DIV) * rec : 0;
+    if (size_bonus > REACT_SCORE_SIZE_MAX) size_bonus = REACT_SCORE_SIZE_MAX;
+    return imp * REACT_SCORE_IMP_WEIGHT
+         - rec * REACT_SCORE_REC_WEIGHT
+         - size_bonus + pos_norm;
+}
 
-    evict_scored_t *scored = malloc((size_t)n * sizeof(evict_scored_t));
-    if (!scored) { *n_scored = 0; return NULL; }
+/* ── Review B4: Generic Mark-Candidates ───────────────── */
 
-    int n_actual = 0;
-    for (int i = 0; i < n; i++) {
+/* Score, sort, and mark evictable messages using a caller-supplied scoring
+ * function. Shared between progressive and emergency eviction.
+ * See react_internal.h for full parameter documentation.
+ * Returns the number of messages marked for eviction. */
+int evict_mark_candidates(const llm_chat_t *chat,
+                          int evict_start, int evict_end,
+                          const evict_partner_map_t *pmap,
+                          long floor_chars,
+                          long remaining_nonhead,
+                          long target_remaining,
+                          evict_score_fn score_fn, void *score_ud,
+                          int *evict_mark) {
+    int n_evictable = evict_end - evict_start;
+    if (n_evictable <= 0) return 0;
+
+    /* Build scored candidate array (skip HIGH/CRITICAL) */
+    evict_candidate_t *cands = malloc((size_t)n_evictable * sizeof(evict_candidate_t));
+    if (!cands) return 0;
+
+    int n_cands = 0;
+    for (int i = 0; i < n_evictable; i++) {
         int mi = evict_start + i;
-        /* Skip HIGH/CRITICAL — never evicted */
         if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
-
-        int imp = (int)chat->msgs[mi].importance;
-        int rec = (int)chat->msgs[mi].recoverability;
-        int msg_len = (int)chat->msgs[mi].content_len;
-        int pos_norm = (n > 1) ? (i * REACT_SCORE_POS_RANGE / (n - 1)) : 0;
-        int size_bonus = (rec > 0 && msg_len > REACT_SCORE_SIZE_THRESH)
-            ? (msg_len / REACT_SCORE_SIZE_DIV) * rec : 0;
-        if (size_bonus > REACT_SCORE_SIZE_MAX) size_bonus = REACT_SCORE_SIZE_MAX;
-
-        scored[n_actual].idx = i;  /* relative to evict_start */
-        scored[n_actual].len = msg_len;  /* Review B3: cache for mark phase */
-        /* Review A7: -rec term means recoverable content gets LOWER score
-         * (evicted first), which is the desired behavior. */
-        scored[n_actual].score = imp * REACT_SCORE_IMP_WEIGHT
-                               - rec * REACT_SCORE_REC_WEIGHT
-                               - size_bonus + pos_norm;
-        n_actual++;
+        cands[n_cands].idx   = i;  /* relative to evict_start */
+        cands[n_cands].score = score_fn(chat, mi, i, n_evictable, score_ud);
+        cands[n_cands].chars = (long)chat->msgs[mi].content_len;
+        n_cands++;
     }
 
-    if (n_actual > 1)
-        qsort(scored, (size_t)n_actual, sizeof(evict_scored_t), cmp_evict_score_asc);
-    *n_scored = n_actual;
-    return scored;
+    if (n_cands > 1)
+        qsort(cands, (size_t)n_cands, sizeof(evict_candidate_t),
+              cmp_candidate_score_asc);
+
+    /* Mark candidates, respecting floor + partner pairing + target */
+    int n_marked = 0;
+    long remaining = remaining_nonhead;
+
+    for (int ci = 0; ci < n_cands; ci++) {
+        int ri = cands[ci].idx;
+        if (evict_mark[ri]) continue;
+
+        long msg_chars = cands[ci].chars;
+        if (remaining - msg_chars < floor_chars) continue;
+
+        /* Partner lookup via pre-built map (Proposal E) */
+        int mi = evict_start + ri;
+        int partner_mi = (pmap && mi < pmap->n_msgs) ? pmap->partner[mi] : -1;
+        int pair_ri = -1;
+        long pair_chars = 0;
+
+        if (partner_mi >= evict_start && partner_mi < evict_end) {
+            pair_ri = partner_mi - evict_start;
+            /* BUG 2 FIX: Skip HIGH/CRITICAL partners — never evict them */
+            if (chat->msgs[partner_mi].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+                pair_ri = -1;  /* partner is protected */
+            } else if (!evict_mark[pair_ri]) {
+                pair_chars = (long)chat->msgs[partner_mi].content_len;
+            } else {
+                pair_ri = -1;  /* partner already marked */
+            }
+        }
+
+        /* Check floor for total pair cost */
+        if (remaining - msg_chars - pair_chars < floor_chars) continue;
+
+        evict_mark[ri] = 1;
+        remaining -= msg_chars;
+        n_marked++;
+
+        if (pair_ri >= 0 && !evict_mark[pair_ri]) {
+            evict_mark[pair_ri] = 1;
+            remaining -= pair_chars;
+            n_marked++;
+        }
+
+        /* Stop when we've reached the target */
+        if (remaining <= target_remaining) break;
+    }
+    free(cands);
+    return n_marked;
 }
 
 /* ── Compress Phase: BM25 compression ─────────────────── */
@@ -540,12 +601,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
 
     /* ── Step 3: Mark phase — score and select messages for eviction ── */
-    int n_scored;
-    evict_scored_t *scored = evict_score_messages(chat, evict_start, evict_end, &n_scored);
-
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
     if (!evict_mark) {
-        free(scored);
         evict_free_partner_map(&pmap);
         evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
                       NULL, step, on_event, userdata);
@@ -588,56 +645,20 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             effective_target_pct = REACT_EFF_TARGET_MIN_PCT;
     }
 
-    /* Mark messages for eviction (lowest-scored first) */
-    long remaining_chars = tail_chars + evictable_chars;
-    int n_to_evict = 0;
+    /* Review B4: Use generic mark-candidates with progressive scoring callback.
+     * target_remaining = budget * effective_target_pct / 100 - head_chars
+     * represents the maximum non-head chars we want to retain. */
+    long remaining_nonhead = tail_chars + evictable_chars;
+    long target_remaining = (context_budget > 0)
+        ? (context_budget * effective_target_pct / 100 - head_chars)
+        : (remaining_nonhead * effective_target_pct / 100);
+    if (target_remaining < floor_chars) target_remaining = floor_chars;
 
-    if (scored) {
-        for (int si = 0; si < n_scored; si++) {
-            int ri = scored[si].idx;  /* relative to evict_start */
-            int mi = evict_start + ri;
-            long msg_chars = (long)chat->msgs[mi].content_len;
-
-            if (evict_mark[ri]) continue;
-            if (remaining_chars - msg_chars < floor_chars) continue;
-
-            /* Check partner using pre-built map (Proposal E) */
-            int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
-            int pair_ri = -1;
-            long pair_chars = 0;
-
-            if (partner_mi >= evict_start && partner_mi < evict_end) {
-                pair_ri = partner_mi - evict_start;
-                /* BUG 2 FIX: Skip HIGH/CRITICAL partners — never evict them */
-                if (chat->msgs[partner_mi].importance >= LLM_MSG_IMPORTANCE_HIGH) {
-                    pair_ri = -1;  /* partner is protected */
-                } else if (!evict_mark[pair_ri]) {
-                    pair_chars = (long)chat->msgs[partner_mi].content_len;
-                } else {
-                    pair_ri = -1;  /* partner already marked */
-                }
-            }
-
-            /* Check floor for total pair cost */
-            if (remaining_chars - msg_chars - pair_chars < floor_chars) continue;
-
-            evict_mark[ri] = 1;
-            remaining_chars -= msg_chars;
-            n_to_evict++;
-
-            if (pair_ri >= 0 && !evict_mark[pair_ri]) {
-                evict_mark[pair_ri] = 1;
-                remaining_chars -= pair_chars;
-                n_to_evict++;
-            }
-
-            /* Proposal D: Use effective_target_pct for sweep phase */
-            if (react_usage_pct(head_chars + remaining_chars, context_budget)
-                <= effective_target_pct)
-                break;
-        }
-    }
-    free(scored);
+    int n_to_evict = evict_mark_candidates(chat, evict_start, evict_end,
+                                            &pmap, floor_chars,
+                                            remaining_nonhead, target_remaining,
+                                            evict_score_progressive, NULL,
+                                            evict_mark);
 
     /* ── Step 4: Sweep phase — remove marked messages + build breadcrumbs ── */
     char *bc_str = NULL;

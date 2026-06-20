@@ -98,6 +98,20 @@ typedef struct {
     int  n_msgs;      /* number of messages (for bounds checking) */
 } evict_partner_map_t;
 
+/* ── Generic Mark-Sweep (Review B4) ────────────────── */
+
+/* Scoring callback for evict_mark_candidates().
+ * Called once per evictable message (importance < HIGH).
+ * Lower score = evicted first.
+ *   chat       — the conversation
+ *   mi         — absolute message index
+ *   ri         — relative index (mi - evict_start)
+ *   n_evictable — total messages in eviction range
+ *   userdata   — caller-supplied context (NULL if unused)
+ * Must return an integer score. */
+typedef int (*evict_score_fn)(const llm_chat_t *chat, int mi, int ri,
+                              int n_evictable, void *userdata);
+
 /* ── Helpers shared across react submodules ─────────── */
 
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */
@@ -199,6 +213,30 @@ static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
  * Returns the number of messages actually removed. */
 int evict_sweep_marked(llm_chat_t *chat, int evict_start,
                        const int *evict_mark, int n_evictable);
+
+/* Review B4: Generic mark-candidates — scores all evictable messages using
+ * a caller-supplied scoring function, sorts by score ascending (lowest =
+ * evicted first), and marks candidates for removal while respecting:
+ *   - Compaction floor (minimum retained content)
+ *   - Partner pairing (tool_call + tool_result evicted together)
+ *   - HIGH/CRITICAL importance protection
+ *   - Target remaining budget stop condition
+ *
+ * Parameters:
+ *   evict_mark     — pre-zeroed calloc'd array of n_evictable ints
+ *   remaining_nonhead — sum of tail + evictable chars (updated internally)
+ *   target_remaining  — stop marking when remaining_nonhead <= this value
+ *   score_fn/score_ud — scoring callback + userdata
+ *
+ * Returns: number of messages marked for eviction. */
+int evict_mark_candidates(const llm_chat_t *chat,
+                          int evict_start, int evict_end,
+                          const evict_partner_map_t *pmap,
+                          long floor_chars,
+                          long remaining_nonhead,
+                          long target_remaining,
+                          evict_score_fn score_fn, void *score_ud,
+                          int *evict_mark);
 
 /* Build enriched BM25 query from user_query + recent thoughts + scratchpad.
  * Returns malloc'd string — caller must free. Shared between eviction and

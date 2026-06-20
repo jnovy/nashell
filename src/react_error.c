@@ -14,11 +14,16 @@
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
-/* FIX FLAW 7: Candidate struct and qsort comparator for emergency eviction. */
-typedef struct { int idx; int score; long chars; } emerg_cand_t;
-
-static int cmp_emerg_score_asc(const void *a, const void *b) {
-    return ((const emerg_cand_t *)a)->score - ((const emerg_cand_t *)b)->score;
+/* Emergency scoring callback — simpler than progressive scoring.
+ * Recoverable content (RECOVER_STORE/FILE/MEMORY) scores lower → evicted first.
+ * Within each recoverability class, older messages (lower ri) score lower.
+ * userdata is unused (NULL). */
+static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
+                                 int n_evictable, void *userdata) {
+    (void)n_evictable; (void)userdata;
+    int rec_score = (chat->msgs[mi].recoverability > LLM_RECOVER_NONE)
+        ? 0 : 1000;
+    return rec_score + ri;  /* older + recoverable first */
 }
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
@@ -56,74 +61,24 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
     long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
                                               head_chars);
 
-    /* Review A4: Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
+    /* Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
 
-    /* ── Mark-and-sweep: score all candidates, then remove ── */
-    emerg_cand_t *cands = malloc((size_t)n_evictable * sizeof(emerg_cand_t));
-    if (!cands) { evict_free_partner_map(&pmap); return 0; }
-
-    int n_cands = 0;
-    for (int i = 0; i < n_evictable; i++) {
-        int mi = evict_start + i;
-        if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-            continue;
-        int rec_score = (chat->msgs[mi].recoverability > LLM_RECOVER_NONE)
-            ? 0 : 1000;
-        cands[n_cands].idx = i;
-        cands[n_cands].score = rec_score + i;  /* older + recoverable first */
-        cands[n_cands].chars = (long)chat->msgs[mi].content_len;
-        n_cands++;
-    }
-
-    qsort(cands, (size_t)n_cands, sizeof(emerg_cand_t),
-          cmp_emerg_score_asc);
-
-    /* Mark candidates for eviction, respecting floor and need_to_remove */
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
-    if (!evict_mark) { free(cands); evict_free_partner_map(&pmap); return 0; }
+    if (!evict_mark) { evict_free_partner_map(&pmap); return 0; }
 
+    /* Review B4: Use generic mark-candidates with emergency scoring callback.
+     * target_remaining = target_chars - head_chars = how much non-head content
+     * we want to retain after eviction. */
     long remaining_nonhead = total_chars - head_chars;
-    long marked_chars = 0;
-    int n_marked = 0;
+    long target_remaining = target_chars - head_chars;
+    if (target_remaining < floor_chars) target_remaining = floor_chars;
 
-    for (int ci = 0; ci < n_cands && marked_chars < need_to_remove; ci++) {
-        int ri = cands[ci].idx;
-        if (evict_mark[ri]) continue;
-
-        long msg_chars = cands[ci].chars;
-        if (remaining_nonhead - msg_chars < floor_chars) continue;
-
-        /* Review A4: Use pre-built partner map for O(1) lookup */
-        int mi = evict_start + ri;
-        int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
-        int pair_ri = -1;
-        long pair_chars = 0;
-
-        if (partner_mi >= evict_start && partner_mi < evict_end) {
-            pair_ri = partner_mi - evict_start;
-            if (!evict_mark[pair_ri]) {
-                pair_chars = (long)chat->msgs[partner_mi].content_len;
-                if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
-                    continue;
-            } else {
-                pair_ri = -1;
-            }
-        }
-
-        evict_mark[ri] = 1;
-        remaining_nonhead -= msg_chars;
-        marked_chars += msg_chars;
-        n_marked++;
-
-        if (pair_ri >= 0) {
-            evict_mark[pair_ri] = 1;
-            remaining_nonhead -= pair_chars;
-            marked_chars += pair_chars;
-            n_marked++;
-        }
-    }
-    free(cands);
+    int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
+                                          &pmap, floor_chars,
+                                          remaining_nonhead, target_remaining,
+                                          evict_score_emergency, NULL,
+                                          evict_mark);
 
     /* Fallback — mark at least one message if nothing was marked */
     if (n_marked == 0 && remaining_nonhead > floor_chars) {
@@ -146,11 +101,9 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
 
     evict_free_partner_map(&pmap);
 
-    /* D3 FIX: Use shared sweep helper */
+    /* Shared sweep helper */
     int removed = evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
     free(evict_mark);
-
-    /* Review A6: removed always equals n_marked — simplified */
     return removed;
 }
 
