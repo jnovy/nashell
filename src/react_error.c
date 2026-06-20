@@ -1,97 +1,138 @@
 /* react_error.c — Error recovery for NULL LLM responses.
  * Extracted from react.c to reduce file size.
- * Includes emergency eviction and the 5-tier retry strategy. */
+ * Includes emergency eviction and the 5-tier retry strategy.
+ *
+ * Bug/Design fixes applied:
+ *   BUG 8:    Considers recoverability — evicts RECOVER_STORE/FILE/MEMORY
+ *             messages before RECOVER_NONE to preserve irreplaceable content
+ *   DESIGN 4: Compaction floor (20% of non-head context) prevents over-eviction
+ *   DESIGN 9: Protection levels aligned with progressive eviction (>= HIGH) */
 
 #include "react_internal.h"
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
-/* Emergency eviction — proportionally removes enough of the oldest
- * evictable messages to reach ~80% of context budget.
- * FIX #3: Takes context_budget parameter. Previously targeted 80% of
- * CURRENT usage, which when context was 150% of budget would produce
- * 120% — still over budget. Now targets 80% of the actual budget.
- * FIX #7: Pair-safe — removes tool_call/tool_result pairs together
- * to avoid orphaning messages that violate the LLM API contract.
+/* Emergency eviction — removes enough evictable messages to reach ~80% of
+ * context budget, prioritizing recoverable content over irreplaceable.
+ * BUG 8 FIX: Two-pass approach — first pass evicts recoverable messages
+ * (RECOVER_STORE/FILE/MEMORY), second pass evicts non-recoverable if needed.
+ * DESIGN 4 FIX: Enforces a compaction floor (20% of non-head context).
  * Returns the number of messages evicted (0 if not enough to evict). */
-int react_emergency_evict(llm_chat_t *chat, int context_budget) {
+int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     int keep_head = REACT_EVICT_KEEP_HEAD;
     int keep_tail = REACT_EVICT_KEEP_TAIL;
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
     if (evict_end <= evict_start + 2) return 0;
 
-    /* Calculate total context chars */
-    int total_chars = 0;
+    /* BUG B FIX: Use long for char counts to avoid overflow for large-context
+     * models (1M+ tokens). Progressive eviction already uses long. */
+    long total_chars = 0;
     for (int i = 0; i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
-            total_chars += (int)strlen(chat->msgs[i].content);
+            total_chars += (long)strlen(chat->msgs[i].content);
 
-    /* FIX #3: Target 80% of context BUDGET, not 80% of current usage.
-     * If context_budget is 0 (unknown), fall back to 80% of current. */
-    int target_chars;
+    long target_chars;
     if (context_budget > 0)
         target_chars = context_budget * 80 / 100;
     else
         target_chars = total_chars * 80 / 100;
-    int need_to_remove = total_chars - target_chars;
+    long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
-    /* Remove oldest evictable messages until we've freed enough.
-     * Skip CRITICAL and HIGH importance messages.
-     * FIX #7: Handle tool_call/tool_result pairs atomically. */
-    int removed_chars = 0;
-    int removed = 0;
-    int i = evict_start;
-    while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
-        /* Never evict CRITICAL or HIGH messages */
-        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
-            i++;
-            continue;
-        }
-
-        /* FIX #7: If this is an assistant with tool_calls, check if the
-         * next message is its tool_result — remove both together. */
-        if (chat->msgs[i].tool_calls_json &&
-            i + 1 < chat->n_msgs - keep_tail &&
-            chat->msgs[i + 1].tool_call_id &&
-            chat->msgs[i + 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
-            if (chat->msgs[i].content)
-                removed_chars += (int)strlen(chat->msgs[i].content);
-            if (chat->msgs[i + 1].content)
-                removed_chars += (int)strlen(chat->msgs[i + 1].content);
-            llm_chat_remove_range(chat, i, i + 2);
-            removed += 2;
-            continue;  /* don't increment — removal shifts array */
-        }
-
-        /* FIX #7: If this is a tool_result, also remove the preceding
-         * assistant (with tool_calls) if it's in range and evictable. */
-        if (chat->msgs[i].tool_call_id &&
-            i - 1 >= evict_start &&
-            chat->msgs[i - 1].tool_calls_json &&
-            chat->msgs[i - 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
-            if (chat->msgs[i - 1].content)
-                removed_chars += (int)strlen(chat->msgs[i - 1].content);
-            if (chat->msgs[i].content)
-                removed_chars += (int)strlen(chat->msgs[i].content);
-            llm_chat_remove_range(chat, i - 1, i + 1);
-            removed += 2;
-            continue;
-        }
-
-        /* Standalone message (no pair) or pair partner is protected */
+    /* DESIGN 4 FIX: Compute compaction floor — never evict below 20% of
+     * non-head context. Without this, emergency eviction can reduce context
+     * to near-zero, triggering the death spiral (max-token exhaustion). */
+    long head_chars = 0;
+    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
-            removed_chars += (int)strlen(chat->msgs[i].content);
-        llm_chat_remove_range(chat, i, i + 1);
-        removed++;
-        /* Don't increment i — removal shifts array down */
+            head_chars += (long)strlen(chat->msgs[i].content);
+    long floor_chars = (context_budget > 0)
+        ? (context_budget - head_chars) / 5 : (total_chars - head_chars) / 5;
+    if (floor_chars < 4000) floor_chars = 4000;
+
+    /* Helper: try to evict a message (or pair) at position i.
+     * Returns count removed (0, 1, or 2). Updates removed_chars. */
+    long removed_chars = 0;
+    int removed = 0;
+
+    /* BUG 8 FIX: Two-pass eviction — recoverable content first.
+     * Pass A: Only evict messages with recoverability > RECOVER_NONE
+     * Pass B: Evict remaining (non-recoverable) messages if still needed.
+     * This preserves irreplaceable content as long as possible. */
+    for (int pass = 0; pass < 2 && removed_chars < need_to_remove; pass++) {
+        int i = evict_start;
+        while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
+            /* Never evict CRITICAL or HIGH messages */
+            if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+                i++;
+                continue;
+            }
+
+            /* BUG 8 FIX: In pass 0, skip non-recoverable messages */
+            if (pass == 0 && chat->msgs[i].recoverability == LLM_RECOVER_NONE) {
+                i++;
+                continue;
+            }
+
+            /* DESIGN 4 FIX: Compaction floor check — stop evicting when
+             * remaining non-head context would drop below floor. */
+            long remaining_nonhead = total_chars - head_chars - removed_chars;
+            long msg_chars = chat->msgs[i].content
+                ? (long)strlen(chat->msgs[i].content) : 0;
+            if (remaining_nonhead - msg_chars < floor_chars)
+                break;
+
+            /* Pair-safe: remove tool_call/tool_result pairs together */
+            if (chat->msgs[i].tool_calls_json &&
+                i + 1 < chat->n_msgs - keep_tail &&
+                chat->msgs[i + 1].tool_call_id &&
+                chat->msgs[i + 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
+                /* In pass 0, skip if partner is non-recoverable */
+                if (pass == 0 && chat->msgs[i + 1].recoverability == LLM_RECOVER_NONE) {
+                    i++;
+                    continue;
+                }
+                long pair_chars = chat->msgs[i + 1].content
+                    ? (long)strlen(chat->msgs[i + 1].content) : 0;
+                /* Floor check for pair */
+                if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
+                    break;
+                removed_chars += msg_chars + pair_chars;
+                llm_chat_remove_range(chat, i, i + 2);
+                removed += 2;
+                continue;
+            }
+
+            if (chat->msgs[i].tool_call_id &&
+                i - 1 >= evict_start &&
+                chat->msgs[i - 1].tool_calls_json &&
+                chat->msgs[i - 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
+                if (pass == 0 && chat->msgs[i - 1].recoverability == LLM_RECOVER_NONE) {
+                    i++;
+                    continue;
+                }
+                long partner_chars = chat->msgs[i - 1].content
+                    ? (long)strlen(chat->msgs[i - 1].content) : 0;
+                if (remaining_nonhead - msg_chars - partner_chars < floor_chars)
+                    break;
+                removed_chars += msg_chars + partner_chars;
+                llm_chat_remove_range(chat, i - 1, i + 1);
+                removed += 2;
+                continue;
+            }
+
+            /* Standalone message */
+            removed_chars += msg_chars;
+            llm_chat_remove_range(chat, i, i + 1);
+            removed++;
+        }
     }
-    /* Ensure we evict at least something (skip CRITICAL+HIGH even here) */
+
+    /* Ensure we evict at least something */
     if (removed == 0) {
         for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
             if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
-                /* Pair-safe: if assistant with tool_calls, take both */
                 if (chat->msgs[j].tool_calls_json &&
                     j + 1 < chat->n_msgs - keep_tail &&
                     chat->msgs[j + 1].tool_call_id) {
@@ -156,11 +197,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         cJSON_AddNumberToObject(err_params, "completion_tokens", stats->completion_tokens);
 
         /* Capture context size for diagnostics */
-        int total_chars = 0;
+        long total_chars = 0;
         for (int ci = 0; ci < chat->n_msgs; ci++)
             if (chat->msgs[ci].content)
-                total_chars += (int)strlen(chat->msgs[ci].content);
-        cJSON_AddNumberToObject(err_params, "context_chars", total_chars);
+                total_chars += (long)strlen(chat->msgs[ci].content);
+        cJSON_AddNumberToObject(err_params, "context_chars", (double)total_chars);
         cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
         /* Include the actual server error message if available. */
@@ -251,9 +292,13 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             }
             /* FIX #3: Compute context_budget and pass to emergency eviction */
             float cpt = react_get_chars_per_token(ctx);
-            int cb = (int)(ctx->provider->cfg.context_size * cpt);
+            long cb = (long)(ctx->provider->cfg.context_size * cpt);
             int n_evict = react_emergency_evict(chat, cb);
             if (n_evict > 0) {
+                /* BUG C FIX: Re-inject scratchpad after emergency eviction.
+                 * Previously lost permanently, leaving agent without
+                 * scratchpad context after error recovery. */
+                react_reinject_scratchpad(ctx, chat, REACT_EVICT_KEEP_HEAD);
                 char emsg[128];
                 snprintf(emsg, sizeof(emsg),
                     "HTTP 400 — evicted %d messages to reduce context "
@@ -296,8 +341,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         /* FIX #3: Compute context_budget and pass to emergency eviction */
         {
             float cpt = react_get_chars_per_token(ctx);
-            int cb = (int)(ctx->provider->cfg.context_size * cpt);
-            react_emergency_evict(chat, cb);
+            long cb = (long)(ctx->provider->cfg.context_size * cpt);
+            int n_evict = react_emergency_evict(chat, cb);
+            /* BUG C FIX: Re-inject scratchpad after emergency eviction. */
+            if (n_evict > 0)
+                react_reinject_scratchpad(ctx, chat, REACT_EVICT_KEEP_HEAD);
         }
         /* Don't count as consecutive (recovery may work) */
         *consecutive_null = 0;

@@ -154,12 +154,24 @@ void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
 }
 
 /* FIX D5: Insert a typed message at a specific position.
- * Grows array if needed, shifts messages from pos..n_msgs-1 forward. */
+ * Grows array if needed, shifts messages from pos..n_msgs-1 forward.
+ * BUG 4 FIX: strdup BEFORE memmove — if strdup fails, chat array is untouched. */
 void llm_chat_insert_typed(llm_chat_t *chat, int pos,
                             const char *role, const char *content,
                             llm_msg_type_t type) {
     if (!chat || pos < 0 || pos > chat->n_msgs) return;
     if (llm_chat_ensure_capacity(chat) != 0) return;
+    /* BUG 4 FIX: Allocate strings BEFORE shifting array.
+     * Previously, memmove ran first, then strdup failure left a
+     * corrupted hole at pos with shifted messages at pos+1..n_msgs. */
+    char *r = strdup(role);
+    char *c = strdup(content);
+    if (!r || !c) {
+        nash_log("[llm] CRITICAL: strdup failed for inserted typed message role=%s", role);
+        free(r);
+        free(c);
+        return;
+    }
     /* Shift existing messages to make room */
     int tail = chat->n_msgs - pos;
     if (tail > 0)
@@ -167,14 +179,8 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
                 tail * sizeof(llm_msg_t));
     llm_msg_t *m = &chat->msgs[pos];
     memset(m, 0, sizeof(*m));
-    m->role = strdup(role);
-    m->content = strdup(content);
-    if (!m->role || !m->content) {
-        nash_log("[llm] CRITICAL: strdup failed for inserted typed message role=%s", role);
-        free(m->role);
-        free(m->content);
-        return;
-    }
+    m->role = r;
+    m->content = c;
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;

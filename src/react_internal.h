@@ -112,7 +112,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
  * falls back to 80% of current usage). Returns count evicted.
  * FIX #3: Takes budget param so it targets budget, not current usage.
  * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
-int react_emergency_evict(llm_chat_t *chat, int context_budget);
+int react_emergency_evict(llm_chat_t *chat, long context_budget);
 
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
  * Returns: 0 = continue (retry), 1 = break (give up).
@@ -130,6 +130,12 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
                        react_event_fn on_event, void *userdata);
+
+/* Re-inject scratchpad at insert_pos in chat.
+ * Returns the serialized scratchpad size in chars (0 if nothing injected).
+ * Shared between progressive and emergency eviction (BUG A/C FIX). */
+long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
+                               int insert_pos);
 
 /* ── Post-Loop (Reflection, Promotion, Pruning) ────── */
 

@@ -1515,18 +1515,33 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * When the API reports prompt_tokens, compute the actual ratio from
          * total_chars / prompt_tokens and use exponential moving average to
          * smooth out noise. This corrects for content-type-dependent variation
-         * (JSON-heavy prompts tokenize differently than prose). */
+         * (JSON-heavy prompts tokenize differently than prose).
+         * FLAW 7 FIX: Use alpha=0.8 on the first calibration (when still
+         * using the default/config value) for fast convergence, then switch
+         * to alpha=0.3 for subsequent updates. The first measurement from
+         * the actual API is far more informative than any default. */
         if (stats.prompt_tokens > 100) {  /* need enough tokens for reliable ratio */
-            int actual_chars = 0;
+            long actual_chars = 0;
             for (int i = 0; i < chat->n_msgs; i++)
                 if (chat->msgs[i].content)
-                    actual_chars += (int)strlen(chat->msgs[i].content);
+                    actual_chars += (long)strlen(chat->msgs[i].content);
             float actual_cpt = (float)actual_chars / (float)stats.prompt_tokens;
             /* Clamp to reasonable range [1.5, 8.0] to avoid outliers */
             if (actual_cpt > 1.5f && actual_cpt < 8.0f) {
                 float old_cpt = react_get_chars_per_token(ctx);
-                /* EMA with alpha=0.3: responsive but not jumpy */
-                float calibrated = old_cpt * 0.7f + actual_cpt * 0.3f;
+                /* FLAW 7 FIX: First calibration uses high alpha for fast convergence.
+                 * Detect "uncalibrated" state by checking if rt.chars_per_token
+                 * hasn't been set from actual measurement yet (still 0 or matches
+                 * the config default exactly). */
+                float alpha;
+                if (ctx->rt.chars_per_token <= 0 ||
+                    (ctx->provider && ctx->provider->cfg.chars_per_token > 0 &&
+                     ctx->rt.chars_per_token == ctx->provider->cfg.chars_per_token)) {
+                    alpha = 0.8f;  /* first measurement: trust it heavily */
+                } else {
+                    alpha = 0.3f;  /* subsequent: smooth EMA */
+                }
+                float calibrated = old_cpt * (1.0f - alpha) + actual_cpt * alpha;
                 ctx->rt.chars_per_token = calibrated;
             }
         }
