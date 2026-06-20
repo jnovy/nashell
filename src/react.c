@@ -164,7 +164,8 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
 }
 
 /* FIX B4: Recover tool_call threading from surviving messages after eviction.
- * Scans backward for the last tool_calls_json, then matches its result.
+ * Scans backward for the last tool_calls_json, then uses react_find_tool_partner
+ * to locate the matching result (not adjacency — handles interleaved messages).
  * Used by both progressive eviction (pass3) and emergency eviction. */
 void react_recover_tool_threading(llm_chat_t *chat) {
     free(chat->last_tool_call_id);
@@ -174,8 +175,11 @@ void react_recover_tool_threading(llm_chat_t *chat) {
     for (int i = chat->n_msgs - 1; i >= 0; i--) {
         if (chat->msgs[i].tool_calls_json) {
             chat->last_tool_calls_json = strdup(chat->msgs[i].tool_calls_json);
-            if (i + 1 < chat->n_msgs && chat->msgs[i + 1].tool_call_id)
-                chat->last_tool_call_id = strdup(chat->msgs[i + 1].tool_call_id);
+            /* Use scanning partner match instead of assuming i+1 adjacency.
+             * Interleaved hints/errors can separate tool_call from result. */
+            int partner = react_find_tool_partner(chat, i, 0, chat->n_msgs);
+            if (partner >= 0 && chat->msgs[partner].tool_call_id)
+                chat->last_tool_call_id = strdup(chat->msgs[partner].tool_call_id);
             break;
         }
     }

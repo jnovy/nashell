@@ -23,7 +23,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     int keep_tail = react_compute_keep_tail(chat);
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
-    if (evict_end <= evict_start + 2) return 0;
+    int n_evictable = evict_end - evict_start;
+    if (n_evictable <= 2) return 0;
 
     long total_chars = react_calc_total_chars(chat);
 
@@ -35,121 +36,120 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
-    /* FIX FLAW 4: Use shared floor calculation helper for consistency
-     * with progressive eviction. */
-    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget);
-
-    /* head_chars still needed for remaining_nonhead calculations below */
+    /* Compute head_chars once — used by both floor calculation and marking. */
     long head_chars = 0;
     for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
             head_chars += (long)strlen(chat->msgs[i].content);
 
-    long removed_chars = 0;
-    int removed = 0;
+    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
+                                              head_chars);
 
-    /* Two-pass eviction — recoverable content first.
-     * Pass 0: Only evict messages with recoverability > RECOVER_NONE
-     * Pass 1: Evict remaining (non-recoverable) messages if still needed. */
-    for (int pass = 0; pass < 2 && removed_chars < need_to_remove; pass++) {
-        int i = evict_start;
-        while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
-            if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
-                i++;
-                continue;
-            }
-            if (pass == 0 && chat->msgs[i].recoverability == LLM_RECOVER_NONE) {
-                i++;
-                continue;
-            }
+    /* ── Mark-and-sweep: score all candidates, then remove in reverse ── */
 
-            /* Compaction floor check */
-            long remaining_nonhead = total_chars - head_chars - removed_chars;
-            long msg_chars = chat->msgs[i].content
-                ? (long)strlen(chat->msgs[i].content) : 0;
-            if (remaining_nonhead - msg_chars < floor_chars)
-                break;
+    /* Score: lower = evict first.  Recoverable content (score 0) is evicted
+     * before non-recoverable (score 1000), with position as tiebreaker
+     * (older messages first). */
+    typedef struct { int idx; int score; long chars; } emerg_cand_t;
+    emerg_cand_t *cands = malloc((size_t)n_evictable * sizeof(emerg_cand_t));
+    if (!cands) return 0;
 
-            /* Pair-safe using shared helper */
-            int partner = react_find_tool_partner(chat, i, evict_start,
-                                                   chat->n_msgs - keep_tail);
+    int n_cands = 0;
+    for (int i = 0; i < n_evictable; i++) {
+        int mi = evict_start + i;
+        if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+            continue;
+        int rec_score = (chat->msgs[mi].recoverability > LLM_RECOVER_NONE)
+            ? 0 : 1000;
+        cands[n_cands].idx = i;
+        cands[n_cands].score = rec_score + i;  /* older + recoverable first */
+        cands[n_cands].chars = chat->msgs[mi].content
+            ? (long)strlen(chat->msgs[mi].content) : 0;
+        n_cands++;
+    }
 
-            if (partner >= 0) {
-                if (pass == 0 && chat->msgs[partner].recoverability == LLM_RECOVER_NONE) {
-                    i++;
-                    continue;
-                }
-                long pair_chars = chat->msgs[partner].content
-                    ? (long)strlen(chat->msgs[partner].content) : 0;
-                if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
-                    break;
-
-                /* Remove higher index first to preserve lower index */
-                int hi = partner > i ? partner : i;
-                int lo = partner > i ? i : partner;
-                long hi_chars = chat->msgs[hi].content
-                    ? (long)strlen(chat->msgs[hi].content) : 0;
-                long lo_chars = chat->msgs[lo].content
-                    ? (long)strlen(chat->msgs[lo].content) : 0;
-                removed_chars += hi_chars;
-                llm_chat_remove_range(chat, hi, hi + 1);
-                removed++;
-                removed_chars += lo_chars;
-                llm_chat_remove_range(chat, lo, lo + 1);
-                removed++;
-                /* Don't increment i — next msg is now at position lo */
-                continue;
+    /* Sort by score ascending (evict first = lowest score) */
+    for (int a = 0; a < n_cands - 1; a++)
+        for (int b = a + 1; b < n_cands; b++)
+            if (cands[b].score < cands[a].score) {
+                emerg_cand_t tmp = cands[a];
+                cands[a] = cands[b];
+                cands[b] = tmp;
             }
 
-            /* Standalone message */
-            removed_chars += msg_chars;
-            llm_chat_remove_range(chat, i, i + 1);
-            removed++;
+    /* Mark candidates for eviction, respecting floor and need_to_remove */
+    int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
+    if (!evict_mark) { free(cands); return 0; }
+
+    long remaining_nonhead = total_chars - head_chars;
+    long marked_chars = 0;
+    int n_marked = 0;
+
+    for (int ci = 0; ci < n_cands && marked_chars < need_to_remove; ci++) {
+        int ri = cands[ci].idx;
+        if (evict_mark[ri]) continue;
+
+        long msg_chars = cands[ci].chars;
+        if (remaining_nonhead - msg_chars < floor_chars) continue;
+
+        /* Also mark partner (pair-safe) */
+        int mi = evict_start + ri;
+        int partner_mi = react_find_tool_partner(chat, mi, evict_start, evict_end);
+        int pair_ri = (partner_mi >= 0) ? partner_mi - evict_start : -1;
+        long pair_chars = 0;
+
+        if (pair_ri >= 0 && pair_ri < n_evictable && !evict_mark[pair_ri]) {
+            pair_chars = chat->msgs[partner_mi].content
+                ? (long)strlen(chat->msgs[partner_mi].content) : 0;
+            if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
+                continue;
+        } else {
+            pair_ri = -1;
+        }
+
+        evict_mark[ri] = 1;
+        remaining_nonhead -= msg_chars;
+        marked_chars += msg_chars;
+        n_marked++;
+
+        if (pair_ri >= 0) {
+            evict_mark[pair_ri] = 1;
+            remaining_nonhead -= pair_chars;
+            marked_chars += pair_chars;
+            n_marked++;
+        }
+    }
+    free(cands);
+
+    /* Fallback — mark at least one message if nothing was marked */
+    if (n_marked == 0 && remaining_nonhead > floor_chars) {
+        for (int i = 0; i < n_evictable; i++) {
+            int mi = evict_start + i;
+            if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
+            evict_mark[i] = 1;
+            n_marked++;
+            int partner_mi = react_find_tool_partner(chat, mi, evict_start, evict_end);
+            int pair_ri = (partner_mi >= 0) ? partner_mi - evict_start : -1;
+            if (pair_ri >= 0 && pair_ri < n_evictable) {
+                evict_mark[pair_ri] = 1;
+                n_marked++;
+            }
+            break;
         }
     }
 
-    /* Fallback — evict at least one message if possible */
-    if (removed == 0) {
-        long cur_total = react_calc_total_chars(chat);
-        long cur_nonhead = cur_total - head_chars;
-        if (cur_nonhead > floor_chars) {
-            int best = -1;
-            for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
-                if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH &&
-                    chat->msgs[j].recoverability > LLM_RECOVER_NONE) {
-                    best = j; break;
-                }
-            }
-            if (best < 0) {
-                for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
-                    if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
-                        best = j; break;
-                    }
-                }
-            }
-            if (best >= 0) {
-                int partner = react_find_tool_partner(chat, best, evict_start,
-                                                      chat->n_msgs - keep_tail);
-                if (partner >= 0) {
-                    int hi = partner > best ? partner : best;
-                    int lo = partner > best ? best : partner;
-                    llm_chat_remove_range(chat, hi, hi + 1);
-                    llm_chat_remove_range(chat, lo, lo + 1);
-                    removed = 2;
-                } else {
-                    llm_chat_remove_range(chat, best, best + 1);
-                    removed = 1;
-                }
-            }
-        }
+    /* Sweep: remove marked messages in reverse order to preserve indices */
+    for (int ri = n_evictable - 1; ri >= 0; ri--) {
+        if (evict_mark[ri])
+            llm_chat_remove_range(chat, evict_start + ri, evict_start + ri + 1);
     }
+    free(evict_mark);
 
-    /* FIX B4: Recover tool_call threading after emergency eviction
-     * (previously only done in progressive eviction pass3). */
-    if (removed > 0)
+    /* FIX B4: Recover tool_call threading after emergency eviction. */
+    if (n_marked > 0)
         react_recover_tool_threading(chat);
 
-    return removed;
+    return n_marked;
 }
 
 /* ── NULL Response Handling ────────────────────────────── */

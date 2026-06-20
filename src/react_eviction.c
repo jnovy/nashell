@@ -69,6 +69,20 @@ long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
     return injected_chars;
 }
 
+/* Re-inject scratchpad and compaction hint at keep_head.
+ * Shared by all early-exit paths in react_maybe_evict. */
+static void evict_reinject_and_hint(react_ctx_t *ctx, llm_chat_t *chat,
+                                    int keep_head) {
+    int pos = keep_head;
+    if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
+    llm_chat_insert_typed(chat, pos,
+        "user",
+        "[Context compacted. Use memory_recall to recover lost "
+        "context — it searches both stored knowledge and past "
+        "session history.]",
+        LLM_MSG_MEMORY_HINT);
+}
+
 /* ── Pass 1: Strip LOW importance messages ────────────── */
 
 /* Remove all LOW-importance messages in the evictable range [keep_head, n-keep_tail).
@@ -140,6 +154,10 @@ static int evict_pass2_compress(llm_chat_t *chat, int keep_head, int keep_tail,
     int n_candidates = 0, cand_cap = 0;
     compress_cand_t *candidates = NULL;
 
+    /* Note: <= NORMAL (not == NORMAL) because LOW messages can survive
+     * Pass 1 when paired with a non-LOW partner — Pass 1 skips such pairs
+     * to avoid prematurely removing the NORMAL partner's context.  These
+     * surviving LOW messages are still good candidates for compression. */
     for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
         if (chat->msgs[i].importance <= LLM_MSG_IMPORTANCE_NORMAL &&
             chat->msgs[i].content &&
@@ -335,11 +353,6 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         if ((long)summary.len >= breadcrumb_cap) break;
     }
 
-    if (n_breadcrumbs == 0) {
-        str_free(&breadcrumb);
-        breadcrumb = str_new(0);
-    }
-
     if (summary.len > 0) {
         char *summ_str = str_steal(&summary);
         scratchpad_write(&ctx->tools->scratch, "evicted_context", summ_str, 2);
@@ -396,14 +409,9 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
             evictable_chars += mc;
     }
 
-    /* Floor calculation (inlined from react_calc_floor_chars, reusing
-     * head_chars computed above to avoid a redundant loop). */
-    long floor_base = (context_budget > 0)
-        ? context_budget - head_chars
-        : (head_chars + tail_chars + evictable_chars) - head_chars;
-    long floor_chars = floor_base * REACT_EVICT_FLOOR_PCT / 100;
-    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
-        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
+    /* Use shared floor helper with pre-computed head_chars (no redundant loop). */
+    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
+                                              head_chars);
 
     long remaining_chars = tail_chars + evictable_chars;
     int n_to_evict = 0;
@@ -562,16 +570,14 @@ static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
         if (usage_pct > target_pct) {
             nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
             react_emergency_evict(chat, context_budget);
-        }
 
-        /* FIX B1: Re-inject scratchpad only after emergency eviction path,
-         * NOT unconditionally.  Previously this ran even when stripping
-         * alone brought usage under target — immediately undoing the strip
-         * and pushing back over target.  After emergency eviction there is
-         * room for a capped scratchpad; after strip-only, leave it stripped
-         * until the next notes() call rebuilds it naturally. */
-        keep_head = react_compute_keep_head(chat);
-        react_reinject_scratchpad(ctx, chat, keep_head);
+            /* FIX B1: Re-inject scratchpad only after emergency eviction,
+             * NOT after strip-only.  Emergency eviction frees enough room
+             * for a capped scratchpad; strip-only means we're barely under
+             * target and re-injecting would push back over. */
+            keep_head = react_compute_keep_head(chat);
+            react_reinject_scratchpad(ctx, chat, keep_head);
+        }
     }
 }
 
@@ -622,16 +628,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     /* If cleanup alone brought us under target, re-inject and return */
     if (usage_pct <= target_pct) {
-        int pos = keep_head;
-        if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
-        /* FIX B5: Re-inject compaction hint on early exit so agent retains
-         * awareness that context was compacted (old hint was stripped above). */
-        llm_chat_insert_typed(chat, pos,
-            "user",
-            "[Context compacted. Use memory_recall to recover lost "
-            "context — it searches both stored knowledge and past "
-            "session history.]",
-            LLM_MSG_MEMORY_HINT);
+        evict_reinject_and_hint(ctx, chat, keep_head);
         did_evict = 1;
         goto journal;
     }
@@ -639,17 +636,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* ── Pass 1: Strip LOW importance messages ── */
     if (evict_pass1_strip_low(chat, keep_head, keep_tail) > 0) {
         did_evict = 1;
-        usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+        total_chars = react_calc_total_chars(chat);
+        usage_pct = react_usage_pct(total_chars, context_budget);
         if (usage_pct <= target_pct) {
-            int pos = keep_head;
-            if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
-            /* FIX B5: Re-inject compaction hint after pass1 early exit. */
-            llm_chat_insert_typed(chat, pos,
-                "user",
-                "[Context compacted. Use memory_recall to recover lost "
-                "context — it searches both stored knowledge and past "
-                "session history.]",
-                LLM_MSG_MEMORY_HINT);
+            evict_reinject_and_hint(ctx, chat, keep_head);
             goto journal;
         }
     }
@@ -673,15 +663,18 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     char *bm25_query = react_build_bm25_query(chat, user_query, &ctx->tools->scratch);
 
     /* ── Pass 2: BM25 compression ── */
-    usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+    /* Reuse total_chars/usage_pct from pass1 check (nothing modified chat since). */
     if (usage_pct > target_pct) {
         if (evict_pass2_compress(chat, keep_head, keep_tail,
-                                 bm25_query, effective_target_pct, context_budget))
+                                 bm25_query, effective_target_pct, context_budget)) {
             did_evict = 1;
+            total_chars = react_calc_total_chars(chat);
+            usage_pct = react_usage_pct(total_chars, context_budget);
+        }
     }
 
     /* ── Pass 3: Scored eviction ── */
-    usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+    /* Reuse usage_pct — only recomputed above if pass2 compressed anything. */
     if (usage_pct > target_pct) {
         /* Use effective_target_pct (accounts for scratchpad + breadcrumb
          * re-injection cost) so Pass 3 evicts enough that re-injection

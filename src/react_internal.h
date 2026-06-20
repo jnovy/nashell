@@ -117,14 +117,19 @@ static inline long react_calc_total_chars(const llm_chat_t *chat) {
 
 /* FIX FLAW 4: Shared floor calculation used by both progressive eviction (pass3)
  * and emergency eviction. Eliminates duplication and ensures consistency.
- * Returns minimum chars that must be retained in the evictable region. */
+ * Returns minimum chars that must be retained in the evictable region.
+ * If known_head_chars >= 0, uses that value directly to avoid recomputing. */
 static inline long react_calc_floor_chars(const llm_chat_t *chat,
                                           int evict_start,
-                                          long context_budget) {
-    long head_chars = 0;
-    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-        if (chat->msgs[i].content)
-            head_chars += (long)strlen(chat->msgs[i].content);
+                                          long context_budget,
+                                          long known_head_chars) {
+    long head_chars = known_head_chars;
+    if (head_chars < 0) {
+        head_chars = 0;
+        for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
+            if (chat->msgs[i].content)
+                head_chars += (long)strlen(chat->msgs[i].content);
+    }
     long base = (context_budget > 0)
         ? context_budget - head_chars
         : react_calc_total_chars(chat) - head_chars;
