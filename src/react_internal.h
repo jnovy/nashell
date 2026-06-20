@@ -25,7 +25,9 @@
 /* ── Eviction Constants ─────────────────────────────── */
 /* Number of messages at HEAD of conversation to always keep during eviction.
  * Protects: [0] system prompt, [1] memory index, [2] pinned knowledge.
- * These are CRITICAL messages that anchor the agent's identity and memory. */
+ * These are CRITICAL messages that anchor the agent's identity and memory.
+ * NOTE: When inject_memory=0, only [0] exists. The code uses this as a
+ * minimum — extra protected slots simply cover early conversation messages. */
 #define REACT_EVICT_KEEP_HEAD  3
 /* Number of messages at TAIL of conversation to always keep during eviction.
  * Protects the most recent 2 exchange pairs (assistant+tool_result × 2).
@@ -33,6 +35,23 @@
 #define REACT_EVICT_KEEP_TAIL  4
 /* Scratchpad budget as percentage of total context size. */
 #define REACT_SCRATCHPAD_BUDGET_PCT  15
+/* Maximum percentage of post-eviction content that scratchpad may occupy.
+ * Prevents scratchpad from drowning out conversation after heavy eviction. */
+#define REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT  40
+/* Compaction floor: minimum retained context as fraction of non-head budget.
+ * Prevents over-eviction death spiral (context-eviction-cliff feedback loop). */
+#define REACT_EVICT_FLOOR_PCT       20
+#define REACT_EVICT_FLOOR_MIN_CHARS 4000
+/* Breadcrumb index cap in chars. Limits growth in long sessions. */
+#define REACT_BREADCRUMB_CAP        4096
+/* Pass 2 compression: only compress messages longer than this. */
+#define REACT_COMPRESS_THRESHOLD    500
+/* Emergency eviction target as percentage of context budget. */
+#define REACT_EMERGENCY_TARGET_PCT  80
+/* Minimum hysteresis gap in percentage points between trigger and target. */
+#define REACT_HYSTERESIS_MIN_GAP    5
+/* Hysteresis gap divisor: gap = eviction_pct / REACT_HYSTERESIS_DIVISOR. */
+#define REACT_HYSTERESIS_DIVISOR    5
 
 /* ── Helpers shared across react submodules ─────────── */
 

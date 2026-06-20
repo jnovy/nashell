@@ -17,8 +17,10 @@
 
 #define COMPRESS_TAG        "[...compressed]"
 #define COMPRESS_TAG_LEN    15
-#define COMPRESS_MIN_CHARS  800   /* minimum output budget */
-#define COMPRESS_MIN_UNITS  12    /* minimum chunks to keep */
+#define COMPRESS_MIN_CHARS  200   /* minimum output budget (lowered from 800 so callers
+                                  * can request tighter compression for eviction) */
+#define COMPRESS_MIN_UNITS  4     /* minimum chunks to keep (lowered from 12 so Pass 2
+                                  * eviction compression is actually effective) */
 #define COMPRESS_MERGE_LEN  40    /* merge lines shorter than this */
 
 /* ── CRC32 ──────────────────────────────────────────────────────── */

@@ -34,9 +34,9 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
 
     long target_chars;
     if (context_budget > 0)
-        target_chars = context_budget * 80 / 100;
+        target_chars = context_budget * REACT_EMERGENCY_TARGET_PCT / 100;
     else
-        target_chars = total_chars * 80 / 100;
+        target_chars = total_chars * REACT_EMERGENCY_TARGET_PCT / 100;
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
@@ -129,20 +129,35 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
         }
     }
 
-    /* Ensure we evict at least something */
+    /* D7 FIX: Fallback — evict at least one message, preferring recoverable
+     * content over non-recoverable. Previously blindly took the first
+     * < HIGH message without considering recoverability. */
     if (removed == 0) {
+        int best = -1;
+        /* First pass: find a recoverable message */
         for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
-            if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
-                if (chat->msgs[j].tool_calls_json &&
-                    j + 1 < chat->n_msgs - keep_tail &&
-                    chat->msgs[j + 1].tool_call_id) {
-                    llm_chat_remove_range(chat, j, j + 2);
-                    removed = 2;
-                } else {
-                    llm_chat_remove_range(chat, j, j + 1);
-                    removed = 1;
+            if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH &&
+                chat->msgs[j].recoverability > LLM_RECOVER_NONE) {
+                best = j; break;
+            }
+        }
+        /* Second pass: any < HIGH message */
+        if (best < 0) {
+            for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
+                if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
+                    best = j; break;
                 }
-                break;
+            }
+        }
+        if (best >= 0) {
+            if (chat->msgs[best].tool_calls_json &&
+                best + 1 < chat->n_msgs - keep_tail &&
+                chat->msgs[best + 1].tool_call_id) {
+                llm_chat_remove_range(chat, best, best + 2);
+                removed = 2;
+            } else {
+                llm_chat_remove_range(chat, best, best + 1);
+                removed = 1;
             }
         }
     }
@@ -479,10 +494,14 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         /* Tier 3: Strip scratchpad entirely (nuclear option).
          * If reformulation didn't help, the scratchpad itself
          * may be the problem. Remove it completely.
-         * Fix #3: Use msg_type instead of content-prefix scanning. */
+         * L2 FIX: Re-inject a minimal scratchpad from disk after stripping.
+         * Previously the scratchpad was permanently lost because
+         * react_maybe_evict only re-injects when eviction triggers. */
         ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
         react_emit(on_event, userdata, &ev);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
+        /* Re-inject a minimal scratchpad so the agent retains its plan/notes */
+        react_reinject_scratchpad(ctx, chat, REACT_EVICT_KEEP_HEAD);
     }
     return 0;  /* continue */
 }

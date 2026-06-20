@@ -508,6 +508,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 snprintf(inject_msg, strlen(redirect) + 64,
                          "[User redirect]\n%s", redirect);
                 llm_chat_add(chat, "user", inject_msg);
+                /* L4 FIX: User redirects carry user intent — NORMAL, not LOW */
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
                 free(inject_msg);
             }
             free(redirect);
@@ -660,6 +663,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "- For shell_exec: pipe output through head/tail/grep to "
                 "limit output size.\n"
                 "Retry your last action with a smaller scope.");
+            /* L4 FIX: Recovery instructions are important guidance — NORMAL */
+            if (chat->n_msgs >= 2) {
+                chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
+                chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
+            }
 
             react_event_t ev = {0};
             ev.react_loop = ctx->tools->react_loop;
@@ -709,6 +717,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "Your response was plain text, not a JSON tool call. "
                 "If you are finished, call the `done` tool with your result. "
                 "If you have more work to do, call the appropriate tool.");
+            /* L4 FIX: Parse error corrections are ephemeral — explicitly LOW */
+            if (chat->n_msgs >= 2) {
+                chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_LOW;
+                chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+            }
             free(response);
             continue;
         }
@@ -896,6 +909,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             } else {
                 llm_chat_add(chat, "assistant", response);
                 llm_chat_add(chat, "user", result_msg);
+            }
+            /* L4 FIX: user_ask answers carry user content — NORMAL importance */
+            if (chat->n_msgs >= 2) {
+                chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
+                chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
             }
 
             free(result_msg);
@@ -1498,6 +1516,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     "and call done() with whatever partial results you have.",
                     total_errors, step + 1, error_threshold);
                 llm_chat_add(chat, "user", budget_msg);
+                /* L4 FIX: Error budget warnings are critical guardrails — NORMAL */
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
 
                 react_event_t ev = {0};
                 ev.react_loop = ctx->tools->react_loop;
@@ -1627,6 +1648,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 snprintf(inject_msg, strlen(redirect) + 64,
                          "[User redirect]\n%s", redirect);
                 llm_chat_add(chat, "user", inject_msg);
+                /* L4 FIX: User redirects carry user intent — NORMAL, not LOW */
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
                 free(inject_msg);
             }
             free(redirect);

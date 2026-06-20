@@ -41,10 +41,32 @@ static long react_calc_total_chars(const llm_chat_t *chat) {
  * (BUG C FIX) to ensure scratchpad is always restored after any eviction. */
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos) {
-    size_t sp_max = (ctx->provider->cfg.context_size > 0)
-        ? (size_t)(ctx->provider->cfg.context_size
-                   * react_get_chars_per_token(ctx) * 15 / 100)
-        : 8192;
+    double cpt = (double)react_get_chars_per_token(ctx);
+    long context_budget = (ctx->provider->cfg.context_size > 0)
+        ? (long)(ctx->provider->cfg.context_size * cpt) : 0;
+
+    /* D1 FIX: Cap scratchpad to the LESSER of:
+     *   - SCRATCHPAD_BUDGET_PCT% of total context (absolute cap)
+     *   - SCRATCHPAD_MAX_OF_REMAINING_PCT% of post-eviction content
+     * This prevents scratchpad from drowning out conversation after
+     * heavy eviction where 15% of total >> remaining conversation. */
+    size_t sp_max;
+    if (context_budget > 0) {
+        size_t abs_cap = (size_t)(context_budget
+                                 * REACT_SCRATCHPAD_BUDGET_PCT / 100);
+        /* Calculate remaining chars to bound scratchpad proportionally */
+        long remaining = 0;
+        for (int i = 0; i < chat->n_msgs; i++)
+            if (chat->msgs[i].content)
+                remaining += (long)strlen(chat->msgs[i].content);
+        size_t rel_cap = (size_t)(remaining
+                                 * REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT / 100);
+        sp_max = abs_cap < rel_cap ? abs_cap : rel_cap;
+        if (sp_max < 2048) sp_max = 2048; /* reasonable minimum */
+    } else {
+        sp_max = 8192;
+    }
+
     char *fresh_sp = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
     long injected_chars = 0;
     if (fresh_sp && fresh_sp[0]) {
@@ -72,16 +94,34 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     if (!ctx->flags.enable_compaction || ctx->provider->cfg.context_size <= 0)
         return;
 
-    float cpt_ev = react_get_chars_per_token(ctx);
-    /* BUG 7 FIX: Use long for context_budget to avoid overflow for large contexts. */
+    /* D4 FIX: If user_query is NULL/empty, try to extract a query from the
+     * chat's USER_QUERY message. Without a meaningful query, BM25 compression
+     * degenerates to positional selection (only first/last chunks kept). */
+    const char *bm25_query = user_query;
+    if (!bm25_query || strlen(bm25_query) < 10) {
+        for (int i = 0; i < chat->n_msgs; i++) {
+            if (chat->msgs[i].msg_type == LLM_MSG_USER_QUERY &&
+                chat->msgs[i].content && strlen(chat->msgs[i].content) >= 10) {
+                bm25_query = chat->msgs[i].content;
+                break;
+            }
+        }
+    }
+
+    /* D10 FIX: Use double for budget calculation to avoid float precision
+     * loss for large contexts (>1M tokens). float has only 23-bit mantissa. */
+    double cpt_ev = (double)react_get_chars_per_token(ctx);
     long context_budget = (long)(ctx->provider->cfg.context_size * cpt_ev);
     int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
-    /* DESIGN 2+10 FIX: Target a lower watermark to provide hysteresis.
-     * Trigger at eviction_pct, but evict down to target_pct.
-     * This prevents re-injection of scratchpad/breadcrumb from immediately
-     * pushing back over the trigger threshold, causing thrashing. */
-    int target_pct = eviction_pct - 10;
-    if (target_pct < 30) target_pct = 30;
+    /* L5 FIX: Proportional hysteresis gap = eviction_pct / DIVISOR (min GAP).
+     * Previously used a fixed 10-point gap clamped to min 30, which eliminated
+     * hysteresis entirely when eviction_pct <= 40 (target==trigger → thrashing).
+     * Now the gap scales with the trigger: at 70% → 14pt gap, at 40% → 8pt gap,
+     * at 30% → 6pt gap. Always at least HYSTERESIS_MIN_GAP points of headroom. */
+    int hysteresis_gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
+    if (hysteresis_gap < REACT_HYSTERESIS_MIN_GAP)
+        hysteresis_gap = REACT_HYSTERESIS_MIN_GAP;
+    int target_pct = eviction_pct - hysteresis_gap;
     int keep_head = REACT_EVICT_KEEP_HEAD;
     int keep_tail = REACT_EVICT_KEEP_TAIL;
 
@@ -142,12 +182,23 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         }
     }
 
-    /* ── Pass 2: Compress NORMAL messages to top-4 sentences.
-     * Uses sentence-BM25 relevance scoring (Harness-1 §3.1).
-     * Only compresses messages longer than 500 chars.
-     * DESIGN 3 FIX: Sort candidates by length (largest first) for biggest
-     * space savings. Previously compressed oldest first (least relevant).
-     * Uses target_pct (low watermark) for hysteresis. */
+    /* L3 FIX: Compute estimated re-injection size ONCE, use in Pass 2 and 3.
+     * After eviction, scratchpad + breadcrumbs + memory hint are injected.
+     * Both passes must account for this to avoid post-eviction overshoot. */
+    long reinject_est = (long)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100)
+                      + REACT_BREADCRUMB_CAP + 200;  /* breadcrumb + memory hint */
+    /* Effective target accounts for re-injection headroom */
+    int effective_target_pct = target_pct;
+    if (context_budget > 0) {
+        int reinject_pct = (int)(100L * reinject_est / context_budget);
+        effective_target_pct = target_pct - reinject_pct;
+        if (effective_target_pct < 10) effective_target_pct = 10;
+    }
+
+    /* ── Pass 2: Compress NORMAL messages via BM25 relevance scoring.
+     * Only compresses messages longer than REACT_COMPRESS_THRESHOLD chars.
+     * Sorted by length (largest first) for maximum space savings.
+     * L3 FIX: Stops at effective_target_pct which accounts for re-injection. */
     if (usage_pct > target_pct) {
         /* Collect compressible message indices and sort by length descending */
         int n_candidates = 0;
@@ -158,7 +209,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         for (int i = keep_head; i < chat->n_msgs - keep_tail; i++) {
             if (chat->msgs[i].importance <= LLM_MSG_IMPORTANCE_NORMAL &&
                 chat->msgs[i].content &&
-                (int)strlen(chat->msgs[i].content) > 500) {
+                (int)strlen(chat->msgs[i].content) > REACT_COMPRESS_THRESHOLD) {
                 if (n_candidates >= cand_cap) {
                     cand_cap = cand_cap ? cand_cap * 2 : 16;
                     compress_cand_t *tmp = realloc(candidates,
@@ -185,7 +236,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         for (int ci = 0; ci < n_candidates; ci++) {
             int i = candidates[ci].idx;
             char *compressed = compress_to_relevant(
-                chat->msgs[i].content, user_query, 4, 400);
+                chat->msgs[i].content, bm25_query, 4, 400);
             if (compressed) {
                 int old_len = (int)strlen(chat->msgs[i].content);
                 int new_len = (int)strlen(compressed);
@@ -193,10 +244,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 chat->msgs[i].content = compressed;
                 total_chars -= (old_len - new_len);
                 did_evict = 1;
-                /* Stop compressing once we're under target watermark */
+                /* L3 FIX: Stop at effective_target_pct (accounts for re-injection) */
                 usage_pct = (context_budget > 0)
                     ? (int)(100L * total_chars / context_budget) : 0;
-                if (usage_pct <= target_pct)
+                if (usage_pct <= effective_target_pct)
                     break;
             }
         }
@@ -285,52 +336,39 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                         scored[j + 1] = key;
                     }
 
-                    /* Compaction floor: keep at least 20% of non-head context. */
-                    int head_chars = 0;
+                    /* Compaction floor: keep at least FLOOR_PCT% of non-head context.
+                     * Uses long to avoid int overflow for large contexts. */
+                    long head_chars = 0;
                     for (int ki = 0; ki < evict_start; ki++)
                         if (chat->msgs[ki].content)
-                            head_chars += (int)strlen(chat->msgs[ki].content);
-                    int floor_chars = (int)((context_budget - head_chars) / 5);
-                    if (floor_chars < 4000) floor_chars = 4000;
+                            head_chars += (long)strlen(chat->msgs[ki].content);
+                    long floor_chars = (context_budget - head_chars)
+                                     * REACT_EVICT_FLOOR_PCT / 100;
+                    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
+                        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
+                    /* Add pre-computed re-injection estimate to the floor */
+                    floor_chars += reinject_est;
 
-                    /* FLAW 2 FIX: Account for re-injection budget in floor.
-                     * After eviction, scratchpad (~15% of context), breadcrumb
-                     * (up to 4096 chars), and memory hint (~200 chars) are
-                     * injected. Without accounting for these, post-eviction
-                     * usage can exceed the trigger threshold, causing the
-                     * DESIGN 1 WARNING to fire. Add estimated re-injection
-                     * size to the floor so eviction leaves room. */
-                    {
-                        long reinject_est = (long)(context_budget
-                            * REACT_SCRATCHPAD_BUDGET_PCT / 100)
-                            + 4096   /* breadcrumb cap */
-                            + 200;   /* memory hint */
-                        floor_chars += (int)reinject_est;
-                    }
-
-                    int tail_chars = 0;
+                    long tail_chars = 0;
                     for (int ki = evict_end; ki < chat->n_msgs; ki++)
                         if (chat->msgs[ki].content)
-                            tail_chars += (int)strlen(chat->msgs[ki].content);
+                            tail_chars += (long)strlen(chat->msgs[ki].content);
 
-                    int evictable_chars = 0;
+                    long evictable_chars = 0;
                     for (int ki = evict_start; ki < evict_end; ki++)
                         if (chat->msgs[ki].content)
-                            evictable_chars += (int)strlen(chat->msgs[ki].content);
+                            evictable_chars += (long)strlen(chat->msgs[ki].content);
 
-                    int remaining_chars = tail_chars + evictable_chars;
+                    long remaining_chars = tail_chars + evictable_chars;
                     for (int si = 0; si < n_evictable; si++) {
                         int ri = scored[si].idx;
                         int mi = evict_start + ri;
-                        int msg_chars = chat->msgs[mi].content
-                            ? (int)strlen(chat->msgs[mi].content) : 0;
+                        long msg_chars = chat->msgs[mi].content
+                            ? (long)strlen(chat->msgs[mi].content) : 0;
 
                         if (evict_mark[ri]) continue;
 
-                        /* BUG 2 FIX: Skip HIGH and CRITICAL messages.
-                         * Previously only skipped CRITICAL, making progressive
-                         * eviction MORE aggressive than emergency eviction for
-                         * HIGH-importance messages (skills, lessons, etc.). */
+                        /* Skip HIGH and CRITICAL messages. */
                         if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH)
                             continue;
 
@@ -338,43 +376,52 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                         if (remaining_chars - msg_chars < floor_chars)
                             break;
 
-                        /* BUG 1 FIX: Pair-safety with floor check for BOTH halves.
-                         * Previously, the pair partner was marked without checking
-                         * if its chars would breach the floor. Now we calculate
-                         * the total pair cost and check floor for the whole pair. */
+                        /* D6 FIX: Pair-safety — find partner by scanning rather
+                         * than assuming adjacency. Previously only checked ri±1,
+                         * which breaks if messages were inserted between a
+                         * tool_call and its tool_result (error recovery, hints). */
                         int pair_ri = -1;
-                        int pair_chars = 0;
+                        long pair_chars = 0;
 
-                        /* If assistant with tool_calls, pair with next tool_result */
-                        if (chat->msgs[mi].tool_calls_json &&
-                            ri + 1 < n_evictable && !evict_mark[ri + 1]) {
-                            int pair_mi = evict_start + ri + 1;
-                            if (pair_mi < evict_end &&
-                                chat->msgs[pair_mi].tool_call_id) {
-                                /* Don't evict pair if partner is HIGH+ */
-                                if (chat->msgs[pair_mi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-                                    continue;
-                                pair_ri = ri + 1;
-                                pair_chars = chat->msgs[pair_mi].content
-                                    ? (int)strlen(chat->msgs[pair_mi].content) : 0;
+                        if (chat->msgs[mi].tool_calls_json) {
+                            /* Assistant with tool_calls: find matching tool_result
+                             * by scanning forward for first tool_call_id match. */
+                            for (int pi = ri + 1; pi < n_evictable; pi++) {
+                                int pmi = evict_start + pi;
+                                if (chat->msgs[pmi].tool_call_id && !evict_mark[pi]) {
+                                    if (chat->msgs[pmi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                                        break;  /* can't evict partner */
+                                    pair_ri = pi;
+                                    pair_chars = chat->msgs[pmi].content
+                                        ? (long)strlen(chat->msgs[pmi].content) : 0;
+                                    break;
+                                }
+                                /* Stop scanning if we hit a non-tool message */
+                                if (!chat->msgs[pmi].tool_call_id &&
+                                    !chat->msgs[pmi].tool_calls_json)
+                                    break;
                             }
                         }
-                        /* If tool_result, pair with preceding assistant */
-                        if (chat->msgs[mi].tool_call_id &&
-                            ri - 1 >= 0 && !evict_mark[ri - 1]) {
-                            int pair_mi = evict_start + ri - 1;
-                            if (pair_mi >= evict_start &&
-                                chat->msgs[pair_mi].tool_calls_json) {
-                                if (chat->msgs[pair_mi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-                                    continue;
-                                pair_ri = ri - 1;
-                                pair_chars = chat->msgs[pair_mi].content
-                                    ? (int)strlen(chat->msgs[pair_mi].content) : 0;
+                        if (chat->msgs[mi].tool_call_id) {
+                            /* Tool_result: find matching tool_call by scanning backward. */
+                            for (int pi = ri - 1; pi >= 0; pi--) {
+                                int pmi = evict_start + pi;
+                                if (chat->msgs[pmi].tool_calls_json && !evict_mark[pi]) {
+                                    if (chat->msgs[pmi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                                        break;
+                                    pair_ri = pi;
+                                    pair_chars = chat->msgs[pmi].content
+                                        ? (long)strlen(chat->msgs[pmi].content) : 0;
+                                    break;
+                                }
+                                if (!chat->msgs[pmi].tool_call_id &&
+                                    !chat->msgs[pmi].tool_calls_json)
+                                    break;
                             }
                         }
 
-                        /* BUG 1 FIX: Check floor for total pair cost */
-                        int total_pair_chars = msg_chars + pair_chars;
+                        /* Check floor for total pair cost */
+                        long total_pair_chars = msg_chars + pair_chars;
                         if (remaining_chars - total_pair_chars < floor_chars)
                             break;
 
@@ -401,8 +448,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 {
                     size_t sp_budget = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
                     size_t summary_budget = sp_budget / 3;
-                    if (summary_budget > 4096) summary_budget = 4096;
-                    str_t summary = str_new(summary_budget > 4096 ? 4096 : summary_budget);
+                    if (summary_budget > (size_t)REACT_BREADCRUMB_CAP)
+                        summary_budget = REACT_BREADCRUMB_CAP;
+                    str_t summary = str_new(summary_budget);
                     int max_per_msg = n_to_evict > 0
                         ? (int)(summary_budget / (unsigned)n_to_evict) : 200;
                     if (max_per_msg < 200) max_per_msg = 200;
@@ -411,9 +459,12 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                     str_append_cstr(&breadcrumb,
                         "[EVICTED CONTEXT — recoverable via file_read]\n");
                     int n_breadcrumbs = 0;
-                    /* DESIGN 7 FIX: Cap breadcrumb at 4096 chars to prevent
-                     * unbounded growth in long sessions with many store refs. */
-                    int breadcrumb_cap = 4096;
+
+                    /* D9 FIX: Track seen store aliases to avoid duplicate
+                     * breadcrumbs across eviction cycles. Simple linear scan
+                     * is fine — breadcrumb count is small. */
+                    const char *seen_aliases[64];
+                    int n_seen = 0;
 
                     for (int ei = 0; ei < n_evictable; ei++) {
                         if (!evict_mark[ei]) continue;
@@ -424,8 +475,19 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                         if (strcmp(role, "system") == 0) continue;
 
                         if (chat->msgs[mi].store_alias) {
-                            /* DESIGN 7 FIX: Stop adding breadcrumbs once capped */
-                            if ((int)breadcrumb.len >= breadcrumb_cap) continue;
+                            /* Cap breadcrumb size */
+                            if ((int)breadcrumb.len >= REACT_BREADCRUMB_CAP) continue;
+
+                            /* D9 FIX: Skip duplicate aliases */
+                            int dup = 0;
+                            for (int di = 0; di < n_seen; di++) {
+                                if (strcmp(seen_aliases[di], chat->msgs[mi].store_alias) == 0) {
+                                    dup = 1; break;
+                                }
+                            }
+                            if (dup) continue;
+                            if (n_seen < 64)
+                                seen_aliases[n_seen++] = chat->msgs[mi].store_alias;
 
                             char brief[81];
                             int blen = (int)strlen(content);
@@ -527,17 +589,28 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     }
 
 post_eviction:
-    /* DESIGN 1 FIX: Post-eviction budget verification.
-     * After eviction + re-injection of scratchpad/breadcrumb/hint,
-     * verify usage is actually under budget. If not, log a warning.
-     * This prevents silent over-budget states. */
+    /* L6 FIX: Post-eviction budget verification with RECOVERY.
+     * Previously only logged a warning, leaving the system in a state
+     * where every react iteration triggers eviction → re-injection
+     * pushes over budget → warning → repeat (soft death spiral).
+     * Now: if still over budget, strip the just-injected scratchpad.
+     * If STILL over budget after that, do emergency eviction. */
     if (did_evict) {
         total_chars = react_calc_total_chars(chat);
         usage_pct = (context_budget > 0)
             ? (int)(100L * total_chars / context_budget) : 0;
         if (usage_pct > eviction_pct) {
-            nash_log("[eviction] WARNING: post-eviction usage %d%% still above "
-                     "trigger %d%% after re-injection", usage_pct, eviction_pct);
+            nash_log("[eviction] post-eviction usage %d%% > trigger %d%% — "
+                     "stripping scratchpad to recover", usage_pct, eviction_pct);
+            llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
+            total_chars = react_calc_total_chars(chat);
+            usage_pct = (context_budget > 0)
+                ? (int)(100L * total_chars / context_budget) : 0;
+            if (usage_pct > eviction_pct) {
+                nash_log("[eviction] still %d%% after scratchpad strip — "
+                         "emergency eviction", usage_pct);
+                react_emergency_evict(chat, context_budget);
+            }
         }
     }
 
