@@ -1724,10 +1724,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * to alpha=0.3 for subsequent updates. The first measurement from
          * the actual API is far more informative than any default. */
         if (stats.prompt_tokens > 100) {  /* need enough tokens for reliable ratio */
-            long actual_chars = 0;
-            for (int i = 0; i < chat->n_msgs; i++)
-                if (chat->msgs[i].content)
-                    actual_chars += (long)strlen(chat->msgs[i].content);
+            /* D4 FIX: Use shared inline helper */
+            long actual_chars = react_calc_total_chars(chat);
             float actual_cpt = (float)actual_chars / (float)stats.prompt_tokens;
             /* Clamp to reasonable range [1.5, 8.0] to avoid outliers */
             if (actual_cpt > 1.5f && actual_cpt < 8.0f) {

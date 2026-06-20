@@ -128,27 +128,13 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         memory_results_free(&all_memories);
     }
 
-    /* X4 FIX: Scratchpad budget uses the same dual-cap policy as
-     * react_reinject_scratchpad() — min(absolute_cap, remaining_cap).
-     * Previously the initial injection used only the absolute cap,
-     * allowing the scratchpad to be larger initially than after the
-     * first eviction cycle, causing a jarring shrink. */
-    size_t max_scratchpad = 8192;  /* fallback if context_size unknown */
-    if (ctx->provider->cfg.context_size > 0) {
-        float cpt = react_get_chars_per_token(ctx);
-        long context_budget = (long)(ctx->provider->cfg.context_size * cpt);
-        size_t abs_cap = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
-        /* Estimate remaining after other injections (system+memory+query) */
-        long current_chars = 0;
-        for (int ci = 0; ci < chat->n_msgs; ci++)
-            if (chat->msgs[ci].content)
-                current_chars += (long)strlen(chat->msgs[ci].content);
-        long remaining = context_budget - current_chars;
-        if (remaining < 0) remaining = 0;
-        size_t rel_cap = (size_t)(remaining * REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT / 100);
-        max_scratchpad = abs_cap < rel_cap ? abs_cap : rel_cap;
-        if (max_scratchpad < 2048) max_scratchpad = 2048;
-    }
+    /* X4+S5 FIX: Scratchpad budget uses the shared dual-cap policy.
+     * min(absolute_cap, remaining_cap) prevents initial injection from
+     * being larger than after the first eviction cycle. */
+    long context_budget = react_context_budget(ctx);
+    long current_chars = react_calc_total_chars(chat);
+    size_t max_scratchpad = react_scratchpad_budget(context_budget, current_chars,
+                                                     2048);
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
      * When branching (parent_loop != previous loop), filter R*_result
@@ -255,18 +241,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
             }
         }
-        if (serialized && serialized[0]) {
-            size_t slen = strlen(serialized);
-            char *scratch_msg = malloc(slen + 32);
-            if (scratch_msg) {
-                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", serialized);
-                llm_chat_add_typed(chat, "user", scratch_msg, LLM_MSG_SCRATCHPAD);
-                free(scratch_msg);
-            }
-            free(serialized);
-        } else {
-            free(serialized);
-        }
+        /* D1 FIX: Use shared scratchpad injection helper */
+        react_inject_scratchpad_msg(chat, chat->n_msgs, serialized);
+        free(serialized);
     }
 
     /* Inject previous result — loaded from session_dir/result.txt. */

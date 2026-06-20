@@ -2,8 +2,8 @@
  *
  * Replaces the old 3-pass progressive pipeline with a cleaner architecture:
  *   1. Mark:     Score all evictable messages once, mark lowest-scored for removal
- *   2. Compress: BM25 compress messages above the eviction line (largest first)
- *   3. Sweep:    Remove marked messages in reverse order, build breadcrumbs
+ *   2. Sweep:    Remove marked messages in reverse order, build breadcrumbs
+ *   3. Compress: BM25 compress surviving messages (largest first)
  *   4. Finalize: Re-inject scratchpad + breadcrumbs + hint, verify budget
  *
  * Key improvements:
@@ -75,6 +75,24 @@ void evict_free_partner_map(evict_partner_map_t *map) {
     map->n_msgs = 0;
 }
 
+/* ── D3 FIX: Shared Mark-Sweep Helper ─────────────────── */
+
+/* Remove marked messages in reverse order and recover tool threading.
+ * Shared between progressive eviction and emergency eviction. */
+int evict_sweep_marked(llm_chat_t *chat, int evict_start,
+                       const int *evict_mark, int n_evictable) {
+    int removed = 0;
+    for (int ri = n_evictable - 1; ri >= 0; ri--) {
+        if (evict_mark[ri]) {
+            llm_chat_remove_range(chat, evict_start + ri, evict_start + ri + 1);
+            removed++;
+        }
+    }
+    if (removed > 0)
+        react_recover_tool_threading(chat);
+    return removed;
+}
+
 /* ── Scratchpad Re-injection ──────────────────────────── */
 
 /* Re-inject scratchpad at insert_pos in chat.
@@ -83,37 +101,12 @@ void evict_free_partner_map(evict_partner_map_t *map) {
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos) {
     long context_budget = react_context_budget(ctx);
-
-    /* Cap scratchpad to the LESSER of:
-     *   - SCRATCHPAD_BUDGET_PCT% of total context (absolute cap)
-     *   - SCRATCHPAD_MAX_OF_REMAINING_PCT% of post-eviction content
-     * Prevents scratchpad from drowning out conversation after heavy eviction. */
-    size_t sp_max;
-    if (context_budget > 0) {
-        size_t abs_cap = (size_t)(context_budget
-                                 * REACT_SCRATCHPAD_BUDGET_PCT / 100);
-        long remaining = react_calc_total_chars(chat);
-        size_t rel_cap = (size_t)(remaining
-                                 * REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT / 100);
-        sp_max = abs_cap < rel_cap ? abs_cap : rel_cap;
-        if (sp_max < REACT_SP_MIN) sp_max = REACT_SP_MIN;
-    } else {
-        sp_max = REACT_SP_FALLBACK;
-    }
+    long current_chars = react_calc_total_chars(chat);
+    size_t sp_max = react_scratchpad_budget(context_budget, current_chars,
+                                             REACT_SP_MIN);
 
     char *fresh_sp = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
-    long injected_chars = 0;
-    if (fresh_sp && fresh_sp[0]) {
-        size_t slen = strlen(fresh_sp);
-        char *sp_msg = malloc(slen + 32);
-        if (sp_msg) {
-            snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", fresh_sp);
-            llm_chat_insert_typed(chat, insert_pos,
-                "user", sp_msg, LLM_MSG_SCRATCHPAD);
-            injected_chars = (long)strlen(sp_msg);
-            free(sp_msg);
-        }
-    }
+    long injected_chars = react_inject_scratchpad_msg(chat, insert_pos, fresh_sp);
     free(fresh_sp);
     return injected_chars;
 }
@@ -167,17 +160,8 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         if (sp_chars > REACT_SP_SHRINK_MIN) {
             char *small_sp = scratchpad_serialize_budget(
                 &ctx->tools->scratch, (size_t)sp_chars);
-            if (small_sp && small_sp[0]) {
-                size_t slen = strlen(small_sp);
-                char *sp_msg = malloc(slen + 32);
-                if (sp_msg) {
-                    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", small_sp);
-                    int kh = react_compute_keep_head(chat);
-                    llm_chat_insert_typed(chat, kh,
-                        "user", sp_msg, LLM_MSG_SCRATCHPAD);
-                    free(sp_msg);
-                }
-            }
+            int kh = react_compute_keep_head(chat);
+            react_inject_scratchpad_msg(chat, kh, small_sp);
             free(small_sp);
         }
 
@@ -191,7 +175,7 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
             usage_pct = react_usage_pct(total_chars, context_budget);
             if (usage_pct > target_pct) {
                 nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
-                react_emergency_evict(chat, context_budget);
+                react_emergency_evict(chat, context_budget, target_pct);
                 /* BUG 5 FIX: Re-inject scratchpad only if room permits,
                  * then verify we actually hit target_pct (not just 80%). */
                 total_chars = react_calc_total_chars(chat);
@@ -266,7 +250,7 @@ static evict_scored_t *evict_score_messages(const llm_chat_t *chat,
 /* FIX FLAW 8: Uses REACT_COMPRESS_THRESH_FIXED instead of average-based
  * threshold. Previously small messages (300 chars) were compressed
  * unnecessarily with negligible savings. Now only messages > 800 chars
- * (or REACT_COMPRESS_THRESH_MIN, whichever is larger) are candidates.
+ * are candidates.
  *
  * Proposal D: Targets target_pct (not effective_target_pct) since compress
  * phase doesn't re-inject anything. Previously over-compressed content. */
@@ -277,7 +261,7 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
     if (upper <= keep_head) return 0;
 
     /* FIX FLAW 8: Fixed threshold — don't depend on average message size */
-    /* S1 FIX: REACT_COMPRESS_THRESH_FIXED (800) > REACT_COMPRESS_THRESH_MIN (200) always */
+    /* S1 FIX: REACT_COMPRESS_THRESH_FIXED (800) is the sole threshold */
     int compress_threshold = REACT_COMPRESS_THRESH_FIXED;
 
     /* Collect candidates */
@@ -443,8 +427,8 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
  *   1. Cleanup: Remove stale injected messages
  *   2. Partner map: Build once (Proposal E)
  *   3. Mark: Score all evictable messages, mark lowest for eviction
- *   4. Compress: BM25 compress large messages above eviction line (Proposal D: target_pct)
- *   5. Sweep: Remove marked messages in reverse order
+ *   4. Sweep: Remove marked messages in reverse order
+ *   5. Compress: BM25 compress surviving messages (Proposal D: target_pct)
  *   6. Finalize: Re-inject scratchpad + breadcrumbs + hint (Proposal A)
  */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
@@ -623,16 +607,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     }
     free(scored);
 
-    /* ── Step 4: Compress phase — BM25 compress un-marked messages ── */
-    /* Proposal D: Compress targets target_pct (not effective_target_pct) */
-    char *bm25_query = react_build_bm25_query(chat, user_query, &ctx->tools->scratch);
-    if (usage_pct > target_pct) {
-        evict_compress(chat, keep_head, keep_tail, bm25_query,
-                       target_pct, context_budget);
-    }
-    free(bm25_query);
-
-    /* ── Step 5: Sweep phase — remove marked messages + build breadcrumbs ── */
+    /* ── Step 4: Sweep phase — remove marked messages + build breadcrumbs ── */
     char *bc_str = NULL;
     if (n_to_evict > 0) {
         /* Build breadcrumbs before removing messages */
@@ -640,18 +615,28 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                                           evict_mark, n_to_evict,
                                           bc_index_cap, bc_summary_cap);
 
-        /* Remove marked messages in REVERSE order to preserve indices */
-        for (int ri = n_evictable - 1; ri >= 0; ri--) {
-            if (evict_mark[ri])
-                llm_chat_remove_range(chat, evict_start + ri, evict_start + ri + 1);
-        }
-
-        /* Recover tool-threading state */
-        react_recover_tool_threading(chat);
+        /* D3 FIX: Use shared sweep helper */
+        evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
     }
 
     free(evict_mark);
     evict_free_partner_map(&pmap);
+
+    /* ── Step 5: Compress phase — BM25 compress surviving messages ── */
+    /* Flaw 1 FIX: Compress runs AFTER sweep so it only processes messages
+     * that survived eviction. Previously compress ran before sweep, wasting
+     * CPU on marked messages and causing incorrect budget tracking. */
+    /* Proposal D: Compress targets target_pct (not effective_target_pct) */
+    keep_head = react_compute_keep_head(chat);
+    keep_tail = react_compute_keep_tail(chat);
+    total_chars = react_calc_total_chars(chat);
+    usage_pct = react_usage_pct(total_chars, context_budget);
+    char *bm25_query = react_build_bm25_query(chat, user_query, &ctx->tools->scratch);
+    if (usage_pct > target_pct) {
+        evict_compress(chat, keep_head, keep_tail, bm25_query,
+                       target_pct, context_budget);
+    }
+    free(bm25_query);
 
     /* ── Step 6: Finalize (Proposal A) ── */
     keep_head = react_compute_keep_head(chat);

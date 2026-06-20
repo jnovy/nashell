@@ -24,8 +24,13 @@ static int cmp_emerg_score_asc(const void *a, const void *b) {
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
  * context budget, prioritizing recoverable content over irreplaceable.
  * Uses the same floor calculation as progressive eviction (REACT_EVICT_FLOOR_PCT).
- * Returns the number of messages evicted (0 if not enough to evict). */
-int react_emergency_evict(llm_chat_t *chat, long context_budget) {
+ * Returns the number of messages evicted (0 if not enough to evict).
+ * target_pct: target usage percentage. 0 = use REACT_EMERGENCY_TARGET_PCT.
+ * Flaw 2 FIX: Accepts explicit target_pct so callers can pass a value
+ * consistent with the configured eviction_pct, preventing the emergency
+ * eviction from leaving usage above the trigger threshold. */
+int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct) {
+    int eff_target = (target_pct > 0) ? target_pct : REACT_EMERGENCY_TARGET_PCT;
     int keep_head = react_compute_keep_head(chat);
     int keep_tail = react_compute_keep_tail(chat);
     int evict_start = keep_head;
@@ -37,9 +42,9 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
 
     long target_chars;
     if (context_budget > 0)
-        target_chars = context_budget * REACT_EMERGENCY_TARGET_PCT / 100;
+        target_chars = context_budget * eff_target / 100;
     else
-        target_chars = total_chars * REACT_EMERGENCY_TARGET_PCT / 100;
+        target_chars = total_chars * eff_target / 100;
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
@@ -139,25 +144,18 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
         }
     }
 
-    /* Sweep: remove marked messages in reverse order to preserve indices */
-    for (int ri = n_evictable - 1; ri >= 0; ri--) {
-        if (evict_mark[ri])
-            llm_chat_remove_range(chat, evict_start + ri, evict_start + ri + 1);
-    }
+    /* D3 FIX: Use shared sweep helper */
+    int removed = evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
     free(evict_mark);
 
-    /* FIX B4: Recover tool_call threading after emergency eviction. */
-    if (n_marked > 0)
-        react_recover_tool_threading(chat);
-
-    return n_marked;
+    return removed > 0 ? removed : n_marked;
 }
 
 /* D3 FIX: Combined emergency evict + scratchpad re-injection.
  * Eliminates 3 copies of the same 3-line pattern. */
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     long cb = react_context_budget(ctx);
-    int n_evict = react_emergency_evict(chat, cb);
+    int n_evict = react_emergency_evict(chat, cb, 0);
     if (n_evict > 0)
         react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
     return n_evict;

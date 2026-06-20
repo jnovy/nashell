@@ -60,8 +60,6 @@
 #define REACT_SP_MIN                2048
 /* Fallback scratchpad budget when context_size unknown (chars). */
 #define REACT_SP_FALLBACK           8192
-/* Minimum compress threshold (chars) — messages below this aren't worth compressing. */
-#define REACT_COMPRESS_THRESH_MIN   200
 /* Compress-scaled parameters: minimum chunks and chars. */
 #define REACT_COMPRESS_MIN_UNITS    4
 #define REACT_COMPRESS_MIN_CHARS    400
@@ -162,6 +160,48 @@ static inline long react_context_budget(const react_ctx_t *ctx) {
         ? (long)(ctx->provider->cfg.context_size * cpt) : 0;
 }
 
+/* D1+S5 FIX: Compute scratchpad budget using the dual-cap policy.
+ * Returns min(abs_cap, rel_cap) with a floor of min_budget.
+ * Shared between react_reinject_scratchpad(), react_build_context(),
+ * and evict_finalize() to eliminate 3 copies of the same logic. */
+static inline size_t react_scratchpad_budget(long context_budget,
+                                              long current_chars,
+                                              size_t min_budget) {
+    if (context_budget <= 0)
+        return REACT_SP_FALLBACK;
+    size_t abs_cap = (size_t)(context_budget
+                              * REACT_SCRATCHPAD_BUDGET_PCT / 100);
+    long remaining = context_budget - current_chars;
+    if (remaining < 0) remaining = 0;
+    size_t rel_cap = (size_t)(remaining
+                              * REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT / 100);
+    size_t budget = abs_cap < rel_cap ? abs_cap : rel_cap;
+    return budget < min_budget ? min_budget : budget;
+}
+
+/* D1 FIX: Format and inject a "[SCRATCHPAD]\n..." message at position pos.
+ * Eliminates 4 copies of the alloc + snprintf("[SCRATCHPAD]\n%s") + insert
+ * pattern across react_eviction.c, react_context.c, and react_error.c.
+ * Returns the injected message length (0 if nothing injected). */
+static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
+                                                const char *sp_content) {
+    if (!sp_content || !sp_content[0]) return 0;
+    size_t slen = strlen(sp_content);
+    char *sp_msg = malloc(slen + 32);
+    if (!sp_msg) return 0;
+    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_content);
+    llm_chat_insert_typed(chat, pos, "user", sp_msg, LLM_MSG_SCRATCHPAD);
+    long injected = (long)strlen(sp_msg);
+    free(sp_msg);
+    return injected;
+}
+
+/* D3 FIX: Shared mark-sweep helper — removes marked messages in reverse order
+ * and recovers tool threading. Used by both progressive and emergency eviction.
+ * Returns the number of messages actually removed. */
+int evict_sweep_marked(llm_chat_t *chat, int evict_start,
+                       const int *evict_mark, int n_evictable);
+
 /* Build enriched BM25 query from user_query + recent thoughts + scratchpad.
  * Returns malloc'd string — caller must free. Shared between eviction and
  * context construction to avoid duplicate implementations. */
@@ -251,11 +291,14 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 /* ── Error Recovery ──────────────────────────────────── */
 
 /* Emergency eviction — proportionally removes oldest evictable messages
- * to reach ~80% of context budget. context_budget is in chars (0 = unknown,
- * falls back to 80% of current usage). Returns count evicted.
+ * to reach target_pct of context budget. context_budget is in chars (0 = unknown,
+ * falls back to target_pct of current usage). Returns count evicted.
+ * target_pct: 0 = use REACT_EMERGENCY_TARGET_PCT default (80%).
+ * Flaw 2 FIX: Accepts target so callers can pass a value consistent with
+ * the configured eviction_pct, preventing immediate re-trigger.
  * FIX #3: Takes budget param so it targets budget, not current usage.
  * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
-int react_emergency_evict(llm_chat_t *chat, long context_budget);
+int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct);
 
 /* D3 FIX: Emergency evict + scratchpad re-injection helper.
  * Combines react_emergency_evict + react_reinject_scratchpad into one call.
