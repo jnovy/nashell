@@ -106,6 +106,9 @@ typedef enum {
 typedef struct {
     char *role;              /* "system", "user", "assistant", "tool" */
     char *content;
+    size_t content_len;      /* cached strlen(content) — updated on creation/replacement.
+                              * Eliminates hundreds of redundant strlen() calls in eviction,
+                              * compression, and scoring (Review C4/B3). */
     char *tool_call_id;      /* for role:"tool" — the ID of the tool call being responded to */
     char *tool_calls_json;   /* for role:"assistant" — raw JSON of tool_calls array */
     char *tool_call_id_outbound; /* Cached outbound tool_call ID extracted from tool_calls_json.
@@ -122,6 +125,9 @@ typedef struct {
     llm_msg_t *msgs;
     int        n_msgs;
     int        cap_msgs;
+    long       total_chars;          /* cached sum of all msgs[i].content_len — updated
+                                      * incrementally by add/remove/insert/replace operations.
+                                      * Eliminates 17 O(n) react_calc_total_chars() loops (Review B1/C4). */
     /* Last tool call info (set by provider_complete/provider_complete_stream for react.c) */
     char      *last_tool_call_id;    /* tool_call_id from last response (caller frees) */
     char      *last_tool_calls_json; /* raw tool_calls JSON from last response (caller frees) */
@@ -141,6 +147,10 @@ void        llm_chat_add_typed(llm_chat_t *chat, const char *role,
 /* Serialize entire chat into a human-readable markdown document.
  * Returns malloc'd string. Caller must free. */
 char       *llm_chat_serialize(llm_chat_t *chat);
+
+/* Free all heap fields of a single message (but not the struct itself).
+ * Used by evict_sweep_marked for O(n) single-pass compaction (Review C2). */
+void        llm_msg_free_fields(llm_msg_t *m);
 
 /* Remove all messages of a given type.
  * Returns the number of messages removed. */
@@ -169,6 +179,11 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
 /* Add an assistant message with tool_calls (for conversation history) */
 void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
                                        const char *tool_calls_json);
+
+/* Replace the content of message at index `idx` with `new_content` (takes ownership).
+ * Updates content_len and total_chars incrementally.
+ * Review C4: Centralizes content replacement to maintain cached char counts. */
+void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content);
 
 /* LLM inference statistics from API response */
 typedef struct {

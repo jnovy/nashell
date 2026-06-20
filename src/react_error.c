@@ -48,22 +48,20 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
-    /* Compute head_chars once — used by both floor calculation and marking. */
+    /* Compute head_chars using cached content_len */
     long head_chars = 0;
     for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-        if (chat->msgs[i].content)
-            head_chars += (long)strlen(chat->msgs[i].content);
+        head_chars += (long)chat->msgs[i].content_len;
 
     long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
                                               head_chars);
 
-    /* ── Mark-and-sweep: score all candidates, then remove in reverse ── */
+    /* Review A4: Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
+    evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
 
-    /* Score: lower = evict first.  Recoverable content (score 0) is evicted
-     * before non-recoverable (score 1000), with position as tiebreaker
-     * (older messages first). */
+    /* ── Mark-and-sweep: score all candidates, then remove ── */
     emerg_cand_t *cands = malloc((size_t)n_evictable * sizeof(emerg_cand_t));
-    if (!cands) return 0;
+    if (!cands) { evict_free_partner_map(&pmap); return 0; }
 
     int n_cands = 0;
     for (int i = 0; i < n_evictable; i++) {
@@ -74,18 +72,16 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
             ? 0 : 1000;
         cands[n_cands].idx = i;
         cands[n_cands].score = rec_score + i;  /* older + recoverable first */
-        cands[n_cands].chars = chat->msgs[mi].content
-            ? (long)strlen(chat->msgs[mi].content) : 0;
+        cands[n_cands].chars = (long)chat->msgs[mi].content_len;
         n_cands++;
     }
 
-    /* FIX FLAW 7: Replace O(n²) bubble sort with O(n log n) qsort. */
     qsort(cands, (size_t)n_cands, sizeof(emerg_cand_t),
           cmp_emerg_score_asc);
 
     /* Mark candidates for eviction, respecting floor and need_to_remove */
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
-    if (!evict_mark) { free(cands); return 0; }
+    if (!evict_mark) { free(cands); evict_free_partner_map(&pmap); return 0; }
 
     long remaining_nonhead = total_chars - head_chars;
     long marked_chars = 0;
@@ -98,19 +94,21 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
         long msg_chars = cands[ci].chars;
         if (remaining_nonhead - msg_chars < floor_chars) continue;
 
-        /* Also mark partner (pair-safe) */
+        /* Review A4: Use pre-built partner map for O(1) lookup */
         int mi = evict_start + ri;
-        int partner_mi = react_find_tool_partner(chat, mi, evict_start, evict_end);
-        int pair_ri = (partner_mi >= 0) ? partner_mi - evict_start : -1;
+        int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
+        int pair_ri = -1;
         long pair_chars = 0;
 
-        if (pair_ri >= 0 && pair_ri < n_evictable && !evict_mark[pair_ri]) {
-            pair_chars = chat->msgs[partner_mi].content
-                ? (long)strlen(chat->msgs[partner_mi].content) : 0;
-            if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
-                continue;
-        } else {
-            pair_ri = -1;
+        if (partner_mi >= evict_start && partner_mi < evict_end) {
+            pair_ri = partner_mi - evict_start;
+            if (!evict_mark[pair_ri]) {
+                pair_chars = (long)chat->msgs[partner_mi].content_len;
+                if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
+                    continue;
+            } else {
+                pair_ri = -1;
+            }
         }
 
         evict_mark[ri] = 1;
@@ -134,21 +132,26 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
             if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
             evict_mark[i] = 1;
             n_marked++;
-            int partner_mi = react_find_tool_partner(chat, mi, evict_start, evict_end);
-            int pair_ri = (partner_mi >= 0) ? partner_mi - evict_start : -1;
-            if (pair_ri >= 0 && pair_ri < n_evictable) {
-                evict_mark[pair_ri] = 1;
-                n_marked++;
+            int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
+            if (partner_mi >= evict_start && partner_mi < evict_end) {
+                int pair_ri = partner_mi - evict_start;
+                if (pair_ri >= 0 && pair_ri < n_evictable && !evict_mark[pair_ri]) {
+                    evict_mark[pair_ri] = 1;
+                    n_marked++;
+                }
             }
             break;
         }
     }
 
+    evict_free_partner_map(&pmap);
+
     /* D3 FIX: Use shared sweep helper */
     int removed = evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
     free(evict_mark);
 
-    return removed > 0 ? removed : n_marked;
+    /* Review A6: removed always equals n_marked — simplified */
+    return removed;
 }
 
 /* D3 FIX: Combined emergency evict + scratchpad re-injection.
@@ -385,8 +388,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 char *new_sp = malloc(clen + 32);
                 if (new_sp) {
                     snprintf(new_sp, clen + 32, "[SCRATCHPAD]\n%s", cleaned);
-                    free(chat->msgs[sp_idx].content);
-                    chat->msgs[sp_idx].content = new_sp;
+                    llm_chat_replace_content(chat, sp_idx, new_sp);
                 }
                 free(cleaned);
             }

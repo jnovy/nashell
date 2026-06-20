@@ -8,6 +8,33 @@
 
 #include "react_internal.h"
 
+/* Review B5: Converted from INJECT_TYPE macro to debuggable static function.
+ * Injects relevant memories of a given type prefix into the chat context. */
+static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
+                               memory_results_t *all, const char *label,
+                               const char *prefix, int plen, int max_count,
+                               llm_msg_type_t mtype) {
+    if (max_count <= 0) return;
+    int remaining = max_count;
+    str_t msg = str_new(4096);
+    str_appendf(&msg, "%s\n", label);
+    for (int j = 0; j < all->count; j++) {
+        if (all->entries[j].key &&
+            strncmp(all->entries[j].key, prefix, (size_t)plen) == 0) {
+            str_appendf(&msg, "\n--- %s ---\n%s\n",
+                all->entries[j].key,
+                all->entries[j].value ? all->entries[j].value : "");
+            tool_track_recalled_key(tools, all->entries[j].key);
+            remaining--;
+        }
+        if (remaining <= 0) break;
+    }
+    if (msg.len > strlen(label) + 5) {
+        llm_chat_add_typed(chat, "user", str_cstr(&msg), mtype);
+    }
+    str_free(&msg);
+}
+
 void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          const char *user_query,
                          react_event_fn on_event, void *userdata) {
@@ -82,41 +109,15 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             : memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
-        /* FIX 6a: Helper macro uses a local counter instead of mutating the
-         * caller's variable.  Previously max_count and type_count were the same
-         * variable passed twice, and the macro decremented type_count — fragile
-         * and confusing. */
-        // NOLINTNEXTLINE(bugprone-macro-parentheses)
-        #define INJECT_TYPE(label, prefix, plen, max_count, mtype) \
-            do { \
-                if ((max_count) > 0) { \
-                    int _remaining = (max_count); \
-                    str_t msg = str_new(4096); \
-                    str_appendf(&msg, "%s\n", label); \
-                    for (int j = 0; j < all_memories.count; j++) { \
-                        if (all_memories.entries[j].key && \
-                            strncmp(all_memories.entries[j].key, prefix, plen) == 0) { \
-                            str_appendf(&msg, "\n--- %s ---\n%s\n", \
-                                all_memories.entries[j].key, \
-                                all_memories.entries[j].value ? all_memories.entries[j].value : ""); \
-                            tool_track_recalled_key(ctx->tools, all_memories.entries[j].key); \
-                            _remaining--; \
-                        } \
-                        if (_remaining <= 0) break; \
-                    } \
-                    if (msg.len > strlen(label) + 5) { \
-                        llm_chat_add_typed(chat, "user", str_cstr(&msg), mtype); \
-                    } \
-                    str_free(&msg); \
-                } \
-            } while(0)
-
-        INJECT_TYPE("[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS);
-        INJECT_TYPE("[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS);
-        INJECT_TYPE("[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, LLM_MSG_STRATEGIES);
-        INJECT_TYPE("[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS);
-
-        #undef INJECT_TYPE
+        /* Review B5: Replaced INJECT_TYPE macro with debuggable static function calls */
+        inject_memory_type(chat, ctx->tools, &all_memories,
+            "[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS);
+        inject_memory_type(chat, ctx->tools, &all_memories,
+            "[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS);
+        inject_memory_type(chat, ctx->tools, &all_memories,
+            "[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, LLM_MSG_STRATEGIES);
+        inject_memory_type(chat, ctx->tools, &all_memories,
+            "[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS);
 
         /* Log memory context for debugging — before freeing mem_summary/pinned */
         react_log_memory_context(ctx->tools, ctx->tools->react_loop,
@@ -133,8 +134,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
      * being larger than after the first eviction cycle. */
     long context_budget = react_context_budget(ctx);
     long current_chars = react_calc_total_chars(chat);
+    /* Review B7: Use REACT_SP_MIN constant instead of hardcoded 2048 */
     size_t max_scratchpad = react_scratchpad_budget(context_budget, current_chars,
-                                                     2048);
+                                                     REACT_SP_MIN);
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
      * When branching (parent_loop != previous loop), filter R*_result

@@ -122,13 +122,12 @@ static inline int react_usage_pct(long total_chars, long context_budget) {
         ? (int)(100L * total_chars / context_budget) : 0;
 }
 
-/* Calculate total chars across all messages in a chat. */
+/* Calculate total chars across all messages in a chat.
+ * Review B1/C4: Now O(1) — returns cached total_chars maintained incrementally
+ * by llm_chat_add, remove, insert, and replace_content. Previously O(n) with
+ * 17 call sites causing thousands of redundant strlen() calls. */
 static inline long react_calc_total_chars(const llm_chat_t *chat) {
-    long total = 0;
-    for (int i = 0; i < chat->n_msgs; i++)
-        if (chat->msgs[i].content)
-            total += (long)strlen(chat->msgs[i].content);
-    return total;
+    return chat->total_chars;
 }
 
 /* FIX FLAW 4: Shared floor calculation used by both progressive eviction (pass3)
@@ -143,8 +142,7 @@ static inline long react_calc_floor_chars(const llm_chat_t *chat,
     if (head_chars < 0) {
         head_chars = 0;
         for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-            if (chat->msgs[i].content)
-                head_chars += (long)strlen(chat->msgs[i].content);
+            head_chars += (long)chat->msgs[i].content_len;
     }
     long base = (context_budget > 0)
         ? context_budget - head_chars

@@ -88,52 +88,66 @@ static void free_words(char **words, int n) {
     free(words);
 }
 
-/* Simple BM25-like term overlap score between a sentence and query terms.
- * Not full BM25 (no IDF, no doc length normalization) but captures the
- * key signal: how many query terms appear in this sentence.
- * FIX #10: Also does substring matching to handle code-centric queries
- * where query words appear as substrings in identifiers (e.g., "evict"
- * matches "evict_mark", "n_evictable"). Without this, all sentences
- * score 0 for code content and only position bonuses differentiate. */
+/* Review C3: In-place word scanning eliminates per-chunk malloc/free overhead.
+ * For each sentence word, scans in-place (lowercased) and compares against
+ * pre-tokenized query words. Previously allocated N word strings per chunk
+ * via tokenize_words() — with 100+ chunks × 20 words each = 2000+ malloc/free.
+ *
+ * FIX #10: Also does substring matching for code identifiers. */
 static float score_sentence(const char *sentence, char **query_words, int n_query) {
     if (!sentence || !query_words || n_query == 0) return 0.0f;
-
-    int n_sent;
-    char **sent_words = tokenize_words(sentence, &n_sent);
-    if (!sent_words) return 0.0f;
 
     float score = 0.0f;
     for (int qi = 0; qi < n_query; qi++) {
         int found_exact = 0;
         int found_partial = 0;
         int qlen = (int)strlen(query_words[qi]);
-        for (int si = 0; si < n_sent; si++) {
-            if (strcmp(query_words[qi], sent_words[si]) == 0) {
-                found_exact = 1;
-                break;
+
+        /* Scan sentence words in-place (no allocation) */
+        const char *p = sentence;
+        while (*p) {
+            while (*p && !isalpha((unsigned char)*p)) p++;
+            if (!*p) break;
+            const char *wstart = p;
+            while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+            int wlen = (int)(p - wstart);
+            if (wlen <= 1 || wlen >= 64) continue;  /* skip single chars and too-long */
+
+            /* Compare lowercased in-place against query word */
+            if (wlen == qlen) {
+                int match = 1;
+                for (int k = 0; k < wlen; k++) {
+                    if ((char)tolower((unsigned char)wstart[k]) != query_words[qi][k]) {
+                        match = 0; break;
+                    }
+                }
+                if (match) { found_exact = 1; break; }
             }
-            /* FIX #10: Substring match for code identifiers.
-             * Only match query words >= 4 chars to avoid false
-             * positives on short common words like "in", "to". */
-            if (!found_partial && qlen >= 4 &&
-                strstr(sent_words[si], query_words[qi])) {
-                found_partial = 1;
+            /* FIX #10: Substring match for code identifiers (>= 4 chars) */
+            if (!found_partial && qlen >= 4 && wlen >= qlen) {
+                /* Check if query word is a substring of this word (lowercased) */
+                for (int off = 0; off <= wlen - qlen; off++) {
+                    int match = 1;
+                    for (int k = 0; k < qlen; k++) {
+                        if ((char)tolower((unsigned char)wstart[off + k]) != query_words[qi][k]) {
+                            match = 0; break;
+                        }
+                    }
+                    if (match) { found_partial = 1; break; }
+                }
             }
         }
         if (found_exact)
             score += 1.0f;
         else if (found_partial)
-            score += 0.5f;  /* partial credit for substring match */
+            score += 0.5f;
     }
-    /* Normalize by query length to get overlap ratio */
     score /= (float)n_query;
 
-    /* Bonus for longer sentences (they carry more info) */
     int slen = (int)strlen(sentence);
     if (slen > 80) score += 0.1f;
     if (slen > 200) score += 0.1f;
 
-    free_words(sent_words, n_sent);
     return score;
 }
 

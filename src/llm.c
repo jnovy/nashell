@@ -19,7 +19,7 @@ llm_chat_t *llm_chat_new(void) {
 }
 
 /* Free all heap fields of a single message (but not the struct itself). */
-static void llm_msg_free_fields(llm_msg_t *m) {
+void llm_msg_free_fields(llm_msg_t *m) {
     free(m->role);
     free(m->content);
     free(m->tool_call_id);
@@ -62,6 +62,8 @@ void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
         free(m->content);
         return;
     }
+    m->content_len = strlen(m->content);
+    chat->total_chars += (long)m->content_len;
     chat->n_msgs++;
 }
 
@@ -114,6 +116,8 @@ void llm_chat_add_typed(llm_chat_t *chat, const char *role,
         free(m->content);
         return;
     }
+    m->content_len = strlen(m->content);
+    chat->total_chars += (long)m->content_len;
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
@@ -126,6 +130,7 @@ int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
     int dst = 0;
     for (int src = 0; src < chat->n_msgs; src++) {
         if (chat->msgs[src].msg_type == type) {
+            chat->total_chars -= (long)chat->msgs[src].content_len;
             llm_msg_free_fields(&chat->msgs[src]);
             removed++;
         } else {
@@ -151,8 +156,10 @@ int llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type) {
 /* Remove a range of messages [start, end). Frees all fields. */
 void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
     if (!chat || start < 0 || end > chat->n_msgs || start >= end) return;
-    for (int i = start; i < end; i++)
+    for (int i = start; i < end; i++) {
+        chat->total_chars -= (long)chat->msgs[i].content_len;
         llm_msg_free_fields(&chat->msgs[i]);
+    }
     int tail = chat->n_msgs - end;
     if (tail > 0)
         memmove(&chat->msgs[start], &chat->msgs[end],
@@ -188,6 +195,8 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
     memset(m, 0, sizeof(*m));
     m->role = r;
     m->content = c;
+    m->content_len = strlen(c);
+    chat->total_chars += (long)m->content_len;
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
@@ -209,6 +218,8 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
         free(m->tool_call_id);
         return;
     }
+    m->content_len = strlen(m->content);
+    chat->total_chars += (long)m->content_len;
     m->msg_type = LLM_MSG_TOOL_RESULT;
     m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
@@ -245,9 +256,23 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
         }
         cJSON_Delete(tc_arr);
     }
+    m->content_len = strlen(m->content);
+    chat->total_chars += (long)m->content_len;
     m->msg_type = LLM_MSG_GENERIC; // Assistant tool calls are generally generic context
     m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
+}
+
+/* Replace the content of message at index `idx` with `new_content` (takes ownership).
+ * Updates content_len and total_chars incrementally. */
+void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content) {
+    if (!chat || idx < 0 || idx >= chat->n_msgs) { free(new_content); return; }
+    llm_msg_t *m = &chat->msgs[idx];
+    chat->total_chars -= (long)m->content_len;
+    free(m->content);
+    m->content = new_content;
+    m->content_len = new_content ? strlen(new_content) : 0;
+    chat->total_chars += (long)m->content_len;
 }
 
 /* ── Chat serialization ──────────────────────────────────────── */
