@@ -1748,7 +1748,24 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
 
         /* Harness-1 §3.5: Multi-pass progressive context eviction */
+        int pre_evict_msgs = chat->n_msgs;
         react_maybe_evict(ctx, chat, step, user_query, on_event, userdata);
+
+        /* FIX: Reset cycling detection state after compaction evicts messages.
+         * Without this, the model cannot legitimately re-read content that was
+         * evicted from context — the stale last_sig matches the new action and
+         * cycling_cached fires as a false positive.  The cached result IS
+         * returned (stage 1), but the "note: cached" annotation confuses the
+         * model, and a third attempt triggers cycling_refused → data loss. */
+        if (chat->n_msgs < pre_evict_msgs) {
+            free(last_sig);
+            last_sig = NULL;
+            free(last_result_json);
+            last_result_json = NULL;
+            free(last_ref);
+            last_ref = NULL;
+            repeat_count = 0;
+        }
 
         /* FIX 4c: Moved diversity nudge outside eviction block so it fires
          * regardless of context pressure.  Previously only triggered when
