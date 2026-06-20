@@ -91,7 +91,11 @@ static void free_words(char **words, int n) {
 
 /* Simple BM25-like term overlap score between a sentence and query terms.
  * Not full BM25 (no IDF, no doc length normalization) but captures the
- * key signal: how many query terms appear in this sentence. */
+ * key signal: how many query terms appear in this sentence.
+ * FIX #10: Also does substring matching to handle code-centric queries
+ * where query words appear as substrings in identifiers (e.g., "evict"
+ * matches "evict_mark", "n_evictable"). Without this, all sentences
+ * score 0 for code content and only position bonuses differentiate. */
 static float score_sentence(const char *sentence, char **query_words, int n_query) {
     if (!sentence || !query_words || n_query == 0) return 0.0f;
 
@@ -101,14 +105,26 @@ static float score_sentence(const char *sentence, char **query_words, int n_quer
 
     float score = 0.0f;
     for (int qi = 0; qi < n_query; qi++) {
-        int found = 0;
+        int found_exact = 0;
+        int found_partial = 0;
+        int qlen = (int)strlen(query_words[qi]);
         for (int si = 0; si < n_sent; si++) {
             if (strcmp(query_words[qi], sent_words[si]) == 0) {
-                found = 1;
+                found_exact = 1;
                 break;
             }
+            /* FIX #10: Substring match for code identifiers.
+             * Only match query words >= 4 chars to avoid false
+             * positives on short common words like "in", "to". */
+            if (!found_partial && qlen >= 4 &&
+                strstr(sent_words[si], query_words[qi])) {
+                found_partial = 1;
+            }
         }
-        if (found) score += 1.0f;
+        if (found_exact)
+            score += 1.0f;
+        else if (found_partial)
+            score += 0.5f;  /* partial credit for substring match */
     }
     /* Normalize by query length to get overlap ratio */
     score /= (float)n_query;
@@ -227,8 +243,12 @@ char *compress_to_relevant(const char *text, const char *query,
     if (!text || !text[0]) return NULL;
     int tlen = (int)strlen(text);
 
-    /* If text is already short enough, return a copy */
-    if (tlen <= max_chars && max_sentences <= 0) return strdup(text);
+    /* FIX #15: Short-circuit when text is already within bounds.
+     * Previously required max_sentences <= 0 which is never true from
+     * the eviction call site (always passes 4). Now also returns early
+     * when text fits within max_chars, avoiding unnecessary sentence
+     * splitting and scoring for short messages. */
+    if (tlen <= max_chars) return strdup(text);
 
     /* Split into sentences */
     int n_sents;

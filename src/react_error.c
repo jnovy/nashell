@@ -6,35 +6,40 @@
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
-/* FIX #14 + FIX 4a: Unified emergency eviction — proportionally removes
- * enough of the oldest evictable messages to reach ~80% of context budget.
- * FIX 4a: Previously always evicted the older HALF regardless of how far
- * over budget the context was (105% over → 50% evicted, wasteful).
- * Now calculates the target and evicts from oldest until target is reached.
- * Falls back to evicting half if we can't determine context sizes.
+/* Emergency eviction — proportionally removes enough of the oldest
+ * evictable messages to reach ~80% of context budget.
+ * FIX #3: Takes context_budget parameter. Previously targeted 80% of
+ * CURRENT usage, which when context was 150% of budget would produce
+ * 120% — still over budget. Now targets 80% of the actual budget.
+ * FIX #7: Pair-safe — removes tool_call/tool_result pairs together
+ * to avoid orphaning messages that violate the LLM API contract.
  * Returns the number of messages evicted (0 if not enough to evict). */
-int react_emergency_evict(llm_chat_t *chat) {
+int react_emergency_evict(llm_chat_t *chat, int context_budget) {
     int keep_head = REACT_EVICT_KEEP_HEAD;
     int keep_tail = REACT_EVICT_KEEP_TAIL;
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
     if (evict_end <= evict_start + 2) return 0;
 
-    /* Calculate total context and target (80%) */
+    /* Calculate total context chars */
     int total_chars = 0;
     for (int i = 0; i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
             total_chars += (int)strlen(chat->msgs[i].content);
-    int target_chars = total_chars * 80 / 100;
+
+    /* FIX #3: Target 80% of context BUDGET, not 80% of current usage.
+     * If context_budget is 0 (unknown), fall back to 80% of current. */
+    int target_chars;
+    if (context_budget > 0)
+        target_chars = context_budget * 80 / 100;
+    else
+        target_chars = total_chars * 80 / 100;
     int need_to_remove = total_chars - target_chars;
+    if (need_to_remove <= 0) return 0;
 
     /* Remove oldest evictable messages until we've freed enough.
-     * FIX #3: Skip CRITICAL-importance messages (scratchpad re-injections,
-     * eviction breadcrumbs) — these must never be evicted.
-     * FIX MED#8: Also skip HIGH-importance messages (skills, lessons,
-     * strategies, anti-patterns, pinned, memory index) — these represent
-     * the agent's knowledge base and should survive emergency eviction.
-     * Only evict NORMAL and LOW importance messages (tool results, errors). */
+     * Skip CRITICAL and HIGH importance messages.
+     * FIX #7: Handle tool_call/tool_result pairs atomically. */
     int removed_chars = 0;
     int removed = 0;
     int i = evict_start;
@@ -44,6 +49,38 @@ int react_emergency_evict(llm_chat_t *chat) {
             i++;
             continue;
         }
+
+        /* FIX #7: If this is an assistant with tool_calls, check if the
+         * next message is its tool_result — remove both together. */
+        if (chat->msgs[i].tool_calls_json &&
+            i + 1 < chat->n_msgs - keep_tail &&
+            chat->msgs[i + 1].tool_call_id &&
+            chat->msgs[i + 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
+            if (chat->msgs[i].content)
+                removed_chars += (int)strlen(chat->msgs[i].content);
+            if (chat->msgs[i + 1].content)
+                removed_chars += (int)strlen(chat->msgs[i + 1].content);
+            llm_chat_remove_range(chat, i, i + 2);
+            removed += 2;
+            continue;  /* don't increment — removal shifts array */
+        }
+
+        /* FIX #7: If this is a tool_result, also remove the preceding
+         * assistant (with tool_calls) if it's in range and evictable. */
+        if (chat->msgs[i].tool_call_id &&
+            i - 1 >= evict_start &&
+            chat->msgs[i - 1].tool_calls_json &&
+            chat->msgs[i - 1].importance < LLM_MSG_IMPORTANCE_HIGH) {
+            if (chat->msgs[i - 1].content)
+                removed_chars += (int)strlen(chat->msgs[i - 1].content);
+            if (chat->msgs[i].content)
+                removed_chars += (int)strlen(chat->msgs[i].content);
+            llm_chat_remove_range(chat, i - 1, i + 1);
+            removed += 2;
+            continue;
+        }
+
+        /* Standalone message (no pair) or pair partner is protected */
         if (chat->msgs[i].content)
             removed_chars += (int)strlen(chat->msgs[i].content);
         llm_chat_remove_range(chat, i, i + 1);
@@ -54,8 +91,16 @@ int react_emergency_evict(llm_chat_t *chat) {
     if (removed == 0) {
         for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
             if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
-                llm_chat_remove_range(chat, j, j + 1);
-                removed = 1;
+                /* Pair-safe: if assistant with tool_calls, take both */
+                if (chat->msgs[j].tool_calls_json &&
+                    j + 1 < chat->n_msgs - keep_tail &&
+                    chat->msgs[j + 1].tool_call_id) {
+                    llm_chat_remove_range(chat, j, j + 2);
+                    removed = 2;
+                } else {
+                    llm_chat_remove_range(chat, j, j + 1);
+                    removed = 1;
+                }
                 break;
             }
         }
@@ -204,8 +249,10 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 react_emit(on_event, userdata, &ev);
                 return 1;  /* break */
             }
-            /* FIX #14: Use unified emergency eviction */
-            int n_evict = react_emergency_evict(chat);
+            /* FIX #3: Compute context_budget and pass to emergency eviction */
+            float cpt = react_get_chars_per_token(ctx);
+            int cb = (int)(ctx->provider->cfg.context_size * cpt);
+            int n_evict = react_emergency_evict(chat, cb);
             if (n_evict > 0) {
                 char emsg[128];
                 snprintf(emsg, sizeof(emsg),
@@ -246,8 +293,12 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         ev.message = mtmsg;
         react_emit(on_event, userdata, &ev);
 
-        /* FIX #14: Use unified emergency eviction */
-        react_emergency_evict(chat);
+        /* FIX #3: Compute context_budget and pass to emergency eviction */
+        {
+            float cpt = react_get_chars_per_token(ctx);
+            int cb = (int)(ctx->provider->cfg.context_size * cpt);
+            react_emergency_evict(chat, cb);
+        }
         /* Don't count as consecutive (recovery may work) */
         *consecutive_null = 0;
         return 0;  /* continue */

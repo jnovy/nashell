@@ -107,9 +107,12 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* ── Error Recovery ──────────────────────────────────── */
 
-/* Unified emergency eviction — proportionally removes oldest evictable
- * messages to reach ~80% of context budget. Returns count evicted. */
-int react_emergency_evict(llm_chat_t *chat);
+/* Emergency eviction — proportionally removes oldest evictable messages
+ * to reach ~80% of context budget. context_budget is in chars (0 = unknown,
+ * falls back to 80% of current usage). Returns count evicted.
+ * FIX #3: Takes budget param so it targets budget, not current usage.
+ * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
+int react_emergency_evict(llm_chat_t *chat, int context_budget);
 
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
  * Returns: 0 = continue (retry), 1 = break (give up).
