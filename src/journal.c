@@ -368,6 +368,267 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     return str_steal(&out);
 }
 
+/* ── Chunk extraction for session-level RAG ─────────── */
+
+void journal_chunks_free(journal_chunks_t *jc) {
+    if (!jc) return;
+    for (int i = 0; i < jc->n_chunks; i++)
+        free(jc->texts[i]);
+    free(jc->texts);
+    jc->texts = NULL;
+    jc->n_chunks = 0;
+}
+
+/* Read first N bytes of a file, return heap string (NULL on error) */
+static char *read_file_head(const char *path, int max_bytes) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char *buf = malloc((size_t)max_bytes + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)max_bytes, f);
+    fclose(f);
+    buf[n] = '\0';
+    /* Clamp to valid UTF-8 boundary */
+    while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80) n--;
+    buf[n] = '\0';
+    return buf;
+}
+
+journal_chunks_t journal_extract_chunks(const char *session_dir,
+                                        int max_chars_per_chunk,
+                                        int max_chunks) {
+    journal_chunks_t result = {0};
+    if (!session_dir) return result;
+    if (max_chars_per_chunk <= 0) max_chars_per_chunk = 900;
+    if (max_chunks <= 0) max_chunks = 50;
+
+    char jpath[NASH_PATH_MAX];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
+
+    FILE *f = fopen(jpath, "r");
+    if (!f) return result;
+    flock(fileno(f), LOCK_SH);
+
+    /* Pass 1: extract per-step semantic text segments */
+    typedef struct { char *text; } seg_t;
+    int seg_count = 0, seg_cap = 64;
+    seg_t *segs = calloc((size_t)seg_cap, sizeof(seg_t));
+    if (!segs) { fclose(f); return result; }
+
+    /* Track query text for chunk prefixes */
+    char query_text[201] = {0};
+
+    char line[NASH_LINE_MAX];
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+
+        const char *tool = cJSON_GetStringValue(
+            cJSON_GetObjectItem(entry, "tool"));
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+        const char *ref = cJSON_GetStringValue(
+            cJSON_GetObjectItem(entry, "ref"));
+
+        if (!tool) { cJSON_Delete(entry); continue; }
+
+        /* Capture query text for chunk context prefix */
+        if (strcmp(tool, "query") == 0 && params && !query_text[0]) {
+            cJSON *qt = cJSON_GetObjectItem(params, "text");
+            if (qt && qt->valuestring) {
+                utf8_truncate(query_text, qt->valuestring, 200);
+            }
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        /* Skip structural entries — no semantic value for RAG */
+        if (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0 ||
+            strcmp(tool, "context") == 0 || strcmp(tool, "spec") == 0 ||
+            strcmp(tool, "memory_context") == 0 || strcmp(tool, "log") == 0 ||
+            strcmp(tool, "compaction") == 0) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        str_t seg = str_new(512);
+
+        /* Extract thought — highest semantic value */
+        if (params) {
+            cJSON *th = cJSON_GetObjectItem(params, "thought");
+            if (th && th->valuestring && th->valuestring[0]) {
+                char *unwrapped = unwrap_thought(th->valuestring);
+                const char *thought = unwrapped ? unwrapped
+                    : (th->valuestring[0] != '{' ? th->valuestring : NULL);
+                if (thought && strlen(thought) > 5) {
+                    char trunc[401];
+                    utf8_truncate(trunc, thought, 400);
+                    str_appendf(&seg, "%s\n", trunc);
+                }
+                free(unwrapped);
+            }
+        }
+
+        /* Tool-specific content extraction */
+        if (strcmp(tool, "done") == 0 && params) {
+            cJSON *res = cJSON_GetObjectItem(params, "result");
+            if (res && res->valuestring && strlen(res->valuestring) > 5) {
+                char trunc[501];
+                utf8_truncate(trunc, res->valuestring, 500);
+                str_appendf(&seg, "Result: %s\n", trunc);
+            }
+        } else if (strcmp(tool, "memory_store") == 0 && params) {
+            cJSON *key_j = cJSON_GetObjectItem(params, "key");
+            cJSON *val_j = cJSON_GetObjectItem(params, "value");
+            if (key_j && key_j->valuestring)
+                str_appendf(&seg, "Stored: %s\n", key_j->valuestring);
+            if (val_j && val_j->valuestring) {
+                char trunc[301];
+                utf8_truncate(trunc, val_j->valuestring, 300);
+                str_appendf(&seg, "%s\n", trunc);
+            }
+        } else if (strcmp(tool, "memory_recall") == 0 && params) {
+            cJSON *q = cJSON_GetObjectItem(params, "query");
+            if (q && q->valuestring)
+                str_appendf(&seg, "Recalled: %s\n", q->valuestring);
+        } else if ((strcmp(tool, "file_read") == 0 ||
+                    strcmp(tool, "grep_search") == 0 ||
+                    strcmp(tool, "shell_exec") == 0 ||
+                    strcmp(tool, "file_edit") == 0 ||
+                    strcmp(tool, "web_fetch") == 0) && ref) {
+            /* Read first N chars of referenced content */
+            char ref_path[NASH_PATH_MAX];
+            snprintf(ref_path, sizeof(ref_path), "%s/%s", session_dir, ref);
+            int content_limit = (strcmp(tool, "shell_exec") == 0) ? 300 : 400;
+            char *content = read_file_head(ref_path, content_limit);
+            if (content && strlen(content) > 10) {
+                /* Add tool context */
+                if (params) {
+                    cJSON *p = cJSON_GetObjectItem(params, "path");
+                    cJSON *cmd = cJSON_GetObjectItem(params, "command");
+                    cJSON *pat = cJSON_GetObjectItem(params, "pattern");
+                    if (p && p->valuestring)
+                        str_appendf(&seg, "%s %s: ", tool, p->valuestring);
+                    else if (cmd && cmd->valuestring) {
+                        char ct[101];
+                        utf8_truncate(ct, cmd->valuestring, 100);
+                        str_appendf(&seg, "shell: %s\n", ct);
+                    } else if (pat && pat->valuestring)
+                        str_appendf(&seg, "%s '%s': ", tool, pat->valuestring);
+                    else
+                        str_appendf(&seg, "%s: ", tool);
+                }
+                str_appendf(&seg, "%s\n", content);
+            }
+            free(content);
+        }
+
+        /* Only keep segments with meaningful content */
+        if (seg.len > 15) {
+            if (seg_count >= seg_cap) {
+                seg_cap *= 2;
+                seg_t *new_segs = realloc(segs, (size_t)seg_cap * sizeof(seg_t));
+                if (!new_segs) { str_free(&seg); break; }
+                segs = new_segs;
+            }
+            segs[seg_count].text = str_steal(&seg);
+            seg_count++;
+        } else {
+            str_free(&seg);
+        }
+
+        cJSON_Delete(entry);
+    }
+    fclose(f);
+
+    if (seg_count == 0) {
+        free(segs);
+        return result;
+    }
+
+    /* Pass 2: Group segments into chunks of ~max_chars_per_chunk */
+    /* Build a session context prefix */
+    char prefix[256];
+    {
+        const char *base = strrchr(session_dir, '/');
+        if (base) base++; else base = session_dir;
+        double ts = atof(base);
+        time_t ts_t = (time_t)ts;
+        struct tm *tm = localtime(&ts_t);
+        char date_buf[32];
+        strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", tm);
+        if (query_text[0])
+            snprintf(prefix, sizeof(prefix), "Session %s | Query: %s\n",
+                     date_buf, query_text);
+        else
+            snprintf(prefix, sizeof(prefix), "Session %s\n", date_buf);
+    }
+    int prefix_len = (int)strlen(prefix);
+    int content_budget = max_chars_per_chunk - prefix_len;
+    if (content_budget < 200) content_budget = 200;
+
+    /* Allocate chunks array (upper bound = seg_count) */
+    int chunk_cap = seg_count < max_chunks ? seg_count : max_chunks;
+    result.texts = calloc((size_t)chunk_cap + 1, sizeof(char *));
+    if (!result.texts) {
+        for (int i = 0; i < seg_count; i++) free(segs[i].text);
+        free(segs);
+        return result;
+    }
+
+    str_t cur_chunk = str_new((size_t)max_chars_per_chunk + 128);
+    str_append_cstr(&cur_chunk, prefix);
+    int chunk_content_len = 0;
+
+    for (int i = 0; i < seg_count; i++) {
+        int seg_len = (int)strlen(segs[i].text);
+
+        /* Would adding this segment exceed budget? Start new chunk. */
+        if (chunk_content_len > 0 &&
+            chunk_content_len + seg_len > content_budget) {
+            /* Save current chunk */
+            if (result.n_chunks < chunk_cap) {
+                result.texts[result.n_chunks] = str_steal(&cur_chunk);
+                result.n_chunks++;
+            } else {
+                str_free(&cur_chunk);
+            }
+            /* Start new chunk with prefix */
+            cur_chunk = str_new((size_t)max_chars_per_chunk + 128);
+            str_append_cstr(&cur_chunk, prefix);
+            chunk_content_len = 0;
+
+            if (result.n_chunks >= max_chunks) {
+                /* Hit chunk cap — discard remaining segments */
+                for (int j = i; j < seg_count; j++) free(segs[j].text);
+                break;
+            }
+        }
+
+        /* Append segment to current chunk */
+        if (seg_len > content_budget) {
+            /* Single oversized segment: truncate */
+            str_append(&cur_chunk, segs[i].text, (size_t)content_budget);
+            chunk_content_len += content_budget;
+        } else {
+            str_append_cstr(&cur_chunk, segs[i].text);
+            chunk_content_len += seg_len;
+        }
+        free(segs[i].text);
+        segs[i].text = NULL;
+    }
+
+    /* Save final chunk if it has content */
+    if (chunk_content_len > 0 && result.n_chunks < max_chunks) {
+        result.texts[result.n_chunks] = str_steal(&cur_chunk);
+        result.n_chunks++;
+    } else {
+        str_free(&cur_chunk);
+    }
+
+    free(segs);
+    return result;
+}
+
 /* Scan journal.jsonl and return the highest react_loop value found.
  * Returns -1 if the journal is empty or doesn't exist. */
 int journal_max_react_loop(journal_t *j) {

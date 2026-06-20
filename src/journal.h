@@ -57,4 +57,29 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
  * Used to continue react_loop numbering when reopening an existing session. */
 int journal_max_react_loop(journal_t *j);
 
+/* ── Chunk extraction for session-level RAG ─────────── */
+
+/* Extracted semantic chunks from a journal for embedding.
+ * Each chunk is a text segment (~800-1000 chars) containing agent thoughts,
+ * tool outputs, and reasoning from consecutive steps. */
+typedef struct {
+    char **texts;       /* chunk text strings (caller must free each + array) */
+    int    n_chunks;    /* number of chunks */
+} journal_chunks_t;
+
+/* Extract semantic text chunks from a journal session.
+ * Parses journal.jsonl, extracts thoughts/tool outputs from each step,
+ * groups consecutive steps into chunks of ~max_chars_per_chunk characters,
+ * prefixed with query context.
+ * Skips: system, query, context, spec, memory_context, log entries.
+ * max_chunks: cap on number of chunks (0 = default 50).
+ * Returns journal_chunks_t with n_chunks=0 on failure.
+ * Caller must free with journal_chunks_free(). */
+journal_chunks_t journal_extract_chunks(const char *session_dir,
+                                        int max_chars_per_chunk,
+                                        int max_chunks);
+
+/* Free journal chunks returned by journal_extract_chunks(). */
+void journal_chunks_free(journal_chunks_t *jc);
+
 #endif

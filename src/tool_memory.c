@@ -567,12 +567,22 @@ tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
                     char ts_buf[64];
                     strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
 
-                    str_appendf(&out,
-                        "[RECALLED SESSION — %s]\n%s\n"
-                        "  -> file_read %s/journal.jsonl for details\n\n",
-                        ts_buf,
-                        sr->manifest ? sr->manifest : "(no summary)",
-                        sr->session_dir ? sr->session_dir : "");
+                    if (sr->chunk_preview && sr->best_chunk >= 0) {
+                        /* v4.1: Show best-matching chunk text */
+                        str_appendf(&out,
+                            "[RECALLED SESSION CHUNK — %s]\n%s\n"
+                            "  -> file_read %s/journal.jsonl for full context\n\n",
+                            ts_buf, sr->chunk_preview,
+                            sr->session_dir ? sr->session_dir : "");
+                    } else {
+                        /* Legacy: show full manifest */
+                        str_appendf(&out,
+                            "[RECALLED SESSION — %s]\n%s\n"
+                            "  -> file_read %s/journal.jsonl for details\n\n",
+                            ts_buf,
+                            sr->manifest ? sr->manifest : "(no summary)",
+                            sr->session_dir ? sr->session_dir : "");
+                    }
                 }
                 total_matches += ses.count;
                 session_index_results_free(&ses);

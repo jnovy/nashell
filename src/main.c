@@ -609,12 +609,24 @@ int main(int argc, char **argv) {
     }
 
     /* v4 unified memory: load session index for L3 search via memory_recall.
-     * Scans sessions/<ts>/summary.emb files into an in-memory index. */
+     * Scans sessions/<ts>/ for chunks.emb (v4.1) or summary.emb (legacy). */
     session_index_t *session_idx = NULL;
     {
         char sessions_dir[NASH_PATH_MAX];
         snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
         session_idx = session_index_load(sessions_dir);
+
+        /* v4.1: Backfill chunk embeddings for sessions without chunks.emb.
+         * Runs at startup, skips sessions already processed.
+         * ~5ms per chunk via ONNX, ~5 chunks/session avg. */
+        if (memory && memory_has_embeddings(memory)) {
+            embed_ctx_t *backfill_embed = memory_embed_ctx(memory);
+            if (backfill_embed) {
+                session_index_chunk_backfill(sessions_dir, backfill_embed,
+                                            session_idx);
+            }
+        }
+
         g_session_idx = session_idx;  /* make available to session_init_tools */
     }
 

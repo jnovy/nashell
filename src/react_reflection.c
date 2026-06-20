@@ -2,6 +2,7 @@
  * scratchpad promotion, scratchpad pruning.
  * Extracted from react.c (P1 decomposition). */
 #include "react_internal.h"
+#include "session_index.h"
 
 /* ── reflection deduplication (in-memory index scan) ───── */
 /* Scans the in-memory embedding index instead of loading every .emb
@@ -585,11 +586,13 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         free(full_sp);
     }
 
-    /* ── Session summary generation (v4 unified memory) ──────────
-     * At session end, embed the journal manifest as summary.txt + summary.emb.
-     * This makes the session searchable via /? and memory_recall.
-     * Uses journal_manifest() — already exists, handles all edge cases.
-     * No new parsing code, no LLM call needed. */
+    /* ── Session summary + chunk generation (v4.1 unified memory) ────
+     * At session end:
+     * 1. Write summary.txt (journal manifest) for human-readable display
+     * 2. Write summary.emb (single embedding of manifest) for legacy compat
+     * 3. Write chunks.emb + chunks.idx (per-chunk embeddings of agent
+     *    thoughts + tool outputs) for granular MaxSim retrieval
+     * 4. Add to in-memory session index for immediate searchability */
     if (ctx->tools->journal && ctx->tools->session_dir) {
         char *manifest = journal_manifest(ctx->tools->journal, 0);
         if (manifest && strlen(manifest) > 30) {
@@ -603,10 +606,10 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 fclose(sf);
             }
 
-            /* Embed and write summary.emb */
             if (ctx->tools->memory && memory_has_embeddings(ctx->tools->memory)) {
                 embed_ctx_t *embed = memory_embed_ctx(ctx->tools->memory);
                 if (embed) {
+                    /* Write summary.emb (legacy single-vector) */
                     embed_vec_t emb = embed_text(embed, manifest);
                     if (emb.data) {
                         char epath[PATH_MAX];
@@ -614,6 +617,93 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                  ctx->tools->session_dir);
                         embed_vec_save(&emb, epath);
                         embed_vec_free(&emb);
+                    }
+
+                    /* v4.1: Generate per-chunk embeddings */
+                    journal_chunks_t jc = journal_extract_chunks(
+                        ctx->tools->session_dir, 900, 50);
+                    if (jc.n_chunks > 0) {
+                        int out_count = 0;
+                        embed_vec_t *vecs = embed_text_batch(embed,
+                            (const char **)jc.texts, jc.n_chunks, &out_count);
+
+                        if (vecs && out_count > 0) {
+                            /* Build multi-vector */
+                            int dim = 0, valid = 0;
+                            for (int ci = 0; ci < out_count; ci++) {
+                                if (vecs[ci].data) {
+                                    if (dim == 0) dim = vecs[ci].dim;
+                                    valid++;
+                                }
+                            }
+
+                            if (valid > 0 && dim > 0) {
+                                embed_multi_vec_t mv = {0};
+                                mv.dim = dim;
+                                mv.n_chunks = valid;
+                                mv.data = malloc((size_t)dim * (size_t)valid * sizeof(float));
+                                char **previews = calloc((size_t)valid, sizeof(char *));
+
+                                if (mv.data && previews) {
+                                    int vi = 0;
+                                    for (int ci = 0; ci < out_count && vi < valid; ci++) {
+                                        if (!vecs[ci].data) continue;
+                                        memcpy(mv.data + vi * dim, vecs[ci].data,
+                                               (size_t)dim * sizeof(float));
+                                        /* Build preview: skip prefix line */
+                                        const char *body = strchr(jc.texts[ci], '\n');
+                                        if (body) body++; else body = jc.texts[ci];
+                                        char pbuf[201];
+                                        size_t plen = strlen(body);
+                                        if (plen > 200) plen = 200;
+                                        while (plen > 0 && ((unsigned char)body[plen] & 0xC0) == 0x80) plen--;
+                                        memcpy(pbuf, body, plen);
+                                        pbuf[plen] = '\0';
+                                        previews[vi] = strdup(pbuf);
+                                        vi++;
+                                    }
+
+                                    /* Save chunks.emb */
+                                    char cepath[PATH_MAX];
+                                    snprintf(cepath, sizeof(cepath), "%s/chunks.emb",
+                                             ctx->tools->session_dir);
+                                    embed_multi_vec_save(&mv, cepath);
+
+                                    /* Save chunks.idx */
+                                    char cipath[PATH_MAX];
+                                    snprintf(cipath, sizeof(cipath), "%s/chunks.idx",
+                                             ctx->tools->session_dir);
+                                    /* Write JSONL index */
+                                    FILE *idxf = fopen(cipath, "w");
+                                    if (idxf) {
+                                        for (int pi = 0; pi < valid; pi++) {
+                                            cJSON *js = cJSON_CreateString(previews[pi] ? previews[pi] : "");
+                                            char *esc = cJSON_PrintUnformatted(js);
+                                            fprintf(idxf, "{\"id\":%d,\"preview\":%s}\n", pi, esc);
+                                            free(esc);
+                                            cJSON_Delete(js);
+                                        }
+                                        fclose(idxf);
+                                    }
+
+                                    /* Add to in-memory session index */
+                                    if (ctx->tools->session_idx) {
+                                        session_index_add(ctx->tools->session_idx,
+                                            ctx->tools->session_dir, manifest,
+                                            NULL, &mv, previews, valid);
+                                    }
+                                }
+
+                                for (int pi = 0; pi < valid; pi++) free(previews[pi]);
+                                free(previews);
+                                embed_multi_vec_free(&mv);
+                            }
+
+                            for (int ci = 0; ci < out_count; ci++)
+                                embed_vec_free(&vecs[ci]);
+                            free(vecs);
+                        }
+                        journal_chunks_free(&jc);
                     }
                 }
             }
