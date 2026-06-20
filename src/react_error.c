@@ -65,9 +65,12 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
 
     /* FIX #11: Use shared helper instead of inline loop */
     long head_chars = react_head_chars(chat, evict_start);
+    long tail_chars = react_tail_chars(chat, evict_end);
 
-    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
-                                              head_chars);
+    /* FIX #5: Pass tail_chars so floor is based on evictable capacity only. */
+    long floor_chars = react_calc_floor_chars(chat, evict_start, evict_end,
+                                              context_budget,
+                                              head_chars, tail_chars);
 
     /* Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
@@ -116,12 +119,33 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
 }
 
 /* D3 FIX: Combined emergency evict + scratchpad re-injection.
- * Eliminates 3 copies of the same 3-line pattern. */
+ * FIX #3: Now injects a breadcrumb + MEMORY_HINT after eviction, matching
+ * the normal eviction path. Previously the LLM silently lost context.
+ * FIX #4: Computes target_pct from config instead of using hardcoded 80%.
+ * Previously, if eviction triggers at 70%, emergency targeting 80% would
+ * leave usage above the trigger, causing an immediate re-trigger loop. */
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     long cb = react_context_budget(ctx);
-    int n_evict = react_emergency_evict(chat, cb, 0);
-    if (n_evict > 0)
-        react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
+    /* FIX #4: Compute target_pct consistent with progressive eviction */
+    int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
+    int hysteresis_gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
+    if (hysteresis_gap < REACT_HYSTERESIS_MIN_GAP)
+        hysteresis_gap = REACT_HYSTERESIS_MIN_GAP;
+    int target_pct = eviction_pct - hysteresis_gap;
+    int n_evict = react_emergency_evict(chat, cb, target_pct);
+    if (n_evict > 0) {
+        int kh = react_compute_keep_head(chat);
+        /* FIX #3: Inject breadcrumb + MEMORY_HINT so LLM knows context was lost */
+        char emsg[128];
+        snprintf(emsg, sizeof(emsg),
+                 "[%d messages emergency-evicted to free context]", n_evict);
+        llm_chat_insert_typed(chat, kh, "user", emsg, LLM_MSG_EVICTION_SUMMARY);
+        llm_chat_insert_typed(chat, kh + 1,
+            "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
+        /* Re-inject scratchpad after breadcrumbs (at kh + 2 would be wrong 
+         * position — scratchpad should come before breadcrumbs) */
+        react_reinject_scratchpad(ctx, chat, kh);
+    }
     return n_evict;
 }
 
