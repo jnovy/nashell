@@ -143,6 +143,12 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
             }
         }
     }
+
+    /* FIX B4: Recover tool_call threading after emergency eviction
+     * (previously only done in progressive eviction pass3). */
+    if (removed > 0)
+        react_recover_tool_threading(chat);
+
     return removed;
 }
 

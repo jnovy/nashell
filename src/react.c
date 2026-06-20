@@ -163,6 +163,24 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
     return -1;
 }
 
+/* FIX B4: Recover tool_call threading from surviving messages after eviction.
+ * Scans backward for the last tool_calls_json, then matches its result.
+ * Used by both progressive eviction (pass3) and emergency eviction. */
+void react_recover_tool_threading(llm_chat_t *chat) {
+    free(chat->last_tool_call_id);
+    chat->last_tool_call_id = NULL;
+    free(chat->last_tool_calls_json);
+    chat->last_tool_calls_json = NULL;
+    for (int i = chat->n_msgs - 1; i >= 0; i--) {
+        if (chat->msgs[i].tool_calls_json) {
+            chat->last_tool_calls_json = strdup(chat->msgs[i].tool_calls_json);
+            if (i + 1 < chat->n_msgs && chat->msgs[i + 1].tool_call_id)
+                chat->last_tool_call_id = strdup(chat->msgs[i + 1].tool_call_id);
+            break;
+        }
+    }
+}
+
 /* Build the full system prompt string (base + model-specific rules).
  * Returns malloc'd string — caller must free.
  * Used for both chat injection and journal logging (Fix #12). */

@@ -81,8 +81,6 @@
 #define REACT_SUMMARY_PER_MSG_MAX   1000
 /* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
 #define REACT_SP_SHRINK_MIN         512
-/* Maximum boundary adjustment iterations to prevent infinite loops. */
-#define REACT_BOUNDARY_ADJ_MAX      20
 
 /* ── Helpers shared across react submodules ─────────── */
 
@@ -155,6 +153,11 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
  * and validates importance < HIGH before returning. */
 int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                             int range_start, int range_end);
+
+/* Recover tool_call threading state (last_tool_call_id / last_tool_calls_json)
+ * from surviving messages after eviction. Shared between progressive eviction
+ * (pass3) and emergency eviction for consistency (FIX B4). */
+void react_recover_tool_threading(llm_chat_t *chat);
 
 /* Safe JSON string accessor */
 const char *react_json_get_str(cJSON *obj, const char *key);

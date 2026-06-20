@@ -242,6 +242,20 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     return str_steal(&out);
 }
 
+/* FIX C3: Lightweight size computation — avoids allocating/freeing a full
+ * serialized string just to measure strlen(). */
+size_t scratchpad_total_size(scratchpad_t *sp) {
+    pthread_mutex_lock(&sp->mtx);
+    if (sp->count == 0) { pthread_mutex_unlock(&sp->mtx); return 0; }
+    size_t total = 0;
+    for (int i = 0; i < sp->count; i++) {
+        total += strlen(sp->sections[i].name) + 6;  /* "## " + name + "\n" + "\n\n" */
+        total += strlen(sp->sections[i].content);
+    }
+    pthread_mutex_unlock(&sp->mtx);
+    return total;
+}
+
 /* ── Legacy scratchpad.md loader (fallback for pre-v4 sessions) ──── */
 static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
     char path[PATH_MAX];

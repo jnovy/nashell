@@ -85,6 +85,14 @@ static int evict_pass1_strip_low(llm_chat_t *chat, int keep_head, int keep_tail)
         int partner = react_find_tool_partner(chat, i, keep_head,
                                                chat->n_msgs - keep_tail);
 
+        if (partner >= 0 &&
+            chat->msgs[partner].importance != LLM_MSG_IMPORTANCE_LOW) {
+            /* Partner is not LOW — skip this pair; let Pass 3 handle it.
+             * Previously Pass 1 would drag NORMAL-importance partners out
+             * prematurely, losing useful context. */
+            continue;
+        }
+
         if (partner >= 0 && partner > i) {
             /* Partner is after us — remove it first to preserve our index */
             llm_chat_remove_range(chat, partner, partner + 1);
@@ -221,29 +229,24 @@ static evict_scored_t *evict_score_messages(const llm_chat_t *chat,
 }
 
 /* Adjust eviction boundary to avoid splitting tool_call/result pairs.
- * Uses a bounded loop with monotonic progress tracking to prevent oscillation
- * (fixes bug #6). Returns adjusted evict_end. */
+ * Shrinks evict_end (never expands) to guarantee monotonic convergence —
+ * the old expand-or-shrink approach could oscillate.  Returns adjusted
+ * evict_end. */
 static int evict_adjust_boundary(const llm_chat_t *chat, int evict_start,
-                                 int evict_end, int keep_tail) {
-    int max_end = chat->n_msgs - keep_tail;
-    for (int iter = 0; evict_end > evict_start && iter < REACT_BOUNDARY_ADJ_MAX; iter++) {
+                                 int evict_end) {
+    /* Shrink until the boundary doesn't split a pair. */
+    while (evict_end > evict_start) {
         if (evict_end < chat->n_msgs && chat->msgs[evict_end].tool_call_id) {
-            /* At a tool_result — try to include the complete pair */
-            if (evict_end + 1 <= max_end) {
-                evict_end++;
-            } else {
-                evict_end--;
-            }
+            /* Boundary lands on a tool_result whose tool_call is inside the
+             * evictable range — shrink to exclude the orphaned result. */
+            evict_end--;
             continue;
         }
         if (evict_end - 1 >= evict_start &&
             chat->msgs[evict_end - 1].tool_calls_json) {
-            /* Last evictable is a tool_call with no result in pool */
-            if (evict_end + 1 <= max_end) {
-                evict_end++;
-            } else {
-                evict_end--;
-            }
+            /* Last evictable msg is a tool_call whose result is outside —
+             * shrink to exclude the orphaned call. */
+            evict_end--;
             continue;
         }
         break;
@@ -257,15 +260,13 @@ static int evict_adjust_boundary(const llm_chat_t *chat, int evict_start,
 static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                                      int evict_start, int n_evictable,
                                      const int *evict_mark, int n_to_evict,
-                                     long breadcrumb_cap, long context_budget) {
+                                     long breadcrumb_cap) {
     str_t breadcrumb = str_new(512);
-    size_t sp_budget = (size_t)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / 100);
-    size_t summary_budget = sp_budget / 3;
-    if (summary_budget > (size_t)breadcrumb_cap)
-        summary_budget = (size_t)breadcrumb_cap;
-    str_t summary = str_new(summary_budget);
+    /* FIX A2+A3: Removed dead context_budget parameter and summary_budget
+     * alias — breadcrumb_cap is used directly as the summary budget. */
+    str_t summary = str_new((size_t)breadcrumb_cap);
     int max_per_msg = n_to_evict > 0
-        ? (int)(summary_budget / (unsigned)n_to_evict) : REACT_SUMMARY_PER_MSG_MIN;
+        ? (int)((size_t)breadcrumb_cap / (unsigned)n_to_evict) : REACT_SUMMARY_PER_MSG_MIN;
     if (max_per_msg < REACT_SUMMARY_PER_MSG_MIN) max_per_msg = REACT_SUMMARY_PER_MSG_MIN;
     if (max_per_msg > REACT_SUMMARY_PER_MSG_MAX) max_per_msg = REACT_SUMMARY_PER_MSG_MAX;
 
@@ -331,7 +332,7 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         if ((int)strlen(content) > max_per_msg)
             str_append_cstr(&summary, "...[truncated]");
         str_append_cstr(&summary, "\n");
-        if (summary.len >= summary_budget) break;
+        if ((long)summary.len >= breadcrumb_cap) break;
     }
 
     if (n_breadcrumbs == 0) {
@@ -367,7 +368,7 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
     int evict_end = chat->n_msgs - keep_tail;
 
     /* Adjust boundary to avoid splitting pairs (fixes bug #6) */
-    evict_end = evict_adjust_boundary(chat, evict_start, evict_end, keep_tail);
+    evict_end = evict_adjust_boundary(chat, evict_start, evict_end);
 
     int n_evictable = evict_end - evict_start;
     if (n_evictable <= 0) return 0;
@@ -380,24 +381,29 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
     if (!evict_mark) { free(scored); return 0; }
 
-    /* FIX FLAW 4: Use shared floor calculation helper */
-    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget);
+    /* FIX B2+B7: Compute head/tail/evictable chars in a single pass over
+     * all messages, eliminating 3 separate O(n) loops + the duplicate head
+     * loop inside react_calc_floor_chars (was 4 passes total). */
+    long head_chars = 0, tail_chars = 0, evictable_chars = 0;
+    for (int ki = 0; ki < chat->n_msgs; ki++) {
+        long mc = chat->msgs[ki].content
+            ? (long)strlen(chat->msgs[ki].content) : 0;
+        if (ki < evict_start)
+            head_chars += mc;
+        else if (ki >= evict_end)
+            tail_chars += mc;
+        else
+            evictable_chars += mc;
+    }
 
-    /* head_chars needed for target check (Flaw 1 fix) */
-    long head_chars = 0;
-    for (int ki = 0; ki < evict_start; ki++)
-        if (chat->msgs[ki].content)
-            head_chars += (long)strlen(chat->msgs[ki].content);
-
-    long tail_chars = 0;
-    for (int ki = evict_end; ki < chat->n_msgs; ki++)
-        if (chat->msgs[ki].content)
-            tail_chars += (long)strlen(chat->msgs[ki].content);
-
-    long evictable_chars = 0;
-    for (int ki = evict_start; ki < evict_end; ki++)
-        if (chat->msgs[ki].content)
-            evictable_chars += (long)strlen(chat->msgs[ki].content);
+    /* Floor calculation (inlined from react_calc_floor_chars, reusing
+     * head_chars computed above to avoid a redundant loop). */
+    long floor_base = (context_budget > 0)
+        ? context_budget - head_chars
+        : (head_chars + tail_chars + evictable_chars) - head_chars;
+    long floor_chars = floor_base * REACT_EVICT_FLOOR_PCT / 100;
+    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
+        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
 
     long remaining_chars = tail_chars + evictable_chars;
     int n_to_evict = 0;
@@ -454,7 +460,7 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
     /* Build breadcrumbs before removing messages */
     char *bc_str = evict_build_breadcrumbs(ctx, chat, evict_start, n_evictable,
                                             evict_mark, n_to_evict,
-                                            breadcrumb_cap, context_budget);
+                                            breadcrumb_cap);
 
     /* Remove marked messages in REVERSE order to preserve indices */
     for (int ri = n_evictable - 1; ri >= 0; ri--) {
@@ -463,24 +469,15 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
     }
     free(evict_mark);
 
-    /* Recover tool_call threading from surviving messages */
-    free(chat->last_tool_call_id);
-    chat->last_tool_call_id = NULL;
-    free(chat->last_tool_calls_json);
-    chat->last_tool_calls_json = NULL;
-    for (int ri = chat->n_msgs - 1; ri >= 0; ri--) {
-        if (chat->msgs[ri].tool_calls_json) {
-            chat->last_tool_calls_json = strdup(chat->msgs[ri].tool_calls_json);
-            if (ri + 1 < chat->n_msgs && chat->msgs[ri + 1].tool_call_id)
-                chat->last_tool_call_id = strdup(chat->msgs[ri + 1].tool_call_id);
-            break;
-        }
-    }
+    /* FIX B4: Use shared helper for tool-threading recovery (also used
+     * by emergency_evict for consistency). */
+    react_recover_tool_threading(chat);
 
     /* Re-inject scratchpad */
     int insert_pos = keep_head;
-    react_reinject_scratchpad(ctx, chat, insert_pos);
-    insert_pos = keep_head + 1;  /* after scratchpad */
+    long sp_injected = react_reinject_scratchpad(ctx, chat, insert_pos);
+    if (sp_injected > 0)
+        insert_pos++;  /* advance past injected scratchpad message */
 
     /* Inject breadcrumb index */
     if (bc_str) {
@@ -513,25 +510,22 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
 /* Verify context is within budget after eviction.
  * If still over target, progressively shrink scratchpad, then emergency evict.
  * FIX FLAW 2: Changed from eviction_pct (trigger) to target_pct so post-verify
- * ensures we reach the TARGET, not just the trigger. Consistent hysteresis. */
+ * ensures we reach the TARGET, not just the trigger. Consistent hysteresis.
+ * FIX B6: Computes keep_head internally (fresh) instead of accepting a
+ * potentially stale value from the caller. */
 static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
-                              int keep_head, int target_pct,
-                              long context_budget) {
+                              int target_pct, long context_budget) {
     long total_chars = react_calc_total_chars(chat);
     int usage_pct = react_usage_pct(total_chars, context_budget);
 
     if (usage_pct <= target_pct) return;
 
-    /* FIX #5: Measure actual scratchpad size NOW (after Pass 3 may have
-     * written to it), not from a stale pre-eviction measurement. */
-    long actual_sp_size = 0;
-    {
-        char *sp_preview = scratchpad_serialize_budget(&ctx->tools->scratch, SIZE_MAX);
-        if (sp_preview) {
-            actual_sp_size = (long)strlen(sp_preview);
-            free(sp_preview);
-        }
-    }
+    /* FIX B6: Always compute fresh keep_head — pass3 may have injected
+     * scratchpad/breadcrumb messages that shifted the boundary. */
+    int keep_head = react_compute_keep_head(chat);
+
+    /* FIX #5 + C3: Measure actual scratchpad size without full serialization. */
+    long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
 
     nash_log("[eviction] post-eviction usage %d%% > target %d%% — "
              "shrinking scratchpad", usage_pct, target_pct);
@@ -569,6 +563,15 @@ static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
             nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
             react_emergency_evict(chat, context_budget);
         }
+
+        /* FIX B1: Re-inject scratchpad only after emergency eviction path,
+         * NOT unconditionally.  Previously this ran even when stripping
+         * alone brought usage under target — immediately undoing the strip
+         * and pushing back over target.  After emergency eviction there is
+         * room for a capped scratchpad; after strip-only, leave it stripped
+         * until the next notes() call rebuilds it naturally. */
+        keep_head = react_compute_keep_head(chat);
+        react_reinject_scratchpad(ctx, chat, keep_head);
     }
 }
 
@@ -619,7 +622,16 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     /* If cleanup alone brought us under target, re-inject and return */
     if (usage_pct <= target_pct) {
-        react_reinject_scratchpad(ctx, chat, keep_head);
+        int pos = keep_head;
+        if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
+        /* FIX B5: Re-inject compaction hint on early exit so agent retains
+         * awareness that context was compacted (old hint was stripped above). */
+        llm_chat_insert_typed(chat, pos,
+            "user",
+            "[Context compacted. Use memory_recall to recover lost "
+            "context — it searches both stored knowledge and past "
+            "session history.]",
+            LLM_MSG_MEMORY_HINT);
         did_evict = 1;
         goto journal;
     }
@@ -629,20 +641,21 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         did_evict = 1;
         usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
         if (usage_pct <= target_pct) {
-            react_reinject_scratchpad(ctx, chat, keep_head);
+            int pos = keep_head;
+            if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
+            /* FIX B5: Re-inject compaction hint after pass1 early exit. */
+            llm_chat_insert_typed(chat, pos,
+                "user",
+                "[Context compacted. Use memory_recall to recover lost "
+                "context — it searches both stored knowledge and past "
+                "session history.]",
+                LLM_MSG_MEMORY_HINT);
             goto journal;
         }
     }
 
-    /* Compute re-injection estimate for effective target calculation */
-    long actual_sp_size = 0;
-    {
-        char *sp_preview = scratchpad_serialize_budget(&ctx->tools->scratch, SIZE_MAX);
-        if (sp_preview) {
-            actual_sp_size = (long)strlen(sp_preview);
-            free(sp_preview);
-        }
-    }
+    /* FIX C3: Compute re-injection estimate without full serialization. */
+    long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
     long breadcrumb_cap = (long)(context_budget * REACT_BREADCRUMB_BUDGET_PCT / 100);
     if (breadcrumb_cap < REACT_BREADCRUMB_CAP_MIN)
         breadcrumb_cap = REACT_BREADCRUMB_CAP_MIN;
@@ -670,8 +683,13 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* ── Pass 3: Scored eviction ── */
     usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
     if (usage_pct > target_pct) {
+        /* Use effective_target_pct (accounts for scratchpad + breadcrumb
+         * re-injection cost) so Pass 3 evicts enough that re-injection
+         * won't immediately overshoot the target.  Previously target_pct
+         * was used here, causing systematic overshoot → post-verify dance. */
         int n = evict_pass3_scored(ctx, chat, keep_head, keep_tail,
-                                   target_pct, context_budget, breadcrumb_cap,
+                                   effective_target_pct, context_budget,
+                                   breadcrumb_cap,
                                    step, on_event, userdata);
         if (n > 0) did_evict = 1;
     }
@@ -680,7 +698,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     /* Post-eviction verification — FIX FLAW 2: pass target_pct, not trigger */
     if (did_evict)
-        evict_post_verify(ctx, chat, keep_head, target_pct, context_budget);
+        evict_post_verify(ctx, chat, target_pct, context_budget);
 
 journal:
     /* Log compaction event to journal if anything changed */

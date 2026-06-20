@@ -59,6 +59,10 @@ char *scratchpad_serialize(scratchpad_t *sp);
  * Caller must free. Returns NULL if empty. */
 char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars);
 
+/* Compute total serialized size without allocating the output string.
+ * Returns the approximate size in chars if serialized (0 if empty). */
+size_t scratchpad_total_size(scratchpad_t *sp);
+
 /* Persist scratchpad to disk (session_dir/scratchpad.md). */
 int scratchpad_save(scratchpad_t *sp, const char *session_dir);
 
