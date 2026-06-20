@@ -173,15 +173,16 @@ void journal_parse_compaction_stats(cJSON *params, journal_compaction_stats_t *s
     s->before_pct = 0;
     s->after_pct = 0;
     if (!params) return;
-    cJSON *j;
-    j = cJSON_GetObjectItem(params, "before_msgs");
-    if (j) s->before_msgs = (int)j->valuedouble;
-    j = cJSON_GetObjectItem(params, "after_msgs");
-    if (j) s->after_msgs = (int)j->valuedouble;
-    j = cJSON_GetObjectItem(params, "before_pct");
-    if (j) s->before_pct = (int)j->valuedouble;
-    j = cJSON_GetObjectItem(params, "after_pct");
-    if (j) s->after_pct = (int)j->valuedouble;
+    /* S3 FIX: Macro-driven extraction eliminates 4× repeated pattern. */
+    #define PARSE_INT_FIELD(name) do { \
+        cJSON *_j = cJSON_GetObjectItem(params, #name); \
+        if (_j) s->name = (int)_j->valuedouble; \
+    } while (0)
+    PARSE_INT_FIELD(before_msgs);
+    PARSE_INT_FIELD(after_msgs);
+    PARSE_INT_FIELD(before_pct);
+    PARSE_INT_FIELD(after_pct);
+    #undef PARSE_INT_FIELD
 }
 
 /* ── B3 FIX: Shared structural tool skip list ────────── */

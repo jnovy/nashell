@@ -151,8 +151,36 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     int pos = keep_head;
     int did_evict = (breadcrumb_str != NULL);
 
-    /* 1. Re-inject scratchpad */
-    if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
+    /* D5/S2 FIX: Pre-compute available scratchpad budget BEFORE injection.
+     * Previously step 1 injected at full budget, then strategy 1 removed and
+     * re-injected at a smaller size — wasting an insert + remove cycle.
+     * Now we compute the right size on the first attempt. */
+    long current_chars = react_calc_total_chars(chat);
+    long target_budget_chars = (context_budget > 0)
+        ? context_budget * target_pct / 100 : 0;
+    long other_inject_chars = 0;
+    if (breadcrumb_str)
+        other_inject_chars += (long)strlen(breadcrumb_str);
+    if (did_evict)
+        other_inject_chars += 130;  /* approximate MEMORY_HINT message length */
+
+    /* 1. Re-inject scratchpad at right-sized budget */
+    if (target_budget_chars > 0) {
+        long available_for_sp = target_budget_chars - current_chars - other_inject_chars;
+        if (available_for_sp > REACT_SP_SHRINK_MIN) {
+            /* Clamp to normal scratchpad budget if room allows */
+            size_t normal_budget = react_scratchpad_budget(
+                context_budget, current_chars, REACT_SP_MIN);
+            size_t sp_budget = (size_t)available_for_sp < normal_budget
+                ? (size_t)available_for_sp : normal_budget;
+            char *sp = scratchpad_serialize_budget(&ctx->tools->scratch, sp_budget);
+            if (react_inject_scratchpad_msg(chat, pos, sp) > 0) pos++;
+            free(sp);
+        }
+    } else {
+        /* No budget info — inject at default budget */
+        if (react_reinject_scratchpad(ctx, chat, pos) > 0) pos++;
+    }
 
     /* 2. Inject breadcrumbs (if any) */
     if (breadcrumb_str) {
@@ -173,36 +201,20 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     }
 
     /* C1 FIX: Flat if-chain replaces over-engineered strategy enum + loop.
-     * Strategies tried in order: shrink SP → strip SP → emergency evict.
+     * D5/S2: Scratchpad was already injected at right-sized budget above.
+     * Strategies: strip SP entirely → emergency evict.
      * Each step re-checks usage and exits as soon as budget is met. */
     int usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
 
-    /* Strategy 1: Shrink scratchpad to fit */
+    /* Strategy 1: Strip scratchpad entirely */
     if (usage_pct > target_pct) {
         nash_log("[eviction] post-finalize usage %d%% > target %d%% — "
-                 "shrinking scratchpad", usage_pct, target_pct);
-        llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-        long target_budget_chars = context_budget * target_pct / 100;
-        long sp_chars = target_budget_chars - react_calc_total_chars(chat);
-        if (sp_chars > REACT_SP_SHRINK_MIN) {
-            char *small_sp = scratchpad_serialize_budget(
-                &ctx->tools->scratch, (size_t)sp_chars);
-            int kh = react_compute_keep_head(chat);
-            react_inject_scratchpad_msg(chat, kh, small_sp);
-            free(small_sp);
-        }
-        usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
-    }
-
-    /* Strategy 2: Strip scratchpad entirely */
-    if (usage_pct > target_pct) {
-        nash_log("[eviction] still %d%% after scratchpad shrink — "
-                 "stripping entirely", usage_pct);
+                 "stripping scratchpad", usage_pct, target_pct);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
         usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
     }
 
-    /* Strategy 3: Emergency eviction */
+    /* Strategy 2: Emergency eviction */
     if (usage_pct > target_pct) {
         nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
         int before_n = chat->n_msgs;
@@ -217,6 +229,14 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                      n_emergency);
             llm_chat_insert_typed(chat, kh, "user", emsg,
                                   LLM_MSG_EVICTION_SUMMARY);
+            /* F3 FIX: Inject MEMORY_HINT alongside emergency breadcrumb,
+             * matching the normal eviction path (step 3 above). */
+            llm_chat_insert_typed(chat, kh + 1,
+                "user",
+                "[Context compacted. Use memory_recall to recover lost "
+                "context — it searches both stored knowledge and past "
+                "session history.]",
+                LLM_MSG_MEMORY_HINT);
         }
         /* Re-inject scratchpad only if room permits */
         if (react_usage_pct(react_calc_total_chars(chat), context_budget) < target_pct) {
@@ -439,10 +459,12 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
 
     str_append_cstr(&breadcrumb, "[EVICTED CONTEXT — recoverable via file_read]\n");
 
-    /* Dynamic seen_aliases array */
-    int seen_cap = n_to_evict > 16 ? n_to_evict : 16;
-    const char **seen_aliases = malloc((size_t)seen_cap * sizeof(const char *));
-    int n_seen = 0;
+    /* D3 FIX: Hash-based alias dedup replaces O(n²) linear scan.
+     * Uses CRC32 hash set with open addressing (power-of-2 table size). */
+    int alias_cap = 64;  /* power of 2, grows if needed */
+    while (alias_cap < n_to_evict * 2) alias_cap *= 2;
+    uint32_t *alias_hashes = calloc((size_t)alias_cap, sizeof(uint32_t));
+    /* hash 0 = empty slot sentinel */
 
     for (int ei = 0; ei < n_evictable; ei++) {
         if (!evict_mark[ei]) continue;
@@ -456,26 +478,20 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
             /* FIX FLAW 5: Use separate index budget */
             if ((long)breadcrumb.len >= breadcrumb_index_cap) continue;
 
-            /* Skip duplicate aliases */
+            /* D3 FIX: O(1) average duplicate check via CRC32 hash set */
             int dup = 0;
-            if (seen_aliases) {
-                for (int di = 0; di < n_seen; di++) {
-                    if (strcmp(seen_aliases[di], chat->msgs[mi].store_alias) == 0) {
-                        dup = 1; break;
-                    }
+            if (alias_hashes) {
+                const char *alias = chat->msgs[mi].store_alias;
+                uint32_t h = compress_crc32(alias, strlen(alias));
+                if (h == 0) h = 1;  /* avoid sentinel */
+                int slot = (int)(h & (uint32_t)(alias_cap - 1));
+                while (alias_hashes[slot]) {
+                    if (alias_hashes[slot] == h) { dup = 1; break; }
+                    slot = (slot + 1) & (alias_cap - 1);
                 }
+                if (!dup) alias_hashes[slot] = h;
             }
             if (dup) continue;
-            if (seen_aliases) {
-                if (n_seen >= seen_cap) {
-                    int new_cap = seen_cap * 2;
-                    const char **tmp = realloc(seen_aliases,
-                        (size_t)new_cap * sizeof(const char *));
-                    if (tmp) { seen_aliases = tmp; seen_cap = new_cap; }
-                }
-                if (n_seen < seen_cap)
-                    seen_aliases[n_seen++] = chat->msgs[mi].store_alias;
-            }
 
             char brief[REACT_BREADCRUMB_BRIEF_LEN + 1];
             int msg_clen = (int)chat->msgs[mi].content_len;
@@ -506,12 +522,14 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     if (summary.len > 0) {
         char *summ_str = str_steal(&summary);
         scratchpad_write(&ctx->tools->scratch, "evicted_context", summ_str, 2);
-        scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+        /* D4 FIX: Defer scratchpad_save() — finalize may strip scratchpad
+         * entirely (strategy 2), making this disk write wasted I/O.
+         * Save is now done after finalize confirms scratchpad survives. */
         free(summ_str);
     } else {
         str_free(&summary);
     }
-    free(seen_aliases);
+    free(alias_hashes);
 
     if (breadcrumb.len > 0)
         return str_steal(&breadcrumb);
@@ -536,7 +554,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
                        react_event_fn on_event, void *userdata) {
 
-    if (!ctx->flags.enable_compaction || ctx->provider->cfg.context_size <= 0)
+    /* F1 FIX: Guard against NULL provider before dereferencing cfg. */
+    if (!ctx->flags.enable_compaction || !ctx->provider ||
+        ctx->provider->cfg.context_size <= 0)
         return;
 
     long context_budget = react_context_budget(ctx);
@@ -560,9 +580,13 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int before_pct = usage_pct;
 
     /* ── Step 1: Cleanup stale injected messages ── */
-    llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-    llm_chat_remove_by_type(chat, LLM_MSG_EVICTION_SUMMARY);
-    llm_chat_remove_by_type(chat, LLM_MSG_MEMORY_HINT);
+    /* D1 FIX: Single-pass multi-type removal instead of 3× O(n) scans. */
+    {
+        llm_msg_type_t cleanup_types[] = {
+            LLM_MSG_SCRATCHPAD, LLM_MSG_EVICTION_SUMMARY, LLM_MSG_MEMORY_HINT
+        };
+        llm_chat_remove_by_types(chat, cleanup_types, 3);
+    }
 
     /* Recompute after cleanup (indices shifted) */
     keep_head = react_compute_keep_head(chat);
@@ -582,31 +606,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
 
-    /* Adjust boundary to avoid splitting pairs at edges.
-     * Review A3: Guard prevents excessive shrinking — stop if range
-     * drops below 2 messages to avoid reducing n_evictable to 0. */
-    while (evict_end > evict_start + 1) {
-        if (evict_end < chat->n_msgs && chat->msgs[evict_end].tool_call_id) {
-            evict_end--;
-            continue;
-        }
-        if (evict_end - 1 >= evict_start &&
-            chat->msgs[evict_end - 1].tool_calls_json) {
-            evict_end--;
-            continue;
-        }
-        break;
-    }
-
-    /* A1 FIX: Symmetric boundary adjustment for evict_start.
-     * If a tool_result sits at evict_start but its tool_call partner is
-     * in the keep_head zone, advance evict_start past it to avoid
-     * orphaning the tool_result during eviction. */
-    while (evict_start < evict_end &&
-           chat->msgs[evict_start].tool_call_id &&
-           (evict_start == 0 ||
-            !chat->msgs[evict_start - 1].tool_calls_json))
-        evict_start++;
+    /* F2/DD1 FIX: Use shared pair-safe boundary adjustment. */
+    evict_adjust_boundaries(chat, &evict_start, &evict_end);
 
     int n_evictable = evict_end - evict_start;
     if (n_evictable <= 0) {
@@ -713,6 +714,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
      * content (llm_chat_replace_content), not message structure. */
     evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
                   bc_str, step, on_event, userdata);
+
+    /* D4 FIX: Save scratchpad to disk after finalize confirms it survived.
+     * Previously saved in evict_build_breadcrumbs before finalize could strip it. */
+    scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
 
 journal:
     /* Log compaction event to journal if anything changed */

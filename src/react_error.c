@@ -40,6 +40,12 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
     int keep_tail = react_compute_keep_tail(chat);
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
+
+    /* F2/DD1 FIX: Use shared pair-safe boundary adjustment.
+     * Previously emergency eviction used raw boundaries, which could
+     * orphan a tool_result whose tool_call partner was protected. */
+    evict_adjust_boundaries(chat, &evict_start, &evict_end);
+
     int n_evictable = evict_end - evict_start;
     if (n_evictable <= 2) return 0;
 

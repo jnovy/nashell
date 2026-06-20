@@ -156,6 +156,12 @@ void        llm_msg_free_fields(llm_msg_t *m);
  * Returns the number of messages removed. */
 int         llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type);
 
+/* D1 FIX: Remove all messages matching ANY of the given types in a single pass.
+ * Avoids O(n) × k scanning when removing k types sequentially.
+ * Returns the total number of messages removed. */
+int         llm_chat_remove_by_types(llm_chat_t *chat,
+                                     const llm_msg_type_t *types, int n_types);
+
 /* Find the first message of a given type.
  * Returns index, or -1 if not found.
  * Type-safe alternative to scanning content prefixes. */

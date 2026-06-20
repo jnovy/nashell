@@ -58,8 +58,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         char *mem_summary = ctx->tools->ws
             ? workspace_build_index(ctx->tools->ws)
             : memory_build_index(ctx->tools->memory);
-        if (mem_summary && strlen(mem_summary) > 0) {
-            size_t mem_msg_sz = strlen(mem_summary) + 512;
+        /* S4 FIX: Cache strlen result instead of calling twice. */
+        size_t mem_summary_len = mem_summary ? strlen(mem_summary) : 0;
+        if (mem_summary_len > 0) {
+            size_t mem_msg_sz = mem_summary_len + 512;
             char *mem_msg = malloc(mem_msg_sz);
             if (mem_msg) {
                 snprintf(mem_msg, mem_msg_sz, "[MEMORY INDEX]\n%s\n\n"

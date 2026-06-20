@@ -53,6 +53,14 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
             /* user message (e.g., user_ask response, hint) — include */
             tail_start = i;
         } else {
+            /* F5 FIX: Skip injected hint/summary messages — don't let them
+             * silently expand the protected tail zone. Only genuine conversation
+             * messages should anchor tail boundaries. */
+            llm_msg_type_t mt = chat->msgs[i].msg_type;
+            if (mt == LLM_MSG_EVICTION_SUMMARY || mt == LLM_MSG_MEMORY_HINT ||
+                mt == LLM_MSG_SCRATCHPAD) {
+                continue;
+            }
             /* Stop if we hit something that isn't part of recent exchanges */
             if (pairs_found > 0) break;
             tail_start = i;
@@ -80,7 +88,7 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
     if (buf.len < 10) {
         for (int i = 0; i < chat->n_msgs; i++) {
             if (chat->msgs[i].msg_type == LLM_MSG_USER_QUERY &&
-                chat->msgs[i].content && strlen(chat->msgs[i].content) >= 10) {
+                chat->msgs[i].content && chat->msgs[i].content_len >= 10) {
                 str_append_cstr(&buf, chat->msgs[i].content);
                 break;
             }
@@ -90,9 +98,9 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
     int thought_count = 0;
     for (int i = chat->n_msgs - 1; i >= 0 && thought_count < 3; i--) {
         if (chat->msgs[i].role && strcmp(chat->msgs[i].role, "assistant") == 0 &&
-            chat->msgs[i].content && strlen(chat->msgs[i].content) > 20) {
+            chat->msgs[i].content && chat->msgs[i].content_len > 20) {
             str_append_cstr(&buf, " ");
-            size_t tlen = strlen(chat->msgs[i].content);
+            size_t tlen = chat->msgs[i].content_len;
             str_append(&buf, chat->msgs[i].content,
                        tlen > REACT_THOUGHT_TRUNC_LEN ? REACT_THOUGHT_TRUNC_LEN : tlen);
             thought_count++;

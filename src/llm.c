@@ -143,6 +143,35 @@ int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
     return removed;
 }
 
+/* D1 FIX: Single-pass removal of multiple message types.
+ * Avoids 3× O(n) scanning when removing SCRATCHPAD + EVICTION_SUMMARY + MEMORY_HINT. */
+int llm_chat_remove_by_types(llm_chat_t *chat,
+                              const llm_msg_type_t *types, int n_types) {
+    if (!chat || !types || n_types <= 0) return 0;
+    int removed = 0;
+    int dst = 0;
+    for (int src = 0; src < chat->n_msgs; src++) {
+        int match = 0;
+        for (int t = 0; t < n_types; t++) {
+            if (chat->msgs[src].msg_type == types[t]) {
+                match = 1;
+                break;
+            }
+        }
+        if (match) {
+            chat->total_chars -= (long)chat->msgs[src].content_len;
+            llm_msg_free_fields(&chat->msgs[src]);
+            removed++;
+        } else {
+            if (dst != src)
+                chat->msgs[dst] = chat->msgs[src];
+            dst++;
+        }
+    }
+    chat->n_msgs = dst;
+    return removed;
+}
+
 /* Find the first message of a given type. Returns index or -1. */
 int llm_chat_find_by_type(llm_chat_t *chat, llm_msg_type_t type) {
     if (!chat) return -1;

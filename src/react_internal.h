@@ -221,6 +221,37 @@ static inline char *react_format_scratchpad_msg(const char *content) {
     return msg;
 }
 
+/* F2/DD1 FIX: Pair-safe boundary adjustment for eviction ranges.
+ * Adjusts evict_start/evict_end so that no tool_call/tool_result pair is
+ * split across the boundary. Shared between progressive and emergency eviction.
+ * Modifies *evict_start and *evict_end in place. */
+static inline void evict_adjust_boundaries(const llm_chat_t *chat,
+                                            int *evict_start, int *evict_end) {
+    /* Adjust evict_end: pull back if a tool_result sits just outside
+     * the range (its tool_call partner would be inside) or if a tool_call
+     * sits at the boundary edge (its result would be outside). */
+    while (*evict_end > *evict_start + 1) {
+        if (*evict_end < chat->n_msgs &&
+            chat->msgs[*evict_end].tool_call_id) {
+            (*evict_end)--;
+            continue;
+        }
+        if (*evict_end - 1 >= *evict_start &&
+            chat->msgs[*evict_end - 1].tool_calls_json) {
+            (*evict_end)--;
+            continue;
+        }
+        break;
+    }
+    /* Adjust evict_start: advance past orphaned tool_results whose
+     * tool_call partner is in the protected keep_head zone. */
+    while (*evict_start < *evict_end &&
+           chat->msgs[*evict_start].tool_call_id &&
+           (*evict_start == 0 ||
+            !chat->msgs[*evict_start - 1].tool_calls_json))
+        (*evict_start)++;
+}
+
 /* D3 FIX: Shared mark-sweep helper — removes marked messages in reverse order
  * and recovers tool threading. Used by both progressive and emergency eviction.
  * Returns the number of messages actually removed. */
