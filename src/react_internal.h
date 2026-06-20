@@ -49,8 +49,9 @@
 #define REACT_SP_BM25_BUDGET        500
 /* Default and minimum breadcrumb capacity (chars). */
 #define REACT_BREADCRUMB_CAP_MIN    1024
-/* Breadcrumb cap divisor: cap = context_budget * SCRATCHPAD_BUDGET_PCT / this. */
-#define REACT_BREADCRUMB_CAP_DIV    300
+/* FIX FLAW 7: Breadcrumb budget as a direct percentage of context budget.
+ * Replaces confusing formula (SCRATCHPAD_BUDGET_PCT / CAP_DIV = 15/300 = 5%). */
+#define REACT_BREADCRUMB_BUDGET_PCT 5
 /* Padding added to re-injection estimate (chars). */
 #define REACT_REINJECT_PAD          200
 /* Minimum effective target percentage (prevents target going to 0). */
@@ -114,6 +115,23 @@ static inline long react_calc_total_chars(const llm_chat_t *chat) {
         if (chat->msgs[i].content)
             total += (long)strlen(chat->msgs[i].content);
     return total;
+}
+
+/* FIX FLAW 4: Shared floor calculation used by both progressive eviction (pass3)
+ * and emergency eviction. Eliminates duplication and ensures consistency.
+ * Returns minimum chars that must be retained in the evictable region. */
+static inline long react_calc_floor_chars(const llm_chat_t *chat,
+                                          int evict_start,
+                                          long context_budget) {
+    long head_chars = 0;
+    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
+        if (chat->msgs[i].content)
+            head_chars += (long)strlen(chat->msgs[i].content);
+    long base = (context_budget > 0)
+        ? context_budget - head_chars
+        : react_calc_total_chars(chat) - head_chars;
+    long floor = base * REACT_EVICT_FLOOR_PCT / 100;
+    return floor < REACT_EVICT_FLOOR_MIN_CHARS ? REACT_EVICT_FLOOR_MIN_CHARS : floor;
 }
 
 /* Compute context_budget in chars from provider config. */

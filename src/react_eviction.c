@@ -363,7 +363,6 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
                               int target_pct, long context_budget,
                               long breadcrumb_cap, int step,
                               react_event_fn on_event, void *userdata) {
-    (void)target_pct;  /* caller gates entry; scoring uses floor, not target */
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
 
@@ -381,15 +380,14 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
     if (!evict_mark) { free(scored); return 0; }
 
-    /* Compaction floor: keep at least FLOOR_PCT% of non-head context */
+    /* FIX FLAW 4: Use shared floor calculation helper */
+    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget);
+
+    /* head_chars needed for target check (Flaw 1 fix) */
     long head_chars = 0;
     for (int ki = 0; ki < evict_start; ki++)
         if (chat->msgs[ki].content)
             head_chars += (long)strlen(chat->msgs[ki].content);
-    long floor_chars = (context_budget - head_chars)
-                     * REACT_EVICT_FLOOR_PCT / 100;
-    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
-        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
 
     long tail_chars = 0;
     for (int ki = evict_end; ki < chat->n_msgs; ki++)
@@ -437,6 +435,14 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
             remaining_chars -= pair_chars;
             n_to_evict++;
         }
+
+        /* FIX FLAW 1: Stop when target is reached instead of evicting
+         * everything down to floor. Previously, pass3 ignored target_pct
+         * and evicted all evictable content to the floor, causing massive
+         * over-eviction (e.g., 72% → floor instead of 72% → 56%). */
+        if (react_usage_pct(head_chars + remaining_chars, context_budget)
+            <= target_pct)
+            break;
     }
     free(scored);
 
@@ -505,16 +511,16 @@ static int evict_pass3_scored(react_ctx_t *ctx, llm_chat_t *chat,
 /* ── Post-eviction verification ──────────────────────── */
 
 /* Verify context is within budget after eviction.
- * If still over, progressively shrink scratchpad, then emergency evict.
- * FIX #5: Remeasures actual_sp_size AFTER Pass 3 (which may have written
- * evicted_context to scratchpad), preventing stale size calculation. */
+ * If still over target, progressively shrink scratchpad, then emergency evict.
+ * FIX FLAW 2: Changed from eviction_pct (trigger) to target_pct so post-verify
+ * ensures we reach the TARGET, not just the trigger. Consistent hysteresis. */
 static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
-                              int keep_head, int eviction_pct,
+                              int keep_head, int target_pct,
                               long context_budget) {
     long total_chars = react_calc_total_chars(chat);
     int usage_pct = react_usage_pct(total_chars, context_budget);
 
-    if (usage_pct <= eviction_pct) return;
+    if (usage_pct <= target_pct) return;
 
     /* FIX #5: Measure actual scratchpad size NOW (after Pass 3 may have
      * written to it), not from a stale pre-eviction measurement. */
@@ -527,13 +533,13 @@ static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
         }
     }
 
-    nash_log("[eviction] post-eviction usage %d%% > trigger %d%% — "
-             "shrinking scratchpad", usage_pct, eviction_pct);
+    nash_log("[eviction] post-eviction usage %d%% > target %d%% — "
+             "shrinking scratchpad", usage_pct, target_pct);
     llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
 
     /* Try proportional reduction first */
     total_chars = react_calc_total_chars(chat);
-    long overshoot = total_chars - (context_budget * eviction_pct / 100);
+    long overshoot = total_chars - (context_budget * target_pct / 100);
     long sp_chars = actual_sp_size - overshoot;
     if (sp_chars > REACT_SP_SHRINK_MIN) {
         char *small_sp = scratchpad_serialize_budget(
@@ -553,13 +559,13 @@ static void evict_post_verify(react_ctx_t *ctx, llm_chat_t *chat,
 
     total_chars = react_calc_total_chars(chat);
     usage_pct = react_usage_pct(total_chars, context_budget);
-    if (usage_pct > eviction_pct) {
+    if (usage_pct > target_pct) {
         nash_log("[eviction] still %d%% after scratchpad shrink — "
                  "stripping entirely", usage_pct);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
         total_chars = react_calc_total_chars(chat);
         usage_pct = react_usage_pct(total_chars, context_budget);
-        if (usage_pct > eviction_pct) {
+        if (usage_pct > target_pct) {
             nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
             react_emergency_evict(chat, context_budget);
         }
@@ -603,6 +609,11 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     llm_chat_remove_by_type(chat, LLM_MSG_EVICTION_SUMMARY);
     llm_chat_remove_by_type(chat, LLM_MSG_MEMORY_HINT);
 
+    /* FIX FLAW 5: Recompute keep_head after stale removal — the scratchpad
+     * was inserted at keep_head, so removing it shifts the boundary. */
+    keep_head = react_compute_keep_head(chat);
+    keep_tail = react_compute_keep_tail(chat);
+
     total_chars = react_calc_total_chars(chat);
     usage_pct = react_usage_pct(total_chars, context_budget);
 
@@ -632,7 +643,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             free(sp_preview);
         }
     }
-    long breadcrumb_cap = (long)(context_budget * REACT_SCRATCHPAD_BUDGET_PCT / REACT_BREADCRUMB_CAP_DIV);
+    long breadcrumb_cap = (long)(context_budget * REACT_BREADCRUMB_BUDGET_PCT / 100);
     if (breadcrumb_cap < REACT_BREADCRUMB_CAP_MIN)
         breadcrumb_cap = REACT_BREADCRUMB_CAP_MIN;
     long reinject_est = actual_sp_size + breadcrumb_cap + REACT_REINJECT_PAD;
@@ -667,9 +678,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     free(bm25_query);
 
-    /* Post-eviction verification */
+    /* Post-eviction verification — FIX FLAW 2: pass target_pct, not trigger */
     if (did_evict)
-        evict_post_verify(ctx, chat, keep_head, eviction_pct, context_budget);
+        evict_post_verify(ctx, chat, keep_head, target_pct, context_budget);
 
 journal:
     /* Log compaction event to journal if anything changed */

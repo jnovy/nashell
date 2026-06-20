@@ -115,19 +115,45 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
     const llm_msg_t *msg = &chat->msgs[msg_idx];
 
     if (msg->tool_calls_json) {
-        /* tool_call: scan forward for matching tool_result */
-        for (int pi = msg_idx + 1; pi < range_end && pi < chat->n_msgs; pi++) {
-            if (chat->msgs[pi].tool_call_id) {
-                if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-                    return -1;  /* can't evict partner */
-                return pi;
+        /* FIX FLAW 3: Match by tool_call_id instead of first-found.
+         * Extract the ID from tool_calls_json and find the tool_result
+         * with a matching tool_call_id. Prevents wrong-pair eviction
+         * when tool call/result pairs are interleaved. */
+        const char *expected_id = NULL;
+        cJSON *tc_arr = cJSON_Parse(msg->tool_calls_json);
+        if (tc_arr && cJSON_IsArray(tc_arr)) {
+            cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
+            if (first) {
+                cJSON *id_item = cJSON_GetObjectItem(first, "id");
+                if (id_item && cJSON_IsString(id_item))
+                    expected_id = id_item->valuestring;
             }
         }
+        int result = -1;
+        for (int pi = msg_idx + 1; pi < range_end && pi < chat->n_msgs; pi++) {
+            if (!chat->msgs[pi].tool_call_id) continue;
+            /* If we extracted an ID, match by it; otherwise fall back to first */
+            if (expected_id) {
+                if (strcmp(chat->msgs[pi].tool_call_id, expected_id) != 0)
+                    continue;
+            }
+            if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+                result = -1;
+                break;
+            }
+            result = pi;
+            break;
+        }
+        cJSON_Delete(tc_arr);
+        return result;
     }
     if (msg->tool_call_id) {
-        /* tool_result: scan backward for matching tool_call */
+        /* tool_result: scan backward for tool_call whose tool_calls_json
+         * contains our tool_call_id. */
         for (int pi = msg_idx - 1; pi >= range_start; pi--) {
-            if (chat->msgs[pi].tool_calls_json) {
+            if (!chat->msgs[pi].tool_calls_json) continue;
+            /* Quick strstr check before expensive JSON parse */
+            if (strstr(chat->msgs[pi].tool_calls_json, msg->tool_call_id)) {
                 if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
                     return -1;
                 return pi;

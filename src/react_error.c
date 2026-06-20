@@ -35,17 +35,15 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
-    /* FIX #4: Use REACT_EVICT_FLOOR_PCT instead of hardcoded /5.
-     * Previously diverged from progressive eviction's floor calculation. */
+    /* FIX FLAW 4: Use shared floor calculation helper for consistency
+     * with progressive eviction. */
+    long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget);
+
+    /* head_chars still needed for remaining_nonhead calculations below */
     long head_chars = 0;
     for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
             head_chars += (long)strlen(chat->msgs[i].content);
-    long floor_chars = (context_budget > 0)
-        ? (context_budget - head_chars) * REACT_EVICT_FLOOR_PCT / 100
-        : (total_chars - head_chars) * REACT_EVICT_FLOOR_PCT / 100;
-    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
-        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
 
     long removed_chars = 0;
     int removed = 0;
