@@ -45,45 +45,16 @@
 /* ── Eviction Tuning Constants (formerly inline magic numbers) ──── */
 /* Thought/content truncation limit for BM25 query augmentation (chars). */
 #define REACT_THOUGHT_TRUNC_LEN     200
-/* Scratchpad preview budget for BM25 query augmentation (chars). */
-#define REACT_SP_BM25_BUDGET        500
-/* Default and minimum breadcrumb capacity (chars). */
-#define REACT_BREADCRUMB_CAP_MIN    1024
-/* Padding added to re-injection estimate (chars). */
-#define REACT_REINJECT_PAD          200
-/* Minimum effective target percentage (prevents target going to 0). */
-#define REACT_EFF_TARGET_MIN_PCT    10
+/* FIX #7: REACT_SP_BM25_BUDGET moved to react.c (only user).
+ * REACT_BREADCRUMB_CAP_MIN, REACT_REINJECT_PAD, REACT_EFF_TARGET_MIN_PCT
+ * moved to react_eviction.c (only user). */
 /* Minimum scratchpad budget (chars). */
 #define REACT_SP_MIN                2048
 /* Fallback scratchpad budget when context_size unknown (chars). */
 #define REACT_SP_FALLBACK           8192
-/* Compress-scaled parameters: minimum chunks and chars. */
-#define REACT_COMPRESS_MIN_UNITS    4
-#define REACT_COMPRESS_MIN_CHARS    400
-/* Score formula coefficients for Pass 3 eviction scoring. */
-#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
-#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
-#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
-#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
-#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
-#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
-/* Breadcrumb brief preview truncation (chars). */
-#define REACT_BREADCRUMB_BRIEF_LEN  80
-/* Minimum tool content length to include in eviction summary. */
-#define REACT_SUMMARY_TOOL_MIN_LEN  50
-/* Per-message summary min/max chars. */
-#define REACT_SUMMARY_PER_MSG_MIN   200
-#define REACT_SUMMARY_PER_MSG_MAX   1000
-/* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
-#define REACT_SP_SHRINK_MIN         512
-/* FIX FLAW 5: Separate budgets for breadcrumb index and eviction summary.
- * Previously both shared REACT_BREADCRUMB_BUDGET_PCT, causing unpredictable
- * allocation depending on which messages had store aliases. */
-#define REACT_BREADCRUMB_INDEX_PCT  2  /* % of context budget for store-alias index */
-#define REACT_BREADCRUMB_SUMMARY_PCT 3 /* % of context budget for eviction summary */
-/* FIX FLAW 8: Fixed minimum compress threshold instead of average-based.
- * Messages below this size yield negligible savings from BM25 compression. */
-#define REACT_COMPRESS_THRESH_FIXED 800
+/* FIX #7: Eviction-only constants (REACT_SCORE_*, REACT_BREADCRUMB_*,
+ * REACT_SUMMARY_*, REACT_SP_SHRINK_MIN, REACT_COMPRESS_*) moved to
+ * react_eviction.c — the only file that uses them. */
 
 /* Compaction hint text injected as MEMORY_HINT after eviction.
  * Extracted to a constant to eliminate 3 copies and the magic-130 estimate. */
@@ -148,6 +119,21 @@ static inline long react_calc_total_chars(const llm_chat_t *chat) {
     return chat->total_chars;
 }
 
+/* FIX #12: Convenience wrapper — combines calc_total_chars + usage_pct.
+ * This 2-function composition appeared 8+ times across eviction files. */
+static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
+    return react_usage_pct(react_calc_total_chars(chat), budget);
+}
+
+/* FIX #11: Compute total chars in head (messages before evict_start).
+ * Eliminates 3 copies of the same loop. */
+static inline long react_head_chars(const llm_chat_t *chat, int evict_start) {
+    long hc = 0;
+    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
+        hc += (long)chat->msgs[i].content_len;
+    return hc;
+}
+
 /* FIX FLAW 4: Shared floor calculation used by both progressive eviction (pass3)
  * and emergency eviction. Eliminates duplication and ensures consistency.
  * Returns minimum chars that must be retained in the evictable region.
@@ -156,12 +142,10 @@ static inline long react_calc_floor_chars(const llm_chat_t *chat,
                                           int evict_start,
                                           long context_budget,
                                           long known_head_chars) {
-    long head_chars = known_head_chars;
-    if (head_chars < 0) {
-        head_chars = 0;
-        for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-            head_chars += (long)chat->msgs[i].content_len;
-    }
+    /* FIX #11: Use react_head_chars helper instead of inline loop */
+    long head_chars = (known_head_chars >= 0)
+        ? known_head_chars
+        : react_head_chars(chat, evict_start);
     long base = (context_budget > 0)
         ? context_budget - head_chars
         : react_calc_total_chars(chat) - head_chars;
@@ -420,10 +404,13 @@ evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
 void evict_free_partner_map(evict_partner_map_t *map);
 
 /* Proposal A: Unified post-eviction finalization. Re-injects scratchpad,
- * breadcrumbs, and compaction hint in a single pass. Verifies budget. */
+ * breadcrumbs, and compaction hint in a single pass. Verifies budget.
+ * FIX #5: breadcrumb_str ownership is CONSUMED (freed) by this function.
+ * Caller must not use breadcrumb_str after calling evict_finalize(). */
 void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
-                   char *breadcrumb_str, int step,
+                   char *breadcrumb_str /* consumed */,
+                   int step,
                    react_event_fn on_event, void *userdata);
 
 /* ── Post-Loop (Reflection, Promotion, Pruning) ────── */

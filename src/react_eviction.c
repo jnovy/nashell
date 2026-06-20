@@ -22,6 +22,38 @@
 #include "react_internal.h"
 #include "compress.h"
 
+/* ── FIX #7: Constants moved from react_internal.h (used only here) ── */
+/* Score formula coefficients for progressive eviction scoring. */
+#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
+#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
+#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
+#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
+#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
+#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
+/* Breadcrumb brief preview truncation (chars). */
+#define REACT_BREADCRUMB_BRIEF_LEN  80
+/* Minimum tool content length to include in eviction summary. */
+#define REACT_SUMMARY_TOOL_MIN_LEN  50
+/* Per-message summary min/max chars. */
+#define REACT_SUMMARY_PER_MSG_MIN   200
+#define REACT_SUMMARY_PER_MSG_MAX   1000
+/* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
+#define REACT_SP_SHRINK_MIN         512
+/* Separate budgets for breadcrumb index and eviction summary. */
+#define REACT_BREADCRUMB_INDEX_PCT  2  /* % of context budget for store-alias index */
+#define REACT_BREADCRUMB_SUMMARY_PCT 3 /* % of context budget for eviction summary */
+/* Fixed minimum compress threshold — messages below this yield negligible savings. */
+#define REACT_COMPRESS_THRESH_FIXED 800
+/* Compress-scaled parameters: minimum chunks and chars. */
+#define REACT_COMPRESS_MIN_UNITS    4
+#define REACT_COMPRESS_MIN_CHARS    400
+/* Default and minimum breadcrumb capacity (chars). */
+#define REACT_BREADCRUMB_CAP_MIN    1024
+/* Padding added to re-injection estimate (chars). */
+#define REACT_REINJECT_PAD          200
+/* Minimum effective target percentage (prevents target going to 0). */
+#define REACT_EFF_TARGET_MIN_PCT    10
+
 /* ── Comparison functions for qsort ───────────────────── */
 
 typedef struct { int idx; int len; } compress_cand_t;
@@ -200,14 +232,15 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
      * D5/S2: Scratchpad was already injected at right-sized budget above.
      * Strategies: strip SP entirely → emergency evict.
      * Each step re-checks usage and exits as soon as budget is met. */
-    int usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+    /* FIX #12: Use react_chat_usage_pct convenience helper */
+    int usage_pct = react_chat_usage_pct(chat, context_budget);
 
     /* Strategy 1: Strip scratchpad entirely */
     if (usage_pct > target_pct) {
         nash_log("[eviction] post-finalize usage %d%% > target %d%% — "
                  "stripping scratchpad", usage_pct, target_pct);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-        usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+        usage_pct = react_chat_usage_pct(chat, context_budget);
     }
 
     /* Strategy 2: Emergency eviction */
@@ -234,11 +267,11 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                 "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
         }
         /* Re-inject scratchpad only if room permits */
-        if (react_usage_pct(react_calc_total_chars(chat), context_budget) < target_pct) {
+        if (react_chat_usage_pct(chat, context_budget) < target_pct) {
             int kh = react_compute_keep_head(chat);
             react_reinject_scratchpad(ctx, chat, kh);
         }
-        usage_pct = react_usage_pct(react_calc_total_chars(chat), context_budget);
+        usage_pct = react_chat_usage_pct(chat, context_budget);
     }
 
     /* Emit event */
@@ -259,13 +292,20 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
  *   importance * IMP_WEIGHT - recoverability * REC_WEIGHT - size_bonus + pos_norm
  * Review A7: -rec term means recoverable content gets LOWER score
  * (evicted first), which is the desired behavior.
- * userdata is unused (NULL). */
+ * FIX #2: userdata = evict_partner_map_t*. size_bonus now includes partner
+ * message cost, so a small tool_call message whose partner is a 10KB
+ * tool_result will score higher (less likely to be evicted). */
 static int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
                                    int n_evictable, void *userdata) {
-    (void)userdata;
     int imp = (int)chat->msgs[mi].importance;
     int rec = (int)chat->msgs[mi].recoverability;
     int msg_len = (int)chat->msgs[mi].content_len;
+    /* FIX #2: Include partner size in cost calculation */
+    const evict_partner_map_t *pmap = (const evict_partner_map_t *)userdata;
+    if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0) {
+        int pi = pmap->partner[mi];
+        msg_len += (int)chat->msgs[pi].content_len;
+    }
     int pos_norm = (n_evictable > 1)
         ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
     int size_bonus = (rec > 0 && msg_len > REACT_SCORE_SIZE_THRESH)
@@ -455,15 +495,11 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     str_append_cstr(&breadcrumb, "[EVICTED CONTEXT — recoverable via file_read]\n");
     size_t header_len = breadcrumb.len;  /* BUG 1 FIX: track header-only length */
 
-    /* D3 FIX: Hash-based alias dedup replaces O(n²) linear scan.
-     * Uses CRC32 hash set with open addressing (power-of-2 table size).
-     * BUG 3 FIX: Store alias pointers alongside hashes to detect collisions
-     * via strcmp, preventing silent alias loss on CRC32 hash collision. */
-    int alias_cap = 64;  /* power of 2, grows if needed */
-    while (alias_cap < n_to_evict * 2) alias_cap *= 2;
-    uint32_t *alias_hashes = calloc((size_t)alias_cap, sizeof(uint32_t));
-    const char **alias_ptrs = calloc((size_t)alias_cap, sizeof(const char *));
-    /* hash 0 = empty slot sentinel */
+    /* FIX #14: Simplified alias dedup — linear scan replaces CRC32 hash table.
+     * With n_to_evict typically 5-20, O(n²) is negligible (~200 comparisons max)
+     * and saves ~30 lines of hash table code + the CRC32 dependency. */
+    const char *seen_aliases[64];
+    int n_seen = 0;
 
     for (int ei = 0; ei < n_evictable; ei++) {
         if (!evict_mark[ei]) continue;
@@ -477,27 +513,13 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
             /* FIX FLAW 5: Use separate index budget */
             if ((long)breadcrumb.len >= breadcrumb_index_cap) continue;
 
-            /* D3 FIX: O(1) average duplicate check via CRC32 hash set.
-             * BUG 3 FIX: On hash match, compare actual alias strings. */
+            /* FIX #14: Simple linear dedup (n≤64 aliases) */
+            const char *alias = chat->msgs[mi].store_alias;
             int dup = 0;
-            if (alias_hashes) {
-                const char *alias = chat->msgs[mi].store_alias;
-                uint32_t h = compress_crc32(alias, strlen(alias));
-                if (h == 0) h = 1;  /* avoid sentinel */
-                int slot = (int)(h & (uint32_t)(alias_cap - 1));
-                while (alias_hashes[slot]) {
-                    if (alias_hashes[slot] == h &&
-                        alias_ptrs[slot] &&
-                        strcmp(alias_ptrs[slot], alias) == 0) {
-                        dup = 1; break;
-                    }
-                    slot = (slot + 1) & (alias_cap - 1);
-                }
-                if (!dup) {
-                    alias_hashes[slot] = h;
-                    alias_ptrs[slot] = alias;
-                }
+            for (int s = 0; s < n_seen; s++) {
+                if (strcmp(seen_aliases[s], alias) == 0) { dup = 1; break; }
             }
+            if (!dup && n_seen < 64) seen_aliases[n_seen++] = alias;
             if (dup) continue;
 
             char brief[REACT_BREADCRUMB_BRIEF_LEN + 1];
@@ -536,9 +558,6 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     } else {
         str_free(&summary);
     }
-    free(alias_hashes);
-    free(alias_ptrs);
-
     /* BUG 1 FIX: Only return breadcrumb string if entries were added beyond
      * the header. Previously always returned non-NULL (header alone = 48 chars),
      * causing phantom eviction events with useless MEMORY_HINT injection. */
@@ -606,12 +625,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     total_chars = react_calc_total_chars(chat);
     usage_pct = react_usage_pct(total_chars, context_budget);
 
-    /* If cleanup alone brought us under target, finalize and return */
-    if (usage_pct <= target_pct) {
-        evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
-                      NULL, step, on_event, userdata);
-        goto journal;
-    }
+    /* FIX #13: Consolidated early-return path — all three "nothing to evict"
+     * cases jump here instead of duplicating evict_finalize(NULL) + goto. */
+    if (usage_pct <= target_pct)
+        goto finalize_no_evict;
 
     /* ── Step 2: Build partner index (Proposal E) ── */
     int evict_start = keep_head;
@@ -621,11 +638,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     evict_adjust_boundaries(chat, &evict_start, &evict_end);
 
     int n_evictable = evict_end - evict_start;
-    if (n_evictable <= 0) {
-        evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
-                      NULL, step, on_event, userdata);
-        goto journal;
-    }
+    if (n_evictable <= 0)
+        goto finalize_no_evict;
 
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
 
@@ -633,9 +647,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
     if (!evict_mark) {
         evict_free_partner_map(&pmap);
-        evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
-                      NULL, step, on_event, userdata);
-        goto journal;
+        goto finalize_no_evict;
     }
 
     /* Compute head/tail/evictable chars in a single pass (using cached content_len) */
@@ -686,7 +698,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int n_to_evict = evict_mark_candidates(chat, evict_start, evict_end,
                                             &pmap, floor_chars,
                                             remaining_nonhead, target_remaining,
-                                            evict_score_progressive, NULL,
+                                            evict_score_progressive, &pmap /* FIX #2 */,
                                             evict_mark);
 
     /* ── Step 4: Sweep phase — remove marked messages + build breadcrumbs ── */
@@ -729,6 +741,12 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* D4 FIX: Save scratchpad to disk after finalize confirms it survived.
      * Previously saved in evict_build_breadcrumbs before finalize could strip it. */
     scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+    goto journal;
+
+finalize_no_evict:
+    /* FIX #13: Single consolidated path for "no eviction needed" cases. */
+    evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
+                  NULL, step, on_event, userdata);
 
 journal:
     /* Log compaction event to journal if anything changed */

@@ -16,14 +16,18 @@
 
 /* Emergency scoring callback — simpler than progressive scoring.
  * Recoverable content (RECOVER_STORE/FILE/MEMORY) scores lower → evicted first.
- * Within each recoverability class, older messages (lower ri) score lower.
+ * Within each recoverability class, importance provides further ordering,
+ * then older messages (lower ri) score lower.
+ * FIX #8: Added importance factor so LOW messages are evicted before NORMAL,
+ * consistent with progressive scoring behavior.
  * userdata is unused (NULL). */
 static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
                                  int n_evictable, void *userdata) {
     (void)n_evictable; (void)userdata;
     int rec_score = (chat->msgs[mi].recoverability > LLM_RECOVER_NONE)
         ? 0 : 1000;
-    return rec_score + ri;  /* older + recoverable first */
+    int imp_score = (int)chat->msgs[mi].importance * 100;
+    return rec_score + imp_score + ri;  /* recoverable + low-importance + older first */
 }
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
@@ -56,13 +60,11 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
         target_chars = context_budget * eff_target / 100;
     else
         target_chars = total_chars * eff_target / 100;
-    long need_to_remove = total_chars - target_chars;
-    if (need_to_remove <= 0) return 0;
+    /* FIX #3: Inlined need_to_remove — it was only used for this check */
+    if (total_chars <= target_chars) return 0;
 
-    /* Compute head_chars using cached content_len */
-    long head_chars = 0;
-    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-        head_chars += (long)chat->msgs[i].content_len;
+    /* FIX #11: Use shared helper instead of inline loop */
+    long head_chars = react_head_chars(chat, evict_start);
 
     long floor_chars = react_calc_floor_chars(chat, evict_start, context_budget,
                                               head_chars);

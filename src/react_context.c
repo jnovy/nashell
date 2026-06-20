@@ -35,6 +35,95 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
     str_free(&msg);
 }
 
+/* FIX #15: Extracted from react_build_context — was 65 lines nested 4 deep.
+ * Filters scratchpad sections for branching: only R*_result sections from
+ * ancestor loops are included. Returns malloc'd serialized string (caller frees).
+ * Walks parent chain in journal to build ancestor set, then filters sections. */
+static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
+                                          const char *session_dir,
+                                          int parent_loop,
+                                          size_t max_budget) {
+    /* Build ancestor set by walking parent chain in journal */
+    int ancestors[256];
+    int n_ancestors = 0;
+    ancestors[n_ancestors++] = parent_loop;
+
+    char jpath[NASH_PATH_MAX];
+    FILE *jf = NULL;
+    if (session_dir) {
+        snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
+        jf = fopen(jpath, "r");
+    }
+    if (jf) {
+        int pmap_cap = 1024;
+        int *pmap = malloc(sizeof(int) * (size_t)pmap_cap);
+        if (pmap)
+            memset(pmap, -1, sizeof(int) * (size_t)pmap_cap);
+        char jline[32768];
+        while (pmap && fgets(jline, sizeof(jline), jf)) {
+            cJSON *entry = cJSON_Parse(jline);
+            if (!entry) continue;
+            const char *jtool = cJSON_GetStringValue(
+                cJSON_GetObjectItem(entry, "tool"));
+            if (jtool && strcmp(jtool, "query") == 0) {
+                int rl = (int)cJSON_GetNumberValue(
+                    cJSON_GetObjectItem(entry, "react_loop"));
+                cJSON *pp = cJSON_GetObjectItem(
+                    cJSON_GetObjectItem(entry, "params"), "parent_loop");
+                if (pp && cJSON_IsNumber(pp) && rl >= 0) {
+                    if (rl >= pmap_cap) {
+                        int new_cap = pmap_cap;
+                        while (new_cap <= rl) new_cap *= 2;
+                        int *tmp = realloc(pmap, sizeof(int) * (size_t)new_cap);
+                        if (tmp) {
+                            memset(tmp + pmap_cap, -1,
+                                   sizeof(int) * (size_t)(new_cap - pmap_cap));
+                            pmap = tmp;
+                            pmap_cap = new_cap;
+                        } else {
+                            cJSON_Delete(entry);
+                            continue;
+                        }
+                    }
+                    pmap[rl] = (int)pp->valuedouble;
+                }
+            }
+            cJSON_Delete(entry);
+        }
+        fclose(jf);
+        if (pmap) {
+            int cur = parent_loop;
+            while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0
+                   && n_ancestors < 256) {
+                cur = pmap[cur];
+                ancestors[n_ancestors++] = cur;
+            }
+            free(pmap);
+        }
+    }
+
+    /* Build filtered scratchpad copy — only ancestor R*_result sections */
+    scratchpad_t filtered;
+    scratchpad_init(&filtered);
+    for (int si = 0; si < scratch->count; si++) {
+        const char *sname = scratch->sections[si].name;
+        int rloop = -1;
+        if (sname && sscanf(sname, "R%d_result", &rloop) == 1) {
+            int is_ancestor = 0;
+            for (int ai = 0; ai < n_ancestors; ai++) {
+                if (ancestors[ai] == rloop) { is_ancestor = 1; break; }
+            }
+            if (!is_ancestor) continue;
+        }
+        scratchpad_write(&filtered, sname,
+                         scratch->sections[si].content,
+                         scratch->sections[si].priority);
+    }
+    char *serialized = scratchpad_serialize_budget(&filtered, max_budget);
+    scratchpad_free(&filtered);
+    return serialized;
+}
+
 void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          const char *user_query,
                          react_event_fn on_event, void *userdata) {
@@ -151,95 +240,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
         if (ctx->tools->scratch.count > 0) {
             if (is_branch) {
-                /* Build ancestor set by walking parent chain in journal */
-                int ancestors[256];
-                int n_ancestors = 0;
-                ancestors[n_ancestors++] = ctx->parent_loop;
-
-                char jpath[NASH_PATH_MAX];
-                FILE *jf = NULL;
-                if (ctx->tools->session_dir) {
-                    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
-                             ctx->tools->session_dir);
-                    jf = fopen(jpath, "r");
-                }
-                if (jf) {
-                    /* FIX #2: Use dynamically-sized parent map instead of fixed 1024.
-                     * Previously, react_loop IDs >= 1024 were silently dropped,
-                     * breaking ancestry tracking in long TUI sessions. */
-                    int pmap_cap = 1024;
-                    int *pmap = malloc(sizeof(int) * (size_t)pmap_cap);
-                    if (pmap) {
-                        memset(pmap, -1, sizeof(int) * (size_t)pmap_cap);
-                    }
-                    char jline[32768];
-                    while (pmap && fgets(jline, sizeof(jline), jf)) {
-                        cJSON *entry = cJSON_Parse(jline);
-                        if (!entry) continue;
-                        const char *jtool = cJSON_GetStringValue(
-                            cJSON_GetObjectItem(entry, "tool"));
-                        if (jtool && strcmp(jtool, "query") == 0) {
-                            int rl = (int)cJSON_GetNumberValue(
-                                cJSON_GetObjectItem(entry, "react_loop"));
-                            cJSON *pp = cJSON_GetObjectItem(
-                                cJSON_GetObjectItem(entry, "params"),
-                                "parent_loop");
-                            if (pp && cJSON_IsNumber(pp) && rl >= 0) {
-                                /* Grow pmap if needed */
-                                if (rl >= pmap_cap) {
-                                    int new_cap = pmap_cap;
-                                    while (new_cap <= rl) new_cap *= 2;
-                                    int *tmp = realloc(pmap, sizeof(int) * (size_t)new_cap);
-                                    if (tmp) {
-                                        memset(tmp + pmap_cap, -1,
-                                               sizeof(int) * (size_t)(new_cap - pmap_cap));
-                                        pmap = tmp;
-                                        pmap_cap = new_cap;
-                                    } else {
-                                        /* realloc failed — skip this entry */
-                                        cJSON_Delete(entry);
-                                        continue;
-                                    }
-                                }
-                                pmap[rl] = (int)pp->valuedouble;
-                            }
-                        }
-                        cJSON_Delete(entry);
-                    }
-                    fclose(jf);
-                    if (pmap) {
-                        int cur = ctx->parent_loop;
-                        while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0
-                               && n_ancestors < 256) {
-                            cur = pmap[cur];
-                            ancestors[n_ancestors++] = cur;
-                        }
-                        free(pmap);
-                    }
-                }
-
-                /* Build a temporary filtered scratchpad copy */
-                scratchpad_t filtered;
-                scratchpad_init(&filtered);
-                for (int si = 0; si < ctx->tools->scratch.count; si++) {
-                    const char *sname = ctx->tools->scratch.sections[si].name;
-                    int rloop = -1;
-                    if (sname && sscanf(sname, "R%d_result", &rloop) == 1) {
-                        int is_ancestor = 0;
-                        for (int ai = 0; ai < n_ancestors; ai++) {
-                            if (ancestors[ai] == rloop) {
-                                is_ancestor = 1;
-                                break;
-                            }
-                        }
-                        if (!is_ancestor) continue;
-                    }
-                    scratchpad_write(&filtered, sname,
-                                     ctx->tools->scratch.sections[si].content,
-                                     ctx->tools->scratch.sections[si].priority);
-                }
-                serialized = scratchpad_serialize_budget(&filtered, max_scratchpad);
-                scratchpad_free(&filtered);
+                /* FIX #15: Use extracted helper instead of 65-line inline block */
+                serialized = scratchpad_filter_for_branch(
+                    &ctx->tools->scratch, ctx->tools->session_dir,
+                    ctx->parent_loop, max_scratchpad);
             } else {
                 /* Normal (linear) — serialize all sections */
                 serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);

@@ -2,6 +2,9 @@
 #include "compress.h"
 #include "tui.h"  /* g_tui_active — for condvar timeout escape hatch */
 
+/* FIX #7: Constant moved from react_internal.h (used only here). */
+#define REACT_SP_BM25_BUDGET        500
+
 /* ── helpers ─────────────────────────────────────────── */
 
 /* FIX #4: Get chars-per-token from runtime state (mutable) instead of
