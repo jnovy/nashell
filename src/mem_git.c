@@ -20,9 +20,15 @@ int memory_git_run(memory_t *m, const char *const argv[]) {
     if (pid < 0) return -1;
     if (pid == 0) {
         /* Child: chdir to memory dir, suppress output */
+        setsid();
         if (chdir(m->dir) != 0) _exit(1);
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDOUT_FILENO); dup2(devnull, STDERR_FILENO); close(devnull); }
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            dup2(devnull, STDOUT_FILENO);
+            dup2(devnull, STDERR_FILENO);
+            close(devnull);
+        }
         execvp(argv[0], (char *const *)argv);
         _exit(127);
     }

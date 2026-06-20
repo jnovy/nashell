@@ -332,6 +332,18 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
 
     if (pid == 0) {
+        /* FIX: Isolate child from parent's terminal session.
+         * Without setsid(), long-running grandchildren (e.g. dnf spawned by
+         * a shell pipeline) inherit our process group and controlling terminal.
+         * If the parent (nash) exits or the grandchild becomes orphaned, it
+         * remains in the foreground PGRP with access to our stdin, which can
+         * steal keystrokes or block the terminal.
+         * Also redirect stdin from /dev/null — child commands don't need it
+         * and leaving it connected to the terminal lets orphaned grandchildren
+         * interfere with the parent's TUI input. */
+        setsid();
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);

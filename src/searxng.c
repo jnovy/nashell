@@ -26,9 +26,10 @@ static int run_container_cmd(const char *runtime, const char *action, const char
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
-        /* Child: redirect stdout/stderr to /dev/null */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
+        setsid();
+        /* Child: redirect all stdio to /dev/null */
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
         execlp(runtime, runtime, action, name, (char *)NULL);
         _exit(127);
     }
@@ -164,8 +165,9 @@ static int searxng_start_with_runtime(const char *runtime, int port, const char 
     pid_t pid = fork();
     if (pid < 0) return -1;
     if (pid == 0) {
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
+        setsid();
+        int devnull = open("/dev/null", O_RDWR);
+        if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
         execlp(runtime, runtime, "run", "-d", "--name", "nash-searxng",
                "-p", port_map,
                "-e", base_url_env,

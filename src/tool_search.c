@@ -41,6 +41,9 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return tools_make_error("fork failed"); }
 
     if (pid == 0) {
+        setsid();
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         dup2(pipefd[1], STDERR_FILENO);
@@ -284,6 +287,9 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return tools_make_error("fork failed"); }
 
     if (pid == 0) {
+        setsid();
+        { int dn = open("/dev/null", O_RDONLY);
+          if (dn >= 0) { dup2(dn, STDIN_FILENO); close(dn); } }
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
