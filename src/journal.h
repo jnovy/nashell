@@ -57,6 +57,28 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
  * Used to continue react_loop numbering when reopening an existing session. */
 int journal_max_react_loop(journal_t *j);
 
+/* ── B1 FIX: Shared compaction parameter extraction ──── */
+
+/* Parsed compaction statistics from a journal compaction event. */
+typedef struct {
+    int before_msgs;
+    int after_msgs;
+    int before_pct;
+    int after_pct;
+} journal_compaction_stats_t;
+
+/* Parse compaction stats from a cJSON params object.
+ * Safely handles NULL params (all fields zeroed). */
+void journal_parse_compaction_stats(cJSON *params, journal_compaction_stats_t *s);
+
+/* ── B3 FIX: Shared structural tool skip list ────────── */
+
+/* Returns 1 if the tool name is a structural/internal journal entry type
+ * that should be skipped during manifest/RAG/session-grep rendering.
+ * Structural tools: system, query, context, spec, memory_context, log, compaction.
+ * Consolidates 3 near-identical skip lists that were diverging. */
+int journal_is_structural_tool(const char *tool);
+
 /* ── Chunk extraction for session-level RAG ─────────── */
 
 /* Extracted semantic chunks from a journal for embedding.

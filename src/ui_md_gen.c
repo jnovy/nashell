@@ -614,21 +614,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             continue;
         }
 
-        /* Compaction entries → collect as separator (not a normal step) */
+        /* B1 FIX: Compaction entries → collect as separator (not a normal step) */
         if (strcmp(tool, "compaction") == 0) {
             cJSON *params = cJSON_GetObjectItem(entry, "params");
-            int bm = 0, am = 0, bp = 0, ap = 0;
-            if (params) {
-                cJSON *j;
-                j = cJSON_GetObjectItem(params, "before_msgs");
-                if (j) bm = (int)j->valuedouble;
-                j = cJSON_GetObjectItem(params, "after_msgs");
-                if (j) am = (int)j->valuedouble;
-                j = cJSON_GetObjectItem(params, "before_pct");
-                if (j) bp = (int)j->valuedouble;
-                j = cJSON_GetObjectItem(params, "after_pct");
-                if (j) ap = (int)j->valuedouble;
-            }
+            journal_compaction_stats_t cs;
+            journal_parse_compaction_stats(params, &cs);
             if (nsteps >= scap) {
                 scap = scap ? scap * 2 : 32;
                 steps = realloc(steps, (size_t)scap * sizeof(step_info_t));
@@ -642,7 +632,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             char cdesc[128];
             snprintf(cdesc, sizeof(cdesc),
                 "\xe2\x9c\x82 context compacted: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%%",
-                bm, am, bp, ap);
+                cs.before_msgs, cs.after_msgs, cs.before_pct, cs.after_pct);
             si->compact_desc = strdup(cdesc);
             cJSON_Delete(entry);
             continue;

@@ -165,6 +165,38 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     return 0;
 }
 
+/* ── B1 FIX: Shared compaction parameter extraction ──── */
+
+void journal_parse_compaction_stats(cJSON *params, journal_compaction_stats_t *s) {
+    s->before_msgs = 0;
+    s->after_msgs = 0;
+    s->before_pct = 0;
+    s->after_pct = 0;
+    if (!params) return;
+    cJSON *j;
+    j = cJSON_GetObjectItem(params, "before_msgs");
+    if (j) s->before_msgs = (int)j->valuedouble;
+    j = cJSON_GetObjectItem(params, "after_msgs");
+    if (j) s->after_msgs = (int)j->valuedouble;
+    j = cJSON_GetObjectItem(params, "before_pct");
+    if (j) s->before_pct = (int)j->valuedouble;
+    j = cJSON_GetObjectItem(params, "after_pct");
+    if (j) s->after_pct = (int)j->valuedouble;
+}
+
+/* ── B3 FIX: Shared structural tool skip list ────────── */
+
+int journal_is_structural_tool(const char *tool) {
+    if (!tool) return 0;
+    return strcmp(tool, "system") == 0 ||
+           strcmp(tool, "query") == 0 ||
+           strcmp(tool, "context") == 0 ||
+           strcmp(tool, "spec") == 0 ||
+           strcmp(tool, "memory_context") == 0 ||
+           strcmp(tool, "log") == 0 ||
+           strcmp(tool, "compaction") == 0;
+}
+
 char *journal_manifest(journal_t *j, int max_steps) {
     /* Delegate to the filtered version with no eviction filtering.
      * target_loop=-1 ensures the eviction check never matches. */
@@ -196,10 +228,7 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     int current_loop = -1;
     int evicted_count = 0;  /* count of evicted steps in target_loop */
     int evicted_compact_step = -1;  /* step of last compaction in evicted range */
-    int evicted_compact_before_msgs = 0;
-    int evicted_compact_after_msgs = 0;
-    int evicted_compact_before_pct = 0;
-    int evicted_compact_after_pct = 0;
+    journal_compaction_stats_t evicted_cs = {0}; /* B1 FIX */
 
     while (fgets(line, sizeof(line), f) && count < max_steps) {
         cJSON *entry = cJSON_Parse(line);
@@ -214,14 +243,14 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
 
         /* New react loop — show header with query text */
         if (loop != current_loop) {
-            /* Flush evicted count from previous loop */
+            /* B2 FIX: Flush evicted count from previous loop */
             if (evicted_count > 0) {
                 if (evicted_compact_step >= 0)
                     str_appendf(&out,
                         "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
                         evicted_count, evicted_compact_step,
-                        evicted_compact_before_msgs, evicted_compact_after_msgs,
-                        evicted_compact_before_pct, evicted_compact_after_pct);
+                        evicted_cs.before_msgs, evicted_cs.after_msgs,
+                        evicted_cs.before_pct, evicted_cs.after_pct);
                 else
                     str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
                                 evicted_count);
@@ -243,29 +272,13 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             str_append_cstr(&out, "\n");
         }
 
-        /* Skip system, query, context, spec, and memory_context entries (shown in header / redundant) */
-        if (tool && (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0 ||
-                     strcmp(tool, "context") == 0 || strcmp(tool, "spec") == 0 ||
-                     strcmp(tool, "memory_context") == 0)) {
-            cJSON_Delete(entry);
-            count++;
-            continue;
-        }
-
         /* FIX D8: For steps in the target loop that are below min_step,
          * just count them — they were evicted from context */
         if (loop == target_loop && step > 0 && step < min_step) {
-            /* Track compaction events within evicted range for richer summary */
+            /* B1 FIX: Track compaction events within evicted range */
             if (tool && strcmp(tool, "compaction") == 0 && params) {
                 evicted_compact_step = step;
-                cJSON *bm = cJSON_GetObjectItem(params, "before_msgs");
-                cJSON *am = cJSON_GetObjectItem(params, "after_msgs");
-                cJSON *bp = cJSON_GetObjectItem(params, "before_pct");
-                cJSON *ap = cJSON_GetObjectItem(params, "after_pct");
-                if (bm) evicted_compact_before_msgs = (int)bm->valuedouble;
-                if (am) evicted_compact_after_msgs = (int)am->valuedouble;
-                if (bp) evicted_compact_before_pct = (int)bp->valuedouble;
-                if (ap) evicted_compact_after_pct = (int)ap->valuedouble;
+                journal_parse_compaction_stats(params, &evicted_cs);
             }
             evicted_count++;
             cJSON_Delete(entry);
@@ -273,19 +286,20 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             continue;
         }
 
-        /* Render compaction entries as a compact separator line */
+        /* B1 FIX: Render compaction entries as a compact separator line */
         if (tool && strcmp(tool, "compaction") == 0 && params) {
-            cJSON *bm = cJSON_GetObjectItem(params, "before_msgs");
-            cJSON *am = cJSON_GetObjectItem(params, "after_msgs");
-            cJSON *bp = cJSON_GetObjectItem(params, "before_pct");
-            cJSON *ap = cJSON_GetObjectItem(params, "after_pct");
+            journal_compaction_stats_t cs;
+            journal_parse_compaction_stats(params, &cs);
             str_appendf(&out,
                 "    \xe2\x9c\x82 context compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%%\n",
-                step,
-                bm ? (int)bm->valuedouble : 0,
-                am ? (int)am->valuedouble : 0,
-                bp ? (int)bp->valuedouble : 0,
-                ap ? (int)ap->valuedouble : 0);
+                step, cs.before_msgs, cs.after_msgs, cs.before_pct, cs.after_pct);
+            cJSON_Delete(entry);
+            count++;
+            continue;
+        }
+
+        /* B3 FIX: Skip structural entries (shown in header / redundant) */
+        if (journal_is_structural_tool(tool)) {
             cJSON_Delete(entry);
             count++;
             continue;
@@ -357,8 +371,8 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             str_appendf(&out,
                 "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
                 evicted_count, evicted_compact_step,
-                evicted_compact_before_msgs, evicted_compact_after_msgs,
-                evicted_compact_before_pct, evicted_compact_after_pct);
+                evicted_cs.before_msgs, evicted_cs.after_msgs,
+                evicted_cs.before_pct, evicted_cs.after_pct);
         else
             str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
                         evicted_count);
@@ -441,11 +455,8 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
             continue;
         }
 
-        /* Skip structural entries — no semantic value for RAG */
-        if (strcmp(tool, "system") == 0 || strcmp(tool, "query") == 0 ||
-            strcmp(tool, "context") == 0 || strcmp(tool, "spec") == 0 ||
-            strcmp(tool, "memory_context") == 0 || strcmp(tool, "log") == 0 ||
-            strcmp(tool, "compaction") == 0) {
+        /* B3 FIX: Skip structural entries — no semantic value for RAG */
+        if (journal_is_structural_tool(tool)) {
             cJSON_Delete(entry);
             continue;
         }

@@ -337,12 +337,10 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                     cleaned[di++] = src[si++];
                 }
                 cleaned[di] = '\0';
-                size_t clen = strlen(cleaned);
-                char *new_sp = malloc(clen + 32);
-                if (new_sp) {
-                    snprintf(new_sp, clen + 32, "[SCRATCHPAD]\n%s", cleaned);
+                /* B5 FIX: Use shared scratchpad formatting helper */
+                char *new_sp = react_format_scratchpad_msg(cleaned);
+                if (new_sp)
                     llm_chat_replace_content(chat, sp_idx, new_sp);
-                }
                 free(cleaned);
             }
         } else {

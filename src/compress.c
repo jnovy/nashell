@@ -278,6 +278,31 @@ static int cmp_index_asc(const void *a, const void *b) {
     return ia - ib;
 }
 
+/* B6 FIX: Shared chunk assembly helper. Writes chunks into `out` buffer up to
+ * max_chars, appending COMPRESS_TAG if truncated. `indices` maps iteration order
+ * to chunk[] indices (NULL = direct 0..count-1). Returns bytes written. */
+static size_t emit_chunks(char *out, size_t out_cap, char **chunks,
+                          const int *indices, int count, int max_chars,
+                          int total_chunks) {
+    size_t pos = 0;
+    int emitted = 0;
+    for (int i = 0; i < count; i++) {
+        const char *s = chunks[indices ? indices[i] : i];
+        size_t sl = strlen(s);
+        if (pos + sl + 2 > (size_t)max_chars) break;
+        memcpy(out + pos, s, sl);
+        pos += sl;
+        out[pos++] = '\n';
+        emitted++;
+    }
+    if (emitted < total_chunks && pos + COMPRESS_TAG_LEN < out_cap) {
+        memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
+        pos += COMPRESS_TAG_LEN;
+    }
+    out[pos] = '\0';
+    return pos;
+}
+
 char *compress_to_relevant(const char *text, const char *query,
                            int max_units, int max_chars) {
     if (!text || !text[0]) return NULL;
@@ -296,6 +321,9 @@ char *compress_to_relevant(const char *text, const char *query,
     if (!chunks || n_chunks == 0) {
         free(chunks);
         /* Fallback: hard truncate */
+        /* D2 FIX: Guard against negative precision if max_chars < tag length */
+        if (max_chars < COMPRESS_TAG_LEN + 1)
+            max_chars = COMPRESS_TAG_LEN + 1;
         char *out = malloc((size_t)(max_chars + COMPRESS_TAG_LEN + 1));
         if (!out) return NULL;
         snprintf(out, (size_t)(max_chars + COMPRESS_TAG_LEN + 1),
@@ -303,30 +331,15 @@ char *compress_to_relevant(const char *text, const char *query,
         return out;
     }
 
-    /* If few enough chunks, just emit them all up to the char limit */
+    /* B6 FIX: If few enough chunks, emit them all via shared helper */
     if (n_chunks <= max_units) {
         size_t total = 0;
         for (int i = 0; i < n_chunks; i++) total += strlen(chunks[i]) + 1;
-        char *out = malloc(total + COMPRESS_TAG_LEN + 1);
-        if (out) {
-            size_t pos = 0;
-            int truncated = 0;
-            for (int i = 0; i < n_chunks; i++) {
-                size_t sl = strlen(chunks[i]);
-                if (pos + sl + 2 > (size_t)max_chars) {
-                    truncated = 1;
-                    break;
-                }
-                memcpy(out + pos, chunks[i], sl);
-                pos += sl;
-                out[pos++] = '\n';
-            }
-            if (truncated && pos + COMPRESS_TAG_LEN < total + COMPRESS_TAG_LEN + 1) {
-                memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
-                pos += COMPRESS_TAG_LEN;
-            }
-            out[pos] = '\0';
-        }
+        size_t out_cap = total + COMPRESS_TAG_LEN + 1;
+        char *out = malloc(out_cap);
+        if (out)
+            emit_chunks(out, out_cap, chunks, NULL, n_chunks, max_chars,
+                        n_chunks);
         for (int i = 0; i < n_chunks; i++) free(chunks[i]);
         free(chunks);
         return out;
@@ -374,7 +387,7 @@ char *compress_to_relevant(const char *text, const char *query,
     /* Re-sort the kept chunks by original index to preserve order */
     qsort(scored, (size_t)keep, sizeof(scored_chunk_t), cmp_index_asc);
 
-    /* Build output */
+    /* B6 FIX: Build output via shared emit helper */
     size_t out_cap = (size_t)max_chars + COMPRESS_TAG_LEN + 1;
     char *out = malloc(out_cap);
     if (!out) {
@@ -384,22 +397,14 @@ char *compress_to_relevant(const char *text, const char *query,
         free(chunks);
         return NULL;
     }
-    size_t pos = 0;
-    for (int i = 0; i < keep; i++) {
-        const char *s = chunks[scored[i].index];
-        size_t sl = strlen(s);
-        if (pos + sl + 2 > (size_t)max_chars) break;
-        memcpy(out + pos, s, sl);
-        pos += sl;
-        out[pos++] = '\n';
+    int *indices = malloc((size_t)keep * sizeof(int));
+    if (indices) {
+        for (int i = 0; i < keep; i++) indices[i] = scored[i].index;
+        emit_chunks(out, out_cap, chunks, indices, keep, max_chars, n_chunks);
+        free(indices);
+    } else {
+        out[0] = '\0';
     }
-    if (pos > 0 && n_chunks > keep) {
-        if (pos + COMPRESS_TAG_LEN < out_cap) {
-            memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
-            pos += COMPRESS_TAG_LEN;
-        }
-    }
-    out[pos] = '\0';
 
     /* Cleanup */
     free(scored);

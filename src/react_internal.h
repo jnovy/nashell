@@ -208,6 +208,19 @@ static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
     return injected;
 }
 
+/* B5 FIX: Format a "[SCRATCHPAD]\n..." string without inserting.
+ * Returns malloc'd formatted string, or NULL. Caller must free().
+ * Used by react_error.c tier-2 recovery (replace in-place, can't use
+ * react_inject_scratchpad_msg which does insert). */
+static inline char *react_format_scratchpad_msg(const char *content) {
+    if (!content || !content[0]) return NULL;
+    size_t clen = strlen(content);
+    char *msg = malloc(clen + 32);
+    if (!msg) return NULL;
+    snprintf(msg, clen + 32, "[SCRATCHPAD]\n%s", content);
+    return msg;
+}
+
 /* D3 FIX: Shared mark-sweep helper — removes marked messages in reverse order
  * and recovers tool threading. Used by both progressive and emergency eviction.
  * Returns the number of messages actually removed. */

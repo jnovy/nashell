@@ -277,13 +277,8 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
             char tool[64];
             parse_journal_fields(line_buf, &rl, &step, tool, sizeof(tool));
 
-            if (strcmp(tool, "system") == 0 ||
-                strcmp(tool, "query") == 0 ||
-                strcmp(tool, "context") == 0 ||
-                strcmp(tool, "memory_context") == 0 ||
-                strcmp(tool, "spec") == 0 ||
-                strcmp(tool, "compaction") == 0 ||
-                strcmp(tool, "log") == 0)
+            /* B3 FIX: Use shared structural tool skip list */
+            if (journal_is_structural_tool(tool))
                 continue;
 
             /* Print session header on first match */
