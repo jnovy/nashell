@@ -25,8 +25,9 @@
 /* Maximum line length we'll read from journal.jsonl */
 #define JLINE_MAX 65536
 
-/* Maximum context snippet length around a match */
-#define SNIPPET_MAX 200
+/* Maximum context snippet length around a match.
+ * Large enough to show full context — do NOT truncate session_grep lines. */
+#define SNIPPET_MAX 4000
 
 /* Default + absolute max for max_results */
 #define DEFAULT_MAX_RESULTS 20
@@ -40,9 +41,9 @@ static char *extract_snippet(const char *line, const char *match_pos,
     size_t patlen = strlen(pattern);
     size_t linelen = strlen(line);
 
-    /* Determine a window around the match */
-    int before = 60;
-    int after  = 60;
+    /* Determine a window around the match — use full line width */
+    int before = 2000;
+    int after  = 2000;
 
     const char *start = match_pos - before;
     if (start < line) start = line;
@@ -152,6 +153,16 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         if (max_results > ABSOLUTE_MAX_RESULTS) max_results = ABSOLUTE_MAX_RESULTS;
     }
 
+    /* Optional days — limit search to sessions within N days */
+    int days = 0;  /* 0 = no limit (search all) */
+    double cutoff_ts = 0.0;
+    cJSON *days_j = cJSON_GetObjectItem(params, "days");
+    if (days_j && cJSON_IsNumber(days_j)) {
+        days = days_j->valueint;
+        if (days < 1) days = 1;
+        cutoff_ts = (double)time(NULL) - (double)days * 86400.0;
+    }
+
     /* Collect session directories to search (newest first).
      * Prefer the in-memory session_index (already sorted by timestamp desc). */
     typedef struct {
@@ -235,7 +246,16 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error("out of memory");
     }
 
+    int sessions_scanned = 0;  /* track how many we actually looked at (vs skipped by age) */
+
     for (int si = 0; si < n_sessions && total_matches < max_results; si++) {
+        /* Age filter: sessions are sorted newest-first, so once we
+         * hit one older than the cutoff, all remaining are older too. */
+        if (days > 0 && sessions[si].timestamp < cutoff_ts)
+            break;
+
+        sessions_scanned++;
+
         char jpath[NASH_PATH_MAX];
         snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", sessions[si].dir);
 
@@ -291,13 +311,23 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
 
     /* Summary header */
     str_t result = str_new(out.len + 256);
-    str_appendf(&result,
-        "session_grep: %d match%s across %d session%s "
-        "(searched %d sessions, pattern: \"%s\")\n\n",
-        total_matches, total_matches == 1 ? "" : "es",
-        sessions_matched, sessions_matched == 1 ? "" : "s",
-        n_sessions,
-        pattern);
+    if (days > 0) {
+        str_appendf(&result,
+            "session_grep: %d match%s across %d session%s "
+            "(searched %d sessions within %d day%s, pattern: \"%s\")\n\n",
+            total_matches, total_matches == 1 ? "" : "es",
+            sessions_matched, sessions_matched == 1 ? "" : "s",
+            sessions_scanned, days, days == 1 ? "" : "s",
+            pattern);
+    } else {
+        str_appendf(&result,
+            "session_grep: %d match%s across %d session%s "
+            "(searched %d sessions, pattern: \"%s\")\n\n",
+            total_matches, total_matches == 1 ? "" : "es",
+            sessions_matched, sessions_matched == 1 ? "" : "s",
+            sessions_scanned,
+            pattern);
+    }
 
     if (total_matches > 0) {
         str_append(&result, out.data, out.len);
@@ -312,9 +342,14 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "pattern", pattern);
     cJSON_AddNumberToObject(meta, "matches", total_matches);
     cJSON_AddNumberToObject(meta, "sessions_matched", sessions_matched);
-    cJSON_AddNumberToObject(meta, "sessions_searched", n_sessions);
+    cJSON_AddNumberToObject(meta, "sessions_searched", sessions_scanned);
+    if (days > 0)
+        cJSON_AddNumberToObject(meta, "days", days);
+    if (max_results != DEFAULT_MAX_RESULTS)
+        cJSON_AddNumberToObject(meta, "max_results", max_results);
     cJSON_AddNumberToObject(meta, "chars", (double)result.len);
     cJSON_AddStringToObject(meta, "ref", alias);
 

@@ -23,16 +23,6 @@
 #include <stdint.h>
 
 /* ── Eviction Constants ─────────────────────────────── */
-/* Number of messages at HEAD of conversation to always keep during eviction.
- * Protects: [0] system prompt, [1] memory index, [2] pinned knowledge.
- * These are CRITICAL messages that anchor the agent's identity and memory.
- * NOTE: When inject_memory=0, only [0] exists. The code uses this as a
- * minimum — extra protected slots simply cover early conversation messages. */
-#define REACT_EVICT_KEEP_HEAD  3
-/* Number of messages at TAIL of conversation to always keep during eviction.
- * Protects the most recent 2 exchange pairs (assistant+tool_result × 2).
- * Ensures the agent always sees its latest actions and their results. */
-#define REACT_EVICT_KEEP_TAIL  4
 /* Scratchpad budget as percentage of total context size. */
 #define REACT_SCRATCHPAD_BUDGET_PCT  15
 /* Maximum percentage of post-eviction content that scratchpad may occupy.
@@ -42,21 +32,32 @@
  * Prevents over-eviction death spiral (context-eviction-cliff feedback loop). */
 #define REACT_EVICT_FLOOR_PCT       20
 #define REACT_EVICT_FLOOR_MIN_CHARS 4000
-/* Breadcrumb index cap in chars. Limits growth in long sessions. */
-#define REACT_BREADCRUMB_CAP        4096
-/* Pass 2 compression: only compress messages longer than this. */
-#define REACT_COMPRESS_THRESHOLD    500
 /* Emergency eviction target as percentage of context budget. */
 #define REACT_EMERGENCY_TARGET_PCT  80
 /* Minimum hysteresis gap in percentage points between trigger and target. */
 #define REACT_HYSTERESIS_MIN_GAP    5
 /* Hysteresis gap divisor: gap = eviction_pct / REACT_HYSTERESIS_DIVISOR. */
 #define REACT_HYSTERESIS_DIVISOR    5
+/* Maximum total recovery attempts across all error types before giving up.
+ * Prevents unbounded retries from alternating error types (D3 fix). */
+#define REACT_MAX_TOTAL_RECOVERY    12
 
 /* ── Helpers shared across react submodules ─────────── */
 
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */
 float react_get_chars_per_token(const react_ctx_t *ctx);
+
+/* Compute dynamic keep_head: count of CRITICAL messages at head.
+ * Replaces hardcoded REACT_EVICT_KEEP_HEAD=3 that assumed fixed
+ * [system, memory_index, pinned] structure. Adapts to actual
+ * injection configuration (inject_memory=0 → only 1 head msg). */
+int react_compute_keep_head(const llm_chat_t *chat);
+
+/* Compute dynamic keep_tail: count of messages in the last N complete
+ * tool-call exchanges at tail. Replaces hardcoded REACT_EVICT_KEEP_TAIL=4
+ * that assumed exactly 2 exchange pairs. Adapts to actual tail structure
+ * (user_ask, error recovery, multi-tool). Returns at least 2. */
+int react_compute_keep_tail(const llm_chat_t *chat);
 
 /* Safe JSON string accessor */
 const char *react_json_get_str(cJSON *obj, const char *key);

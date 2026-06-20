@@ -15,8 +15,8 @@
  *
  * text:       input text to compress
  * query:      relevance query (user query + current thought)
- * max_units:  maximum chunks to retain (floor: 12)
- * max_chars:  hard character limit on output (floor: 800)
+ * max_units:  maximum chunks to retain (caller decides; 1 = minimum)
+ * max_chars:  hard character limit on output (caller decides; 1 = minimum)
  * Returns:    malloc'd compressed string (caller frees), or NULL
  */
 char *compress_to_relevant(const char *text, const char *query,
@@ -25,10 +25,5 @@ char *compress_to_relevant(const char *text, const char *query,
 /* CRC32 hash for content deduplication (Harness-1 §3.3).
  * Simple, fast, good enough for near-duplicate detection. */
 uint32_t compress_crc32(const char *data, size_t len);
-
-/* Check if two CRC32 hashes represent likely-duplicate content.
- * Returns 1 if duplicate, 0 otherwise. */
-int compress_is_duplicate(uint32_t hash, const uint32_t *hash_buf,
-                          int hash_count);
 
 #endif /* COMPRESS_H */

@@ -14,6 +14,51 @@ float react_get_chars_per_token(const react_ctx_t *ctx) {
     return 3.5f;
 }
 
+/* Compute dynamic keep_head: count consecutive CRITICAL messages from
+ * the start of the chat. Adapts to actual injection config rather than
+ * assuming a fixed [system, memory_index, pinned] header structure. */
+int react_compute_keep_head(const llm_chat_t *chat) {
+    int head = 0;
+    for (int i = 0; i < chat->n_msgs; i++) {
+        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_CRITICAL ||
+            chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+            head = i + 1;
+        } else {
+            break;
+        }
+    }
+    /* Always protect at least the system prompt */
+    return head > 0 ? head : 1;
+}
+
+/* Compute dynamic keep_tail: walk backward from end to find the last
+ * 2 complete tool-call exchange boundaries (assistant+tool_result pairs).
+ * Adapts to actual tail structure instead of assuming fixed 4 messages. */
+int react_compute_keep_tail(const llm_chat_t *chat) {
+    int pairs_found = 0;
+    int tail_start = chat->n_msgs;
+    for (int i = chat->n_msgs - 1; i >= 0 && pairs_found < 2; i--) {
+        /* A tool_result followed by its tool_call = one pair */
+        if (chat->msgs[i].tool_call_id && i > 0 &&
+            chat->msgs[i - 1].tool_calls_json) {
+            tail_start = i - 1;
+            pairs_found++;
+            i--;  /* skip the assistant tool_call too */
+        } else if (chat->msgs[i].role &&
+                   strcmp(chat->msgs[i].role, "user") == 0 &&
+                   !chat->msgs[i].tool_call_id) {
+            /* user message (e.g., user_ask response, hint) — include */
+            tail_start = i;
+        } else {
+            /* Stop if we hit something that isn't part of recent exchanges */
+            if (pairs_found > 0) break;
+            tail_start = i;
+        }
+    }
+    int keep = chat->n_msgs - tail_start;
+    return keep >= 2 ? keep : 2;
+}
+
 const char *react_json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
@@ -1576,24 +1621,21 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
          * only 1-2 tools for 10+ steps, inject a soft reminder to use
          * notes for saving findings. */
+        /* D10 FIX: Re-nudge mechanism — nudges every 15 steps without notes
+         * usage. Previously set count=1 which prevented re-triggering.
+         * Now: nudge fires when steps_since_notes >= 15 and n_tool_uses >= 10.
+         * After nudge, reset the baseline so it can fire again. */
         if (ctx->tools->n_tool_uses >= 10) {
             int notes_idx = react_tool_index("notes");
             int notes_used = (notes_idx >= 0 && notes_idx < 32)
                 ? ctx->tools->tool_use_counts[notes_idx] : 0;
-            if (notes_used == 0) {
+            /* Nudge every 15 steps when notes hasn't been used */
+            if (notes_used == 0 && ctx->tools->n_tool_uses % 15 == 0) {
                 llm_chat_add_typed(chat, "user",
                     "[HINT] You have not used notes() to save key findings. "
                     "Consider saving important discoveries to scratchpad sections "
                     "to preserve them across context compaction.",
                     LLM_MSG_MEMORY_HINT);
-                /* FIX #14: Set count to 1 (not -1) to prevent re-nudging.
-                 * The previous -1 sentinel was never incremented back to 0,
-                 * so nudge couldn't re-trigger even after 20+ more steps
-                 * without notes usage. Using 1 means: if notes IS actually
-                 * used later, the count goes to 2+; if not, it stays at 1
-                 * (nonzero → no re-trigger). */
-                if (notes_idx >= 0 && notes_idx < 32)
-                    ctx->tools->tool_use_counts[notes_idx] = 1;
             }
         }
 

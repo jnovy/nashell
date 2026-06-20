@@ -72,8 +72,14 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
         case LLM_MSG_SYSTEM:
         case LLM_MSG_USER_QUERY:
         case LLM_MSG_SCRATCHPAD:
-        case LLM_MSG_EVICTION_SUMMARY:
             return LLM_MSG_IMPORTANCE_CRITICAL;
+        /* D2 FIX: EVICTION_SUMMARY demoted from CRITICAL to HIGH.
+         * Breadcrumb indices are useful but not irreplaceable — they
+         * should not consume the same budget tier as the system prompt
+         * and user query. They're removed at the start of each eviction
+         * cycle anyway, so CRITICAL protection was only relevant between
+         * evictions where it wasted context budget. */
+        case LLM_MSG_EVICTION_SUMMARY:
         case LLM_MSG_MEMORY_INDEX:
         case LLM_MSG_PINNED:
         case LLM_MSG_SKILLS:

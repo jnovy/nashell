@@ -1173,6 +1173,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
              * Covers both old format "  ✓ N HH:MM [tool](uri) ..."
              * and new format "N RXSY HH:MM:SS [tool](uri) ..." */
             int pair = C_SUCCESS;
+            int lines_consumed = 1;
 
             /* Check for inline link on this step line */
             int step_has_link = has_link;
@@ -1185,60 +1186,69 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 link_idx++;
             }
 
+            /* Parse link boundaries outside visible check — needed for
+             * off-screen line counting too */
+            const char *bracket = strchr(line_buf, '[');
+            const char *bracket_end = bracket ? strchr(bracket, ']') : NULL;
+            const char *paren_end = NULL;
+            if (bracket_end && bracket_end[1] == '(')
+                paren_end = strchr(bracket_end + 2, ')');
+
             if (visible) {
-                if (step_has_link) {
-                    /* Find [text](uri) boundaries in line_buf */
-                    const char *bracket = strchr(line_buf, '[');
-                    const char *bracket_end = bracket ? strchr(bracket, ']') : NULL;
-                    const char *paren_end = NULL;
-                    if (bracket_end && bracket_end[1] == '(') {
-                        paren_end = strchr(bracket_end + 2, ')');
-                    }
-
-                    if (bracket && bracket_end && paren_end) {
-                        int x = 0;
-                        /* 1. Render prefix (before [) with step color + inline formatting */
-                        int prefix_len = (int)(bracket - line_buf);
-                        if (prefix_len > 0) {
-                            inline_seg_t segs[MAX_INLINE_SEGS];
-                            int n = parse_inline(line_buf, prefix_len, segs, MAX_INLINE_SEGS);
-                            apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
-                            x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
-                        }
-
-                        /* 2. Render link text with link color */
-                        if (is_cursor)
-                            wattron(win, A_REVERSE | A_BOLD);
-                        else
-                            wattron(win, COLOR_PAIR(C_FOCUS));
-
-                        int link_text_len = (int)(bracket_end - bracket - 1);
-                        if (link_text_len > 0 && x < cols) {
-                            x += render_segment(win, vis_line, x,
-                                                bracket + 1, link_text_len, cols - x);
-                        }
-
-                        if (is_cursor)
-                            wattroff(win, A_REVERSE | A_BOLD);
-                        else
-                            wattroff(win, COLOR_PAIR(C_FOCUS));
-
-                        /* 3. Render suffix (after )) with step color + inline formatting */
-                        const char *suffix = paren_end + 1;
-                        int suffix_len = (int)strlen(suffix);
-                        if (suffix_len > 0 && x < cols) {
-                            inline_seg_t segs[MAX_INLINE_SEGS];
-                            int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
-                            apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
-                            render_segs_on_line(win, vis_line, x, segs, n, cols - x);
-                        }
-                    } else {
-                        /* Fallback: couldn't parse link boundaries, render whole line */
+                if (step_has_link && bracket && bracket_end && paren_end) {
+                    int x = 0;
+                    /* 1. Render prefix (before [) with step color + inline formatting */
+                    int prefix_len = (int)(bracket - line_buf);
+                    if (prefix_len > 0) {
                         inline_seg_t segs[MAX_INLINE_SEGS];
-                        int n = parse_inline(line_buf, (int)strlen(line_buf), segs, MAX_INLINE_SEGS);
+                        int n = parse_inline(line_buf, prefix_len, segs, MAX_INLINE_SEGS);
                         apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
-                        render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                        x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
                     }
+
+                    /* 2. Render link text with link color */
+                    if (is_cursor)
+                        wattron(win, A_REVERSE | A_BOLD);
+                    else
+                        wattron(win, COLOR_PAIR(C_FOCUS));
+
+                    int link_text_len = (int)(bracket_end - bracket - 1);
+                    if (link_text_len > 0 && x < cols) {
+                        x += render_segment(win, vis_line, x,
+                                            bracket + 1, link_text_len, cols - x);
+                    }
+
+                    if (is_cursor)
+                        wattroff(win, A_REVERSE | A_BOLD);
+                    else
+                        wattroff(win, COLOR_PAIR(C_FOCUS));
+
+                    /* 3. Render suffix (after )) with step color + wrapping.
+                     * Continuation lines are indented to column x (after tool
+                     * name) so long thoughts wrap neatly instead of truncating. */
+                    const char *suffix = paren_end + 1;
+                    int suffix_len = (int)strlen(suffix);
+                    if (suffix_len > 0 && x < cols) {
+                        int remaining = cols - x;
+                        inline_seg_t segs[MAX_INLINE_SEGS];
+                        int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
+                        apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
+                        int total_dcols = 0;
+                        for (int k = 0; k < n; k++)
+                            total_dcols += seg_display_cols(segs[k].text, segs[k].len);
+                        if (total_dcols <= remaining) {
+                            render_segs_on_line(win, vis_line, x, segs, n, remaining);
+                        } else {
+                            lines_consumed = render_segs_wrapped(
+                                win, vis_line, x, segs, n, remaining);
+                        }
+                    }
+                } else if (step_has_link) {
+                    /* Fallback: couldn't parse link boundaries, render whole line */
+                    inline_seg_t segs[MAX_INLINE_SEGS];
+                    int n = parse_inline(line_buf, (int)strlen(line_buf), segs, MAX_INLINE_SEGS);
+                    apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
+                    render_segs_on_line(win, vis_line, 0, segs, n, cols);
                 } else {
                     /* No link — render with inline formatting as before */
                     inline_seg_t segs[MAX_INLINE_SEGS];
@@ -1246,7 +1256,23 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
                     render_segs_on_line(win, vis_line, 0, segs, n, cols);
                 }
+            } else {
+                /* Off-screen: count wrapped lines for accurate render_line tracking */
+                if (bracket && bracket_end && paren_end) {
+                    int prefix_len = (int)(bracket - line_buf);
+                    int link_text_len = (int)(bracket_end - bracket - 1);
+                    int x = prefix_len + link_text_len;
+                    const char *suffix = paren_end + 1;
+                    int suffix_len = (int)strlen(suffix);
+                    if (suffix_len > 0 && x < cols) {
+                        int remaining = cols - x;
+                        lines_consumed = count_wrapped_lines(
+                            suffix, suffix_len, remaining);
+                    }
+                }
             }
+
+            advance_render_line(&render_line, lines_consumed);
 
         } else if (line_buf[0] == '|') {
             /* Table block — Item 2: delegate to render_table() */

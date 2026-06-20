@@ -109,7 +109,7 @@ const tool_def_t TOOL_REGISTRY[] = {
      "memory_recall (semantic search) with precise pattern matching. "
      "Searches journal.jsonl files (agent thoughts, tool calls, params) "
      "across recent sessions, newest first. Case-insensitive.",
-     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Substring pattern to search for (case-insensitive)\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum matches to return (default: 20, max: 100)\"}},\"required\":[\"pattern\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Substring pattern to search for (case-insensitive)\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum matches to return (default: 20, max: 100)\"},\"days\":{\"type\":\"integer\",\"description\":\"Only search sessions up to N days old (default: all)\"}},\"required\":[\"pattern\"]}"},
 
     {NULL, NULL, NULL}  /* sentinel */
 };

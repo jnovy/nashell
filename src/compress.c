@@ -17,10 +17,6 @@
 
 #define COMPRESS_TAG        "[...compressed]"
 #define COMPRESS_TAG_LEN    15
-#define COMPRESS_MIN_CHARS  200   /* minimum output budget (lowered from 800 so callers
-                                  * can request tighter compression for eviction) */
-#define COMPRESS_MIN_UNITS  4     /* minimum chunks to keep (lowered from 12 so Pass 2
-                                  * eviction compression is actually effective) */
 #define COMPRESS_MERGE_LEN  40    /* merge lines shorter than this */
 
 /* ── CRC32 ──────────────────────────────────────────────────────── */
@@ -46,14 +42,6 @@ uint32_t compress_crc32(const char *data, size_t len) {
     for (size_t i = 0; i < len; i++)
         crc = crc32_table[(crc ^ (uint8_t)data[i]) & 0xFF] ^ (crc >> 8);
     return crc ^ 0xFFFFFFFF;
-}
-
-int compress_is_duplicate(uint32_t hash, const uint32_t *hash_buf,
-                          int hash_count) {
-    for (int i = 0; i < hash_count; i++) {
-        if (hash_buf[i] == hash) return 1;
-    }
-    return 0;
 }
 
 /* ── Line-level relevance compression ────────────────────────────── */
@@ -161,9 +149,33 @@ static char **split_chunks(const char *text, int *n_chunks) {
     if (!chunks) { *n_chunks = 0; return NULL; }
 
     const char *p = text;
-    /* Accumulator for merging short lines */
-    char merge_buf[512];
+    /* Dynamic merge buffer — grows to accommodate arbitrarily many
+     * consecutive short lines (e.g., bullet lists, short log entries).
+     * Previously a fixed 512-byte stack buffer that caused artificial
+     * chunk boundaries in long bullet lists. */
+    int merge_cap = 512;
+    char *merge_buf = malloc((size_t)merge_cap);
     int  merge_len = 0;
+    if (!merge_buf) { free(chunks); *n_chunks = 0; return NULL; }
+
+    /* Helper macro: flush merge buffer as its own chunk */
+    #define FLUSH_MERGE() do { \
+        if (merge_len > 0) { \
+            char *_chunk = malloc((size_t)(merge_len + 1)); \
+            if (_chunk) { \
+                memcpy(_chunk, merge_buf, (size_t)merge_len); \
+                _chunk[merge_len] = '\0'; \
+                if (count >= cap) { \
+                    cap *= 2; \
+                    char **_tmp = realloc(chunks, (size_t)cap * sizeof(char *)); \
+                    if (!_tmp) { free(_chunk); goto done; } \
+                    chunks = _tmp; \
+                } \
+                chunks[count++] = _chunk; \
+            } \
+            merge_len = 0; \
+        } \
+    } while(0)
 
     while (*p) {
         /* Extract one line */
@@ -179,22 +191,7 @@ static char **split_chunks(const char *text, int *n_chunks) {
             }
         }
         if (blank) {
-            /* Flush merge buffer as its own chunk */
-            if (merge_len > 0) {
-                char *chunk = malloc((size_t)(merge_len + 1));
-                if (chunk) {
-                    memcpy(chunk, merge_buf, (size_t)merge_len);
-                    chunk[merge_len] = '\0';
-                    if (count >= cap) {
-                        cap *= 2;
-                        char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
-                        if (!tmp) { free(chunk); break; }
-                        chunks = tmp;
-                    }
-                    chunks[count++] = chunk;
-                }
-                merge_len = 0;
-            }
+            FLUSH_MERGE();
             p = *eol ? eol + 1 : eol;
             continue;
         }
@@ -203,28 +200,22 @@ static char **split_chunks(const char *text, int *n_chunks) {
          * Merge if: line is short AND doesn't start with whitespace
          * (indentation = code structure, don't merge across indent levels). */
         int starts_with_ws = (ll > 0 && (p[0] == ' ' || p[0] == '\t'));
-        if (ll < COMPRESS_MERGE_LEN && !starts_with_ws &&
-            merge_len + ll + 1 < (int)sizeof(merge_buf)) {
+        if (ll < COMPRESS_MERGE_LEN && !starts_with_ws) {
+            /* Grow merge buffer if needed */
+            int need = merge_len + ll + 2;
+            if (need > merge_cap) {
+                int new_cap = merge_cap;
+                while (new_cap < need) new_cap *= 2;
+                char *tmp = realloc(merge_buf, (size_t)new_cap);
+                if (!tmp) goto done;
+                merge_buf = tmp;
+                merge_cap = new_cap;
+            }
             if (merge_len > 0) merge_buf[merge_len++] = ' ';
             memcpy(merge_buf + merge_len, p, (size_t)ll);
             merge_len += ll;
         } else {
-            /* Flush any pending merge buffer first */
-            if (merge_len > 0) {
-                char *chunk = malloc((size_t)(merge_len + 1));
-                if (chunk) {
-                    memcpy(chunk, merge_buf, (size_t)merge_len);
-                    chunk[merge_len] = '\0';
-                    if (count >= cap) {
-                        cap *= 2;
-                        char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
-                        if (!tmp) { free(chunk); break; }
-                        chunks = tmp;
-                    }
-                    chunks[count++] = chunk;
-                }
-                merge_len = 0;
-            }
+            FLUSH_MERGE();
             /* Emit current line as its own chunk */
             char *chunk = malloc((size_t)(ll + 1));
             if (chunk) {
@@ -233,7 +224,7 @@ static char **split_chunks(const char *text, int *n_chunks) {
                 if (count >= cap) {
                     cap *= 2;
                     char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
-                    if (!tmp) { free(chunk); break; }
+                    if (!tmp) { free(chunk); goto done; }
                     chunks = tmp;
                 }
                 chunks[count++] = chunk;
@@ -243,22 +234,11 @@ static char **split_chunks(const char *text, int *n_chunks) {
         p = *eol ? eol + 1 : eol;
     }
 
-    /* Flush trailing merge buffer */
-    if (merge_len > 0) {
-        char *chunk = malloc((size_t)(merge_len + 1));
-        if (chunk) {
-            memcpy(chunk, merge_buf, (size_t)merge_len);
-            chunk[merge_len] = '\0';
-            if (count >= cap) {
-                cap *= 2;
-                char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
-                if (!tmp) { free(chunk); goto done; }
-                chunks = tmp;
-            }
-            chunks[count++] = chunk;
-        }
-    }
+    FLUSH_MERGE();
+    #undef FLUSH_MERGE
+
 done:
+    free(merge_buf);
     *n_chunks = count;
     return chunks;
 }
@@ -289,9 +269,9 @@ char *compress_to_relevant(const char *text, const char *query,
     if (!text || !text[0]) return NULL;
     int tlen = (int)strlen(text);
 
-    /* Enforce minimum budgets so compression is never pathologically tight */
-    if (max_units < COMPRESS_MIN_UNITS) max_units = COMPRESS_MIN_UNITS;
-    if (max_chars < COMPRESS_MIN_CHARS) max_chars = COMPRESS_MIN_CHARS;
+    /* Sane minimums — at least 1 chunk and 1 char */
+    if (max_units < 1) max_units = 1;
+    if (max_chars < 1) max_chars = 1;
 
     /* Short-circuit when text already fits within budget */
     if (tlen <= max_chars) return strdup(text);
@@ -350,12 +330,27 @@ char *compress_to_relevant(const char *text, const char *query,
         free(chunks);
         return NULL;
     }
+    /* Compute max content-based score across all chunks to calibrate
+     * position bonuses. When query terms match well, position bonuses
+     * are secondary tiebreakers. When no terms match (short/empty query),
+     * position bonuses dominate — which is the best we can do. */
+    float max_content_score = 0.0f;
     for (int i = 0; i < n_chunks; i++) {
         scored[i].index = i;
         scored[i].score = score_sentence(chunks[i], qwords, n_qwords);
+        if (scored[i].score > max_content_score)
+            max_content_score = scored[i].score;
+    }
+    /* Position bonus scales down when content scoring is effective.
+     * At max_content_score=0 (no query matches), bonus_scale=0.3 (full).
+     * At max_content_score>=0.5 (good matches), bonus_scale→0.06 (minimal). */
+    float bonus_scale = 0.3f / (1.0f + max_content_score * 4.0f);
+    for (int i = 0; i < n_chunks; i++) {
         /* Boost first few and last few chunks (often contain key info) */
-        if (i < 3) scored[i].score += 0.3f - i * 0.08f;
-        if (i >= n_chunks - 2) scored[i].score += 0.15f;
+        if (i == 0)      scored[i].score += bonus_scale;
+        else if (i == 1) scored[i].score += bonus_scale * 0.73f;
+        else if (i == 2) scored[i].score += bonus_scale * 0.47f;
+        if (i >= n_chunks - 2) scored[i].score += bonus_scale * 0.5f;
     }
 
     /* Sort by score descending, keep top-N */
