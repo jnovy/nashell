@@ -257,6 +257,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
  * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget);
 
+/* D3 FIX: Emergency evict + scratchpad re-injection helper.
+ * Combines react_emergency_evict + react_reinject_scratchpad into one call.
+ * Returns number of messages evicted (0 if none). */
+int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat);
+
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
  * Returns: 0 = continue (retry), 1 = break (give up).
  * Modifies chat in-place for recovery. */

@@ -153,6 +153,16 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     return n_marked;
 }
 
+/* D3 FIX: Combined emergency evict + scratchpad re-injection.
+ * Eliminates 3 copies of the same 3-line pattern. */
+int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
+    long cb = react_context_budget(ctx);
+    int n_evict = react_emergency_evict(chat, cb);
+    if (n_evict > 0)
+        react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
+    return n_evict;
+}
+
 /* ── NULL Response Handling ────────────────────────────── */
 
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
@@ -270,10 +280,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 react_emit(on_event, userdata, &ev);
                 return 1;
             }
-            long cb = react_context_budget(ctx);
-            int n_evict = react_emergency_evict(chat, cb);
+            int n_evict = react_emergency_evict_and_reinject(ctx, chat);
             if (n_evict > 0) {
-                react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
                 char emsg[128];
                 snprintf(emsg, sizeof(emsg),
                     "HTTP 400 — evicted %d messages to reduce context "
@@ -301,12 +309,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         ev.message = mtmsg;
         react_emit(on_event, userdata, &ev);
 
-        {
-            long cb = react_context_budget(ctx);
-            int n_evict = react_emergency_evict(chat, cb);
-            if (n_evict > 0)
-                react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
-        }
+        react_emergency_evict_and_reinject(ctx, chat);
         (*consecutive_null)++;
         return 0;
     }
@@ -336,7 +339,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         react_emit(on_event, userdata, &ev);
         if (chat->n_msgs >= 2) {
             int remove_from = chat->n_msgs - 2;
-            if (remove_from < 3) remove_from = 3;
+            int kh = react_compute_keep_head(chat);
+            if (remove_from < kh) remove_from = kh;
             if (remove_from < chat->n_msgs)
                 llm_chat_remove_range(chat, remove_from, chat->n_msgs);
         }
@@ -397,7 +401,9 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
         react_emit(on_event, userdata, &ev);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-        react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
+        /* BUG 4 FIX: Do NOT re-inject — this is the nuclear option.
+         * Previous code immediately re-injected at full budget, making
+         * Tier 3 identical to "refresh scratchpad" rather than a true strip. */
     }
     return 0;
 }

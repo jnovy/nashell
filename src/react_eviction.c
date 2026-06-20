@@ -52,39 +52,19 @@ evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
     for (int i = 0; i < chat->n_msgs; i++)
         map.partner[i] = -1;
 
-    /* For each tool_call message in range, find its tool_result partner */
+    /* D1 FIX: Delegate to react_find_tool_partner() to eliminate duplicated
+     * ID extraction + JSON fallback + forward scanning logic (~30 lines).
+     * Note: react_find_tool_partner() checks importance >= HIGH and returns -1
+     * for protected partners, which is the correct behavior (BUG 2 fix). */
     for (int i = range_start; i < range_end && i < chat->n_msgs; i++) {
         if (!chat->msgs[i].tool_calls_json) continue;
         if (map.partner[i] >= 0) continue;  /* already matched */
 
-        /* Get the outbound tool_call_id (Proposal C: cached, no JSON parse) */
-        const char *expected_id = chat->msgs[i].tool_call_id_outbound;
-        cJSON *tc_arr = NULL;
-        if (!expected_id) {
-            /* Fallback for checkpoint-restored messages without cached ID */
-            tc_arr = cJSON_Parse(chat->msgs[i].tool_calls_json);
-            if (tc_arr && cJSON_IsArray(tc_arr)) {
-                cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
-                if (first) {
-                    cJSON *id_item = cJSON_GetObjectItem(first, "id");
-                    if (id_item && cJSON_IsString(id_item))
-                        expected_id = id_item->valuestring;
-                }
-            }
+        int pi = react_find_tool_partner(chat, i, range_start, range_end);
+        if (pi >= 0) {
+            map.partner[i] = pi;
+            map.partner[pi] = i;
         }
-
-        if (expected_id) {
-            /* Scan forward for matching tool_call_id */
-            for (int pi = i + 1; pi < chat->n_msgs; pi++) {
-                if (chat->msgs[pi].tool_call_id &&
-                    strcmp(chat->msgs[pi].tool_call_id, expected_id) == 0) {
-                    map.partner[i] = pi;
-                    map.partner[pi] = i;
-                    break;
-                }
-            }
-        }
-        cJSON_Delete(tc_arr);
     }
     return map;
 }
@@ -180,10 +160,9 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                  "shrinking scratchpad", usage_pct, target_pct);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
 
-        long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
         total_chars = react_calc_total_chars(chat);
-        long overshoot = total_chars - (context_budget * target_pct / 100);
-        long sp_chars = actual_sp_size - overshoot;
+        long target_budget = context_budget * target_pct / 100;
+        long sp_chars = target_budget - total_chars;  /* exact room left */
 
         if (sp_chars > REACT_SP_SHRINK_MIN) {
             char *small_sp = scratchpad_serialize_budget(
@@ -213,8 +192,13 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
             if (usage_pct > target_pct) {
                 nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
                 react_emergency_evict(chat, context_budget);
-                int kh = react_compute_keep_head(chat);
-                react_reinject_scratchpad(ctx, chat, kh);
+                /* BUG 5 FIX: Re-inject scratchpad only if room permits,
+                 * then verify we actually hit target_pct (not just 80%). */
+                total_chars = react_calc_total_chars(chat);
+                if (react_usage_pct(total_chars, context_budget) < target_pct) {
+                    int kh = react_compute_keep_head(chat);
+                    react_reinject_scratchpad(ctx, chat, kh);
+                }
             }
         }
     }
@@ -293,9 +277,8 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
     if (upper <= keep_head) return 0;
 
     /* FIX FLAW 8: Fixed threshold — don't depend on average message size */
+    /* S1 FIX: REACT_COMPRESS_THRESH_FIXED (800) > REACT_COMPRESS_THRESH_MIN (200) always */
     int compress_threshold = REACT_COMPRESS_THRESH_FIXED;
-    if (compress_threshold < REACT_COMPRESS_THRESH_MIN)
-        compress_threshold = REACT_COMPRESS_THRESH_MIN;
 
     /* Collect candidates */
     int n_candidates = 0, cand_cap = 0;
@@ -371,7 +354,6 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     if (max_per_msg > REACT_SUMMARY_PER_MSG_MAX) max_per_msg = REACT_SUMMARY_PER_MSG_MAX;
 
     str_append_cstr(&breadcrumb, "[EVICTED CONTEXT — recoverable via file_read]\n");
-    int n_breadcrumbs = 0;
 
     /* Dynamic seen_aliases array */
     int seen_cap = n_to_evict > 16 ? n_to_evict : 16;
@@ -420,7 +402,6 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                 if (brief[b] == '\n' || brief[b] == '\r') brief[b] = ' ';
             str_appendf(&breadcrumb, "- %s: %s (%s, %d chars)\n",
                 chat->msgs[mi].store_alias, brief, role, (int)strlen(content));
-            n_breadcrumbs++;
             continue;
         }
 
@@ -446,8 +427,6 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         str_free(&summary);
     }
     free(seen_aliases);
-
-    (void)n_breadcrumbs;  /* used only for counting */
 
     if (breadcrumb.len > 0)
         return str_steal(&breadcrumb);
@@ -603,7 +582,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 ? (long)strlen(chat->msgs[mi].content) : 0;
 
             if (evict_mark[ri]) continue;
-            if (remaining_chars - msg_chars < floor_chars) break;
+            if (remaining_chars - msg_chars < floor_chars) continue;
 
             /* Check partner using pre-built map (Proposal E) */
             int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
@@ -612,7 +591,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
             if (partner_mi >= evict_start && partner_mi < evict_end) {
                 pair_ri = partner_mi - evict_start;
-                if (!evict_mark[pair_ri]) {
+                /* BUG 2 FIX: Skip HIGH/CRITICAL partners — never evict them */
+                if (chat->msgs[partner_mi].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+                    pair_ri = -1;  /* partner is protected */
+                } else if (!evict_mark[pair_ri]) {
                     pair_chars = chat->msgs[partner_mi].content
                         ? (long)strlen(chat->msgs[partner_mi].content) : 0;
                 } else {
@@ -621,7 +603,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             }
 
             /* Check floor for total pair cost */
-            if (remaining_chars - msg_chars - pair_chars < floor_chars) break;
+            if (remaining_chars - msg_chars - pair_chars < floor_chars) continue;
 
             evict_mark[ri] = 1;
             remaining_chars -= msg_chars;
