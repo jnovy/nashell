@@ -14,6 +14,13 @@
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
+/* FIX FLAW 7: Candidate struct and qsort comparator for emergency eviction. */
+typedef struct { int idx; int score; long chars; } emerg_cand_t;
+
+static int cmp_emerg_score_asc(const void *a, const void *b) {
+    return ((const emerg_cand_t *)a)->score - ((const emerg_cand_t *)b)->score;
+}
+
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
  * context budget, prioritizing recoverable content over irreplaceable.
  * Uses the same floor calculation as progressive eviction (REACT_EVICT_FLOOR_PCT).
@@ -50,7 +57,6 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     /* Score: lower = evict first.  Recoverable content (score 0) is evicted
      * before non-recoverable (score 1000), with position as tiebreaker
      * (older messages first). */
-    typedef struct { int idx; int score; long chars; } emerg_cand_t;
     emerg_cand_t *cands = malloc((size_t)n_evictable * sizeof(emerg_cand_t));
     if (!cands) return 0;
 
@@ -68,14 +74,9 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
         n_cands++;
     }
 
-    /* Sort by score ascending (evict first = lowest score) */
-    for (int a = 0; a < n_cands - 1; a++)
-        for (int b = a + 1; b < n_cands; b++)
-            if (cands[b].score < cands[a].score) {
-                emerg_cand_t tmp = cands[a];
-                cands[a] = cands[b];
-                cands[b] = tmp;
-            }
+    /* FIX FLAW 7: Replace O(n²) bubble sort with O(n log n) qsort. */
+    qsort(cands, (size_t)n_cands, sizeof(emerg_cand_t),
+          cmp_emerg_score_asc);
 
     /* Mark candidates for eviction, respecting floor and need_to_remove */
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));

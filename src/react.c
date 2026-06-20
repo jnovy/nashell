@@ -14,13 +14,17 @@ float react_get_chars_per_token(const react_ctx_t *ctx) {
     return 3.5f;
 }
 
-/* Compute dynamic keep_head: count consecutive CRITICAL messages from
- * the start of the chat. Adapts to actual injection config rather than
- * assuming a fixed [system, memory_index, pinned] header structure. */
+/* Compute dynamic keep_head: count consecutive CRITICAL-importance messages
+ * from the start of the chat. Adapts to actual injection config rather than
+ * assuming a fixed [system, memory_index, pinned] header structure.
+ * FIX FLAW 3: Changed from >= HIGH to == CRITICAL. Previously HIGH messages
+ * (e.g., EVICTION_SUMMARY, MEMORY_INDEX) at head were double-protected:
+ * excluded from evictable range AND skipped by Pass 3 scoring. Now only
+ * system prompt, user query, and scratchpad (CRITICAL) extend the head. */
 int react_compute_keep_head(const llm_chat_t *chat) {
     int head = 0;
     for (int i = 0; i < chat->n_msgs; i++) {
-        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+        if (chat->msgs[i].importance == LLM_MSG_IMPORTANCE_CRITICAL) {
             head = i + 1;
         } else {
             break;
@@ -108,31 +112,35 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
 
 /* Find the partner of a tool_call or tool_result message by scanning.
  * FIX #3: Matches by scanning (not adjacency) and validates importance.
- * FIX #8: Scans past interleaved non-tool messages (hints, error recovery). */
+ * FIX #8: Scans past interleaved non-tool messages (hints, error recovery).
+ * Proposal C: Uses cached tool_call_id_outbound for O(1) ID lookup instead
+ * of parsing tool_calls_json on every call. Falls back to JSON parse if
+ * the cached field is not populated (e.g., checkpoint-restored messages). */
 int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                             int range_start, int range_end) {
     if (msg_idx < 0 || msg_idx >= chat->n_msgs) return -1;
     const llm_msg_t *msg = &chat->msgs[msg_idx];
 
     if (msg->tool_calls_json) {
-        /* FIX FLAW 3: Match by tool_call_id instead of first-found.
-         * Extract the ID from tool_calls_json and find the tool_result
-         * with a matching tool_call_id. Prevents wrong-pair eviction
-         * when tool call/result pairs are interleaved. */
-        const char *expected_id = NULL;
-        cJSON *tc_arr = cJSON_Parse(msg->tool_calls_json);
-        if (tc_arr && cJSON_IsArray(tc_arr)) {
-            cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
-            if (first) {
-                cJSON *id_item = cJSON_GetObjectItem(first, "id");
-                if (id_item && cJSON_IsString(id_item))
-                    expected_id = id_item->valuestring;
+        /* Proposal C: Use cached outbound ID if available, else parse JSON */
+        const char *expected_id = msg->tool_call_id_outbound;
+        cJSON *tc_arr = NULL;
+        if (!expected_id) {
+            /* Fallback for messages not created via llm_chat_add_assistant_tool_call
+             * (e.g., restored from checkpoint without the cached field). */
+            tc_arr = cJSON_Parse(msg->tool_calls_json);
+            if (tc_arr && cJSON_IsArray(tc_arr)) {
+                cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
+                if (first) {
+                    cJSON *id_item = cJSON_GetObjectItem(first, "id");
+                    if (id_item && cJSON_IsString(id_item))
+                        expected_id = id_item->valuestring;
+                }
             }
         }
         int result = -1;
         for (int pi = msg_idx + 1; pi < range_end && pi < chat->n_msgs; pi++) {
             if (!chat->msgs[pi].tool_call_id) continue;
-            /* If we extracted an ID, match by it; otherwise fall back to first */
             if (expected_id) {
                 if (strcmp(chat->msgs[pi].tool_call_id, expected_id) != 0)
                     continue;
@@ -148,11 +156,20 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
         return result;
     }
     if (msg->tool_call_id) {
-        /* tool_result: scan backward for tool_call whose tool_calls_json
-         * contains our tool_call_id. */
+        /* tool_result: scan backward for tool_call. Proposal C: use cached
+         * tool_call_id_outbound for O(1) match instead of strstr on JSON. */
         for (int pi = msg_idx - 1; pi >= range_start; pi--) {
             if (!chat->msgs[pi].tool_calls_json) continue;
-            /* Quick strstr check before expensive JSON parse */
+            /* Proposal C: Use cached ID if available */
+            if (chat->msgs[pi].tool_call_id_outbound) {
+                if (strcmp(chat->msgs[pi].tool_call_id_outbound, msg->tool_call_id) == 0) {
+                    if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                        return -1;
+                    return pi;
+                }
+                continue;
+            }
+            /* Fallback: strstr check on raw JSON */
             if (strstr(chat->msgs[pi].tool_calls_json, msg->tool_call_id)) {
                 if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
                     return -1;

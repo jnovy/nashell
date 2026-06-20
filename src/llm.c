@@ -24,6 +24,7 @@ static void llm_msg_free_fields(llm_msg_t *m) {
     free(m->content);
     free(m->tool_call_id);
     free(m->tool_calls_json);
+    free(m->tool_call_id_outbound);
     free(m->store_alias);
 }
 
@@ -213,7 +214,9 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
     chat->n_msgs++;
 }
 
-/* Add an assistant message with tool_calls (for conversation history) */
+/* Add an assistant message with tool_calls (for conversation history).
+ * Proposal C: Caches the outbound tool_call_id from tool_calls_json at creation
+ * time for O(1) partner matching during eviction (eliminates repeated JSON parsing). */
 void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
                                        const char *tool_calls_json) {
     if (llm_chat_ensure_capacity(chat) != 0) return;
@@ -228,6 +231,19 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
         free(m->content);
         free(m->tool_calls_json);
         return;
+    }
+    /* Proposal C: Extract and cache outbound tool_call_id from JSON */
+    if (m->tool_calls_json) {
+        cJSON *tc_arr = cJSON_Parse(m->tool_calls_json);
+        if (tc_arr && cJSON_IsArray(tc_arr)) {
+            cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
+            if (first) {
+                cJSON *id_item = cJSON_GetObjectItem(first, "id");
+                if (id_item && cJSON_IsString(id_item))
+                    m->tool_call_id_outbound = strdup(id_item->valuestring);
+            }
+        }
+        cJSON_Delete(tc_arr);
     }
     m->msg_type = LLM_MSG_GENERIC; // Assistant tool calls are generally generic context
     m->importance = llm_importance_for_type(m->msg_type);

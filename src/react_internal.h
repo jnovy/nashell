@@ -81,6 +81,24 @@
 #define REACT_SUMMARY_PER_MSG_MAX   1000
 /* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
 #define REACT_SP_SHRINK_MIN         512
+/* FIX FLAW 5: Separate budgets for breadcrumb index and eviction summary.
+ * Previously both shared REACT_BREADCRUMB_BUDGET_PCT, causing unpredictable
+ * allocation depending on which messages had store aliases. */
+#define REACT_BREADCRUMB_INDEX_PCT  2  /* % of context budget for store-alias index */
+#define REACT_BREADCRUMB_SUMMARY_PCT 3 /* % of context budget for eviction summary */
+/* FIX FLAW 8: Fixed minimum compress threshold instead of average-based.
+ * Messages below this size yield negligible savings from BM25 compression. */
+#define REACT_COMPRESS_THRESH_FIXED 800
+
+/* ── Proposal E: Partner Index ──────────────────────── */
+
+/* Pre-computed partner map for pair-safe eviction.
+ * Built once before eviction passes, eliminates repeated O(n) scanning
+ * and JSON parsing during eviction. */
+typedef struct {
+    int *partner;     /* partner[i] = partner index for msg i, or -1 */
+    int  n_msgs;      /* number of messages (for bounds checking) */
+} evict_partner_map_t;
 
 /* ── Helpers shared across react submodules ─────────── */
 
@@ -250,8 +268,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 /* ── Context Eviction ────────────────────────────────── */
 
 /* Check context usage and evict old messages if over threshold.
- * Includes importance-aware multi-pass eviction, pair-safe boundaries,
- * scratchpad re-injection, and breadcrumb generation (LCM-Lite). */
+ * Implements mark-then-sweep eviction (Proposal B) with unified finalization
+ * (Proposal A), partner index (Proposal E), and per-pass targets (Proposal D). */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
                        react_event_fn on_event, void *userdata);
@@ -261,6 +279,20 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
  * Shared between progressive and emergency eviction (BUG A/C FIX). */
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos);
+
+/* Proposal E: Build a partner index mapping each tool_call message to its
+ * result and vice versa. Built once before eviction, used by all phases.
+ * Returns a heap-allocated map. Caller must call evict_free_partner_map(). */
+evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
+                                             int range_start, int range_end);
+void evict_free_partner_map(evict_partner_map_t *map);
+
+/* Proposal A: Unified post-eviction finalization. Re-injects scratchpad,
+ * breadcrumbs, and compaction hint in a single pass. Verifies budget. */
+void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
+                   int keep_head, int target_pct, long context_budget,
+                   char *breadcrumb_str, int step,
+                   react_event_fn on_event, void *userdata);
 
 /* ── Post-Loop (Reflection, Promotion, Pruning) ────── */
 

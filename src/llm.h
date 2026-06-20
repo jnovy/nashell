@@ -108,6 +108,9 @@ typedef struct {
     char *content;
     char *tool_call_id;      /* for role:"tool" — the ID of the tool call being responded to */
     char *tool_calls_json;   /* for role:"assistant" — raw JSON of tool_calls array */
+    char *tool_call_id_outbound; /* Cached outbound tool_call ID extracted from tool_calls_json.
+                                  * For assistant msgs with tool_calls — stores the ID from the
+                                  * first tool_call entry for O(1) partner matching (Proposal C). */
     llm_msg_type_t msg_type; /* typed message category (0 = generic/legacy) */
     llm_msg_importance_t importance; /* eviction priority (Harness-1 §3.2) */
     llm_recoverability_t recoverability; /* CWL §3: how recoverable is this content? */
