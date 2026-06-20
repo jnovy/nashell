@@ -1,8 +1,9 @@
-/* compress.c — Sentence-level relevance compression and deduplication.
+/* compress.c — Line-level relevance compression and deduplication.
  *
  * Implements two key mechanisms from Harness-1 (arXiv 2606.02373):
- *   §3.1 Sentence-BM25 compression: compress tool outputs to the most
- *         relevant sentences instead of blind truncation.
+ *   §3.1 Line-BM25 compression: compress tool outputs to the most
+ *         relevant lines instead of blind truncation.  Content-type
+ *         agnostic — works for code, prose, JSON, YAML, logs, etc.
  *   §3.3 Content deduplication: CRC32-based near-duplicate detection
  *         to prevent injecting the same content into context twice.
  */
@@ -11,6 +12,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <ctype.h>
+
+/* ── Constants ──────────────────────────────────────────────────── */
+
+#define COMPRESS_TAG        "[...compressed]"
+#define COMPRESS_TAG_LEN    15
+#define COMPRESS_MIN_CHARS  800   /* minimum output budget */
+#define COMPRESS_MIN_UNITS  12    /* minimum chunks to keep */
+#define COMPRESS_MERGE_LEN  40    /* merge lines shorter than this */
 
 /* ── CRC32 ──────────────────────────────────────────────────────── */
 
@@ -45,7 +54,7 @@ int compress_is_duplicate(uint32_t hash, const uint32_t *hash_buf,
     return 0;
 }
 
-/* ── Sentence-level relevance compression ────────────────────────── */
+/* ── Line-level relevance compression ────────────────────────────── */
 
 /* Tokenize a string into lowercase words for BM25-like scoring.
  * Returns array of malloc'd word strings. Sets *n_words.
@@ -138,94 +147,129 @@ static float score_sentence(const char *sentence, char **query_words, int n_quer
     return score;
 }
 
-/* Split text into sentences at '.', '!', '?', or '\n\n'.
- * Returns array of malloc'd sentence strings. Sets *n_sentences.
- * Caller must free each sentence and the array. */
-static char **split_sentences(const char *text, int *n_sentences) {
-    int cap = 64, count = 0;
-    char **sents = malloc((size_t)cap * sizeof(char *));
-    if (!sents) { *n_sentences = 0; return NULL; }
+/* Split text into logical chunks by lines, merging short consecutive
+ * non-indented lines into larger units.  Content-type agnostic: works
+ * for code, prose, JSON, YAML, logs, diffs, etc.
+ *
+ * Returns array of malloc'd chunk strings.  Sets *n_chunks.
+ * Caller must free each chunk and the array. */
+static char **split_chunks(const char *text, int *n_chunks) {
+    int cap = 128, count = 0;
+    char **chunks = malloc((size_t)cap * sizeof(char *));
+    if (!chunks) { *n_chunks = 0; return NULL; }
 
     const char *p = text;
-    while (*p) {
-        /* Skip leading whitespace */
-        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-        if (!*p) break;
+    /* Accumulator for merging short lines */
+    char merge_buf[512];
+    int  merge_len = 0;
 
-        const char *start = p;
-        /* Find sentence end.
-         * FIX MED#9: Don't treat '.' as sentence boundary when it appears
-         * inside filenames (file.c), version numbers (v2.0), IP addresses
-         * (127.0.0.1), or abbreviations (e.g., i.e.). A '.' is a sentence
-         * boundary only if the char before it is not a digit/slash and the
-         * char after it is whitespace-then-uppercase, end of string, or
-         * a newline. This is critical for a coding agent where tool outputs
-         * contain pervasive dotted identifiers. */
-        while (*p) {
-            if (*p == '!' || *p == '?') {
-                p++;
-                while (*p == ' ') p++;
-                break;
+    while (*p) {
+        /* Extract one line */
+        const char *eol = strchr(p, '\n');
+        if (!eol) eol = p + strlen(p);
+        int ll = (int)(eol - p);
+
+        /* Skip blank lines — they're separators, not content */
+        int blank = 1;
+        for (int i = 0; i < ll; i++) {
+            if (p[i] != ' ' && p[i] != '\t' && p[i] != '\r') {
+                blank = 0; break;
             }
-            if (*p == '.') {
-                /* Check if this dot is a real sentence boundary:
-                 * NOT a boundary if preceded by a digit or followed by
-                 * an alphanumeric char (covers filenames, versions, IPs) */
-                int prev_is_alnum = (p > start && (isalnum((unsigned char)*(p-1)) || *(p-1) == '/'));
-                int next_is_alnum = (*(p+1) && isalnum((unsigned char)*(p+1)));
-                if (prev_is_alnum && next_is_alnum) {
-                    /* Dot inside identifier — skip */
-                    p++;
-                    continue;
+        }
+        if (blank) {
+            /* Flush merge buffer as its own chunk */
+            if (merge_len > 0) {
+                char *chunk = malloc((size_t)(merge_len + 1));
+                if (chunk) {
+                    memcpy(chunk, merge_buf, (size_t)merge_len);
+                    chunk[merge_len] = '\0';
+                    if (count >= cap) {
+                        cap *= 2;
+                        char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
+                        if (!tmp) { free(chunk); break; }
+                        chunks = tmp;
+                    }
+                    chunks[count++] = chunk;
                 }
-                /* Also skip single-letter abbreviations like e.g. i.e. */
-                if (p > start && isalpha((unsigned char)*(p-1)) &&
-                    p - start >= 1 && (p - 1 == start || !isalpha((unsigned char)*(p-2))) &&
-                    *(p+1) && isalpha((unsigned char)*(p+1))) {
-                    p++;
-                    continue;
-                }
-                p++;
-                /* Skip trailing dots/spaces */
-                while (*p == '.' || *p == ' ') p++;
-                break;
+                merge_len = 0;
             }
-            if (*p == '\n' && *(p + 1) == '\n') {
-                p += 2;
-                break;
-            }
-            p++;
+            p = *eol ? eol + 1 : eol;
+            continue;
         }
 
-        int slen = (int)(p - start);
-        if (slen > 5) {  /* skip trivial fragments */
-            char *sent = malloc((size_t)(slen + 1));
-            if (sent) {
-                memcpy(sent, start, (size_t)slen);
-                sent[slen] = '\0';
+        /* Decide: merge into accumulator or emit as own chunk.
+         * Merge if: line is short AND doesn't start with whitespace
+         * (indentation = code structure, don't merge across indent levels). */
+        int starts_with_ws = (ll > 0 && (p[0] == ' ' || p[0] == '\t'));
+        if (ll < COMPRESS_MERGE_LEN && !starts_with_ws &&
+            merge_len + ll + 1 < (int)sizeof(merge_buf)) {
+            if (merge_len > 0) merge_buf[merge_len++] = ' ';
+            memcpy(merge_buf + merge_len, p, (size_t)ll);
+            merge_len += ll;
+        } else {
+            /* Flush any pending merge buffer first */
+            if (merge_len > 0) {
+                char *chunk = malloc((size_t)(merge_len + 1));
+                if (chunk) {
+                    memcpy(chunk, merge_buf, (size_t)merge_len);
+                    chunk[merge_len] = '\0';
+                    if (count >= cap) {
+                        cap *= 2;
+                        char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
+                        if (!tmp) { free(chunk); break; }
+                        chunks = tmp;
+                    }
+                    chunks[count++] = chunk;
+                }
+                merge_len = 0;
+            }
+            /* Emit current line as its own chunk */
+            char *chunk = malloc((size_t)(ll + 1));
+            if (chunk) {
+                memcpy(chunk, p, (size_t)ll);
+                chunk[ll] = '\0';
                 if (count >= cap) {
                     cap *= 2;
-                    char **tmp = realloc(sents, (size_t)cap * sizeof(char *));
-                    if (!tmp) { free(sent); break; }
-                    sents = tmp;
+                    char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
+                    if (!tmp) { free(chunk); break; }
+                    chunks = tmp;
                 }
-                sents[count++] = sent;
+                chunks[count++] = chunk;
             }
         }
+
+        p = *eol ? eol + 1 : eol;
     }
-    *n_sentences = count;
-    return sents;
+
+    /* Flush trailing merge buffer */
+    if (merge_len > 0) {
+        char *chunk = malloc((size_t)(merge_len + 1));
+        if (chunk) {
+            memcpy(chunk, merge_buf, (size_t)merge_len);
+            chunk[merge_len] = '\0';
+            if (count >= cap) {
+                cap *= 2;
+                char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
+                if (!tmp) { free(chunk); goto done; }
+                chunks = tmp;
+            }
+            chunks[count++] = chunk;
+        }
+    }
+done:
+    *n_chunks = count;
+    return chunks;
 }
 
-/* Comparison function for sorting scored sentences by score (descending) */
+/* Comparison function for sorting scored chunks by score (descending) */
 typedef struct {
     int   index;
     float score;
-} scored_sentence_t;
+} scored_chunk_t;
 
 static int cmp_scored_desc(const void *a, const void *b) {
-    float sa = ((const scored_sentence_t *)a)->score;
-    float sb = ((const scored_sentence_t *)b)->score;
+    float sa = ((const scored_chunk_t *)a)->score;
+    float sb = ((const scored_chunk_t *)b)->score;
     if (sb > sa) return 1;
     if (sb < sa) return -1;
     return 0;
@@ -233,110 +277,115 @@ static int cmp_scored_desc(const void *a, const void *b) {
 
 /* Comparison function for sorting by original index (ascending) — preserve order */
 static int cmp_index_asc(const void *a, const void *b) {
-    int ia = ((const scored_sentence_t *)a)->index;
-    int ib = ((const scored_sentence_t *)b)->index;
+    int ia = ((const scored_chunk_t *)a)->index;
+    int ib = ((const scored_chunk_t *)b)->index;
     return ia - ib;
 }
 
 char *compress_to_relevant(const char *text, const char *query,
-                           int max_sentences, int max_chars) {
+                           int max_units, int max_chars) {
     if (!text || !text[0]) return NULL;
     int tlen = (int)strlen(text);
 
-    /* FIX #15: Short-circuit when text is already within bounds.
-     * Previously required max_sentences <= 0 which is never true from
-     * the eviction call site (always passes 4). Now also returns early
-     * when text fits within max_chars, avoiding unnecessary sentence
-     * splitting and scoring for short messages. */
+    /* Enforce minimum budgets so compression is never pathologically tight */
+    if (max_units < COMPRESS_MIN_UNITS) max_units = COMPRESS_MIN_UNITS;
+    if (max_chars < COMPRESS_MIN_CHARS) max_chars = COMPRESS_MIN_CHARS;
+
+    /* Short-circuit when text already fits within budget */
     if (tlen <= max_chars) return strdup(text);
 
-    /* Split into sentences */
-    int n_sents;
-    char **sents = split_sentences(text, &n_sents);
-    if (!sents || n_sents == 0) {
-        free(sents);
-        /* Fallback: truncate */
-        char *out = malloc((size_t)(max_chars + 16));
+    /* Split into content-agnostic chunks (lines with short-line merging) */
+    int n_chunks;
+    char **chunks = split_chunks(text, &n_chunks);
+    if (!chunks || n_chunks == 0) {
+        free(chunks);
+        /* Fallback: hard truncate */
+        char *out = malloc((size_t)(max_chars + COMPRESS_TAG_LEN + 1));
         if (!out) return NULL;
-        snprintf(out, (size_t)(max_chars + 16), "%.*s...[compressed]", max_chars - 16, text);
+        snprintf(out, (size_t)(max_chars + COMPRESS_TAG_LEN + 1),
+                 "%.*s" COMPRESS_TAG, max_chars - COMPRESS_TAG_LEN, text);
         return out;
     }
 
-    /* If we have few sentences, just return them all (up to char limit) */
-    if (n_sents <= max_sentences) {
+    /* If few enough chunks, just emit them all up to the char limit */
+    if (n_chunks <= max_units) {
         size_t total = 0;
-        for (int i = 0; i < n_sents; i++) total += strlen(sents[i]) + 1;
-        char *out = malloc(total + 32);
+        for (int i = 0; i < n_chunks; i++) total += strlen(chunks[i]) + 1;
+        char *out = malloc(total + COMPRESS_TAG_LEN + 1);
         if (out) {
-            out[0] = '\0';
             size_t pos = 0;
-            for (int i = 0; i < n_sents; i++) {
-                size_t sl = strlen(sents[i]);
-                if (pos + sl + 2 > (size_t)max_chars) break;
-                memcpy(out + pos, sents[i], sl);
+            int truncated = 0;
+            for (int i = 0; i < n_chunks; i++) {
+                size_t sl = strlen(chunks[i]);
+                if (pos + sl + 2 > (size_t)max_chars) {
+                    truncated = 1;
+                    break;
+                }
+                memcpy(out + pos, chunks[i], sl);
                 pos += sl;
-                out[pos++] = ' ';
+                out[pos++] = '\n';
+            }
+            if (truncated && pos + COMPRESS_TAG_LEN < total + COMPRESS_TAG_LEN + 1) {
+                memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
+                pos += COMPRESS_TAG_LEN;
             }
             out[pos] = '\0';
         }
-        for (int i = 0; i < n_sents; i++) free(sents[i]);
-        free(sents);
+        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
+        free(chunks);
         return out;
     }
 
-    /* Tokenize query */
+    /* Tokenize query for BM25-like scoring */
     int n_qwords;
     char **qwords = tokenize_words(query ? query : "", &n_qwords);
 
-    /* Score each sentence */
-    scored_sentence_t *scored = malloc((size_t)n_sents * sizeof(scored_sentence_t));
+    /* Score each chunk by query relevance */
+    scored_chunk_t *scored = malloc((size_t)n_chunks * sizeof(scored_chunk_t));
     if (!scored) {
         free_words(qwords, n_qwords);
-        for (int i = 0; i < n_sents; i++) free(sents[i]);
-        free(sents);
+        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
+        free(chunks);
         return NULL;
     }
-    for (int i = 0; i < n_sents; i++) {
+    for (int i = 0; i < n_chunks; i++) {
         scored[i].index = i;
-        scored[i].score = score_sentence(sents[i], qwords, n_qwords);
-        /* Boost first and last sentences (they often contain key info) */
-        if (i == 0) scored[i].score += 0.3f;
-        if (i == n_sents - 1) scored[i].score += 0.15f;
+        scored[i].score = score_sentence(chunks[i], qwords, n_qwords);
+        /* Boost first few and last few chunks (often contain key info) */
+        if (i < 3) scored[i].score += 0.3f - i * 0.08f;
+        if (i >= n_chunks - 2) scored[i].score += 0.15f;
     }
 
-    /* Sort by score descending, take top N */
-    qsort(scored, (size_t)n_sents, sizeof(scored_sentence_t), cmp_scored_desc);
-    int keep = max_sentences < n_sents ? max_sentences : n_sents;
+    /* Sort by score descending, keep top-N */
+    qsort(scored, (size_t)n_chunks, sizeof(scored_chunk_t), cmp_scored_desc);
+    int keep = max_units < n_chunks ? max_units : n_chunks;
 
-    /* Re-sort the kept sentences by original index to preserve order */
-    qsort(scored, (size_t)keep, sizeof(scored_sentence_t), cmp_index_asc);
+    /* Re-sort the kept chunks by original index to preserve order */
+    qsort(scored, (size_t)keep, sizeof(scored_chunk_t), cmp_index_asc);
 
     /* Build output */
-    size_t out_cap = (size_t)max_chars + 64;
+    size_t out_cap = (size_t)max_chars + COMPRESS_TAG_LEN + 1;
     char *out = malloc(out_cap);
     if (!out) {
         free(scored);
         free_words(qwords, n_qwords);
-        for (int i = 0; i < n_sents; i++) free(sents[i]);
-        free(sents);
+        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
+        free(chunks);
         return NULL;
     }
-    out[0] = '\0';
     size_t pos = 0;
     for (int i = 0; i < keep; i++) {
-        const char *s = sents[scored[i].index];
+        const char *s = chunks[scored[i].index];
         size_t sl = strlen(s);
         if (pos + sl + 2 > (size_t)max_chars) break;
         memcpy(out + pos, s, sl);
         pos += sl;
-        out[pos++] = ' ';
+        out[pos++] = '\n';
     }
-    if (pos > 0 && n_sents > keep) {
-        const char *tag = "[...compressed]";
-        size_t tl = strlen(tag);
-        if (pos + tl < out_cap) {
-            memcpy(out + pos, tag, tl);
-            pos += tl;
+    if (pos > 0 && n_chunks > keep) {
+        if (pos + COMPRESS_TAG_LEN < out_cap) {
+            memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
+            pos += COMPRESS_TAG_LEN;
         }
     }
     out[pos] = '\0';
@@ -344,7 +393,7 @@ char *compress_to_relevant(const char *text, const char *query,
     /* Cleanup */
     free(scored);
     free_words(qwords, n_qwords);
-    for (int i = 0; i < n_sents; i++) free(sents[i]);
-    free(sents);
+    for (int i = 0; i < n_chunks; i++) free(chunks[i]);
+    free(chunks);
     return out;
 }
