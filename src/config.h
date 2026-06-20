@@ -155,8 +155,11 @@ typedef struct {
 } model_profile_t;
 
 typedef struct {
-    /* [server] — kept for backward compatibility */
+    /* [server] — kept for backward compatibility.
+     * When api_base is explicitly set in config.toml, it takes priority
+     * over [provider] and forces local inference. */
     char  *api_base;
+    int    api_base_explicit;  /* 1 = user set [server].api_base in config */
 
     /* [provider] — new multi-provider config */
     provider_config_toml_t provider;

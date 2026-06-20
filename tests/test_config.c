@@ -108,11 +108,49 @@ static void test_missing_sections(void) {
     free(dir);
 }
 
+/* ── test_api_base_explicit_flag ── */
+static void test_api_base_explicit_flag(void) {
+    /* No config file → api_base_explicit should be 0 (default) */
+    config_t *cfg = config_load("/tmp/nash_test_nonexistent_config.toml");
+    ASSERT_NOT_NULL(cfg);
+    ASSERT_EQ(cfg->api_base_explicit, 0);
+    config_free(cfg);
+
+    /* Explicit [server].api_base → api_base_explicit should be 1 */
+    char *dir = make_test_dir();
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/explicit.toml", dir);
+    FILE *f = fopen(path, "w");
+    fprintf(f, "[server]\napi_base = \"http://myserver:8080\"\n");
+    fclose(f);
+
+    cfg = config_load(path);
+    ASSERT_NOT_NULL(cfg);
+    ASSERT_STR_EQ(cfg->api_base, "http://myserver:8080");
+    ASSERT_EQ(cfg->api_base_explicit, 1);
+    config_free(cfg);
+
+    /* [provider] only, no [server] → api_base_explicit should be 0 */
+    snprintf(path, sizeof(path), "%s/provider_only.toml", dir);
+    f = fopen(path, "w");
+    fprintf(f, "[provider]\ntype = \"openai\"\nmodel_id = \"gpt-4o\"\n");
+    fclose(f);
+
+    cfg = config_load(path);
+    ASSERT_NOT_NULL(cfg);
+    ASSERT_EQ(cfg->api_base_explicit, 0);
+    config_free(cfg);
+
+    rm_rf(dir);
+    free(dir);
+}
+
 int main(void) {
     printf("test_config:\n");
     RUN_TEST(test_defaults);
     RUN_TEST(test_parse_toml);
     RUN_TEST(test_write_default);
     RUN_TEST(test_missing_sections);
+    RUN_TEST(test_api_base_explicit_flag);
     TEST_SUMMARY();
 }

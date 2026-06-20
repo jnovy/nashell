@@ -311,6 +311,7 @@ int main(int argc, char **argv) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
             cfg->api_base = strdup(argv[++i]);
+            cfg->api_base_explicit = 1;
             /* --api forces local provider mode — override any [provider]
              * section in config.toml. The user is pointing to a specific
              * llama.cpp/OpenAI-compatible server, not a cloud API. */
@@ -447,6 +448,18 @@ int main(int argc, char **argv) {
     }
 
     /* ── Create provider from config ── */
+    /* When [server].api_base is explicitly set, prefer local inference
+     * over any [provider] configuration. The user is pointing to a
+     * specific local server — honor that over cloud provider settings. */
+    if (cfg->api_base_explicit && cfg->provider.type &&
+        strcmp(cfg->provider.type, "local") != 0) {
+        nash_log("[config] [server].api_base is set (%s) — "
+                 "overriding [provider].type '%s' → 'local'",
+                 cfg->api_base, cfg->provider.type);
+        free(cfg->provider.type);
+        cfg->provider.type = strdup("local");
+    }
+
     provider_config_t pcfg = {
         .type           = provider_type_from_str(cfg->provider.type),
         .model_id       = cfg->provider.model_id,

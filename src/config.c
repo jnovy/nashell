@@ -239,6 +239,8 @@ config_t *config_load(const char *path) {
     toml_table_t *server = toml_table_in(root, "server");
     if (server) {
         cfg->api_base = toml_str(server, "api_base");
+        if (cfg->api_base)
+            cfg->api_base_explicit = 1;  /* user explicitly set [server].api_base */
     }
 
     /* [provider] — multi-provider configuration (mirrors nashell config.yaml) */
@@ -1350,6 +1352,9 @@ int config_write_default(const char *path) {
         "#   anthropic = Anthropic API (Claude)\n"
         "#   vertex   = Anthropic via Google Vertex AI\n"
         "# If [provider] is absent, defaults to local using [server].api_base\n"
+        "# NOTE: When [server].api_base is set, it takes priority over [provider]\n"
+        "# and forces local inference. Remove/comment [server].api_base to use\n"
+        "# a cloud provider.\n"
         "[provider]\n"
         "type = \"local\"\n"
         "# model_id = \"claude-opus-4-6\"       # model identifier for API\n"
