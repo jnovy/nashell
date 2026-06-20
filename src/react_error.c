@@ -3,10 +3,12 @@
  * Includes emergency eviction and the 5-tier retry strategy.
  *
  * Bug/Design fixes applied:
+ *   BUG 4:    Floor calculation now uses REACT_EVICT_FLOOR_PCT (not hardcoded /5)
  *   BUG 8:    Considers recoverability — evicts RECOVER_STORE/FILE/MEMORY
  *             messages before RECOVER_NONE to preserve irreplaceable content
- *   DESIGN 4: Compaction floor (20% of non-head context) prevents over-eviction
- *   DESIGN 9: Protection levels aligned with progressive eviction (>= HIGH) */
+ *   DESIGN 4: Compaction floor prevents over-eviction
+ *   DESIGN 9: Protection levels aligned with progressive eviction (>= HIGH)
+ *   UNIFY:    Uses shared react_find_tool_partner() for pair-safety */
 
 #include "react_internal.h"
 
@@ -14,24 +16,16 @@
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
  * context budget, prioritizing recoverable content over irreplaceable.
- * BUG 8 FIX: Two-pass approach — first pass evicts recoverable messages
- * (RECOVER_STORE/FILE/MEMORY), second pass evicts non-recoverable if needed.
- * DESIGN 4 FIX: Enforces a compaction floor (20% of non-head context).
+ * Uses the same floor calculation as progressive eviction (REACT_EVICT_FLOOR_PCT).
  * Returns the number of messages evicted (0 if not enough to evict). */
 int react_emergency_evict(llm_chat_t *chat, long context_budget) {
-    /* H2/H3 FIX: Dynamic keep_head/keep_tail */
     int keep_head = react_compute_keep_head(chat);
     int keep_tail = react_compute_keep_tail(chat);
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
     if (evict_end <= evict_start + 2) return 0;
 
-    /* BUG B FIX: Use long for char counts to avoid overflow for large-context
-     * models (1M+ tokens). Progressive eviction already uses long. */
-    long total_chars = 0;
-    for (int i = 0; i < chat->n_msgs; i++)
-        if (chat->msgs[i].content)
-            total_chars += (long)strlen(chat->msgs[i].content);
+    long total_chars = react_calc_total_chars(chat);
 
     long target_chars;
     if (context_budget > 0)
@@ -41,114 +35,72 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
     long need_to_remove = total_chars - target_chars;
     if (need_to_remove <= 0) return 0;
 
-    /* DESIGN 4 FIX: Compute compaction floor — never evict below 20% of
-     * non-head context. Without this, emergency eviction can reduce context
-     * to near-zero, triggering the death spiral (max-token exhaustion). */
+    /* FIX #4: Use REACT_EVICT_FLOOR_PCT instead of hardcoded /5.
+     * Previously diverged from progressive eviction's floor calculation. */
     long head_chars = 0;
     for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
         if (chat->msgs[i].content)
             head_chars += (long)strlen(chat->msgs[i].content);
     long floor_chars = (context_budget > 0)
-        ? (context_budget - head_chars) / 5 : (total_chars - head_chars) / 5;
-    if (floor_chars < 4000) floor_chars = 4000;
+        ? (context_budget - head_chars) * REACT_EVICT_FLOOR_PCT / 100
+        : (total_chars - head_chars) * REACT_EVICT_FLOOR_PCT / 100;
+    if (floor_chars < REACT_EVICT_FLOOR_MIN_CHARS)
+        floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
 
-    /* Helper: try to evict a message (or pair) at position i.
-     * Returns count removed (0, 1, or 2). Updates removed_chars. */
     long removed_chars = 0;
     int removed = 0;
 
-    /* BUG 8 FIX: Two-pass eviction — recoverable content first.
-     * Pass A: Only evict messages with recoverability > RECOVER_NONE
-     * Pass B: Evict remaining (non-recoverable) messages if still needed.
-     * This preserves irreplaceable content as long as possible. */
+    /* Two-pass eviction — recoverable content first.
+     * Pass 0: Only evict messages with recoverability > RECOVER_NONE
+     * Pass 1: Evict remaining (non-recoverable) messages if still needed. */
     for (int pass = 0; pass < 2 && removed_chars < need_to_remove; pass++) {
         int i = evict_start;
         while (i < chat->n_msgs - keep_tail && removed_chars < need_to_remove) {
-            /* Never evict CRITICAL or HIGH messages */
             if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
                 i++;
                 continue;
             }
-
-            /* BUG 8 FIX: In pass 0, skip non-recoverable messages */
             if (pass == 0 && chat->msgs[i].recoverability == LLM_RECOVER_NONE) {
                 i++;
                 continue;
             }
 
-            /* DESIGN 4 FIX: Compaction floor check — stop evicting when
-             * remaining non-head context would drop below floor. */
+            /* Compaction floor check */
             long remaining_nonhead = total_chars - head_chars - removed_chars;
             long msg_chars = chat->msgs[i].content
                 ? (long)strlen(chat->msgs[i].content) : 0;
             if (remaining_nonhead - msg_chars < floor_chars)
                 break;
 
-            /* B6 FIX: Pair-safe with scanning — find partner by scanning
-             * forward/backward instead of assuming strict adjacency.
-             * Error recovery, hints, etc. may sit between pairs. */
-            if (chat->msgs[i].tool_calls_json) {
-                /* Find partner tool_result by scanning forward */
-                int partner = -1;
-                for (int pi = i + 1; pi < chat->n_msgs - keep_tail; pi++) {
-                    if (chat->msgs[pi].tool_call_id) {
-                        if (chat->msgs[pi].importance < LLM_MSG_IMPORTANCE_HIGH)
-                            partner = pi;
-                        break;
-                    }
-                }
-                if (partner >= 0) {
-                    if (pass == 0 && chat->msgs[partner].recoverability == LLM_RECOVER_NONE) {
-                        i++;
-                        continue;
-                    }
-                    long pair_chars = chat->msgs[partner].content
-                        ? (long)strlen(chat->msgs[partner].content) : 0;
-                    if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
-                        break;
-                    /* Remove partner first (higher index) to preserve indices */
-                    removed_chars += pair_chars;
-                    llm_chat_remove_range(chat, partner, partner + 1);
-                    removed++;
-                    /* Now remove the tool_call (i hasn't shifted) */
-                    removed_chars += msg_chars;
-                    llm_chat_remove_range(chat, i, i + 1);
-                    removed++;
-                    continue;
-                }
-            }
+            /* Pair-safe using shared helper */
+            int partner = react_find_tool_partner(chat, i, evict_start,
+                                                   chat->n_msgs - keep_tail);
 
-            if (chat->msgs[i].tool_call_id) {
-                /* Find partner tool_call by scanning backward */
-                int partner = -1;
-                for (int pi = i - 1; pi >= evict_start; pi--) {
-                    if (chat->msgs[pi].tool_calls_json) {
-                        if (chat->msgs[pi].importance < LLM_MSG_IMPORTANCE_HIGH)
-                            partner = pi;
-                        break;
-                    }
-                }
-                if (partner >= 0) {
-                    if (pass == 0 && chat->msgs[partner].recoverability == LLM_RECOVER_NONE) {
-                        i++;
-                        continue;
-                    }
-                    long partner_chars = chat->msgs[partner].content
-                        ? (long)strlen(chat->msgs[partner].content) : 0;
-                    if (remaining_nonhead - msg_chars - partner_chars < floor_chars)
-                        break;
-                    /* Remove i first (higher index) */
-                    removed_chars += msg_chars;
-                    llm_chat_remove_range(chat, i, i + 1);
-                    removed++;
-                    /* Now remove partner */
-                    removed_chars += partner_chars;
-                    llm_chat_remove_range(chat, partner, partner + 1);
-                    removed++;
-                    /* i was removed, so don't increment — the next iteration
-                     * will look at what was after i (now at position i) */
+            if (partner >= 0) {
+                if (pass == 0 && chat->msgs[partner].recoverability == LLM_RECOVER_NONE) {
+                    i++;
                     continue;
                 }
+                long pair_chars = chat->msgs[partner].content
+                    ? (long)strlen(chat->msgs[partner].content) : 0;
+                if (remaining_nonhead - msg_chars - pair_chars < floor_chars)
+                    break;
+
+                /* Remove higher index first to preserve lower index */
+                int hi = partner > i ? partner : i;
+                int lo = partner > i ? i : partner;
+                long hi_chars = chat->msgs[hi].content
+                    ? (long)strlen(chat->msgs[hi].content) : 0;
+                long lo_chars = chat->msgs[lo].content
+                    ? (long)strlen(chat->msgs[lo].content) : 0;
+                removed_chars += hi_chars;
+                llm_chat_remove_range(chat, hi, hi + 1);
+                removed++;
+                removed_chars += lo_chars;
+                llm_chat_remove_range(chat, lo, lo + 1);
+                removed++;
+                /* Don't increment i — next msg is now at position lo */
+                continue;
             }
 
             /* Standalone message */
@@ -158,28 +110,18 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
         }
     }
 
-    /* D7 FIX: Fallback — evict at least one message, preferring recoverable
-     * content over non-recoverable.
-     * B3 FIX: Check compaction floor before force-evicting — previously the
-     * fallback bypassed the floor entirely, violating the death-spiral guard. */
+    /* Fallback — evict at least one message if possible */
     if (removed == 0) {
-        /* B3 FIX: Recalculate remaining to check floor */
-        long cur_total = 0;
-        for (int ci = 0; ci < chat->n_msgs; ci++)
-            if (chat->msgs[ci].content)
-                cur_total += (long)strlen(chat->msgs[ci].content);
+        long cur_total = react_calc_total_chars(chat);
         long cur_nonhead = cur_total - head_chars;
-        /* Only force-evict if we're above the floor */
         if (cur_nonhead > floor_chars) {
             int best = -1;
-            /* First pass: find a recoverable message */
             for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
                 if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH &&
                     chat->msgs[j].recoverability > LLM_RECOVER_NONE) {
                     best = j; break;
                 }
             }
-            /* Second pass: any < HIGH message */
             if (best < 0) {
                 for (int j = evict_start; j < chat->n_msgs - keep_tail; j++) {
                     if (chat->msgs[j].importance < LLM_MSG_IMPORTANCE_HIGH) {
@@ -188,10 +130,13 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget) {
                 }
             }
             if (best >= 0) {
-                if (chat->msgs[best].tool_calls_json &&
-                    best + 1 < chat->n_msgs - keep_tail &&
-                    chat->msgs[best + 1].tool_call_id) {
-                    llm_chat_remove_range(chat, best, best + 2);
+                int partner = react_find_tool_partner(chat, best, evict_start,
+                                                      chat->n_msgs - keep_tail);
+                if (partner >= 0) {
+                    int hi = partner > best ? partner : best;
+                    int lo = partner > best ? best : partner;
+                    llm_chat_remove_range(chat, hi, hi + 1);
+                    llm_chat_remove_range(chat, lo, lo + 1);
                     removed = 2;
                 } else {
                     llm_chat_remove_range(chat, best, best + 1);
@@ -213,13 +158,9 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                                llm_stats_t *stats, int step,
                                react_event_fn on_event, void *userdata) {
 
-    /* Write server error to journal so it's visible in TUI and
-     * preserved for post-mortem analysis. The journal entry uses
-     * tool="server_error" with failed=true, which the TUI renders
-     * with an "x" marker instead of "+". */
+    /* Write server error to journal */
     {
         cJSON *err_params = cJSON_CreateObject();
-        /* Build error message from actual server error if available */
         {
             const char *srv_err = NULL;
             if (ctx->provider && ctx->provider->last_error)
@@ -250,27 +191,17 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         cJSON_AddNumberToObject(err_params, "attempt", *consecutive_null);
         cJSON_AddNumberToObject(err_params, "completion_tokens", stats->completion_tokens);
 
-        /* Capture context size for diagnostics */
-        long total_chars = 0;
-        for (int ci = 0; ci < chat->n_msgs; ci++)
-            if (chat->msgs[ci].content)
-                total_chars += (long)strlen(chat->msgs[ci].content);
+        long total_chars = react_calc_total_chars(chat);
         cJSON_AddNumberToObject(err_params, "context_chars", (double)total_chars);
         cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
-        /* Include the actual server error message if available. */
         const char *err_msg = ctx->provider ? ctx->provider->last_error : NULL;
         const char *err_req = ctx->provider ? ctx->provider->last_error_request : NULL;
         const char *err_resp = ctx->provider ? ctx->provider->last_error_response : NULL;
 
-        if (err_msg) {
+        if (err_msg)
             cJSON_AddStringToObject(err_params, "server_message", err_msg);
-        }
 
-        /* Save raw request and response bodies to store/ for
-         * post-mortem analysis. These contain the exact JSON that
-         * caused the server error, including the offset information
-         * the server reports in its error message. */
         if (err_req && ctx->tools->store) {
             char *req_ref = store_save(ctx->tools->store, err_req);
             if (req_ref) {
@@ -286,7 +217,6 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             }
         }
 
-        /* Store full error params in store/ for audit trail */
         char *se_alias = NULL;
         {
             char *content = cJSON_Print(err_params);
@@ -313,27 +243,18 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     ev.type = REACT_EVENT_ERROR;
     ev.step = step + 1;
 
-    /* Check if this is an authentication error (HTTP 401/403).
-     * Auth errors can't be fixed by scratchpad manipulation —
-     * the provider already retried once with a fresh token.
-     * If it still fails, the credentials are truly invalid. */
+    /* Authentication error (HTTP 401/403) — can't be fixed by eviction */
     {
         const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
         if (perr && (strstr(perr, "HTTP 401") || strstr(perr, "HTTP 403"))) {
             ev.message = "Authentication failed — token expired or invalid, "
                          "please re-authenticate (e.g. gcloud auth login)";
             react_emit(on_event, userdata, &ev);
-            return 1;  /* break */
+            return 1;
         }
     }
 
-    /* BUG FIX: Detect HTTP 400 (client error = bad request).
-     * Unlike HTTP 500 (transient server error), 400 means the request
-     * itself is malformed — typically context too large. The old tier 1
-     * retry (remove 2 messages + continue) would let the model respond
-     * successfully, resetting consecutive_null_responses to 0, then the
-     * next LLM call would fail again with 400 → infinite loop.
-     * For 400 errors: do aggressive context eviction immediately. */
+    /* HTTP 400 (client error = bad request) — aggressive context eviction */
     {
         const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
         if (perr && strstr(perr, "HTTP 400")) {
@@ -342,16 +263,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 ev.message = "HTTP 400 — context still too large after "
                              "repeated eviction, giving up";
                 react_emit(on_event, userdata, &ev);
-                return 1;  /* break */
+                return 1;
             }
-            /* FIX #3: Compute context_budget and pass to emergency eviction */
-            float cpt = react_get_chars_per_token(ctx);
-            long cb = (long)(ctx->provider->cfg.context_size * cpt);
+            long cb = react_context_budget(ctx);
             int n_evict = react_emergency_evict(chat, cb);
             if (n_evict > 0) {
-                /* BUG C FIX: Re-inject scratchpad after emergency eviction.
-                 * Previously lost permanently, leaving agent without
-                 * scratchpad context after error recovery. */
                 react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
                 char emsg[128];
                 snprintf(emsg, sizeof(emsg),
@@ -362,16 +278,14 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             } else {
                 ev.message = "HTTP 400 — no evictable messages remain, giving up";
                 react_emit(on_event, userdata, &ev);
-                return 1;  /* break */
+                return 1;
             }
             *consecutive_null = 0;
-            return 0;  /* continue */
+            return 0;
         }
     }
 
-    /* Detect max-token exhaustion as a distinct error class.
-     * When completion_tokens == max_tokens, the model hit the output
-     * ceiling — this is deterministic, not transient. Recovery: evict. */
+    /* Max-token exhaustion — deterministic, not transient */
     if (stats->completion_tokens > 0 && ctx->provider &&
         stats->completion_tokens >= ctx->provider->cfg.max_tokens) {
         char mtmsg[256];
@@ -383,65 +297,38 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         react_emit(on_event, userdata, &ev);
 
         {
-            float cpt = react_get_chars_per_token(ctx);
-            long cb = (long)(ctx->provider->cfg.context_size * cpt);
+            long cb = react_context_budget(ctx);
             int n_evict = react_emergency_evict(chat, cb);
             if (n_evict > 0)
                 react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
         }
-        /* B4 FIX: DO NOT reset consecutive_null — max-token exhaustion is
-         * deterministic, not transient. Resetting the counter prevented the
-         * 5-tier system from advancing, creating infinite loops:
-         * evict → retry → max_tokens → reset → evict → retry. */
         (*consecutive_null)++;
-        return 0;  /* continue */
+        return 0;
     }
 
-    /* 5-tier retry strategy for HTTP 500 / NULL responses.
-     * Tiers 0a/0b: Plain retry with backoff (transient server errors)
-     * Tier 1: Remove last assistant+tool_result pair (model confusion)
-     * Tier 2: Reformulate scratchpad (context pollution)
-     * Tier 3: Strip scratchpad entirely (nuclear option)
-     * Tier 4+: Give up
-     *
-     * FIX: Previously, the first failure immediately removed the last
-     * exchange (destructive). For intermittent server errors (e.g.,
-     * llama.cpp returning sporadic HTTP 500s), this wastes the previous
-     * tool result and forces the agent to re-execute the same tool.
-     * Now we do 2 plain retries with backoff first. */
+    /* 5-tier retry strategy for HTTP 500 / NULL responses */
     if (*consecutive_null >= 6) {
         ev.message = "LLM server error — all recovery tiers exhausted, giving up";
         react_emit(on_event, userdata, &ev);
-        return 1;  /* break */
+        return 1;
     }
 
     if (*consecutive_null <= 2) {
-        /* Tier 0: Plain retry with backoff — no context modification.
-         * Most HTTP 500s from local servers (llama.cpp) are transient.
-         * Retrying without destroying context avoids wasting tool results
-         * and forcing the agent to re-execute the same operations. */
-        if (ctx->pause_requested) return 1;  /* honor TUI pause immediately */
-        int backoff_ms = *consecutive_null * 2000; /* 2s, 4s */
+        /* Tier 0: Plain retry with backoff */
+        if (ctx->pause_requested) return 1;
+        int backoff_ms = *consecutive_null * 2000;
         char rmsg[128];
         snprintf(rmsg, sizeof(rmsg),
             "LLM server error — plain retry %d/2 (backoff %dms)",
             *consecutive_null, backoff_ms);
         ev.message = rmsg;
         react_emit(on_event, userdata, &ev);
-        /* Interruptible sleep: check pause_requested every 100ms
-         * instead of blocking for the full backoff duration. */
         for (int ms = 0; ms < backoff_ms && !ctx->pause_requested; ms += 100)
             usleep(100000);
     } else if (*consecutive_null == 3) {
-        /* Tier 1: Remove the last assistant+tool_result pair.
-         * The model's previous output was likely malformed (e.g.,
-         * "shell_execshell_exec"). Removing it gives the model a
-         * clean slate to regenerate from the previous context. */
+        /* Tier 1: Remove the last assistant+tool_result pair */
         ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
         react_emit(on_event, userdata, &ev);
-
-        /* Remove last 2 messages (assistant + tool_result) if they exist.
-         * Fix #9: use llm_chat_remove_range instead of manual free. */
         if (chat->n_msgs >= 2) {
             int remove_from = chat->n_msgs - 2;
             if (remove_from < 3) remove_from = 3;
@@ -449,24 +336,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 llm_chat_remove_range(chat, remove_from, chat->n_msgs);
         }
     } else if (*consecutive_null == 4) {
-        /* Tier 2: Reformulate scratchpad into plain prose.
-         * Code blocks and JSON in the scratchpad can confuse
-         * the model's JSON generation.
-         * Fix #3: Use msg_type instead of content-prefix scanning. */
+        /* Tier 2: Reformulate scratchpad (strip code blocks) */
         int sp_idx = llm_chat_find_by_type(chat, LLM_MSG_SCRATCHPAD);
-
         if (sp_idx >= 0) {
             ev.message = "LLM server error — stripping code blocks from scratchpad (tier 2)";
             react_emit(on_event, userdata, &ev);
-
-            /* P6: Local code-block stripping instead of LLM call.
-             * The LLM server may be overloaded (common cause of 500s),
-             * so making another LLM call during recovery adds load.
-             * Strip ```...``` code blocks and inline `code` locally. */
-            /* FIX #8: Use strstr instead of hardcoded sizeof offset.
-             * The previous code assumed content starts with exactly
-             * "[SCRATCHPAD]\n" (14 bytes). Now finds the first newline
-             * dynamically, so format changes won't corrupt the pointer. */
             const char *src = chat->msgs[sp_idx].content;
             {
                 const char *nl = strchr(src, '\n');
@@ -477,36 +351,29 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             if (cleaned) {
                 size_t di = 0;
                 for (size_t si = 0; si < src_len; ) {
-                    /* Strip fenced code blocks: ```...``` */
                     if (si + 3 <= src_len && strncmp(src + si, "```", 3) == 0) {
-                        /* Skip to closing ``` */
                         const char *end = strstr(src + si + 3, "```");
                         if (end) {
                             si = (size_t)(end - src) + 3;
-                            /* Skip trailing newline */
                             if (si < src_len && src[si] == '\n') si++;
                         } else {
-                            si += 3; /* no closing fence — skip opening */
+                            si += 3;
                         }
                         continue;
                     }
-                    /* Strip inline backtick code: `...` */
                     if (src[si] == '`') {
                         const char *end = strchr(src + si + 1, '`');
-                        if (end && end - (src + si) < 200) {
-                            /* Copy content without backticks */
+                        if (end && end - (src + si) < REACT_THOUGHT_TRUNC_LEN) {
                             si++;
-                            while (src + si < end) {
+                            while (src + si < end)
                                 cleaned[di++] = src[si++];
-                            }
-                            si++; /* skip closing backtick */
+                            si++;
                             continue;
                         }
                     }
                     cleaned[di++] = src[si++];
                 }
                 cleaned[di] = '\0';
-
                 size_t clen = strlen(cleaned);
                 char *new_sp = malloc(clen + 32);
                 if (new_sp) {
@@ -521,17 +388,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             react_emit(on_event, userdata, &ev);
         }
     } else if (*consecutive_null == 5) {
-        /* Tier 3: Strip scratchpad entirely (nuclear option).
-         * If reformulation didn't help, the scratchpad itself
-         * may be the problem. Remove it completely.
-         * L2 FIX: Re-inject a minimal scratchpad from disk after stripping.
-         * Previously the scratchpad was permanently lost because
-         * react_maybe_evict only re-injects when eviction triggers. */
+        /* Tier 3: Strip scratchpad entirely (nuclear option) */
         ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
         react_emit(on_event, userdata, &ev);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-        /* Re-inject a minimal scratchpad so the agent retains its plan/notes */
         react_reinject_scratchpad(ctx, chat, react_compute_keep_head(chat));
     }
-    return 0;  /* continue */
+    return 0;
 }

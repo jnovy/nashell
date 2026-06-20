@@ -20,8 +20,7 @@ float react_get_chars_per_token(const react_ctx_t *ctx) {
 int react_compute_keep_head(const llm_chat_t *chat) {
     int head = 0;
     for (int i = 0; i < chat->n_msgs; i++) {
-        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_CRITICAL ||
-            chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
+        if (chat->msgs[i].importance >= LLM_MSG_IMPORTANCE_HIGH) {
             head = i + 1;
         } else {
             break;
@@ -63,6 +62,79 @@ const char *react_json_get_str(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
     if (item && cJSON_IsString(item)) return item->valuestring;
     return NULL;
+}
+
+/* Build enriched BM25 query from user_query + recent thoughts + scratchpad.
+ * Shared between eviction (react_maybe_evict) and context construction
+ * (react_build_context) to avoid duplicated logic. */
+char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
+                             scratchpad_t *scratch) {
+    str_t buf = str_new(1024);
+    if (user_query && user_query[0])
+        str_append_cstr(&buf, user_query);
+    /* Fallback: extract query from chat if user_query is short/empty */
+    if (buf.len < 10) {
+        for (int i = 0; i < chat->n_msgs; i++) {
+            if (chat->msgs[i].msg_type == LLM_MSG_USER_QUERY &&
+                chat->msgs[i].content && strlen(chat->msgs[i].content) >= 10) {
+                str_append_cstr(&buf, chat->msgs[i].content);
+                break;
+            }
+        }
+    }
+    /* Augment with recent assistant thoughts (last 3 exchanges) */
+    int thought_count = 0;
+    for (int i = chat->n_msgs - 1; i >= 0 && thought_count < 3; i--) {
+        if (chat->msgs[i].role && strcmp(chat->msgs[i].role, "assistant") == 0 &&
+            chat->msgs[i].content && strlen(chat->msgs[i].content) > 20) {
+            str_append_cstr(&buf, " ");
+            size_t tlen = strlen(chat->msgs[i].content);
+            str_append(&buf, chat->msgs[i].content,
+                       tlen > REACT_THOUGHT_TRUNC_LEN ? REACT_THOUGHT_TRUNC_LEN : tlen);
+            thought_count++;
+        }
+    }
+    /* Augment with scratchpad content if available */
+    if (scratch && scratch->count > 0) {
+        char *sp = scratchpad_serialize_budget(scratch, REACT_SP_BM25_BUDGET);
+        if (sp && sp[0]) {
+            str_append_cstr(&buf, " ");
+            str_append_cstr(&buf, sp);
+        }
+        free(sp);
+    }
+    return str_steal(&buf);
+}
+
+/* Find the partner of a tool_call or tool_result message by scanning.
+ * FIX #3: Matches by scanning (not adjacency) and validates importance.
+ * FIX #8: Scans past interleaved non-tool messages (hints, error recovery). */
+int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
+                            int range_start, int range_end) {
+    if (msg_idx < 0 || msg_idx >= chat->n_msgs) return -1;
+    const llm_msg_t *msg = &chat->msgs[msg_idx];
+
+    if (msg->tool_calls_json) {
+        /* tool_call: scan forward for matching tool_result */
+        for (int pi = msg_idx + 1; pi < range_end && pi < chat->n_msgs; pi++) {
+            if (chat->msgs[pi].tool_call_id) {
+                if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                    return -1;  /* can't evict partner */
+                return pi;
+            }
+        }
+    }
+    if (msg->tool_call_id) {
+        /* tool_result: scan backward for matching tool_call */
+        for (int pi = msg_idx - 1; pi >= range_start; pi--) {
+            if (chat->msgs[pi].tool_calls_json) {
+                if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                    return -1;
+                return pi;
+            }
+        }
+    }
+    return -1;
 }
 
 /* Build the full system prompt string (base + model-specific rules).

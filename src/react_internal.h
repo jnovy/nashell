@@ -42,6 +42,47 @@
  * Prevents unbounded retries from alternating error types (D3 fix). */
 #define REACT_MAX_TOTAL_RECOVERY    12
 
+/* ── Eviction Tuning Constants (formerly inline magic numbers) ──── */
+/* Thought/content truncation limit for BM25 query augmentation (chars). */
+#define REACT_THOUGHT_TRUNC_LEN     200
+/* Scratchpad preview budget for BM25 query augmentation (chars). */
+#define REACT_SP_BM25_BUDGET        500
+/* Default and minimum breadcrumb capacity (chars). */
+#define REACT_BREADCRUMB_CAP_MIN    1024
+/* Breadcrumb cap divisor: cap = context_budget * SCRATCHPAD_BUDGET_PCT / this. */
+#define REACT_BREADCRUMB_CAP_DIV    300
+/* Padding added to re-injection estimate (chars). */
+#define REACT_REINJECT_PAD          200
+/* Minimum effective target percentage (prevents target going to 0). */
+#define REACT_EFF_TARGET_MIN_PCT    10
+/* Minimum scratchpad budget (chars). */
+#define REACT_SP_MIN                2048
+/* Fallback scratchpad budget when context_size unknown (chars). */
+#define REACT_SP_FALLBACK           8192
+/* Minimum compress threshold (chars) — messages below this aren't worth compressing. */
+#define REACT_COMPRESS_THRESH_MIN   200
+/* Compress-scaled parameters: minimum chunks and chars. */
+#define REACT_COMPRESS_MIN_UNITS    4
+#define REACT_COMPRESS_MIN_CHARS    400
+/* Score formula coefficients for Pass 3 eviction scoring. */
+#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
+#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
+#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
+#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
+#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
+#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
+/* Breadcrumb brief preview truncation (chars). */
+#define REACT_BREADCRUMB_BRIEF_LEN  80
+/* Minimum tool content length to include in eviction summary. */
+#define REACT_SUMMARY_TOOL_MIN_LEN  50
+/* Per-message summary min/max chars. */
+#define REACT_SUMMARY_PER_MSG_MIN   200
+#define REACT_SUMMARY_PER_MSG_MAX   1000
+/* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
+#define REACT_SP_SHRINK_MIN         512
+/* Maximum boundary adjustment iterations to prevent infinite loops. */
+#define REACT_BOUNDARY_ADJ_MAX      20
+
 /* ── Helpers shared across react submodules ─────────── */
 
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */
@@ -58,6 +99,44 @@ int react_compute_keep_head(const llm_chat_t *chat);
  * that assumed exactly 2 exchange pairs. Adapts to actual tail structure
  * (user_ask, error recovery, multi-tool). Returns at least 2. */
 int react_compute_keep_tail(const llm_chat_t *chat);
+
+/* Calculate usage percentage of context budget. Centralizes the repeated
+ * pattern: (context_budget > 0) ? (int)(100L * chars / budget) : 0 */
+static inline int react_usage_pct(long total_chars, long context_budget) {
+    return (context_budget > 0)
+        ? (int)(100L * total_chars / context_budget) : 0;
+}
+
+/* Calculate total chars across all messages in a chat. */
+static inline long react_calc_total_chars(const llm_chat_t *chat) {
+    long total = 0;
+    for (int i = 0; i < chat->n_msgs; i++)
+        if (chat->msgs[i].content)
+            total += (long)strlen(chat->msgs[i].content);
+    return total;
+}
+
+/* Compute context_budget in chars from provider config. */
+static inline long react_context_budget(const react_ctx_t *ctx) {
+    double cpt = (double)react_get_chars_per_token(ctx);
+    return (ctx->provider && ctx->provider->cfg.context_size > 0)
+        ? (long)(ctx->provider->cfg.context_size * cpt) : 0;
+}
+
+/* Build enriched BM25 query from user_query + recent thoughts + scratchpad.
+ * Returns malloc'd string — caller must free. Shared between eviction and
+ * context construction to avoid duplicate implementations. */
+char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
+                             scratchpad_t *scratch);
+
+/* Find the partner of a tool_call or tool_result message by scanning.
+ * For tool_calls_json messages: scans forward for matching tool_call_id.
+ * For tool_call_id messages: scans backward for matching tool_calls_json.
+ * Returns partner index within [range_start, range_end), or -1 if none.
+ * FIX: Matches by scanning (not adjacency) to handle interleaved messages,
+ * and validates importance < HIGH before returning. */
+int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
+                            int range_start, int range_end);
 
 /* Safe JSON string accessor */
 const char *react_json_get_str(cJSON *obj, const char *key);
