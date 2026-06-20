@@ -94,8 +94,8 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->reflection_gate < 0)             cfg->reflection_gate = 0;
 
     /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
-    if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.7f;
-    if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.3f;
+    if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.5f;
+    if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.5f;
     /* vscore_exponent: 0 is a valid value (disables vscore), so use sentinel -1.
      * Default 0.3 — empirically calibrated to reduce cold-start penalty:
      *   86% of memories have vscore=0.5 (zero evidence). With exponent=1.0,

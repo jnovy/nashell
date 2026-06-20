@@ -641,8 +641,8 @@ static double score_entry_hybrid(const char *key, const char *value,
     double relevance;
 
     /* Use configurable blend weights (P3: Self-Harness tunable surfaces) */
-    float w_sem = blend_semantic > 0 ? blend_semantic : 0.7f;
-    float w_sub = blend_substring > 0 ? blend_substring : 0.3f;
+    float w_sem = blend_semantic > 0 ? blend_semantic : 0.5f;
+    float w_sub = blend_substring > 0 ? blend_substring : 0.5f;
 
     if (has_semantic) {
         /* Semantic mode: cosine similarity is primary signal.
@@ -655,7 +655,7 @@ static double score_entry_hybrid(const char *key, const char *value,
         double substring = score_entry_substring(key, value, query);
 
         /* Blend: semantic + substring using configurable weights.
-         * Default: 70% semantic + 30% substring.
+         * Default: 50% semantic + 50% substring.
          * Normalize by actual weight sum so result is always in [0, 1].
          *
          * FIX HIGH#5: Exact key match floor — when substring score is high

@@ -68,8 +68,8 @@ typedef struct {
     /* Recall tuning parameters — set once via memory_set_recall_config().
      * Centralizes the config→memory sync (was 4 manual copies in main.c). */
     double recall_min_score;       /* min composite score for injection (default 0.25) */
-    float recall_blend_semantic;   /* semantic weight (default 0.7) */
-    float recall_blend_substring;  /* substring weight (default 0.3) */
+    float recall_blend_semantic;   /* semantic weight (default 0.5) */
+    float recall_blend_substring;  /* substring weight (default 0.5) */
     float vscore_exponent;         /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
 
     /* Guard against recursive consolidation — set during

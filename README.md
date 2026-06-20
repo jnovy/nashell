@@ -1046,8 +1046,8 @@ max_recalled_per_query = 8                # unified recall limit (L4 + L3 combin
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning
 consolidation_threshold = 0.82            # cosine threshold for dedup
-recall_blend_semantic = 0.7               # semantic similarity weight
-recall_blend_substring = 0.3              # substring match weight
+recall_blend_semantic = 0.5               # semantic similarity weight
+recall_blend_substring = 0.5              # substring match weight
 dream_reminder_threshold = 50            # new entries before dream reminder
 
 # Error-triggered reactive retrieval

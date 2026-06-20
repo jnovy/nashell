@@ -210,8 +210,8 @@ typedef struct {
     /* Self-Harness tunable surfaces (P3) — exposed for automated harness evolution.
      * These parameters can be tuned by the self-harness loop and validated via
      * the regression gate (--validate-harness compare). */
-    float  recall_blend_semantic;  /* weight for semantic similarity in memory recall blend (default 0.7) */
-    float  recall_blend_substring; /* weight for substring matching in memory recall blend (default 0.3) */
+    float  recall_blend_semantic;  /* weight for semantic similarity in memory recall blend (default 0.5) */
+    float  recall_blend_substring; /* weight for substring matching in memory recall blend (default 0.5) */
     float  vscore_exponent;        /* power-law exponent for Bayesian validation score (default 0.3).
                                     * composite = relevance × pow(vscore, exponent).
                                     * 0.0 = disabled (pure relevance), 1.0 = full multiplicative.
