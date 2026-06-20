@@ -32,8 +32,6 @@
 #define DEFAULT_MAX_RESULTS 20
 #define ABSOLUTE_MAX_RESULTS 100
 
-/* Maximum sessions to scan (performance guard) */
-#define MAX_SESSIONS_SCAN 500
 
 /* Extract a readable context snippet around the match position.
  * Writes into buf (size buflen).  Returns buf. */
@@ -167,7 +165,6 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
     if (ctx->session_idx) {
         pthread_mutex_lock(&ctx->session_idx->mtx);
         n_sessions = ctx->session_idx->count;
-        if (n_sessions > MAX_SESSIONS_SCAN) n_sessions = MAX_SESSIONS_SCAN;
         sessions = calloc((size_t)n_sessions, sizeof(scan_entry_t));
         if (sessions) {
             for (int i = 0; i < n_sessions; i++) {
@@ -224,7 +221,6 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
             qsort(sessions, (size_t)n_sessions, sizeof(scan_entry_t),
                   cmp_scan_entry_desc);
         }
-        if (n_sessions > MAX_SESSIONS_SCAN) n_sessions = MAX_SESSIONS_SCAN;
     }
 
     /* Search each session's journal.jsonl */
@@ -300,7 +296,7 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         "(searched %d sessions, pattern: \"%s\")\n\n",
         total_matches, total_matches == 1 ? "" : "es",
         sessions_matched, sessions_matched == 1 ? "" : "s",
-        n_sessions > MAX_SESSIONS_SCAN ? MAX_SESSIONS_SCAN : n_sessions,
+        n_sessions,
         pattern);
 
     if (total_matches > 0) {
