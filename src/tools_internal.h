@@ -67,4 +67,7 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params);
 /* tool_image.c */
 tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params);
 
+/* tool_session.c */
+tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params);
+
 #endif /* TOOLS_INTERNAL_H */

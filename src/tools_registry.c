@@ -102,6 +102,15 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},\"question\":{\"type\":\"string\",\"description\":\"What to analyze or ask about the image (default: describe in detail)\"}},\"required\":[\"path\"]}"},
 
+    {"session_grep",
+     "Search past session journals for exact/substring matches. "
+     "Use for finding specific function names, error codes, file paths, "
+     "commands, or identifiers in historical sessions. Complements "
+     "memory_recall (semantic search) with precise pattern matching. "
+     "Searches journal.jsonl files (agent thoughts, tool calls, params) "
+     "across recent sessions, newest first. Case-insensitive.",
+     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Substring pattern to search for (case-insensitive)\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum matches to return (default: 20, max: 100)\"}},\"required\":[\"pattern\"]}"},
+
     {NULL, NULL, NULL}  /* sentinel */
 };
 
