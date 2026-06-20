@@ -162,7 +162,7 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     if (breadcrumb_str)
         other_inject_chars += (long)strlen(breadcrumb_str);
     if (did_evict)
-        other_inject_chars += 130;  /* approximate MEMORY_HINT message length */
+        other_inject_chars += (long)(sizeof(EVICT_COMPACT_HINT) - 1);
 
     /* 1. Re-inject scratchpad at right-sized budget */
     if (target_budget_chars > 0) {
@@ -193,11 +193,7 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     /* 3. Review A2: Only inject compaction hint when eviction actually occurred */
     if (did_evict) {
         llm_chat_insert_typed(chat, pos,
-            "user",
-            "[Context compacted. Use memory_recall to recover lost "
-            "context — it searches both stored knowledge and past "
-            "session history.]",
-            LLM_MSG_MEMORY_HINT);
+            "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
     }
 
     /* C1 FIX: Flat if-chain replaces over-engineered strategy enum + loop.
@@ -217,6 +213,9 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     /* Strategy 2: Emergency eviction */
     if (usage_pct > target_pct) {
         nash_log("[eviction] still %d%% — emergency eviction", usage_pct);
+        /* BUG 2 FIX: Remove step-3 MEMORY_HINT before emergency eviction
+         * to prevent duplicate hints coexisting in the chat. */
+        llm_chat_remove_by_type(chat, LLM_MSG_MEMORY_HINT);
         int before_n = chat->n_msgs;
         react_emergency_evict(chat, context_budget, target_pct);
         /* A2 FIX: Inject minimal breadcrumb so LLM knows messages were lost */
@@ -232,11 +231,7 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
             /* F3 FIX: Inject MEMORY_HINT alongside emergency breadcrumb,
              * matching the normal eviction path (step 3 above). */
             llm_chat_insert_typed(chat, kh + 1,
-                "user",
-                "[Context compacted. Use memory_recall to recover lost "
-                "context — it searches both stored knowledge and past "
-                "session history.]",
-                LLM_MSG_MEMORY_HINT);
+                "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
         }
         /* Re-inject scratchpad only if room permits */
         if (react_usage_pct(react_calc_total_chars(chat), context_budget) < target_pct) {
@@ -458,12 +453,16 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     if (max_per_msg > REACT_SUMMARY_PER_MSG_MAX) max_per_msg = REACT_SUMMARY_PER_MSG_MAX;
 
     str_append_cstr(&breadcrumb, "[EVICTED CONTEXT — recoverable via file_read]\n");
+    size_t header_len = breadcrumb.len;  /* BUG 1 FIX: track header-only length */
 
     /* D3 FIX: Hash-based alias dedup replaces O(n²) linear scan.
-     * Uses CRC32 hash set with open addressing (power-of-2 table size). */
+     * Uses CRC32 hash set with open addressing (power-of-2 table size).
+     * BUG 3 FIX: Store alias pointers alongside hashes to detect collisions
+     * via strcmp, preventing silent alias loss on CRC32 hash collision. */
     int alias_cap = 64;  /* power of 2, grows if needed */
     while (alias_cap < n_to_evict * 2) alias_cap *= 2;
     uint32_t *alias_hashes = calloc((size_t)alias_cap, sizeof(uint32_t));
+    const char **alias_ptrs = calloc((size_t)alias_cap, sizeof(const char *));
     /* hash 0 = empty slot sentinel */
 
     for (int ei = 0; ei < n_evictable; ei++) {
@@ -478,7 +477,8 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
             /* FIX FLAW 5: Use separate index budget */
             if ((long)breadcrumb.len >= breadcrumb_index_cap) continue;
 
-            /* D3 FIX: O(1) average duplicate check via CRC32 hash set */
+            /* D3 FIX: O(1) average duplicate check via CRC32 hash set.
+             * BUG 3 FIX: On hash match, compare actual alias strings. */
             int dup = 0;
             if (alias_hashes) {
                 const char *alias = chat->msgs[mi].store_alias;
@@ -486,10 +486,17 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                 if (h == 0) h = 1;  /* avoid sentinel */
                 int slot = (int)(h & (uint32_t)(alias_cap - 1));
                 while (alias_hashes[slot]) {
-                    if (alias_hashes[slot] == h) { dup = 1; break; }
+                    if (alias_hashes[slot] == h &&
+                        alias_ptrs[slot] &&
+                        strcmp(alias_ptrs[slot], alias) == 0) {
+                        dup = 1; break;
+                    }
                     slot = (slot + 1) & (alias_cap - 1);
                 }
-                if (!dup) alias_hashes[slot] = h;
+                if (!dup) {
+                    alias_hashes[slot] = h;
+                    alias_ptrs[slot] = alias;
+                }
             }
             if (dup) continue;
 
@@ -530,8 +537,12 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         str_free(&summary);
     }
     free(alias_hashes);
+    free(alias_ptrs);
 
-    if (breadcrumb.len > 0)
+    /* BUG 1 FIX: Only return breadcrumb string if entries were added beyond
+     * the header. Previously always returned non-NULL (header alone = 48 chars),
+     * causing phantom eviction events with useless MEMORY_HINT injection. */
+    if (breadcrumb.len > header_len)
         return str_steal(&breadcrumb);
     str_free(&breadcrumb);
     return NULL;

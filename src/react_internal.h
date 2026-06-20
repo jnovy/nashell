@@ -49,9 +49,6 @@
 #define REACT_SP_BM25_BUDGET        500
 /* Default and minimum breadcrumb capacity (chars). */
 #define REACT_BREADCRUMB_CAP_MIN    1024
-/* FIX FLAW 7: Breadcrumb budget as a direct percentage of context budget.
- * Replaces confusing formula (SCRATCHPAD_BUDGET_PCT / CAP_DIV = 15/300 = 5%). */
-#define REACT_BREADCRUMB_BUDGET_PCT 5
 /* Padding added to re-injection estimate (chars). */
 #define REACT_REINJECT_PAD          200
 /* Minimum effective target percentage (prevents target going to 0). */
@@ -87,6 +84,13 @@
 /* FIX FLAW 8: Fixed minimum compress threshold instead of average-based.
  * Messages below this size yield negligible savings from BM25 compression. */
 #define REACT_COMPRESS_THRESH_FIXED 800
+
+/* Compaction hint text injected as MEMORY_HINT after eviction.
+ * Extracted to a constant to eliminate 3 copies and the magic-130 estimate. */
+#define EVICT_COMPACT_HINT \
+    "[Context compacted. Use memory_recall to recover lost " \
+    "context \xe2\x80\x94 it searches both stored knowledge and past " \
+    "session history.]"
 
 /* ── Proposal E: Partner Index ──────────────────────── */
 

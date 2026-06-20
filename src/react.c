@@ -49,7 +49,13 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
             i--;  /* skip the assistant tool_call too */
         } else if (chat->msgs[i].role &&
                    strcmp(chat->msgs[i].role, "user") == 0 &&
-                   !chat->msgs[i].tool_call_id) {
+                   !chat->msgs[i].tool_call_id &&
+                   /* BUG 4 FIX: Exclude injected hints/summaries with role="user".
+                    * Without this, MEMORY_HINT nudges (injected with role="user")
+                    * inflate keep_tail, shrinking the evictable range. */
+                   chat->msgs[i].msg_type != LLM_MSG_MEMORY_HINT &&
+                   chat->msgs[i].msg_type != LLM_MSG_EVICTION_SUMMARY &&
+                   chat->msgs[i].msg_type != LLM_MSG_SCRATCHPAD) {
             /* user message (e.g., user_ask response, hint) — include */
             tail_start = i;
         } else {
