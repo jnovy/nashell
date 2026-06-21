@@ -1,6 +1,6 @@
 # nash — Autonomous Coding Agent in C
 
-**nash** is a fully autonomous coding agent implemented in ~44,000 lines of C (~30K original, plus vendored cJSON and ONNX Runtime headers). It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+**nash** is a fully autonomous coding agent implemented in C. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
 
 Unlike wrapper-based agents, nash is a single compiled binary with zero Python dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
@@ -19,8 +19,8 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 │ Provider │  Memory  │   Tools   │   Journal + Store     │
 │ local    │ semantic │ 18 tools  │ content-addressed     │
 │ openai   │ Bayesian │ registry  │ full audit trail      │
-│ anthropic│ pruning  │ dispatch  │ checkpoint/resume     │
-│ vertex   │ pinning  │ filtering │                       │
+│ anthropic│ event-   │ dispatch  │ checkpoint/resume     │
+│ vertex   │ driven   │ filtering │ episodic recall       │
 ├──────────┴──────────┴───────────┴───────────────────────┤
 │           Playbooks · Self-Harness · Model Profiles     │
 ├─────────────────────────────────────────────────────────┤
@@ -42,7 +42,7 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  L1: Context Window (volatile, ~128K tokens)        │
+│  L1: Context Window (volatile)                      │
 │  Current conversation messages                      │
 │  Managed by harness-1 compaction                    │
 ├─────────────────────────────────────────────────────┤
@@ -70,16 +70,24 @@ User query
     ▼
 react_build_context()
     ├── System prompt
-    ├── Memory index + pinned + recalled (L4 + L3 → L1)
+    ├── Memory index + pinned (L4 → L1)
+    ├── Temporal event calendar (L4 timestamps → L1)
+    ├── Episodic recall (L3 session_index → L1 journal chunks)
+    ├── Semantic recall + associative graph walk (L4 → L1)
+    ├── Enriched rendering (recency, confidence, recall count)
     ├── Scratchpad (L2 → L1, loaded from scratchpad.jsonl)
     └── Previous result
     │
     ▼
 React loop (tool calls)
     ├── Tools execute, results stored in .store/ with RXSX aliases
+    ├── Working memory auto-promotion (tool results → L2 scratchpad)
+    ├── Error-triggered retrieval (L4 → L1, query = error text)
+    ├── Cycling-triggered retrieval (L4 → L1, query = stuck action)
     ├── Scratchpad updated (in-memory sections)
     ├── Compaction fires when context full (harness-1)
     │   ├── Breadcrumbs for recoverable content
+    │   ├── Eviction-triggered re-retrieval (L4 → L1, query = breadcrumbs)
     │   └── evicted_context → scratchpad
     └── Agent may call memory_recall → searches L4 + L3
     │
@@ -153,6 +161,8 @@ relevance = semantic_similarity * blend_semantic + substring_match * blend_subst
 composite = relevance
 final_score = composite * pow(vscore, vscore_exponent)
 ```
+
+The default blend weights are **40/60 semantic/substring**, favoring substring matching. This is grounded in [arXiv:2605.15184](https://arxiv.org/abs/2605.15184) ("Is Grep All You Need?"), which found that substring/grep-based retrieval outperforms vector search for **inline delivery** — the delivery mode nash uses exclusively for memory injection. Nash memories contain literal spans (function names, error codes, file paths) where exact matching provides the strongest retrieval signal.
 
 Importance (log access frequency) was intentionally removed from ranking because it distorted results — boosting frequently-recalled but irrelevant memories above less-popular but more relevant ones. Importance is redundant with vscore: popular memories accumulate more recall hits → higher vscore, which already captures usefulness without the distortion.
 
@@ -232,9 +242,87 @@ Inspired by:
 
 At startup, nash counts memory entries created since the last dream (using `created_at` timestamps vs `.last_dream` file mtime). If the count exceeds `dream_reminder_threshold`, a warning appears in the TUI status bar. This is usage-based, not calendar-based — adapts to burst vs. quiet periods.
 
-#### Error-Triggered Reactive Retrieval
+#### Event-Driven Reactive Retrieval
 
-When a tool fails, nash queries memory with the error text to surface relevant lessons. Controlled by `error_recall_*` config parameters.
+Nash implements **event-driven memory retrieval** — the harness automatically re-queries memory when runtime events signal that new knowledge is needed. This directly addresses the **retrieval-timing bottleneck** identified in [arXiv:2605.30621](https://arxiv.org/abs/2605.30621): a single retrieval at task start creates a timing mismatch because the agent's needs evolve as it discovers what the task requires.
+
+Four event triggers fire independently, each using the event content as the retrieval query (providing high signal-to-noise ratio):
+
+| Trigger | Query Source | Injection Label | Config |
+|---------|-------------|-----------------|--------|
+| **Tool error** | Error text + action name | `[MEMORY HINT — relevant to this error]` | `error_recall_*` |
+| **Context eviction** | Breadcrumb summary of evicted messages | `[MEMORY RECOVERY — post-eviction]` | `eviction_recall_*` |
+| **Cycling detection** | Repeated action + path ("stuck cycling: ...") | `[MEMORY HINT — you may be stuck]` | `cycling_recall_*` |
+
+All triggers follow the same pattern: query memory → filter by relevance threshold → deduplicate against `recalled_keys[]` → inject as labeled user message → track for validation scoring. This is the **Memory-as-Cognition** principle from [MemCog](https://arxiv.org/abs/2605.28046) — the harness controls ALL retrieval timing; the LLM never decides when to recall.
+
+Design rationale for event-driven over periodic retrieval: periodic re-retrieval (every N steps) was evaluated and rejected — the schedule has zero correlation with actual retrieval need. Event-driven triggers provide signal-correlated retrieval where the event content IS the optimal query.
+
+Based on:
+- [arXiv:2605.30621](https://arxiv.org/abs/2605.30621) — retrieval timing as the bottleneck in memory-augmented agents
+- [MemCog](https://arxiv.org/abs/2605.28046) — Memory-as-Cognition paradigm: navigable memory store with proactive reasoning
+- [CogniFold](https://arxiv.org/abs/2605.13438) — always-on proactive memory via cognitive folding
+
+#### Temporal Event Calendar
+
+At context construction time, nash injects a `[TEMPORAL CONTEXT]` section that provides a chronologically-structured overview of recent memory activity. Memories are grouped into "Recent (last 7 days)" and "Older (last 30 days)" buckets, sorted most-recent-first, showing date, key, and description per entry.
+
+This implements the **most impactful single component** identified in [arXiv:2605.15184](https://arxiv.org/abs/2605.15184) ("Is Grep All You Need?") — removing the temporal events calendar halved accuracy for weaker models. The calendar provides temporal scaffolding that enables the model to reason about chronological relationships ("what changed recently?", "when did I learn this?").
+
+```
+[TEMPORAL CONTEXT]
+Recent (last 7 days):
+  2026-06-20  lesson:context-compaction-fixes — Six context compaction flaws fixed
+  2026-06-19  skill:implement-reactive-retrieval — Adding auto retrieval to react loops
+
+Older (last 30 days):
+  2026-06-01  fact:nash-memory-store-size — 314 entries after pruning
+  2026-05-28  lesson:memory-retrieval-timing — Bottleneck is timing not storage
+```
+
+Config: `temporal_calendar=true`, `temporal_recent_days=7`, `temporal_older_days=30`, `temporal_max_entries=20`.
+
+#### Episodic Recall from Session History
+
+During context construction, nash queries the session index (`session_index_search()`) with the user query embedding to find similar past sessions. The best-matching journal chunks are injected as `[RECALLED SESSION CHUNK]` messages, providing raw problem-solving traces from prior experience.
+
+This unlocks the full journal history during execution. Journal chunks contain actual tool sequences, error patterns, and solutions — episodic memory that complements the distilled knowledge in L4 curated memories. The session index infrastructure (chunk-level embeddings, MaxSim retrieval) already existed for `session_grep` but was not queried during `react_build_context()`.
+
+Inspired by [ByteRover](https://arxiv.org/abs/2604.01599) (agent-native memory with zero external infrastructure) and [MemMachine](https://arxiv.org/abs/2604.04853) (ground-truth-preserving episodic memory).
+
+Config: `episodic_recall=true`, `episodic_max_results=2`, `episodic_min_score=0.35`.
+
+#### Associative Graph Walk
+
+After semantic recall, nash follows `refs[]` links on recalled memories one level deep. When a recalled memory references other memories via its `refs` array, those referenced entries are looked up via `memory_find()` and injected as `[ASSOCIATED MEMORIES]` if they pass the relevance threshold.
+
+The `refs[]` infrastructure has existed since the dreaming/consolidation system was implemented (populated by the SYNTHESIZE pass), but refs were previously only used for a +0.3 score boost during recall. This change actually injects the referenced content, implementing depth-1 associative navigation.
+
+Inspired by [MRAgent](https://arxiv.org/abs/2606.06036) (ICML 2026 — graph memory with iterative exploration, +23% on LoCoMo/LongMemEval) and [MemCog](https://arxiv.org/abs/2605.28046) (navigable memory store with associative link graphs).
+
+Config: `associative_depth=1` (0 = disabled).
+
+#### Enriched Memory Rendering
+
+Recalled memories are rendered with temporal and confidence metadata, not just bare key-value pairs:
+
+```
+--- skill:c-codebase-analysis-order (2d ago, 327 recalls, confidence: 95%) ---
+## When to apply
+When analyzing a C codebase for the first time...
+```
+
+Recency is computed from the `created_at` timestamp. Confidence uses the Beta posterior mean: `(hits + 1) / (hits + misses + 2) × 100%`. Recall count is the raw `recall_hits` value.
+
+This implements the key finding from [arXiv:2605.15184](https://arxiv.org/abs/2605.15184) that **rendering IS retrieval** — how memories are presented to the model matters as much as which ones are retrieved. The metadata helps the model weight recalled knowledge appropriately ("this has been recalled 327 times with 95% confidence" vs. "this was created yesterday with no validation").
+
+#### Working Memory Auto-Promotion
+
+After successful tool execution with substantial output (>500 chars), the harness automatically appends a snippet to the scratchpad `auto_findings` section at priority 4. This implements the **always-on** principle from [CogniFold](https://arxiv.org/abs/2605.13438) — memory operates without explicit agent action.
+
+The total `auto_findings` section is capped at 2000 chars to prevent bloat (oldest entries dropped via FIFO). This replaces the diversity nudge hack ("consider saving findings to scratchpad") with harness-side cognitive offloading — the agent doesn't need to remember to call `notes()`.
+
+Config: `auto_promote=true`, `auto_promote_min_length=500`, `auto_promote_max_chars=2000`.
 
 #### Layered Workspaces — Memory Segregation
 
@@ -279,7 +367,7 @@ sessions/<timestamp>/
     scratchpad.jsonl    # append-only section data
 ```
 
-At startup, nash builds an in-memory index of all sessions with embeddings (~4.5KB per session). Session search uses cosine similarity with a gentle logarithmic recency boost:
+At startup, nash builds an in-memory index of all sessions with embeddings. Session search uses cosine similarity with a gentle logarithmic recency boost:
 
 ```
 recency = 1.0 / (1.0 + log1p(age_days / 30.0))
@@ -595,7 +683,7 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
 
-After reflection and scratchpad pruning, nash generates a searchable session summary by calling `journal_manifest()` and embedding the output as `summary.txt` + `summary.emb`. This is the only new post-task work (~15 lines of code) and makes the session discoverable via `memory_recall` and `/? query` for all future sessions.
+After reflection and scratchpad pruning, nash generates a searchable session summary by calling `journal_manifest()` and embedding the output as `summary.txt` + `summary.emb`. This makes the session discoverable via `memory_recall` and `/? query` for all future sessions.
 
 ### Playbooks — Multi-Pass Task Orchestration
 
@@ -1046,8 +1134,8 @@ max_recalled_per_query = 8                # unified recall limit (L4 + L3 combin
 prune_min_score = 0.35                    # Bayesian pruning threshold
 prune_min_evidence = 3                    # min recalls before pruning
 consolidation_threshold = 0.82            # cosine threshold for dedup
-recall_blend_semantic = 0.5               # semantic similarity weight
-recall_blend_substring = 0.5              # substring match weight
+recall_blend_semantic = 0.4               # semantic similarity weight (grep-favoring)
+recall_blend_substring = 0.6              # substring match weight (grep-favoring)
 dream_reminder_threshold = 50            # new entries before dream reminder
 
 # Error-triggered reactive retrieval
@@ -1055,6 +1143,33 @@ error_recall_min_length = 10
 error_recall_candidates = 3
 error_recall_max_inject = 1
 error_recall_min_relevance = 0.25
+
+# Eviction-triggered re-retrieval
+eviction_recall_candidates = 3            # candidates to consider post-eviction
+eviction_recall_min_relevance = 0.30      # min relevance for post-eviction injection
+
+# Cycling-triggered retrieval
+cycling_recall_candidates = 2             # candidates when agent is cycling
+cycling_recall_min_relevance = 0.30       # min relevance for cycling injection
+
+# Temporal event calendar
+temporal_calendar = true                  # inject [TEMPORAL CONTEXT] section
+temporal_recent_days = 7                  # "Recent" window in days
+temporal_older_days = 30                  # "Older" window in days
+temporal_max_entries = 20                 # max entries in calendar
+
+# Episodic recall from past sessions
+episodic_recall = true                    # query session_index at task start
+episodic_max_results = 2                  # max session chunks to inject
+episodic_min_score = 0.35                 # min similarity for injection
+
+# Associative graph walk
+associative_depth = 1                     # follow refs[] depth (0 = disabled)
+
+# Working memory auto-promotion
+auto_promote = true                       # auto-save findings to scratchpad
+auto_promote_min_length = 500             # min tool output length to trigger
+auto_promote_max_chars = 2000             # max auto_findings section size
 
 [context]
 context_eviction_pct = 70                 # evict when context > 70% full
@@ -1226,6 +1341,11 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [MemForest](https://arxiv.org/abs/2605.23986) | 2026 | Temporal indexing, memory relevance changes over time | Inspired temporal relevance awareness in scoring design |
 | [MemFail](https://arxiv.org/abs/2605.26667) | 2026 | Weak memory injection hurts performance | Bayesian scoring + abstention gate filters low-quality memories |
 | [MemMorph](https://arxiv.org/abs/2605.26154) | 2026 | Raw storage insufficient, needs active management | Post-loop pruning + consolidation |
+| [ByteRover](https://arxiv.org/abs/2604.01599) | 2026 | Agent-native hierarchical memory with zero external infrastructure; LLM curates its own Context Tree | Episodic recall from session index — journals as agent-native episodic memory with no vector DB |
+| [CogniFold](https://arxiv.org/abs/2605.13438) | 2026 | Always-on proactive memory via cognitive folding; extends CLS theory to 3 layers with graph self-organization | Working memory auto-promotion — harness auto-saves findings to scratchpad without explicit agent action |
+| [MemCog](https://arxiv.org/abs/2605.28046) | 2026 | Memory-as-Cognition: navigable memory store with associative link graphs and proactive reasoning protocol; SOTA on LoCoMo (92.98) and LongMemEval (95.8) | Memory-as-Cognition principle — harness controls all retrieval timing; associative graph walk follows refs[] on recalled memories |
+| [MRAgent](https://arxiv.org/abs/2606.06036) | 2026 | Memory is reconstructed, not retrieved: associative Cue-Tag-Content graph with active reconstruction; +23% on LoCoMo/LongMemEval (ICML 2026) | Associative graph walk: depth-1 ref following injects referenced memories during recall |
+| [MemRefine](https://arxiv.org/abs/2606.13177) | 2026 | LLM-guided compression for budget-constrained long-term memory; similarity-based candidate pairs with delete/merge/preserve decisions | Informed design of memory pruning: aggressive dead-weight removal (73% never-recalled entries deleted) |
 
 ### Cognitive Architecture
 | Paper | Year | Key Insight | Nash Implementation |
@@ -1257,6 +1377,16 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [CWL — Context Window Lifecycle](https://arxiv.org/abs/2606.11213) | 2026 | Typed, dependency-linked episodes; deterministic LLM-free eviction based on recoverability | Recoverability-aware eviction: messages annotated with `RECOVER_NONE/SCRATCHPAD/STORE/FILE/MEMORY`, sorted by recoverability during Pass 3 eviction |
 | [LCM — Lossless Context Management](https://arxiv.org/abs/2605.04050) | 2026 | Recursive context compression via hierarchical summary DAG with lossless pointers | LCM-Lite: breadcrumb index of evicted store refs injected at eviction point, making eviction lossless via `file_read` recovery |
 
+### Agentic Search & Retrieval
+| Paper | Year | Key Insight | Nash Implementation |
+|-------|------|-------------|---------------------|
+| [Chronos](https://arxiv.org/abs/2603.16862) | 2026 | Agentic harness evaluation framework; temporal event structuring as most impactful component; harness ≈ retriever in impact on accuracy | Temporal event calendar; event-driven architecture validated by harness-vs-retriever finding |
+| ["Is Grep All You Need?"](https://arxiv.org/abs/2605.15184) | 2026 | Grep beats vector for inline delivery; file-based delivery inverts rankings; temporal events most impactful single component; rendering = retrieval + orchestration | 40/60 semantic/substring blend (grep-favoring); inline-only memory delivery; temporal calendar; enriched rendering with recency/confidence metadata |
+| [Retrieval Timing Bottleneck](https://arxiv.org/abs/2605.30621) | 2026 | Retrieval timing, not storage quality, is the bottleneck in memory-augmented agents; single retrieval at task start creates timing mismatch as agent needs evolve | Event-driven re-retrieval: eviction-triggered, cycling-triggered, error-triggered — all using event content as the retrieval query |
+| [Recursive Agent Harnesses](https://arxiv.org/abs/2606.13643) | 2026 | Parent agents spawn sub-agent harnesses; harness recursion improves Codex from 71.75% → 81.36% on Oolong-Synthetic | Validates harness-investment approach — orchestration matters more than model capability |
+| [Ask Early, Ask Late, Ask Right](https://arxiv.org/abs/2605.07937) | 2026 | Clarification timing matters: goal clarification loses value after 10% execution; no frontier model asks within optimal window | `user_ask` tool with system prompt guidance to ask early when uncertainty ≥ 0.5 |
+| [MemMachine](https://arxiv.org/abs/2604.04853) | 2026 | Ground-truth-preserving memory combining short-term, long-term episodic, and profile memory | Episodic recall: raw journal chunks preserve ground-truth tool sequences alongside distilled L4 memories |
+
 ### Additional References
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
@@ -1273,7 +1403,7 @@ MIT
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact (~30K lines of original C, plus vendored dependencies) and self-contained.
+Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact and self-contained.
 
 Key design principles:
 - **No Python dependencies** — single compiled binary

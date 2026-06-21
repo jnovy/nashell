@@ -1199,6 +1199,18 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     int x = 0;
                     /* 1. Render prefix (before [) with step color + inline formatting */
                     int prefix_len = (int)(bracket - line_buf);
+                    if (prefix_len >= cols) {
+                        /* Prefix is wider than the terminal — the [text](uri)
+                         * is content text (e.g. literal "[tool](uri)" inside
+                         * a done result), not a navigable link.  Render the
+                         * entire line as wrapped inline text instead of the
+                         * prefix+link+suffix decomposition which would
+                         * truncate the prefix. */
+                        lines_consumed = render_inline_wrapped(
+                            win, vis_line, 0, line_buf,
+                            (int)strlen(line_buf), cols);
+                        goto step_line_done;
+                    }
                     if (prefix_len > 0) {
                         inline_seg_t segs[MAX_INLINE_SEGS];
                         int n = parse_inline(line_buf, prefix_len, segs, MAX_INLINE_SEGS);
@@ -1260,18 +1272,25 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 /* Off-screen: count wrapped lines for accurate render_line tracking */
                 if (bracket && bracket_end && paren_end) {
                     int prefix_len = (int)(bracket - line_buf);
-                    int link_text_len = (int)(bracket_end - bracket - 1);
-                    int x = prefix_len + link_text_len;
-                    const char *suffix = paren_end + 1;
-                    int suffix_len = (int)strlen(suffix);
-                    if (suffix_len > 0 && x < cols) {
-                        int remaining = cols - x;
+                    if (prefix_len >= cols) {
+                        /* Long prefix — whole line is wrapped text */
                         lines_consumed = count_wrapped_lines(
-                            suffix, suffix_len, remaining);
+                            line_buf, (int)strlen(line_buf), cols);
+                    } else {
+                        int link_text_len = (int)(bracket_end - bracket - 1);
+                        int x = prefix_len + link_text_len;
+                        const char *suffix = paren_end + 1;
+                        int suffix_len = (int)strlen(suffix);
+                        if (suffix_len > 0 && x < cols) {
+                            int remaining = cols - x;
+                            lines_consumed = count_wrapped_lines(
+                                suffix, suffix_len, remaining);
+                        }
                     }
                 }
             }
 
+step_line_done:
             advance_render_line(&render_line, lines_consumed);
 
         } else if (line_buf[0] == '|') {
@@ -1323,6 +1342,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                      * to the column where the suffix started. */
                     int x = 0;
                     int prefix_len = (int)(bracket - line_buf);
+                    if (prefix_len >= cols) {
+                        /* Prefix wider than terminal — [text](uri) is literal
+                         * content, not a real link.  Render as wrapped text. */
+                        lines_consumed = render_inline_wrapped(
+                            win, vis_line, 0, line_buf,
+                            (int)strlen(line_buf), cols);
+                    } else {
                     if (prefix_len > 0) {
                         inline_seg_t segs[MAX_INLINE_SEGS];
                         int n = parse_inline(line_buf, prefix_len, segs, MAX_INLINE_SEGS);
@@ -1341,9 +1367,14 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         lines_consumed = render_inline_wrapped(
                             win, vis_line, x, suffix, suffix_len, remaining);
                     }
+                    }
                 } else if (bracket && bracket_end && paren_end) {
                     /* Off-screen link line: count wrapped lines for suffix */
                     int prefix_len = (int)(bracket - line_buf);
+                    if (prefix_len >= cols) {
+                        lines_consumed = count_wrapped_lines(
+                            line_buf, (int)strlen(line_buf), cols);
+                    } else {
                     int link_text_len = (int)(bracket_end - bracket - 1);
                     int x = prefix_len + link_text_len;
                     const char *suffix = paren_end + 1;
@@ -1351,6 +1382,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     if (suffix_len > 0 && x < cols) {
                         int remaining = cols - x;
                         lines_consumed = count_wrapped_lines(suffix, suffix_len, remaining);
+                    }
                     }
                 } else if (visible) {
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);

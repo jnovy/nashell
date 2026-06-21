@@ -1346,6 +1346,50 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "cycling_refused", refused, last_ref,
                                0, 0, "refused repeated action", NULL);
+
+                /* ── Change 6: Cycling-triggered retrieval ─────────────
+                 * The agent is stuck repeating the same action. Query
+                 * memory for alternative approaches — the repeated action
+                 * IS the retrieval query because it reveals what the
+                 * agent is stuck on. */
+                if (ctx->flags.inject_memory
+                    && (ctx->tools->memory || ctx->tools->ws)) {
+                    int cy_candidates = ctx->tools->cfg
+                        ? ctx->tools->cfg->cycling_recall_candidates : 2;
+                    double cy_min_rel = ctx->tools->cfg
+                        ? ctx->tools->cfg->cycling_recall_min_relevance : 0.30;
+                    char cycle_query[512];
+                    snprintf(cycle_query, sizeof(cycle_query),
+                        "stuck cycling: %.200s %.200s",
+                        action_name, path_s);
+                    memory_results_t cy_mem = ctx->tools->ws
+                        ? workspace_recall(ctx->tools->ws, cycle_query, cy_candidates)
+                        : memory_recall(ctx->tools->memory, cycle_query, cy_candidates);
+                    int cy_injected = 0;
+                    for (int cj = 0; cj < cy_mem.count && cy_injected < 1; cj++) {
+                        int cdup = 0;
+                        for (int ck = 0; ck < ctx->tools->n_recalled_keys; ck++) {
+                            if (strcmp(ctx->tools->recalled_keys[ck],
+                                       cy_mem.entries[cj].key) == 0) {
+                                cdup = 1; break;
+                            }
+                        }
+                        if (!cdup && cy_mem.entries[cj].relevance > cy_min_rel) {
+                            char cy_hint[2048];
+                            snprintf(cy_hint, sizeof(cy_hint),
+                                "[MEMORY HINT — you may be stuck, consider this approach]\n"
+                                "--- %s ---\n%s",
+                                cy_mem.entries[cj].key,
+                                cy_mem.entries[cj].value);
+                            llm_chat_add_typed(chat, "user", cy_hint,
+                                               LLM_MSG_MEMORY_HINT);
+                            tool_track_recalled_key(ctx->tools,
+                                                     cy_mem.entries[cj].key);
+                            cy_injected++;
+                        }
+                    }
+                    memory_results_free(&cy_mem);
+                }
             }
         } else {
             /* Normal execution — inject thought into tool_ctx for journal recording */
@@ -1662,6 +1706,36 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         (int)strlen(meta_str) > 500 ? "..." : "");
                     scratchpad_write(&ctx->tools->scratch, "auto_seed", seed, 3);
                     free(seed);
+                }
+            }
+        }
+
+        /* ── Change 8: Working Memory Auto-Promotion ─────────────────
+         * CogniFold's "always-on" principle: memory operates without explicit
+         * agent action. After successful tool execution with substantial output,
+         * auto-append a snippet to the scratchpad "auto_findings" section.
+         * This replaces the diversity nudge hack — the harness offloads
+         * bookkeeping from the LLM (Harness-1 §3.2). */
+        {
+            int do_promote = ctx->tools->cfg
+                ? ctx->tools->cfg->auto_promote : 1;
+            int promote_min = ctx->tools->cfg
+                ? ctx->tools->cfg->auto_promote_min_length : 500;
+            int promote_max = ctx->tools->cfg
+                ? ctx->tools->cfg->auto_promote_max_chars : 2000;
+            if (do_promote && tr.success && meta_str
+                && (int)strlen(meta_str) > promote_min) {
+                /* Check current auto_findings size before appending */
+                int af_idx = scratchpad_find(&ctx->tools->scratch, "auto_findings");
+                int cur_len = 0;
+                if (af_idx >= 0 && ctx->tools->scratch.sections[af_idx].content)
+                    cur_len = (int)strlen(ctx->tools->scratch.sections[af_idx].content);
+                if (cur_len < promote_max) {
+                    char snippet[320];
+                    snprintf(snippet, sizeof(snippet), "\n[step %d] %s: %.280s",
+                             step + 1, action_name, meta_str);
+                    scratchpad_append(&ctx->tools->scratch, "auto_findings",
+                                      snippet, 4);
                 }
             }
         }

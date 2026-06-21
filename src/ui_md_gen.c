@@ -887,6 +887,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (thought_text) {
                 memcpy(thought_text, thought_start, (size_t)tlen);
                 thought_text[tlen] = '\0';
+                /* Replace newlines so the md renderer handles wrapping
+                 * with proper column alignment and green coloring */
+                for (int k = 0; k < tlen; k++) {
+                    if (thought_text[k] == '\n' || thought_text[k] == '\r')
+                        thought_text[k] = ' ';
+                }
             }
             if (thought_text) {
                 EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
@@ -907,6 +913,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (thought_text) {
                 memcpy(thought_text, thought_start, (size_t)tlen);
                 thought_text[tlen] = '\0';
+                /* Replace newlines so the md renderer handles wrapping
+                 * with proper column alignment and green coloring */
+                for (int k = 0; k < tlen; k++) {
+                    if (thought_text[k] == '\n' || thought_text[k] == '\r')
+                        thought_text[k] = ' ';
+                }
             }
             if (thought_text) {
                 EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);

@@ -79,6 +79,8 @@ typedef enum {
     LLM_MSG_MEMORY_HINT,     /* [MEMORY HINT] error-triggered retrieval */
     LLM_MSG_THINKING,        /* thought-only assistant response */
     LLM_MSG_EVICTION_SUMMARY,/* scratchpad re-injection after eviction */
+    LLM_MSG_TEMPORAL,        /* [TEMPORAL CONTEXT] chronological memory calendar */
+    LLM_MSG_EPISODIC,        /* [RECALLED SESSION CHUNK] episodic journal recall */
 } llm_msg_type_t;
 
 /* Message importance level — controls eviction priority.
