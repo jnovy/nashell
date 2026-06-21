@@ -7,9 +7,29 @@
  */
 
 #include "react_internal.h"
+#include "session_index.h"
+
+/* Format a unix timestamp as a relative recency string (e.g. "2d ago", "3w ago").
+ * Writes to a caller-supplied buffer. */
+static const char *format_recency(double created_at, char *buf, size_t bufsz) {
+    if (created_at <= 0) { snprintf(buf, bufsz, "unknown"); return buf; }
+    double now = (double)time(NULL);
+    double diff = now - created_at;
+    if (diff < 0) diff = 0;
+    int days = (int)(diff / 86400.0);
+    if (days == 0) snprintf(buf, bufsz, "today");
+    else if (days == 1) snprintf(buf, bufsz, "1d ago");
+    else if (days < 7) snprintf(buf, bufsz, "%dd ago", days);
+    else if (days < 30) snprintf(buf, bufsz, "%dw ago", days / 7);
+    else if (days < 365) snprintf(buf, bufsz, "%dmo ago", days / 30);
+    else snprintf(buf, bufsz, "%dy ago", days / 365);
+    return buf;
+}
 
 /* Review B5: Converted from INJECT_TYPE macro to debuggable static function.
- * Injects relevant memories of a given type prefix into the chat context. */
+ * Injects relevant memories of a given type prefix into the chat context.
+ * Change 3 (arXiv 2605.15184 Finding #6): Enriched rendering — includes
+ * temporal recency and confidence metadata alongside memory content. */
 static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
                                memory_results_t *all, const char *label,
                                const char *prefix, int plen, int max_count,
@@ -22,8 +42,17 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
     for (int j = 0; j < all->count; j++) {
         if (all->entries[j].key &&
             strncmp(all->entries[j].key, prefix, (size_t)plen) == 0) {
-            str_appendf(&msg, "\n--- %s ---\n%s\n",
-                all->entries[j].key,
+            /* Enriched rendering: include recency + confidence metadata.
+             * arXiv 2605.15184 Finding #6: how memories are RENDERED matters
+             * as much as which ones are retrieved. */
+            int hits = all->entries[j].recall_hits;
+            int misses = all->entries[j].recall_misses;
+            int confidence = (int)(100.0 * (hits + 1.0) / (hits + misses + 2.0));
+            char recency_buf[32];
+            format_recency(all->entries[j].created_at, recency_buf, sizeof(recency_buf));
+            str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) ---\n%s\n",
+                all->entries[j].key, recency_buf,
+                hits + misses, confidence,
                 all->entries[j].value ? all->entries[j].value : "");
             tool_track_recalled_key(tools, all->entries[j].key);
             remaining--;
@@ -191,6 +220,143 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         char *mem_summary = NULL, *pinned = NULL;
         react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
+        /* ── Change 1: Temporal Event Calendar ──────────────────────────
+         * arXiv 2605.15184 Finding #5: temporal event structuring is the
+         * most impactful single component. Inject a chronological overview
+         * of recent memory activity to enable temporal reasoning. */
+        {
+            int do_temporal = ctx->tools->cfg
+                ? ctx->tools->cfg->temporal_calendar : 1;
+            if (do_temporal) {
+                int recent_days = ctx->tools->cfg
+                    ? ctx->tools->cfg->temporal_recent_days : 7;
+                int older_days = ctx->tools->cfg
+                    ? ctx->tools->cfg->temporal_older_days : 30;
+                int max_entries = ctx->tools->cfg
+                    ? ctx->tools->cfg->temporal_max_entries : 20;
+                double now = (double)time(NULL);
+                double recent_cutoff = now - recent_days * 86400.0;
+                double older_cutoff = now - older_days * 86400.0;
+
+                typedef struct { const char *key; const char *desc; double ts; } tcal_entry_t;
+                int tcal_cap = max_entries * 2 < 64 ? 64 : max_entries * 2;
+                tcal_entry_t *recent = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
+                tcal_entry_t *older = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
+                int n_recent = 0, n_older = 0;
+
+                memory_t *mem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                if (mem && recent && older) {
+                    pthread_mutex_lock(&mem->mtx);
+                    for (int mi = 0; mi < mem->idx.count; mi++) {
+                        const mem_index_entry_t *e = &mem->idx.entries[mi];
+                        if (!e->key || !e->description) continue;
+                        if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
+                            recent[n_recent++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                        } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
+                            older[n_older++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                        }
+                    }
+                    pthread_mutex_unlock(&mem->mtx);
+                }
+
+                /* Sort by timestamp descending (insertion sort — small N) */
+                for (int i = 1; i < n_recent; i++) {
+                    tcal_entry_t tmp = recent[i];
+                    int j = i - 1;
+                    while (j >= 0 && recent[j].ts < tmp.ts) {
+                        recent[j + 1] = recent[j]; j--;
+                    }
+                    recent[j + 1] = tmp;
+                }
+                for (int i = 1; i < n_older; i++) {
+                    tcal_entry_t tmp = older[i];
+                    int j = i - 1;
+                    while (j >= 0 && older[j].ts < tmp.ts) {
+                        older[j + 1] = older[j]; j--;
+                    }
+                    older[j + 1] = tmp;
+                }
+
+                if (n_recent > 0 || n_older > 0) {
+                    str_t cal = str_new(2048);
+                    str_appendf(&cal, "[TEMPORAL CONTEXT]\n");
+                    if (n_recent > 0) {
+                        str_appendf(&cal, "Recent (last %d days):\n", recent_days);
+                        int limit = n_recent < max_entries / 2 ? n_recent : max_entries / 2;
+                        for (int i = 0; i < limit; i++) {
+                            time_t ts = (time_t)recent[i].ts;
+                            struct tm tm;
+                            localtime_r(&ts, &tm);
+                            char datebuf[16];
+                            strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &tm);
+                            str_appendf(&cal, "  %s  %s — %s\n",
+                                datebuf, recent[i].key, recent[i].desc);
+                        }
+                    }
+                    if (n_older > 0) {
+                        str_appendf(&cal, "Older (last %d days):\n", older_days);
+                        int limit = n_older < max_entries / 2 ? n_older : max_entries / 2;
+                        for (int i = 0; i < limit; i++) {
+                            time_t ts = (time_t)older[i].ts;
+                            struct tm tm;
+                            localtime_r(&ts, &tm);
+                            char datebuf[16];
+                            strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &tm);
+                            str_appendf(&cal, "  %s  %s — %s\n",
+                                datebuf, older[i].key, older[i].desc);
+                        }
+                    }
+                    llm_chat_add_typed(chat, "user", str_cstr(&cal), LLM_MSG_TEMPORAL);
+                    str_free(&cal);
+                }
+                free(recent);
+                free(older);
+            }
+        }
+
+        /* ── Change 5: Episodic Recall at Init ─────────────────────────
+         * Query session_index for similar past sessions and inject the
+         * best matching journal chunks. Unlocks 470MB of journal data
+         * that currently sits unused during execution. */
+        {
+            int do_episodic = ctx->tools->cfg
+                ? ctx->tools->cfg->episodic_recall : 1;
+            if (do_episodic && ctx->tools->session_idx) {
+                memory_t *ep_mem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                embed_ctx_t *emb_ctx = ep_mem ? memory_embed_ctx(ep_mem) : NULL;
+                if (emb_ctx && emb_ctx->available) {
+                    embed_vec_t query_emb = embed_text(emb_ctx, user_query);
+                    if (query_emb.data) {
+                        int ep_max = ctx->tools->cfg
+                            ? ctx->tools->cfg->episodic_max_results : 2;
+                        double ep_min = ctx->tools->cfg
+                            ? ctx->tools->cfg->episodic_min_score : 0.35;
+                        session_index_results_t ses =
+                            session_index_search(ctx->tools->session_idx,
+                                                 &query_emb, ep_max);
+                        for (int si = 0; si < ses.count; si++) {
+                            session_index_result_t *sr = &ses.results[si];
+                            if (sr->score >= ep_min) {
+                                const char *preview = sr->chunk_preview
+                                    ? sr->chunk_preview : sr->manifest;
+                                if (preview && preview[0]) {
+                                    const char *ts_str = strrchr(sr->session_dir, '/');
+                                    ts_str = ts_str ? ts_str + 1 : sr->session_dir;
+                                    llm_chat_add_formatted(chat, "user",
+                                        LLM_MSG_EPISODIC,
+                                        "[RECALLED SESSION CHUNK — %s]\n%s\n"
+                                        "  -> file_read %s/journal.jsonl for full context",
+                                        ts_str, preview, sr->session_dir);
+                                }
+                            }
+                        }
+                        session_index_results_free(&ses);
+                        embed_vec_free(&query_emb);
+                    }
+                }
+            }
+        }
+
         /* Inject relevant memories by type — semantic recall filtered by prefix. */
         int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
         int max_lessons = ctx->tools->cfg ? ctx->tools->cfg->max_lessons_per_query : 2;
@@ -224,6 +390,55 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         inject_memory_type(chat, ctx->tools, &all_memories,
             "[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS);
 
+        /* ── Change 7: Associative Graph Walk (Depth-1 Ref Following) ──
+         * When a recalled memory has refs[], follow them one level deep.
+         * MRAgent (ICML 2026): reconstruction via graph traversal outperforms
+         * single-query retrieval by 23%. Our refs[] already exist but are only
+         * used for score boosting — actually injecting them implements
+         * associative recall. */
+        {
+            int assoc_depth = ctx->tools->cfg
+                ? ctx->tools->cfg->associative_depth : 1;
+            if (assoc_depth > 0) {
+                memory_t *amem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                if (amem) {
+                    str_t assoc_msg = str_new(2048);
+                    int assoc_added = 0;
+                    for (int j = 0; j < all_memories.count && assoc_added < 3; j++) {
+                        if (all_memories.entries[j].n_refs <= 0) continue;
+                        for (int ri = 0; ri < all_memories.entries[j].n_refs && assoc_added < 3; ri++) {
+                            const char *ref_key = all_memories.entries[j].refs[ri];
+                            if (!ref_key) continue;
+                            /* Check not already recalled */
+                            int dup = 0;
+                            for (int k = 0; k < ctx->tools->n_recalled_keys; k++) {
+                                if (strcmp(ctx->tools->recalled_keys[k], ref_key) == 0) {
+                                    dup = 1; break;
+                                }
+                            }
+                            if (dup) continue;
+                            const mem_index_entry_t *ref_entry = memory_find(amem, ref_key);
+                            if (ref_entry && ref_entry->value) {
+                                if (assoc_added == 0)
+                                    str_appendf(&assoc_msg, "[ASSOCIATED MEMORIES]\n");
+                                str_appendf(&assoc_msg,
+                                    "\n--- %s (via %s) ---\n%s\n",
+                                    ref_key, all_memories.entries[j].key,
+                                    ref_entry->value);
+                                tool_track_recalled_key(ctx->tools, ref_key);
+                                assoc_added++;
+                            }
+                        }
+                    }
+                    if (assoc_added > 0) {
+                        llm_chat_add_typed(chat, "user", str_cstr(&assoc_msg),
+                                          LLM_MSG_MEMORY_HINT);
+                    }
+                    str_free(&assoc_msg);
+                }
+            }
+        }
+
         /* Log memory context for debugging — before freeing mem_summary/pinned */
         react_log_memory_context(ctx->tools, ctx->tools->react_loop,
                            ctx->tools->step, mem_summary, pinned,
@@ -237,11 +452,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     /* X4+S5 FIX: Scratchpad budget uses the shared dual-cap policy.
      * min(absolute_cap, remaining_cap) prevents initial injection from
      * being larger than after the first eviction cycle. */
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
     long context_budget = react_context_budget(ctx);
     long current_chars = react_calc_total_chars(chat);
-    /* Review B7: Use REACT_SP_MIN constant instead of hardcoded 2048 */
-    size_t max_scratchpad = react_scratchpad_budget(context_budget, current_chars,
-                                                     REACT_SP_MIN);
+    size_t max_scratchpad = react_scratchpad_budget_pol(context_budget, current_chars,
+                                                        (size_t)pol.sp_min_chars, &pol);
 
     /* Inject scratchpad if exists (budget-aware, priority-ordered).
      * When branching (parent_loop != previous loop), filter R*_result

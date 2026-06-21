@@ -146,8 +146,9 @@ static void test_calc_floor_chars_with_tail(void) {
      * evictable region is smaller when tail is excluded */
     ASSERT(floor_with_tail <= floor_no_tail);
 
-    /* Both should be at least REACT_EVICT_FLOOR_MIN_CHARS */
-    ASSERT(floor_with_tail >= REACT_EVICT_FLOOR_MIN_CHARS);
+    /* Both should be at least the default floor_min_chars */
+    eviction_policy_t dpol = react_eviction_policy(NULL);
+    ASSERT(floor_with_tail >= dpol.floor_min_chars);
 
     llm_chat_free(chat);
 }
@@ -157,7 +158,8 @@ static void test_calc_floor_chars_minimum(void) {
     llm_chat_t *chat = make_test_chat(2, 50);
     long floor = react_calc_floor_chars(chat, 2, chat->n_msgs,
                                          1000, 200, 0);
-    ASSERT_EQ((int)floor, REACT_EVICT_FLOOR_MIN_CHARS);
+    { eviction_policy_t dpol2 = react_eviction_policy(NULL);
+    ASSERT_EQ((int)floor, (int)dpol2.floor_min_chars); }
     llm_chat_free(chat);
 }
 
@@ -177,7 +179,8 @@ static void test_scratchpad_budget(void) {
 
     /* No budget → fallback */
     budget = react_scratchpad_budget(0, 5000, 2048);
-    ASSERT_EQ((int)budget, REACT_SP_FALLBACK);
+    { eviction_policy_t spol = react_eviction_policy(NULL);
+    ASSERT_EQ((int)budget, (int)spol.sp_fallback); }
 }
 
 static void test_format_scratchpad_msg(void) {
@@ -405,7 +408,8 @@ static void test_mark_candidates_basic(void) {
     for (int i = evict_start; i < evict_end; i++)
         evictable_chars += (long)chat->msgs[i].content_len;
 
-    long floor_chars = REACT_EVICT_FLOOR_MIN_CHARS;
+    eviction_policy_t tpol = react_eviction_policy(NULL);
+    long floor_chars = tpol.floor_min_chars;
     long target_remaining = evictable_chars / 2; /* try to evict half */
 
     int *mark = calloc((size_t)n_evictable, sizeof(int));
@@ -497,7 +501,7 @@ static void test_mark_candidates_protects_high_importance(void) {
 
     int *mark = calloc((size_t)n_evictable, sizeof(int));
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
-                                          &pmap, REACT_EVICT_FLOOR_MIN_CHARS,
+                                          &pmap, react_eviction_policy(NULL).floor_min_chars,
                                           evictable_chars, 0 /* tail_chars */,
                                           0,
                                           score_by_position, NULL,
@@ -699,8 +703,9 @@ static void test_fix5_floor_with_large_tail(void) {
     /* floor = base * 20 / 100 */
     long base_correct = budget - head_chars - tail_chars_val;
     long base_buggy = budget - head_chars;
-    ASSERT_EQ((int)floor_correct, (int)(base_correct * REACT_EVICT_FLOOR_PCT / 100));
-    ASSERT_EQ((int)floor_buggy, (int)(base_buggy * REACT_EVICT_FLOOR_PCT / 100));
+    { eviction_policy_t fpol = react_eviction_policy(NULL);
+    ASSERT_EQ((int)floor_correct, (int)(base_correct * fpol.floor_pct / 100));
+    ASSERT_EQ((int)floor_buggy, (int)(base_buggy * fpol.floor_pct / 100)); }
 
     llm_chat_free(chat);
 }

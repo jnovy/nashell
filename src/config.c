@@ -62,6 +62,10 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 1;
     if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 1;
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
+    if (cfg->eviction_floor_pct <= 0)   cfg->eviction_floor_pct = 20;
+    if (cfg->scratchpad_budget_pct <= 0) cfg->scratchpad_budget_pct = 15;
+    if (cfg->breadcrumb_budget_pct <= 0) cfg->breadcrumb_budget_pct = 5;
+    if (cfg->compress_min_length <= 0)  cfg->compress_min_length = 800;
     if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
     if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
     if (cfg->file_read_context_pct <= 0) cfg->file_read_context_pct = 10;
@@ -87,15 +91,43 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->error_recall_candidates <= 0)    cfg->error_recall_candidates = 3;
     if (cfg->error_recall_max_inject <= 0)    cfg->error_recall_max_inject = 1;
     if (cfg->error_recall_min_relevance <= 0) cfg->error_recall_min_relevance = 0.25;
+    /* Eviction-triggered re-retrieval */
+    if (cfg->eviction_recall_candidates <= 0)   cfg->eviction_recall_candidates = 3;
+    if (cfg->eviction_recall_min_relevance <= 0) cfg->eviction_recall_min_relevance = 0.30;
+    /* Cycling-triggered retrieval */
+    if (cfg->cycling_recall_candidates <= 0)    cfg->cycling_recall_candidates = 2;
+    if (cfg->cycling_recall_min_relevance <= 0) cfg->cycling_recall_min_relevance = 0.30;
+    /* Temporal event calendar (default: enabled) */
+    if (cfg->temporal_calendar <= 0)       cfg->temporal_calendar = 1;
+    if (cfg->temporal_recent_days <= 0)    cfg->temporal_recent_days = 7;
+    if (cfg->temporal_older_days <= 0)     cfg->temporal_older_days = 30;
+    if (cfg->temporal_max_entries <= 0)    cfg->temporal_max_entries = 20;
+    /* Episodic recall (default: enabled) */
+    if (cfg->episodic_recall <= 0)         cfg->episodic_recall = 1;
+    if (cfg->episodic_max_results <= 0)    cfg->episodic_max_results = 2;
+    if (cfg->episodic_min_score <= 0)      cfg->episodic_min_score = 0.35;
+    /* Associative graph walk (default: depth 1) */
+    if (cfg->associative_depth <= 0)       cfg->associative_depth = 1;
+    /* Working memory auto-promotion (default: enabled) */
+    if (cfg->auto_promote <= 0)            cfg->auto_promote = 1;
+    if (cfg->auto_promote_min_length <= 0) cfg->auto_promote_min_length = 500;
+    if (cfg->auto_promote_max_chars <= 0)  cfg->auto_promote_max_chars = 2000;
     if (cfg->dream_reminder_threshold <= 0)   cfg->dream_reminder_threshold = 50;
     /* reflection_gate: default to user_ask (0) — only reflect when the model
      * needed to ask the user, indicating genuine learning opportunity.
      * -1 = not set (sentinel), 0 = user_ask, 1 = always, 2 = never */
     if (cfg->reflection_gate < 0)             cfg->reflection_gate = 0;
 
-    /* P3: Self-Harness tunable surfaces — see config.h for descriptions */
-    if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.5f;
-    if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.5f;
+    /* P3: Self-Harness tunable surfaces — see config.h for descriptions.
+     * Blend defaults: 40/60 semantic/substring — grep-favoring for inline delivery.
+     * arXiv 2605.15184 "Is Grep All You Need?" Finding #1: substring matching
+     * outperforms vector search when memories are delivered inline (as Nash does)
+     * because inline memories ARE structured text with literal spans (function
+     * names, error codes, config keys, file paths) — exactly the distribution
+     * where grep dominates. With 314 entries post-pruning, grep's precision
+     * advantage holds without noise-scaling issues. */
+    if (cfg->recall_blend_semantic <= 0)  cfg->recall_blend_semantic = 0.4f;
+    if (cfg->recall_blend_substring <= 0) cfg->recall_blend_substring = 0.6f;
     /* vscore_exponent: 0 is a valid value (disables vscore), so use sentinel -1.
      * Default 0.3 — empirically calibrated to reduce cold-start penalty:
      *   86% of memories have vscore=0.5 (zero evidence). With exponent=1.0,
@@ -310,6 +342,10 @@ config_t *config_load(const char *path) {
         cfg->max_strategies_per_query = toml_int(limits, "max_strategies_per_query", -1);
         cfg->max_antipatterns_per_query = toml_int(limits, "max_antipatterns_per_query", -1);
         cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
+        cfg->eviction_floor_pct   = toml_int(limits, "eviction_floor_pct", -1);
+        cfg->scratchpad_budget_pct = toml_int(limits, "scratchpad_budget_pct", -1);
+        cfg->breadcrumb_budget_pct = toml_int(limits, "breadcrumb_budget_pct", -1);
+        cfg->compress_min_length  = toml_int(limits, "compress_min_length", -1);
         cfg->max_reflection_steps = toml_int(limits, "max_reflection_steps", -1);
         { char *rg = toml_str(limits, "reflection_gate");
           if (rg) {
@@ -330,6 +366,26 @@ config_t *config_load(const char *path) {
         cfg->error_recall_candidates    = toml_int(limits, "error_recall_candidates", -1);
         cfg->error_recall_max_inject    = toml_int(limits, "error_recall_max_inject", -1);
         cfg->error_recall_min_relevance = toml_dbl(limits, "error_recall_min_relevance", 0);
+        /* Event-driven retrieval */
+        cfg->eviction_recall_candidates   = toml_int(limits, "eviction_recall_candidates", -1);
+        cfg->eviction_recall_min_relevance = toml_dbl(limits, "eviction_recall_min_relevance", 0);
+        cfg->cycling_recall_candidates    = toml_int(limits, "cycling_recall_candidates", -1);
+        cfg->cycling_recall_min_relevance = toml_dbl(limits, "cycling_recall_min_relevance", 0);
+        /* Temporal calendar */
+        cfg->temporal_calendar       = toml_int(limits, "temporal_calendar", -1);
+        cfg->temporal_recent_days    = toml_int(limits, "temporal_recent_days", -1);
+        cfg->temporal_older_days     = toml_int(limits, "temporal_older_days", -1);
+        cfg->temporal_max_entries    = toml_int(limits, "temporal_max_entries", -1);
+        /* Episodic recall */
+        cfg->episodic_recall         = toml_int(limits, "episodic_recall", -1);
+        cfg->episodic_max_results    = toml_int(limits, "episodic_max_results", -1);
+        cfg->episodic_min_score      = toml_dbl(limits, "episodic_min_score", 0);
+        /* Associative graph walk */
+        cfg->associative_depth       = toml_int(limits, "associative_depth", -1);
+        /* Working memory auto-promotion */
+        cfg->auto_promote            = toml_int(limits, "auto_promote", -1);
+        cfg->auto_promote_min_length = toml_int(limits, "auto_promote_min_length", -1);
+        cfg->auto_promote_max_chars  = toml_int(limits, "auto_promote_max_chars", -1);
         cfg->dream_reminder_threshold  = toml_int(limits, "dream_reminder_threshold", -1);
         /* Backward compat: old "auto_dream_writes" in [limits] */
         if (cfg->dream_reminder_threshold <= 0)
@@ -626,6 +682,10 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
             p->max_strategies_per_query = toml_int(mem_tbl, "max_strategies_per_query", 0);
             p->max_antipatterns_per_query = toml_int(mem_tbl, "max_antipatterns_per_query", 0);
             p->context_eviction_pct = toml_int(mem_tbl, "context_eviction_pct", 0);
+            p->eviction_floor_pct = toml_int(mem_tbl, "eviction_floor_pct", 0);
+            p->scratchpad_budget_pct = toml_int(mem_tbl, "scratchpad_budget_pct", 0);
+            p->breadcrumb_budget_pct = toml_int(mem_tbl, "breadcrumb_budget_pct", 0);
+            p->compress_min_length = toml_int(mem_tbl, "compress_min_length", 0);
         }
 
         /* [tools] subtable — allow/block arrays + max_tools */
@@ -789,6 +849,10 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     if (p->max_strategies_per_query > 0) cfg->max_strategies_per_query = p->max_strategies_per_query;
     if (p->max_antipatterns_per_query > 0) cfg->max_antipatterns_per_query = p->max_antipatterns_per_query;
     if (p->context_eviction_pct > 0)   cfg->context_eviction_pct = p->context_eviction_pct;
+    if (p->eviction_floor_pct > 0)     cfg->eviction_floor_pct = p->eviction_floor_pct;
+    if (p->scratchpad_budget_pct > 0)  cfg->scratchpad_budget_pct = p->scratchpad_budget_pct;
+    if (p->breadcrumb_budget_pct > 0)  cfg->breadcrumb_budget_pct = p->breadcrumb_budget_pct;
+    if (p->compress_min_length > 0)    cfg->compress_min_length = p->compress_min_length;
 
     /* [react] flags → store on cfg for main.c to apply to react_flags_t.
      * Only override if the profile explicitly sets the value (not -1 = inherit).
@@ -925,7 +989,11 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "max_lessons_per_query = %d\n", cfg->max_lessons_per_query);
     fprintf(out, "max_strategies_per_query = %d\n", cfg->max_strategies_per_query);
     fprintf(out, "max_antipatterns_per_query = %d\n", cfg->max_antipatterns_per_query);
-    fprintf(out, "context_eviction_pct = %d\n\n", cfg->context_eviction_pct);
+    fprintf(out, "context_eviction_pct = %d\n", cfg->context_eviction_pct);
+    fprintf(out, "eviction_floor_pct = %d\n", cfg->eviction_floor_pct);
+    fprintf(out, "scratchpad_budget_pct = %d\n", cfg->scratchpad_budget_pct);
+    fprintf(out, "breadcrumb_budget_pct = %d\n", cfg->breadcrumb_budget_pct);
+    fprintf(out, "compress_min_length = %d\n\n", cfg->compress_min_length);
 
     fprintf(out, "[tools]\n");
     /* Show memory_recall toggle status */
@@ -1025,6 +1093,21 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "error_recall_candidates = %d\n", cfg->error_recall_candidates);
     fprintf(out, "error_recall_max_inject = %d\n", cfg->error_recall_max_inject);
     fprintf(out, "error_recall_min_relevance = %.2f\n", cfg->error_recall_min_relevance);
+    fprintf(out, "eviction_recall_candidates = %d\n", cfg->eviction_recall_candidates);
+    fprintf(out, "eviction_recall_min_relevance = %.2f\n", cfg->eviction_recall_min_relevance);
+    fprintf(out, "cycling_recall_candidates = %d\n", cfg->cycling_recall_candidates);
+    fprintf(out, "cycling_recall_min_relevance = %.2f\n", cfg->cycling_recall_min_relevance);
+    fprintf(out, "temporal_calendar = %s\n", cfg->temporal_calendar ? "true" : "false");
+    fprintf(out, "temporal_recent_days = %d\n", cfg->temporal_recent_days);
+    fprintf(out, "temporal_older_days = %d\n", cfg->temporal_older_days);
+    fprintf(out, "temporal_max_entries = %d\n", cfg->temporal_max_entries);
+    fprintf(out, "episodic_recall = %s\n", cfg->episodic_recall ? "true" : "false");
+    fprintf(out, "episodic_max_results = %d\n", cfg->episodic_max_results);
+    fprintf(out, "episodic_min_score = %.2f\n", cfg->episodic_min_score);
+    fprintf(out, "associative_depth = %d\n", cfg->associative_depth);
+    fprintf(out, "auto_promote = %s\n", cfg->auto_promote ? "true" : "false");
+    fprintf(out, "auto_promote_min_length = %d\n", cfg->auto_promote_min_length);
+    fprintf(out, "auto_promote_max_chars = %d\n", cfg->auto_promote_max_chars);
     fprintf(out, "\n");
 
     fprintf(out, "[memory_belief_entropy]\n");
@@ -1210,6 +1293,14 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v > 0) cfg->max_antipatterns_per_query = v;
         v = toml_int(mem, "context_eviction_pct", 0);
         if (v > 0) cfg->context_eviction_pct = v;
+        v = toml_int(mem, "eviction_floor_pct", 0);
+        if (v > 0) cfg->eviction_floor_pct = v;
+        v = toml_int(mem, "scratchpad_budget_pct", 0);
+        if (v > 0) cfg->scratchpad_budget_pct = v;
+        v = toml_int(mem, "breadcrumb_budget_pct", 0);
+        if (v > 0) cfg->breadcrumb_budget_pct = v;
+        v = toml_int(mem, "compress_min_length", 0);
+        if (v > 0) cfg->compress_min_length = v;
     }
 
     /* [tools] overlay — allow/block lists */
@@ -1352,6 +1443,37 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v > 0) cfg->error_recall_max_inject = v;
         { double d = toml_dbl(limits, "error_recall_min_relevance", 0);
           if (d > 0) cfg->error_recall_min_relevance = d; }
+        /* Event-driven retrieval overlays */
+        v = toml_int(limits, "eviction_recall_candidates", 0);
+        if (v > 0) cfg->eviction_recall_candidates = v;
+        { double d = toml_dbl(limits, "eviction_recall_min_relevance", 0);
+          if (d > 0) cfg->eviction_recall_min_relevance = d; }
+        v = toml_int(limits, "cycling_recall_candidates", 0);
+        if (v > 0) cfg->cycling_recall_candidates = v;
+        { double d = toml_dbl(limits, "cycling_recall_min_relevance", 0);
+          if (d > 0) cfg->cycling_recall_min_relevance = d; }
+        v = toml_int(limits, "temporal_calendar", 0);
+        if (v > 0) cfg->temporal_calendar = v;
+        v = toml_int(limits, "temporal_recent_days", 0);
+        if (v > 0) cfg->temporal_recent_days = v;
+        v = toml_int(limits, "temporal_older_days", 0);
+        if (v > 0) cfg->temporal_older_days = v;
+        v = toml_int(limits, "temporal_max_entries", 0);
+        if (v > 0) cfg->temporal_max_entries = v;
+        v = toml_int(limits, "episodic_recall", 0);
+        if (v > 0) cfg->episodic_recall = v;
+        v = toml_int(limits, "episodic_max_results", 0);
+        if (v > 0) cfg->episodic_max_results = v;
+        { double d = toml_dbl(limits, "episodic_min_score", 0);
+          if (d > 0) cfg->episodic_min_score = d; }
+        v = toml_int(limits, "associative_depth", 0);
+        if (v > 0) cfg->associative_depth = v;
+        v = toml_int(limits, "auto_promote", 0);
+        if (v > 0) cfg->auto_promote = v;
+        v = toml_int(limits, "auto_promote_min_length", 0);
+        if (v > 0) cfg->auto_promote_min_length = v;
+        v = toml_int(limits, "auto_promote_max_chars", 0);
+        if (v > 0) cfg->auto_promote_max_chars = v;
     }
 
     /* [memory_belief_entropy] overlay */
@@ -1472,6 +1594,10 @@ int config_write_default(const char *path) {
         "scratchpad_max = 0           # max scratchpad chars (0 = auto: 5%% of context)\n"
         "max_react_steps = 0          # max steps per react loop (0 = unlimited)\n"
         "context_eviction_pct = 70    # context usage %% that triggers message eviction\n"
+        "eviction_floor_pct = 20      # min retained context as %% of non-head budget\n"
+        "scratchpad_budget_pct = 15   # scratchpad as %% of context budget\n"
+        "breadcrumb_budget_pct = 5    # combined breadcrumb budget as %% of context\n"
+        "compress_min_length = 800    # min message size (chars) for BM25 compression\n"
         "file_read_max_inline = 50000 # max chars returned inline by file_read (50KB)\n"
         "file_read_context_pct = 10   # max %% of context window for file_read inline (0 = use file_read_max_inline)\n"
         "\n"
@@ -1502,8 +1628,8 @@ int config_write_default(const char *path) {
         "# Self-Harness tunable surfaces (P3)\n"
         "# These parameters can be automatically tuned by the self-harness loop\n"
         "# and validated via: nash --regression --validate-harness compare\n"
-        "recall_blend_semantic = 0.5  # weight for semantic similarity in memory recall (0.0-1.0)\n"
-        "recall_blend_substring = 0.5 # weight for substring matching in memory recall (0.0-1.0)\n"
+        "recall_blend_semantic = 0.4  # weight for semantic similarity in memory recall (0.0-1.0)\n"
+        "recall_blend_substring = 0.6 # weight for substring matching in memory recall (0.0-1.0)\n"
         "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
         "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
         "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"

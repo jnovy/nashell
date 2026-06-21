@@ -125,6 +125,10 @@ typedef struct {
     /* [limits] overrides */
     int    max_react_steps;     /* 0 = inherit */
     int    context_eviction_pct;/* 0 = inherit */
+    int    eviction_floor_pct;  /* 0 = inherit */
+    int    scratchpad_budget_pct;/* 0 = inherit */
+    int    breadcrumb_budget_pct;/* 0 = inherit */
+    int    compress_min_length; /* 0 = inherit */
     double recall_min_score;    /* 0.0 = inherit */
     float  recall_blend_semantic;  /* 0.0 = inherit */
     float  recall_blend_substring; /* 0.0 = inherit */
@@ -200,6 +204,10 @@ typedef struct {
     int    max_strategies_per_query; /* max strategies loaded per query */
     int    max_antipatterns_per_query; /* max anti-patterns loaded per query */
     int    context_eviction_pct; /* context usage % that triggers eviction */
+    int    eviction_floor_pct;   /* min retained context as % of non-head budget (default 20) */
+    int    scratchpad_budget_pct;/* scratchpad as % of context budget (default 15) */
+    int    breadcrumb_budget_pct;/* combined breadcrumb budget as % of context (default 5) */
+    int    compress_min_length;  /* min message size (chars) for BM25 compression (default 800) */
     int    max_reflection_steps; /* max steps in post-task reflection */
     int    reflection_gate;      /* 0 = user_ask (only reflect after user_ask),
                                   * 1 = always (reflect after every task),
@@ -252,6 +260,38 @@ typedef struct {
     int    error_recall_candidates;   /* max candidates to retrieve from memory (default 3) */
     int    error_recall_max_inject;   /* max entries to inject into chat (default 1) */
     double error_recall_min_relevance; /* min relevance score [0,1] for injection (default 0.25) */
+
+    /* Eviction-triggered re-retrieval — when context is evicted, re-query
+     * memory with the breadcrumb summary to re-surface relevant knowledge.
+     * arXiv 2605.30621: retrieval at init uses the initial query, but needs
+     * evolve. Eviction summary is the optimal query for what was lost. */
+    int    eviction_recall_candidates;   /* candidates to retrieve (default 3) */
+    double eviction_recall_min_relevance; /* min relevance for injection (default 0.30) */
+
+    /* Cycling-triggered retrieval — when the agent is stuck in a cycle,
+     * query memory for alternative approaches. */
+    int    cycling_recall_candidates;    /* candidates to retrieve (default 2) */
+    double cycling_recall_min_relevance; /* min relevance for injection (default 0.30) */
+
+    /* Temporal event calendar — inject chronological memory overview.
+     * arXiv 2605.15184 Finding #5: most impactful single component. */
+    int    temporal_calendar;        /* enable temporal event injection (default 1) */
+    int    temporal_recent_days;     /* "Recent" window in days (default 7) */
+    int    temporal_older_days;      /* "Older" window in days (default 30) */
+    int    temporal_max_entries;     /* max entries in calendar (default 20) */
+
+    /* Episodic recall — query session_index for similar past sessions. */
+    int    episodic_recall;          /* enable episodic recall at init (default 1) */
+    int    episodic_max_results;     /* max session chunks to inject (default 2) */
+    double episodic_min_score;       /* min similarity score (default 0.35) */
+
+    /* Associative graph walk — follow refs[] of recalled memories. */
+    int    associative_depth;        /* ref-follow depth (0=disabled, default 1) */
+
+    /* Working memory auto-promotion — auto-append findings to scratchpad. */
+    int    auto_promote;             /* enable auto-promotion (default 1) */
+    int    auto_promote_min_length;  /* min tool result chars to trigger (default 500) */
+    int    auto_promote_max_chars;   /* max chars in auto_findings section (default 2000) */
 
     /* P3: Auto-dream — usage-based memory consolidation trigger.
      *

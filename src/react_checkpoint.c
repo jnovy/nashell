@@ -67,9 +67,11 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
      * BUG #3 FIX: Use scratchpad_serialize_budget() instead of unbounded
      * scratchpad_serialize() — prevents oversized scratchpad after restore. */
     {
+        eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
         long cb = react_context_budget(ctx);
         long cc = react_calc_total_chars(chat);
-        size_t sp_max = react_scratchpad_budget(cb, cc, REACT_SP_MIN);
+        size_t sp_max = react_scratchpad_budget_pol(cb, cc,
+                                                     (size_t)pol.sp_min_chars, &pol);
         char *sp_text = NULL;
         if (ctx->tools->scratch.count > 0) {
             sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);

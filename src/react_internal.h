@@ -22,39 +22,88 @@
 #include <dirent.h>
 #include <stdint.h>
 
-/* ── Eviction Constants ─────────────────────────────── */
-/* Scratchpad budget as percentage of total context size. */
-#define REACT_SCRATCHPAD_BUDGET_PCT  15
-/* Maximum percentage of post-eviction content that scratchpad may occupy.
- * Prevents scratchpad from drowning out conversation after heavy eviction. */
-#define REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT  40
-/* Compaction floor: minimum retained context as fraction of non-head budget.
- * Prevents over-eviction death spiral (context-eviction-cliff feedback loop). */
-#define REACT_EVICT_FLOOR_PCT       20
-#define REACT_EVICT_FLOOR_MIN_CHARS 4000
-/* Emergency eviction target as percentage of context budget. */
-#define REACT_EMERGENCY_TARGET_PCT  80
-/* Minimum hysteresis gap in percentage points between trigger and target. */
-#define REACT_HYSTERESIS_MIN_GAP    5
-/* Hysteresis gap divisor: gap = eviction_pct / REACT_HYSTERESIS_DIVISOR. */
-#define REACT_HYSTERESIS_DIVISOR    5
+/* ── Eviction Policy ───────────────────────────────── */
+/* Computed once at eviction entry from config.  Replaces 20+ scattered
+ * #defines with a single struct whose fields are either direct from config
+ * or derived via simple formulas.  Five config.toml knobs (under [limits])
+ * drive all values:
+ *   context_eviction_pct  (trigger threshold, default 70)
+ *   eviction_floor_pct    (min retention, default 20)
+ *   scratchpad_budget_pct (SP as % of context, default 15)
+ *   breadcrumb_budget_pct (combined breadcrumb %, default 5)
+ *   compress_min_length   (min msg size for BM25, default 800) */
+typedef struct {
+    /* Direct from config */
+    int trigger_pct;          /* context_eviction_pct (70) */
+    int floor_pct;            /* eviction_floor_pct (20) */
+    int sp_budget_pct;        /* scratchpad_budget_pct (15) */
+    int breadcrumb_pct;       /* breadcrumb_budget_pct (5) */
+    int compress_min_len;     /* compress_min_length (800) */
+
+    /* Derived (computed once) */
+    int target_pct;           /* trigger - trigger/5  = 56 */
+    int emergency_target_pct; /* trigger + 10         = 80 */
+    int hysteresis_gap;       /* trigger/5, min 5     = 14 */
+
+    int sp_max_remaining_pct; /* sp_budget * 8/3      ≈ 40 */
+    long sp_min_chars;        /* 2048 (absolute floor) */
+    long sp_shrink_min;       /* sp_min / 4           = 512 */
+    long sp_fallback;         /* 8192 (when context unknown) */
+
+    int bc_index_pct;         /* breadcrumb * 2/5     = 2 */
+    int bc_summary_pct;       /* breadcrumb * 3/5     = 3 */
+    int summary_per_msg_min;  /* 200 (absolute floor) */
+    int summary_per_msg_max;  /* per_msg_min * 5      = 1000 */
+
+    int compress_min_chars;   /* compress_min_len / 2 = 400 */
+    int compress_min_units;   /* 4 (always) */
+
+    long floor_min_chars;     /* 4000 (absolute floor) */
+} eviction_policy_t;
+
+/* Compute policy from config.  Call once at start of react_maybe_evict(). */
+static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
+    eviction_policy_t p = {0};
+    p.trigger_pct       = cfg ? cfg->context_eviction_pct : 70;
+    p.floor_pct         = cfg ? cfg->eviction_floor_pct : 20;
+    p.sp_budget_pct     = cfg ? cfg->scratchpad_budget_pct : 15;
+    p.breadcrumb_pct    = cfg ? cfg->breadcrumb_budget_pct : 5;
+    p.compress_min_len  = cfg ? cfg->compress_min_length : 800;
+
+    /* Hysteresis */
+    p.hysteresis_gap    = p.trigger_pct / 5;
+    if (p.hysteresis_gap < 5) p.hysteresis_gap = 5;
+    p.target_pct        = p.trigger_pct - p.hysteresis_gap;
+    p.emergency_target_pct = p.trigger_pct + 10;
+    if (p.emergency_target_pct > 95) p.emergency_target_pct = 95;
+
+    /* Scratchpad budget chain */
+    p.sp_max_remaining_pct = p.sp_budget_pct * 8 / 3;  /* ≈ 2.67× */
+    p.sp_min_chars      = 2048;
+    p.sp_shrink_min     = p.sp_min_chars / 4;           /* 512 */
+    p.sp_fallback       = 8192;
+
+    /* Breadcrumb budget chain */
+    p.bc_index_pct      = p.breadcrumb_pct * 2 / 5;
+    p.bc_summary_pct    = p.breadcrumb_pct - p.bc_index_pct;
+    p.summary_per_msg_min = 200;
+    p.summary_per_msg_max = p.summary_per_msg_min * 5;  /* 1000 */
+
+    /* Compression chain */
+    p.compress_min_chars = p.compress_min_len / 2;      /* 400 */
+    p.compress_min_units = 4;
+
+    p.floor_min_chars    = 4000;
+    return p;
+}
+
 /* Maximum total recovery attempts across all error types before giving up.
  * Prevents unbounded retries from alternating error types (D3 fix). */
 #define REACT_MAX_TOTAL_RECOVERY    12
 
-/* ── Eviction Tuning Constants (formerly inline magic numbers) ──── */
+/* ── Eviction Tuning Constants (stable algorithm internals) ──── */
 /* Thought/content truncation limit for BM25 query augmentation (chars). */
 #define REACT_THOUGHT_TRUNC_LEN     200
-/* FIX #7: REACT_SP_BM25_BUDGET moved to react.c (only user).
- * REACT_BREADCRUMB_CAP_MIN, REACT_REINJECT_PAD, REACT_EFF_TARGET_MIN_PCT
- * moved to react_eviction.c (only user). */
-/* Minimum scratchpad budget (chars). */
-#define REACT_SP_MIN                2048
-/* Fallback scratchpad budget when context_size unknown (chars). */
-#define REACT_SP_FALLBACK           8192
-/* FIX #7: Eviction-only constants (REACT_SCORE_*, REACT_BREADCRUMB_*,
- * REACT_SUMMARY_*, REACT_SP_SHRINK_MIN, REACT_COMPRESS_*) moved to
- * react_eviction.c — the only file that uses them. */
 
 /* Compaction hint text injected as MEMORY_HINT after eviction.
  * Extracted to a constant to eliminate 3 copies and the magic-130 estimate. */
@@ -132,13 +181,11 @@ static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
 
 /* Compute eviction target_pct from config.
  * Shared between react_maybe_evict and react_emergency_evict_and_reinject
- * to eliminate duplicated hysteresis gap calculation. */
+ * to eliminate duplicated hysteresis gap calculation.
+ * Now implemented via react_eviction_policy() derivation chain. */
 static inline int react_eviction_target_pct(const config_t *cfg) {
-    int eviction_pct = cfg ? cfg->context_eviction_pct : 70;
-    int gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
-    if (gap < REACT_HYSTERESIS_MIN_GAP)
-        gap = REACT_HYSTERESIS_MIN_GAP;
-    return eviction_pct - gap;
+    eviction_policy_t pol = react_eviction_policy(cfg);
+    return pol.target_pct;
 }
 
 /* FIX #11: Compute total chars in head (messages before evict_start).
@@ -164,25 +211,36 @@ static inline long react_tail_chars(const llm_chat_t *chat, int evict_end) {
  * If known_head_chars >= 0, uses that value directly to avoid recomputing.
  * FIX #5: Subtracts tail_chars from base — the floor should be based on the
  * evictable region capacity, not the entire non-head budget. Pass -1 for
- * known_tail_chars to auto-compute (requires evict_end). */
-static inline long react_calc_floor_chars(const llm_chat_t *chat,
-                                          int evict_start, int evict_end,
-                                          long context_budget,
-                                          long known_head_chars,
-                                          long known_tail_chars) {
-    /* FIX #11: Use react_head_chars helper instead of inline loop */
+ * known_tail_chars to auto-compute (requires evict_end).
+ * Now reads floor_pct and floor_min_chars from eviction_policy_t. */
+static inline long react_calc_floor_chars_pol(const llm_chat_t *chat,
+                                              int evict_start, int evict_end,
+                                              long context_budget,
+                                              long known_head_chars,
+                                              long known_tail_chars,
+                                              const eviction_policy_t *pol) {
     long head_chars = (known_head_chars >= 0)
         ? known_head_chars
         : react_head_chars(chat, evict_start);
     long tail_chars = (known_tail_chars >= 0)
         ? known_tail_chars
         : react_tail_chars(chat, evict_end);
-    /* FIX #5: base = evictable capacity = total - head - tail */
     long base = (context_budget > 0)
         ? context_budget - head_chars - tail_chars
         : react_calc_total_chars(chat) - head_chars - tail_chars;
-    long floor = base * REACT_EVICT_FLOOR_PCT / 100;
-    return floor < REACT_EVICT_FLOOR_MIN_CHARS ? REACT_EVICT_FLOOR_MIN_CHARS : floor;
+    long floor = base * pol->floor_pct / 100;
+    return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
+}
+/* Convenience wrapper using default policy from config. */
+static inline long react_calc_floor_chars(const llm_chat_t *chat,
+                                          int evict_start, int evict_end,
+                                          long context_budget,
+                                          long known_head_chars,
+                                          long known_tail_chars) {
+    eviction_policy_t pol = react_eviction_policy(NULL);
+    return react_calc_floor_chars_pol(chat, evict_start, evict_end,
+                                      context_budget, known_head_chars,
+                                      known_tail_chars, &pol);
 }
 
 /* Compute context_budget in chars from provider config. */
@@ -195,20 +253,30 @@ static inline long react_context_budget(const react_ctx_t *ctx) {
 /* D1+S5 FIX: Compute scratchpad budget using the dual-cap policy.
  * Returns min(abs_cap, rel_cap) with a floor of min_budget.
  * Shared between react_reinject_scratchpad(), react_build_context(),
- * and evict_finalize() to eliminate 3 copies of the same logic. */
-static inline size_t react_scratchpad_budget(long context_budget,
-                                              long current_chars,
-                                              size_t min_budget) {
+ * and evict_finalize() to eliminate 3 copies of the same logic.
+ * Now reads sp_budget_pct / sp_max_remaining_pct / sp_fallback from policy. */
+static inline size_t react_scratchpad_budget_pol(long context_budget,
+                                                 long current_chars,
+                                                 size_t min_budget,
+                                                 const eviction_policy_t *pol) {
     if (context_budget <= 0)
-        return REACT_SP_FALLBACK;
+        return (size_t)pol->sp_fallback;
     size_t abs_cap = (size_t)(context_budget
-                              * REACT_SCRATCHPAD_BUDGET_PCT / 100);
+                              * pol->sp_budget_pct / 100);
     long remaining = context_budget - current_chars;
     if (remaining < 0) remaining = 0;
     size_t rel_cap = (size_t)(remaining
-                              * REACT_SCRATCHPAD_MAX_OF_REMAINING_PCT / 100);
+                              * pol->sp_max_remaining_pct / 100);
     size_t budget = abs_cap < rel_cap ? abs_cap : rel_cap;
     return budget < min_budget ? min_budget : budget;
+}
+/* Convenience wrapper using default policy from config. */
+static inline size_t react_scratchpad_budget(long context_budget,
+                                              long current_chars,
+                                              size_t min_budget) {
+    eviction_policy_t pol = react_eviction_policy(NULL);
+    return react_scratchpad_budget_pol(context_budget, current_chars,
+                                       min_budget, &pol);
 }
 
 /* SIMP1 FIX: Compute a budget cap = max(budget * pct / 100, min_val).
@@ -413,7 +481,7 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
 /* Emergency eviction — proportionally removes oldest evictable messages
  * to reach target_pct of context budget. context_budget is in chars (0 = unknown,
  * falls back to target_pct of current usage). Returns count evicted.
- * target_pct: 0 = use REACT_EMERGENCY_TARGET_PCT default (80%).
+ * target_pct: 0 = use pol.emergency_target_pct default (80%).
  * Flaw 2 FIX: Accepts target so callers can pass a value consistent with
  * the configured eviction_pct, preventing immediate re-trigger.
  * FIX #3: Takes budget param so it targets budget, not current usage.

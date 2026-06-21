@@ -22,7 +22,7 @@
 #include "react_internal.h"
 #include "compress.h"
 
-/* ── FIX #7: Constants moved from react_internal.h (used only here) ── */
+/* ── Algorithm-internal constants (stable, not policy-configurable) ── */
 /* Score formula coefficients for progressive eviction scoring. */
 #define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
 #define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
@@ -34,22 +34,7 @@
 #define REACT_BREADCRUMB_BRIEF_LEN  80
 /* Minimum tool content length to include in eviction summary. */
 #define REACT_SUMMARY_TOOL_MIN_LEN  50
-/* Per-message summary min/max chars. */
-#define REACT_SUMMARY_PER_MSG_MIN   200
-#define REACT_SUMMARY_PER_MSG_MAX   1000
-/* Minimum scratchpad chars for proportional shrink (below this, strip entirely). */
-#define REACT_SP_SHRINK_MIN         512
-/* Separate budgets for breadcrumb index and eviction summary. */
-#define REACT_BREADCRUMB_INDEX_PCT  2  /* % of context budget for store-alias index */
-#define REACT_BREADCRUMB_SUMMARY_PCT 3 /* % of context budget for eviction summary */
-/* Fixed minimum compress threshold — messages below this yield negligible savings. */
-#define REACT_COMPRESS_THRESH_FIXED 800
-/* Compress-scaled parameters: minimum chunks and chars. */
-#define REACT_COMPRESS_MIN_UNITS    4
-#define REACT_COMPRESS_MIN_CHARS    400
-/* SIMP1 FIX: Minimum per-component breadcrumb capacity (chars).
- * Renamed from REACT_BREADCRUMB_CAP_MIN (1024/2=512) to clarify
- * that this is the per-subcap minimum, not the whole-breadcrumb minimum. */
+/* Minimum per-component breadcrumb capacity (chars). */
 #define REACT_BREADCRUMB_SUBCAP_MIN 512
 /* Padding added to re-injection estimate (chars). */
 #define REACT_REINJECT_PAD          200
@@ -57,6 +42,16 @@
 #define REACT_EFF_TARGET_MIN_PCT    10
 /* FIX #10: Maximum store-alias dedup entries in breadcrumb builder. */
 #define REACT_BREADCRUMB_MAX_ALIASES 64
+/* NOTE: The following constants moved to eviction_policy_t (react_internal.h):
+ * REACT_SP_SHRINK_MIN        → pol.sp_shrink_min
+ * REACT_BREADCRUMB_INDEX_PCT → pol.bc_index_pct
+ * REACT_BREADCRUMB_SUMMARY_PCT → pol.bc_summary_pct
+ * REACT_SUMMARY_PER_MSG_MIN  → pol.summary_per_msg_min
+ * REACT_SUMMARY_PER_MSG_MAX  → pol.summary_per_msg_max
+ * REACT_COMPRESS_THRESH_FIXED→ pol.compress_min_len
+ * REACT_COMPRESS_MIN_UNITS   → pol.compress_min_units
+ * REACT_COMPRESS_MIN_CHARS   → pol.compress_min_chars
+ */
 
 /* ── Comparison functions for qsort ───────────────────── */
 
@@ -171,10 +166,11 @@ int evict_sweep_marked(llm_chat_t *chat, int evict_start,
  * Shared between progressive and emergency eviction. */
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos) {
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
     long context_budget = react_context_budget(ctx);
     long current_chars = react_calc_total_chars(chat);
-    size_t sp_max = react_scratchpad_budget(context_budget, current_chars,
-                                             REACT_SP_MIN);
+    size_t sp_max = react_scratchpad_budget_pol(context_budget, current_chars,
+                                                (size_t)pol.sp_min_chars, &pol);
 
     char *fresh_sp = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
     long injected_chars = react_inject_scratchpad_msg(chat, insert_pos, fresh_sp);
@@ -234,6 +230,7 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
                    char *breadcrumb_str, int n_evicted, int step,
                    react_event_fn on_event, void *userdata) {
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
     int pos = keep_head;
     /* FIX #1: Use explicit n_evicted count instead of inferring from
      * breadcrumb_str != NULL. breadcrumb_str can be NULL even when eviction
@@ -257,10 +254,10 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     /* 1. Re-inject scratchpad at right-sized budget */
     if (target_budget_chars > 0) {
         long available_for_sp = target_budget_chars - current_chars - other_inject_chars;
-        if (available_for_sp > REACT_SP_SHRINK_MIN) {
+        if (available_for_sp > pol.sp_shrink_min) {
             /* Clamp to normal scratchpad budget if room allows */
-            size_t normal_budget = react_scratchpad_budget(
-                context_budget, current_chars, REACT_SP_MIN);
+            size_t normal_budget = react_scratchpad_budget_pol(
+                context_budget, current_chars, (size_t)pol.sp_min_chars, &pol);
             size_t sp_budget = (size_t)available_for_sp < normal_budget
                 ? (size_t)available_for_sp : normal_budget;
             char *sp = scratchpad_serialize_budget(&ctx->tools->scratch, sp_budget);
@@ -274,6 +271,49 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* 2. Inject breadcrumbs (if any) */
     if (breadcrumb_str) {
+        /* ── Change 2: Eviction-triggered re-retrieval ──────────────────
+         * arXiv 2605.30621: retrieval at init uses the initial query, but
+         * the agent's needs evolve. The eviction summary describes exactly
+         * what knowledge was just lost — it's the optimal re-retrieval query.
+         * Query memory with the breadcrumb text BEFORE freeing it. */
+        if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)
+            && strlen(breadcrumb_str) > 100) {
+            int ev_candidates = ctx->tools->cfg
+                ? ctx->tools->cfg->eviction_recall_candidates : 3;
+            double ev_min_rel = ctx->tools->cfg
+                ? ctx->tools->cfg->eviction_recall_min_relevance : 0.30;
+
+            /* Truncate breadcrumb for recall query (max 400 chars) */
+            char ev_query[512];
+            snprintf(ev_query, sizeof(ev_query), "%.400s", breadcrumb_str);
+
+            memory_results_t ev_mem = ctx->tools->ws
+                ? workspace_recall(ctx->tools->ws, ev_query, ev_candidates)
+                : memory_recall(ctx->tools->memory, ev_query, ev_candidates);
+
+            int ev_injected = 0;
+            for (int j = 0; j < ev_mem.count && ev_injected < 2; j++) {
+                /* Dedup against recalled_keys */
+                int dup = 0;
+                for (int k = 0; k < ctx->tools->n_recalled_keys; k++) {
+                    if (strcmp(ctx->tools->recalled_keys[k],
+                               ev_mem.entries[j].key) == 0) { dup = 1; break; }
+                }
+                if (!dup && ev_mem.entries[j].relevance > ev_min_rel) {
+                    char hint[2048];
+                    snprintf(hint, sizeof(hint),
+                        "[MEMORY RECOVERY — post-eviction]\n"
+                        "--- %s ---\n%s",
+                        ev_mem.entries[j].key, ev_mem.entries[j].value);
+                    llm_chat_insert_typed(chat, pos, "user", hint, LLM_MSG_MEMORY_HINT);
+                    tool_track_recalled_key(ctx->tools, ev_mem.entries[j].key);
+                    pos++;
+                    ev_injected++;
+                }
+            }
+            memory_results_free(&ev_mem);
+        }
+
         llm_chat_insert_typed(chat, pos,
             "user", breadcrumb_str, LLM_MSG_EVICTION_SUMMARY);
         free(breadcrumb_str);
@@ -491,13 +531,13 @@ int evict_mark_candidates(const llm_chat_t *chat,
  * phase doesn't re-inject anything. Previously over-compressed content. */
 static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
                           const char *bm25_query, int target_pct,
-                          long context_budget) {
+                          long context_budget,
+                          const eviction_policy_t *pol) {
     int upper = chat->n_msgs - keep_tail;
     if (upper <= keep_head) return 0;
 
-    /* FIX FLAW 8: Fixed threshold — don't depend on average message size */
-    /* S1 FIX: REACT_COMPRESS_THRESH_FIXED (800) is the sole threshold */
-    int compress_threshold = REACT_COMPRESS_THRESH_FIXED;
+    /* Compress threshold from policy (default 800) */
+    int compress_threshold = pol->compress_min_len;
 
     /* Collect candidates */
     int n_candidates = 0, cand_cap = 0;
@@ -530,9 +570,9 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
         int i = candidates[ci].idx;
         int old_len = (int)chat->msgs[i].content_len;
         int scaled_units = old_len / 1000;
-        if (scaled_units < REACT_COMPRESS_MIN_UNITS) scaled_units = REACT_COMPRESS_MIN_UNITS;
+        if (scaled_units < pol->compress_min_units) scaled_units = pol->compress_min_units;
         int scaled_chars = old_len / 4;
-        if (scaled_chars < REACT_COMPRESS_MIN_CHARS) scaled_chars = REACT_COMPRESS_MIN_CHARS;
+        if (scaled_chars < pol->compress_min_chars) scaled_chars = pol->compress_min_chars;
         char *compressed = compress_to_relevant(
             chat->msgs[i].content, bm25_query, scaled_units, scaled_chars);
         if (compressed) {
@@ -568,13 +608,13 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                                      const int *evict_mark, int n_to_evict,
                                      long breadcrumb_index_cap,
                                      long breadcrumb_summary_cap) {
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
     str_t breadcrumb = str_new(512);
     str_t summary = str_new((size_t)breadcrumb_summary_cap);
-    /* D3 FIX: Consistent int division (was mixing size_t/unsigned) */
     int max_per_msg = n_to_evict > 0
-        ? (int)(breadcrumb_summary_cap / n_to_evict) : REACT_SUMMARY_PER_MSG_MIN;
-    if (max_per_msg < REACT_SUMMARY_PER_MSG_MIN) max_per_msg = REACT_SUMMARY_PER_MSG_MIN;
-    if (max_per_msg > REACT_SUMMARY_PER_MSG_MAX) max_per_msg = REACT_SUMMARY_PER_MSG_MAX;
+        ? (int)(breadcrumb_summary_cap / n_to_evict) : pol.summary_per_msg_min;
+    if (max_per_msg < pol.summary_per_msg_min) max_per_msg = pol.summary_per_msg_min;
+    if (max_per_msg > pol.summary_per_msg_max) max_per_msg = pol.summary_per_msg_max;
 
     str_append_cstr(&breadcrumb, "[EVICTED CONTEXT — recoverable via file_read]\n");
     size_t header_len = breadcrumb.len;  /* BUG 1 FIX: track header-only length */
@@ -677,9 +717,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         ctx->provider->cfg.context_size <= 0)
         return;
 
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
     long context_budget = react_context_budget(ctx);
-    int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
-    int target_pct = react_eviction_target_pct(ctx->tools->cfg);
+    int eviction_pct = pol.trigger_pct;
+    int target_pct = pol.target_pct;
 
     /* DUP3 FIX: Use react_chat_usage_pct convenience helper */
     int usage_pct = react_chat_usage_pct(chat, context_budget);
@@ -751,20 +792,20 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     /* Compaction floor — minimum evictable content to retain
      * FIX #5: Pass tail_chars so floor is based on evictable capacity only. */
-    long floor_chars = react_calc_floor_chars(chat, evict_start, evict_end,
-                                              context_budget,
-                                              head_chars, tail_chars);
+    long floor_chars = react_calc_floor_chars_pol(chat, evict_start, evict_end,
+                                                   context_budget,
+                                                   head_chars, tail_chars, &pol);
 
     /* Proposal D: Compute effective target for sweep phase only.
      * Compress phase targets target_pct (it doesn't re-inject).
      * Sweep phase targets effective_target_pct (accounts for re-injection). */
     long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
-    /* SIMP1 FIX: Use react_budget_cap helper + renamed REACT_BREADCRUMB_SUBCAP_MIN */
+    /* Breadcrumb budget caps from policy */
     long bc_index_cap = react_budget_cap(context_budget,
-                                          REACT_BREADCRUMB_INDEX_PCT,
+                                          pol.bc_index_pct,
                                           REACT_BREADCRUMB_SUBCAP_MIN);
     long bc_summary_cap = react_budget_cap(context_budget,
-                                            REACT_BREADCRUMB_SUMMARY_PCT,
+                                            pol.bc_summary_pct,
                                             REACT_BREADCRUMB_SUBCAP_MIN);
     long reinject_est = actual_sp_size + bc_index_cap + bc_summary_cap + REACT_REINJECT_PAD;
 
@@ -820,7 +861,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     char *bm25_query = react_build_bm25_query(chat, user_query, &ctx->tools->scratch);
     if (usage_pct > target_pct) {
         evict_compress(chat, keep_head, keep_tail, bm25_query,
-                       target_pct, context_budget);
+                       target_pct, context_budget, &pol);
     }
     free(bm25_query);
 

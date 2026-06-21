@@ -3,7 +3,7 @@
  * Includes emergency eviction and the 5-tier retry strategy.
  *
  * Bug/Design fixes applied:
- *   BUG 4:    Floor calculation now uses REACT_EVICT_FLOOR_PCT (not hardcoded /5)
+ *   BUG 4:    Floor calculation now uses eviction_policy_t.floor_pct (not hardcoded /5)
  *   BUG 8:    Considers recoverability — evicts RECOVER_STORE/FILE/MEMORY
  *             messages before RECOVER_NONE to preserve irreplaceable content
  *   DESIGN 4: Compaction floor prevents over-eviction
@@ -32,14 +32,15 @@ static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
  * context budget, prioritizing recoverable content over irreplaceable.
- * Uses the same floor calculation as progressive eviction (REACT_EVICT_FLOOR_PCT).
+ * Uses the same floor calculation as progressive eviction (pol.floor_pct).
  * Returns the number of messages evicted (0 if not enough to evict).
- * target_pct: target usage percentage. 0 = use REACT_EMERGENCY_TARGET_PCT.
+ * target_pct: target usage percentage. 0 = use pol.emergency_target_pct.
  * Flaw 2 FIX: Accepts explicit target_pct so callers can pass a value
  * consistent with the configured eviction_pct, preventing the emergency
  * eviction from leaving usage above the trigger threshold. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct) {
-    int eff_target = (target_pct > 0) ? target_pct : REACT_EMERGENCY_TARGET_PCT;
+    eviction_policy_t pol = react_eviction_policy(NULL);
+    int eff_target = (target_pct > 0) ? target_pct : pol.emergency_target_pct;
     int keep_head = react_compute_keep_head(chat);
     int keep_tail = react_compute_keep_tail(chat);
     int evict_start = keep_head;
