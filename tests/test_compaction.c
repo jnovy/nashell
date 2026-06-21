@@ -573,7 +573,7 @@ static void test_emergency_evict_basic(void) {
     long context_budget = total / 2;
     int n_before = chat->n_msgs;
 
-    int removed = react_emergency_evict(chat, context_budget, 60);
+    int removed = react_emergency_evict(chat, context_budget, 60, NULL);
     ASSERT(removed > 0);
     ASSERT(chat->n_msgs < n_before);
 
@@ -591,7 +591,7 @@ static void test_emergency_evict_respects_target(void) {
     long context_budget = total; /* exactly at 100% */
 
     /* Evict to 50% */
-    int removed = react_emergency_evict(chat, context_budget, 50);
+    int removed = react_emergency_evict(chat, context_budget, 50, NULL);
     ASSERT(removed > 0);
 
     /* Usage should be around or below 50% (floor may prevent exact) */
@@ -608,7 +608,7 @@ static void test_emergency_evict_default_target(void) {
     long total = react_calc_total_chars(chat);
     long context_budget = total / 2; /* 200% usage */
 
-    int removed = react_emergency_evict(chat, context_budget, 0);
+    int removed = react_emergency_evict(chat, context_budget, 0, NULL);
     ASSERT(removed > 0);
 
     /* Should target 80% (REACT_EMERGENCY_TARGET_PCT) */
@@ -624,7 +624,7 @@ static void test_emergency_evict_already_below_target(void) {
     long total = react_calc_total_chars(chat);
     long context_budget = total * 3; /* 33% usage — well below any target */
 
-    int removed = react_emergency_evict(chat, context_budget, 80);
+    int removed = react_emergency_evict(chat, context_budget, 80, NULL);
     ASSERT_EQ(removed, 0); /* Nothing to evict */
 
     llm_chat_free(chat);
@@ -642,7 +642,7 @@ static void test_emergency_evict_preserves_critical(void) {
             critical_count++;
     }
 
-    react_emergency_evict(chat, context_budget, 60);
+    react_emergency_evict(chat, context_budget, 60, NULL);
 
     /* Count CRITICAL messages after eviction — should be same */
     int critical_after = 0;
@@ -834,7 +834,7 @@ static void test_realistic_eviction_scenario(void) {
     long budget = total_before / 2;
 
     /* Emergency evict to 60% of budget */
-    int removed = react_emergency_evict(chat, budget, 60);
+    int removed = react_emergency_evict(chat, budget, 60, NULL);
     ASSERT(removed > 0);
     ASSERT(chat->n_msgs < n_before);
 

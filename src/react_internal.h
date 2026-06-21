@@ -93,13 +93,17 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
     p.compress_min_chars = p.compress_min_len / 2;      /* 400 */
     p.compress_min_units = 4;
 
-    p.floor_min_chars    = 4000;
+    p.floor_min_chars    = 7000;  /* ~2000 tokens at 3.5 cpt — anti-pattern minimum */
     return p;
 }
 
 /* Maximum total recovery attempts across all error types before giving up.
  * Prevents unbounded retries from alternating error types (D3 fix). */
 #define REACT_MAX_TOTAL_RECOVERY    12
+
+/* L1 FIX: Maximum keep_tail to prevent unbounded tail growth from
+ * interleaved user_ask responses shrinking the evictable range. */
+#define REACT_KEEP_TAIL_MAX          8
 
 /* ── Eviction Tuning Constants (stable algorithm internals) ──── */
 /* Thought/content truncation limit for BM25 query augmentation (chars). */
@@ -486,7 +490,8 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
  * the configured eviction_pct, preventing immediate re-trigger.
  * FIX #3: Takes budget param so it targets budget, not current usage.
  * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
-int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct);
+int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
+                          const config_t *cfg);
 
 /* Shared emergency breadcrumb + scratchpad injection.
  * Injects breadcrumb summary + MEMORY_HINT + scratchpad (budget-guarded).

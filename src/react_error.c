@@ -14,20 +14,26 @@
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
-/* Emergency scoring callback — simpler than progressive scoring.
- * Recoverable content (RECOVER_STORE/FILE/MEMORY) scores lower → evicted first.
- * Within each recoverability class, importance provides further ordering,
- * then older messages (lower ri) score lower.
- * FIX #8: Added importance factor so LOW messages are evicted before NORMAL,
- * consistent with progressive scoring behavior.
+/* Emergency scoring callback — aligned with progressive scoring.
+ * L3 FIX: Now includes size awareness and normalized position, matching
+ * the progressive scorer's preference order. Previously used raw position
+ * index + no size factor, causing inconsistent eviction decisions when
+ * Strategy 2 fires after progressive eviction.
  * userdata is unused (NULL). */
 static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
                                  int n_evictable, void *userdata) {
-    (void)n_evictable; (void)userdata;
-    int rec_score = (chat->msgs[mi].recoverability > LLM_RECOVER_NONE)
-        ? 0 : 1000;
-    int imp_score = (int)chat->msgs[mi].importance * 100;
-    return rec_score + imp_score + ri;  /* recoverable + low-importance + older first */
+    (void)userdata;
+    int imp = (int)chat->msgs[mi].importance;
+    int rec = (int)chat->msgs[mi].recoverability;
+    int msg_len = (int)chat->msgs[mi].content_len;
+    int pos_norm = (n_evictable > 1)
+        ? (ri * 19 / (n_evictable - 1)) : 0;
+    int size_bonus = 0;
+    if (msg_len > 200) {
+        size_bonus = (rec > 0) ? (msg_len / 500) * rec : msg_len / 1000;
+        if (size_bonus > 90) size_bonus = 90;
+    }
+    return imp * 100 - rec * 10 - size_bonus + pos_norm;
 }
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of
@@ -38,8 +44,13 @@ static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
  * Flaw 2 FIX: Accepts explicit target_pct so callers can pass a value
  * consistent with the configured eviction_pct, preventing the emergency
  * eviction from leaving usage above the trigger threshold. */
-int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct) {
-    eviction_policy_t pol = react_eviction_policy(NULL);
+int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
+                          const config_t *cfg) {
+    /* D2 FIX: Use caller-supplied config instead of NULL defaults.
+     * Previously emergency eviction ignored user-configured floor_pct,
+     * compress_min_length, etc., potentially over-evicting content the
+     * user explicitly configured to be protected. */
+    eviction_policy_t pol = react_eviction_policy(cfg);
     int eff_target = (target_pct > 0) ? target_pct : pol.emergency_target_pct;
     int keep_head = react_compute_keep_head(chat);
     int keep_tail = react_compute_keep_tail(chat);
@@ -68,10 +79,11 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
     long head_chars = react_head_chars(chat, evict_start);
     long tail_chars = react_tail_chars(chat, evict_end);
 
-    /* FIX #5: Pass tail_chars so floor is based on evictable capacity only. */
-    long floor_chars = react_calc_floor_chars(chat, evict_start, evict_end,
-                                              context_budget,
-                                              head_chars, tail_chars);
+    /* FIX #5: Pass tail_chars so floor is based on evictable capacity only.
+     * D2 FIX: Use policy-based variant so user config is respected. */
+    long floor_chars = react_calc_floor_chars_pol(chat, evict_start, evict_end,
+                                                  context_budget,
+                                                  head_chars, tail_chars, &pol);
 
     /* Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
@@ -143,7 +155,7 @@ int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     long cb = react_context_budget(ctx);
     /* FIX #4: Compute target_pct consistent with progressive eviction */
     int target_pct = react_eviction_target_pct(ctx->tools->cfg);
-    int n_evict = react_emergency_evict(chat, cb, target_pct);
+    int n_evict = react_emergency_evict(chat, cb, target_pct, ctx->tools->cfg);
     /* D1 FIX: Use shared helper for breadcrumb + hint + SP injection.
      * BUG #4 FIX: SP re-injection is now budget-guarded (matching
      * evict_finalize) — previously always re-injected regardless of usage. */

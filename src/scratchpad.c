@@ -148,11 +148,14 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
     return 0;
 }
 
-/* Compare sections by priority for qsort (lower priority number = first) */
+/* Compare sections by priority for qsort (lower priority number = first).
+ * E3 FIX: Use safe comparison macro instead of subtraction. While safe
+ * in practice (priorities 1-9), subtraction-based comparison is a
+ * maintenance hazard — inconsistent with SAFE_CMP used elsewhere. */
 static int section_cmp(const void *a, const void *b) {
     const scratchpad_section_t *sa = a;
     const scratchpad_section_t *sb = b;
-    return sa->priority - sb->priority;
+    return (sa->priority > sb->priority) - (sa->priority < sb->priority);
 }
 
 char *scratchpad_serialize(scratchpad_t *sp) {

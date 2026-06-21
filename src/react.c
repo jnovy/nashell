@@ -154,6 +154,10 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
         }
     }
     int keep = chat->n_msgs - tail_start;
+    /* L1 FIX: Cap keep_tail to prevent unbounded growth from interleaved
+     * user_ask responses. Without this, the tail can grow to 6-8+ messages,
+     * shrinking the evictable range and forcing emergency eviction. */
+    if (keep > REACT_KEEP_TAIL_MAX) keep = REACT_KEEP_TAIL_MAX;
     return keep >= 2 ? keep : 2;
 }
 

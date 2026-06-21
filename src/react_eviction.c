@@ -36,12 +36,19 @@
 #define REACT_SUMMARY_TOOL_MIN_LEN  50
 /* Minimum per-component breadcrumb capacity (chars). */
 #define REACT_BREADCRUMB_SUBCAP_MIN 512
-/* Padding added to re-injection estimate (chars). */
-#define REACT_REINJECT_PAD          200
+/* D3 FIX: Padding added to re-injection estimate (chars).
+ * Accounts for: eviction-triggered memory re-retrieval (2 × 2048 = 4096),
+ * EVICT_COMPACT_HINT (~130 chars), breadcrumb header (~48 chars),
+ * REACT_SP_PREFIX_LEN (13 chars), and miscellaneous overhead.
+ * Previously 200 — systematically underestimated by ~4KB, causing
+ * progressive eviction to fail and fall back to emergency eviction. */
+#define REACT_REINJECT_PAD          4500
 /* Minimum effective target percentage (prevents target going to 0). */
 #define REACT_EFF_TARGET_MIN_PCT    10
-/* FIX #10: Maximum store-alias dedup entries in breadcrumb builder. */
-#define REACT_BREADCRUMB_MAX_ALIASES 64
+/* FIX #10: Maximum store-alias dedup entries in breadcrumb builder.
+ * L6 FIX: Increased from 64 to 256 — at 64, long sessions would overflow
+ * the dedup array, causing duplicate store references in breadcrumbs. */
+#define REACT_BREADCRUMB_MAX_ALIASES 256
 /* NOTE: The following constants moved to eviction_policy_t (react_internal.h):
  * REACT_SP_SHRINK_MIN        → pol.sp_shrink_min
  * REACT_BREADCRUMB_INDEX_PCT → pol.bc_index_pct
@@ -493,14 +500,21 @@ int evict_mark_candidates(const llm_chat_t *chat,
             }
         }
 
-        /* FLAW 5 FIX: When pair violates floor, evict message alone without
-         * its partner. Previously BOTH were skipped, leaving large pairs
-         * un-evictable when context is tight. */
+        /* FLAW 5 FIX + L2 FIX: When pair violates floor, decide based on
+         * message type. Never orphan a tool_result (confuses LLM — answer
+         * without question). A tool_call without its result is tolerable
+         * (LLM sees "I asked but didn't get an answer"). */
         int evict_partner = 0;
         if (pair_ri >= 0 && !evict_mark[pair_ri]) {
-            if (remaining - tail_chars - msg_chars - pair_chars >= floor_chars)
+            if (remaining - tail_chars - msg_chars - pair_chars >= floor_chars) {
                 evict_partner = 1;
-            /* else: evict message alone, orphaning the partner */
+            } else if (chat->msgs[mi].tool_call_id) {
+                /* L2 FIX: This is a tool_result — skip it entirely rather
+                 * than orphaning it (a result without its question is worse
+                 * than a question without its answer). */
+                continue;
+            }
+            /* else: tool_call message — evict alone, partner (result) stays */
         }
 
         evict_mark[ri] = 1;
@@ -804,6 +818,14 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
      * Compress phase targets target_pct (it doesn't re-inject).
      * Sweep phase targets effective_target_pct (accounts for re-injection). */
     long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
+    /* D5 FIX: Cap SP contribution to reinject_est at the absolute SP budget.
+     * After cleanup removes the old SP, remaining space is artificially large,
+     * inflating rel_cap and thus reinject_est. Using min(actual, abs_cap)
+     * gives a deterministic, non-inflated estimate. */
+    long sp_abs_cap = (context_budget > 0)
+        ? context_budget * pol.sp_budget_pct / 100 : pol.sp_fallback;
+    long sp_reinject_est = actual_sp_size < sp_abs_cap
+        ? actual_sp_size : sp_abs_cap;
     /* Breadcrumb budget caps from policy */
     long bc_index_cap = react_budget_cap(context_budget,
                                           pol.bc_index_pct,
@@ -811,7 +833,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     long bc_summary_cap = react_budget_cap(context_budget,
                                             pol.bc_summary_pct,
                                             REACT_BREADCRUMB_SUBCAP_MIN);
-    long reinject_est = actual_sp_size + bc_index_cap + bc_summary_cap + REACT_REINJECT_PAD;
+    long reinject_est = sp_reinject_est + bc_index_cap + bc_summary_cap + REACT_REINJECT_PAD;
 
     int effective_target_pct = target_pct;
     if (context_budget > 0) {
@@ -882,16 +904,34 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     goto journal;
 
 finalize_no_evict:
-    /* FIX #13: Single consolidated path for "no eviction needed" cases.
-     * BUG2 FIX: Capture emergency eviction count from evict_finalize.
-     * If Strategy 2 fires (SP re-injection pushed over budget), the
-     * emergency eviction must be recorded in the journal. */
+    /* FIX #13 + D4 FIX: Pre-check SP injection feasibility before calling
+     * evict_finalize. Previously, finalize_no_evict unconditionally called
+     * evict_finalize which injected SP, potentially pushing usage above
+     * target_pct and paradoxically triggering emergency eviction.
+     * Now we only inject SP if it won't overshoot, avoiding the paradox. */
     {
-        int n_emergency = evict_finalize(ctx, chat, keep_head, target_pct,
-                                         context_budget, NULL, 0, step,
-                                         on_event, userdata);
-        if (n_emergency > 0)
-            did_compact = 1;
+        long cur_chars = react_calc_total_chars(chat);
+        long sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
+        long target_chars = (context_budget > 0)
+            ? context_budget * target_pct / 100 : 0;
+        /* If SP injection would push us over target, inject a smaller SP
+         * or skip finalize entirely to avoid the emergency eviction paradox. */
+        if (target_chars > 0 && cur_chars + sp_size + REACT_SP_PREFIX_LEN > target_chars) {
+            /* Only inject SP if there's room — at reduced budget */
+            long room = target_chars - cur_chars - REACT_SP_PREFIX_LEN;
+            if (room > (long)pol.sp_shrink_min) {
+                char *sp = scratchpad_serialize_budget(&ctx->tools->scratch, (size_t)room);
+                react_inject_scratchpad_msg(chat, keep_head, sp);
+                free(sp);
+            }
+            /* Skip evict_finalize — no eviction needed, SP handled above */
+        } else {
+            int n_emergency = evict_finalize(ctx, chat, keep_head, target_pct,
+                                             context_budget, NULL, 0, step,
+                                             on_event, userdata);
+            if (n_emergency > 0)
+                did_compact = 1;
+        }
     }
 
 journal:

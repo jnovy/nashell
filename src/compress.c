@@ -110,20 +110,61 @@ static int push_chunk(char ***chunks, int *count, int *cap, char *chunk) {
     return 0;
 }
 
+/* D6 FIX: Stopword filter for BM25-like scoring. Without IDF, all query
+ * terms are weighted equally. Filtering common English words and programming
+ * keywords prevents them from dominating the score and drowning out the
+ * rare, semantically meaningful terms. */
+static int is_stopword(const char *word) {
+    /* Top English stopwords + common programming terms.
+     * All lowercase — query words are already lowercased by tokenize_words. */
+    static const char *stopwords[] = {
+        /* English */
+        "the", "be", "to", "of", "and", "in", "that", "have", "it", "for",
+        "not", "on", "with", "he", "as", "you", "do", "at", "this", "but",
+        "his", "by", "from", "they", "we", "say", "her", "she", "or", "an",
+        "will", "my", "one", "all", "would", "there", "their", "what",
+        "so", "up", "out", "if", "about", "who", "get", "which", "go",
+        "when", "can", "no", "just", "than", "been", "its", "also", "is",
+        "was", "are", "were", "has", "had", "did", "does", "am",
+        /* Programming */
+        "int", "char", "void", "const", "return", "if", "else", "for",
+        "while", "struct", "null", "true", "false", "static",
+        "function", "var", "let", "new", "class", "string",
+        NULL
+    };
+    for (int i = 0; stopwords[i]; i++) {
+        if (strcmp(word, stopwords[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* Review C3: In-place word scanning eliminates per-chunk malloc/free overhead.
  * For each sentence word, scans in-place (lowercased) and compares against
  * pre-tokenized query words. Previously allocated N word strings per chunk
  * via tokenize_words() — with 100+ chunks × 20 words each = 2000+ malloc/free.
  *
- * FIX #10: Also does substring matching for code identifiers. */
+ * FIX #10: Also does substring matching for code identifiers.
+ * D6 FIX: Skips stopwords to prevent common terms from drowning signal. */
 /* SIMP 3 FIX: Added sentence_len parameter to avoid redundant strlen.
  * Caller already knows chunk length from split_chunks. */
 static float score_sentence(const char *sentence, int sentence_len,
                             char **query_words, int n_query) {
     if (!sentence || !query_words || n_query == 0) return 0.0f;
 
+    /* D6 FIX: Count non-stopword query terms for normalization.
+     * Previously divided by n_query, diluting scores with stopword matches. */
+    int n_effective = 0;
+    for (int qi = 0; qi < n_query; qi++) {
+        if (!is_stopword(query_words[qi]))
+            n_effective++;
+    }
+    if (n_effective == 0) return 0.0f;
+
     float score = 0.0f;
     for (int qi = 0; qi < n_query; qi++) {
+        /* D6 FIX: Skip stopwords — they match everywhere and add noise */
+        if (is_stopword(query_words[qi])) continue;
         int found_exact = 0;
         int found_partial = 0;
         int qlen = (int)strlen(query_words[qi]);
@@ -167,7 +208,8 @@ static float score_sentence(const char *sentence, int sentence_len,
         else if (found_partial)
             score += 0.5f;
     }
-    score /= (float)n_query;
+    /* D6 FIX: Normalize by effective (non-stopword) count */
+    score /= (float)n_effective;
 
     /* SIMP 3 FIX: Use caller-provided length instead of strlen */
     if (sentence_len > 80) score += 0.1f;
