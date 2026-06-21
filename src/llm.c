@@ -330,6 +330,204 @@ char *llm_chat_serialize(llm_chat_t *chat) {
 
 /* ── Parse action from assistant response ────────────────────── */
 
+/* Parse Qwen-style XML tool calls.
+ *
+ * Qwen models are trained with two XML formats for tool calling:
+ *
+ * Format A (Qwen3 native — JSON inside tags):
+ *   <tool_call>{"name":"func","arguments":{"param":"val"}}</tool_call>
+ *
+ * Format B (Hermes/Qwen3.6 — pure XML):
+ *   <tool_call>
+ *   <function=func_name>
+ *   <parameter=param1>
+ *   value1
+ *   </parameter>
+ *   </function>
+ *   </tool_call>
+ *
+ * Returns a cJSON object matching our unified format:
+ *   {"action":"func_name", "param1":"value1", ...}
+ * or NULL if no XML tool call is found. */
+static cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
+    if (!text) return NULL;
+
+    /* Find <tool_call> tag */
+    const char *tc_start = strstr(text, "<tool_call>");
+    if (!tc_start) return NULL;
+
+    /* Capture any text before <tool_call> as the "thought" */
+    const char *thought_start = text;
+    while (*thought_start == ' ' || *thought_start == '\n' ||
+           *thought_start == '\r' || *thought_start == '\t')
+        thought_start++;
+    size_t thought_len = (thought_start < tc_start) ?
+                         (size_t)(tc_start - thought_start) : 0;
+    /* Trim trailing whitespace from thought */
+    while (thought_len > 0 && (thought_start[thought_len-1] == ' ' ||
+           thought_start[thought_len-1] == '\n' ||
+           thought_start[thought_len-1] == '\r'))
+        thought_len--;
+
+    const char *body = tc_start + strlen("<tool_call>");
+
+    /* Find </tool_call> (optional — may be truncated) */
+    const char *tc_end = strstr(body, "</tool_call>");
+    size_t body_len = tc_end ? (size_t)(tc_end - body) : strlen(body);
+
+    /* Count additional <tool_call> occurrences for multi_count */
+    if (multi_count) {
+        int count = 1;
+        const char *scan = tc_end ? (tc_end + strlen("</tool_call>")) : NULL;
+        while (scan) {
+            scan = strstr(scan, "<tool_call>");
+            if (scan) { count++; scan += strlen("<tool_call>"); }
+        }
+        *multi_count = count;
+    }
+
+    /* Make a NUL-terminated copy of the body */
+    char *body_copy = malloc(body_len + 1);
+    if (!body_copy) return NULL;
+    memcpy(body_copy, body, body_len);
+    body_copy[body_len] = '\0';
+
+    /* ── Format A: JSON inside <tool_call> tags ────────────── */
+    const char *brace = strchr(body_copy, '{');
+    if (brace) {
+        cJSON *inner = cJSON_Parse(brace);
+        if (inner) {
+            /* Convert {"name":"X","arguments":{...}} → {"action":"X",...} */
+            cJSON *name = cJSON_GetObjectItem(inner, "name");
+            cJSON *args = cJSON_GetObjectItem(inner, "arguments");
+
+            cJSON *result = cJSON_CreateObject();
+            /* Add thought if there was text before <tool_call> */
+            if (thought_len > 0) {
+                char *thought = malloc(thought_len + 1);
+                if (thought) {
+                    memcpy(thought, thought_start, thought_len);
+                    thought[thought_len] = '\0';
+                    cJSON_AddStringToObject(result, "thought", thought);
+                    free(thought);
+                }
+            }
+            cJSON_AddStringToObject(result, "action",
+                (name && cJSON_IsString(name)) ? name->valuestring : "");
+
+            if (args && cJSON_IsObject(args)) {
+                cJSON *child = args->child;
+                while (child) {
+                    cJSON *next = child->next;
+                    cJSON *copy = cJSON_Duplicate(child, 1);
+                    if (copy) cJSON_AddItemToObject(result, child->string, copy);
+                    child = next;
+                }
+            }
+
+            cJSON_Delete(inner);
+            free(body_copy);
+            nash_log("[llm] parsed Qwen XML tool call (format A: JSON in tags)");
+            return result;
+        }
+    }
+
+    /* ── Format B: Pure XML <function=NAME><parameter=KEY>VAL</parameter> ── */
+    const char *fn_start = strstr(body_copy, "<function=");
+    if (!fn_start) { free(body_copy); return NULL; }
+
+    /* Extract function name: <function=NAME> or <function=NAME>\n */
+    const char *fn_name_start = fn_start + strlen("<function=");
+    const char *fn_name_end = fn_name_start;
+    while (*fn_name_end && *fn_name_end != '>' && *fn_name_end != '\n')
+        fn_name_end++;
+    size_t fn_name_len = (size_t)(fn_name_end - fn_name_start);
+
+    cJSON *result = cJSON_CreateObject();
+    /* Add thought if there was text before <tool_call> */
+    if (thought_len > 0) {
+        char *thought = malloc(thought_len + 1);
+        if (thought) {
+            memcpy(thought, thought_start, thought_len);
+            thought[thought_len] = '\0';
+            cJSON_AddStringToObject(result, "thought", thought);
+            free(thought);
+        }
+    }
+    char fn_name[256];
+    if (fn_name_len >= sizeof(fn_name)) fn_name_len = sizeof(fn_name) - 1;
+    memcpy(fn_name, fn_name_start, fn_name_len);
+    fn_name[fn_name_len] = '\0';
+    /* Trim trailing whitespace */
+    while (fn_name_len > 0 && (fn_name[fn_name_len-1] == ' ' ||
+           fn_name[fn_name_len-1] == '\t')) {
+        fn_name[--fn_name_len] = '\0';
+    }
+    cJSON_AddStringToObject(result, "action", fn_name);
+
+    /* Extract parameters: <parameter=KEY>\nVALUE\n</parameter> */
+    const char *p = fn_name_end;
+    while (p && *p) {
+        const char *param_tag = strstr(p, "<parameter=");
+        if (!param_tag) break;
+
+        /* Extract parameter name */
+        const char *pname_start = param_tag + strlen("<parameter=");
+        const char *pname_end = pname_start;
+        while (*pname_end && *pname_end != '>' && *pname_end != '\n')
+            pname_end++;
+
+        char pname[256];
+        size_t pname_len = (size_t)(pname_end - pname_start);
+        if (pname_len >= sizeof(pname)) pname_len = sizeof(pname) - 1;
+        memcpy(pname, pname_start, pname_len);
+        pname[pname_len] = '\0';
+        /* Trim */
+        while (pname_len > 0 && (pname[pname_len-1] == ' ' ||
+               pname[pname_len-1] == '\t')) {
+            pname[--pname_len] = '\0';
+        }
+
+        /* Extract value: everything between > and </parameter> */
+        const char *val_start = pname_end;
+        if (*val_start == '>') val_start++;
+        /* Skip leading newline */
+        if (*val_start == '\n') val_start++;
+
+        const char *val_end = strstr(val_start, "</parameter>");
+        if (!val_end) {
+            /* No closing tag — take rest of body (truncated) */
+            val_end = body_copy + body_len;
+        }
+
+        /* Trim trailing whitespace from value */
+        while (val_end > val_start && (val_end[-1] == '\n' ||
+               val_end[-1] == '\r' || val_end[-1] == ' '))
+            val_end--;
+
+        size_t val_len = (size_t)(val_end - val_start);
+        char *val = malloc(val_len + 1);
+        if (val) {
+            memcpy(val, val_start, val_len);
+            val[val_len] = '\0';
+            cJSON_AddStringToObject(result, pname, val);
+            free(val);
+        }
+
+        /* Advance past </parameter> */
+        const char *close = strstr(val_start, "</parameter>");
+        if (close) {
+            p = close + strlen("</parameter>");
+        } else {
+            break;
+        }
+    }
+
+    free(body_copy);
+    nash_log("[llm] parsed Qwen XML tool call (format B: pure XML)");
+    return result;
+}
+
 /* Attempt to repair common JSON errors produced by models:
  * - "key="value"  → "key":"value"  (missing colon)
  * - "key=value"   → "key":"value"  (missing colon and quotes)
@@ -404,7 +602,10 @@ cJSON *llm_parse_action(const char *response, int *multi_count) {
     }
 
     const char *brace = strchr(start, '{');
-    if (!brace) return NULL;
+    if (!brace) {
+        /* No JSON found — try Qwen XML tool call format as fallback */
+        return parse_xml_tool_call(response, multi_count);
+    }
 
     /* Try strict parse first, tracking where parsing ended */
     const char *parse_end = NULL;
@@ -419,7 +620,11 @@ cJSON *llm_parse_action(const char *response, int *multi_count) {
             }
             free(repaired);
         }
-        if (multi_count && action) *multi_count = 1;
+        /* JSON repair also failed — try Qwen XML tool call format */
+        if (!action) {
+            action = parse_xml_tool_call(response, multi_count);
+        }
+        if (multi_count && action && *multi_count < 1) *multi_count = 1;
         return action;
     }
 
