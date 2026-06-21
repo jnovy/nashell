@@ -353,6 +353,21 @@ static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
 
 /* ── JSONL scratchpad persistence (v4) ──────────────────────── */
 
+/* DEDUP1: Shared helper — write one scratchpad section as a JSONL line.
+ * Used by both scratchpad_save (append dirty) and scratchpad_compact (full snapshot). */
+static void write_section_jsonl(FILE *f, const scratchpad_section_t *s) {
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "name", s->name);
+    cJSON_AddNumberToObject(obj, "priority", s->priority);
+    cJSON_AddStringToObject(obj, "content", s->content);
+    char *line = cJSON_PrintUnformatted(obj);
+    if (line) {
+        fprintf(f, "%s\n", line);
+        free(line);
+    }
+    cJSON_Delete(obj);
+}
+
 int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
     if (!session_dir) return -1;
 
@@ -381,16 +396,7 @@ int scratchpad_save(scratchpad_t *sp, const char *session_dir) {
     /* Write dirty sections (append-only — only changed sections) */
     for (int i = 0; i < sp->count; i++) {
         if (!sp->sections[i].dirty) continue;
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "name", sp->sections[i].name);
-        cJSON_AddNumberToObject(obj, "priority", sp->sections[i].priority);
-        cJSON_AddStringToObject(obj, "content", sp->sections[i].content);
-        char *line = cJSON_PrintUnformatted(obj);
-        if (line) {
-            fprintf(f, "%s\n", line);
-            free(line);
-        }
-        cJSON_Delete(obj);
+        write_section_jsonl(f, &sp->sections[i]);
         sp->sections[i].dirty = 0;
     }
 
@@ -471,16 +477,7 @@ void scratchpad_compact(scratchpad_t *sp, const char *session_dir) {
 
     /* Write one line per live section (cleared sections omitted) */
     for (int i = 0; i < sp->count; i++) {
-        cJSON *obj = cJSON_CreateObject();
-        cJSON_AddStringToObject(obj, "name", sp->sections[i].name);
-        cJSON_AddNumberToObject(obj, "priority", sp->sections[i].priority);
-        cJSON_AddStringToObject(obj, "content", sp->sections[i].content);
-        char *line = cJSON_PrintUnformatted(obj);
-        if (line) {
-            fprintf(f, "%s\n", line);
-            free(line);
-        }
-        cJSON_Delete(obj);
+        write_section_jsonl(f, &sp->sections[i]);
         sp->sections[i].dirty = 0;
     }
 

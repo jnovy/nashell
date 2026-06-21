@@ -60,23 +60,26 @@
 
 /* ── Comparison functions for qsort ───────────────────── */
 
+/* DEDUP3: Safe three-way comparison macro — avoids overflow from subtraction. */
+#define SAFE_CMP(a, b) (((a) > (b)) - ((a) < (b)))
+
 typedef struct { int idx; int len; } compress_cand_t;
 
-/* SIMP 4 FIX: safe comparison (subtraction can overflow for extreme values) */
+/* Sort by length descending (largest first for compress). */
 static int cmp_compress_desc(const void *a, const void *b) {
     int la = ((const compress_cand_t *)a)->len;
     int lb = ((const compress_cand_t *)b)->len;
-    return (lb > la) - (lb < la);
+    return SAFE_CMP(lb, la);
 }
 
 /* Review B4: Generic candidate type used by evict_mark_candidates(). */
 typedef struct { int idx; int score; long chars; } evict_candidate_t;
 
-/* SIMP 4 FIX: safe comparison */
+/* Sort by score ascending (lowest score = evicted first). */
 static int cmp_candidate_score_asc(const void *a, const void *b) {
     int sa = ((const evict_candidate_t *)a)->score;
     int sb = ((const evict_candidate_t *)b)->score;
-    return (sa > sb) - (sa < sb);
+    return SAFE_CMP(sa, sb);
 }
 
 /* ── Proposal E: Partner Index ────────────────────────── */
@@ -189,6 +192,21 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
                                          int n_evicted, long context_budget,
                                          int target_pct) {
     int kh = react_compute_keep_head(chat);
+
+    /* DESIGN1 FIX: Compute SP budget BEFORE injecting breadcrumb + hint.
+     * Previously the usage check happened after injection, so the
+     * breadcrumb + hint chars inflated the usage %, potentially pushing
+     * it above target_pct and preventing SP injection. This created a
+     * self-defeating cycle where evict_finalize strategy-2 would fire. */
+    long pre_inject_chars = react_calc_total_chars(chat);
+    int inject_overhead = 0;
+    if (n_evicted > 0)
+        inject_overhead = 128 + (int)(sizeof(EVICT_COMPACT_HINT) - 1);
+    long chars_after_inject = pre_inject_chars + inject_overhead;
+    int can_inject_sp = (context_budget > 0)
+        ? (int)(100L * chars_after_inject / context_budget) < target_pct
+        : 1;
+
     if (n_evicted > 0) {
         char emsg[128];
         snprintf(emsg, sizeof(emsg),
@@ -198,8 +216,8 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
         llm_chat_insert_typed(chat, kh + 1,
             "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
     }
-    /* Re-inject scratchpad only if room permits */
-    if (react_chat_usage_pct(chat, context_budget) < target_pct) {
+    /* Re-inject scratchpad only if room permits (based on pre-injection budget) */
+    if (can_inject_sp) {
         react_reinject_scratchpad(ctx, chat, kh);
     }
 }
@@ -209,8 +227,10 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
 /* Review C1: Flattened strategy loop replaces 4-level nested if cascade.
  * Review A2: Skip compaction hint when no eviction occurred (breadcrumb_str==NULL).
  * Review A1: Final verification after every re-injection to catch overshoot.
- * breadcrumb_str is consumed (freed) by this function. */
-void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
+ * breadcrumb_str is consumed (freed) by this function.
+ * BUG2+3 FIX: Returns the number of messages emergency-evicted by Strategy 2
+ * (0 if Strategy 2 didn't fire). Callers use this for journal + event emission. */
+int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
                    char *breadcrumb_str, int n_evicted, int step,
                    react_event_fn on_event, void *userdata) {
@@ -284,29 +304,32 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     /* Strategy 2: Emergency eviction
      * FIX #6: This indicates the progressive eviction's effective_target_pct
      * underestimated the re-injection overhead. Log a warning. */
+    int n_emergency = 0;
     if (usage_pct > target_pct) {
         nash_log("[eviction] WARNING: post-finalize still %d%% > target %d%% — "
                  "progressive eviction underestimated re-injection cost, "
                  "falling back to emergency eviction", usage_pct, target_pct);
-        /* BUG 2 FIX: Remove step-3 MEMORY_HINT before emergency eviction
-         * to prevent duplicate hints coexisting in the chat. */
+        /* BUG1 FIX: Remove EVICTION_SUMMARY (step-2 breadcrumbs) AND
+         * MEMORY_HINT (step-3 hint) before emergency eviction. Previously
+         * only MEMORY_HINT was removed, leaving the progressive breadcrumb
+         * coexisting with the emergency breadcrumb — two EVICTION_SUMMARYs. */
+        llm_chat_remove_by_type(chat, LLM_MSG_EVICTION_SUMMARY);
         llm_chat_remove_by_type(chat, LLM_MSG_MEMORY_HINT);
-        int before_n = chat->n_msgs;
-        react_emergency_evict(chat, context_budget, target_pct);
-        /* A2 FIX: Inject minimal breadcrumb so LLM knows messages were lost */
-        int n_emergency = before_n - chat->n_msgs;
+        /* DEDUP2 FIX: Reuse react_emergency_evict_and_reinject instead of
+         * reimplementing the emergency_evict → inject_breadcrumbs sequence. */
+        n_emergency = react_emergency_evict_and_reinject(ctx, chat);
         if (n_emergency == 0) {
             nash_log("[eviction] WARNING: emergency eviction found nothing "
                      "to evict, context remains at %d%% > target %d%%",
                      react_chat_usage_pct(chat, context_budget), target_pct);
         }
-        react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
-                                           context_budget, target_pct);
         usage_pct = react_chat_usage_pct(chat, context_budget);
     }
 
-    /* Emit event */
-    if (on_event && did_evict) {
+    /* BUG3 FIX: Emit event when EITHER progressive or emergency eviction
+     * occurred. Previously only checked did_evict (progressive count),
+     * so emergency-only eviction produced no UI notification. */
+    if (on_event && (did_evict || n_emergency > 0)) {
         react_event_t ev = {0};
         ev.react_loop = ctx->tools->react_loop;
         ev.type = REACT_EVENT_WARNING;
@@ -315,6 +338,7 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                      "non-recoverable summarized";
         react_emit(on_event, userdata, &ev);
     }
+    return n_emergency;
 }
 
 /* ── Progressive Scoring Callback ─────────────────────── */
@@ -570,8 +594,10 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         if (strcmp(role, "system") == 0) continue;
 
         if (chat->msgs[mi].store_alias) {
-            /* FIX FLAW 5: Use separate index budget */
-            if ((long)breadcrumb.len >= breadcrumb_index_cap) continue;
+            /* FIX FLAW 5: Use separate index budget.
+             * BUG5 FIX: Subtract header_len so the cap applies to index
+             * content only, not the fixed header prefix. */
+            if ((long)(breadcrumb.len - header_len) >= breadcrumb_index_cap) continue;
 
             /* FIX #14: Simple linear dedup */
             const char *alias = chat->msgs[mi].store_alias;
@@ -801,8 +827,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* ── Step 6: Finalize (Proposal A) ── */
     /* B4 FIX: Reuse keep_head from step 5 — evict_compress only changes
      * content (llm_chat_replace_content), not message structure. */
-    evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
-                  bc_str, n_to_evict, step, on_event, userdata);
+    (void)evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
+                         bc_str, n_to_evict, step, on_event, userdata);
 
     /* D4 FIX: Save scratchpad to disk after finalize confirms it survived.
      * Previously saved in evict_build_breadcrumbs before finalize could strip it. */
@@ -811,9 +837,17 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     goto journal;
 
 finalize_no_evict:
-    /* FIX #13: Single consolidated path for "no eviction needed" cases. */
-    evict_finalize(ctx, chat, keep_head, target_pct, context_budget,
-                  NULL, 0, step, on_event, userdata);
+    /* FIX #13: Single consolidated path for "no eviction needed" cases.
+     * BUG2 FIX: Capture emergency eviction count from evict_finalize.
+     * If Strategy 2 fires (SP re-injection pushed over budget), the
+     * emergency eviction must be recorded in the journal. */
+    {
+        int n_emergency = evict_finalize(ctx, chat, keep_head, target_pct,
+                                         context_budget, NULL, 0, step,
+                                         on_event, userdata);
+        if (n_emergency > 0)
+            did_compact = 1;
+    }
 
 journal:
     /* BUG #2 FIX: Only log compaction journal entry when actual eviction or

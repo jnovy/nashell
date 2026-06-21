@@ -468,8 +468,10 @@ void evict_free_partner_map(evict_partner_map_t *map);
  * Caller must not use breadcrumb_str after calling evict_finalize().
  * FIX #1: n_evicted tracks actual eviction count — eviction status is no
  * longer inferred from breadcrumb_str being non-NULL (which fails when all
- * evicted messages are system-role or empty-content). */
-void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
+ * evicted messages are system-role or empty-content).
+ * BUG2+3 FIX: Returns the number of messages emergency-evicted by Strategy 2
+ * (0 if Strategy 2 didn't fire). Callers use this for journal + event tracking. */
+int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
                    char *breadcrumb_str /* consumed */, int n_evicted,
                    int step,

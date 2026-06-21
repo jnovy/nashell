@@ -92,20 +92,33 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
                                           evict_score_emergency, NULL,
                                           evict_mark);
 
-    /* Fallback — mark at least one message if nothing was marked */
+    /* Fallback — mark at least one message if nothing was marked.
+     * BUG4 FIX: Check that evicting the message (+ partner) won't violate
+     * the compaction floor. Previously this fallback bypassed the floor
+     * check that evict_mark_candidates carefully enforces. */
     if (n_marked == 0 && remaining_nonhead > floor_chars) {
         for (int i = 0; i < n_evictable; i++) {
             int mi = evict_start + i;
             if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
+            long msg_chars = (long)chat->msgs[mi].content_len;
+            long pair_chars = 0;
+            int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
+            int pair_ri = -1;
+            if (partner_mi >= evict_start && partner_mi < evict_end) {
+                pair_ri = partner_mi - evict_start;
+                if (pair_ri >= 0 && pair_ri < n_evictable)
+                    pair_chars = (long)chat->msgs[partner_mi].content_len;
+                else
+                    pair_ri = -1;
+            }
+            /* Floor guard: ensure remaining content stays above floor */
+            if (remaining_nonhead - tail_chars - msg_chars - pair_chars < floor_chars)
+                continue;
             evict_mark[i] = 1;
             n_marked++;
-            int partner_mi = (mi < pmap.n_msgs) ? pmap.partner[mi] : -1;
-            if (partner_mi >= evict_start && partner_mi < evict_end) {
-                int pair_ri = partner_mi - evict_start;
-                if (pair_ri >= 0 && pair_ri < n_evictable && !evict_mark[pair_ri]) {
-                    evict_mark[pair_ri] = 1;
-                    n_marked++;
-                }
+            if (pair_ri >= 0 && !evict_mark[pair_ri]) {
+                evict_mark[pair_ri] = 1;
+                n_marked++;
             }
             break;
         }
