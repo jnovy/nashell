@@ -142,6 +142,13 @@ typedef struct {
     int            search_active;     /* 1 = search results shown in main pane */
     char          *nash_dir;          /* ~/.nash (for finding sessions) */
 
+    /* ── In-page text search (? prefix) ── */
+    char          *page_search_term;  /* current search term (NULL = inactive) */
+    int            page_search_current; /* index of current match for 'n' nav */
+    int            page_search_total;   /* total matches found on last render */
+    int           *page_search_lines;   /* rendered line numbers of matches */
+    int            page_search_lines_cap; /* allocated capacity */
+
     /* ── Deferred regeneration flags ── */
     /* Set by the inference thread's event handler (under mtx) to request
      * expensive file I/O without holding the mutex during the actual I/O.

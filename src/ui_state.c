@@ -88,6 +88,8 @@ void ui_state_free(ui_state_t *ui) {
     for (int i = 0; i < ui->expanded_count; i++)
         free(ui->expanded_uris[i]);
     free(ui->expanded_uris);
+    free(ui->page_search_term);
+    free(ui->page_search_lines);
     pthread_mutex_destroy(&ui->mtx);
     free(ui);
 }

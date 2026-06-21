@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <locale.h>
+#include <ctype.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,6 +72,10 @@ static int   paste_len = 0;
 #define NC_CT_NORMAL    34  /* #DCE1F0 (220,225,240) — normal text */
 #define NC_CT_DIFF_ADD_BG 35  /* #1A2E1A (26,46,26) — diff add background */
 #define NC_CT_DIFF_DEL_BG 36  /* #2E1A1A (46,26,26) — diff del background */
+/* Search highlight colors */
+#define NC_CT_SEARCH_FG   37  /* #1E2030 (30,32,48)  — dark text on highlight */
+#define NC_CT_SEARCH_BG   38  /* #F9E2AF (249,226,175) — yellow/amber background */
+#define NC_CT_SEARCH_CUR  39  /* #FAB387 (250,179,135) — orange bg for current */
 
 /* Color pair numbers for status/input rows */
 #define CP_STATUS_READY  8   /* status bar: bg=#232637, fg=#B4B9C8 */
@@ -83,6 +88,9 @@ static int   paste_len = 0;
 /* Diff color pairs: colored background for +/- diff lines */
 #define CP_DIFF_ADD      15  /* diff add: bg=#1A2E1A, fg=#A6E3A1 */
 #define CP_DIFF_DEL      16  /* diff del: bg=#2E1A1A, fg=#F38BA8 */
+/* Search highlight color pairs */
+#define CP_SEARCH_MATCH  17  /* search match: bg=yellow, fg=dark */
+#define CP_SEARCH_CURRENT 18 /* current match: bg=orange, fg=dark */
 
 /* ── True-color registration ─────────────────────────── */
 
@@ -119,6 +127,10 @@ static void init_true_colors(void) {
     /* Diff backgrounds — subtle tinted backgrounds for +/- lines */
     init_color(NC_CT_DIFF_ADD_BG, 26*1000/255, 46*1000/255, 26*1000/255);
     init_color(NC_CT_DIFF_DEL_BG, 46*1000/255, 26*1000/255, 26*1000/255);
+    /* Search highlight colors */
+    init_color(NC_CT_SEARCH_FG,   30*1000/255,  32*1000/255,  48*1000/255);
+    init_color(NC_CT_SEARCH_BG,  249*1000/255, 226*1000/255, 175*1000/255);
+    init_color(NC_CT_SEARCH_CUR, 250*1000/255, 179*1000/255, 135*1000/255);
 
     /* Create color pairs combining bg + fg */
     init_pair(CP_STATUS_READY,  NC_STATUS_BG, NC_STATUS_READY);
@@ -140,6 +152,9 @@ static void init_true_colors(void) {
     /* Diff pairs: fg on colored background */
     init_pair(CP_DIFF_ADD, NC_CT_GREEN,  NC_CT_DIFF_ADD_BG);
     init_pair(CP_DIFF_DEL, NC_CT_RED,    NC_CT_DIFF_DEL_BG);
+    /* Search highlight pairs */
+    init_pair(CP_SEARCH_MATCH,  NC_CT_SEARCH_FG, NC_CT_SEARCH_BG);
+    init_pair(CP_SEARCH_CURRENT, NC_CT_SEARCH_FG, NC_CT_SEARCH_CUR);
 
     true_color_available = 1;
 }
@@ -166,6 +181,9 @@ void tui_init(void) {
         init_pair(C_DIM,      COLOR_WHITE,  -1);
         init_pair(C_FOCUS,    COLOR_YELLOW, -1);
         init_pair(C_STREAM,   COLOR_CYAN,   -1);
+        /* Fallback search highlight pairs (non-true-color) */
+        init_pair(CP_SEARCH_MATCH,  COLOR_BLACK, COLOR_YELLOW);
+        init_pair(CP_SEARCH_CURRENT, COLOR_BLACK, COLOR_RED);
 
         /* Initialize true-color palette and pairs */
         init_true_colors();
@@ -453,6 +471,131 @@ static void resize_panes_with_input_buf(const char *buf, int input_len,
     mvwin(win_bottom, main_height, 0);
 }
 
+/* ── In-page search: highlight overlay ──────────────── */
+
+/* Case-insensitive substring search (local to tui.c). */
+static const char *tui_ci_strstr(const char *haystack, const char *needle) {
+    if (!needle[0]) return haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack, *n = needle;
+        while (*h && *n && (tolower((unsigned char)*h) == tolower((unsigned char)*n))) {
+            h++; n++;
+        }
+        if (!*n) return haystack;
+    }
+    return NULL;
+}
+
+/* Scan the entire document source for matches and record their rendered
+ * line numbers.  This mirrors md_render's line counting logic (skipping
+ * ``` fence lines, counting wrapped code lines) so that 'n' can scroll
+ * to the correct position.  Must be called after md_render() so that
+ * doc->total_lines is accurate. */
+static void page_search_scan_matches(ui_state_t *ui) {
+    ui->page_search_total = 0;
+    if (!ui->page_search_term || !ui->page_search_term[0]) return;
+    if (!ui->doc || !ui->doc->source) return;
+
+    const char *term = ui->page_search_term;
+    const char *src = ui->doc->source;
+    int render_line = 0;
+    int in_code_block = 0;
+
+    while (*src) {
+        const char *eol = strchr(src, '\n');
+        int line_len = eol ? (int)(eol - src) : (int)strlen(src);
+
+        /* Check for code fence toggle */
+        if (line_len >= 3 && src[0] == '`' && src[1] == '`' && src[2] == '`') {
+            in_code_block = !in_code_block;
+            src = eol ? eol + 1 : src + line_len;
+            continue;  /* fence lines don't get a render_line */
+        }
+
+        /* Check if this line contains the search term */
+        char line_buf[4096];
+        int copy_len = line_len < (int)sizeof(line_buf) - 1 ? line_len : (int)sizeof(line_buf) - 1;
+        memcpy(line_buf, src, (size_t)copy_len);
+        line_buf[copy_len] = '\0';
+
+        if (tui_ci_strstr(line_buf, term)) {
+            /* Record this match line */
+            if (ui->page_search_total >= ui->page_search_lines_cap) {
+                int new_cap = ui->page_search_lines_cap ? ui->page_search_lines_cap * 2 : 64;
+                int *new_arr = realloc(ui->page_search_lines, (size_t)new_cap * sizeof(int));
+                if (new_arr) {
+                    ui->page_search_lines = new_arr;
+                    ui->page_search_lines_cap = new_cap;
+                }
+            }
+            if (ui->page_search_total < ui->page_search_lines_cap) {
+                ui->page_search_lines[ui->page_search_total++] = render_line;
+            }
+        }
+
+        render_line++;
+        src = eol ? eol + 1 : src + line_len;
+    }
+
+    /* Clamp current match index */
+    if (ui->page_search_total > 0) {
+        if (ui->page_search_current >= ui->page_search_total)
+            ui->page_search_current = 0;
+    } else {
+        ui->page_search_current = 0;
+    }
+}
+
+/* Apply search highlighting to the already-rendered main window.
+ * Reads back each visible row, finds case-insensitive matches of
+ * the search term.  Uses CP_SEARCH_MATCH (yellow bg) for normal matches
+ * and CP_SEARCH_CURRENT (orange bg) for the match at page_search_current,
+ * so the cursor position is visually distinct. */
+static void page_search_highlight(ui_state_t *ui) {
+    if (!ui->page_search_term || !ui->page_search_term[0]) return;
+
+    int rows = getmaxy(win_main);
+    int cols = getmaxx(win_main);
+    int term_len = (int)strlen(ui->page_search_term);
+
+    /* Determine which rendered line the current match is on */
+    int cur_render_line = -1;
+    if (ui->page_search_total > 0 && ui->page_search_lines &&
+        ui->page_search_current < ui->page_search_total) {
+        cur_render_line = ui->page_search_lines[ui->page_search_current];
+    }
+
+    for (int r = 0; r < rows; r++) {
+        /* Read the rendered text from the window */
+        char row_buf[4096];
+        int n = (cols < (int)sizeof(row_buf) - 1) ? cols : (int)sizeof(row_buf) - 1;
+        int got = mvwinnstr(win_main, r, 0, row_buf, n);
+        if (got <= 0) continue;
+        row_buf[got] = '\0';
+
+        /* The rendered line number for this screen row */
+        int render_line = ui->scroll_y + r;
+
+        /* Is this the row containing the current match? */
+        int is_current_line = (render_line == cur_render_line);
+
+        /* Find all case-insensitive matches in this row */
+        const char *p = row_buf;
+        while ((p = tui_ci_strstr(p, ui->page_search_term)) != NULL) {
+            /* Convert byte offset to display column position */
+            int col = utf8_display_width(row_buf, (int)(p - row_buf));
+            /* Convert match byte length to display width */
+            int match_width = utf8_display_width(p, term_len);
+            if (match_width <= 0) match_width = 1;
+            if (col < cols) {
+                short pair = is_current_line ? CP_SEARCH_CURRENT : CP_SEARCH_MATCH;
+                mvwchgat(win_main, r, col, match_width, A_BOLD, pair, NULL);
+            }
+            p += term_len;
+        }
+    }
+}
+
 /* ── Render main pane (MD document) ──────────────────── */
 
 static void render_main(ui_state_t *ui) {
@@ -505,6 +648,12 @@ static void render_main(ui_state_t *ui) {
         wattron(win_main, COLOR_PAIR(C_DIM));
         mvwaddstr(win_main, 0, 0, "  Loading...");
         wattroff(win_main, COLOR_PAIR(C_DIM));
+    }
+
+    /* In-page search: scan for match positions, then highlight visible matches */
+    if (ui->page_search_term && ui->page_search_term[0]) {
+        page_search_scan_matches(ui);
+        page_search_highlight(ui);
     }
 
     wnoutrefresh(win_main);
@@ -1032,6 +1181,23 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 ui->cursor_pos = 0;
                 ui_state_enter(ui);
                 ui->dirty = 1;
+            } else if (ui->page_search_term && ui->input_len >= 1 &&
+                       ui->input_buffer[0] == '?') {
+                /* In-page search: Enter switches focus to main pane.
+                 * Highlights stay active; 'n' navigates to next match. */
+                ui->focus = FOCUS_JOURNAL;
+                /* Scroll to first match if available */
+                if (ui->page_search_total > 0) {
+                    ui->page_search_current = 0;
+                    int target = ui->page_search_lines[0];
+                    int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+                    int half = vis / 2;
+                    int scroll = target - half;
+                    if (scroll < 0) scroll = 0;
+                    ui->scroll_y = scroll;
+                    ui->user_scrolled = 1;
+                }
+                ui->dirty = 1;
             } else if (ui->input_len > 0) {
                 /* Submit query — expand clipboard tokens, save to history */
                 *out_query = expand_clipboard_tokens(ui->input_buffer,
@@ -1089,8 +1255,20 @@ int tui_input(ui_state_t *ui, char **out_query) {
             }
             /* Other ESC [ sequences are consumed (arrow keys etc. handled by ncurses) */
         } else if (next == ERR) {
-            /* Plain Escape — navigate back */
-            if (ui->focus == FOCUS_JOURNAL) {
+            /* Plain Escape — clear page search or navigate back */
+            if (ui->focus == FOCUS_JOURNAL && ui->page_search_term) {
+                /* Clear in-page search and return to input */
+                free(ui->page_search_term);
+                ui->page_search_term = NULL;
+                ui->page_search_total = 0;
+                ui->page_search_current = 0;
+                ui->focus = FOCUS_QUERY;
+                /* Clear the ?search input */
+                ui->input_buffer[0] = '\0';
+                ui->input_len = 0;
+                ui->cursor_pos = 0;
+                ui->dirty = 1;
+            } else if (ui->focus == FOCUS_JOURNAL) {
                 ui_state_back(ui);
             }
         }
@@ -1205,6 +1383,51 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->focus == FOCUS_QUERY) ui_state_input_delete(ui);
         break;
 
+    case 'n':
+        if (ui->focus == FOCUS_JOURNAL && ui->page_search_term &&
+            ui->page_search_total > 0) {
+            /* Jump to next search match */
+            ui->page_search_current = (ui->page_search_current + 1) %
+                                       ui->page_search_total;
+            int target = ui->page_search_lines[ui->page_search_current];
+            int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+            int half = vis / 2;
+            int scroll = target - half;
+            int max_scroll = (ui->doc ? ui->doc->total_lines : 0) - vis;
+            if (max_scroll < 0) max_scroll = 0;
+            if (scroll < 0) scroll = 0;
+            if (scroll > max_scroll) scroll = max_scroll;
+            ui->scroll_y = scroll;
+            ui->user_scrolled = 1;
+            ui->dirty = 1;
+            break;
+        }
+        /* fall through to typing in query */
+        goto handle_default;
+
+    case 'N':
+        if (ui->focus == FOCUS_JOURNAL && ui->page_search_term &&
+            ui->page_search_total > 0) {
+            /* Jump to previous search match */
+            ui->page_search_current = (ui->page_search_current - 1 +
+                                        ui->page_search_total) %
+                                       ui->page_search_total;
+            int target = ui->page_search_lines[ui->page_search_current];
+            int vis = ui->visible_rows > 0 ? ui->visible_rows : 20;
+            int half = vis / 2;
+            int scroll = target - half;
+            int max_scroll = (ui->doc ? ui->doc->total_lines : 0) - vis;
+            if (max_scroll < 0) max_scroll = 0;
+            if (scroll < 0) scroll = 0;
+            if (scroll > max_scroll) scroll = max_scroll;
+            ui->scroll_y = scroll;
+            ui->user_scrolled = 1;
+            ui->dirty = 1;
+            break;
+        }
+        /* fall through to typing in query */
+        goto handle_default;
+
     case 'c':
         if (ui->focus == FOCUS_JOURNAL) {
             ui_state_toggle_preview(ui);
@@ -1264,6 +1487,32 @@ int tui_input(ui_state_t *ui, char **out_query) {
     } else if (ui->search_active && ui->focus == FOCUS_QUERY) {
         /* Input no longer starts with /? — clear search */
         ui_state_search(ui, NULL);
+    }
+
+    /* ── In-page search: detect ? prefix and trigger highlighting ── */
+    if (ui->focus == FOCUS_QUERY && !paste_mode &&
+        ui->input_len >= 1 && ui->input_buffer[0] == '?' &&
+        !(ui->input_len >= 2 && ui->input_buffer[1] == '/')) {
+        if (ui->input_len >= 4) {
+            /* Have at least 3 chars after "?": set page search term */
+            ui->input_buffer[ui->input_len] = '\0';
+            free(ui->page_search_term);
+            ui->page_search_term = strdup(ui->input_buffer + 1);
+            ui->dirty = 1;
+        } else {
+            /* Query too short — clear page search */
+            free(ui->page_search_term);
+            ui->page_search_term = NULL;
+            ui->page_search_total = 0;
+            ui->dirty = 1;
+        }
+    } else if (ui->page_search_term && ui->focus == FOCUS_QUERY &&
+               !(ui->input_len >= 1 && ui->input_buffer[0] == '?')) {
+        /* Input no longer starts with ? — clear page search */
+        free(ui->page_search_term);
+        ui->page_search_term = NULL;
+        ui->page_search_total = 0;
+        ui->dirty = 1;
     }
 
 paste_done:
