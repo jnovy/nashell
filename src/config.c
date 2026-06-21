@@ -411,6 +411,22 @@ config_t *config_load(const char *path) {
         cfg->belief_entropy.warn_threshold  = (float)toml_dbl(be, "warn_threshold", 0);
     }
 
+    /* [tools] — per-tool toggles (e.g., memory_recall = false) */
+    toml_table_t *tools_sec = toml_table_in(root, "tools");
+    if (tools_sec) {
+        toml_datum_t mr = toml_bool_in(tools_sec, "memory_recall");
+        if (mr.ok && !mr.u.b) {
+            /* Block the memory_recall tool */
+            int n = cfg->n_profile_tools_block;
+            cfg->profile_tools_block = realloc(cfg->profile_tools_block,
+                                                (n + 1) * sizeof(char *));
+            cfg->profile_tools_block[n] = strdup("memory_recall");
+            cfg->n_profile_tools_block = n + 1;
+            /* Also disable automatic memory injection */
+            cfg->profile_inject_memory = 0;
+        }
+    }
+
     toml_free(root);
     config_set_defaults(cfg);
     return cfg;
@@ -774,21 +790,30 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     if (p->max_antipatterns_per_query > 0) cfg->max_antipatterns_per_query = p->max_antipatterns_per_query;
     if (p->context_eviction_pct > 0)   cfg->context_eviction_pct = p->context_eviction_pct;
 
-    /* [react] flags → store on cfg for main.c to apply to react_flags_t */
-    cfg->profile_inject_memory = p->inject_memory;
-    cfg->profile_inject_prev_result = p->inject_prev_result;
-    cfg->profile_enable_reflection = p->enable_reflection;
-    cfg->profile_enable_pruning = p->enable_pruning;
-    cfg->profile_enable_compaction = p->enable_compaction;
-    cfg->profile_enable_scoring = p->enable_scoring;
+    /* [react] flags → store on cfg for main.c to apply to react_flags_t.
+     * Only override if the profile explicitly sets the value (not -1 = inherit).
+     * This preserves user config.toml settings (e.g., tools.memory_recall = false
+     * sets profile_inject_memory = 0) unless the model profile explicitly overrides. */
+    if (p->inject_memory >= 0) cfg->profile_inject_memory = p->inject_memory;
+    if (p->inject_prev_result >= 0) cfg->profile_inject_prev_result = p->inject_prev_result;
+    if (p->enable_reflection >= 0) cfg->profile_enable_reflection = p->enable_reflection;
+    if (p->enable_pruning >= 0) cfg->profile_enable_pruning = p->enable_pruning;
+    if (p->enable_compaction >= 0) cfg->profile_enable_compaction = p->enable_compaction;
+    if (p->enable_scoring >= 0) cfg->profile_enable_scoring = p->enable_scoring;
 
     /* [tools] filter → store on cfg for main.c/react.c to use.
      * These point into the profile's arrays (no copy needed — profile
-     * lives as long as cfg). */
-    cfg->profile_tools_allow = p->tools_allow;
-    cfg->n_profile_tools_allow = p->n_tools_allow;
-    cfg->profile_tools_block = p->tools_block;
-    cfg->n_profile_tools_block = p->n_tools_block;
+     * lives as long as cfg).
+     * Only override if the profile explicitly sets a filter — preserve
+     * user config.toml settings (e.g., tools.memory_recall = false). */
+    if (p->n_tools_allow > 0) {
+        cfg->profile_tools_allow = p->tools_allow;
+        cfg->n_profile_tools_allow = p->n_tools_allow;
+    }
+    if (p->n_tools_block > 0) {
+        cfg->profile_tools_block = p->tools_block;
+        cfg->n_profile_tools_block = p->n_tools_block;
+    }
 
     /* max_tools: auto-populate allow list with essential tools when
      * max_tools is set but no explicit allow list is provided.
@@ -903,6 +928,14 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "context_eviction_pct = %d\n\n", cfg->context_eviction_pct);
 
     fprintf(out, "[tools]\n");
+    /* Show memory_recall toggle status */
+    {
+        int mr_blocked = 0;
+        for (int i = 0; i < cfg->n_profile_tools_block; i++)
+            if (strcmp(cfg->profile_tools_block[i], "memory_recall") == 0)
+                { mr_blocked = 1; break; }
+        fprintf(out, "memory_recall = %s\n", mr_blocked ? "false" : "true");
+    }
     if (cfg->n_profile_tools_allow > 0) {
         fprintf(out, "allow = [");
         for (int i = 0; i < cfg->n_profile_tools_allow; i++)
@@ -1212,6 +1245,23 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                     cfg->profile_tools_block[j] = d.ok ? d.u.s : strdup("");
                 }
             }
+        }
+
+        /* [tools] memory_recall = true/false — shorthand to disable memory_recall
+         * tool (hidden from model) and automatic memory injection. When false,
+         * adds "memory_recall" to the block list and sets inject_memory = false.
+         * This lets the user test session_grep as the sole retrieval mechanism. */
+        { toml_datum_t mr = toml_bool_in(tools, "memory_recall");
+          if (mr.ok && !mr.u.b) {
+              /* Add "memory_recall" to the block list */
+              int n = cfg->n_profile_tools_block;
+              cfg->profile_tools_block = realloc(cfg->profile_tools_block,
+                                                  (n + 1) * sizeof(char *));
+              cfg->profile_tools_block[n] = strdup("memory_recall");
+              cfg->n_profile_tools_block = n + 1;
+              /* Also disable automatic memory injection */
+              cfg->profile_inject_memory = 0;
+          }
         }
 
         /* [tools.<name>] description overrides */
