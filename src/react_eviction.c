@@ -47,8 +47,10 @@
 /* Compress-scaled parameters: minimum chunks and chars. */
 #define REACT_COMPRESS_MIN_UNITS    4
 #define REACT_COMPRESS_MIN_CHARS    400
-/* Default and minimum breadcrumb capacity (chars). */
-#define REACT_BREADCRUMB_CAP_MIN    1024
+/* SIMP1 FIX: Minimum per-component breadcrumb capacity (chars).
+ * Renamed from REACT_BREADCRUMB_CAP_MIN (1024/2=512) to clarify
+ * that this is the per-subcap minimum, not the whole-breadcrumb minimum. */
+#define REACT_BREADCRUMB_SUBCAP_MIN 512
 /* Padding added to re-injection estimate (chars). */
 #define REACT_REINJECT_PAD          200
 /* Minimum effective target percentage (prevents target going to 0). */
@@ -355,6 +357,7 @@ int evict_mark_candidates(const llm_chat_t *chat,
                           const evict_partner_map_t *pmap,
                           long floor_chars,
                           long remaining_nonhead,
+                          long tail_chars,
                           long target_remaining,
                           evict_score_fn score_fn, void *score_ud,
                           int *evict_mark) {
@@ -379,7 +382,11 @@ int evict_mark_candidates(const llm_chat_t *chat,
         qsort(cands, (size_t)n_cands, sizeof(evict_candidate_t),
               cmp_candidate_score_asc);
 
-    /* Mark candidates, respecting floor + partner pairing + target */
+    /* Mark candidates, respecting floor + partner pairing + target.
+     * Floor check subtracts tail_chars because `remaining` includes protected
+     * tail content that can never be evicted. Without this, the floor is
+     * defeated when tail_chars >= floor_chars, allowing all evictable content
+     * to be removed. */
     int n_marked = 0;
     long remaining = remaining_nonhead;
 
@@ -388,7 +395,7 @@ int evict_mark_candidates(const llm_chat_t *chat,
         if (evict_mark[ri]) continue;
 
         long msg_chars = cands[ci].chars;
-        if (remaining - msg_chars < floor_chars) continue;
+        if (remaining - tail_chars - msg_chars < floor_chars) continue;
 
         /* Partner lookup via pre-built map (Proposal E) */
         int mi = evict_start + ri;
@@ -409,7 +416,7 @@ int evict_mark_candidates(const llm_chat_t *chat,
         }
 
         /* Check floor for total pair cost */
-        if (remaining - msg_chars - pair_chars < floor_chars) continue;
+        if (remaining - tail_chars - msg_chars - pair_chars < floor_chars) continue;
 
         evict_mark[ri] = 1;
         remaining -= msg_chars;
@@ -579,15 +586,16 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         if ((long)summary.len >= breadcrumb_summary_cap) break;
     }
 
-    if (summary.len > 0) {
+    /* SIMP3 FIX: Simplified — str_steal always returns a valid pointer
+     * (empty string if nothing was appended), and free handles it. */
+    {
         char *summ_str = str_steal(&summary);
-        scratchpad_write(&ctx->tools->scratch, "evicted_context", summ_str, 2);
+        if (summ_str[0])
+            scratchpad_write(&ctx->tools->scratch, "evicted_context", summ_str, 2);
         /* D4 FIX: Defer scratchpad_save() — finalize may strip scratchpad
          * entirely (strategy 2), making this disk write wasted I/O.
          * Save is now done after finalize confirms scratchpad survives. */
         free(summ_str);
-    } else {
-        str_free(&summary);
     }
     /* BUG 1 FIX: Only return breadcrumb string if entries were added beyond
      * the header. Previously always returned non-NULL (header alone = 48 chars),
@@ -624,8 +632,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
     int target_pct = react_eviction_target_pct(ctx->tools->cfg);
 
-    long total_chars = react_calc_total_chars(chat);
-    int usage_pct = react_usage_pct(total_chars, context_budget);
+    /* DUP3 FIX: Use react_chat_usage_pct convenience helper */
+    int usage_pct = react_chat_usage_pct(chat, context_budget);
 
     int keep_head = react_compute_keep_head(chat);
     int keep_tail = react_compute_keep_tail(chat);
@@ -646,7 +654,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     keep_head = react_compute_keep_head(chat);
     keep_tail = react_compute_keep_tail(chat);
 
-    total_chars = react_calc_total_chars(chat);
+    long total_chars = react_calc_total_chars(chat);
     usage_pct = react_usage_pct(total_chars, context_budget);
 
     /* FIX #8: Capture before_pct AFTER cleanup to avoid phantom journal entries.
@@ -657,8 +665,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     int before_pct = usage_pct;
     /* BUG #2 FIX: Track whether actual eviction/compression occurred.
      * Without this, SP re-injection in finalize_no_evict changes n_msgs,
-     * triggering a spurious "compaction" journal entry. */
-    int did_actual_evict = 0;
+     * triggering a spurious "compaction" journal entry.
+     * Renamed from did_actual_evict: set for both eviction and compression. */
+    int did_compact = 0;
 
     /* FIX #13: Consolidated early-return path — all three "nothing to evict"
      * cases jump here instead of duplicating evict_finalize(NULL) + goto. */
@@ -685,17 +694,11 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         goto finalize_no_evict;
     }
 
-    /* Compute head/tail/evictable chars in a single pass (using cached content_len) */
-    long head_chars = 0, tail_chars = 0, evictable_chars = 0;
-    for (int ki = 0; ki < chat->n_msgs; ki++) {
-        long mc = (long)chat->msgs[ki].content_len;
-        if (ki < evict_start)
-            head_chars += mc;
-        else if (ki >= evict_end)
-            tail_chars += mc;
-        else
-            evictable_chars += mc;
-    }
+    /* DUP2 FIX: Use existing helpers instead of manual single-pass loop.
+     * O(2n) vs O(n) is negligible since n_msgs is typically < 200. */
+    long head_chars = react_head_chars(chat, evict_start);
+    long tail_chars = react_tail_chars(chat, evict_end);
+    long evictable_chars = total_chars - head_chars - tail_chars;
 
     /* Compaction floor — minimum evictable content to retain
      * FIX #5: Pass tail_chars so floor is based on evictable capacity only. */
@@ -707,12 +710,13 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
      * Compress phase targets target_pct (it doesn't re-inject).
      * Sweep phase targets effective_target_pct (accounts for re-injection). */
     long actual_sp_size = (long)scratchpad_total_size(&ctx->tools->scratch);
-    long bc_index_cap = (long)(context_budget * REACT_BREADCRUMB_INDEX_PCT / 100);
-    long bc_summary_cap = (long)(context_budget * REACT_BREADCRUMB_SUMMARY_PCT / 100);
-    if (bc_index_cap < REACT_BREADCRUMB_CAP_MIN / 2)
-        bc_index_cap = REACT_BREADCRUMB_CAP_MIN / 2;
-    if (bc_summary_cap < REACT_BREADCRUMB_CAP_MIN / 2)
-        bc_summary_cap = REACT_BREADCRUMB_CAP_MIN / 2;
+    /* SIMP1 FIX: Use react_budget_cap helper + renamed REACT_BREADCRUMB_SUBCAP_MIN */
+    long bc_index_cap = react_budget_cap(context_budget,
+                                          REACT_BREADCRUMB_INDEX_PCT,
+                                          REACT_BREADCRUMB_SUBCAP_MIN);
+    long bc_summary_cap = react_budget_cap(context_budget,
+                                            REACT_BREADCRUMB_SUMMARY_PCT,
+                                            REACT_BREADCRUMB_SUBCAP_MIN);
     long reinject_est = actual_sp_size + bc_index_cap + bc_summary_cap + REACT_REINJECT_PAD;
 
     int effective_target_pct = target_pct;
@@ -734,7 +738,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     int n_to_evict = evict_mark_candidates(chat, evict_start, evict_end,
                                             &pmap, floor_chars,
-                                            remaining_nonhead, target_remaining,
+                                            remaining_nonhead, tail_chars,
+                                            target_remaining,
                                             evict_score_progressive, &pmap /* FIX #2 */,
                                             evict_mark);
 
@@ -779,7 +784,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* D4 FIX: Save scratchpad to disk after finalize confirms it survived.
      * Previously saved in evict_build_breadcrumbs before finalize could strip it. */
     scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
-    did_actual_evict = 1;
+    did_compact = 1;
     goto journal;
 
 finalize_no_evict:
@@ -791,7 +796,7 @@ journal:
     /* BUG #2 FIX: Only log compaction journal entry when actual eviction or
      * compression occurred. Previously SP re-injection in finalize_no_evict
      * changed n_msgs, producing spurious "compaction" entries. */
-    if (ctx->tools->journal && did_actual_evict) {
+    if (ctx->tools->journal && did_compact) {
         long after_chars = react_calc_total_chars(chat);
         int after_pct = react_usage_pct(after_chars, context_budget);
         if (after_pct != before_pct || chat->n_msgs != before_msgs) {

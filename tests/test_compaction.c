@@ -411,7 +411,8 @@ static void test_mark_candidates_basic(void) {
     int *mark = calloc((size_t)n_evictable, sizeof(int));
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                           &pmap, floor_chars,
-                                          evictable_chars, target_remaining,
+                                          evictable_chars, 0 /* tail_chars */,
+                                          target_remaining,
                                           score_by_position, NULL,
                                           mark);
 
@@ -457,7 +458,8 @@ static void test_mark_candidates_respects_floor(void) {
     int *mark = calloc((size_t)n_evictable, sizeof(int));
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                           &pmap, floor_chars,
-                                          evictable_chars, target_remaining,
+                                          evictable_chars, 0 /* tail_chars */,
+                                          target_remaining,
                                           score_by_position, NULL,
                                           mark);
 
@@ -489,7 +491,8 @@ static void test_mark_candidates_protects_high_importance(void) {
     int *mark = calloc((size_t)n_evictable, sizeof(int));
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                           &pmap, REACT_EVICT_FLOOR_MIN_CHARS,
-                                          evictable_chars, 0,
+                                          evictable_chars, 0 /* tail_chars */,
+                                          0,
                                           score_by_position, NULL,
                                           mark);
 
@@ -525,7 +528,8 @@ static void test_mark_candidates_pair_eviction(void) {
     int *mark = calloc((size_t)n_evictable, sizeof(int));
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                           &pmap, 0, /* no floor */
-                                          evictable_chars, 0,
+                                          evictable_chars, 0 /* tail_chars */,
+                                          0,
                                           score_by_position, NULL,
                                           mark);
 

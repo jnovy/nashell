@@ -211,6 +211,13 @@ static inline size_t react_scratchpad_budget(long context_budget,
     return budget < min_budget ? min_budget : budget;
 }
 
+/* SIMP1 FIX: Compute a budget cap = max(budget * pct / 100, min_val).
+ * Shared between breadcrumb index and summary cap computations. */
+static inline long react_budget_cap(long budget, int pct, long min_val) {
+    long cap = budget * pct / 100;
+    return cap < min_val ? min_val : cap;
+}
+
 /* D1 FIX: Format and inject a "[SCRATCHPAD]\n..." message at position pos.
  * Eliminates 4 copies of the alloc + snprintf("[SCRATCHPAD]\n%s") + insert
  * pattern across react_eviction.c, react_context.c, and react_error.c.
@@ -293,6 +300,7 @@ int evict_sweep_marked(llm_chat_t *chat, int evict_start,
  * Parameters:
  *   evict_mark     — pre-zeroed calloc'd array of n_evictable ints
  *   remaining_nonhead — sum of tail + evictable chars (updated internally)
+ *   tail_chars        — chars in protected tail (subtracted in floor check)
  *   target_remaining  — stop marking when remaining_nonhead <= this value
  *   score_fn/score_ud — scoring callback + userdata
  *
@@ -302,6 +310,7 @@ int evict_mark_candidates(const llm_chat_t *chat,
                           const evict_partner_map_t *pmap,
                           long floor_chars,
                           long remaining_nonhead,
+                          long tail_chars,
                           long target_remaining,
                           evict_score_fn score_fn, void *score_ud,
                           int *evict_mark);

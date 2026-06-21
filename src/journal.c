@@ -198,6 +198,25 @@ int journal_is_structural_tool(const char *tool) {
            strcmp(tool, "compaction") == 0;
 }
 
+/* DUP1 FIX: Extract shared evicted-count flush logic.
+ * Appends an eviction summary line to `out` and resets counters. */
+static void journal_flush_evicted(str_t *out, int *evicted_count,
+                                  int *evicted_compact_step,
+                                  const journal_compaction_stats_t *cs) {
+    if (*evicted_count <= 0) return;
+    if (*evicted_compact_step >= 0)
+        str_appendf(out,
+            "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
+            *evicted_count, *evicted_compact_step,
+            cs->before_msgs, cs->after_msgs,
+            cs->before_pct, cs->after_pct);
+    else
+        str_appendf(out, "    ... [%d earlier steps evicted from context]\n",
+                    *evicted_count);
+    *evicted_count = 0;
+    *evicted_compact_step = -1;
+}
+
 char *journal_manifest(journal_t *j, int max_steps) {
     /* Delegate to the filtered version with no eviction filtering.
      * target_loop=-1 ensures the eviction check never matches. */
@@ -245,19 +264,8 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         /* New react loop — show header with query text */
         if (loop != current_loop) {
             /* B2 FIX: Flush evicted count from previous loop */
-            if (evicted_count > 0) {
-                if (evicted_compact_step >= 0)
-                    str_appendf(&out,
-                        "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
-                        evicted_count, evicted_compact_step,
-                        evicted_cs.before_msgs, evicted_cs.after_msgs,
-                        evicted_cs.before_pct, evicted_cs.after_pct);
-                else
-                    str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
-                                evicted_count);
-                evicted_count = 0;
-                evicted_compact_step = -1;
-            }
+            journal_flush_evicted(&out, &evicted_count,
+                                  &evicted_compact_step, &evicted_cs);
             current_loop = loop;
             if (loop > 0) str_append_cstr(&out, "\n");
             str_appendf(&out, "  [Query R%d]", loop);
@@ -367,17 +375,8 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     }
 
     /* Flush final evicted count */
-    if (evicted_count > 0) {
-        if (evicted_compact_step >= 0)
-            str_appendf(&out,
-                "    ... [%d steps compacted at step %d: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%% usage]\n",
-                evicted_count, evicted_compact_step,
-                evicted_cs.before_msgs, evicted_cs.after_msgs,
-                evicted_cs.before_pct, evicted_cs.after_pct);
-        else
-            str_appendf(&out, "    ... [%d earlier steps evicted from context]\n",
-                        evicted_count);
-    }
+    journal_flush_evicted(&out, &evicted_count,
+                          &evicted_compact_step, &evicted_cs);
 
     fclose(f);
     return str_steal(&out);

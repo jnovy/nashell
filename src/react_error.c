@@ -87,7 +87,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
 
     int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                           &pmap, floor_chars,
-                                          remaining_nonhead, target_remaining,
+                                          remaining_nonhead, tail_chars,
+                                          target_remaining,
                                           evict_score_emergency, NULL,
                                           evict_mark);
 

@@ -168,8 +168,8 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
         str_append_cstr(&buf, user_query);
     /* Fallback: extract query from chat if user_query is short/empty.
      * FIX #12: Scan backward — after eviction the query may only survive
-     * near the head, but backward scan is still O(1) in the common case
-     * (finds the first USER_QUERY quickly since there's typically just one). */
+     * near the head, but backward scan is O(1) amortized — there is
+     * typically just one USER_QUERY message, found quickly. */
     if (buf.len < 10) {
         for (int i = chat->n_msgs - 1; i >= 0; i--) {
             if (chat->msgs[i].msg_type == LLM_MSG_USER_QUERY &&
