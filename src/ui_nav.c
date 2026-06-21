@@ -574,7 +574,7 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         if (!f) continue;
 
         /* Read file line by line, search for query */
-        char line[4096];
+        char line[NASH_PATH_MAX];
         int session_had_match = 0;
         char *current_section = NULL;
 

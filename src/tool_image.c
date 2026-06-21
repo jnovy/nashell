@@ -17,6 +17,14 @@
 #include <errno.h>
 #include <curl/curl.h>
 
+/* Default models for image analysis when none configured.
+ * Keep in sync with provider_openai.c / provider_anthropic.c. */
+#define IMAGE_OPENAI_DEFAULT_MODEL    "gpt-4o"
+#define IMAGE_ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
+
+/* API version strings — keep in sync with provider_anthropic.c */
+#define IMAGE_VERTEX_VERSION "vertex-2023-10-16"
+
 /* ── Base64 encoder ─────────────────────────────────────────────── */
 
 static const char b64_table[] =
@@ -81,7 +89,7 @@ static char *build_openai_image_request(provider_t *p, const char *question,
                                          const char *mime, const char *b64) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "model",
-                            p->cfg.model_id ? p->cfg.model_id : "gpt-4o");
+                            p->cfg.model_id ? p->cfg.model_id : IMAGE_OPENAI_DEFAULT_MODEL);
     cJSON_AddNumberToObject(req, "max_tokens", 4096);
     cJSON_AddNumberToObject(req, "temperature", 0.2);
 
@@ -131,10 +139,10 @@ static char *build_anthropic_image_request(provider_t *p, const char *question,
      * Direct Anthropic API: model in body, anthropic_version as header
      * (but we also add it to body for direct API calls). */
     if (p->type == PROVIDER_VERTEX) {
-        cJSON_AddStringToObject(req, "anthropic_version", "vertex-2023-10-16");
+        cJSON_AddStringToObject(req, "anthropic_version", IMAGE_VERTEX_VERSION);
     } else {
         cJSON_AddStringToObject(req, "model",
-                                p->cfg.model_id ? p->cfg.model_id : "claude-sonnet-4-20250514");
+                                p->cfg.model_id ? p->cfg.model_id : IMAGE_ANTHROPIC_DEFAULT_MODEL);
     }
     cJSON_AddNumberToObject(req, "max_tokens", 4096);
 

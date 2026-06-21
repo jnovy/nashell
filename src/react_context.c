@@ -123,7 +123,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
         int *pmap = malloc(sizeof(int) * (size_t)pmap_cap);
         if (pmap)
             memset(pmap, -1, sizeof(int) * (size_t)pmap_cap);
-        char jline[32768];
+        char jline[NASH_LINE_MAX];
         while (pmap && fgets(jline, sizeof(jline), jf)) {
             cJSON *entry = cJSON_Parse(jline);
             if (!entry) continue;

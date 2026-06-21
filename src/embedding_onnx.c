@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "embedding_onnx.h"
+#include "nash_limits.h"
 #include "onnxruntime_c_api.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -235,7 +236,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     if (!model_dir) return NULL;
 
     /* Build paths */
-    char model_path[4096], vocab_path[4096];
+    char model_path[NASH_PATH_MAX], vocab_path[NASH_PATH_MAX];
     snprintf(model_path, sizeof(model_path), "%s/onnx/model.onnx", model_dir);
     snprintf(vocab_path, sizeof(vocab_path), "%s/vocab.txt", model_dir);
 

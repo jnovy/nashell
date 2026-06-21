@@ -179,10 +179,10 @@ static int cmd_cwd(command_ctx_t *ctx, const char *dir) {
         return CMD_CONTINUE;
     }
     /* Show success with resolved path */
-    char resolved[4096];
+    char resolved[NASH_PATH_MAX];
     if (!getcwd(resolved, sizeof(resolved)))
         snprintf(resolved, sizeof(resolved), "%s", dir);
-    char status_msg[4112];
+    char status_msg[NASH_PATH_MAX + 16];
     snprintf(status_msg, sizeof(status_msg), "CWD: %s", resolved);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_READY, status_msg);

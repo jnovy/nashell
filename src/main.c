@@ -63,7 +63,7 @@ static void shutdown_handler(int sig) {
 static int daemon_lock_fd = -1;
 
 static int daemon_lock_acquire(const char *nash_dir) {
-    char path[512];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/daemon.lock", nash_dir);
     daemon_lock_fd = open(path, O_CREAT | O_RDWR, 0644);
     if (daemon_lock_fd < 0) {
@@ -108,7 +108,7 @@ static char *get_nash_dir(const config_t *cfg) {
     }
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
-    char path[512];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/.nash", home);
     mkdir(path, 0755);
     return strdup(path);
@@ -286,7 +286,7 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
 
     /* Load config from ~/.nash/config.toml (or default) */
-    char config_path[512];
+    char config_path[NASH_PATH_MAX];
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
     snprintf(config_path, sizeof(config_path), "%s/.nash/config.toml", home);

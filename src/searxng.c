@@ -96,7 +96,7 @@ static char *searxng_base_url(const char *url) {
 /* Ensure the persistent SearXNG config directory exists at ~/.nash/searxng/
  * with a settings.yml that enables JSON format. */
 static const char *ensure_searxng_config_dir(void) {
-    static char cfg_dir[512] = {0};
+    static char cfg_dir[NASH_PATH_MAX] = {0};
     if (cfg_dir[0]) return cfg_dir;
 
     const char *home = getenv("HOME");
@@ -105,7 +105,7 @@ static const char *ensure_searxng_config_dir(void) {
 
     mkdir_p(cfg_dir, 0755);
 
-    char settings_path[600];
+    char settings_path[NASH_PATH_MAX + 16];
     snprintf(settings_path, sizeof(settings_path), "%s/settings.yml", cfg_dir);
 
     int needs_write = 0;

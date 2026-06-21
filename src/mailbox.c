@@ -167,7 +167,7 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
 
             if (ret > 0) {
                 /* Drain inotify events */
-                char evbuf[4096]
+                char evbuf[NASH_PATH_MAX]
                     __attribute__((aligned(__alignof__(struct inotify_event))));
                 ssize_t len = read(ifd, evbuf, sizeof(evbuf));
                 if (len > 0) {
@@ -230,7 +230,7 @@ void mailbox_notify(const char *mailbox_dir, const char *event_type,
              mailbox_dir, msg_id);
 
     /* Plain text: "type: message" */
-    char content[4096];
+    char content[NASH_PATH_MAX];
     snprintf(content, sizeof(content), "[%s] %s",
              event_type ? event_type : "status",
              message ? message : "");
@@ -334,7 +334,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
         }
 
         if (ret > 0) {
-            char evbuf[4096]
+            char evbuf[NASH_PATH_MAX]
                 __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t len = read(ifd, evbuf, sizeof(evbuf));
             if (len > 0) {

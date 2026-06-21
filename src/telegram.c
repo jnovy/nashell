@@ -15,6 +15,7 @@
  */
 
 #include "telegram.h"
+#include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
 #include "toml.h"
@@ -764,7 +765,7 @@ char *md_tables_to_bullets(const char *md) {
 
             if (second_pipe) {
                 /* Parse header row */
-                char hdr_buf[4096];
+                char hdr_buf[NASH_PATH_MAX];
                 char *headers[64];
                 int nhdr = parse_table_cells(q, eol, hdr_buf, headers, 64);
 
@@ -805,7 +806,7 @@ char *md_tables_to_bullets(const char *md) {
                         if (!has_second) break;
 
                         /* Parse data cells */
-                        char row_buf[4096];
+                        char row_buf[NASH_PATH_MAX];
                         char *cells[64];
                         int ncells = parse_table_cells(rs, row_eol,
                                                       row_buf, cells, 64);
@@ -1795,7 +1796,7 @@ void *telegram_run(void *arg) {
         /* ── Phase 2: Check outbox for results/questions ─────────── */
         if (ifd >= 0) {
             /* Read inotify events (non-blocking) */
-            char evbuf[4096]
+            char evbuf[NASH_PATH_MAX]
                 __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t nread = read(ifd, evbuf, sizeof(evbuf));
             if (nread > 0) {

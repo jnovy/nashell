@@ -32,6 +32,10 @@
 /* Default fallback model when none configured */
 #define ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
 
+/* API version strings — centralised for easy updates */
+#define ANTHROPIC_API_VERSION     "2023-06-01"
+#define ANTHROPIC_VERTEX_VERSION  "vertex-2023-10-16"
+
 /* ── Auth helpers ───────────────────────────────────────────────── */
 
 static const char *get_anthropic_api_key(const provider_config_t *cfg) {
@@ -469,7 +473,7 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
      * Also: model is specified in the URL path, NOT in the body —
      * Vertex rejects "model" as an extra input. */
     if (p->type == PROVIDER_VERTEX) {
-        cJSON_AddStringToObject(req, "anthropic_version", "vertex-2023-10-16");
+        cJSON_AddStringToObject(req, "anthropic_version", ANTHROPIC_VERTEX_VERSION);
     } else {
         cJSON_AddStringToObject(req, "model",
                                 p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
@@ -567,7 +571,7 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
             nash_log("[provider/anthropic] WARNING: no API key in $%s",
                      p->cfg.api_key_env ? p->cfg.api_key_env : "ANTHROPIC_API_KEY");
         }
-        headers = curl_slist_append(headers, "anthropic-version: 2023-06-01");
+        headers = curl_slist_append(headers, "anthropic-version: " ANTHROPIC_API_VERSION);
     }
 
     /* Enable prompt caching beta (direct Anthropic API only — Vertex AI

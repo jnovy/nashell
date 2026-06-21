@@ -1,4 +1,5 @@
 #include "md_render.h"
+#include "nash_limits.h"
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -17,7 +18,7 @@
 #define CP_DIFF_DEL 16
 
 /* ── Buffer size for line copying ── */
-#define LINE_BUF_SIZE 4096
+#define LINE_BUF_SIZE NASH_PATH_MAX
 
 /* ── Segment-based inline formatting ── */
 

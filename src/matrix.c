@@ -14,6 +14,7 @@
  */
 
 #include "matrix.h"
+#include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
 #include "toml.h"
@@ -1830,7 +1831,7 @@ void *matrix_run(void *arg) {
 
         /* ── Phase 2: Check outbox ────────────────────────────── */
         if (ifd >= 0) {
-            char evbuf[4096]
+            char evbuf[NASH_PATH_MAX]
                 __attribute__((aligned(__alignof__(struct inotify_event))));
             ssize_t nread = read(ifd, evbuf, sizeof(evbuf));
             if (nread > 0) {

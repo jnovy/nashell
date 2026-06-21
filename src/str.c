@@ -263,7 +263,7 @@ size_t utf8_clamp(const char *s, size_t max_bytes) {
 /* ── file I/O ───────────────────────────────────────────────────── */
 
 int mkdir_p(const char *path, mode_t mode) {
-    char tmp[4096];
+    char tmp[NASH_PATH_MAX];
     size_t len = strlen(path);
     if (len == 0 || len >= sizeof(tmp)) { errno = ENAMETOOLONG; return -1; }
     memcpy(tmp, path, len + 1);

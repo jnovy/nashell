@@ -72,7 +72,7 @@ static char **load_chunk_previews(const char *idx_path, int *out_count) {
     char **previews = calloc((size_t)cap, sizeof(char *));
     if (!previews) { fclose(f); return NULL; }
 
-    char line[4096];
+    char line[NASH_PATH_MAX];
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;

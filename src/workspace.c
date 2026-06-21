@@ -15,13 +15,14 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "workspace.h"
+#include "nash_limits.h"
 #include "str.h"
 
 /* ── helpers ─────────────────────────────────────────── */
 
 /* Recursive mkdir -p.  Creates all intermediate directories. */
 static void mkdirp(const char *path) {
-    char tmp[4096];
+    char tmp[NASH_PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s", path);
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
@@ -42,7 +43,7 @@ static int mem_has_key(memory_t *m, const char *key) {
      * Actually, the simplest approach: try to load the entry JSON. */
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
-    char path[4096];
+    char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
     struct stat st;
     return (stat(path, &st) == 0);
@@ -72,7 +73,7 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
         ws->name = strdup(ws_name);
 
         /* Build workspace root: ~/.nash/workspaces/<name>/ */
-        char ws_root[4096];
+        char ws_root[NASH_PATH_MAX];
         snprintf(ws_root, sizeof(ws_root), "%s/workspaces/%s",
                  nash_dir, ws_name);
         mkdirp(ws_root);
@@ -419,7 +420,7 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
 
-    char src_path[4096], dst_path[4096];
+    char src_path[NASH_PATH_MAX], dst_path[NASH_PATH_MAX];
     snprintf(src_path, sizeof(src_path), "%s/%s", src->dir, fname);
     snprintf(dst_path, sizeof(dst_path), "%s/%s", dst->dir, fname);
 
@@ -433,7 +434,7 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     /* Copy .emb file if it exists */
     char emb_fname[512];
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
-    char src_emb[4096], dst_emb[4096];
+    char src_emb[NASH_PATH_MAX], dst_emb[NASH_PATH_MAX];
     snprintf(src_emb, sizeof(src_emb), "%s/%s", src->dir, emb_fname);
     snprintf(dst_emb, sizeof(dst_emb), "%s/%s", dst->dir, emb_fname);
 

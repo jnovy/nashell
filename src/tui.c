@@ -513,7 +513,7 @@ static void page_search_scan_matches(ui_state_t *ui) {
         }
 
         /* Check if this line contains the search term */
-        char line_buf[4096];
+        char line_buf[NASH_PATH_MAX];
         int copy_len = line_len < (int)sizeof(line_buf) - 1 ? line_len : (int)sizeof(line_buf) - 1;
         memcpy(line_buf, src, (size_t)copy_len);
         line_buf[copy_len] = '\0';
@@ -567,7 +567,7 @@ static void page_search_highlight(ui_state_t *ui) {
 
     for (int r = 0; r < rows; r++) {
         /* Read the rendered text from the window */
-        char row_buf[4096];
+        char row_buf[NASH_PATH_MAX];
         int n = (cols < (int)sizeof(row_buf) - 1) ? cols : (int)sizeof(row_buf) - 1;
         int got = mvwinnstr(win_main, r, 0, row_buf, n);
         if (got <= 0) continue;
