@@ -5,6 +5,25 @@
 /* FIX #7: Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
 
+/* Log a parse error to journal + store.  Shared between the two parse-error
+ * branches (no JSON / missing "action" field) to eliminate duplication. */
+static void log_parse_error(react_ctx_t *ctx, int step, const char *type,
+                            const char *response, const char *desc) {
+    char *err_hash = store_save(ctx->tools->store, response);
+    char *err_alias = tool_register_alias(ctx->tools,
+                                err_hash ? err_hash : "");
+    cJSON *err_p = cJSON_CreateObject();
+    cJSON_AddStringToObject(err_p, "type", type);
+    cJSON_AddStringToObject(err_p, "raw_preview",
+        strlen(response) > 200 ? "(truncated)" : response);
+    journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                   step, "parse_error", err_p, err_alias,
+                   strlen(response), 0, desc, NULL);
+    cJSON_Delete(err_p);
+    free(err_alias);
+    free(err_hash);
+}
+
 /* Wait for user pause/redirect — shared between top-of-loop and bottom-of-loop
  * pause handlers. Waits on condvar, injects redirect query into chat, and
  * cleans up checkpoint. Caller is responsible for outer condition checks. */
@@ -902,21 +921,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ev.message = "Failed to parse LLM response as JSON";
             react_emit(on_event, userdata, &ev);
 
-            /* Log the invalid response to journal for analysis */
-            char *err_hash = store_save(ctx->tools->store, response);
-            char *err_alias = tool_register_alias(ctx->tools,
-                                        err_hash ? err_hash : "");
-            cJSON *err_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(err_p, "type", "parse_error");
-            cJSON_AddStringToObject(err_p, "raw_preview",
-                strlen(response) > 200 ? "(truncated)" : response);
-            journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step + 1, "parse_error", err_p, err_alias,
-                           strlen(response), 0,
-                           "LLM response was not valid JSON", NULL);
-            cJSON_Delete(err_p);
-            free(err_alias);
-            free(err_hash);
+            log_parse_error(ctx, step + 1, "parse_error", response,
+                            "LLM response was not valid JSON");
 
             /* Retry — tell model to use tool_calls */
             llm_chat_add(chat, "assistant", response);
@@ -988,20 +994,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = "No 'action' field in response";
                 react_emit(on_event, userdata, &ev);
 
-                char *err_hash = store_save(ctx->tools->store, response);
-                char *err_alias = tool_register_alias(ctx->tools,
-                                            err_hash ? err_hash : "");
-                cJSON *err_p = cJSON_CreateObject();
-                cJSON_AddStringToObject(err_p, "type", "missing_action");
-                cJSON_AddStringToObject(err_p, "raw_preview",
-                    strlen(response) > 200 ? "(truncated)" : response);
-                journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                               step + 1, "parse_error", err_p, err_alias,
-                               strlen(response), 0,
-                               "LLM response missing 'action' field", NULL);
-                cJSON_Delete(err_p);
-                free(err_alias);
-                free(err_hash);
+                log_parse_error(ctx, step + 1, "missing_action", response,
+                                "LLM response missing 'action' field");
 
                 /* Retry — tell model to use tool_calls */
                 llm_chat_add(chat, "assistant", response);

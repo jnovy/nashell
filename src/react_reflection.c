@@ -5,6 +5,27 @@
 #include "session_index.h"
 
 /* ── reflection deduplication (in-memory index scan) ───── */
+
+/* Log a reflection dedup decision to journal + store.
+ * Shared by both "allowed_failure_correction" and "skipped" branches. */
+static void log_dedup_decision(react_ctx_t *ctx, const char *key,
+                               float sim, const char *action_str) {
+    cJSON *dup_p = cJSON_CreateObject();
+    cJSON_AddStringToObject(dup_p, "key", key);
+    cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
+    cJSON_AddStringToObject(dup_p, "action", action_str);
+    char *dup_str = cJSON_PrintUnformatted(dup_p);
+    char *dup_hash = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
+    char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
+    journal_append(ctx->tools->journal,
+        ctx->tools->react_loop, ctx->tools->step,
+        "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
+    free(dup_str);
+    free(dup_hash);
+    free(dup_ref);
+    cJSON_Delete(dup_p);
+}
+
 /* Scans the in-memory embedding index instead of loading every .emb
  * file from disk.  O(N) cosine comparisons with zero I/O.
  * Returns 1 if a near-duplicate was found and should_store was updated. */
@@ -33,38 +54,12 @@ static int reflection_dedup_index_scan(
          * allow the store — memory_try_consolidate will classify it as
          * SUPERSEDES and delete the old entry. Only block for successes. */
         if (!task_succeeded) {
-            /* Log but allow — let consolidation handle contradiction */
-            cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
-            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
-            cJSON_AddStringToObject(dup_p, "action", "allowed_failure_correction");
-            char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_hash = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
-            char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
-            journal_append(ctx->tools->journal,
-                ctx->tools->react_loop, ctx->tools->step,
-                "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
-            free(dup_str);
-            free(dup_hash);
-            free(dup_ref);
-            cJSON_Delete(dup_p);
+            log_dedup_decision(ctx, rkey_j->valuestring, sim,
+                               "allowed_failure_correction");
             /* should_store stays 1 */
         } else {
             *should_store = 0;
-            cJSON *dup_p = cJSON_CreateObject();
-            cJSON_AddStringToObject(dup_p, "key", rkey_j->valuestring);
-            cJSON_AddNumberToObject(dup_p, "similarity", (double)sim);
-            cJSON_AddStringToObject(dup_p, "action", "skipped");
-            char *dup_str = cJSON_PrintUnformatted(dup_p);
-            char *dup_hash = dup_str ? store_save(ctx->tools->store, dup_str) : NULL;
-            char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
-            journal_append(ctx->tools->journal,
-                ctx->tools->react_loop, ctx->tools->step,
-                "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
-            free(dup_str);
-            free(dup_hash);
-            free(dup_ref);
-            cJSON_Delete(dup_p);
+            log_dedup_decision(ctx, rkey_j->valuestring, sim, "skipped");
         }
     }
     pthread_mutex_unlock(&mem->mtx);
@@ -278,10 +273,8 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 sp_text = scratchpad_serialize(&ctx->tools->scratch);
             }
             if (sp_text && sp_text[0]) {
-                size_t slen = strlen(sp_text);
-                char *sp_msg = malloc(slen + 32);
+                char *sp_msg = react_format_scratchpad_msg(sp_text);
                 if (sp_msg) {
-                    snprintf(sp_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
                     llm_chat_add(reflect, "user", sp_msg);
                     free(sp_msg);
                 }
