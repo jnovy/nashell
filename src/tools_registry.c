@@ -47,9 +47,11 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Store reusable knowledge in long-term memory.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key\"},\"value\":{\"type\":\"string\",\"description\":\"Content to store\"},\"refs\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"description\":\"Related memory keys for cross-references\"},\"supersedes\":{\"type\":\"string\",\"description\":\"Key of the memory this entry replaces (lesson lineage tracking)\"},\"global\":{\"type\":\"boolean\",\"description\":\"Store in global memory instead of workspace (default: false)\"}},\"required\":[\"key\",\"value\"]}"},
 
-    {"memory_recall",
-     "Recall information from long-term memory. Use when the task may depend on user preferences, prior decisions, or historical context.",
-     "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Exact key to recall\"},\"query\":{\"type\":\"string\",\"description\":\"Search query\"}}}"},
+    {"memory_search",
+     "Search long-term memory and past session journals. Use when the task may depend on user preferences, prior decisions, or historical context. "
+     "Supports semantic search (query), exact key lookup (key), lexical/regex search across session journals (pattern), or any combination. "
+     "Returns interleaved results from curated memory and session history, ranked by relevance.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search query\"},\"key\":{\"type\":\"string\",\"description\":\"Exact key to recall\"},\"pattern\":{\"type\":\"string\",\"description\":\"Substring pattern to search for (case-insensitive). When regex=true, this is a POSIX Extended Regular Expression.\"},\"regex\":{\"type\":\"boolean\",\"description\":\"Use POSIX Extended Regular Expression matching instead of substring (default: false).\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum results to return (default: 20, max: 100)\"},\"days\":{\"type\":\"integer\",\"description\":\"Only search sessions up to N days old (default: all)\"}}}"},
 
     {"memory_pin",
      "Pin an existing memory so it is always injected into the system prompt.",
@@ -92,7 +94,7 @@ const tool_def_t TOOL_REGISTRY[] = {
 
     {"memory_list",
      "List all memory keys grouped by type. Returns key names with descriptions. "
-     "Use to browse available memories when memory_recall semantic search is too narrow.",
+     "Use to browse available memories when memory_search semantic search is too narrow.",
      "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, anti-pattern, other. Omit for all.\"}}}"},
 
     {"image_analyze",
@@ -101,16 +103,6 @@ const tool_def_t TOOL_REGISTRY[] = {
      "for multimodal analysis. Returns a textual description/analysis. "
      "Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},\"question\":{\"type\":\"string\",\"description\":\"What to analyze or ask about the image (default: describe in detail)\"}},\"required\":[\"path\"]}"},
-
-    {"session_grep",
-     "Search past session journals for exact/substring matches or regex patterns. "
-     "Use for finding specific function names, error codes, file paths, "
-     "commands, or identifiers in historical sessions. Complements "
-     "memory_recall (semantic search) with precise pattern matching. "
-     "Searches journal.jsonl files (agent thoughts, tool calls, params) "
-     "across recent sessions, newest first. Case-insensitive.",
-     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Substring pattern to search for (case-insensitive). When regex=true, this is a POSIX Extended Regular Expression.\"},\"regex\":{\"type\":\"boolean\",\"description\":\"Use POSIX Extended Regular Expression matching instead of substring (default: false). Enables patterns like reactR?.md, RHEL.*zstream, memory_(recall|store).\"},\"max_results\":{\"type\":\"integer\",\"description\":\"Maximum matches to return (default: 20, max: 100)\"},\"days\":{\"type\":\"integer\",\"description\":\"Only search sessions up to N days old (default: all)\"}},\"required\":[\"pattern\"]}"},
-
     {NULL, NULL, NULL}  /* sentinel */
 };
 

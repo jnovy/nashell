@@ -639,7 +639,8 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
         *submitted_query = NULL;
         return rc;
     }
-    if (strncmp(sq, "/memory_recall ", 15) == 0) {
+    if (strncmp(sq, "/memory_search ", 15) == 0 ||
+        strncmp(sq, "/memory_recall ", 15) == 0) {
         int rc = cmd_memory_recall(ctx, sq + 15);
         free(sq);
         *submitted_query = NULL;

@@ -628,7 +628,7 @@ static int react_tool_importance(const char *tool_name, int success) {
     if (strcmp(tool_name, "grep_search") == 0 ||
         strcmp(tool_name, "web_search") == 0 ||
         strcmp(tool_name, "web_fetch") == 0 ||
-        strcmp(tool_name, "memory_recall") == 0)
+        strcmp(tool_name, "memory_search") == 0)
         return LLM_MSG_IMPORTANCE_HIGH;
     /* Done is critical — never evict the final result */
     if (strcmp(tool_name, "done") == 0)

@@ -497,10 +497,10 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
                 utf8_truncate(trunc, val_j->valuestring, 300);
                 str_appendf(&seg, "%s\n", trunc);
             }
-        } else if (strcmp(tool, "memory_recall") == 0 && params) {
+        } else if (strcmp(tool, "memory_search") == 0 && params) {
             cJSON *q = cJSON_GetObjectItem(params, "query");
             if (q && q->valuestring)
-                str_appendf(&seg, "Recalled: %s\n", q->valuestring);
+                str_appendf(&seg, "Searched: %s\n", q->valuestring);
         } else if ((strcmp(tool, "file_read") == 0 ||
                     strcmp(tool, "grep_search") == 0 ||
                     strcmp(tool, "shell_exec") == 0 ||

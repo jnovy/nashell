@@ -78,7 +78,7 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
     if (mem_summary && strlen(mem_summary) > 0) {
         llm_chat_add_formatted(chat, "user", LLM_MSG_MEMORY_INDEX,
             "[MEMORY INDEX]\n%s\n\n"
-            "Call memory_recall when the answer may depend on user preferences, "
+            "Call memory_search when the answer may depend on user preferences, "
             "prior decisions, ongoing projects, or historical context not visible "
             "in the current conversation.\n"
             "Use memory_list to browse all keys (optionally filtered by type).",

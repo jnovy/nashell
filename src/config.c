@@ -473,16 +473,18 @@ config_t *config_load(const char *path) {
         cfg->belief_entropy.warn_threshold  = (float)toml_dbl(be, "warn_threshold", 0);
     }
 
-    /* [tools] — per-tool toggles (e.g., memory_recall = false) */
+    /* [tools] — per-tool toggles (e.g., memory_search = false) */
     toml_table_t *tools_sec = toml_table_in(root, "tools");
     if (tools_sec) {
-        toml_datum_t mr = toml_bool_in(tools_sec, "memory_recall");
+        /* Accept both new "memory_search" and legacy "memory_recall" config keys */
+        toml_datum_t mr = toml_bool_in(tools_sec, "memory_search");
+        if (!mr.ok) mr = toml_bool_in(tools_sec, "memory_recall");
         if (mr.ok && !mr.u.b) {
-            /* Block the memory_recall tool */
+            /* Block the memory_search tool */
             int n = cfg->n_profile_tools_block;
             cfg->profile_tools_block = realloc(cfg->profile_tools_block,
                                                 (n + 1) * sizeof(char *));
-            cfg->profile_tools_block[n] = strdup("memory_recall");
+            cfg->profile_tools_block[n] = strdup("memory_search");
             cfg->n_profile_tools_block = n + 1;
             /* Also disable automatic memory injection */
             cfg->profile_inject_memory = 0;
@@ -1002,13 +1004,13 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "compress_min_length = %d\n\n", cfg->compress_min_length);
 
     fprintf(out, "[tools]\n");
-    /* Show memory_recall toggle status */
+    /* Show memory_search toggle status */
     {
         int mr_blocked = 0;
         for (int i = 0; i < cfg->n_profile_tools_block; i++)
-            if (strcmp(cfg->profile_tools_block[i], "memory_recall") == 0)
+            if (strcmp(cfg->profile_tools_block[i], "memory_search") == 0)
                 { mr_blocked = 1; break; }
-        fprintf(out, "memory_recall = %s\n", mr_blocked ? "false" : "true");
+        fprintf(out, "memory_search = %s\n", mr_blocked ? "false" : "true");
     }
     if (cfg->n_profile_tools_allow > 0) {
         fprintf(out, "allow = [");
@@ -1344,17 +1346,18 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
             }
         }
 
-        /* [tools] memory_recall = true/false — shorthand to disable memory_recall
+        /* [tools] memory_search = true/false — shorthand to disable memory_search
          * tool (hidden from model) and automatic memory injection. When false,
-         * adds "memory_recall" to the block list and sets inject_memory = false.
-         * This lets the user test session_grep as the sole retrieval mechanism. */
-        { toml_datum_t mr = toml_bool_in(tools, "memory_recall");
+         * adds "memory_search" to the block list and sets inject_memory = false.
+         * Also accepts legacy "memory_recall" config key for backward compat. */
+        { toml_datum_t mr = toml_bool_in(tools, "memory_search");
+          if (!mr.ok) mr = toml_bool_in(tools, "memory_recall");
           if (mr.ok && !mr.u.b) {
-              /* Add "memory_recall" to the block list */
+              /* Add "memory_search" to the block list */
               int n = cfg->n_profile_tools_block;
               cfg->profile_tools_block = realloc(cfg->profile_tools_block,
                                                   (n + 1) * sizeof(char *));
-              cfg->profile_tools_block[n] = strdup("memory_recall");
+              cfg->profile_tools_block[n] = strdup("memory_search");
               cfg->n_profile_tools_block = n + 1;
               /* Also disable automatic memory injection */
               cfg->profile_inject_memory = 0;

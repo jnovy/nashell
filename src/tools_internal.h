@@ -43,7 +43,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params);
 
 /* tool_memory.c */
 tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params);
+tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params);
@@ -66,8 +66,5 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params);
 
 /* tool_image.c */
 tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_session.c */
-tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params);
 
 #endif /* TOOLS_INTERNAL_H */

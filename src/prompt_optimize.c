@@ -153,7 +153,7 @@ static const char *REFLECTION_SYSTEM_PROMPT =
     "You are an expert prompt engineer optimizing system instructions for an "
     "autonomous coding agent called Nash. Nash uses a ReAct loop with tools "
     "(file_read, file_write, file_edit, shell_exec, grep_search, glob_search, "
-    "web_fetch, web_search, memory_store, memory_recall, notes, done, plan, user_ask).\n\n"
+    "web_fetch, web_search, memory_store, memory_search, notes, done, plan, user_ask).\n\n"
     "Your task: given the current system prompt rules and regression test results, "
     "propose IMPROVED instructions that will make the agent pass more tests.\n\n"
     "Guidelines:\n"

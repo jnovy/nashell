@@ -720,7 +720,7 @@ static const tool_handler_fn TOOL_HANDLERS[] = {
     tool_web_search,       /* web_search    */
     tool_glob_search,      /* glob_search   */
     tool_memory_store,     /* memory_store  */
-    tool_memory_recall,    /* memory_recall */
+    tool_memory_search,    /* memory_search */
     tool_memory_pin,       /* memory_pin    */
     tool_memory_unpin,     /* memory_unpin  */
     tool_done,             /* done          */
@@ -730,7 +730,6 @@ static const tool_handler_fn TOOL_HANDLERS[] = {
     tool_memory_delete,    /* memory_delete */
     tool_memory_list,      /* memory_list   */
     tool_image_analyze,    /* image_analyze */
-    tool_session_grep,     /* session_grep  */
 };
 
 /* Compile-time assertion: handler count must match registry count.

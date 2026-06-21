@@ -3,6 +3,7 @@
 #include "workspace.h"
 #include "embedding.h"
 #include "session_index.h"
+#include "session_search.h"
 #include "provider.h"
 #include "llm.h"
 #include <stdio.h>
@@ -508,103 +509,222 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
 }
 
-/* ── memory_recall (v4 unified: L4 curated + L3 sessions) ── */
+/* ── memory_search (v4.4 unified: curated memory + session history) ── */
+/* Single search tool that replaces both memory_recall and session_search.
+ * Searches curated L4 memory (lessons, skills, strategies, facts) and
+ * L3 session history (journal.jsonl), ranks all results by relevance,
+ * and returns an interleaved result set labeled by source. */
 
-tool_result_t tool_memory_recall(tool_ctx_t *ctx, cJSON *params) {
+tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
+    /* Extract parameters */
+    const char *query = NULL;
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
-        return tools_make_error("memory_recall requires a non-empty 'query' string. "
-                          "Describe what you're looking for.");
+    if (query_j && query_j->valuestring && query_j->valuestring[0])
+        query = query_j->valuestring;
 
-    const char *query = query_j->valuestring;
+    const char *key = NULL;
+    cJSON *key_j = cJSON_GetObjectItem(params, "key");
+    if (key_j && key_j->valuestring && key_j->valuestring[0])
+        key = key_j->valuestring;
 
-    /* Check optional source filter (default: "all") */
-    const char *source = "all";
-    cJSON *source_j = cJSON_GetObjectItem(params, "source");
-    if (source_j && source_j->valuestring && source_j->valuestring[0])
-        source = source_j->valuestring;
+    const char *pattern = NULL;
+    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
+    if (pattern_j && pattern_j->valuestring && pattern_j->valuestring[0])
+        pattern = pattern_j->valuestring;
 
-    int search_memory = (strcmp(source, "all") == 0 || strcmp(source, "memory") == 0);
-    int search_sessions = (strcmp(source, "all") == 0 || strcmp(source, "sessions") == 0);
+    if (!query && !key && !pattern)
+        return tools_make_error(
+            "memory_search requires at least one of: 'query' (semantic search), "
+            "'key' (exact memory key), or 'pattern' (lexical/regex search).");
 
-    str_t out = str_new(1024);
-    int total_matches = 0;
+    int use_regex = 0;
+    cJSON *regex_j = cJSON_GetObjectItem(params, "regex");
+    if (regex_j && cJSON_IsTrue(regex_j))
+        use_regex = 1;
+
+    int max_results = 0;  /* 0 = use defaults per source */
+    cJSON *max_j = cJSON_GetObjectItem(params, "max_results");
+    if (max_j && cJSON_IsNumber(max_j)) {
+        max_results = max_j->valueint;
+        if (max_results < 1) max_results = 1;
+        if (max_results > 100) max_results = 100;
+    }
+
+    int days = 0;
+    cJSON *days_j = cJSON_GetObjectItem(params, "days");
+    if (days_j && cJSON_IsNumber(days_j))
+        days = days_j->valueint > 0 ? days_j->valueint : 0;
+
+    str_t out = str_new(4096);
+    int mem_count = 0, ses_count = 0, total_lexical_matches = 0;
+
+    /* ── Exact key lookup (bypasses scoring) ──────── */
+    memory_results_t mem_results = {0};
+    if (key && !query && !pattern) {
+        /* Direct key recall — return just this entry */
+        if (ctx->memory || ctx->ws) {
+            mem_results = ctx->ws
+                ? workspace_recall(ctx->ws, key, 1)
+                : memory_recall(ctx->memory, key, 1);
+            for (int i = 0; i < mem_results.count; i++) {
+                memory_entry_t *e = &mem_results.entries[i];
+                str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
+                tool_track_recalled_key(ctx, e->key);
+            }
+            mem_count = mem_results.count;
+        }
+        if (mem_count == 0)
+            str_appendf(&out, "(no memory found for key \"%s\")\n", key);
+        goto finish;
+    }
 
     /* ── L4: Curated memory search ──────────────── */
-    memory_results_t results = {0};
-    if (search_memory && (ctx->memory || ctx->ws)) {
-        results = ctx->ws
-            ? workspace_recall(ctx->ws, query, 5)
-            : memory_recall(ctx->memory, query, 5);
-
-        for (int i = 0; i < results.count; i++) {
-            memory_entry_t *e = &results.entries[i];
-            str_appendf(&out, "[RECALLED MEMORY — %s]\n%s\n\n", e->key, e->value);
-            tool_track_recalled_key(ctx, e->key);
-        }
-        total_matches += results.count;
+    if (query && (ctx->memory || ctx->ws)) {
+        int mem_max = max_results > 0 ? (max_results < 10 ? max_results : 10) : 5;
+        mem_results = ctx->ws
+            ? workspace_recall(ctx->ws, query, mem_max)
+            : memory_recall(ctx->memory, query, mem_max);
+        mem_count = mem_results.count;
     }
 
     /* ── L3: Session history search ─────────────── */
-    if (search_sessions && ctx->session_idx && ctx->memory &&
-        memory_has_embeddings(ctx->memory)) {
-        embed_ctx_t *embed = memory_embed_ctx(ctx->memory);
-        if (embed) {
-            embed_vec_t query_emb = embed_text(embed, query);
-            if (query_emb.data) {
-                int max_ses = 3;
-                /* If L4 returned good results, fewer sessions needed */
-                if (results.count >= 3) max_ses = 1;
-
-                session_index_results_t ses = session_index_search(
-                    ctx->session_idx, &query_emb, max_ses);
-
-                for (int i = 0; i < ses.count; i++) {
-                    session_index_result_t *sr = &ses.results[i];
-                    /* Format timestamp */
-                    time_t ts = (time_t)sr->timestamp;
-                    struct tm *tm = localtime(&ts);
-                    char ts_buf[64];
-                    strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
-
-                    if (sr->chunk_preview && sr->best_chunk >= 0) {
-                        /* v4.1: Show best-matching chunk text */
-                        str_appendf(&out,
-                            "[RECALLED SESSION CHUNK — %s]\n%s\n"
-                            "  -> file_read %s/journal.jsonl for full context\n\n",
-                            ts_buf, sr->chunk_preview,
-                            sr->session_dir ? sr->session_dir : "");
-                    } else {
-                        /* Legacy: show full manifest */
-                        str_appendf(&out,
-                            "[RECALLED SESSION — %s]\n%s\n"
-                            "  -> file_read %s/journal.jsonl for details\n\n",
-                            ts_buf,
-                            sr->manifest ? sr->manifest : "(no summary)",
-                            sr->session_dir ? sr->session_dir : "");
-                    }
-                }
-                total_matches += ses.count;
-                session_index_results_free(&ses);
-                embed_vec_free(&query_emb);
-            }
+    ss_results_t ses_results = {0};
+    if (query || pattern) {
+        /* Derive sessions_dir from session_dir (parent) */
+        char sessions_dir[NASH_PATH_MAX] = {0};
+        if (ctx->session_dir) {
+            snprintf(sessions_dir, sizeof(sessions_dir), "%s", ctx->session_dir);
+            char *last_slash = strrchr(sessions_dir, '/');
+            if (last_slash) *last_slash = '\0';
         }
+
+        embed_ctx_t *embed = NULL;
+        if (ctx->memory && memory_has_embeddings(ctx->memory))
+            embed = memory_embed_ctx(ctx->memory);
+
+        /* Adjust session count based on memory results */
+        int ses_max = max_results > 0 ? max_results : 5;
+        if (!pattern && mem_count >= 3 && ses_max > 2) ses_max = 2;
+
+        ses_results = session_search(
+            ctx->session_idx, embed, query, pattern,
+            use_regex, ses_max, days,
+            sessions_dir[0] ? sessions_dir : NULL);
+
+        ses_count = ses_results.count;
+        total_lexical_matches = ses_results.total_matches;
     }
 
-    /* Always store result (even empty) so journal gets a ref and the
-     * reactRX.md renderer can produce a clickable hyperlink. */
-    char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(no matches)");
+    /* ── Interleave results by score ────────────── */
+    /* Build a merged index: memory entries have relevance [0,1],
+     * session entries have composite_score [0,1]. Walk both arrays
+     * in descending score order. */
+    {
+        int mi = 0, si = 0;
+        int total_emitted = 0;
+        int emit_limit = max_results > 0 ? max_results : 20;
+
+        static const char *conf_labels[] = {"LOW", "MEDIUM", "HIGH"};
+
+        while (total_emitted < emit_limit && (mi < mem_count || si < ses_count)) {
+            double mem_score = (mi < mem_count)
+                ? mem_results.entries[mi].relevance : -1.0;
+            double ses_score = (si < ses_count)
+                ? ses_results.results[si].composite_score : -1.0;
+
+            if (mem_score >= ses_score && mi < mem_count) {
+                /* Emit memory result */
+                memory_entry_t *e = &mem_results.entries[mi];
+                str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
+                tool_track_recalled_key(ctx, e->key);
+                mi++;
+            } else if (si < ses_count) {
+                /* Emit session result */
+                ss_result_t *r = &ses_results.results[si];
+                time_t ts = (time_t)r->timestamp;
+                struct tm tm_buf;
+                struct tm *tm = gmtime_r(&ts, &tm_buf);
+                char ts_buf[32];
+                if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
+                else    snprintf(ts_buf, sizeof(ts_buf), "%.0f", r->timestamp);
+
+                /* Determine output detail level based on whether we have
+                 * lexical matches (pattern-driven) or just semantic */
+                int has_lex_matches = (r->n_matches > 0);
+                int has_semantic = (r->semantic_score > 0.01);
+
+                if (has_lex_matches || has_semantic) {
+                    str_appendf(&out, "[SESSION — %s  %s  score=%.3f",
+                                ts_buf, conf_labels[r->confidence],
+                                r->composite_score);
+                    if (has_semantic)
+                        str_appendf(&out, " sem=%.2f", r->semantic_score);
+                    if (has_lex_matches)
+                        str_appendf(&out, " lex=%.2f matches=%d",
+                                    r->lexical_score, r->match_count);
+                    str_appendf(&out, "]\n");
+                    str_appendf(&out, "    %s\n",
+                                r->session_dir ? r->session_dir : "");
+
+                    /* Show chunk preview (semantic) */
+                    if (r->chunk_preview && r->chunk_preview[0]) {
+                        str_appendf(&out, "  %s\n", r->chunk_preview);
+                    }
+
+                    /* Show per-line lexical matches */
+                    for (int j = 0; j < r->n_matches; j++) {
+                        ss_match_t *m = &r->matches[j];
+                        str_appendf(&out, "  R%dS%d [%s]: %s\n",
+                                    m->react_loop, m->step, m->tool,
+                                    m->snippet ? m->snippet : "");
+                    }
+                    if (r->match_count > r->n_matches) {
+                        str_appendf(&out, "  ... and %d more match%s\n",
+                                    r->match_count - r->n_matches,
+                                    (r->match_count - r->n_matches) == 1 ? "" : "es");
+                    }
+                } else {
+                    str_appendf(&out,
+                        "[SESSION — %s]\n    %s\n"
+                        "  -> file_read %s/journal.jsonl for details\n",
+                        ts_buf,
+                        r->session_dir ? r->session_dir : "",
+                        r->session_dir ? r->session_dir : "");
+                }
+                str_appendf(&out, "\n");
+                si++;
+            }
+            total_emitted++;
+        }
+
+        if (total_emitted == 0)
+            str_appendf(&out, "(no matches)\n");
+    }
+
+finish:;
+    int total_results = mem_count + ses_count;
+
+    /* Store result */
+    char *hash = store_save(ctx->store,
+                            out.len > 0 ? out.data : "(no matches)");
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddNumberToObject(meta, "matches", total_matches);
+    cJSON_AddNumberToObject(meta, "matches", total_results);
+    if (mem_count > 0)
+        cJSON_AddNumberToObject(meta, "memories", mem_count);
+    if (ses_count > 0)
+        cJSON_AddNumberToObject(meta, "sessions", ses_count);
+    if (total_lexical_matches > 0)
+        cJSON_AddNumberToObject(meta, "lexical_matches", total_lexical_matches);
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_recall",
-                   params, alias, out.len, total_matches, NULL, NULL);
+    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_search",
+                   params, alias, out.len, total_results, NULL, NULL);
 
-    memory_results_free(&results);
+    memory_results_free(&mem_results);
+    if (ses_count > 0) ss_results_free(&ses_results);
     char *ref_copy = strdup(alias);
     free(alias);
     free(hash);

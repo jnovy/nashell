@@ -108,7 +108,7 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 /* Compaction hint text injected as MEMORY_HINT after eviction.
  * Extracted to a constant to eliminate 3 copies and the magic-130 estimate. */
 #define EVICT_COMPACT_HINT \
-    "[Context compacted. Use memory_recall to recover lost " \
+    "[Context compacted. Use memory_search to recover lost " \
     "context \xe2\x80\x94 it searches both stored knowledge and past " \
     "session history.]"
 
