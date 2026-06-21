@@ -25,7 +25,7 @@
 #include <math.h>
 
 /* Maximum line length we'll read from journal.jsonl */
-#define SS_JLINE_MAX     65536
+#define SS_JLINE_MAX     NASH_LINE_MAX
 
 /* Maximum snippet length (matches session_grep's SNIPPET_MAX) */
 #define SS_SNIPPET_MAX   4000
