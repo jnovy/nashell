@@ -852,7 +852,7 @@ tool_retry_limit = 2                   # fail fast
 max_reflection_steps = 3
 
 [memory]
-recall_min_score = 0.28                # stricter — inject fewer, more relevant
+recall_min_score = 0.20                # stricter — inject fewer, more relevant
 memory_index_max = 40
 max_skills_per_query = 2
 max_lessons_per_query = 2
@@ -1035,7 +1035,7 @@ enable_pruning = true
 ...
 
 [memory]
-recall_min_score = 0.25
+recall_min_score = 0.15
 vscore_exponent = 0.3
 ...
 
@@ -1123,7 +1123,7 @@ max_react_steps = 0                       # 0 = unlimited
 llm_timeout = 300                         # seconds per LLM call
 
 [memory]
-recall_min_score = 0.25                   # normalized [0, 1] threshold
+recall_min_score = 0.15                   # normalized [0, 1] threshold
 vscore_exponent = 0.3                     # power-law exponent for validation score
 memory_index_max = 50                     # max entries in memory index
 max_skills_per_query = 2                  # skills loaded per query

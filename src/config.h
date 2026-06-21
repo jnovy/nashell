@@ -251,7 +251,7 @@ typedef struct {
      * This is the frozen-model equivalent of Mem-π's learned abstention:
      * instead of training a model to decide when to inject, we use a score
      * threshold on the composite relevance signal. */
-    double recall_min_score;     /* min composite score for injection (default 0.25, normalized [0,1]) */
+    double recall_min_score;     /* min composite score for injection (default 0.15, normalized [0,1]) */
 
     /* Error-triggered reactive retrieval (P3 from harness-benefit research).
      * When a tool fails, memory is queried with the error text to surface

@@ -76,17 +76,23 @@ void config_set_defaults(config_t *cfg) {
     /* P0: recall_min_score — memories below this composite score are not
      * injected. Formula: composite = relevance × pow(vscore, exponent).
      *
-     * Empirically calibrated with vscore_exponent=0.3 against 10 queries:
-     *   Score distribution: P50=0.19, P75=0.22, P90=0.27, P95=0.30
-     *   t=0.20: avg 21.7/query — too noisy (47, 48, 50 for broad queries)
-     *   t=0.25: avg 6.8/query — good signal/noise, per-type limits cap it
-     *   t=0.28: avg 4.1/query — good but starts losing some relevant hits
-     *   t=0.30: avg 2.7/query — too aggressive (0 for "debug a segfault")
+     * Empirically calibrated with vscore_exponent=0.3 against 20 queries
+     * (1000 data points, 314 memories, hybrid semantic+substring scoring):
+     *   Score distribution: P50=0.10, P75=0.13, P90=0.17, P95=0.20
+     *   Noise ceiling: 0.10 (max score for queries with NO relevant memories)
+     *   Signal floor:  0.19 (min top-1 for queries WITH relevant memories)
+     *   Gap: [0.10, 0.19] — clean separation zone
+     *
+     *   t=0.12: avg 15.6/query — noisy, too many marginal matches
+     *   t=0.15: avg  7.3/query — good signal coverage, per-type limits cap it
+     *   t=0.18: avg  4.3/query — tighter, some signal loss
+     *   t=0.20: avg  2.5/query — aggressive, noticeable signal loss
+     *   t=0.25: avg  0.3/query — kills almost everything
      *
      * With vscore_exponent=0.3, new memories (vscore=0.5) get ×0.81,
-     * so a good semantic match (rel=0.35) → composite=0.28 — passes 0.25.
-     * This was impossible with exponent=1.0 (same match → composite=0.175). */
-    if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.25;
+     * so threshold 0.15 needs raw_relevance ≥ 0.185 (achievable).
+     * At 0.25, raw_relevance ≥ 0.31 was needed (nearly impossible). */
+    if (cfg->recall_min_score <= 0)     cfg->recall_min_score = 0.15;
     if (cfg->error_recall_min_length <= 0)    cfg->error_recall_min_length = 10;
     if (cfg->error_recall_candidates <= 0)    cfg->error_recall_candidates = 3;
     if (cfg->error_recall_max_inject <= 0)    cfg->error_recall_max_inject = 1;
@@ -1614,7 +1620,7 @@ int config_write_default(const char *path) {
         "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
         "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
         "dedup_threshold = 0.90       # cosine similarity threshold for reflection deduplication\n"
-        "recall_min_score = 0.25      # P0: min composite score for memory injection (empirically calibrated)\n"
+        "recall_min_score = 0.15      # P0: min composite score for memory injection (empirically calibrated)\n"
         "\n"
         "# Error-triggered reactive retrieval — when a tool fails, query memory\n"
         "# with the error text to surface relevant lessons/skills.\n"

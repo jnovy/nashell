@@ -898,7 +898,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
          * started below the threshold were permanently excluded. Now we use
          * half the min_score as a pre-filter, then apply the real threshold
          * after ref-boost (below). */
-        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
+        double min_score = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
         double pre_filter = min_score * 0.5;  /* relaxed gate for ref-boost candidates */
         if (out_rel >= pre_filter) {
             scored[n_scored].idx_pos = i;
@@ -962,7 +962,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
      * that crossed the threshold are kept, while truly irrelevant entries
      * (which only passed the relaxed 0.5× gate) are still excluded. */
     {
-        double final_min = m->recall_min_score > 0 ? m->recall_min_score : 0.25;
+        double final_min = m->recall_min_score > 0 ? m->recall_min_score : 0.15;
         int write_pos = 0;
         for (int i = 0; i < n_scored; i++) {
             /* Keep if composite score (post-boost, vscore-adjusted) meets threshold.
