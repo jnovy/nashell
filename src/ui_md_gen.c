@@ -130,6 +130,14 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         if (msg && msg->valuestring) return msg->valuestring;
         return "(system log)";
     }
+    /* Server error entries: show the error message */
+    if (strcmp(tool, "server_error") == 0) {
+        cJSON *err = cJSON_GetObjectItem(params, "error");
+        if (err && err->valuestring) return err->valuestring;
+        cJSON *sm = cJSON_GetObjectItem(params, "server_message");
+        if (sm && sm->valuestring) return sm->valuestring;
+        return "LLM server error";
+    }
     /* Plan: don't show inline text — the full plan is rendered below */
     if (strcmp(tool, "plan") == 0)
         return "";
@@ -730,6 +738,20 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         if (si->compact_desc) {
             str_append_cstr(&md, "---\n");
             str_append_cstr(&md, si->compact_desc);
+            str_append_cstr(&md, "\n---\n");
+            continue;
+        }
+
+        /* Server error — render as prominent error banner so the user
+         * can immediately see the session died and why. */
+        if (strcmp(si->tool, "server_error") == 0) {
+            str_append_cstr(&md, "\n---\n");
+            /* \xe2\x9d\x8c = ❌ */
+            str_appendf(&md, "## \xe2\x9d\x8c LLM Error\n\n");
+            if (si->desc && si->desc[0])
+                str_appendf(&md, "%s\n", si->desc);
+            else
+                str_append_cstr(&md, "LLM server returned an unrecoverable error.\n");
             str_append_cstr(&md, "\n---\n");
             continue;
         }

@@ -112,6 +112,11 @@ int count_lines(const char *s);
  * Returns the number of bytes written (excluding NUL). */
 int utf8_truncate(char *dst, const char *src, int max_bytes);
 
+/* Clamp a byte length so it does not split a multi-byte UTF-8 character.
+ * Returns the largest value <= max_bytes such that s[0..return) ends on
+ * a complete UTF-8 character boundary. */
+size_t utf8_clamp(const char *s, size_t max_bytes);
+
 /* Return the byte length of the UTF-8 character starting at *p.
  * Returns 1 for ASCII/invalid bytes, 2-4 for valid multi-byte sequences. */
 int utf8_char_len(const char *p);

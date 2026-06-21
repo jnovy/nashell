@@ -234,6 +234,32 @@ int utf8_truncate(char *dst, const char *src, int max_bytes) {
     return cut;
 }
 
+size_t utf8_clamp(const char *s, size_t max_bytes) {
+    if (!s || max_bytes == 0) return 0;
+    /* Find actual length up to max_bytes */
+    size_t len = 0;
+    while (len < max_bytes && s[len]) len++;
+    /* String fits entirely — no clamping needed */
+    if (len < max_bytes || !s[len]) return len;
+    /* Walk backwards past any continuation bytes (10xxxxxx) */
+    size_t cut = len;
+    while (cut > 0 && ((unsigned char)s[cut - 1] & 0xC0) == 0x80)
+        cut--;
+    /* Now s[cut-1] is a leader byte — check if the character is complete */
+    if (cut > 0) {
+        unsigned char lead = (unsigned char)s[cut - 1];
+        int expected = 1;
+        if ((lead & 0xE0) == 0xC0) expected = 2;
+        else if ((lead & 0xF0) == 0xE0) expected = 3;
+        else if ((lead & 0xF8) == 0xF0) expected = 4;
+        if (cut - 1 + (size_t)expected <= len)
+            cut = cut - 1 + (size_t)expected;
+        else
+            cut--;
+    }
+    return cut;
+}
+
 /* ── file I/O ───────────────────────────────────────────────────── */
 
 int mkdir_p(const char *path, mode_t mode) {

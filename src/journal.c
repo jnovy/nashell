@@ -617,8 +617,9 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 
         /* Append segment to current chunk */
         if (seg_len > content_budget) {
-            /* Single oversized segment: truncate */
-            str_append(&cur_chunk, segs[i].text, (size_t)content_budget);
+            /* Single oversized segment: truncate (UTF-8 safe) */
+            size_t safe_len = utf8_clamp(segs[i].text, (size_t)content_budget);
+            str_append(&cur_chunk, segs[i].text, safe_len);
             chunk_content_len += content_budget;
         } else {
             str_append_cstr(&cur_chunk, segs[i].text);

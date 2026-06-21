@@ -199,6 +199,8 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
             size_t tlen = chat->msgs[i].content_len;
             if (tlen > REACT_THOUGHT_TRUNC_LEN) tlen = REACT_THOUGHT_TRUNC_LEN;
             if (tlen > augment_remaining) tlen = augment_remaining;
+            /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
+            tlen = utf8_clamp(chat->msgs[i].content, tlen);
             str_append(&buf, chat->msgs[i].content, tlen);
             augment_remaining -= tlen;
             thought_count++;
@@ -1927,6 +1929,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     llm_chat_free(chat);
+
+    /* FIX: Emit REACT_EVENT_DONE on fatal error so the TUI regenerates
+     * reactRX.md showing the error instead of leaving "prompt processing..."
+     * frozen on screen.  Without this, the md is never regenerated because
+     * the error event fires while STATUS_RUNNING, then the loop moves on. */
+    if (!final_result && on_event) {
+        struct timespec task_end;
+        clock_gettime(CLOCK_MONOTONIC, &task_end);
+        double total = (task_end.tv_sec - task_start.tv_sec) +
+                       (task_end.tv_nsec - task_start.tv_nsec) / 1e9;
+        react_event_t ev = {0};
+        ev.react_loop = ctx->tools->react_loop;
+        ev.type = REACT_EVENT_DONE;
+        ev.total_elapsed = total;
+        ev.result = NULL;
+        react_emit(on_event, userdata, &ev);
+    }
 
     /* Remove checkpoint — task completed (successfully or not).
      * Only needed for non-done exits (max steps, errors);

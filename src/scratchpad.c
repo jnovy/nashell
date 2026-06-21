@@ -222,8 +222,10 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
             /* Fits fully */
             str_append_cstr(&out, sorted[i].content);
         } else {
-            /* Truncate content to fit budget (defensive: guard against underflow) */
+            /* Truncate content to fit budget (defensive: guard against underflow).
+             * Clamp to UTF-8 boundary to avoid splitting multi-byte chars. */
             size_t avail = (remaining > header_len + 12) ? (remaining - header_len - 12) : 0;
+            avail = utf8_clamp(sorted[i].content, avail);
             if (avail > 0) str_append(&out, sorted[i].content, avail);
             str_append_cstr(&out, "\n[truncated]");
         }

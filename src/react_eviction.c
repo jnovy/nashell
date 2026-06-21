@@ -653,6 +653,8 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
             int msg_clen = (int)chat->msgs[mi].content_len;
             int blen = msg_clen > REACT_BREADCRUMB_BRIEF_LEN
                 ? REACT_BREADCRUMB_BRIEF_LEN : msg_clen;
+            /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
+            blen = (int)utf8_clamp(content, (size_t)blen);
             memcpy(brief, content, (size_t)blen);
             brief[blen] = '\0';
             for (int b = 0; brief[b]; b++)
@@ -667,6 +669,8 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
         if (strcmp(role, "tool") == 0 && msg_clen < REACT_SUMMARY_TOOL_MIN_LEN)
             continue;
         int clen = msg_clen > max_per_msg ? max_per_msg : msg_clen;
+        /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
+        clen = (int)utf8_clamp(content, (size_t)clen);
         str_appendf(&summary, "[%s]: ", role);
         str_append(&summary, content, (size_t)clen);
         if (msg_clen > max_per_msg)
