@@ -878,28 +878,81 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             } \
         } while (0)
 
+        /* Helper: emit thought text as a green paragraph (using ~> prefix).
+         * Each line of the thought becomes a separate ~> line.
+         * If thought is a single long line, emit it as one ~> line
+         * (md_render.c will word-wrap it). */
+        #define EMIT_THOUGHT_PARAGRAPH() do { \
+            const char *p = thought_start; \
+            int remaining = tlen; \
+            while (remaining > 0) { \
+                /* Find next newline */ \
+                const char *nl = NULL; \
+                for (int k = 0; k < remaining; k++) { \
+                    if (p[k] == '\n' || p[k] == '\r') { \
+                        nl = p + k; \
+                        break; \
+                    } \
+                } \
+                if (nl) { \
+                    int line_len = (int)(nl - p); \
+                    if (line_len > 0) { \
+                        str_append_cstr(&md, "~> "); \
+                        str_append(&md, p, (size_t)line_len); \
+                        str_append_cstr(&md, "\n"); \
+                    } \
+                    p = nl + 1; \
+                    remaining = tlen - (int)(p - thought_start); \
+                    /* Skip \r\n pairs */ \
+                    if (remaining > 0 && *p == '\n') { \
+                        p++; remaining--; \
+                    } \
+                } else { \
+                    /* Last (or only) line */ \
+                    if (remaining > 0) { \
+                        str_append_cstr(&md, "~> "); \
+                        str_append(&md, p, (size_t)remaining); \
+                        str_append_cstr(&md, "\n"); \
+                    } \
+                    break; \
+                } \
+            } \
+        } while (0)
 
-
-        if (is_shell && tlen > 0) {
-            /* shell_exec with thought: thought on main line (plain text),
-             * command on second line (code) */
-            char *thought_text = malloc((size_t)tlen + 1);
-            if (thought_text) {
-                memcpy(thought_text, thought_start, (size_t)tlen);
-                thought_text[tlen] = '\0';
-                /* Replace newlines so the md renderer handles wrapping
-                 * with proper column alignment and green coloring */
-                for (int k = 0; k < tlen; k++) {
-                    if (thought_text[k] == '\n' || thought_text[k] == '\r')
-                        thought_text[k] = ' ';
+        /* Check if thought is multiline (has embedded newlines) */
+        int thought_multiline = 0;
+        if (tlen > 0) {
+            for (int k = 0; k < tlen; k++) {
+                if (thought_start[k] == '\n' || thought_start[k] == '\r') {
+                    thought_multiline = 1;
+                    break;
                 }
             }
-            if (thought_text) {
-                EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
+        }
+        /* Decide: inline thought vs. green paragraph underneath.
+         * Inline if: single line AND fits in available columns.
+         * Paragraph if: multiline OR too long for the line. */
+        int thought_inline = (tlen > 0 && !thought_multiline && tlen <= avail);
+
+        if (is_shell && tlen > 0) {
+            /* shell_exec with thought */
+            if (thought_inline) {
+                /* Thought fits on main line (plain text),
+                 * command on second line (code) */
+                char *thought_text = malloc((size_t)tlen + 1);
+                if (thought_text) {
+                    memcpy(thought_text, thought_start, (size_t)tlen);
+                    thought_text[tlen] = '\0';
+                    EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
+                } else {
+                    EMIT_TOOL_HEADER(!desc_clean);
+                }
+                free(thought_text);
             } else {
+                /* Thought as green paragraph underneath */
                 EMIT_TOOL_HEADER(!desc_clean);
+                EMIT_THOUGHT_PARAGRAPH();
             }
-            free(thought_text);
             if (desc_clean) {
                 EMIT_CONTINUATION(desc_clean, 1);
             }
@@ -908,24 +961,23 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
              * the md renderer word-wraps long code spans across multiple lines */
             EMIT_TOOL_WITH_TEXT(desc_clean, 1);
         } else if (tlen > 0) {
-            /* Has thought: thought on main line (plain text), desc on second line (code) */
-            char *thought_text = malloc((size_t)tlen + 1);
-            if (thought_text) {
-                memcpy(thought_text, thought_start, (size_t)tlen);
-                thought_text[tlen] = '\0';
-                /* Replace newlines so the md renderer handles wrapping
-                 * with proper column alignment and green coloring */
-                for (int k = 0; k < tlen; k++) {
-                    if (thought_text[k] == '\n' || thought_text[k] == '\r')
-                        thought_text[k] = ' ';
+            /* Has thought */
+            if (thought_inline) {
+                /* Thought on main line (plain text), desc on second line (code) */
+                char *thought_text = malloc((size_t)tlen + 1);
+                if (thought_text) {
+                    memcpy(thought_text, thought_start, (size_t)tlen);
+                    thought_text[tlen] = '\0';
+                    EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
+                } else {
+                    EMIT_TOOL_HEADER(!desc_clean);
                 }
-            }
-            if (thought_text) {
-                EMIT_TOOL_WITH_THOUGHT(thought_text, !desc_clean);
+                free(thought_text);
             } else {
+                /* Thought as green paragraph underneath */
                 EMIT_TOOL_HEADER(!desc_clean);
+                EMIT_THOUGHT_PARAGRAPH();
             }
-            free(thought_text);
             if (desc_clean) {
                 EMIT_CONTINUATION(desc_clean, 1);
             }
@@ -945,6 +997,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         #undef EMIT_TOOL_WITH_TEXT
         #undef EMIT_CONTINUATION
         #undef EMIT_TOOL_WITH_THOUGHT
+        #undef EMIT_THOUGHT_PARAGRAPH
         #undef TIME_COL_WIDTH
 
         free(desc_clean);

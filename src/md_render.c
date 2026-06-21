@@ -1132,6 +1132,33 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 wattroff(win, COLOR_PAIR(C_DIM));
             }
 
+        } else if (line_buf[0] == '~' && line_buf[1] == '>'
+                   && line_buf[2] == ' ') {
+            /* Green thought paragraph — renders text in green (C_SUCCESS)
+             * with word-wrapping, no decoration bar. */
+            const char *gp_text = line_buf + 3;
+            int gp_len = (int)strlen(gp_text);
+            int lines_consumed = 1;
+            if (gp_len > 0) {
+                if (visible) {
+                    inline_seg_t segs[MAX_INLINE_SEGS];
+                    int n = parse_inline(gp_text, gp_len, segs, MAX_INLINE_SEGS);
+                    apply_attr_to_segs(segs, n, COLOR_PAIR(C_SUCCESS));
+                    int total_dcols = 0;
+                    for (int k = 0; k < n; k++)
+                        total_dcols += seg_display_cols(segs[k].text, segs[k].len);
+                    if (total_dcols <= cols) {
+                        render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                    } else {
+                        lines_consumed = render_segs_wrapped(
+                            win, vis_line, 0, segs, n, cols);
+                    }
+                } else {
+                    lines_consumed = count_wrapped_lines(gp_text, gp_len, cols);
+                }
+            }
+            advance_render_line(&render_line, lines_consumed);
+
         } else if (line_buf[0] == '>' && line_buf[1] == ' ') {
             /* Blockquote — with word-wrapping */
             int usable = cols - 2;

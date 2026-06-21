@@ -339,7 +339,8 @@ static int wrap_rows_for_segment(int len, int first_row_w, int cont_w) {
     return 1 + (remaining + cont_w - 1) / cont_w;
 }
 
-/* Buffer-aware: counts display lines considering '\n' characters. */
+/* Buffer-aware: counts display lines considering '\n' characters.
+ * Uses UTF-8 display width (columns) for wrapping, not byte count. */
 static int calc_input_lines_buf(const char *buf, int buf_len, int cols) {
     if (buf_len <= 0 || !buf) return 1;
     int first_w = cols - INPUT_PROMPT_W;
@@ -354,11 +355,11 @@ static int calc_input_lines_buf(const char *buf, int buf_len, int cols) {
         /* Find end of this logical line */
         int line_start = pos;
         while (pos < buf_len && buf[pos] != '\n') pos++;
-        int line_len = pos - line_start;
+        int line_disp_w = utf8_display_width(buf + line_start, pos - line_start);
 
         /* First row width depends on whether this is the first logical line */
         int frw = (logical_line == 0) ? first_w : cont_w;
-        total_rows += wrap_rows_for_segment(line_len, frw, cont_w);
+        total_rows += wrap_rows_for_segment(line_disp_w, frw, cont_w);
 
         if (pos < buf_len) pos++;  /* skip '\n' */
         else break;
@@ -368,7 +369,8 @@ static int calc_input_lines_buf(const char *buf, int buf_len, int cols) {
     return total_rows > 0 ? total_rows : 1;
 }
 
-/* Buffer-aware cursor→rowcol: handles '\n' in the input buffer. */
+/* Buffer-aware cursor→rowcol: handles '\n' in the input buffer.
+ * Uses UTF-8 display widths for cursor column positioning. */
 static void cursor_to_rowcol_buf(const char *buf, int buf_len,
                                   int cursor_pos, int cols,
                                   int *out_row, int *out_col) {
@@ -384,21 +386,22 @@ static void cursor_to_rowcol_buf(const char *buf, int buf_len,
         /* Find end of this logical line */
         int line_start = pos;
         while (pos < buf_len && buf[pos] != '\n') pos++;
-        int line_len = pos - line_start;
+        int line_byte_len = pos - line_start;
 
         /* Is the cursor within this logical line? */
-        int cursor_offset = cursor_pos - line_start;
         if (cursor_pos >= line_start &&
             (cursor_pos < pos || (cursor_pos == pos && (pos >= buf_len || buf[pos] == '\n')))) {
-            /* Cursor is in this logical line */
+            /* Cursor is in this logical line — compute display column offset */
+            int cursor_byte_offset = cursor_pos - line_start;
+            int cursor_disp_w = utf8_display_width(buf + line_start, cursor_byte_offset);
             int frw = (logical_line == 0) ? first_w : cont_w;
-            if (cursor_offset <= frw) {
+            if (cursor_disp_w <= frw) {
                 *out_row = display_row;
                 *out_col = (logical_line == 0)
-                           ? INPUT_PROMPT_W + cursor_offset
-                           : cursor_offset;
+                           ? INPUT_PROMPT_W + cursor_disp_w
+                           : cursor_disp_w;
             } else {
-                int rem = cursor_offset - frw;
+                int rem = cursor_disp_w - frw;
                 *out_row = display_row + 1 + rem / cont_w;
                 *out_col = rem % cont_w;
             }
@@ -407,7 +410,8 @@ static void cursor_to_rowcol_buf(const char *buf, int buf_len,
 
         /* Advance display_row by the number of wrapped rows for this line */
         int frw = (logical_line == 0) ? first_w : cont_w;
-        display_row += wrap_rows_for_segment(line_len, frw, cont_w);
+        int line_disp_w = utf8_display_width(buf + line_start, line_byte_len);
+        display_row += wrap_rows_for_segment(line_disp_w, frw, cont_w);
 
         if (pos < buf_len) pos++;  /* skip '\n' */
         else break;
@@ -660,14 +664,17 @@ static void render_bottom(ui_state_t *ui) {
             int is_first_logical = (logical_line == 0);
             int frw = is_first_logical ? first_w : cont_w;
 
-            /* Render first row of this logical line */
+            /* Render first row of this logical line.
+             * Use utf8_bytes_for_width to find how many bytes fit in
+             * the available display columns, so multi-byte UTF-8 chars
+             * are not split and wrapping is correct. */
             {
                 char row_buf[1024];
                 int rlen = 0;
                 if (is_first_logical) {
                     rlen += snprintf(row_buf + rlen, sizeof(row_buf) - rlen, "> ");
                 }
-                int chunk = line_len < frw ? line_len : frw;
+                int chunk = utf8_bytes_for_width(text + line_start, line_len, frw);
                 if (chunk > 0 && text) {
                     if (chunk > (int)sizeof(row_buf) - rlen - 1)
                         chunk = (int)sizeof(row_buf) - rlen - 1;
@@ -682,8 +689,9 @@ static void render_bottom(ui_state_t *ui) {
 
                 /* Continuation rows within this logical line (wrapping) */
                 while (seg_pos < line_len && row < bh) {
-                    int wchunk = line_len - seg_pos;
-                    if (wchunk > cont_w) wchunk = cont_w;
+                    int wchunk = utf8_bytes_for_width(text + line_start + seg_pos,
+                                                     line_len - seg_pos, cont_w);
+                    if (wchunk <= 0) wchunk = 1; /* safety: advance at least 1 byte */
                     char wbuf[1024];
                     if (wchunk > (int)sizeof(wbuf) - 1)
                         wchunk = (int)sizeof(wbuf) - 1;
@@ -864,9 +872,19 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 int cw = cols_now > 0 ? cols_now : 1;
 
                 /* Scan backward to find a position on the previous display row.
-                 * Simple approach: try subtracting the current row's width. */
+                 * Use UTF-8 display widths to find byte position on prior row. */
                 int cur_w = (crow == 0) ? fw : cw;
-                int new_pos = ui->cursor_pos - cur_w;
+                /* Walk backward in the buffer by cur_w display columns */
+                int new_pos = ui->cursor_pos;
+                { int cols_back = 0;
+                  while (new_pos > 0 && cols_back < cur_w) {
+                      const char *prev = utf8_prev(ui->input_buffer, ui->input_buffer + new_pos);
+                      int cw2 = utf8_char_width(prev);
+                      if (cols_back + cw2 > cur_w) break;
+                      cols_back += cw2;
+                      new_pos = (int)(prev - ui->input_buffer);
+                  }
+                }
                 if (new_pos < 0) new_pos = 0;
                 /* Don't cross a newline boundary — clamp to start of current
                  * logical line if we'd jump past a '\n' */
@@ -879,9 +897,11 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         int above_start = nl_pos;
                         while (above_start > 0 && ui->input_buffer[above_start - 1] != '\n')
                             above_start--;
-                        int above_len = nl_pos - above_start;
-                        /* Try to land at same column offset */
-                        new_pos = above_start + (ccol < above_len ? ccol : above_len);
+                        int above_byte_len = nl_pos - above_start;
+                        /* Try to land at same display column offset */
+                        int byte_off = utf8_bytes_for_width(
+                            ui->input_buffer + above_start, above_byte_len, ccol);
+                        new_pos = above_start + byte_off;
                         break;
                     }
                     nl_pos--;
@@ -925,9 +945,17 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 int cw = cols_now > 0 ? cols_now : 1;
                 int cur_w = (crow == 0) ? fw : cw;
 
-                /* Check if there's a '\n' between cursor and cursor+cur_w */
-                int scan_end = ui->cursor_pos + cur_w;
-                if (scan_end > ui->input_len) scan_end = ui->input_len;
+                /* Walk forward by cur_w display columns to find scan boundary */
+                int scan_end = ui->cursor_pos;
+                { int cols_fwd = 0;
+                  while (scan_end < ui->input_len && cols_fwd < cur_w) {
+                      if (ui->input_buffer[scan_end] == '\n') break;
+                      int cw2 = utf8_char_width(ui->input_buffer + scan_end);
+                      cols_fwd += cw2;
+                      scan_end += utf8_char_len(ui->input_buffer + scan_end);
+                  }
+                }
+                /* Check if there's a '\n' between cursor and scan_end */
                 int nl_found = -1;
                 for (int i = ui->cursor_pos; i < scan_end; i++) {
                     if (ui->input_buffer[i] == '\n') {
@@ -942,15 +970,17 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     int next_end = next_start;
                     while (next_end < ui->input_len && ui->input_buffer[next_end] != '\n')
                         next_end++;
-                    int next_len = next_end - next_start;
-                    new_pos = next_start + (ccol < next_len ? ccol : next_len);
+                    int next_byte_len = next_end - next_start;
+                    /* Land at same display column offset */
+                    int byte_off = utf8_bytes_for_width(
+                        ui->input_buffer + next_start, next_byte_len, ccol);
+                    new_pos = next_start + byte_off;
                 } else {
-                    /* Jump by full terminal width (cw) so that the visual
-                     * column is preserved.  Row 0 starts at column
-                     * INPUT_PROMPT_W, continuation rows start at column 0,
-                     * so jumping by cur_w (== fw when crow==0) would shift
-                     * the cursor left by INPUT_PROMPT_W. */
-                    new_pos = ui->cursor_pos + cw;
+                    /* No newline — jump forward by cw display columns */
+                    int fwd_bytes = utf8_bytes_for_width(
+                        ui->input_buffer + ui->cursor_pos,
+                        ui->input_len - ui->cursor_pos, cw);
+                    new_pos = ui->cursor_pos + fwd_bytes;
                 }
                 if (new_pos > ui->input_len) new_pos = ui->input_len;
                 ui->cursor_pos = new_pos;

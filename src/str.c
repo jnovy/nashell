@@ -11,6 +11,7 @@
 #include <time.h>
 #include <curl/curl.h>
 #include <dirent.h>
+#include <stdint.h>
 
 str_t str_new(size_t initial_cap) {
     str_t s;
@@ -101,6 +102,80 @@ const char *utf8_prev(const char *begin, const char *p) {
     p--;
     while (p > begin && ((unsigned char)*p & 0xC0) == 0x80) p--;
     return p;
+}
+
+/* ── UTF-8 display width ───────────────────────────────────────── */
+
+/* Decode a UTF-8 character at *p into a Unicode codepoint.
+ * Returns the codepoint, or (uint32_t)-1 on invalid sequence. */
+static uint32_t utf8_decode(const char *p, int *out_len) {
+    unsigned char c = (unsigned char)p[0];
+    uint32_t cp;
+    int len;
+    if (c < 0x80)        { cp = c;              len = 1; }
+    else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+    else { *out_len = 1; return (uint32_t)-1; }
+    for (int i = 1; i < len; i++) {
+        if (((unsigned char)p[i] & 0xC0) != 0x80) { *out_len = 1; return (uint32_t)-1; }
+        cp = (cp << 6) | ((unsigned char)p[i] & 0x3F);
+    }
+    *out_len = len;
+    return cp;
+}
+
+/* Is a codepoint fullwidth or wide (2 display columns)?
+ * Covers CJK Unified Ideographs, Katakana, Hangul, fullwidth forms, etc. */
+static int is_wide_codepoint(uint32_t cp) {
+    return (cp >= 0x1100 &&
+            (cp <= 0x115F ||                    /* Hangul Jamo */
+             cp == 0x2329 || cp == 0x232A ||    /* angle brackets */
+             (cp >= 0x2E80 && cp <= 0x303E) ||  /* CJK radicals, symbols */
+             (cp >= 0x3040 && cp <= 0x33BF) ||  /* Hiragana, Katakana, CJK compat */
+             (cp >= 0x3400 && cp <= 0x4DBF) ||  /* CJK Unified Ext A */
+             (cp >= 0x4E00 && cp <= 0xA4CF) ||  /* CJK Unified + Yi */
+             (cp >= 0xA960 && cp <= 0xA97C) ||  /* Hangul Jamo Extended-A */
+             (cp >= 0xAC00 && cp <= 0xD7A3) ||  /* Hangul Syllables */
+             (cp >= 0xF900 && cp <= 0xFAFF) ||  /* CJK Compat Ideographs */
+             (cp >= 0xFE10 && cp <= 0xFE6F) ||  /* CJK compat forms, small forms */
+             (cp >= 0xFF01 && cp <= 0xFF60) ||  /* Fullwidth ASCII */
+             (cp >= 0xFFE0 && cp <= 0xFFE6) ||  /* Fullwidth signs */
+             (cp >= 0x1F300 && cp <= 0x1F9FF) || /* Emoji (misc symbols, emoticons) */
+             (cp >= 0x20000 && cp <= 0x2FFFF) || /* CJK Unified Ext B-F */
+             (cp >= 0x30000 && cp <= 0x3FFFF))); /* CJK Unified Ext G+ */
+}
+
+int utf8_char_width(const char *p) {
+    int len;
+    uint32_t cp = utf8_decode(p, &len);
+    if (cp == (uint32_t)-1) return 1;  /* invalid byte: treat as 1 column */
+    if (cp < 32 || cp == 127) return 0; /* control chars: 0 width */
+    if (is_wide_codepoint(cp)) return 2;
+    return 1;
+}
+
+int utf8_display_width(const char *s, int nbytes) {
+    int w = 0;
+    const char *end = s + nbytes;
+    while (s < end && *s) {
+        w += utf8_char_width(s);
+        s += utf8_char_len(s);
+    }
+    return w;
+}
+
+int utf8_bytes_for_width(const char *s, int nbytes, int max_cols) {
+    int cols = 0;
+    const char *start = s;
+    const char *end = s + nbytes;
+    while (s < end && *s) {
+        int cw = utf8_char_width(s);
+        if (cols + cw > max_cols) break;
+        cols += cw;
+        s += utf8_char_len(s);
+    }
+    return (int)(s - start);
 }
 
 /* ── UTF-8 safe truncation ──────────────────────────────────────── */

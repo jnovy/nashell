@@ -124,6 +124,19 @@ const char *utf8_next(const char *p);
  * Walks backwards from p past any continuation bytes. */
 const char *utf8_prev(const char *begin, const char *p);
 
+/* Return the display width (columns) of a single UTF-8 character at *p.
+ * ASCII printable = 1, control = 0, most Unicode = 1,
+ * CJK fullwidth/wide = 2. */
+int utf8_char_width(const char *p);
+
+/* Return the display width (columns) of the first `nbytes` bytes of a
+ * UTF-8 string. Stops at NUL or after nbytes bytes. */
+int utf8_display_width(const char *s, int nbytes);
+
+/* Return the number of bytes from `s` (up to `nbytes`) that fit in
+ * `max_cols` display columns.  Never splits a multi-byte character. */
+int utf8_bytes_for_width(const char *s, int nbytes, int max_cols);
+
 /* ── Directory iteration helpers ──────────────────────────────────────
  * Callback-based directory traversal.  Iterates over files matching
  * *suffix* in *dirpath*, calling cb(dirpath, filename, fullpath, user_data)
