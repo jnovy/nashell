@@ -1697,17 +1697,27 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (step == 0 && tr.success && !is_dedup && meta_str) {
             int sp_exists = scratchpad_find(&ctx->tools->scratch, "auto_seed");
             if (sp_exists < 0) {
-                /* Extract first 500 chars of tool output as seed */
-                int seed_len = (int)strlen(meta_str);
-                if (seed_len > 500) seed_len = 500;
-                char *seed = malloc((size_t)(seed_len + 64));
-                if (seed) {
-                    snprintf(seed, (size_t)(seed_len + 64),
-                        "First result (%s): %.*s%s",
-                        action_name, seed_len, meta_str,
-                        (int)strlen(meta_str) > 500 ? "..." : "");
-                    scratchpad_write(&ctx->tools->scratch, "auto_seed", seed, 3);
-                    free(seed);
+                /* Build a metadata-only summary — strip bulk "content" field
+                 * which dominates output and is not useful as a seed. */
+                cJSON *seed_meta = cJSON_Duplicate(tr.meta, 1);
+                if (seed_meta) {
+                    cJSON *c = cJSON_DetachItemFromObject(seed_meta, "content");
+                    if (c) cJSON_Delete(c);
+                    char *seed_json = cJSON_PrintUnformatted(seed_meta);
+                    cJSON_Delete(seed_meta);
+                    if (seed_json) {
+                        int sj_len = (int)strlen(seed_json);
+                        char *seed = malloc((size_t)(sj_len + 64));
+                        if (seed) {
+                            snprintf(seed, (size_t)(sj_len + 64),
+                                "First result (%s): %s",
+                                action_name, seed_json);
+                            scratchpad_write(&ctx->tools->scratch,
+                                             "auto_seed", seed, 3);
+                            free(seed);
+                        }
+                        free(seed_json);
+                    }
                 }
             }
         }
@@ -1733,11 +1743,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (af_idx >= 0 && ctx->tools->scratch.sections[af_idx].content)
                     cur_len = (int)strlen(ctx->tools->scratch.sections[af_idx].content);
                 if (cur_len < promote_max) {
-                    char snippet[320];
-                    snprintf(snippet, sizeof(snippet), "\n[step %d] %s: %.280s",
-                             step + 1, action_name, meta_str);
-                    scratchpad_append(&ctx->tools->scratch, "auto_findings",
-                                      snippet, 4);
+                    /* Build metadata-only snippet — strip bulk "content" field
+                     * to keep auto_findings concise and useful. No leading \n:
+                     * scratchpad_append() already inserts \n between entries. */
+                    cJSON *promo_meta = cJSON_Duplicate(tr.meta, 1);
+                    if (promo_meta) {
+                        cJSON *c = cJSON_DetachItemFromObject(promo_meta, "content");
+                        if (c) cJSON_Delete(c);
+                        char *promo_json = cJSON_PrintUnformatted(promo_meta);
+                        cJSON_Delete(promo_meta);
+                        if (promo_json) {
+                            char snippet[320];
+                            snprintf(snippet, sizeof(snippet),
+                                     "[step %d] %s: %.280s",
+                                     step + 1, action_name, promo_json);
+                            scratchpad_append(&ctx->tools->scratch,
+                                              "auto_findings", snippet, 4);
+                            free(promo_json);
+                        }
+                    }
                 }
             }
         }
