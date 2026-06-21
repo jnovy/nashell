@@ -463,10 +463,17 @@ static void test_mark_candidates_respects_floor(void) {
                                           score_by_position, NULL,
                                           mark);
 
-    /* Floor should prevent evicting most messages */
-    /* With floor = evictable_chars - 100, at most ~50 chars can be removed,
-     * but each message is 2000 chars — so nothing should be marked */
-    ASSERT_EQ(n_marked, 0);
+    /* FLAW 5 FIX: Floor prevents evicting large messages, but small messages
+     * (the ~10-char assistant tool_call stubs) can be evicted individually
+     * without their 2000-char partners.  Previously both were skipped. */
+    ASSERT(n_marked > 0);  /* small messages fit within the 100-char budget */
+    /* But the 2000-char tool_results should NOT be marked (too large) */
+    for (int i = 0; i < n_evictable; i++) {
+        if (mark[i]) {
+            int mi = evict_start + i;
+            ASSERT(chat->msgs[mi].content_len < 100);  /* only small msgs */
+        }
+    }
 
     free(mark);
     evict_free_partner_map(&pmap);

@@ -62,16 +62,21 @@
 
 typedef struct { int idx; int len; } compress_cand_t;
 
+/* SIMP 4 FIX: safe comparison (subtraction can overflow for extreme values) */
 static int cmp_compress_desc(const void *a, const void *b) {
-    return ((const compress_cand_t *)b)->len - ((const compress_cand_t *)a)->len;
+    int la = ((const compress_cand_t *)a)->len;
+    int lb = ((const compress_cand_t *)b)->len;
+    return (lb > la) - (lb < la);
 }
 
 /* Review B4: Generic candidate type used by evict_mark_candidates(). */
 typedef struct { int idx; int score; long chars; } evict_candidate_t;
 
+/* SIMP 4 FIX: safe comparison */
 static int cmp_candidate_score_asc(const void *a, const void *b) {
-    return ((const evict_candidate_t *)a)->score
-         - ((const evict_candidate_t *)b)->score;
+    int sa = ((const evict_candidate_t *)a)->score;
+    int sb = ((const evict_candidate_t *)b)->score;
+    return (sa > sb) - (sa < sb);
 }
 
 /* ── Proposal E: Partner Index ────────────────────────── */
@@ -338,8 +343,17 @@ static int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
     }
     int pos_norm = (n_evictable > 1)
         ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
-    int size_bonus = (rec > 0 && msg_len > REACT_SCORE_SIZE_THRESH)
-        ? (msg_len / REACT_SCORE_SIZE_DIV) * rec : 0;
+    /* FLAW 4 FIX: Apply size bonus for non-recoverable content too (at half
+     * rate). Previously a 50KB rec=0 message scored the same as a 200-char one,
+     * causing bloated non-recoverable LOW-importance messages to survive while
+     * smaller important content was evicted. */
+    int size_bonus = 0;
+    if (msg_len > REACT_SCORE_SIZE_THRESH) {
+        if (rec > 0)
+            size_bonus = (msg_len / REACT_SCORE_SIZE_DIV) * rec;
+        else
+            size_bonus = msg_len / (REACT_SCORE_SIZE_DIV * 2);
+    }
     if (size_bonus > REACT_SCORE_SIZE_MAX) size_bonus = REACT_SCORE_SIZE_MAX;
     return imp * REACT_SCORE_IMP_WEIGHT
          - rec * REACT_SCORE_REC_WEIGHT
@@ -415,14 +429,21 @@ int evict_mark_candidates(const llm_chat_t *chat,
             }
         }
 
-        /* Check floor for total pair cost */
-        if (remaining - tail_chars - msg_chars - pair_chars < floor_chars) continue;
+        /* FLAW 5 FIX: When pair violates floor, evict message alone without
+         * its partner. Previously BOTH were skipped, leaving large pairs
+         * un-evictable when context is tight. */
+        int evict_partner = 0;
+        if (pair_ri >= 0 && !evict_mark[pair_ri]) {
+            if (remaining - tail_chars - msg_chars - pair_chars >= floor_chars)
+                evict_partner = 1;
+            /* else: evict message alone, orphaning the partner */
+        }
 
         evict_mark[ri] = 1;
         remaining -= msg_chars;
         n_marked++;
 
-        if (pair_ri >= 0 && !evict_mark[pair_ri]) {
+        if (evict_partner) {
             evict_mark[pair_ri] = 1;
             remaining -= pair_chars;
             n_marked++;
@@ -492,7 +513,9 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
             chat->msgs[i].content, bm25_query, scaled_units, scaled_chars);
         if (compressed) {
             int new_len = (int)strlen(compressed);
-            if (new_len < old_len) {
+            /* FLAW 7 FIX: Guard against compress returning empty string,
+             * which would effectively delete the message content. */
+            if (new_len > 0 && new_len < old_len) {
                 llm_chat_replace_content(chat, i, compressed);
                 total_chars = chat->total_chars;
                 did_compress = 1;

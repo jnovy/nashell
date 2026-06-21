@@ -4,6 +4,11 @@
 
 /* FIX #7: Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
+/* FLAW 2 FIX: Cap total augmentation chars (thoughts + scratchpad) to prevent
+ * query dilution.  With 100+ tokenized words, each term match contributes only
+ * ~0.01 to the score, reducing discriminative power.  Cap at ~400 chars
+ * produces ~30 augmented words — enough for context but not overwhelming. */
+#define REACT_BM25_MAX_AUGMENT_CHARS 400
 
 /* Log a parse error to journal + store.  Shared between the two parse-error
  * branches (no JSON / missing "action" field) to eliminate duplication. */
@@ -179,27 +184,38 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
             }
         }
     }
+    /* FLAW 2 FIX: Track augmentation budget to prevent query dilution.
+     * User query terms are primary; augmented content is secondary context. */
+    size_t base_len = buf.len;  /* user query portion */
+    size_t augment_remaining = REACT_BM25_MAX_AUGMENT_CHARS;
+
     /* Augment with recent assistant thoughts (last 3 exchanges) */
     int thought_count = 0;
     for (int i = chat->n_msgs - 1; i >= 0 && thought_count < 3; i--) {
+        if (augment_remaining == 0) break;
         if (chat->msgs[i].role && strcmp(chat->msgs[i].role, "assistant") == 0 &&
             chat->msgs[i].content && chat->msgs[i].content_len > 20) {
             str_append_cstr(&buf, " ");
             size_t tlen = chat->msgs[i].content_len;
-            str_append(&buf, chat->msgs[i].content,
-                       tlen > REACT_THOUGHT_TRUNC_LEN ? REACT_THOUGHT_TRUNC_LEN : tlen);
+            if (tlen > REACT_THOUGHT_TRUNC_LEN) tlen = REACT_THOUGHT_TRUNC_LEN;
+            if (tlen > augment_remaining) tlen = augment_remaining;
+            str_append(&buf, chat->msgs[i].content, tlen);
+            augment_remaining -= tlen;
             thought_count++;
         }
     }
     /* Augment with scratchpad content if available */
-    if (scratch && scratch->count > 0) {
-        char *sp = scratchpad_serialize_budget(scratch, REACT_SP_BM25_BUDGET);
+    if (augment_remaining > 0 && scratch && scratch->count > 0) {
+        size_t sp_budget = augment_remaining < REACT_SP_BM25_BUDGET
+            ? augment_remaining : REACT_SP_BM25_BUDGET;
+        char *sp = scratchpad_serialize_budget(scratch, sp_budget);
         if (sp && sp[0]) {
             str_append_cstr(&buf, " ");
             str_append_cstr(&buf, sp);
         }
         free(sp);
     }
+    (void)base_len;  /* used conceptually for budget tracking */
     return str_steal(&buf);
 }
 

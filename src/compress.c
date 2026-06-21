@@ -56,8 +56,9 @@ static char **tokenize_words(const char *text, int *n_words) {
 
     const char *p = text;
     while (*p) {
-        /* Skip non-alpha */
-        while (*p && !isalpha((unsigned char)*p)) p++;
+        /* Skip non-alphanumeric (FLAW 3 FIX: was isalpha — skipped digit-starting
+         * tokens like error codes 404, IPs 192.168.1.1, versions, hex values) */
+        while (*p && !isalnum((unsigned char)*p)) p++;
         if (!*p) break;
         const char *start = p;
         while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
@@ -88,13 +89,37 @@ static void free_words(char **words, int n) {
     free(words);
 }
 
+/* DEDUP 1 FIX: Extracted chunk-freeing pattern (was 4 identical copies). */
+static void free_chunks(char **chunks, int n) {
+    if (!chunks) return;
+    for (int i = 0; i < n; i++) free(chunks[i]);
+    free(chunks);
+}
+
+/* DEDUP 2 FIX: Extracted grow-and-add pattern (was duplicated in FLUSH_MERGE
+ * macro and emit-as-own-chunk block). Returns 0 on success, -1 on OOM. */
+static int push_chunk(char ***chunks, int *count, int *cap, char *chunk) {
+    if (*count >= *cap) {
+        int new_cap = *cap * 2;
+        char **tmp = realloc(*chunks, (size_t)new_cap * sizeof(char *));
+        if (!tmp) return -1;
+        *chunks = tmp;
+        *cap = new_cap;
+    }
+    (*chunks)[(*count)++] = chunk;
+    return 0;
+}
+
 /* Review C3: In-place word scanning eliminates per-chunk malloc/free overhead.
  * For each sentence word, scans in-place (lowercased) and compares against
  * pre-tokenized query words. Previously allocated N word strings per chunk
  * via tokenize_words() — with 100+ chunks × 20 words each = 2000+ malloc/free.
  *
  * FIX #10: Also does substring matching for code identifiers. */
-static float score_sentence(const char *sentence, char **query_words, int n_query) {
+/* SIMP 3 FIX: Added sentence_len parameter to avoid redundant strlen.
+ * Caller already knows chunk length from split_chunks. */
+static float score_sentence(const char *sentence, int sentence_len,
+                            char **query_words, int n_query) {
     if (!sentence || !query_words || n_query == 0) return 0.0f;
 
     float score = 0.0f;
@@ -106,7 +131,7 @@ static float score_sentence(const char *sentence, char **query_words, int n_quer
         /* Scan sentence words in-place (no allocation) */
         const char *p = sentence;
         while (*p) {
-            while (*p && !isalpha((unsigned char)*p)) p++;
+            while (*p && !isalnum((unsigned char)*p)) p++;
             if (!*p) break;
             const char *wstart = p;
             while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
@@ -144,9 +169,9 @@ static float score_sentence(const char *sentence, char **query_words, int n_quer
     }
     score /= (float)n_query;
 
-    int slen = (int)strlen(sentence);
-    if (slen > 80) score += 0.1f;
-    if (slen > 200) score += 0.1f;
+    /* SIMP 3 FIX: Use caller-provided length instead of strlen */
+    if (sentence_len > 80) score += 0.1f;
+    if (sentence_len > 200) score += 0.1f;
 
     return score;
 }
@@ -172,20 +197,16 @@ static char **split_chunks(const char *text, int *n_chunks) {
     int  merge_len = 0;
     if (!merge_buf) { free(chunks); *n_chunks = 0; return NULL; }
 
-    /* Helper macro: flush merge buffer as its own chunk */
+    /* SIMP 2 FIX: Replaced FLUSH_MERGE macro (16-line macro with goto control
+     * flow) with flush_merge inline helper using push_chunk (DEDUP 2). */
     #define FLUSH_MERGE() do { \
         if (merge_len > 0) { \
             char *_chunk = malloc((size_t)(merge_len + 1)); \
             if (_chunk) { \
                 memcpy(_chunk, merge_buf, (size_t)merge_len); \
                 _chunk[merge_len] = '\0'; \
-                if (count >= cap) { \
-                    cap *= 2; \
-                    char **_tmp = realloc(chunks, (size_t)cap * sizeof(char *)); \
-                    if (!_tmp) { free(_chunk); goto done; } \
-                    chunks = _tmp; \
-                } \
-                chunks[count++] = _chunk; \
+                if (push_chunk(&chunks, &count, &cap, _chunk) < 0) \
+                    { free(_chunk); goto done; } \
             } \
             merge_len = 0; \
         } \
@@ -230,18 +251,13 @@ static char **split_chunks(const char *text, int *n_chunks) {
             merge_len += ll;
         } else {
             FLUSH_MERGE();
-            /* Emit current line as its own chunk */
+            /* DEDUP 2 FIX: Use push_chunk instead of inline grow-and-add */
             char *chunk = malloc((size_t)(ll + 1));
             if (chunk) {
                 memcpy(chunk, p, (size_t)ll);
                 chunk[ll] = '\0';
-                if (count >= cap) {
-                    cap *= 2;
-                    char **tmp = realloc(chunks, (size_t)cap * sizeof(char *));
-                    if (!tmp) { free(chunk); goto done; }
-                    chunks = tmp;
-                }
-                chunks[count++] = chunk;
+                if (push_chunk(&chunks, &count, &cap, chunk) < 0)
+                    { free(chunk); goto done; }
             }
         }
 
@@ -275,7 +291,8 @@ static int cmp_scored_desc(const void *a, const void *b) {
 static int cmp_index_asc(const void *a, const void *b) {
     int ia = ((const scored_chunk_t *)a)->index;
     int ib = ((const scored_chunk_t *)b)->index;
-    return ia - ib;
+    /* SIMP 4 FIX: safe comparison (ia - ib can overflow for extreme values) */
+    return (ia > ib) - (ia < ib);
 }
 
 /* B6 FIX: Shared chunk assembly helper. Writes chunks into `out` buffer up to
@@ -289,7 +306,9 @@ static size_t emit_chunks(char *out, size_t out_cap, char **chunks,
     for (int i = 0; i < count; i++) {
         const char *s = chunks[indices ? indices[i] : i];
         size_t sl = strlen(s);
-        if (pos + sl + 2 > (size_t)max_chars) break;
+        /* FLAW 6 FIX: was +2 (reserved space for NUL which isn't part of
+         * output length), causing the last fitting chunk to be skipped */
+        if (pos + sl + 1 > (size_t)max_chars) break;
         memcpy(out + pos, s, sl);
         pos += sl;
         out[pos++] = '\n';
@@ -340,8 +359,7 @@ char *compress_to_relevant(const char *text, const char *query,
         if (out)
             emit_chunks(out, out_cap, chunks, NULL, n_chunks, max_chars,
                         n_chunks);
-        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
-        free(chunks);
+        free_chunks(chunks, n_chunks);
         return out;
     }
 
@@ -353,8 +371,7 @@ char *compress_to_relevant(const char *text, const char *query,
     scored_chunk_t *scored = malloc((size_t)n_chunks * sizeof(scored_chunk_t));
     if (!scored) {
         free_words(qwords, n_qwords);
-        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
-        free(chunks);
+        free_chunks(chunks, n_chunks);
         return NULL;
     }
     /* Compute max content-based score across all chunks to calibrate
@@ -364,7 +381,8 @@ char *compress_to_relevant(const char *text, const char *query,
     float max_content_score = 0.0f;
     for (int i = 0; i < n_chunks; i++) {
         scored[i].index = i;
-        scored[i].score = score_sentence(chunks[i], qwords, n_qwords);
+        scored[i].score = score_sentence(chunks[i], (int)strlen(chunks[i]),
+                                          qwords, n_qwords);
         if (scored[i].score > max_content_score)
             max_content_score = scored[i].score;
     }
@@ -377,7 +395,10 @@ char *compress_to_relevant(const char *text, const char *query,
         if (i == 0)      scored[i].score += bonus_scale;
         else if (i == 1) scored[i].score += bonus_scale * 0.73f;
         else if (i == 2) scored[i].score += bonus_scale * 0.47f;
-        if (i >= n_chunks - 2) scored[i].score += bonus_scale * 0.5f;
+        /* FLAW 1 FIX: Guard tail bonus against overlap with head region.
+         * Previously when n_chunks<=4, middle chunks got BOTH head+tail
+         * bonuses, inverting the intended ranking. */
+        if (i >= n_chunks - 2 && i > 2) scored[i].score += bonus_scale * 0.5f;
     }
 
     /* Sort by score descending, keep top-N */
@@ -393,8 +414,7 @@ char *compress_to_relevant(const char *text, const char *query,
     if (!out) {
         free(scored);
         free_words(qwords, n_qwords);
-        for (int i = 0; i < n_chunks; i++) free(chunks[i]);
-        free(chunks);
+        free_chunks(chunks, n_chunks);
         return NULL;
     }
     int *indices = malloc((size_t)keep * sizeof(int));
@@ -409,7 +429,6 @@ char *compress_to_relevant(const char *text, const char *query,
     /* Cleanup */
     free(scored);
     free_words(qwords, n_qwords);
-    for (int i = 0; i < n_chunks; i++) free(chunks[i]);
-    free(chunks);
+    free_chunks(chunks, n_chunks);
     return out;
 }
