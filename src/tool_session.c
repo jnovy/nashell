@@ -1,12 +1,16 @@
-/* tool_session.c — session_grep: exact/substring search across past session
+/* tool_session.c — session_grep: substring or regex search across past session
  * journals.  Complements memory_recall's semantic search with precise
  * pattern matching on function names, error codes, file paths, commands,
  * and other identifiers that embedding-based search handles poorly.
  *
+ * Supports two modes:
+ *   - Substring (default): case-insensitive literal substring match
+ *   - Regex (regex=true):  POSIX Extended Regular Expression, case-insensitive
+ *
  * Iterates sessions newest-first via the in-memory session_index (if
  * available) or by scanning the sessions directory directly.  For each
- * session, reads journal.jsonl line by line and applies case-insensitive
- * substring matching against the raw JSON text (which contains thoughts,
+ * session, reads journal.jsonl line by line and applies the selected
+ * matching mode against the raw JSON text (which contains thoughts,
  * tool params, commands, file paths, etc.).
  *
  * Part of Nash unified memory architecture v4.1. */
@@ -21,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>    /* strcasestr */
+#include <regex.h>      /* regcomp, regexec, regfree — POSIX regex */
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -39,10 +44,11 @@
 
 
 /* Extract a readable context snippet around the match position.
- * Writes into buf (size buflen).  Returns buf. */
+ * match_len is the length of the matched text (pattern length for substring,
+ * rm_eo - rm_so for regex).  Writes into buf (size buflen).  Returns buf. */
 static char *extract_snippet(const char *line, const char *match_pos,
-                              const char *pattern, char *buf, size_t buflen) {
-    size_t patlen = strlen(pattern);
+                              size_t match_len, char *buf, size_t buflen) {
+    size_t patlen = match_len;
     size_t linelen = strlen(line);
 
     /* Determine a window around the match — use full line width */
@@ -167,6 +173,24 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         cutoff_ts = (double)time(NULL) - (double)days * 86400.0;
     }
 
+    /* Optional regex — use POSIX Extended Regular Expressions */
+    int use_regex = 0;
+    regex_t compiled_re;
+    cJSON *regex_j = cJSON_GetObjectItem(params, "regex");
+    if (regex_j && cJSON_IsTrue(regex_j)) {
+        use_regex = 1;
+        int rc = regcomp(&compiled_re, pattern, REG_EXTENDED | REG_ICASE | REG_NEWLINE);
+        if (rc != 0) {
+            char errbuf[256];
+            regerror(rc, &compiled_re, errbuf, sizeof(errbuf));
+            regfree(&compiled_re);
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "session_grep: invalid regex \"%s\": %s", pattern, errbuf);
+            return tools_make_error(msg);
+        }
+    }
+
     /* Collect session directories to search (newest first).
      * Prefer the in-memory session_index (already sorted by timestamp desc). */
     typedef struct {
@@ -198,6 +222,7 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
          * parent is the sessions/ directory. */
         if (!ctx->session_dir) {
             free(sessions);
+            if (use_regex) regfree(&compiled_re);
             return tools_make_error("no session directory available for session_grep");
         }
         char sessions_dir[NASH_PATH_MAX];
@@ -208,6 +233,7 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         DIR *d = opendir(sessions_dir);
         if (!d) {
             free(sessions);
+            if (use_regex) regfree(&compiled_re);
             return tools_make_error("cannot open sessions directory");
         }
 
@@ -247,6 +273,7 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
     if (!line_buf) {
         free(sessions);
         str_free(&out);
+        if (use_regex) regfree(&compiled_re);
         return tools_make_error("out of memory");
     }
 
@@ -272,9 +299,22 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
         int session_printed = 0;
 
         while (fgets(line_buf, JLINE_MAX, f) && total_matches < max_results) {
-            /* Case-insensitive substring search on the raw line */
-            const char *match = strcasestr(line_buf, pattern);
-            if (!match) continue;
+            const char *match_pos = NULL;
+            size_t match_len = 0;
+
+            if (use_regex) {
+                /* POSIX regex match */
+                regmatch_t pmatch[1];
+                if (regexec(&compiled_re, line_buf, 1, pmatch, 0) == 0) {
+                    match_pos = line_buf + pmatch[0].rm_so;
+                    match_len = (size_t)(pmatch[0].rm_eo - pmatch[0].rm_so);
+                }
+            } else {
+                /* Case-insensitive substring search on the raw line */
+                match_pos = strcasestr(line_buf, pattern);
+                match_len = strlen(pattern);
+            }
+            if (!match_pos) continue;
 
             /* Skip structural noise (system, query, context, memory_context, spec) */
             int rl, step;
@@ -296,7 +336,7 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
 
             /* Extract snippet around match */
             char snippet[SNIPPET_MAX + 16];
-            extract_snippet(line_buf, match, pattern, snippet, sizeof(snippet));
+            extract_snippet(line_buf, match_pos, match_len, snippet, sizeof(snippet));
 
             str_appendf(&out, "  R%dS%d [%s]: %s\n", rl, step, tool, snippet);
             total_matches++;
@@ -307,25 +347,27 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
 
     free(line_buf);
     free(sessions);
+    if (use_regex) regfree(&compiled_re);
 
     /* Summary header */
+    const char *mode_label = use_regex ? "regex" : "pattern";
     str_t result = str_new(out.len + 256);
     if (days > 0) {
         str_appendf(&result,
             "session_grep: %d match%s across %d session%s "
-            "(searched %d sessions within %d day%s, pattern: \"%s\")\n\n",
+            "(searched %d sessions within %d day%s, %s: \"%s\")\n\n",
             total_matches, total_matches == 1 ? "" : "es",
             sessions_matched, sessions_matched == 1 ? "" : "s",
             sessions_scanned, days, days == 1 ? "" : "s",
-            pattern);
+            mode_label, pattern);
     } else {
         str_appendf(&result,
             "session_grep: %d match%s across %d session%s "
-            "(searched %d sessions, pattern: \"%s\")\n\n",
+            "(searched %d sessions, %s: \"%s\")\n\n",
             total_matches, total_matches == 1 ? "" : "es",
             sessions_matched, sessions_matched == 1 ? "" : "s",
             sessions_scanned,
-            pattern);
+            mode_label, pattern);
     }
 
     if (total_matches > 0) {
@@ -342,6 +384,8 @@ tool_result_t tool_session_grep(tool_ctx_t *ctx, cJSON *params) {
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "pattern", pattern);
+    if (use_regex)
+        cJSON_AddBoolToObject(meta, "regex", 1);
     cJSON_AddNumberToObject(meta, "matches", total_matches);
     cJSON_AddNumberToObject(meta, "sessions_matched", sessions_matched);
     cJSON_AddNumberToObject(meta, "sessions_searched", sessions_scanned);
