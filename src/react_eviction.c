@@ -605,10 +605,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     long context_budget = react_context_budget(ctx);
     int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
-    int hysteresis_gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
-    if (hysteresis_gap < REACT_HYSTERESIS_MIN_GAP)
-        hysteresis_gap = REACT_HYSTERESIS_MIN_GAP;
-    int target_pct = eviction_pct - hysteresis_gap;
+    int target_pct = react_eviction_target_pct(ctx->tools->cfg);
 
     long total_chars = react_calc_total_chars(chat);
     int usage_pct = react_usage_pct(total_chars, context_budget);

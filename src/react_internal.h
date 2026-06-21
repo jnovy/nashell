@@ -130,6 +130,17 @@ static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
     return react_usage_pct(react_calc_total_chars(chat), budget);
 }
 
+/* Compute eviction target_pct from config.
+ * Shared between react_maybe_evict and react_emergency_evict_and_reinject
+ * to eliminate duplicated hysteresis gap calculation. */
+static inline int react_eviction_target_pct(const config_t *cfg) {
+    int eviction_pct = cfg ? cfg->context_eviction_pct : 70;
+    int gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
+    if (gap < REACT_HYSTERESIS_MIN_GAP)
+        gap = REACT_HYSTERESIS_MIN_GAP;
+    return eviction_pct - gap;
+}
+
 /* FIX #11: Compute total chars in head (messages before evict_start).
  * Eliminates 3 copies of the same loop. */
 static inline long react_head_chars(const llm_chat_t *chat, int evict_start) {

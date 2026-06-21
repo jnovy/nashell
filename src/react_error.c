@@ -127,11 +127,7 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct)
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     long cb = react_context_budget(ctx);
     /* FIX #4: Compute target_pct consistent with progressive eviction */
-    int eviction_pct = ctx->tools->cfg ? ctx->tools->cfg->context_eviction_pct : 70;
-    int hysteresis_gap = eviction_pct / REACT_HYSTERESIS_DIVISOR;
-    if (hysteresis_gap < REACT_HYSTERESIS_MIN_GAP)
-        hysteresis_gap = REACT_HYSTERESIS_MIN_GAP;
-    int target_pct = eviction_pct - hysteresis_gap;
+    int target_pct = react_eviction_target_pct(ctx->tools->cfg);
     int n_evict = react_emergency_evict(chat, cb, target_pct);
     if (n_evict > 0) {
         int kh = react_compute_keep_head(chat);

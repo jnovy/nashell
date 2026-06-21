@@ -5,6 +5,60 @@
 /* FIX #7: Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
 
+/* Wait for user pause/redirect — shared between top-of-loop and bottom-of-loop
+ * pause handlers. Waits on condvar, injects redirect query into chat, and
+ * cleans up checkpoint. Caller is responsible for outer condition checks. */
+static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
+                                     int step,
+                                     react_event_fn on_event, void *userdata) {
+    {
+        react_event_t ev = {0};
+        ev.react_loop = ctx->tools->react_loop;
+        ev.type = REACT_EVENT_WARNING;
+        ev.step = step;
+        ev.message = "Paused (Space to resume, type query to redirect)";
+        react_emit(on_event, userdata, &ev);
+    }
+    /* Wait for user to provide a redirect query (or resume).
+     * Uses pthread_cond_timedwait with 2s timeout as an escape hatch:
+     * if the TUI thread crashes/exits without signaling, the inference
+     * thread won't block forever — it checks g_tui_active each cycle
+     * and breaks out with a synthetic "quit" redirect. */
+    ctx->pause_waiting = 1;
+    pthread_mutex_lock(&ctx->pause_mutex);
+    while (!ctx->pause_query) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 2;
+        pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
+        if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
+            ctx->pause_query = strdup("quit");
+            break;
+        }
+    }
+    char *redirect = ctx->pause_query;
+    ctx->pause_query = NULL;
+    ctx->pause_waiting = 0;
+    ctx->pause_requested = 0;
+    pthread_mutex_unlock(&ctx->pause_mutex);
+
+    /* Reset abort flag so next LLM call proceeds normally */
+    ctx->provider->abort_retry = 0;
+
+    /* Inject the redirect query into the chat context */
+    char *inject_msg = malloc(strlen(redirect) + 64);
+    if (inject_msg) {
+        snprintf(inject_msg, strlen(redirect) + 64,
+                 "[User redirect]\n%s", redirect);
+        llm_chat_add(chat, "user", inject_msg);
+        if (chat->n_msgs > 0)
+            chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
+        free(inject_msg);
+    }
+    free(redirect);
+    react_checkpoint_remove(ctx);
+}
+
 /* ── helpers ─────────────────────────────────────────── */
 
 /* FIX #4: Get chars-per-token from runtime state (mutable) instead of
@@ -360,6 +414,7 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
     journal_append(tools->journal, react_loop, step, "memory_context",
                    params, mc_alias, mc_alias ? strlen(mc_alias) : 0, 0, NULL, NULL);
     free(mc_alias);
+    cJSON_Delete(params);
 }
 
 /* Recursively unwrap nested JSON in the "thought" field.
@@ -667,57 +722,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         if (ctx->pause_requested) {
             react_checkpoint_save(ctx, step, user_query,
                                   chat->last_tool_call_id);
-            {
-                react_event_t ev = {0};
-                ev.react_loop = ctx->tools->react_loop;
-                ev.type = REACT_EVENT_WARNING;
-                ev.step = step;
-                ev.message = "Paused (Space to resume, type query to redirect)";
-                react_emit(on_event, userdata, &ev);
-            }
-            /* Wait for user to provide a redirect query (or resume).
-             * Uses pthread_cond_timedwait with 2s timeout as an escape hatch:
-             * if the TUI thread crashes/exits without signaling, the inference
-             * thread won't block forever — it checks g_tui_active each cycle
-             * and breaks out with a synthetic "quit" redirect. */
-            ctx->pause_waiting = 1;
-            pthread_mutex_lock(&ctx->pause_mutex);
-            while (!ctx->pause_query) {
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_sec += 2;
-                pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
-                /* Escape hatch: if TUI shut down while we were waiting,
-                 * inject a synthetic quit to unblock the loop. */
-                if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
-                    ctx->pause_query = strdup("quit");
-                    break;
-                }
-            }
-            char *redirect = ctx->pause_query;
-            ctx->pause_query = NULL;
-            ctx->pause_waiting = 0;
-            ctx->pause_requested = 0;
-            pthread_mutex_unlock(&ctx->pause_mutex);
-
-            /* Reset abort flag so next LLM call proceeds normally */
-            ctx->provider->abort_retry = 0;
-
-            /* Inject the redirect query into the chat context so the model
-             * sees it as a new user message in the ongoing conversation. */
-            char *inject_msg = malloc(strlen(redirect) + 64);
-            if (inject_msg) {
-                snprintf(inject_msg, strlen(redirect) + 64,
-                         "[User redirect]\n%s", redirect);
-                llm_chat_add(chat, "user", inject_msg);
-                /* L4 FIX: User redirects carry user intent — NORMAL, not LOW */
-                if (chat->n_msgs > 0)
-                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
-                free(inject_msg);
-            }
-            free(redirect);
-            react_checkpoint_remove(ctx);
-            /* Fall through to continue the loop with preserved context */
+            react_wait_for_redirect(ctx, chat, step, on_event, userdata);
         }
 
         ctx->tools->step = step + 1;
@@ -1825,51 +1830,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * condvar for the user to provide a redirect query or resume.
          * Checkpoint was already saved above. */
         if (!final_result && ctx->pause_requested) {
-            {
-                react_event_t ev = {0};
-                ev.react_loop = ctx->tools->react_loop;
-                ev.type = REACT_EVENT_WARNING;
-                ev.step = step + 1;
-                ev.message = "Paused (Space to resume, type query to redirect)";
-                react_emit(on_event, userdata, &ev);
-            }
-            /* Wait for user to provide a redirect query (or resume).
-             * Timed wait with escape hatch — see top-of-loop comment. */
-            ctx->pause_waiting = 1;
-            pthread_mutex_lock(&ctx->pause_mutex);
-            while (!ctx->pause_query) {
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_sec += 2;
-                pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
-                if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
-                    ctx->pause_query = strdup("quit");
-                    break;
-                }
-            }
-            char *redirect = ctx->pause_query;
-            ctx->pause_query = NULL;
-            ctx->pause_waiting = 0;
-            ctx->pause_requested = 0;
-            pthread_mutex_unlock(&ctx->pause_mutex);
-
-            /* Reset abort flag so next LLM call proceeds normally */
-            ctx->provider->abort_retry = 0;
-
-            /* Inject the redirect query into the chat context */
-            char *inject_msg = malloc(strlen(redirect) + 64);
-            if (inject_msg) {
-                snprintf(inject_msg, strlen(redirect) + 64,
-                         "[User redirect]\n%s", redirect);
-                llm_chat_add(chat, "user", inject_msg);
-                /* L4 FIX: User redirects carry user intent — NORMAL, not LOW */
-                if (chat->n_msgs > 0)
-                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
-                free(inject_msg);
-            }
-            free(redirect);
-            react_checkpoint_remove(ctx);
-            /* Fall through to continue the loop with preserved context */
+            react_wait_for_redirect(ctx, chat, step + 1, on_event, userdata);
         }
 
         cJSON_Delete(action);

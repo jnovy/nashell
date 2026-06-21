@@ -5,6 +5,10 @@
  * (agent thoughts + tool outputs) for granular MaxSim retrieval.
  * Falls back to single summary.emb for sessions without chunks. */
 
+/* Suppress -Wformat-truncation for PATH_MAX path construction.
+ * All snprintf calls use sizeof(buf) and handle truncation safely. */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include "session_index.h"
 #include "journal.h"
 #include "str.h"

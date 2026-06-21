@@ -1,3 +1,7 @@
+/* Suppress -Wformat-truncation for PATH_MAX path construction.
+ * snprintf with sizeof(buf) handles truncation safely. */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include <stdio.h>
 #include <stdatomic.h>
 #include <pthread.h>

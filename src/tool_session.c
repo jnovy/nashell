@@ -11,6 +11,10 @@
  *
  * Part of Nash unified memory architecture v4.1. */
 
+/* Suppress -Wformat-truncation for PATH_MAX path construction.
+ * snprintf with sizeof(buf) handles truncation safely. */
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 #include "tools_internal.h"
 #include "session_index.h"
 #include <stdio.h>

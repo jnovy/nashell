@@ -159,6 +159,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
         fprintf(stderr, "[user_ask] headless mode — cannot prompt user, returning empty answer\n");
         break;
 
+    case REACT_EVENT_PROMPT_PROGRESS:
+        /* Handled by TUI (tui.c), ignored in headless mode */
+        break;
+
     case REACT_EVENT_DONE: {
         { char _dur[32]; fmt_duration(ev->step_elapsed, _dur, sizeof(_dur));
         fprintf(stderr, "\r\033[K[step %d] done (%s)\n", ev->step, _dur); }
