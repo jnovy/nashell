@@ -411,6 +411,13 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
  * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct);
 
+/* Shared emergency breadcrumb + scratchpad injection.
+ * Injects breadcrumb summary + MEMORY_HINT + scratchpad (budget-guarded).
+ * Used by evict_finalize strategy-2 and react_emergency_evict_and_reinject. */
+void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
+                                         int n_evicted, long context_budget,
+                                         int target_pct);
+
 /* D3 FIX: Emergency evict + scratchpad re-injection helper.
  * Combines react_emergency_evict + react_reinject_scratchpad into one call.
  * Returns number of messages evicted (0 if none). */

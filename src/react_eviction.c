@@ -172,6 +172,31 @@ long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
     return injected_chars;
 }
 
+/* ── Shared Emergency Breadcrumb Injection ────────────── */
+
+/* Inject breadcrumb summary + MEMORY_HINT + scratchpad after emergency eviction.
+ * Shared between evict_finalize strategy-2 and react_emergency_evict_and_reinject.
+ * BUG #4 FIX: scratchpad re-injection is budget-guarded (only if room permits),
+ * fixing inconsistency where react_emergency_evict_and_reinject always re-injected. */
+void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
+                                         int n_evicted, long context_budget,
+                                         int target_pct) {
+    int kh = react_compute_keep_head(chat);
+    if (n_evicted > 0) {
+        char emsg[128];
+        snprintf(emsg, sizeof(emsg),
+                 "[%d messages emergency-evicted to free context]", n_evicted);
+        llm_chat_insert_typed(chat, kh, "user", emsg,
+                              LLM_MSG_EVICTION_SUMMARY);
+        llm_chat_insert_typed(chat, kh + 1,
+            "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
+    }
+    /* Re-inject scratchpad only if room permits */
+    if (react_chat_usage_pct(chat, context_budget) < target_pct) {
+        react_reinject_scratchpad(ctx, chat, kh);
+    }
+}
+
 /* ── Proposal A: Unified Finalization ─────────────────── */
 
 /* Review C1: Flattened strategy loop replaces 4-level nested if cascade.
@@ -263,25 +288,13 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         react_emergency_evict(chat, context_budget, target_pct);
         /* A2 FIX: Inject minimal breadcrumb so LLM knows messages were lost */
         int n_emergency = before_n - chat->n_msgs;
-        /* FIX #5: Compute keep_head once — inserting non-CRITICAL messages
-         * at kh doesn't change the CRITICAL head count. */
-        int kh = react_compute_keep_head(chat);
-        if (n_emergency > 0) {
-            char emsg[128];
-            snprintf(emsg, sizeof(emsg),
-                     "[%d messages emergency-evicted to free context]",
-                     n_emergency);
-            llm_chat_insert_typed(chat, kh, "user", emsg,
-                                  LLM_MSG_EVICTION_SUMMARY);
-            /* F3 FIX: Inject MEMORY_HINT alongside emergency breadcrumb,
-             * matching the normal eviction path (step 3 above). */
-            llm_chat_insert_typed(chat, kh + 1,
-                "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
+        if (n_emergency == 0) {
+            nash_log("[eviction] WARNING: emergency eviction found nothing "
+                     "to evict, context remains at %d%% > target %d%%",
+                     react_chat_usage_pct(chat, context_budget), target_pct);
         }
-        /* Re-inject scratchpad only if room permits */
-        if (react_chat_usage_pct(chat, context_budget) < target_pct) {
-            react_reinject_scratchpad(ctx, chat, kh);
-        }
+        react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
+                                           context_budget, target_pct);
         usage_pct = react_chat_usage_pct(chat, context_budget);
     }
 
@@ -642,6 +655,10 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
      * a "compaction" journal entry even when no messages were actually evicted. */
     int before_msgs = chat->n_msgs;
     int before_pct = usage_pct;
+    /* BUG #2 FIX: Track whether actual eviction/compression occurred.
+     * Without this, SP re-injection in finalize_no_evict changes n_msgs,
+     * triggering a spurious "compaction" journal entry. */
+    int did_actual_evict = 0;
 
     /* FIX #13: Consolidated early-return path — all three "nothing to evict"
      * cases jump here instead of duplicating evict_finalize(NULL) + goto. */
@@ -762,6 +779,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     /* D4 FIX: Save scratchpad to disk after finalize confirms it survived.
      * Previously saved in evict_build_breadcrumbs before finalize could strip it. */
     scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+    did_actual_evict = 1;
     goto journal;
 
 finalize_no_evict:
@@ -770,8 +788,10 @@ finalize_no_evict:
                   NULL, 0, step, on_event, userdata);
 
 journal:
-    /* Log compaction event to journal if anything changed */
-    if (ctx->tools->journal) {
+    /* BUG #2 FIX: Only log compaction journal entry when actual eviction or
+     * compression occurred. Previously SP re-injection in finalize_no_evict
+     * changed n_msgs, producing spurious "compaction" entries. */
+    if (ctx->tools->journal && did_actual_evict) {
         long after_chars = react_calc_total_chars(chat);
         int after_pct = react_usage_pct(after_chars, context_budget);
         if (after_pct != before_pct || chat->n_msgs != before_msgs) {

@@ -129,19 +129,10 @@ int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     /* FIX #4: Compute target_pct consistent with progressive eviction */
     int target_pct = react_eviction_target_pct(ctx->tools->cfg);
     int n_evict = react_emergency_evict(chat, cb, target_pct);
-    if (n_evict > 0) {
-        int kh = react_compute_keep_head(chat);
-        /* FIX #3: Inject breadcrumb + MEMORY_HINT so LLM knows context was lost */
-        char emsg[128];
-        snprintf(emsg, sizeof(emsg),
-                 "[%d messages emergency-evicted to free context]", n_evict);
-        llm_chat_insert_typed(chat, kh, "user", emsg, LLM_MSG_EVICTION_SUMMARY);
-        llm_chat_insert_typed(chat, kh + 1,
-            "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
-        /* Re-inject scratchpad after breadcrumbs (at kh + 2 would be wrong 
-         * position — scratchpad should come before breadcrumbs) */
-        react_reinject_scratchpad(ctx, chat, kh);
-    }
+    /* D1 FIX: Use shared helper for breadcrumb + hint + SP injection.
+     * BUG #4 FIX: SP re-injection is now budget-guarded (matching
+     * evict_finalize) — previously always re-injected regardless of usage. */
+    react_inject_emergency_breadcrumbs(ctx, chat, n_evict, cb, target_pct);
     return n_evict;
 }
 
@@ -154,14 +145,16 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                                int *consecutive_null, int *total_400,
                                llm_stats_t *stats, int step,
                                react_event_fn on_event, void *userdata) {
+    /* D2 FIX: Extract provider error strings once at function entry.
+     * Previously extracted 3 separate times in different block scopes. */
+    const char *srv_err = ctx->provider ? ctx->provider->last_error : NULL;
+    const char *srv_err_req = ctx->provider ? ctx->provider->last_error_request : NULL;
+    const char *srv_err_resp = ctx->provider ? ctx->provider->last_error_response : NULL;
 
     /* Write server error to journal */
     {
         cJSON *err_params = cJSON_CreateObject();
         {
-            const char *srv_err = NULL;
-            if (ctx->provider && ctx->provider->last_error)
-                srv_err = ctx->provider->last_error;
 
             if (*consecutive_null >= 3) {
                 if (srv_err) {
@@ -192,22 +185,18 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         cJSON_AddNumberToObject(err_params, "context_chars", (double)total_chars);
         cJSON_AddNumberToObject(err_params, "context_msgs", chat->n_msgs);
 
-        const char *err_msg = ctx->provider ? ctx->provider->last_error : NULL;
-        const char *err_req = ctx->provider ? ctx->provider->last_error_request : NULL;
-        const char *err_resp = ctx->provider ? ctx->provider->last_error_response : NULL;
+        if (srv_err)
+            cJSON_AddStringToObject(err_params, "server_message", srv_err);
 
-        if (err_msg)
-            cJSON_AddStringToObject(err_params, "server_message", err_msg);
-
-        if (err_req && ctx->tools->store) {
-            char *req_ref = store_save(ctx->tools->store, err_req);
+        if (srv_err_req && ctx->tools->store) {
+            char *req_ref = store_save(ctx->tools->store, srv_err_req);
             if (req_ref) {
                 cJSON_AddStringToObject(err_params, "request_ref", req_ref);
                 free(req_ref);
             }
         }
-        if (err_resp && ctx->tools->store) {
-            char *resp_ref = store_save(ctx->tools->store, err_resp);
+        if (srv_err_resp && ctx->tools->store) {
+            char *resp_ref = store_save(ctx->tools->store, srv_err_resp);
             if (resp_ref) {
                 cJSON_AddStringToObject(err_params, "response_ref", resp_ref);
                 free(resp_ref);
@@ -241,43 +230,37 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     ev.step = step + 1;
 
     /* Authentication error (HTTP 401/403) — can't be fixed by eviction */
-    {
-        const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
-        if (perr && (strstr(perr, "HTTP 401") || strstr(perr, "HTTP 403"))) {
-            ev.message = "Authentication failed — token expired or invalid, "
-                         "please re-authenticate (e.g. gcloud auth login)";
-            react_emit(on_event, userdata, &ev);
-            return 1;
-        }
+    if (srv_err && (strstr(srv_err, "HTTP 401") || strstr(srv_err, "HTTP 403"))) {
+        ev.message = "Authentication failed — token expired or invalid, "
+                     "please re-authenticate (e.g. gcloud auth login)";
+        react_emit(on_event, userdata, &ev);
+        return 1;
     }
 
     /* HTTP 400 (client error = bad request) — aggressive context eviction */
-    {
-        const char *perr = ctx->provider ? ctx->provider->last_error : NULL;
-        if (perr && strstr(perr, "HTTP 400")) {
-            (*total_400)++;
-            if (*total_400 >= 6) {
-                ev.message = "HTTP 400 — context still too large after "
-                             "repeated eviction, giving up";
-                react_emit(on_event, userdata, &ev);
-                return 1;
-            }
-            int n_evict = react_emergency_evict_and_reinject(ctx, chat);
-            if (n_evict > 0) {
-                char emsg[128];
-                snprintf(emsg, sizeof(emsg),
-                    "HTTP 400 — evicted %d messages to reduce context "
-                    "(attempt %d/6)", n_evict, *total_400);
-                ev.message = emsg;
-                react_emit(on_event, userdata, &ev);
-            } else {
-                ev.message = "HTTP 400 — no evictable messages remain, giving up";
-                react_emit(on_event, userdata, &ev);
-                return 1;
-            }
-            *consecutive_null = 0;
-            return 0;
+    if (srv_err && strstr(srv_err, "HTTP 400")) {
+        (*total_400)++;
+        if (*total_400 >= 6) {
+            ev.message = "HTTP 400 — context still too large after "
+                         "repeated eviction, giving up";
+            react_emit(on_event, userdata, &ev);
+            return 1;
         }
+        int n_evict = react_emergency_evict_and_reinject(ctx, chat);
+        if (n_evict > 0) {
+            char emsg[128];
+            snprintf(emsg, sizeof(emsg),
+                "HTTP 400 — evicted %d messages to reduce context "
+                "(attempt %d/6)", n_evict, *total_400);
+            ev.message = emsg;
+            react_emit(on_event, userdata, &ev);
+        } else {
+            ev.message = "HTTP 400 — no evictable messages remain, giving up";
+            react_emit(on_event, userdata, &ev);
+            return 1;
+        }
+        *consecutive_null = 0;
+        return 0;
     }
 
     /* Max-token exhaustion — deterministic, not transient */

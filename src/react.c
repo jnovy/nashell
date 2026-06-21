@@ -231,13 +231,17 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                 }
             }
         }
+        /* BUG FIX: without an ID we can't safely match — bail out rather
+         * than accepting the first arbitrary tool_result message. */
+        if (!expected_id) {
+            cJSON_Delete(tc_arr);
+            return -1;
+        }
         int result = -1;
         for (int pi = msg_idx + 1; pi < range_end && pi < chat->n_msgs; pi++) {
             if (!chat->msgs[pi].tool_call_id) continue;
-            if (expected_id) {
-                if (strcmp(chat->msgs[pi].tool_call_id, expected_id) != 0)
-                    continue;
-            }
+            if (strcmp(chat->msgs[pi].tool_call_id, expected_id) != 0)
+                continue;
             if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH) {
                 result = -1;
                 break;
