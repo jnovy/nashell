@@ -195,6 +195,8 @@ typedef struct {
     int    llm_max_response;     /* bytes */
     int    llm_repeat_threshold; /* consecutive identical tokens */
     int    llm_timeout;          /* seconds, per-call wall-clock timeout for LLM API */
+    int    provider_max_retries; /* max retries on transient LLM errors (default 10) */
+    int    provider_retry_base;  /* initial backoff seconds between retries (default 10) */
     int    cycling_detection;    /* 0 = disabled (default), 1 = enabled */
     int    scratchpad_max;       /* chars, 0 = auto */
     int    max_react_steps;      /* steps per react loop */

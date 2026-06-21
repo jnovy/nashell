@@ -13,9 +13,13 @@
 #include <stdarg.h>
 #include <time.h>
 
-#define PROVIDER_MAX_RETRIES    10
-#define PROVIDER_RETRY_BASE_SEC 10
-#define PROVIDER_DEFAULT_TIMEOUT 600  /* 10 min default if not configured */
+#define PROVIDER_DEFAULT_MAX_RETRIES    10
+#define PROVIDER_DEFAULT_RETRY_BASE_SEC 10
+#define PROVIDER_DEFAULT_TIMEOUT        600  /* 10 min default if not configured */
+
+/* Resolve retry config: use provider_config_t values if set, else defaults */
+#define PROVIDER_MAX_RETRIES(p)    ((p)->cfg.max_retries > 0 ? (p)->cfg.max_retries : PROVIDER_DEFAULT_MAX_RETRIES)
+#define PROVIDER_RETRY_BASE_SEC(p) ((p)->cfg.retry_base_sec > 0 ? (p)->cfg.retry_base_sec : PROVIDER_DEFAULT_RETRY_BASE_SEC)
 
 /* Interruptible sleep: sleeps up to `seconds` but wakes early if
  * p->abort_retry is set or TUI has shut down.
@@ -1087,7 +1091,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     cJSON *resp = NULL;
     int auth_refreshed = 0;
 
-    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES; attempt++) {
+    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
         str_clear(&response);
 
         CURL *curl = curl_easy_init();
@@ -1125,10 +1129,10 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         }
 
         if (res != CURLE_OK) {
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) {
+                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
+            if (attempt < PROVIDER_MAX_RETRIES(p)) {
                 if (provider_sleep(p, delay)) {
                     free(req_body); free(endpoint); str_free(&response);
                     return NULL;  /* aborted during retry sleep */
@@ -1162,10 +1166,10 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                      http_code,
                      response.len > 0 ? str_cstr(&response) : "(empty)");
             int retryable = (http_code == 429 || http_code >= 500);
-            if (retryable && attempt < PROVIDER_MAX_RETRIES) {
-                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
+                int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
                 nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
-                         http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+                         http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
                 str_clear(&response);
                 if (provider_sleep(p, delay)) {
                     str_free(&response);
@@ -1183,10 +1187,10 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         resp = cJSON_Parse(response.data);
         str_free(&response);
         if (!resp) {
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
             nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
-                     attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) {
+                     attempt, PROVIDER_MAX_RETRIES(p), delay);
+            if (attempt < PROVIDER_MAX_RETRIES(p)) {
                 if (provider_sleep(p, delay)) {
                     free(req_body); free(endpoint);
                     return NULL;  /* aborted */
@@ -1206,11 +1210,11 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 cJSON *emsg = cJSON_GetObjectItem(error, "message");
                 if (emsg && cJSON_IsString(emsg)) msg = emsg->valuestring;
             }
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
             nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
-                     msg, attempt, PROVIDER_MAX_RETRIES, delay);
+                     msg, attempt, PROVIDER_MAX_RETRIES(p), delay);
             cJSON_Delete(resp);
-            if (attempt < PROVIDER_MAX_RETRIES) {
+            if (attempt < PROVIDER_MAX_RETRIES(p)) {
                 if (provider_sleep(p, delay)) {
                     free(req_body); free(endpoint);
                     return NULL;  /* aborted */
@@ -1298,7 +1302,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
 
     char *result = NULL;
     int auth_refreshed = 0;
-    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES; attempt++) {
+    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
         str_clear(&st.line_buf);
         str_clear(&st.full_content);
         str_clear(&st.tool_call_name);
@@ -1386,11 +1390,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 continue;
             }
             int retryable = (http_code == 429 || http_code >= 500);
-            if (retryable && attempt < PROVIDER_MAX_RETRIES) {
-                int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
+                int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
                 nash_log("[provider] HTTP %ld error (attempt %d/%d, "
                          "retry in %ds)",
-                         http_code, attempt, PROVIDER_MAX_RETRIES, delay);
+                         http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
                 if (provider_sleep(p, delay)) {
                     free(req_body);
                     goto cleanup;  /* aborted during retry sleep */
@@ -1443,10 +1447,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                     ? strdup(str_cstr(&st.thinking_content)) : NULL;
                 goto cleanup;
             }
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC;
+            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
             nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES, delay);
-            if (attempt < PROVIDER_MAX_RETRIES) {
+                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
+            if (attempt < PROVIDER_MAX_RETRIES(p)) {
                 if (provider_sleep(p, delay)) {
                     free(req_body);
                     goto cleanup;  /* aborted during retry sleep */

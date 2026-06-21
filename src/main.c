@@ -481,6 +481,8 @@ int main(int argc, char **argv) {
         .enable_thinking = 0,
         .thinking_budget = -1,
         .llm_timeout     = cfg->llm_timeout,
+        .max_retries     = cfg->provider_max_retries,
+        .retry_base_sec  = cfg->provider_retry_base,
     };
     provider_t *provider = provider_create(&pcfg);
 

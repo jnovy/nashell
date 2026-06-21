@@ -35,6 +35,8 @@ typedef struct {
     int         enable_thinking;/* 0=off, 1=on */
     int         thinking_budget;/* -1=unrestricted, 0=none, N>0=max */
     int         llm_timeout;    /* per-call wall-clock timeout in seconds (0=no limit) */
+    int         max_retries;    /* max retries on transient errors (0=use default 10) */
+    int         retry_base_sec; /* initial backoff seconds (0=use default 10) */
 } provider_config_t;
 
 /* ── Provider vtable ────────────────────────────────────────────── */

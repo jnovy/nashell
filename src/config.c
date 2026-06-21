@@ -56,6 +56,8 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->llm_max_response <= 0)     cfg->llm_max_response = 10485760;
     if (cfg->llm_repeat_threshold <= 0) cfg->llm_repeat_threshold = 100;
     if (cfg->llm_timeout <= 0)          cfg->llm_timeout = 600;
+    if (cfg->provider_max_retries <= 0) cfg->provider_max_retries = 10;
+    if (cfg->provider_retry_base <= 0)  cfg->provider_retry_base = 10;
     if (cfg->memory_index_max <= 0)     cfg->memory_index_max = 50;
     if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 2;
     if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
@@ -339,6 +341,8 @@ config_t *config_load(const char *path) {
         cfg->llm_max_response   = toml_int(limits, "llm_max_response", -1);
         cfg->llm_repeat_threshold = toml_int(limits, "llm_repeat_threshold", -1);
         cfg->llm_timeout        = toml_int(limits, "llm_timeout", -1);
+        cfg->provider_max_retries = toml_int(limits, "provider_max_retries", -1);
+        cfg->provider_retry_base  = toml_int(limits, "provider_retry_base", -1);
         cfg->cycling_detection  = toml_bl(limits, "cycling_detection", 1);
         cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", -1);
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
@@ -1422,6 +1426,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (v > 0) cfg->web_max_size = v;
         v = toml_int(limits, "llm_timeout", 0);
         if (v > 0) cfg->llm_timeout = v;
+        v = toml_int(limits, "provider_max_retries", 0);
+        if (v > 0) cfg->provider_max_retries = v;
+        v = toml_int(limits, "provider_retry_base", 0);
+        if (v > 0) cfg->provider_retry_base = v;
         v = toml_int(limits, "llm_max_response", 0);
         if (v > 0) cfg->llm_max_response = v;
         v = toml_int(limits, "llm_repeat_threshold", 0);
@@ -1597,6 +1605,8 @@ int config_write_default(const char *path) {
         "llm_max_response = 10485760  # max bytes from LLM response (10MB)\n"
         "llm_repeat_threshold = 100   # stop after N consecutive identical tokens\n"
         "llm_timeout = 600            # max seconds per LLM API call (0 = no limit)\n"
+        "provider_max_retries = 10    # max retries on transient LLM errors\n"
+        "provider_retry_base = 10     # initial backoff seconds between retries\n"
         "cycling_detection = true     # detect and refuse repeated identical tool calls\n"
         "\n"
         "# Context management\n"
