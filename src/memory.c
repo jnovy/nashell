@@ -125,7 +125,10 @@ static void mem_index_map_rebuild(mem_index_t *idx) {
     while (new_cap < idx->count * 2) new_cap *= 2;  /* ≤50% load factor */
     idx->map.cap = new_cap;
     idx->map.slots = malloc((size_t)new_cap * sizeof(int));
-    memset(idx->map.slots, -1, (size_t)new_cap * sizeof(int));
+    /* FIX #12: Explicit loop instead of memset(-1), which relies on
+     * implementation-defined behavior (two's complement byte pattern). */
+    for (int j = 0; j < new_cap; j++)
+        idx->map.slots[j] = -1;
     for (int i = 0; i < idx->count; i++) {
         if (!idx->entries[i].key) continue;
         unsigned int slot = mem_fnv1a(idx->entries[i].key) & (unsigned)(new_cap - 1);
@@ -159,18 +162,20 @@ static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
     return NULL;
 }
 
-/* Ensure capacity for at least one more entry */
-static void mem_index_grow(mem_index_t *idx) {
+/* Ensure capacity for at least one more entry.
+ * FIX #5: Returns 0 on success, -1 on allocation failure.
+ * Previously returned void and silently failed, causing callers to
+ * write past the end of the entries array (heap buffer overflow). */
+static int mem_index_grow(mem_index_t *idx) {
     if (idx->count >= idx->cap) {
         int new_cap = idx->cap ? idx->cap * 2 : 64;
-        /* FIX CRIT#3: Check realloc failure — NULL return would lose all
-         * existing entries (memory leak) and crash on next access. */
         void *tmp = realloc(idx->entries,
                             (size_t)new_cap * sizeof(mem_index_entry_t));
-        if (!tmp) return;  /* keep existing allocation, caller will retry */
+        if (!tmp) return -1;
         idx->entries = tmp;
         idx->cap = new_cap;
     }
+    return 0;
 }
 
 /* Insert a key→index mapping into the hash map (used after adding an entry) */
@@ -290,7 +295,11 @@ static int index_load_cb(const char *dirpath, const char *filename,
     cJSON *entry = slurp_json(fullpath);
     if (!entry) return 0;
 
-    mem_index_grow(ctx->idx);
+    /* FIX #5: Check mem_index_grow return — skip entry if alloc fails */
+    if (mem_index_grow(ctx->idx) != 0) {
+        cJSON_Delete(entry);
+        return 0;
+    }
     mem_index_entry_from_json(&ctx->idx->entries[ctx->idx->count], entry, fullpath);
     ctx->idx->count++;
 
@@ -503,28 +512,29 @@ int memory_store(memory_t *m, const char *key, const char *value,
     char *json = cJSON_Print(entry);
     write_file(path, json, strlen(json));
     free(json);
-    cJSON_Delete(entry);
 
     /* P1: Update in-memory index — either update existing entry or add new.
-     * Re-reads the just-written JSON to populate the index entry with all
-     * fields including the auto-generated description. */
+     * FIX #13: Populate index directly from the cJSON entry we already have
+     * instead of re-reading the just-written JSON file from disk. */
     {
-        cJSON *fresh = memory_load_entry_json(m, key);
-        if (fresh) {
-            mem_index_entry_t *existing = mem_index_find(&m->idx, key);
-            if (existing) {
-                mem_index_entry_free(existing);
-                mem_index_entry_from_json(existing, fresh, path);
-            } else {
-                mem_index_grow(&m->idx);
-                mem_index_entry_from_json(&m->idx.entries[m->idx.count], fresh, path);
-                m->idx.count++;
-                /* FIX 2a: Update hash map for the new entry */
-                mem_index_map_insert(&m->idx, key, m->idx.count - 1);
+        mem_index_entry_t *existing = mem_index_find(&m->idx, key);
+        if (existing) {
+            mem_index_entry_free(existing);
+            mem_index_entry_from_json(existing, entry, path);
+        } else {
+            /* FIX #5: Check mem_index_grow return to avoid heap overflow */
+            if (mem_index_grow(&m->idx) != 0) {
+                cJSON_Delete(entry);
+                pthread_mutex_unlock(&m->mtx);
+                return -1;
             }
-            cJSON_Delete(fresh);
+            mem_index_entry_from_json(&m->idx.entries[m->idx.count], entry, path);
+            m->idx.count++;
+            /* FIX 2a: Update hash map for the new entry */
+            mem_index_map_insert(&m->idx, key, m->idx.count - 1);
         }
     }
+    cJSON_Delete(entry);
 
     /* Generate embedding for semantic matching (if enabled).
      * Skip during batch operations (consolidating flag) — embeddings
@@ -533,6 +543,19 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * for entries that are about to be merged/deleted in the same pass. */
     if (m->embed && m->embed->available && !atomic_load(&m->consolidating)) {
         memory_embed_entry(m, key, value);
+
+        /* FIX #4: Reload embedding into cached index entry so
+         * memory_recall() sees it immediately (not after restart).
+         * Previously the embedding was written to disk but the index
+         * entry retained has_emb=0 until process restart. */
+        mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+        if (ie) {
+            char emb_path[NASH_PATH_MAX];
+            json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
+            if (ie->has_emb) embed_multi_vec_free(&ie->emb);
+            ie->emb = embed_multi_vec_load(emb_path);
+            ie->has_emb = (ie->emb.data && ie->emb.dim > 0) ? 1 : 0;
+        }
     }
 
     /* Git commit: track memory creation/update */
@@ -1642,12 +1665,11 @@ int memory_set_belief_entropy(memory_t *m, const char *key, double h_be) {
     free(json);
     cJSON_Delete(entry);
 
-    /* Update in-memory index */
-    for (int i = 0; i < m->idx.count; i++) {
-        if (strcmp(m->idx.entries[i].key, key) == 0) {
-            m->idx.entries[i].belief_entropy = h_be;
-            break;
-        }
+    /* FIX #7: Update in-memory index via O(1) hash map lookup
+     * instead of O(n) linear scan. */
+    {
+        mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+        if (ie) ie->belief_entropy = h_be;
     }
 
     pthread_mutex_unlock(&m->mtx);
@@ -1900,8 +1922,14 @@ int memory_embed_all(memory_t *m) {
 
 /* ── Encapsulation accessors ──────────────────────────────────── */
 
+/* FIX CRITICAL #3: Protect idx.count read with mutex to prevent
+ * data race with concurrent memory_store/memory_delete. */
 int memory_count(memory_t *m) {
-    return m ? m->idx.count : 0;
+    if (!m) return 0;
+    pthread_mutex_lock(&m->mtx);
+    int count = m->idx.count;
+    pthread_mutex_unlock(&m->mtx);
+    return count;
 }
 
 const char *memory_dir(memory_t *m) {
@@ -1929,9 +1957,104 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
     return count;
 }
 
-const mem_index_entry_t *memory_find(memory_t *m, const char *key) {
+/* FIX CRITICAL #2: Deep-copy an index entry under the mutex.
+ * Returns a heap-allocated copy the caller owns, or NULL.
+ * Previously returned a raw pointer into the index array without
+ * holding the lock — a concurrent memory_delete (swap-remove) could
+ * invalidate the pointer while the caller was dereferencing it. */
+mem_index_entry_t *memory_find(memory_t *m, const char *key) {
     if (!m || !key) return NULL;
-    return mem_index_find(&m->idx, key);
+    pthread_mutex_lock(&m->mtx);
+    const mem_index_entry_t *src = mem_index_find(&m->idx, key);
+    if (!src) {
+        pthread_mutex_unlock(&m->mtx);
+        return NULL;
+    }
+    mem_index_entry_t *copy = calloc(1, sizeof(*copy));
+    if (!copy) {
+        pthread_mutex_unlock(&m->mtx);
+        return NULL;
+    }
+    copy->key = src->key ? strdup(src->key) : NULL;
+    copy->description = src->description ? strdup(src->description) : NULL;
+    copy->value = src->value ? strdup(src->value) : NULL;
+    copy->path = src->path ? strdup(src->path) : NULL;
+    copy->pinned = src->pinned;
+    copy->access_count = src->access_count;
+    copy->recall_hits = src->recall_hits;
+    copy->recall_misses = src->recall_misses;
+    copy->belief_entropy = src->belief_entropy;
+    copy->created_at = src->created_at;
+    copy->n_refs = src->n_refs;
+    if (src->refs && src->n_refs > 0) {
+        copy->refs = calloc((size_t)src->n_refs, sizeof(char *));
+        if (copy->refs) {
+            for (int i = 0; i < src->n_refs; i++)
+                copy->refs[i] = src->refs[i] ? strdup(src->refs[i]) : NULL;
+        }
+    }
+    /* Don't copy embedding data — callers only need metadata */
+    copy->has_emb = 0;
+    memset(&copy->emb, 0, sizeof(copy->emb));
+    pthread_mutex_unlock(&m->mtx);
+    return copy;
+}
+
+void memory_find_free(mem_index_entry_t *entry) {
+    if (!entry) return;
+    free(entry->key);
+    free(entry->description);
+    free(entry->value);
+    free(entry->path);
+    for (int i = 0; i < entry->n_refs; i++) free(entry->refs[i]);
+    free(entry->refs);
+    free(entry);
+}
+
+/* FIX #8: Re-index a single entry by reading its on-disk JSON into the
+ * in-memory index.  Used by workspace transfer_entry() to update the
+ * destination memory's index after copying files directly, without the
+ * double-write of calling memory_store() (which overwrites metadata
+ * like created_at and regenerates embeddings unnecessarily).
+ * Returns 0 on success, -1 on failure. */
+int memory_reindex_entry(memory_t *m, const char *key) {
+    if (!m || !key) return -1;
+    pthread_mutex_lock(&m->mtx);
+
+    char fname[512];
+    key_to_path(key, ".json", fname, sizeof(fname));
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+
+    cJSON *entry = slurp_json(path);
+    if (!entry) {
+        pthread_mutex_unlock(&m->mtx);
+        return -1;
+    }
+
+    mem_index_entry_t *existing = mem_index_find(&m->idx, key);
+    if (existing) {
+        mem_index_entry_free(existing);
+        mem_index_entry_from_json(existing, entry, path);
+    } else {
+        if (mem_index_grow(&m->idx) != 0) {
+            cJSON_Delete(entry);
+            pthread_mutex_unlock(&m->mtx);
+            return -1;
+        }
+        mem_index_entry_from_json(&m->idx.entries[m->idx.count], entry, path);
+        m->idx.count++;
+        mem_index_map_insert(&m->idx, key, m->idx.count - 1);
+    }
+    cJSON_Delete(entry);
+
+    /* Git commit for the new file */
+    char commit_msg[256];
+    snprintf(commit_msg, sizeof(commit_msg), "memory: reindex %s", key);
+    memory_git_commit(m, commit_msg);
+
+    pthread_mutex_unlock(&m->mtx);
+    return 0;
 }
 
 /* ── Deferred git commit API (delegates to mem_git.c) ─────────── */

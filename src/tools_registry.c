@@ -92,11 +92,6 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Delete a memory entry by key.",
      "{\"type\":\"object\",\"properties\":{\"key\":{\"type\":\"string\",\"description\":\"Memory key to delete\"}},\"required\":[\"key\"]}"},
 
-    {"memory_list",
-     "List all memory keys grouped by type. Returns key names with descriptions. "
-     "Use to browse available memories when memory_search semantic search is too narrow.",
-     "{\"type\":\"object\",\"properties\":{\"type\":{\"type\":\"string\",\"description\":\"Filter by type: lesson, strategy, skill, fact, task, anti-pattern, other. Omit for all.\"}}}"},
-
     {"image_analyze",
      "Analyze an image file using the LLM's vision capabilities. "
      "Reads the image, base64-encodes it, and sends it to the provider "

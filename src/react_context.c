@@ -80,8 +80,7 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
             "[MEMORY INDEX]\n%s\n\n"
             "Call memory_search when the answer may depend on user preferences, "
             "prior decisions, ongoing projects, or historical context not visible "
-            "in the current conversation.\n"
-            "Use memory_list to browse all keys (optionally filtered by type).",
+            "in the current conversation.",
             mem_summary);
     }
 
@@ -417,7 +416,8 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                                 }
                             }
                             if (dup) continue;
-                            const mem_index_entry_t *ref_entry = memory_find(amem, ref_key);
+                            /* FIX CRITICAL #2: memory_find returns owned copy */
+                            mem_index_entry_t *ref_entry = memory_find(amem, ref_key);
                             if (ref_entry && ref_entry->value) {
                                 if (assoc_added == 0)
                                     str_appendf(&assoc_msg, "[ASSOCIATED MEMORIES]\n");
@@ -428,6 +428,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                                 tool_track_recalled_key(ctx->tools, ref_key);
                                 assoc_added++;
                             }
+                            memory_find_free(ref_entry);
                         }
                     }
                     if (assoc_added > 0) {

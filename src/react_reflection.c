@@ -122,10 +122,12 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 cJSON_CreateString(ctx->tools->recalled_keys[i]));
             /* Check if this key has zero evidence */
             if (ctx->tools->memory) {
-                const mem_index_entry_t *ie = memory_find(
+                /* FIX CRITICAL #2: memory_find returns owned copy */
+                mem_index_entry_t *ie = memory_find(
                     ctx->tools->memory, ctx->tools->recalled_keys[i]);
                 if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
                     cold_start_count++;
+                memory_find_free(ie);
             }
         }
         cJSON_AddItemToObject(mq, "recalled_keys", keys_arr);

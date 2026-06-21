@@ -127,7 +127,7 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 ```
 
 - **Native OpenAI tool_calls API** — uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
-- **18 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_recall, memory_pin, memory_unpin, memory_delete, memory_list, user_ask
+- **18 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete, image_analyze, user_ask
 - **Shared tool registry** (`tools_registry.h`) — tool definitions defined once, formatted per-provider (local/OpenAI/Anthropic)
 - **Dispatch table** — tool execution via function pointer table, not strcmp chains
 - **Tool filtering** — per-playbook-pass whitelist/blacklist restricts available tools

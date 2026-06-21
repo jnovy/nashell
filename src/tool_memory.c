@@ -75,10 +75,12 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
     /* Load the multi-vec embedding for the new entry (just stored by
      * memory_embed_entry, which already produced chunked embeddings). */
+    /* FIX #9: Use ".emb" extension directly instead of empty extension
+     * + manual .emb append, which was fragile and inconsistent. */
     char new_emb_fname[512];
-    key_to_path(new_key, "", new_emb_fname, sizeof(new_emb_fname));
+    key_to_path(new_key, ".emb", new_emb_fname, sizeof(new_emb_fname));
     char new_emb_path[NASH_PATH_MAX];
-    snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s.emb",
+    snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s",
              memory_dir(ctx->memory), new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return NULL;
@@ -105,24 +107,58 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     char best_path[NASH_PATH_MAX] = {0};
     float best_sim = 0.0f;
 
+    /* FIX CRITICAL #1: Snapshot index keys and paths under the mutex,
+     * then iterate the snapshot without holding the lock.  Previously
+     * iterated m->idx.entries[] directly without the mutex — a concurrent
+     * memory_delete (swap-remove) could cause use-after-free or OOB. */
     memory_t *m = ctx->memory;
-    int mcount = memory_count(m);
-    for (int i = 0; i < mcount; i++) {
-        /* Note: still accesses idx directly for iteration — memory_iterate()
-         * can't be used here because we need mutable access to loaded_emb. */
-        mem_index_entry_t *e = &m->idx.entries[i];
+    typedef struct { char *key; char *path; int has_emb; embed_multi_vec_t emb; } consol_snap_t;
+    int snap_count = 0;
+    consol_snap_t *snap = NULL;
+    {
+        /* Build snapshot under memory mutex */
+        pthread_mutex_lock(&m->mtx);
+        snap_count = m->idx.count;
+        if (snap_count > 0) {
+            snap = calloc((size_t)snap_count, sizeof(consol_snap_t));
+            if (snap) {
+                for (int i = 0; i < snap_count; i++) {
+                    mem_index_entry_t *e = &m->idx.entries[i];
+                    snap[i].key = e->key ? strdup(e->key) : NULL;
+                    snap[i].path = e->path ? strdup(e->path) : NULL;
+                    snap[i].has_emb = e->has_emb;
+                    /* Deep-copy embedding data for thread-safe access */
+                    if (e->has_emb && e->emb.data) {
+                        snap[i].emb.dim = e->emb.dim;
+                        snap[i].emb.n_chunks = e->emb.n_chunks;
+                        size_t emb_bytes = sizeof(float) * (size_t)e->emb.dim * (size_t)e->emb.n_chunks;
+                        snap[i].emb.data = malloc(emb_bytes);
+                        if (snap[i].emb.data)
+                            memcpy(snap[i].emb.data, e->emb.data, emb_bytes);
+                        else
+                            snap[i].has_emb = 0;
+                    }
+                }
+            }
+        }
+        pthread_mutex_unlock(&m->mtx);
+    }
+    if (!snap) { embed_multi_vec_free(&new_emb); return NULL; }
+
+    for (int i = 0; i < snap_count; i++) {
+        if (!snap[i].key) continue;
 
         /* Skip self — the entry we just stored */
-        if (strcmp(e->key, new_key) == 0) continue;
+        if (strcmp(snap[i].key, new_key) == 0) continue;
 
-        /* Get embedding: prefer cached, fall back to disk */
+        /* Get embedding: prefer cached snapshot, fall back to disk */
         embed_multi_vec_t *emb_ptr = NULL;
         embed_multi_vec_t loaded_emb = {0};
-        if (e->has_emb && e->emb.data) {
-            emb_ptr = &e->emb;
-        } else if (e->path) {
+        if (snap[i].has_emb && snap[i].emb.data) {
+            emb_ptr = &snap[i].emb;
+        } else if (snap[i].path) {
             char emb_path[NASH_PATH_MAX];
-            snprintf(emb_path, sizeof(emb_path), "%s", e->path);
+            snprintf(emb_path, sizeof(emb_path), "%s", snap[i].path);
             size_t plen = strlen(emb_path);
             if (plen >= 5 && strcmp(emb_path + plen - 5, ".json") == 0)
                 strcpy(emb_path + plen - 5, ".emb");
@@ -136,7 +172,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             if (loaded_emb.data) {
                 /* Delete stale .emb file so memory_embed_all() regenerates it */
                 char emb_path[NASH_PATH_MAX];
-                snprintf(emb_path, sizeof(emb_path), "%s", e->path);
+                snprintf(emb_path, sizeof(emb_path), "%s", snap[i].path);
                 size_t plen = strlen(emb_path);
                 if (plen >= 5 && strcmp(emb_path + plen - 5, ".json") == 0)
                     strcpy(emb_path + plen - 5, ".emb");
@@ -152,11 +188,18 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
         if (sim > best_sim && sim > cons_threshold) {
             best_sim = sim;
-            snprintf(best_key, sizeof(best_key), "%s", e->key);
-            if (e->path)
-                snprintf(best_path, sizeof(best_path), "%s", e->path);
+            snprintf(best_key, sizeof(best_key), "%s", snap[i].key);
+            if (snap[i].path)
+                snprintf(best_path, sizeof(best_path), "%s", snap[i].path);
         }
     }
+    /* Free snapshot */
+    for (int i = 0; i < snap_count; i++) {
+        free(snap[i].key);
+        free(snap[i].path);
+        if (snap[i].emb.data) free(snap[i].emb.data);
+    }
+    free(snap);
 
     embed_multi_vec_free(&new_emb);
 
@@ -755,37 +798,4 @@ tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
         workspace_delete, memory_delete);
 }
 
-/* ── memory_list ────────────────────────────────────────── */
 
-tool_result_t tool_memory_list(tool_ctx_t *ctx, cJSON *params) {
-    if (!ctx->memory && !ctx->ws)
-        return tools_make_error("memory not available");
-
-    const char *type_filter = NULL;
-    cJSON *type_j = cJSON_GetObjectItem(params, "type");
-    if (type_j && type_j->valuestring && type_j->valuestring[0])
-        type_filter = type_j->valuestring;
-
-    char *listing = ctx->ws
-        ? workspace_build_listing(ctx->ws, type_filter)
-        : memory_build_listing(ctx->memory, type_filter);
-    if (!listing)
-        return tools_make_error("no memory entries found");
-
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "ok");
-    if (type_filter)
-        cJSON_AddStringToObject(meta, "filter", type_filter);
-
-    char *ref = store_save(ctx->store, listing);
-    char *alias = tool_register_alias(ctx, ref ? ref : "");
-    tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_list",
-                   params, alias, listing ? strlen(listing) : 0, 0, NULL, NULL);
-
-    char *ref_copy = strdup(alias);
-    free(alias);
-    free(ref);
-    free(listing);
-    return tools_make_result(1, meta, ref_copy);
-}

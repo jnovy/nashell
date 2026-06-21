@@ -288,6 +288,13 @@ int memory_embed_all(memory_t *m);
 void memory_git_defer(memory_t *m);
 void memory_git_flush(memory_t *m, const char *msg);
 
+/* FIX #8: Re-index a single entry from its on-disk JSON file.
+ * Updates the in-memory index without overwriting the file (preserves
+ * all metadata like created_at, recall_hits, etc.).
+ * Used by workspace transfer_entry() to avoid the double-write pattern.
+ * Returns 0 on success, -1 on failure. */
+int memory_reindex_entry(memory_t *m, const char *key);
+
 /* ── Encapsulation accessors ──────────────────────────────────── */
 /* These replace direct access to m->idx, m->dir, m->embed from
  * external modules (main.c, tool_memory.c, playbook.c, react_reflection.c). */
@@ -310,8 +317,12 @@ embed_ctx_t *memory_embed_ctx(memory_t *m);
 typedef int (*memory_iter_cb)(const mem_index_entry_t *entry, void *user_data);
 int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data);
 
-/* Find an index entry by key (read-only). Returns NULL if not found.
- * The returned pointer is owned by the memory module — do NOT free. */
-const mem_index_entry_t *memory_find(memory_t *m, const char *key);
+/* FIX CRITICAL #2: Find an index entry by key (thread-safe).
+ * Returns a heap-allocated deep copy of the entry, or NULL if not found.
+ * Caller MUST free with memory_find_free(). The copy is taken under the
+ * mutex, so the returned data is consistent even if another thread
+ * modifies the index concurrently. */
+mem_index_entry_t *memory_find(memory_t *m, const char *key);
+void memory_find_free(mem_index_entry_t *entry);
 
 #endif

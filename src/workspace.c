@@ -451,45 +451,11 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     /* Delete from source (updates source index + git) */
     memory_delete(src, key);
 
-    /* Rebuild destination index entry by re-reading the JSON.
-     * The simplest way: call memory_store with the entry's value,
-     * but that would overwrite metadata.  Instead, we force a
-     * re-index by freeing and re-creating the destination memory.
-     * Actually, we can just do a targeted re-index:
-     * Since we wrote the JSON file directly, we need to update
-     * the destination's in-memory index. The cleanest way is to
-     * read the value and store through the normal API. */
-
-    /* Read the value from the copied JSON */
-    cJSON *entry = slurp_json(dst_path);
-
-    if (entry) {
-        /* Extract value and pinned from JSON, store via API.
-         * This properly updates the in-memory index. */
-        cJSON *val_j = cJSON_GetObjectItem(entry, "value");
-        cJSON *pin_j = cJSON_GetObjectItem(entry, "pinned");
-        const char *value = val_j ? val_j->valuestring : "";
-        int pinned = (pin_j && cJSON_IsTrue(pin_j)) ? 1 : 0;
-
-        /* Extract refs */
-        cJSON *refs_j = cJSON_GetObjectItem(entry, "refs");
-        int n_refs = 0;
-        const char **refs = NULL;
-        if (refs_j && cJSON_IsArray(refs_j)) {
-            n_refs = cJSON_GetArraySize(refs_j);
-            if (n_refs > 0) {
-                refs = malloc(n_refs * sizeof(char *));
-                for (int i = 0; i < n_refs; i++) {
-                    cJSON *r = cJSON_GetArrayItem(refs_j, i);
-                    refs[i] = r ? r->valuestring : "";
-                }
-            }
-        }
-
-        memory_store(dst, key, value, pinned, NULL, refs, n_refs);
-        free(refs);
-        cJSON_Delete(entry);
-    }
+    /* FIX #8: Use memory_reindex_entry() instead of memory_store().
+     * memory_store() would overwrite the copied JSON (losing created_at,
+     * recall_hits, etc.) and regenerate the embedding we already copied.
+     * memory_reindex_entry() just reads the file and updates the index. */
+    memory_reindex_entry(dst, key);
 
     return 0;
 }
