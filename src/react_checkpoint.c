@@ -47,37 +47,12 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* v5: No manifest injection — scratchpad carries all cross-loop state. */
 
-    /* Step 2: Add memory context (fresh) */
-    if (ctx->tools->memory || ctx->tools->ws) {
-        char *mem_summary = ctx->tools->ws
-            ? workspace_build_index(ctx->tools->ws)
-            : memory_build_index(ctx->tools->memory);
-        if (mem_summary && strlen(mem_summary) > 0) {
-            size_t mem_msg_sz = strlen(mem_summary) + 512;
-            char *mem_msg = malloc(mem_msg_sz);
-            if (mem_msg) {
-                snprintf(mem_msg, mem_msg_sz, "[MEMORY INDEX]\n%s\n\n"
-                        "Call memory_recall when the answer may depend on user preferences, "
-                        "prior decisions, ongoing projects, or historical context not visible "
-                        "in the current conversation.\n"
-                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
-                llm_chat_add_typed(chat, "user", mem_msg, LLM_MSG_MEMORY_INDEX);
-                free(mem_msg);
-            }
-        }
-
-        char *pinned = ctx->tools->ws
-            ? workspace_load_pinned(ctx->tools->ws)
-            : memory_load_pinned(ctx->tools->memory);
-        if (pinned && strlen(pinned) > 0) {
-            size_t pin_msg_sz = strlen(pinned) + 64;
-            char *pin_msg = malloc(pin_msg_sz);
-            if (pin_msg) {
-                snprintf(pin_msg, pin_msg_sz, "[PINNED KNOWLEDGE]\n%s", pinned);
-                llm_chat_add_typed(chat, "user", pin_msg, LLM_MSG_PINNED);
-                free(pin_msg);
-            }
-        }
+    /* Step 2: Add memory context (fresh)
+     * BUG #2 FIX: Check inject_memory flag — previously always injected. */
+    if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
+        /* FIX #9: Use shared helper for memory index + pinned injection */
+        char *mem_summary = NULL, *pinned = NULL;
+        react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
         /* Log memory context for debugging (checkpoint restore path) */
         react_log_memory_context(ctx->tools, ctx->tools->react_loop,
@@ -88,21 +63,19 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         free(pinned);
     }
 
-    /* Step 4: Add scratchpad if exists (section-based or legacy) */
+    /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup).
+     * BUG #3 FIX: Use scratchpad_serialize_budget() instead of unbounded
+     * scratchpad_serialize() — prevents oversized scratchpad after restore. */
     {
+        long cb = react_context_budget(ctx);
+        long cc = react_calc_total_chars(chat);
+        size_t sp_max = react_scratchpad_budget(cb, cc, REACT_SP_MIN);
         char *sp_text = NULL;
         if (ctx->tools->scratch.count > 0) {
-            sp_text = scratchpad_serialize(&ctx->tools->scratch);
+            sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
         }
-        if (sp_text && sp_text[0]) {
-            size_t slen = strlen(sp_text);
-            char *scratch_msg = malloc(slen + 32);
-            if (scratch_msg) {
-                snprintf(scratch_msg, slen + 32, "[SCRATCHPAD]\n%s", sp_text);
-                llm_chat_add_typed(chat, "user", scratch_msg, LLM_MSG_SCRATCHPAD);
-                free(scratch_msg);
-            }
-        }
+        /* FIX #10: Use shared scratchpad injection helper */
+        react_inject_scratchpad_msg(chat, chat->n_msgs, sp_text);
         free(sp_text);
     }
 

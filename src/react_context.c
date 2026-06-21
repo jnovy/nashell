@@ -16,6 +16,7 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
                                llm_msg_type_t mtype) {
     if (max_count <= 0) return;
     int remaining = max_count;
+    int added = 0;
     str_t msg = str_new(4096);
     str_appendf(&msg, "%s\n", label);
     for (int j = 0; j < all->count; j++) {
@@ -26,13 +27,45 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
                 all->entries[j].value ? all->entries[j].value : "");
             tool_track_recalled_key(tools, all->entries[j].key);
             remaining--;
+            added++;
         }
         if (remaining <= 0) break;
     }
-    if (msg.len > strlen(label) + 5) {
+    /* FIX #18: Use boolean flag instead of magic strlen+5 check */
+    if (added > 0) {
         llm_chat_add_typed(chat, "user", str_cstr(&msg), mtype);
     }
     str_free(&msg);
+}
+
+/* FIX #9: Shared helper — injects memory index and pinned knowledge into chat.
+ * Used by both react_build_context() and react_checkpoint_restore().
+ * Returns mem_summary and pinned via output params for logging (caller frees). */
+void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
+                                     char **out_mem_summary, char **out_pinned) {
+    char *mem_summary = tools->ws
+        ? workspace_build_index(tools->ws)
+        : memory_build_index(tools->memory);
+    if (mem_summary && strlen(mem_summary) > 0) {
+        llm_chat_add_formatted(chat, "user", LLM_MSG_MEMORY_INDEX,
+            "[MEMORY INDEX]\n%s\n\n"
+            "Call memory_recall when the answer may depend on user preferences, "
+            "prior decisions, ongoing projects, or historical context not visible "
+            "in the current conversation.\n"
+            "Use memory_list to browse all keys (optionally filtered by type).",
+            mem_summary);
+    }
+
+    char *pinned = tools->ws
+        ? workspace_load_pinned(tools->ws)
+        : memory_load_pinned(tools->memory);
+    if (pinned && strlen(pinned) > 0) {
+        llm_chat_add_formatted(chat, "user", LLM_MSG_PINNED,
+            "[PINNED KNOWLEDGE]\n%s", pinned);
+    }
+
+    if (out_mem_summary) *out_mem_summary = mem_summary; else free(mem_summary);
+    if (out_pinned) *out_pinned = pinned; else free(pinned);
 }
 
 /* FIX #15: Extracted from react_build_context — was 65 lines nested 4 deep.
@@ -44,7 +77,10 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
                                           int parent_loop,
                                           size_t max_budget) {
     /* Build ancestor set by walking parent chain in journal */
-    int ancestors[256];
+    /* FIX #7: Dynamic allocation replaces fixed ancestors[256] array */
+    int anc_cap = 64;
+    int *ancestors = malloc(sizeof(int) * (size_t)anc_cap);
+    if (!ancestors) return scratchpad_serialize_budget(scratch, max_budget);
     int n_ancestors = 0;
     ancestors[n_ancestors++] = parent_loop;
 
@@ -93,8 +129,14 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
         fclose(jf);
         if (pmap) {
             int cur = parent_loop;
-            while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0
-                   && n_ancestors < 256) {
+            while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0) {
+                if (n_ancestors >= anc_cap) {
+                    int new_cap = anc_cap * 2;
+                    int *tmp = realloc(ancestors, sizeof(int) * (size_t)new_cap);
+                    if (!tmp) break;
+                    ancestors = tmp;
+                    anc_cap = new_cap;
+                }
                 cur = pmap[cur];
                 ancestors[n_ancestors++] = cur;
             }
@@ -121,6 +163,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     }
     char *serialized = scratchpad_serialize_budget(&filtered, max_budget);
     scratchpad_free(&filtered);
+    free(ancestors);
     return serialized;
 }
 
@@ -144,38 +187,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* Inject memory summary (counts only — no alphabetical listing) */
     if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
-        char *mem_summary = ctx->tools->ws
-            ? workspace_build_index(ctx->tools->ws)
-            : memory_build_index(ctx->tools->memory);
-        /* S4 FIX: Cache strlen result instead of calling twice. */
-        size_t mem_summary_len = mem_summary ? strlen(mem_summary) : 0;
-        if (mem_summary_len > 0) {
-            size_t mem_msg_sz = mem_summary_len + 512;
-            char *mem_msg = malloc(mem_msg_sz);
-            if (mem_msg) {
-                snprintf(mem_msg, mem_msg_sz, "[MEMORY INDEX]\n%s\n\n"
-                        "Call memory_recall when the answer may depend on user preferences, "
-                        "prior decisions, ongoing projects, or historical context not visible "
-                        "in the current conversation.\n"
-                        "Use memory_list to browse all keys (optionally filtered by type).", mem_summary);
-                llm_chat_add_typed(chat, "user", mem_msg, LLM_MSG_MEMORY_INDEX);
-                free(mem_msg);
-            }
-        }
-
-        /* Inject pinned memories (always-active knowledge) */
-        char *pinned = ctx->tools->ws
-            ? workspace_load_pinned(ctx->tools->ws)
-            : memory_load_pinned(ctx->tools->memory);
-        if (pinned && strlen(pinned) > 0) {
-            size_t pin_msg_sz = strlen(pinned) + 64;
-            char *pin_msg = malloc(pin_msg_sz);
-            if (pin_msg) {
-                snprintf(pin_msg, pin_msg_sz, "[PINNED KNOWLEDGE]\n%s", pinned);
-                llm_chat_add_typed(chat, "user", pin_msg, LLM_MSG_PINNED);
-                free(pin_msg);
-            }
-        }
+        /* FIX #9: Use shared helper for memory index + pinned injection */
+        char *mem_summary = NULL, *pinned = NULL;
+        react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
         /* Inject relevant memories by type — semantic recall filtered by prefix. */
         int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
@@ -260,17 +274,12 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
         char *prev_result = slurp_file(rpath, NULL);
         if (prev_result && strlen(prev_result) > 0) {
-            size_t rlen = strlen(prev_result);
-            char *prev_msg = malloc(rlen + 128);
-            if (prev_msg) {
-                snprintf(prev_msg, rlen + 128,
-                    "[PREVIOUS RESULT]\n%s\n"
-                    "The above is the result of the previous task. "
-                    "You can reference it for follow-up queries.",
-                    prev_result);
-                llm_chat_add_typed(chat, "user", prev_msg, LLM_MSG_PREV_RESULT);
-                free(prev_msg);
-            }
+            /* FIX #12: Use llm_chat_add_formatted to eliminate alloc pattern */
+            llm_chat_add_formatted(chat, "user", LLM_MSG_PREV_RESULT,
+                "[PREVIOUS RESULT]\n%s\n"
+                "The above is the result of the previous task. "
+                "You can reference it for follow-up queries.",
+                prev_result);
         }
         free(prev_result);
     }

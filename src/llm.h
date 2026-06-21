@@ -2,6 +2,7 @@
 #define LLM_H
 
 #include "cJSON.h"
+#include <stdarg.h>
 
 /* Configuration for the LLM endpoint */
 typedef struct {
@@ -143,6 +144,14 @@ void        llm_chat_add(llm_chat_t *chat, const char *role, const char *content
  * Replaces content-prefix scanning with type-safe dispatch. */
 void        llm_chat_add_typed(llm_chat_t *chat, const char *role,
                                const char *content, llm_msg_type_t type);
+
+/* Add a typed message with printf-style formatting.
+ * Handles the alloc + snprintf + add_typed + free pattern internally.
+ * Returns 0 on success, -1 on allocation failure. */
+int         llm_chat_add_formatted(llm_chat_t *chat, const char *role,
+                                    llm_msg_type_t type,
+                                    const char *fmt, ...)
+            __attribute__((format(printf, 4, 5)));
 
 /* Serialize entire chat into a human-readable markdown document.
  * Returns malloc'd string. Caller must free. */

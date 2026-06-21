@@ -123,24 +123,30 @@ void llm_chat_add_typed(llm_chat_t *chat, const char *role,
     chat->n_msgs++;
 }
 
+/* Add a typed message with printf-style formatting.
+ * Handles the alloc + snprintf + add_typed + free pattern internally. */
+int llm_chat_add_formatted(llm_chat_t *chat, const char *role,
+                            llm_msg_type_t type,
+                            const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    va_list ap2;
+    va_copy(ap2, ap);
+    int needed = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (needed < 0) { va_end(ap2); return -1; }
+    char *buf = malloc((size_t)needed + 1);
+    if (!buf) { va_end(ap2); return -1; }
+    vsnprintf(buf, (size_t)needed + 1, fmt, ap2);
+    va_end(ap2);
+    llm_chat_add_typed(chat, role, buf, type);
+    free(buf);
+    return 0;
+}
+
 /* Remove all messages of a given type. Returns count removed. */
 int llm_chat_remove_by_type(llm_chat_t *chat, llm_msg_type_t type) {
-    if (!chat) return 0;
-    int removed = 0;
-    int dst = 0;
-    for (int src = 0; src < chat->n_msgs; src++) {
-        if (chat->msgs[src].msg_type == type) {
-            chat->total_chars -= (long)chat->msgs[src].content_len;
-            llm_msg_free_fields(&chat->msgs[src]);
-            removed++;
-        } else {
-            if (dst != src)
-                chat->msgs[dst] = chat->msgs[src];
-            dst++;
-        }
-    }
-    chat->n_msgs = dst;
-    return removed;
+    return llm_chat_remove_by_types(chat, &type, 1);
 }
 
 /* D1 FIX: Single-pass removal of multiple message types.
@@ -292,9 +298,10 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     chat->n_msgs++;
 }
 
-/* Replace the content of message at index `idx` with `new_content` (takes ownership).
- * Updates content_len and total_chars incrementally. */
-void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content) {
+/* Replace the content of message at index `idx` with `new_content`.
+ * Ownership: new_content is CONSUMED — caller must not use or free it after
+ * this call. Updates content_len and total_chars incrementally. */
+void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content /*consumed*/) {
     if (!chat || idx < 0 || idx >= chat->n_msgs) { free(new_content); return; }
     llm_msg_t *m = &chat->msgs[idx];
     chat->total_chars -= (long)m->content_len;

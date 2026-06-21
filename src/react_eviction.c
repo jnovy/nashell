@@ -263,8 +263,10 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         react_emergency_evict(chat, context_budget, target_pct);
         /* A2 FIX: Inject minimal breadcrumb so LLM knows messages were lost */
         int n_emergency = before_n - chat->n_msgs;
+        /* FIX #5: Compute keep_head once — inserting non-CRITICAL messages
+         * at kh doesn't change the CRITICAL head count. */
+        int kh = react_compute_keep_head(chat);
         if (n_emergency > 0) {
-            int kh = react_compute_keep_head(chat);
             char emsg[128];
             snprintf(emsg, sizeof(emsg),
                      "[%d messages emergency-evicted to free context]",
@@ -278,7 +280,6 @@ void evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         }
         /* Re-inject scratchpad only if room permits */
         if (react_chat_usage_pct(chat, context_budget) < target_pct) {
-            int kh = react_compute_keep_head(chat);
             react_reinject_scratchpad(ctx, chat, kh);
         }
         usage_pct = react_chat_usage_pct(chat, context_budget);
@@ -311,9 +312,12 @@ static int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
     int imp = (int)chat->msgs[mi].importance;
     int rec = (int)chat->msgs[mi].recoverability;
     int msg_len = (int)chat->msgs[mi].content_len;
-    /* FIX #2: Include partner size in cost calculation */
+    /* FIX #2+#4: Include partner size only for the primary (tool_call) message.
+     * Previously both partners included each other's size, double-counting
+     * the pair cost and making the partner eviction logic redundant. */
     const evict_partner_map_t *pmap = (const evict_partner_map_t *)userdata;
-    if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0) {
+    if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0
+        && chat->msgs[mi].tool_calls_json) {
         int pi = pmap->partner[mi];
         msg_len += (int)chat->msgs[pi].content_len;
     }

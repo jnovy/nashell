@@ -392,6 +392,13 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          const char *user_query,
                          react_event_fn on_event, void *userdata);
 
+/* FIX #9: Inject memory index + pinned knowledge into chat.
+ * Used by react_build_context() and react_checkpoint_restore().
+ * Returns mem_summary and pinned via output params for logging (caller frees).
+ * Pass NULL for output params if not needed. */
+void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
+                                     char **out_mem_summary, char **out_pinned);
+
 /* ── Error Recovery ──────────────────────────────────── */
 
 /* Emergency eviction — proportionally removes oldest evictable messages

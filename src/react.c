@@ -331,7 +331,7 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                                memory_results_t *all_memories,
                                const char *query)
 {
-    if (!tools->memory || !tools->journal) return;
+    if ((!tools->memory && !tools->ws) || !tools->journal) return;
 
     cJSON *params = cJSON_CreateObject();
 
@@ -387,10 +387,11 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
     };
     for (int t = 0; type_prefixes[t] != NULL; t++) {
         cJSON *arr = cJSON_CreateArray();
+        size_t plen = strlen(type_prefixes[t]);
         if (all_memories) {
             for (int i = 0; i < all_memories->count; i++) {
                 if (all_memories->entries[i].key &&
-                    strncmp(all_memories->entries[i].key, type_prefixes[t], strlen(type_prefixes[t])) == 0) {
+                    strncmp(all_memories->entries[i].key, type_prefixes[t], plen) == 0) {
                     cJSON *e = cJSON_CreateObject();
                     cJSON_AddStringToObject(e, "key", all_memories->entries[i].key);
                     cJSON_AddNumberToObject(e, "score", all_memories->entries[i].relevance);
