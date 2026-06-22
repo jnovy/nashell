@@ -8,6 +8,7 @@
 
 #include "react_internal.h"
 #include "session_index.h"
+#include "repomap.h"
 
 /* Format a unix timestamp as a relative recency string (e.g. "2d ago", "3w ago").
  * Writes to a caller-supplied buffer. */
@@ -448,6 +449,23 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         free(mem_summary);
         free(pinned);
         memory_results_free(&all_memories);
+    }
+
+    /* ── Repo Map: structural codebase context ─────────────────────
+     * Aider-style repo map: symbol extraction → PageRank → elided rendering.
+     * Injected as read-only structural context so the LLM understands
+     * the codebase architecture without seeing full implementations. */
+    {
+        int do_repomap = ctx->tools->cfg ? ctx->tools->cfg->repo_map : 1;
+        if (do_repomap) {
+            int rm_budget = ctx->tools->cfg
+                ? ctx->tools->cfg->repo_map_max_chars : 8000;
+            char *map = repomap_build(NULL, user_query, NULL, 0, rm_budget);
+            if (map && map[0]) {
+                llm_chat_add_typed(chat, "user", map, LLM_MSG_REPO_MAP);
+            }
+            free(map);
+        }
     }
 
     /* X4+S5 FIX: Scratchpad budget uses the shared dual-cap policy.

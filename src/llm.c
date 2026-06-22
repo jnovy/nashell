@@ -93,6 +93,7 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
             return LLM_MSG_IMPORTANCE_HIGH;
         case LLM_MSG_ERROR:
         case LLM_MSG_MEMORY_HINT:
+        case LLM_MSG_REPO_MAP:
             return LLM_MSG_IMPORTANCE_LOW;
         case LLM_MSG_TOOL_RESULT:
         case LLM_MSG_GENERIC:

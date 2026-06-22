@@ -290,6 +290,11 @@ typedef struct {
     /* Associative graph walk — follow refs[] of recalled memories. */
     int    associative_depth;        /* ref-follow depth (0=disabled, default 1) */
 
+    /* Repo map — structural codebase context injection.
+     * Aider-style repo map: symbol extraction, PageRank, elided rendering. */
+    int    repo_map;                 /* enable repo map injection (default 1) */
+    int    repo_map_max_chars;       /* max chars in repo map output (default 8000) */
+
     /* Working memory auto-promotion — auto-append findings to scratchpad. */
     int    auto_promote;             /* enable auto-promotion (default 1) */
     int    auto_promote_min_length;  /* min tool result chars to trigger (default 500) */

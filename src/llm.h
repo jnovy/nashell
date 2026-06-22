@@ -81,6 +81,7 @@ typedef enum {
     LLM_MSG_EVICTION_SUMMARY,/* scratchpad re-injection after eviction */
     LLM_MSG_TEMPORAL,        /* [TEMPORAL CONTEXT] chronological memory calendar */
     LLM_MSG_EPISODIC,        /* [RECALLED SESSION CHUNK] episodic journal recall */
+    LLM_MSG_REPO_MAP,        /* [REPO MAP] structural codebase context */
 } llm_msg_type_t;
 
 /* Message importance level — controls eviction priority.

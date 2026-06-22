@@ -116,6 +116,9 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->episodic_min_score <= 0)      cfg->episodic_min_score = 0.35;
     /* Associative graph walk (default: depth 1) */
     if (cfg->associative_depth <= 0)       cfg->associative_depth = 1;
+    /* Repo map (default: enabled, 8000 chars) */
+    if (cfg->repo_map <= 0)               cfg->repo_map = 1;
+    if (cfg->repo_map_max_chars <= 0)     cfg->repo_map_max_chars = 8000;
     /* Working memory auto-promotion (default: enabled) */
     if (cfg->auto_promote <= 0)            cfg->auto_promote = 1;
     if (cfg->auto_promote_min_length <= 0) cfg->auto_promote_min_length = 500;
@@ -392,6 +395,9 @@ config_t *config_load(const char *path) {
         cfg->episodic_min_score      = toml_dbl(limits, "episodic_min_score", 0);
         /* Associative graph walk */
         cfg->associative_depth       = toml_int(limits, "associative_depth", -1);
+        /* Repo map */
+        cfg->repo_map                = toml_int(limits, "repo_map", -1);
+        cfg->repo_map_max_chars      = toml_int(limits, "repo_map_max_chars", -1);
         /* Working memory auto-promotion */
         cfg->auto_promote            = toml_int(limits, "auto_promote", -1);
         cfg->auto_promote_min_length = toml_int(limits, "auto_promote_min_length", -1);
@@ -1117,6 +1123,8 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "episodic_max_results = %d\n", cfg->episodic_max_results);
     fprintf(out, "episodic_min_score = %.2f\n", cfg->episodic_min_score);
     fprintf(out, "associative_depth = %d\n", cfg->associative_depth);
+    fprintf(out, "repo_map = %s\n", cfg->repo_map ? "true" : "false");
+    fprintf(out, "repo_map_max_chars = %d\n", cfg->repo_map_max_chars);
     fprintf(out, "auto_promote = %s\n", cfg->auto_promote ? "true" : "false");
     fprintf(out, "auto_promote_min_length = %d\n", cfg->auto_promote_min_length);
     fprintf(out, "auto_promote_max_chars = %d\n", cfg->auto_promote_max_chars);
@@ -1485,6 +1493,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
           if (d > 0) cfg->episodic_min_score = d; }
         v = toml_int(limits, "associative_depth", 0);
         if (v > 0) cfg->associative_depth = v;
+        v = toml_int(limits, "repo_map", 0);
+        if (v > 0) cfg->repo_map = v;
+        v = toml_int(limits, "repo_map_max_chars", 0);
+        if (v > 0) cfg->repo_map_max_chars = v;
         v = toml_int(limits, "auto_promote", 0);
         if (v > 0) cfg->auto_promote = v;
         v = toml_int(limits, "auto_promote_min_length", 0);
