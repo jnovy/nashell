@@ -77,10 +77,8 @@ static void write_md_file(const char *path, const char *content) {
 /* Extract tool description from journal params (for step display). */
 static const char *extract_desc(const char *tool, cJSON *params) {
     if (!params) return "";
-    cJSON *cmd  = cJSON_GetObjectItem(params, "command");
     cJSON *path = cJSON_GetObjectItem(params, "path");
     cJSON *pat  = cJSON_GetObjectItem(params, "pattern");
-    cJSON *qry  = cJSON_GetObjectItem(params, "query");
     cJSON *res  = cJSON_GetObjectItem(params, "result");
     cJSON *url  = cJSON_GetObjectItem(params, "url");
 
@@ -153,13 +151,85 @@ static const char *extract_desc(const char *tool, cJSON *params) {
                  len, s, (nl || (int)strlen(s) > 80) ? "..." : "");
         return trunc_desc;
     }
-    if (cmd && cmd->valuestring) return cmd->valuestring;
-    if (path && path->valuestring) return path->valuestring;
-    if (pat && pat->valuestring) return pat->valuestring;
-    if (qry && qry->valuestring) return qry->valuestring;
-    if (res && res->valuestring) return res->valuestring;
-    cJSON *err = cJSON_GetObjectItem(params, "error");
-    if (err && err->valuestring) return err->valuestring;
+    /* Generic fallback: show params compactly (skip "thought").
+     * - Single visible param: show just value, no key= prefix
+     * - Multiple visible params: show key=value pairs
+     * - Skip default-valued params (false booleans)
+     * Truncate individual values at 60 chars. */
+    {
+        static char generic_desc[512];
+        int pos = 0;
+
+        /* First pass: count visible (non-thought, non-default) params */
+        int n_visible = 0;
+        cJSON *child = params->child;
+        while (child) {
+            if (child->string && strcmp(child->string, "thought") != 0) {
+                /* Skip false booleans (default values) */
+                if (!(cJSON_IsBool(child) && !cJSON_IsTrue(child)))
+                    n_visible++;
+            }
+            child = child->next;
+        }
+        int single_param = (n_visible == 1);
+
+        child = params->child;
+        while (child && pos < (int)sizeof(generic_desc) - 2) {
+            if (!child->string) { child = child->next; continue; }
+            /* Skip thought — rendered separately */
+            if (strcmp(child->string, "thought") == 0) {
+                child = child->next;
+                continue;
+            }
+            /* Skip false booleans (default values) */
+            if (cJSON_IsBool(child) && !cJSON_IsTrue(child)) {
+                child = child->next;
+                continue;
+            }
+            /* Add separator */
+            if (pos > 0)
+                generic_desc[pos++] = ' ';
+            /* key= prefix (omit for single-param tools) */
+            if (!single_param) {
+                int klen = (int)strlen(child->string);
+                int room = (int)sizeof(generic_desc) - 1 - pos;
+                if (room < klen + 2) break;
+                memcpy(generic_desc + pos, child->string, (size_t)klen);
+                pos += klen;
+                generic_desc[pos++] = '=';
+            }
+            if (child->valuestring) {
+                int vlen = (int)strlen(child->valuestring);
+                int trunc = (vlen > 60);
+                if (trunc) vlen = 60;
+                int room = (int)sizeof(generic_desc) - 4 - pos;
+                if (vlen > room) { vlen = room; trunc = 1; }
+                if (vlen > 0) {
+                    memcpy(generic_desc + pos, child->valuestring, (size_t)vlen);
+                    pos += vlen;
+                }
+                if (trunc && pos < (int)sizeof(generic_desc) - 4) {
+                    memcpy(generic_desc + pos, "...", 3);
+                    pos += 3;
+                }
+            } else if (cJSON_IsNumber(child)) {
+                int room = (int)sizeof(generic_desc) - 1 - pos;
+                int n = snprintf(generic_desc + pos, (size_t)room, "%g",
+                                 cJSON_GetNumberValue(child));
+                if (n > 0 && n < room) pos += n;
+            } else if (cJSON_IsBool(child)) {
+                /* Only true booleans reach here (false already skipped) */
+                int room = (int)sizeof(generic_desc) - 1 - pos;
+                if (room >= 4) {
+                    memcpy(generic_desc + pos, "true", 4);
+                    pos += 4;
+                }
+            }
+            child = child->next;
+        }
+        generic_desc[pos] = '\0';
+        if (pos > 0) return generic_desc;
+    }
     return "";
 }
 

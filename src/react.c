@@ -1276,15 +1276,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *el = cJSON_GetObjectItem(action, "end_line");
         int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
         int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
-        /* Include priority, background, regex — without these,
-         * notes(priority=1) vs notes(priority=5), shell_exec(background=true)
-         * vs shell_exec(background=false), and grep_search(regex=true) vs
-         * grep_search(regex=false) would falsely trigger cycling. */
+        /* Include priority, regex — without these,
+         * notes(priority=1) vs notes(priority=5) and grep_search(regex=true)
+         * vs grep_search(regex=false) would falsely trigger cycling. */
         cJSON *pr = cJSON_GetObjectItem(action, "priority");
-        cJSON *bg = cJSON_GetObjectItem(action, "background");
         cJSON *rx = cJSON_GetObjectItem(action, "regex");
         int priority = pr ? (int)cJSON_GetNumberValue(pr) : 0;
-        int background = bg ? (cJSON_IsTrue(bg) ? 1 : 0) : -1;
         int regex = rx ? (cJSON_IsTrue(rx) ? 1 : 0) : -1;
         /* Build action signature dynamically — no fixed buffer, no truncation.
          * Short fields (action_name, cmd, path, pattern) go verbatim for
@@ -1293,7 +1290,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *cmd_s = cmd ? cmd : "";
         const char *path_s = path ? path : "";
         const char *pattern_s = pattern ? pattern : "";
-        /* 90 bytes for 10 hashed fields + 9 colons + 48 for ints + 1 null */
+        /* 90 bytes for 10 hashed fields + 9 colons + 40 for ints + 1 null */
         size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s)
                        + strlen(pattern_s) + 90 + 48 + 1;
         char *sig = malloc(sig_cap);
@@ -1306,9 +1303,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         } while (0)
         int sig_pos = 0;
         /* Short fields go verbatim for debuggability */
-        sig_pos += snprintf(sig, sig_cap, "%s:%s:%s:%s:%d:%d:%d:%d:%d:",
+        sig_pos += snprintf(sig, sig_cap, "%s:%s:%s:%s:%d:%d:%d:%d:",
                  action_name, cmd_s, path_s, pattern_s,
-                 start_line, end_line, priority, background, regex);
+                 start_line, end_line, priority, regex);
         /* Long fields get hashed — no truncation, no overflow */
         SIG_HASH_FIELD(content);
         SIG_HASH_FIELD(old_text);

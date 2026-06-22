@@ -16,36 +16,6 @@
 #include "embedding.h"
 #include <time.h>
 
-/* Strip markdown links: [text](url) → text.
- * Returns a new malloc'd string. Caller must free. */
-static char *strip_md_links(const char *src) {
-    if (!src) return strdup("");
-    size_t len = strlen(src);
-    char *out = malloc(len + 1);
-    if (!out) return strdup("");
-    size_t oi = 0;
-    for (size_t i = 0; i < len; ) {
-        if (src[i] == '[') {
-            /* Look for ](url) */
-            const char *close_bracket = strchr(src + i + 1, ']');
-            if (close_bracket && close_bracket[1] == '(') {
-                const char *close_paren = strchr(close_bracket + 2, ')');
-                if (close_paren) {
-                    /* Copy just the link text (between [ and ]) */
-                    size_t text_len = (size_t)(close_bracket - (src + i + 1));
-                    memcpy(out + oi, src + i + 1, text_len);
-                    oi += text_len;
-                    i = (size_t)(close_paren - src) + 1;
-                    continue;
-                }
-            }
-        }
-        out[oi++] = src[i++];
-    }
-    out[oi] = '\0';
-    return out;
-}
-
 /* Comparator for qsort — descending string order (newest first) */
 static int cmp_str_desc(const void *a, const void *b) {
     return strcmp(*(const char **)b, *(const char **)a);
@@ -817,8 +787,7 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
                                 r->lexical_score, r->match_count);
                 str_append_cstr(&md_file, ")\n\n");
 
-                /* Session dir — hyperlinked in md, strip_md_links
-                 * will produce plain text for TUI display */
+                /* Session dir — rendered as OSC 8 clickable link in TUI */
                 if (r->session_dir)
                     str_appendf(&md_file, "    [%s](%s)\n\n",
                                 r->session_dir, r->session_dir);
@@ -869,8 +838,8 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
         }
     }
 
-    /* ── Derive TUI display by stripping markdown links ── */
-    char *banner = strip_md_links(str_cstr(&md_file));
+    /* ── Pass markdown with links to TUI for OSC 8 rendering ── */
+    char *banner = strdup(str_cstr(&md_file));
     str_free(&md_file);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_banner(ui, banner);

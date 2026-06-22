@@ -9,9 +9,8 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Execute a shell command (git, make, docker, gh, npm, etc.). "
      "For file reading use file_read, for content search use grep_search, "
      "for file search use glob_search, for URL fetching use web_fetch. "
-     "Limit output: pipe through head -50, tail, jq, grep. "
-     "For servers/daemons, set background=true.",
-     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"},\"background\":{\"type\":\"boolean\",\"description\":\"Start as background process (for servers/daemons). Returns immediately with PID.\",\"default\":false}},\"required\":[\"command\"]}"},
+     "Limit output: pipe through head -50, tail, jq, grep.",
+     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"}},\"required\":[\"command\"]}"},
 
     {"file_read",
      "Read contents of a file. Supports line ranges to avoid reading entire large files. "
@@ -41,7 +40,7 @@ const tool_def_t TOOL_REGISTRY[] = {
 
     {"glob_search",
      "Search for files matching a glob pattern.",
-     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern (e.g. **/*.py)\"}},\"required\":[\"pattern\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern (e.g. **/*.py)\"},\"path\":{\"type\":\"string\",\"description\":\"Directory or file to search in\"}},\"required\":[\"pattern\"]}"},
 
     {"memory_store",
      "Store reusable knowledge in long-term memory.",

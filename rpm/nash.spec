@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        1%{?dist}
+Release:        2%{?dist}
 Summary:        Autonomous coding agent in C — New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -40,12 +40,14 @@ dependencies. It runs locally with local models, maintains long-term memory
 across sessions, and learns from every task it completes.
 
 Key features:
-  - 18 built-in tools (file I/O, search, web fetch, memory, image analysis)
-  - ncurses TUI with markdown rendering, step expansion, keyboard navigation
+  - 19 built-in tools (file I/O, search, web fetch, memory, image analysis, todo)
+  - ncurses TUI with markdown rendering, step expansion, in-page search
   - Multiple LLM providers: local (llama.cpp), OpenAI, Anthropic, Vertex AI
-  - Semantic memory with Bayesian pruning and pinning
+  - Semantic memory with Bayesian pruning, ONNX embeddings, and BM25 scoring
+  - Aider-style repo map for structural codebase context
   - Playbook system for automated multi-pass workflows (dream, health, etc.)
-  - Session journaling with checkpoint/resume support
+  - Session journaling with checkpoint/resume and episodic search
+  - Context compaction with configurable eviction policies
   - Content-addressed store with full audit trail
 
 %prep
@@ -95,5 +97,30 @@ make test CC=gcc \
 %{_datadir}/%{name}/
 
 %changelog
+* Sun Jun 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-2
+- feat: /todo command and persistent todo tool
+- feat: Aider-style repo map for structural codebase context
+- feat: BM25 scoring for memory search relevance
+- feat: unified memory_search (replaces memory_recall + session_search)
+- feat: session_grep with POSIX Extended Regular Expression support
+- feat: /ms TUI command for full-parameter memory search
+- feat: in-page text search with ?-prefix, match highlighting, n/N navigation
+- feat: configurable provider retry policy via config.toml
+- feat: configurable eviction policy struct (replaces 20+ scattered #defines)
+- feat: per-chunk journal RAG with ONNX embeddings
+- feat: pre-compaction warning (alerts model before eviction fires)
+- feat: Qwen XML tool call parsing as fallback
+- feat: top_p and top_k sampling parameter support
+- feat: UDCS uncertainty decomposition prompt
+- feat: event-driven retrieval and auto-promotion
+- feat: arrow-down past last history entry restores in-progress text
+- fix: context compaction rewrite — mark-sweep eviction, death spiral
+  elimination, 30+ bug fixes across 15 review passes
+- fix: memory subsystem — 13 design/logic flaws (3 critical, 3 high)
+- fix: replace hardcoded buffer sizes with named constants
+- fix: UTF-8 safe truncation and LLM error display
+- fix: cycle-detection refinement and portability improvements
+- Update tool count from 18 to 19
+
 * Fri Jun 19 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-1
 - Initial RPM package

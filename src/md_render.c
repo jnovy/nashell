@@ -668,6 +668,27 @@ static int is_web_uri(const char *uri) {
     return strncmp(uri, "http://", 7) == 0 || strncmp(uri, "https://", 8) == 0;
 }
 
+/* Check if a URI is linkable via OSC 8: web URLs, file:// URIs, or
+ * absolute paths (which get auto-prefixed with file:// at emit time) */
+static int is_linkable_uri(const char *uri) {
+    if (!uri || !*uri) return 0;
+    return is_web_uri(uri)
+        || strncmp(uri, "file://", 7) == 0
+        || uri[0] == '/';
+}
+
+/* Emit OSC 8 start, auto-prefixing absolute paths with file:// */
+static void emit_osc8_link_start(WINDOW *win, const char *uri) {
+    if (uri[0] == '/' && strncmp(uri, "file://", 7) != 0) {
+        /* Build file:// URI for absolute path */
+        char buf[4096];
+        snprintf(buf, sizeof(buf), "file://%s", uri);
+        emit_osc8_start(win, buf);
+    } else {
+        emit_osc8_start(win, uri);
+    }
+}
+
 /* ── Render helpers ── */
 
 /* Count the number of display columns a UTF-8 string occupies.
@@ -1006,7 +1027,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int is_cursor = (focus && link_idx == cursor_link);
             md_link_t *lk = &doc->links[link_idx];
             lk->render_line = render_line;
-            int has_osc8 = visible && is_web_uri(lk->uri);
+            int has_osc8 = visible && is_linkable_uri(lk->uri);
             link_idx++;
 
             if (visible) {
@@ -1016,9 +1037,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                     wattron(win, COLOR_PAIR(C_FOCUS));
                 }
 
-                /* Emit OSC 8 hyperlink start for web URIs */
+                /* Emit OSC 8 hyperlink start */
                 if (has_osc8) {
-                    emit_osc8_start(win, lk->uri);
+                    emit_osc8_link_start(win, lk->uri);
                 }
 
                 /* Render the link text with inline formatting */
@@ -1026,7 +1047,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 int n = parse_inline(lk->text, (int)strlen(lk->text), segs, MAX_INLINE_SEGS);
                 render_segs_on_line(win, vis_line, 0, segs, n, cols);
 
-                /* Emit OSC 8 hyperlink end for web URIs */
+                /* Emit OSC 8 hyperlink end */
                 if (has_osc8) {
                     emit_osc8_end(win);
                 }
@@ -1080,13 +1101,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         }
 
                         /* 2. Link text with link color (or cursor highlight) */
-                        int has_osc8 = is_web_uri(head_lk->uri);
+                        int has_osc8 = is_linkable_uri(head_lk->uri);
                         if (head_is_cursor)
                             wattron(win, A_REVERSE | A_BOLD);
                         else
                             wattron(win, COLOR_PAIR(C_FOCUS) | A_BOLD);
                         if (has_osc8)
-                            emit_osc8_start(win, head_lk->uri);
+                            emit_osc8_link_start(win, head_lk->uri);
 
                         int link_text_len = (int)(bracket_end - bracket - 1);
                         if (link_text_len > 0 && x < cols)
