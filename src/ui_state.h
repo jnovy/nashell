@@ -78,6 +78,8 @@ typedef struct {
     int            history_count;
     int            history_cap;
     int            history_idx;   /* current position in history navigation */
+    char          *saved_input;   /* stashed in-progress text during history nav */
+    int            saved_input_len;
 
     /* ── Streaming state ── */
     char          *stream_tokens;

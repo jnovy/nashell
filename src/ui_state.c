@@ -85,6 +85,7 @@ void ui_state_free(ui_state_t *ui) {
     for (int i = 0; i < ui->history_count; i++)
         free(ui->history[i]);
     free(ui->history);
+    free(ui->saved_input);
     for (int i = 0; i < ui->expanded_count; i++)
         free(ui->expanded_uris[i]);
     free(ui->expanded_uris);

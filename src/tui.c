@@ -1062,6 +1062,16 @@ int tui_input(ui_state_t *ui, char **out_query) {
             } else {
                 /* On first display row — load previous history */
                 if (ui->history_count > 0 && ui->history_idx > 0) {
+                    /* Stash in-progress input when first entering history */
+                    if (ui->history_idx == ui->history_count) {
+                        free(ui->saved_input);
+                        ui->saved_input = malloc((size_t)(ui->input_len + 1));
+                        if (ui->saved_input) {
+                            memcpy(ui->saved_input, ui->input_buffer, (size_t)ui->input_len);
+                            ui->saved_input[ui->input_len] = '\0';
+                        }
+                        ui->saved_input_len = ui->input_len;
+                    }
                     ui->history_idx--;
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
                     if (hlen >= ui->input_cap) {
@@ -1135,17 +1145,33 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 ui->cursor_pos = new_pos;
                 ui->dirty = 1;
             } else {
-                /* On last display row — load next history or do nothing */
-                if (ui->history_count > 0 && ui->history_idx < ui->history_count - 1) {
+                /* On last display row — load next history or restore saved input */
+                if (ui->history_count > 0 && ui->history_idx < ui->history_count) {
                     ui->history_idx++;
-                    int hlen = (int)strlen(ui->history[ui->history_idx]);
-                    if (hlen >= ui->input_cap) {
-                        ui->input_cap = hlen + 64;
-                        ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                    if (ui->history_idx == ui->history_count) {
+                        /* Past end — restore stashed in-progress input */
+                        int hlen = ui->saved_input ? ui->saved_input_len : 0;
+                        if (hlen >= ui->input_cap) {
+                            ui->input_cap = hlen + 64;
+                            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                        }
+                        if (hlen > 0)
+                            memcpy(ui->input_buffer, ui->saved_input, (size_t)hlen);
+                        ui->input_len = hlen;
+                        ui->cursor_pos = hlen;
+                        free(ui->saved_input);
+                        ui->saved_input = NULL;
+                        ui->saved_input_len = 0;
+                    } else {
+                        int hlen = (int)strlen(ui->history[ui->history_idx]);
+                        if (hlen >= ui->input_cap) {
+                            ui->input_cap = hlen + 64;
+                            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                        }
+                        memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
+                        ui->input_len = hlen;
+                        ui->cursor_pos = hlen;
                     }
-                    memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
-                    ui->input_len = hlen;
-                    ui->cursor_pos = hlen;
                     ui->dirty = 1;
                 }
             }
