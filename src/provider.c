@@ -392,9 +392,15 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
         cJSON_AddBoolToObject(req, "return_progress", 1);
     }
 
-    /* Tools — use filter if set on provider (allows model profile tool restrictions) */
+    /* Tools — use filter if set on provider (allows model profile tool restrictions).
+     * When filter produces zero tools (e.g. structural thinking Call 1),
+     * omit the tools array entirely — some APIs reject empty tools. */
     cJSON *tools = build_tools_from_registry_filtered(provider_type, p->tool_filter);
-    cJSON_AddItemToObject(req, "tools", tools);
+    if (cJSON_GetArraySize(tools) > 0) {
+        cJSON_AddItemToObject(req, "tools", tools);
+    } else {
+        cJSON_Delete(tools);
+    }
 
     /* Messages — use shared helper */
     cJSON *msgs = build_messages_json(chat);

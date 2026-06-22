@@ -846,6 +846,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ev.message = msg;
                     react_emit(on_event, userdata, &ev);
                 }
+            } else if (mode == THINKING_STRUCTURAL) {
+                ctx->rt.enable_thinking = 0;
+                ctx->rt.structural_thinking = 1;
+
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_WARNING;
+                ev.step = step + 1;
+                ev.message = "Structural reasoning: two-call mode (reason → act)";
+                react_emit(on_event, userdata, &ev);
             }
             /* Propagate thinking budget from config */
             ctx->rt.thinking_budget = ctx->tools->cfg->thinking.budget;
@@ -856,6 +866,80 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                      ctx->tools->react_loop };
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
+
+        /* ── Structural reasoning: two-call pattern ──
+         * Call 1: reason (no tools, thinking OFF) → forced plain-text analysis
+         * Call 2: act (tools restored) → tool call informed by reasoning
+         * The reasoning becomes a persistent assistant message in context,
+         * unlike native thinking which vanishes after each turn.
+         * Inspired by OpenDev's structural thinking separation [arXiv:2603.05344]. */
+        if (ctx->rt.structural_thinking) {
+            /* Save current tool filter, replace with empty whitelist (no tools) */
+            const struct tool_filter_t *saved_filter = &ctx->tools->tool_filter;
+            tool_filter_t no_tools = {0};
+            static const char *empty_list[] = {NULL};
+            no_tools.allowed = empty_list;
+            no_tools.n_allowed = 0;
+            ctx->provider->tool_filter = (const struct tool_filter_t *)&no_tools;
+            ctx->provider->cfg.enable_thinking = 0;
+            ctx->provider->cfg.thinking_budget = 0;
+
+            /* Inject reasoning prompt — adapted to task complexity */
+            llm_chat_add(chat, "user",
+                "Before acting, briefly analyze this step:\n"
+                "- What is the current situation and what needs to happen next?\n"
+                "- What approach will you take?\n"
+                "- What could go wrong?\n"
+                "Be concise (3-8 sentences). Do NOT describe tool calls or "
+                "write code — just reason about the problem.");
+            /* Mark reasoning prompt as LOW importance for eviction */
+            if (chat->n_msgs > 0)
+                chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+
+            /* Call 1: reason — no tools available, model must produce plain text */
+            llm_stats_t reason_stats = {0};
+            char *reasoning = provider_complete_stream(ctx->provider, chat,
+                    &reason_stats,
+                    on_event ? react_stream_token_cb : NULL, &sctx,
+                    max_resp / 4,  /* cap reasoning at 1/4 of max response */
+                    rep_thresh,
+                    on_event ? react_progress_cb : NULL, &sctx);
+
+            /* Remove the injected reasoning prompt */
+            llm_chat_remove_range(chat, chat->n_msgs - 1, chat->n_msgs);
+
+            if (reasoning && reasoning[0]) {
+                /* Add reasoning as assistant message — becomes persistent context */
+                llm_chat_add(chat, "assistant", reasoning);
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+                llm_chat_add(chat, "user",
+                    "Good analysis. Now execute — call the appropriate tool.");
+                if (chat->n_msgs > 0)
+                    chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+
+                /* Emit reasoning step event */
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_STEP_COMPLETE;
+                ev.step = step + 1;
+                ev.max_steps = ctx->max_steps;
+                ev.action = "structural_reason";
+                ev.description = reasoning;
+                ev.stats = reason_stats;
+                ev.context_size = ctx->provider->cfg.context_size;
+                react_emit(on_event, userdata, &ev);
+
+                /* Accumulate reasoning tokens into step stats */
+                stats.prompt_tokens += reason_stats.prompt_tokens;
+                stats.completion_tokens += reason_stats.completion_tokens;
+            }
+            free(reasoning);
+
+            /* Restore tool filter for Call 2 */
+            ctx->provider->tool_filter = saved_filter;
+        }
+
         /* Propagate tool filter so provider builds schema with only allowed tools */
         ctx->provider->tool_filter = &ctx->tools->tool_filter;
         /* FIX: Copy runtime thinking state to provider->cfg just before the

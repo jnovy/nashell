@@ -518,26 +518,34 @@ static char *anthropic_build_request(provider_t *p, llm_chat_t *chat, int stream
 
     cJSON_Delete(converted);
 
-    /* Tools — use filter if set on provider */
+    /* Tools — use filter if set on provider.
+     * When filter produces zero tools (e.g. structural thinking Call 1),
+     * omit both "tools" and "tool_choice" — the API rejects
+     * tool_choice.any when no tools are provided (HTTP 400). */
     cJSON *tools = build_tools_from_registry_filtered(PROVIDER_ANTHROPIC, p->tool_filter);
-    cJSON_AddItemToObject(req, "tools", tools);
+    int n_tools = cJSON_GetArraySize(tools);
+    if (n_tools > 0) {
+        cJSON_AddItemToObject(req, "tools", tools);
 
-    /* Force tool use — the agent always expects a tool call response.
-     * Without this, the model sometimes responds with plain text
-     * (e.g., "I'm ready to help!") which fails JSON parsing and
-     * wastes a round-trip on recovery.
-     *
-     * BUG FIX: When thinking is enabled, Anthropic API only allows
-     * tool_choice "auto" or "none" — "any" and "tool" force tool use
-     * which is incompatible with extended thinking and returns HTTP 400.
-     * See: docs.anthropic.com/en/docs/build-with-claude/extended-thinking */
-    cJSON *tool_choice = cJSON_CreateObject();
-    if (p->cfg.enable_thinking) {
-        cJSON_AddStringToObject(tool_choice, "type", "auto");
+        /* Force tool use — the agent always expects a tool call response.
+         * Without this, the model sometimes responds with plain text
+         * (e.g., "I'm ready to help!") which fails JSON parsing and
+         * wastes a round-trip on recovery.
+         *
+         * BUG FIX: When thinking is enabled, Anthropic API only allows
+         * tool_choice "auto" or "none" — "any" and "tool" force tool use
+         * which is incompatible with extended thinking and returns HTTP 400.
+         * See: docs.anthropic.com/en/docs/build-with-claude/extended-thinking */
+        cJSON *tool_choice = cJSON_CreateObject();
+        if (p->cfg.enable_thinking) {
+            cJSON_AddStringToObject(tool_choice, "type", "auto");
+        } else {
+            cJSON_AddStringToObject(tool_choice, "type", "any");
+        }
+        cJSON_AddItemToObject(req, "tool_choice", tool_choice);
     } else {
-        cJSON_AddStringToObject(tool_choice, "type", "any");
+        cJSON_Delete(tools);
     }
-    cJSON_AddItemToObject(req, "tool_choice", tool_choice);
 
     char *json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);

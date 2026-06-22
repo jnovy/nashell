@@ -85,7 +85,7 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if (strcmp(tool, "grep_search") == 0 && pat && pat->valuestring) {
         static char grep_desc[256];
         if (path && path->valuestring && path->valuestring[0])
-            snprintf(grep_desc, sizeof(grep_desc), "%s in %s",
+            snprintf(grep_desc, sizeof(grep_desc), "%s %s",
                      pat->valuestring, path->valuestring);
         else
             snprintf(grep_desc, sizeof(grep_desc), "%s", pat->valuestring);
