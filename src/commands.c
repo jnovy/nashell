@@ -12,6 +12,9 @@
 #include "nash_limits.h"
 #include "scratchpad.h"
 #include "tui.h"
+#include "session_search.h"
+#include "embedding.h"
+#include <time.h>
 
 /* Comparator for qsort — descending string order (newest first) */
 static int cmp_str_desc(const void *a, const void *b) {
@@ -513,75 +516,316 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
     return CMD_CONTINUE;
 }
 
-/* ── /memory_recall <query> ────────────────────────────────────── */
-static int cmd_memory_recall(command_ctx_t *ctx, const char *query) {
+/* ── Argument parser for /memory_search (Option C: short+long flags) ── */
+
+/* Extract a quoted or unquoted token starting at *p.
+ * Advances *p past the token (and any trailing whitespace).
+ * Returns a pointer into a static buffer (overwritten each call). */
+static const char *ms_next_token(const char **p) {
+    static char tokbuf[NASH_PATH_MAX];
+    const char *s = *p;
+    while (*s == ' ') s++;
+    if (!*s) { *p = s; return NULL; }
+
+    int i = 0;
+    if (*s == '"') {
+        s++; /* skip opening quote */
+        while (*s && *s != '"' && i < NASH_PATH_MAX - 1)
+            tokbuf[i++] = *s++;
+        if (*s == '"') s++; /* skip closing quote */
+    } else if (*s == '\'') {
+        s++;
+        while (*s && *s != '\'' && i < NASH_PATH_MAX - 1)
+            tokbuf[i++] = *s++;
+        if (*s == '\'') s++;
+    } else {
+        while (*s && *s != ' ' && i < NASH_PATH_MAX - 1)
+            tokbuf[i++] = *s++;
+    }
+    tokbuf[i] = '\0';
+    while (*s == ' ') s++;
+    *p = s;
+    return tokbuf;
+}
+
+typedef struct {
+    char query[NASH_PATH_MAX];
+    char key[NASH_PATH_MAX];
+    char pattern[NASH_PATH_MAX];
+    int  use_regex;
+    int  max_results;   /* 0 = default */
+    int  days;           /* 0 = no limit */
+} ms_args_t;
+
+static int ms_parse_args(const char *input, ms_args_t *args) {
+    memset(args, 0, sizeof(*args));
+    const char *p = input;
+    while (*p == ' ') p++;
+    if (!*p) return -1; /* empty */
+
+    /* Collect bare words (no flag prefix) into query */
+    str_t bare = str_new(256);
+
+    while (*p) {
+        if (*p == '-') {
+            const char *flag_start = p;
+            p++; /* skip first '-' */
+            if (*p == '-') p++; /* skip second '-' for long flags */
+            /* Read flag name */
+            char flag[32] = {0};
+            int fi = 0;
+            while (*p && *p != ' ' && *p != '=' && fi < 30)
+                flag[fi++] = *p++;
+            if (*p == '=') p++;
+            while (*p == ' ') p++;
+
+            if (strcmp(flag, "q") == 0 || strcmp(flag, "query") == 0) {
+                const char *tok = ms_next_token(&p);
+                if (tok) snprintf(args->query, sizeof(args->query), "%s", tok);
+            } else if (strcmp(flag, "k") == 0 || strcmp(flag, "key") == 0) {
+                const char *tok = ms_next_token(&p);
+                if (tok) snprintf(args->key, sizeof(args->key), "%s", tok);
+            } else if (strcmp(flag, "p") == 0 || strcmp(flag, "pattern") == 0) {
+                const char *tok = ms_next_token(&p);
+                if (tok) snprintf(args->pattern, sizeof(args->pattern), "%s", tok);
+            } else if (strcmp(flag, "r") == 0 || strcmp(flag, "regex") == 0) {
+                args->use_regex = 1;
+            } else if (strcmp(flag, "n") == 0 || strcmp(flag, "max") == 0) {
+                const char *tok = ms_next_token(&p);
+                if (tok) {
+                    args->max_results = atoi(tok);
+                    if (args->max_results < 1) args->max_results = 1;
+                    if (args->max_results > 100) args->max_results = 100;
+                }
+            } else if (strcmp(flag, "d") == 0 || strcmp(flag, "days") == 0) {
+                const char *tok = ms_next_token(&p);
+                if (tok) {
+                    args->days = atoi(tok);
+                    if (args->days < 0) args->days = 0;
+                }
+            } else {
+                /* Unknown flag — treat from flag_start as bare word */
+                const char *tok = flag_start;
+                while (*tok && *tok != ' ') tok++;
+                if (bare.len > 0) str_append_cstr(&bare, " ");
+                str_append(&bare, flag_start, tok - flag_start);
+                p = tok;
+                while (*p == ' ') p++;
+            }
+        } else {
+            /* Bare word — accumulate into query */
+            const char *tok = ms_next_token(&p);
+            if (tok) {
+                if (bare.len > 0) str_append_cstr(&bare, " ");
+                str_append_cstr(&bare, tok);
+            }
+        }
+    }
+
+    /* If we got bare words and no explicit -q, use them as query */
+    if (bare.len > 0 && args->query[0] == '\0') {
+        snprintf(args->query, sizeof(args->query), "%s",
+                 bare.data ? bare.data : "");
+    }
+    str_free(&bare);
+
+    /* Must have at least one search parameter */
+    if (args->query[0] == '\0' && args->key[0] == '\0' &&
+        args->pattern[0] == '\0')
+        return -1;
+
+    return 0;
+}
+
+/* ── /memory_search — full hybrid search (curated memory + sessions) ── */
+static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
     ui_state_t *ui = ctx->ui;
 
-    /* Strip optional quotes */
-    int n = strlen(query);
-    const char *q_start = query;
-    const char *q_end = query + n;
-    if (n >= 2 && q_start[0] == '"' && q_end[-1] == '"') {
-        q_start++; q_end--;
-    } else if (n >= 2 && q_start[0] == '\'' && q_end[-1] == '\'') {
-        q_start++; q_end--;
-    }
-    int q_len = q_end - q_start;
-    if (q_len == 0) {
+    ms_args_t args;
+    if (ms_parse_args(input, &args) < 0) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
-            "/memory_recall: usage: /memory_recall \"query\"");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
-        return CMD_CONTINUE;
-    }
-    char qbuf[NASH_PATH_MAX];
-    memcpy(qbuf, q_start, q_len);
-    qbuf[q_len] = '\0';
-
-    memory_results_t results = ctx->ws
-        ? workspace_recall(ctx->ws, qbuf, 10)
-        : memory_recall(ctx->memory, qbuf, 10);
-    if (results.count == 0) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY,
-            "No memories matched query");
+            "Usage: /ms [-q query] [-k key] [-p pattern] [-r] [-n max] [-d days]");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
     }
 
-    /* Format results as a readable display string */
+    const char *query   = args.query[0]   ? args.query   : NULL;
+    const char *key     = args.key[0]     ? args.key     : NULL;
+    const char *pattern = args.pattern[0] ? args.pattern : NULL;
+    int max_results     = args.max_results;
+    int days            = args.days;
+    int use_regex       = args.use_regex;
+
+    int mem_count = 0, ses_count = 0;
+    memory_results_t mem_results = {0};
+    ss_results_t ses_results = {0};
+
+    static const char *conf_labels[] = {"LOW", "MEDIUM", "HIGH"};
+
+    /* ── Exact key lookup (bypasses scoring) ──────── */
+    if (key && !query && !pattern) {
+        if (ctx->memory || ctx->ws) {
+            mem_results = ctx->ws
+                ? workspace_recall(ctx->ws, key, 1)
+                : memory_recall(ctx->memory, key, 1);
+            mem_count = mem_results.count;
+        }
+        if (mem_count == 0) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_READY,
+                "No memory found for that key");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        /* Fall through to display */
+    }
+
+    /* ── L4: Curated memory search ──────────────── */
+    if (!key && query && (ctx->memory || ctx->ws)) {
+        int mem_max = max_results > 0 ? (max_results < 10 ? max_results : 10) : 5;
+        mem_results = ctx->ws
+            ? workspace_recall(ctx->ws, query, mem_max)
+            : memory_recall(ctx->memory, query, mem_max);
+        mem_count = mem_results.count;
+    }
+
+    /* ── L3: Session history search ─────────────── */
+    if (!key && (query || pattern)) {
+        char sessions_dir[NASH_PATH_MAX] = {0};
+        if (ctx->session_dir && *ctx->session_dir) {
+            snprintf(sessions_dir, sizeof(sessions_dir), "%s", *ctx->session_dir);
+            char *last_slash = strrchr(sessions_dir, '/');
+            if (last_slash) *last_slash = '\0';
+        }
+
+        embed_ctx_t *embed = NULL;
+        if (ctx->memory && memory_has_embeddings(ctx->memory))
+            embed = memory_embed_ctx(ctx->memory);
+
+        int ses_max = max_results > 0 ? max_results : 5;
+        if (!pattern && mem_count >= 3 && ses_max > 2) ses_max = 2;
+
+        ses_results = session_search(
+            ctx->tools ? ctx->tools->session_idx : NULL,
+            embed, query, pattern,
+            use_regex, ses_max, days,
+            sessions_dir[0] ? sessions_dir : NULL);
+        ses_count = ses_results.count;
+    }
+
+    /* ── Build display ──────────────────────────── */
     str_t display = str_new(4096);
-    str_appendf(&display, "# Memory Recall: \"%.*s\"\n\n", q_len, q_start);
-    str_appendf(&display, "Found %d matching entries:\n\n", results.count);
-    for (int i = 0; i < results.count; i++) {
-        memory_entry_t *e = &results.entries[i];
-        str_appendf(&display,
-            "### %d. %s  (score: %.3f)\n\n",
-            i + 1, e->key, e->relevance);
-        str_append_cstr(&display, e->value);
-        str_append_cstr(&display, "\n\n");
-        /* Tags removed */
-        (void)0;
-        /* Validation score */
-        double vscore = (e->recall_hits + 1.0) /
-                        (e->recall_hits + e->recall_misses + 2.0);
-        str_appendf(&display,
-            "hits: %d misses: %d vscore: %.2f pinned: %s\n\n",
-            e->recall_hits, e->recall_misses,
-            vscore, e->pinned ? "yes" : "no");
-        str_append_cstr(&display, "---\n\n");
+
+    /* Header */
+    str_append_cstr(&display, "# Memory Search Results\n\n");
+    if (query)   str_appendf(&display, "**Query:** %s\n", query);
+    if (key)     str_appendf(&display, "**Key:** %s\n", key);
+    if (pattern) str_appendf(&display, "**Pattern:** `%s`%s\n",
+                             pattern, use_regex ? " (regex)" : "");
+    if (days > 0) str_appendf(&display, "**Days:** %d\n", days);
+    str_appendf(&display, "**Results:** %d memory, %d session\n\n",
+                mem_count, ses_count);
+
+    if (mem_count == 0 && ses_count == 0) {
+        str_append_cstr(&display, "*No matches found.*\n");
+    }
+
+    /* ── Interleave results by score ────────────── */
+    {
+        int mi = 0, si = 0;
+        int total_emitted = 0;
+        int emit_limit = max_results > 0 ? max_results : 20;
+        int rank = 1;
+
+        while (total_emitted < emit_limit &&
+               (mi < mem_count || si < ses_count)) {
+            double mem_score = (mi < mem_count)
+                ? mem_results.entries[mi].relevance : -1.0;
+            double ses_score = (si < ses_count)
+                ? ses_results.results[si].composite_score : -1.0;
+
+            if (mem_score >= ses_score && mi < mem_count) {
+                /* Emit memory result */
+                memory_entry_t *e = &mem_results.entries[mi];
+                str_appendf(&display,
+                    "### %d. 🧠 %s  (score: %.3f)\n\n",
+                    rank, e->key, e->relevance);
+                str_append_cstr(&display, e->value);
+                str_append_cstr(&display, "\n\n");
+                double vscore = (e->recall_hits + 1.0) /
+                                (e->recall_hits + e->recall_misses + 2.0);
+                str_appendf(&display,
+                    "hits: %d misses: %d vscore: %.2f pinned: %s\n\n",
+                    e->recall_hits, e->recall_misses,
+                    vscore, e->pinned ? "yes" : "no");
+                str_append_cstr(&display, "---\n\n");
+                mi++;
+            } else if (si < ses_count) {
+                /* Emit session result */
+                ss_result_t *r = &ses_results.results[si];
+                time_t ts = (time_t)r->timestamp;
+                struct tm tm_buf;
+                struct tm *tm = gmtime_r(&ts, &tm_buf);
+                char ts_buf[32];
+                if (tm)
+                    strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M", tm);
+                else
+                    snprintf(ts_buf, sizeof(ts_buf), "%.0f", r->timestamp);
+
+                int has_lex = (r->n_matches > 0);
+                int has_sem = (r->semantic_score > 0.01);
+
+                str_appendf(&display,
+                    "### %d. 📅 %s  %s  (score: %.3f",
+                    rank, ts_buf, conf_labels[r->confidence],
+                    r->composite_score);
+                if (has_sem)
+                    str_appendf(&display, " sem=%.2f", r->semantic_score);
+                if (has_lex)
+                    str_appendf(&display, " lex=%.2f matches=%d",
+                                r->lexical_score, r->match_count);
+                str_append_cstr(&display, ")\n\n");
+
+                if (r->session_dir)
+                    str_appendf(&display, "    %s\n\n", r->session_dir);
+
+                /* Show chunk preview (semantic) */
+                if (r->chunk_preview && r->chunk_preview[0])
+                    str_appendf(&display, "%s\n\n", r->chunk_preview);
+
+                /* Show per-line lexical matches */
+                for (int j = 0; j < r->n_matches; j++) {
+                    ss_match_t *m = &r->matches[j];
+                    str_appendf(&display, "  R%dS%d [%s]: %s\n",
+                                m->react_loop, m->step, m->tool,
+                                m->snippet ? m->snippet : "");
+                }
+                if (r->match_count > r->n_matches) {
+                    str_appendf(&display, "  ... and %d more match%s\n",
+                                r->match_count - r->n_matches,
+                                (r->match_count - r->n_matches) == 1
+                                    ? "" : "es");
+                }
+                str_append_cstr(&display, "\n---\n\n");
+                si++;
+            }
+            total_emitted++;
+            rank++;
+        }
     }
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_banner(ui, banner);
     ui_state_set_status(ui, STATUS_READY,
-        "Memory recall complete");
+        "Memory search complete");
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
-    memory_results_free(&results);
+    memory_results_free(&mem_results);
+    if (ses_count > 0) ss_results_free(&ses_results);
     tui_render(ui);
     return CMD_CONTINUE;
 }
@@ -642,6 +886,12 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     if (strncmp(sq, "/memory_search ", 15) == 0 ||
         strncmp(sq, "/memory_recall ", 15) == 0) {
         int rc = cmd_memory_recall(ctx, sq + 15);
+        free(sq);
+        *submitted_query = NULL;
+        return rc;
+    }
+    if (strncmp(sq, "/ms ", 4) == 0) {
+        int rc = cmd_memory_recall(ctx, sq + 4);
         free(sq);
         *submitted_query = NULL;
         return rc;
