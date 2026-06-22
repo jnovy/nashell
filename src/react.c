@@ -1905,7 +1905,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Pre-compaction warning: warn the model BEFORE eviction fires so it
          * can save unsaved analysis while file contents are still in context.
          * The hint fires when context usage enters the "warning zone" (within
-         * 8% of trigger_pct) AND the model has 3+ unsaved file_reads.
+         * warn_gap of trigger_pct, both derived from config) AND the model
+         * has 3+ unsaved file_reads.
          * When eviction actually fires, react_maybe_evict removes MEMORY_HINT
          * messages as part of cleanup (step 1), so the warning is self-cleaning.
          * Reset on notes() to allow re-warning after the next batch of reads. */
@@ -1917,19 +1918,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
             long budget = react_context_budget(ctx);
             int usage_pct = react_chat_usage_pct(chat, budget);
-            int warn_zone = pol.trigger_pct - 8;
+            int warn_zone = pol.trigger_pct - pol.warn_gap;
             if (usage_pct >= warn_zone && usage_pct <= pol.trigger_pct) {
-                char warn_buf[512];
-                snprintf(warn_buf, sizeof(warn_buf),
-                    "[URGENT: Context is %d%% full \xe2\x80\x94 compaction is "
-                    "imminent. Save your unsaved analysis to notes() NOW "
-                    "with exact file:line references. After compaction, "
-                    "evicted file contents CANNOT be recovered from "
-                    "memory \xe2\x80\x94 you will confabulate if you try to "
-                    "recall them later. Use notes(op=\"append\", "
-                    "section=\"findings\", content=\"...\").]",
-                    usage_pct);
-                llm_chat_add_typed(chat, "user", warn_buf,
+                llm_chat_add_typed(chat, "user", EVICT_PRE_COMPACT_WARN,
                     LLM_MSG_MEMORY_HINT);
                 ctx->tools->pre_compact_warned = 1;
             }

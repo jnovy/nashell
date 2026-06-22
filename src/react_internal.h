@@ -54,6 +54,7 @@ typedef struct {
     int target_pct;           /* trigger - trigger/5  = 56 */
     int emergency_target_pct; /* trigger + 10         = 80 */
     int hysteresis_gap;       /* trigger/5, min 5     = 14 */
+    int warn_gap;             /* hysteresis/2, min 3  = 7  */
 
     int sp_max_remaining_pct; /* sp_budget * 8/3      ≈ 40 */
     long sp_min_chars;        /* 2048 (absolute floor) */
@@ -84,6 +85,8 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
     p.hysteresis_gap    = p.trigger_pct / 5;
     if (p.hysteresis_gap < 5) p.hysteresis_gap = 5;
     p.target_pct        = p.trigger_pct - p.hysteresis_gap;
+    p.warn_gap          = p.hysteresis_gap / 2;
+    if (p.warn_gap < 3) p.warn_gap = 3;
     p.emergency_target_pct = p.trigger_pct + 10;
     if (p.emergency_target_pct > 95) p.emergency_target_pct = 95;
 
@@ -131,6 +134,17 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
     "If you have unsaved analysis, save it to notes() immediately " \
     "\xe2\x80\x94 do NOT try to recall evicted file details from memory. " \
     "Use memory_search to recover lost context.]"
+
+/* Pre-compaction warning text injected BEFORE eviction fires, while file
+ * contents are still in context.  Uses warn_gap (derived from trigger_pct)
+ * to detect the warning zone — no hardcoded thresholds. */
+#define EVICT_PRE_COMPACT_WARN \
+    "[URGENT: Context nearing compaction threshold. Save your unsaved " \
+    "analysis to notes() NOW with exact file:line references. After " \
+    "compaction, evicted file contents CANNOT be recovered from " \
+    "memory \xe2\x80\x94 you will confabulate if you try to recall them " \
+    "later. Use notes(op=\"append\", section=\"findings\", " \
+    "content=\"...\").]"
 
 /* FIX #11: Scratchpad message prefix — eliminates duplicate string literals
  * in react_inject_scratchpad_msg and react_format_scratchpad_msg. */
