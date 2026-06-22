@@ -532,6 +532,7 @@ This preserves more useful context at each stage instead of dropping messages wh
 New `compress.c` module (301 lines) implements relevance-based text compression:
 
 - Splits text into sentences
+- Filters stopwords (70 English + 20 programming terms) to prevent common words from drowning out semantically meaningful query terms
 - Scores each sentence by BM25-like term overlap with the current query
 - Keeps top-N sentences in their original order
 
@@ -572,6 +573,7 @@ Nash provides a full ncurses-based TUI with:
 - **Status bar** — model name, context usage percentage (`ctx 42%`), background jobs count, dream reminder
 - **Journal view** — full session history with react loop headers, step markers (+/x), thoughts (💭)
 - **Keyboard navigation** — arrow keys, Page Up/Down, Home/End, Enter to expand/collapse
+- **Input history** — arrow keys browse query history; arrow-down past the last entry restores in-progress text (standard shell/readline behavior)
 - **Pause/Resume** — press Space during inference to pause after the current step; Space or new query to resume
 - **Auto-redirect** — typing a new query during active inference automatically pauses the current task, stashes the new query, and dispatches it immediately when the loop yields — no "Space then type" dance required
 - **Cross-session search** — type `/?query` for incremental scratchpad search, or `/? query` for semantic session history search (embedding-based, searches `summary.emb` across all sessions)
@@ -589,6 +591,7 @@ Nash provides a full ncurses-based TUI with:
 | `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
 | `/runs show ID` | Display details of a specific playbook run |
 | `/memory_recall QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
+| `/ms QUERY` | Full-parameter memory search (alias: `/memory_search`). Supports `-q` query, `-k` key, `-p` pattern, `-r` regex, `-n` max results, `-d` days. Searches both curated memory (L4) and session journals (L3) |
 | `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
 | `/?query` | Cross-session scratchpad search (live incremental results) |
 | `/? query` | Semantic session history search (embedding-based, shows ranked results) |
@@ -931,6 +934,8 @@ Each tier logs a `server_error` entry to the journal with full diagnostics:
 - `request_ref` — raw request body stored in store/ (for post-mortem)
 - `response_ref` — raw server response stored in store/
 
+Retry count and backoff delay are configurable via `provider_max_retries` and `provider_retry_base` in `[limits]` (defaults: 10 retries, 10s base delay).
+
 #### Unknown Tool Recovery
 
 When the model generates a non-existent tool name (e.g., `shell_execshell_exec`):
@@ -1121,6 +1126,8 @@ shell_max_output = 512000                 # bytes (~512KB)
 file_max_size = 52428800                  # 50MB
 max_react_steps = 0                       # 0 = unlimited
 llm_timeout = 300                         # seconds per LLM call
+provider_max_retries = 10                 # max HTTP retries for LLM provider
+provider_retry_base = 10                  # base delay (seconds) between retries
 
 [memory]
 recall_min_score = 0.15                   # normalized [0, 1] threshold
