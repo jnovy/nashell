@@ -75,10 +75,9 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Persistent scratchpad that survives context compaction. "
      "Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, "
      "notes(op=\"append\", section=\"name\", content=\"...\") to append, "
-     "notes(op=\"clear\", section=\"name\") to delete a section, "
-     "notes(op=\"list\") to list all sections. "
-     "Legacy: notes(content=\"...\") still works (replaces all). Priority 1=highest, 9=lowest (default 5).",
-     "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\",\"description\":\"Full scratchpad content (legacy mode) or section content (with op).\"},\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, read, clear, list\"},\"section\":{\"type\":\"string\",\"description\":\"Section name for write/append/read/clear\"},\"priority\":{\"type\":\"integer\",\"description\":\"Section priority 1-9 (1=highest, default 5)\"}}}"},
+     "notes(op=\"clear\", section=\"name\") to delete a section. "
+     "Priority 1=highest, 9=lowest (default 5).",
+     "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"description\":\"Operation: write, append, clear\"},\"section\":{\"type\":\"string\",\"description\":\"Section name\"},\"content\":{\"type\":\"string\",\"description\":\"Section content (for write/append)\"},\"priority\":{\"type\":\"integer\",\"description\":\"Section priority 1-9 (1=highest, default 5)\"}},\"required\":[\"op\"]}"},
 
     {"user_ask",
      "Ask the user a clarifying question. Use when you need information "
