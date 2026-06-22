@@ -896,6 +896,311 @@ static int cmd_search(command_ctx_t *ctx) {
     return CMD_CONTINUE;
 }
 
+/* ── /todo — per-workspace TODO list ───────────────────────────── */
+
+/* Derive todo.md path from workspace (same logic as tool_todo.c) */
+static int cmd_todo_path(command_ctx_t *ctx, char *buf, size_t sz) {
+    const char *mdir = NULL;
+    if (ctx->ws && ctx->ws->workspace)
+        mdir = memory_dir(ctx->ws->workspace);
+    else if (ctx->ws && ctx->ws->global)
+        mdir = memory_dir(ctx->ws->global);
+    else if (ctx->memory)
+        mdir = memory_dir(ctx->memory);
+    if (!mdir) return -1;
+
+    size_t mlen = strlen(mdir);
+    const char *suffix = "/memory";
+    size_t slen = strlen(suffix);
+    if (mlen > slen && strcmp(mdir + mlen - slen, suffix) == 0) {
+        size_t rlen = mlen - slen;
+        if (rlen + sizeof("/todo.md") > sz) return -1;
+        memcpy(buf, mdir, rlen);
+        memcpy(buf + rlen, "/todo.md", sizeof("/todo.md"));
+    } else {
+        snprintf(buf, sz, "%s/../todo.md", mdir);
+    }
+    return 0;
+}
+
+static int cmd_todo(command_ctx_t *ctx, const char *args) {
+    ui_state_t *ui = ctx->ui;
+    char fpath[NASH_PATH_MAX];
+
+    if (cmd_todo_path(ctx, fpath, sizeof(fpath)) != 0) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR,
+            "Cannot determine todo.md path (no workspace or memory)");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    /* Skip leading whitespace */
+    while (*args == ' ') args++;
+
+    /* /todo add <text> */
+    if (strncmp(args, "add ", 4) == 0) {
+        const char *text = args + 4;
+        while (*text == ' ') text++;
+        if (!*text) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "/todo add <text>");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        FILE *f = fopen(fpath, "a");
+        if (!f) {
+            char *slash = strrchr(fpath, '/');
+            if (slash) { *slash = '\0'; mkdir(fpath, 0755); *slash = '/'; }
+            f = fopen(fpath, "a");
+        }
+        if (!f) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "Cannot write todo.md");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        fprintf(f, "- [ ] %s\n", text);
+        fclose(f);
+        char status[256];
+        snprintf(status, sizeof(status), "Added: %s", text);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, status);
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    /* /todo done <N> */
+    if (strncmp(args, "done ", 5) == 0) {
+        int idx = atoi(args + 5);
+        if (idx < 1) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "/todo done <number>");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        /* Load, flip, save */
+        FILE *f = fopen(fpath, "r");
+        if (!f) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char **lines = NULL;
+        int count = 0, cap = 0;
+        char linebuf[4096];
+        while (fgets(linebuf, sizeof(linebuf), f)) {
+            size_t len = strlen(linebuf);
+            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+                linebuf[--len] = '\0';
+            if (len == 0) continue;
+            if (count >= cap) { cap = cap ? cap * 2 : 16; lines = realloc(lines, sizeof(char*) * (size_t)cap); }
+            lines[count++] = strdup(linebuf);
+        }
+        fclose(f);
+        if (idx > count) {
+            for (int i = 0; i < count; i++) free(lines[i]);
+            free(lines);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "Index out of range");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char *check = strstr(lines[idx-1], "- [ ]");
+        if (check) check[3] = 'x';
+        /* Atomic save */
+        char tmp[NASH_PATH_MAX + 8];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
+        f = fopen(tmp, "w");
+        if (f) {
+            for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
+            fclose(f);
+            rename(tmp, fpath);
+        }
+        char status[256];
+        snprintf(status, sizeof(status), "Done: %s", lines[idx-1]);
+        for (int i = 0; i < count; i++) free(lines[i]);
+        free(lines);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, status);
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    /* /todo remove <N> */
+    if (strncmp(args, "remove ", 7) == 0 || strncmp(args, "rm ", 3) == 0) {
+        int idx = atoi(strncmp(args, "rm ", 3) == 0 ? args + 3 : args + 7);
+        if (idx < 1) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "/todo remove <number>");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        FILE *f = fopen(fpath, "r");
+        if (!f) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char **lines = NULL;
+        int count = 0, cap = 0;
+        char linebuf[4096];
+        while (fgets(linebuf, sizeof(linebuf), f)) {
+            size_t len = strlen(linebuf);
+            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+                linebuf[--len] = '\0';
+            if (len == 0) continue;
+            if (count >= cap) { cap = cap ? cap * 2 : 16; lines = realloc(lines, sizeof(char*) * (size_t)cap); }
+            lines[count++] = strdup(linebuf);
+        }
+        fclose(f);
+        if (idx > count) {
+            for (int i = 0; i < count; i++) free(lines[i]);
+            free(lines);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "Index out of range");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char status[256];
+        snprintf(status, sizeof(status), "Removed: %s", lines[idx-1]);
+        free(lines[idx-1]);
+        for (int i = idx-1; i < count-1; i++) lines[i] = lines[i+1];
+        count--;
+        char tmp[NASH_PATH_MAX + 8];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
+        f = fopen(tmp, "w");
+        if (f) {
+            for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
+            fclose(f);
+            rename(tmp, fpath);
+        }
+        for (int i = 0; i < count; i++) free(lines[i]);
+        free(lines);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, status);
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    /* /todo purge */
+    if (strcmp(args, "purge") == 0) {
+        FILE *f = fopen(fpath, "r");
+        if (!f) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_READY, "No todo.md found (nothing to purge)");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char **lines = NULL;
+        int count = 0, cap = 0;
+        char linebuf[4096];
+        while (fgets(linebuf, sizeof(linebuf), f)) {
+            size_t len = strlen(linebuf);
+            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+                linebuf[--len] = '\0';
+            if (len == 0) continue;
+            if (count >= cap) { cap = cap ? cap * 2 : 16; lines = realloc(lines, sizeof(char*) * (size_t)cap); }
+            lines[count++] = strdup(linebuf);
+        }
+        fclose(f);
+        int kept = 0, purged = 0;
+        for (int i = 0; i < count; i++) {
+            if (strstr(lines[i], "- [x]")) { free(lines[i]); lines[i] = NULL; purged++; }
+        }
+        for (int i = 0; i < count; i++) { if (lines[i]) lines[kept++] = lines[i]; }
+        char tmp[NASH_PATH_MAX + 8];
+        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
+        f = fopen(tmp, "w");
+        if (f) {
+            for (int i = 0; i < kept; i++) fprintf(f, "%s\n", lines[i]);
+            fclose(f);
+            rename(tmp, fpath);
+        }
+        for (int i = 0; i < kept; i++) free(lines[i]);
+        free(lines);
+        char status[128];
+        snprintf(status, sizeof(status), "Purged %d completed items, %d remaining", purged, kept);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, status);
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    /* /todo  or  /todo list — display all items */
+    {
+        str_t out = str_new(1024);
+        str_append_cstr(&out, "# TODO List");
+        if (ctx->ws && ctx->ws->name)
+            str_appendf(&out, " (%s)", ctx->ws->name);
+        str_append_cstr(&out, "\n\n");
+
+        FILE *f = fopen(fpath, "r");
+        if (!f || (strcmp(args, "list") != 0 && args[0] != '\0')) {
+            if (!f && args[0] == '\0') {
+                str_append_cstr(&out, "*No items yet.* Use `/todo add <text>` to add one.\n");
+            } else if (f) {
+                fclose(f);
+                str_free(&out);
+                char status[256];
+                snprintf(status, sizeof(status),
+                    "Unknown subcommand. Usage: /todo [list|add <text>|done <N>|remove <N>|purge]");
+                pthread_mutex_lock(&ui->mtx);
+                ui_state_set_status(ui, STATUS_ERROR, status);
+                pthread_mutex_unlock(&ui->mtx);
+                tui_render(ui);
+                return CMD_CONTINUE;
+            }
+        } else {
+            int num = 0, open = 0, done_n = 0;
+            char linebuf[4096];
+            while (fgets(linebuf, sizeof(linebuf), f)) {
+                size_t len = strlen(linebuf);
+                while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+                    linebuf[--len] = '\0';
+                if (len == 0) continue;
+                num++;
+                str_appendf(&out, "%d. %s\n", num, linebuf);
+                if (strstr(linebuf, "- [ ]")) open++;
+                else if (strstr(linebuf, "- [x]")) done_n++;
+            }
+            fclose(f);
+            if (num == 0) {
+                str_append_cstr(&out, "*No items yet.* Use `/todo add <text>` to add one.\n");
+            } else {
+                str_appendf(&out, "\n**%d open, %d done** — `/todo add|done|remove|purge`\n",
+                            open, done_n);
+            }
+        }
+
+        char *banner = strdup(str_cstr(&out));
+        str_free(&out);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_banner(ui, banner);
+        ui_state_set_status(ui, STATUS_READY, "TODO list");
+        pthread_mutex_unlock(&ui->mtx);
+        free(banner);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+}
+
 /* ── Main dispatch ─────────────────────────────────────────────── */
 int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     char *sq = *submitted_query;
@@ -952,6 +1257,13 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     }
     if (strncmp(sq, "/?", 2) == 0) {
         int rc = cmd_search(ctx);
+        free(sq);
+        *submitted_query = NULL;
+        return rc;
+    }
+    if (strcmp(sq, "/todo") == 0 ||
+        strncmp(sq, "/todo ", 6) == 0) {
+        int rc = cmd_todo(ctx, strlen(sq) > 5 ? sq + 6 : "");
         free(sq);
         *submitted_query = NULL;
         return rc;

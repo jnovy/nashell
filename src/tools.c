@@ -731,6 +731,7 @@ static const tool_handler_fn TOOL_HANDLERS[] = {
     tool_user_ask_stub,    /* user_ask      */
     tool_memory_delete,    /* memory_delete */
     tool_image_analyze,    /* image_analyze */
+    tool_todo,             /* todo          */
 };
 
 /* Compile-time assertion: handler count must match registry count.

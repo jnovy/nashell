@@ -72,9 +72,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     /* Sync current_react_loop from event — critical after checkpoint restore
      * which may change the react loop on the inference thread while the UI
-     * still tracks the pre-restore loop number set by main.c. */
+     * still tracks the pre-restore loop number set by main.c.
+     *
+     * FIX: removed `ev->react_loop > 0` guard that prevented loop_changed
+     * from firing for R0 (react_loop==0).  The guard was originally there
+     * to avoid overwriting -1 with 0, but main.c already pre-sets the
+     * value. The guard made auto-navigation dead code for R0. */
     int loop_changed = 0;
-    if (ev->react_loop > 0 && ev->react_loop != ui->current_react_loop) {
+    if (ev->react_loop >= 0 && ev->react_loop != ui->current_react_loop) {
         ui->current_react_loop = ev->react_loop;
         loop_changed = 1;
     }
@@ -140,8 +145,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
         /* Auto-navigate into reactRX.md on first step (or after checkpoint
          * restore changed the loop) so user sees streaming tokens in
-         * real-time instead of just the preview in session.md. */
-        if ((ev->step == 0 || loop_changed) &&
+         * real-time instead of just the preview in session.md.
+         *
+         * Use ev->step <= 1 because react.c emits step+1 (1-based), so
+         * the first step of any react loop has ev->step == 1, not 0.
+         * The old ev->step == 0 condition was dead code. */
+        if ((ev->step <= 1 || loop_changed) &&
             !viewing_react_file(ui, ui->current_react_loop)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
@@ -277,8 +286,39 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         free(ui->user_ask_question);
         ui->user_ask_question = (ev->message && ev->message[0])
             ? strdup(ev->message) : strdup("(no question specified)");
+
+        /* Auto-navigate to reactRX.md so the user can see the question.
+         * The question is rendered only in reactRX.md (ui_md_gen.c), not
+         * in session.md.  Without this, users viewing session.md get the
+         * status bar hint "see main pane" but no visible question. */
+        if (!viewing_react_file(ui, ui->current_react_loop)) {
+            if (ui->nav_depth >= ui->nav_cap) {
+                ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+                ui->nav_stack = realloc(ui->nav_stack,
+                                         (size_t)ui->nav_cap * sizeof(nav_entry_t));
+            }
+            nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
+            ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->scroll_y = ui->scroll_y;
+            ne->scroll_x = ui->scroll_x;
+            ne->cursor_link = ui->cursor_link;
+            ne->saved_doc = NULL;
+            ui->nav_depth++;
+
+            char rpath[NASH_PATH_MAX];
+            snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
+                     eff_session_dir, ui->current_react_loop);
+            free(ui->current_filepath);
+            ui->current_filepath = strdup(rpath);
+            ui->scroll_y = 0;
+            ui->scroll_x = 0;
+            ui->cursor_link = 0;
+            ui->focus = FOCUS_JOURNAL;
+        }
+
         /* Defer expensive file I/O to main loop */
         ui->needs_react_regen = 1;
+        ui->needs_session_regen = 1;
         ui->needs_file_reload = 1;
         break;
 

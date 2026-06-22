@@ -98,6 +98,11 @@ const tool_def_t TOOL_REGISTRY[] = {
      "for multimodal analysis. Returns a textual description/analysis. "
      "Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Path to the image file\"},\"question\":{\"type\":\"string\",\"description\":\"What to analyze or ask about the image (default: describe in detail)\"}},\"required\":[\"path\"]}"},
+    {"todo",
+     "Persistent per-workspace TODO list that survives across sessions. "
+     "Use to park findings, ideas, or action items for later. "
+     "Stored in todo.md within the active workspace directory (human-editable).",
+     "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"description\":\"Operation: add, list, done, remove, purge\"},\"text\":{\"type\":\"string\",\"description\":\"TODO text (for add)\"},\"index\":{\"type\":\"integer\",\"description\":\"Item number (for done/remove)\"}},\"required\":[\"op\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };
 
