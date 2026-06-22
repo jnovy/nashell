@@ -870,9 +870,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* ── Structural reasoning: two-call pattern ──
          * Call 1: reason (no tools, thinking OFF) → forced plain-text analysis
          * Call 2: act (tools restored) → tool call informed by reasoning
-         * The reasoning becomes a persistent assistant message in context,
-         * unlike native thinking which vanishes after each turn.
+         * The reasoning + nudge are EPHEMERAL — removed after Call 2 so they
+         * don't pollute subsequent steps (the model would quote the nudge
+         * text as if it were a user instruction, causing confusion).
          * Inspired by OpenDev's structural thinking separation [arXiv:2603.05344]. */
+        int structural_msg_start = -1;  /* track msgs to remove after Call 2 */
         if (ctx->rt.structural_thinking) {
             /* Save current tool filter, replace with empty whitelist (no tools) */
             const struct tool_filter_t *saved_filter = &ctx->tools->tool_filter;
@@ -909,7 +911,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             llm_chat_remove_range(chat, chat->n_msgs - 1, chat->n_msgs);
 
             if (reasoning && reasoning[0]) {
-                /* Add reasoning as assistant message — becomes persistent context */
+                /* Add reasoning + nudge as ephemeral messages for Call 2.
+                 * Record start index so we can remove them after Call 2 —
+                 * if left in chat, the model quotes "Now execute" as a
+                 * user instruction on subsequent steps, causing confusion. */
+                structural_msg_start = chat->n_msgs;
                 llm_chat_add(chat, "assistant", reasoning);
                 if (chat->n_msgs > 0)
                     chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
@@ -952,6 +958,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 on_event ? react_stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh,
                 on_event ? react_progress_cb : NULL, &sctx);
+
+        /* Remove ephemeral structural reasoning messages after Call 2.
+         * These served their purpose (informing Call 2) and must not persist —
+         * the model interprets the nudge ("Now execute") as a user instruction
+         * on subsequent steps, causing confusion and lack of tool calls. */
+        if (structural_msg_start >= 0 && structural_msg_start < chat->n_msgs) {
+            llm_chat_remove_range(chat, structural_msg_start, chat->n_msgs);
+            structural_msg_start = -1;
+        }
+
         if (!response) {
             /* If the HTTP call was aborted because of a pause request
              * (Space pressed), skip error handling — continue to the
