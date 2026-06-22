@@ -139,21 +139,47 @@ static int is_stopword(const char *word) {
     return 0;
 }
 
-/* Review C3: In-place word scanning eliminates per-chunk malloc/free overhead.
- * For each sentence word, scans in-place (lowercased) and compares against
- * pre-tokenized query words. Previously allocated N word strings per chunk
- * via tokenize_words() — with 100+ chunks × 20 words each = 2000+ malloc/free.
+/* Count words in a chunk using the same tokenization as score_sentence:
+ * alphanumeric+underscore runs of length 2..63. Needed for BM25 document
+ * length (dl) and average document length (avgdl). */
+static int count_words(const char *text) {
+    int count = 0;
+    const char *p = text;
+    while (*p) {
+        while (*p && !isalnum((unsigned char)*p)) p++;
+        if (!*p) break;
+        const char *wstart = p;
+        while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
+        int wlen = (int)(p - wstart);
+        if (wlen >= 2 && wlen < 64) count++;
+    }
+    return count;
+}
+
+/* BM25 TF-saturation scoring for chunks against a query.
  *
- * FIX #10: Also does substring matching for code identifiers.
- * D6 FIX: Skips stopwords to prevent common terms from drowning signal. */
-/* SIMP 3 FIX: Added sentence_len parameter to avoid redundant strlen.
- * Caller already knows chunk length from split_chunks. */
+ * Replaces the previous binary scoring (exact=1.0, partial=0.5) with proper
+ * BM25 term frequency saturation: repeated query term matches in a chunk
+ * increase the score with diminishing returns, and longer chunks are
+ * penalized via length normalization.
+ *
+ * Formula per query term: tf*(k1+1) / (tf + k1*(1 - b + b*dl/avgdl))
+ *   k1=1.2 (saturation speed), b=0.75 (length normalization strength)
+ *   tf = exact_matches + 0.5*partial_matches (substring hits count as half)
+ *
+ * D6 FIX: Stopwords still filtered — without IDF, they'd match everywhere.
+ * FIX #10: Substring matching for code identifiers still supported.
+ * SIMP 3 FIX: sentence_len parameter avoids redundant strlen. */
 static float score_sentence(const char *sentence, int sentence_len,
-                            char **query_words, int n_query) {
+                            char **query_words, int n_query,
+                            int doc_wordcount, float avgdl) {
     if (!sentence || !query_words || n_query == 0) return 0.0f;
 
-    /* D6 FIX: Count non-stopword query terms for normalization.
-     * Previously divided by n_query, diluting scores with stopword matches. */
+    /* BM25 parameters */
+    const float k1 = 1.2f;
+    const float b = 0.75f;
+
+    /* D6 FIX: Count non-stopword query terms for normalization. */
     int n_effective = 0;
     for (int qi = 0; qi < n_query; qi++) {
         if (!is_stopword(query_words[qi]))
@@ -161,15 +187,19 @@ static float score_sentence(const char *sentence, int sentence_len,
     }
     if (n_effective == 0) return 0.0f;
 
+    float dl = (float)doc_wordcount;
+    /* Guard against degenerate avgdl (empty chunks) */
+    float safe_avgdl = avgdl > 0.0f ? avgdl : 1.0f;
+
     float score = 0.0f;
     for (int qi = 0; qi < n_query; qi++) {
         /* D6 FIX: Skip stopwords — they match everywhere and add noise */
         if (is_stopword(query_words[qi])) continue;
-        int found_exact = 0;
-        int found_partial = 0;
+        int tf_exact = 0;
+        int tf_partial = 0;
         int qlen = (int)strlen(query_words[qi]);
 
-        /* Scan sentence words in-place (no allocation) */
+        /* Scan ALL sentence words — count frequencies, don't stop at first */
         const char *p = sentence;
         while (*p) {
             while (*p && !isalnum((unsigned char)*p)) p++;
@@ -177,9 +207,9 @@ static float score_sentence(const char *sentence, int sentence_len,
             const char *wstart = p;
             while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
             int wlen = (int)(p - wstart);
-            if (wlen <= 1 || wlen >= 64) continue;  /* skip single chars and too-long */
+            if (wlen <= 1 || wlen >= 64) continue;
 
-            /* Compare lowercased in-place against query word */
+            /* Exact match */
             if (wlen == qlen) {
                 int match = 1;
                 for (int k = 0; k < wlen; k++) {
@@ -187,11 +217,10 @@ static float score_sentence(const char *sentence, int sentence_len,
                         match = 0; break;
                     }
                 }
-                if (match) { found_exact = 1; break; }
+                if (match) { tf_exact++; continue; }
             }
             /* FIX #10: Substring match for code identifiers (>= 4 chars) */
-            if (!found_partial && qlen >= 4 && wlen >= qlen) {
-                /* Check if query word is a substring of this word (lowercased) */
+            if (qlen >= 4 && wlen >= qlen) {
                 for (int off = 0; off <= wlen - qlen; off++) {
                     int match = 1;
                     for (int k = 0; k < qlen; k++) {
@@ -199,19 +228,23 @@ static float score_sentence(const char *sentence, int sentence_len,
                             match = 0; break;
                         }
                     }
-                    if (match) { found_partial = 1; break; }
+                    if (match) { tf_partial++; break; }
                 }
             }
         }
-        if (found_exact)
-            score += 1.0f;
-        else if (found_partial)
-            score += 0.5f;
+
+        /* Effective TF: exact matches count full, partial (substring) as half */
+        float tf = (float)tf_exact + 0.5f * (float)tf_partial;
+        if (tf > 0.0f) {
+            /* BM25 TF saturation with length normalization */
+            score += tf * (k1 + 1.0f) /
+                     (tf + k1 * (1.0f - b + b * dl / safe_avgdl));
+        }
     }
-    /* D6 FIX: Normalize by effective (non-stopword) count */
+    /* Normalize by effective (non-stopword) query term count */
     score /= (float)n_effective;
 
-    /* SIMP 3 FIX: Use caller-provided length instead of strlen */
+    /* SIMP 3 FIX: Length bonuses for substantial chunks */
     if (sentence_len > 80) score += 0.1f;
     if (sentence_len > 200) score += 0.1f;
 
@@ -405,17 +438,34 @@ char *compress_to_relevant(const char *text, const char *query,
         return out;
     }
 
-    /* Tokenize query for BM25-like scoring */
+    /* Tokenize query for BM25 scoring */
     int n_qwords;
     char **qwords = tokenize_words(query ? query : "", &n_qwords);
 
-    /* Score each chunk by query relevance */
+    /* Score each chunk by query relevance using BM25 TF saturation */
     scored_chunk_t *scored = malloc((size_t)n_chunks * sizeof(scored_chunk_t));
     if (!scored) {
         free_words(qwords, n_qwords);
         free_chunks(chunks, n_chunks);
         return NULL;
     }
+
+    /* BM25 needs average document length (avgdl) for length normalization.
+     * Pre-compute word count per chunk and derive avgdl. */
+    int *wordcounts = malloc((size_t)n_chunks * sizeof(int));
+    if (!wordcounts) {
+        free(scored);
+        free_words(qwords, n_qwords);
+        free_chunks(chunks, n_chunks);
+        return NULL;
+    }
+    int total_words = 0;
+    for (int i = 0; i < n_chunks; i++) {
+        wordcounts[i] = count_words(chunks[i]);
+        total_words += wordcounts[i];
+    }
+    float avgdl = (float)total_words / (float)n_chunks;
+
     /* Compute max content-based score across all chunks to calibrate
      * position bonuses. When query terms match well, position bonuses
      * are secondary tiebreakers. When no terms match (short/empty query),
@@ -424,10 +474,12 @@ char *compress_to_relevant(const char *text, const char *query,
     for (int i = 0; i < n_chunks; i++) {
         scored[i].index = i;
         scored[i].score = score_sentence(chunks[i], (int)strlen(chunks[i]),
-                                          qwords, n_qwords);
+                                          qwords, n_qwords,
+                                          wordcounts[i], avgdl);
         if (scored[i].score > max_content_score)
             max_content_score = scored[i].score;
     }
+    free(wordcounts);
     /* Position bonus scales down when content scoring is effective.
      * At max_content_score=0 (no query matches), bonus_scale=0.3 (full).
      * At max_content_score>=0.5 (good matches), bonus_scale→0.06 (minimal). */

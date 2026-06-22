@@ -579,6 +579,7 @@ void *playbook_worker(void *arg) {
             .react_loop = pass_react_loop,
             .aliases = alias_map_new(),
             .tool_filter = tf,
+            .last_notes_step = -1,
         };
 
         /* Transfer shared scratchpad */

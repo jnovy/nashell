@@ -802,6 +802,14 @@ char *llm_apply_template(const char *api_base, const char *user_query) {
  * a routing decision: 0=direct (thinking off), 1=cot (thinking on).
  * ─────────────────────────────────────────────────────────────────── */
 
+/* Comparator for spearman_corr — at file scope for C99/C11 portability */
+typedef struct { int idx; float val; } spearman_pair_t;
+
+static int spearman_cmp(const void *a, const void *b) {
+    float diff = ((const spearman_pair_t *)a)->val - ((const spearman_pair_t *)b)->val;
+    return (diff > 0) - (diff < 0);
+}
+
 /* Spearman rank correlation between two arrays of length n */
 static float spearman_corr(const float *x, const float *y, int n) {
     if (n < 3) return 0.0f;
@@ -810,22 +818,16 @@ static float spearman_corr(const float *x, const float *y, int n) {
     float *ry = calloc(n, sizeof(float));
     if (!rx || !ry) { free(rx); free(ry); return 0.0f; }
 
-    typedef struct { int idx; float val; } pair_t;
-    pair_t *px = malloc(n * sizeof(pair_t));
-    pair_t *py = malloc(n * sizeof(pair_t));
+    spearman_pair_t *px = malloc(n * sizeof(spearman_pair_t));
+    spearman_pair_t *py = malloc(n * sizeof(spearman_pair_t));
     if (!px || !py) { free(rx); free(ry); free(px); free(py); return 0.0f; }
 
-    for (int i = 0; i < n; i++) { px[i] = (pair_t){i, x[i]}; py[i] = (pair_t){i, y[i]}; }
+    for (int i = 0; i < n; i++) { px[i] = (spearman_pair_t){i, x[i]}; py[i] = (spearman_pair_t){i, y[i]}; }
 
-    int cmp_float(const void *a, const void *b) {
-        float diff = ((pair_t *)a)->val - ((pair_t *)b)->val;
-        return (diff > 0) - (diff < 0);
-    }
-
-    qsort(px, n, sizeof(pair_t), cmp_float);
+    qsort(px, n, sizeof(spearman_pair_t), spearman_cmp);
     for (int i = 0; i < n; i++) rx[px[i].idx] = (float)(i + 1);
 
-    qsort(py, n, sizeof(pair_t), cmp_float);
+    qsort(py, n, sizeof(spearman_pair_t), spearman_cmp);
     for (int i = 0; i < n; i++) ry[py[i].idx] = (float)(i + 1);
 
     free(px); free(py);

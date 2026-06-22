@@ -436,6 +436,7 @@ static query_result_t run_single_query(const test_query_t *tq,
         .provider = provider,
         .react_loop = 0,
         .aliases = alias_map_new(),
+        .last_notes_step = -1,
     };
     scratchpad_init(&tools.scratch);
 

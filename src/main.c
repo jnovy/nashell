@@ -225,6 +225,7 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
         scratchpad_load(&tools->scratch, session_dir);
     }
     tools->tool_filter = build_profile_tool_filter(cfg);
+    tools->last_notes_step = -1;  /* -1 = never used */
 }
 
 static void session_init_react(react_ctx_t *react, provider_t *provider,

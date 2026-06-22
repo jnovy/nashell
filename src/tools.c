@@ -316,7 +316,9 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
         ctx->recalled_keys = new_keys;
         ctx->recalled_keys_cap = new_cap;
     }
-    ctx->recalled_keys[ctx->n_recalled_keys++] = strdup(key);
+    char *dup = strdup(key);
+    if (!dup) return;
+    ctx->recalled_keys[ctx->n_recalled_keys++] = dup;
 }
 
 /* Run a command with timeout and output cap.
@@ -487,7 +489,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddNumberToObject(meta, "exit_code", exit_code);
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
-    cJSON_AddNumberToObject(meta, "lines", count_lines(out.data));
+    cJSON_AddNumberToObject(meta, "lines", out.data ? count_lines(out.data) : 0);
     cJSON_AddStringToObject(meta, "ref", alias);
 
     /* Fix 3: Conditional preview — saves file_read steps for small outputs */
@@ -870,7 +872,8 @@ char *tools_system_prompt(void) {
         "- Use dedicated tools (file_read, grep_search, glob_search) instead of "
         "shell_exec equivalents (cat, grep, find, sed, head, tail). "
         "file_read supports start_line/end_line for reading specific line ranges.\n"
-        "- Record key findings in notes — they survive context eviction.\n"
+        "- Record key findings in notes — they survive context eviction. "
+        "Save incrementally (every 3-5 file reads), not in one batch at the end.\n"
         "- Call done with the final answer when finished.\n"
         "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
         "Never reference notes content — include all data directly in done result.\n"

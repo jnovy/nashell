@@ -306,9 +306,16 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         ev.message = mtmsg;
         react_emit(on_event, userdata, &ev);
 
-        react_emergency_evict_and_reinject(ctx, chat);
-        (*consecutive_null)++;
-        return 0;
+        int n_evict = react_emergency_evict_and_reinject(ctx, chat);
+        if (n_evict > 0) {
+            (*consecutive_null)++;
+            return 0;
+        } else {
+            ev.message = "Max-token exhaustion — no evictable messages "
+                         "remain, giving up";
+            react_emit(on_event, userdata, &ev);
+            return 1;
+        }
     }
 
     /* 5-tier retry strategy for HTTP 500 / NULL responses */
