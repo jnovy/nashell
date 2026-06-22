@@ -120,11 +120,17 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 #define REACT_THOUGHT_TRUNC_LEN     200
 
 /* Compaction hint text injected as MEMORY_HINT after eviction.
- * Extracted to a constant to eliminate 3 copies and the magic-130 estimate. */
+ * Extracted to a constant to eliminate 3 copies and the magic-130 estimate.
+ * Note: the pre-compaction warning in react.c fires BEFORE eviction to give
+ * the model a chance to save findings while file contents are still in
+ * context.  This post-compaction hint focuses on recovery (memory_search)
+ * and confirms that compaction occurred.  Saving is still mentioned as a
+ * last resort for any analysis the model holds but hasn't yet persisted. */
 #define EVICT_COMPACT_HINT \
-    "[Context compacted. Use memory_search to recover lost " \
-    "context \xe2\x80\x94 it searches both stored knowledge and past " \
-    "session history.]"
+    "[Context compacted. Some file contents have been evicted. " \
+    "If you have unsaved analysis, save it to notes() immediately " \
+    "\xe2\x80\x94 do NOT try to recall evicted file details from memory. " \
+    "Use memory_search to recover lost context.]"
 
 /* FIX #11: Scratchpad message prefix — eliminates duplicate string literals
  * in react_inject_scratchpad_msg and react_format_scratchpad_msg. */

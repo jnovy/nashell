@@ -107,6 +107,12 @@ typedef struct {
     /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
     int            tool_use_counts[32]; /* indexed by tool_registry order */
     int            n_tool_uses;     /* total tool invocations this loop */
+    /* Incremental notes tracking: detect deferred synthesis anti-pattern.
+     * When the model reads many files without saving findings, compaction
+     * evicts the raw content and the model confabulates from degraded memory. */
+    int            last_notes_step;          /* step when notes() last used (-1 = never) */
+    int            file_reads_since_notes;   /* file_read calls since last notes() */
+    int            pre_compact_warned;       /* 1 = pre-compaction warning already fired */
     /* v4 unified memory: session index for L3 search via memory_recall */
     session_index_t *session_idx;
 } tool_ctx_t;

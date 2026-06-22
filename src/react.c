@@ -1663,6 +1663,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ctx->tools->n_tool_uses++;
         }
 
+        /* Track incremental note-taking: detect deferred synthesis anti-pattern.
+         * When the model reads many files without saving findings to notes(),
+         * compaction evicts the raw content and the model confabulates. */
+        if (action_name) {
+            if (strcmp(action_name, "file_read") == 0 && tr.success)
+                ctx->tools->file_reads_since_notes++;
+            else if (strcmp(action_name, "notes") == 0 && tr.success) {
+                ctx->tools->file_reads_since_notes = 0;
+                ctx->tools->last_notes_step = step;
+                ctx->tools->pre_compact_warned = 0; /* allow re-warning after save */
+            }
+        }
+
         /* Multi-tool detection: inject corrective hint when the model emitted
          * multiple tool calls (concatenated JSON or native tool_calls array > 1).
          * Common with gemma4/qwen3.6 models. Only the first tool call was executed;
@@ -1889,6 +1902,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
+        /* Pre-compaction warning: warn the model BEFORE eviction fires so it
+         * can save unsaved analysis while file contents are still in context.
+         * The hint fires when context usage enters the "warning zone" (within
+         * 8% of trigger_pct) AND the model has 3+ unsaved file_reads.
+         * When eviction actually fires, react_maybe_evict removes MEMORY_HINT
+         * messages as part of cleanup (step 1), so the warning is self-cleaning.
+         * Reset on notes() to allow re-warning after the next batch of reads. */
+        if (ctx->flags.enable_compaction && ctx->provider &&
+            ctx->provider->cfg.context_size > 0 &&
+            !ctx->tools->pre_compact_warned &&
+            ctx->tools->file_reads_since_notes >= 3)
+        {
+            eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
+            long budget = react_context_budget(ctx);
+            int usage_pct = react_chat_usage_pct(chat, budget);
+            int warn_zone = pol.trigger_pct - 8;
+            if (usage_pct >= warn_zone && usage_pct <= pol.trigger_pct) {
+                char warn_buf[512];
+                snprintf(warn_buf, sizeof(warn_buf),
+                    "[URGENT: Context is %d%% full \xe2\x80\x94 compaction is "
+                    "imminent. Save your unsaved analysis to notes() NOW "
+                    "with exact file:line references. After compaction, "
+                    "evicted file contents CANNOT be recovered from "
+                    "memory \xe2\x80\x94 you will confabulate if you try to "
+                    "recall them later. Use notes(op=\"append\", "
+                    "section=\"findings\", content=\"...\").]",
+                    usage_pct);
+                llm_chat_add_typed(chat, "user", warn_buf,
+                    LLM_MSG_MEMORY_HINT);
+                ctx->tools->pre_compact_warned = 1;
+            }
+        }
+
         /* Harness-1 §3.5: Multi-pass progressive context eviction */
         int pre_evict_msgs = chat->n_msgs;
         react_maybe_evict(ctx, chat, step, user_query, on_event, userdata);
@@ -1907,29 +1953,38 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(last_ref);
             last_ref = NULL;
             repeat_count = 0;
+            /* Reset pre-compaction warning so it can fire again for the
+             * next batch of file reads before the next compaction. */
+            ctx->tools->pre_compact_warned = 0;
         }
 
-        /* FIX 4c: Moved diversity nudge outside eviction block so it fires
-         * regardless of context pressure.  Previously only triggered when
-         * usage_pct > eviction_pct. */
-        /* Harness-1 §4.2: Tool diversity nudge — if the agent has used
-         * only 1-2 tools for 10+ steps, inject a soft reminder to use
-         * notes for saving findings. */
-        /* D10 FIX: Re-nudge mechanism — nudges every 15 steps without notes
-         * usage. Previously set count=1 which prevented re-triggering.
-         * Now: nudge fires when steps_since_notes >= 15 and n_tool_uses >= 10.
-         * After nudge, reset the baseline so it can fire again. */
-        if (ctx->tools->n_tool_uses >= 10) {
-            int notes_idx = react_tool_index("notes");
-            int notes_used = (notes_idx >= 0 && notes_idx < 32)
-                ? ctx->tools->tool_use_counts[notes_idx] : 0;
-            /* Nudge every 15 steps when notes hasn't been used */
-            if (notes_used == 0 && ctx->tools->n_tool_uses % 15 == 0) {
+        /* Incremental notes nudge: detect deferred synthesis anti-pattern.
+         * The model tends to read many files and defer note-taking until the
+         * end, by which time compaction has evicted file contents and the
+         * model confabulates findings.  Two triggers:
+         *   (a) 5+ file_reads since last notes() — volume-based
+         *   (b) 10+ steps since last notes() with 3+ file_reads — time-based
+         * Either trigger fires the nudge, then resets the counter to allow
+         * re-nudging.  The nudge text emphasizes saving with exact file:line
+         * references to maximize utility of what's preserved. */
+        {
+            int fr = ctx->tools->file_reads_since_notes;
+            int steps_since = (ctx->tools->last_notes_step >= 0)
+                ? step - ctx->tools->last_notes_step : step;
+            int nudge = 0;
+            if (fr >= 5)
+                nudge = 1;  /* volume trigger: 5+ files without notes */
+            else if (steps_since >= 10 && fr >= 3)
+                nudge = 1;  /* time trigger: 10+ steps with 3+ files */
+            if (nudge) {
                 llm_chat_add_typed(chat, "user",
-                    "[HINT] You have not used notes() to save key findings. "
-                    "Consider saving important discoveries to scratchpad sections "
-                    "to preserve them across context compaction.",
+                    "[HINT] You have read multiple files without saving findings "
+                    "to notes(). Save your analysis NOW with exact file:line "
+                    "references before context compaction evicts the file contents. "
+                    "Use notes(op=\"append\", section=\"findings\", content=\"...\").",
                     LLM_MSG_MEMORY_HINT);
+                /* Reset to allow re-nudging after another batch */
+                ctx->tools->file_reads_since_notes = 0;
             }
         }
 
