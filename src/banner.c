@@ -119,8 +119,6 @@ char *build_banner_impl(const config_t *cfg, const char *props_json,
         think_str = "yes";
     else if (cfg->thinking.mode == THINKING_EDRM)
         think_str = is_api ? "off (edrm n/a)" : "edrm";
-    else if (cfg->thinking.mode == THINKING_STRUCTURAL)
-        think_str = "structural";
     else
         think_str = "no";
     str_appendf(&s, "client: temp=%.1f max_tokens=%d thinking=%s stream=%s\n",

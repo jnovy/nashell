@@ -177,15 +177,14 @@ void config_set_defaults(config_t *cfg) {
 
     cfg->stream = 1;     /* always on for now */
 
-    /* [thinking] defaults — STRUCTURAL is the default mode.
-     * Two-call reasoning: Call 1 (no tools, forced reasoning) → Call 2 (tools, act).
-     * Works with all providers, no logprobs or native thinking API required.
+    /* [thinking] defaults — EDRM is the default mode.
+     * Entropy-dynamics routing: probe → route → generate.
      * Float fields use NAN as sentinel (0.0 is valid for all of them).
      * budget uses INT_MIN as sentinel (0=no-thinking and -1=unrestricted are both valid). */
     if (cfg->thinking.mode == THINKING_OFF && cfg->thinking.probe_tokens == 0
         && isnan(cfg->thinking.tau_vnr) && isnan(cfg->thinking.tau_h)) {
-        /* Nothing was set by TOML parsing — default to structural */
-        cfg->thinking.mode = THINKING_STRUCTURAL;
+        /* Nothing was set by TOML parsing — default to EDRM */
+        cfg->thinking.mode = THINKING_EDRM;
     }
     if (cfg->thinking.probe_tokens == 0)      cfg->thinking.probe_tokens = 30;
     if (cfg->thinking.probe_n_probs == 0)     cfg->thinking.probe_n_probs = 10;
@@ -458,8 +457,6 @@ config_t *config_load(const char *path) {
                 cfg->thinking.mode = THINKING_ON;
             else if (strcmp(mode_str, "edrm") == 0)
                 cfg->thinking.mode = THINKING_EDRM;
-            else if (strcmp(mode_str, "structural") == 0)
-                cfg->thinking.mode = THINKING_STRUCTURAL;
             else  /* "no", "off", or anything else */
                 cfg->thinking.mode = THINKING_OFF;
             free(mode_str);
@@ -562,8 +559,6 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
             tc->mode = THINKING_ON;
         else if (strcmp(mode_str, "edrm") == 0)
             tc->mode = THINKING_EDRM;
-        else if (strcmp(mode_str, "structural") == 0)
-            tc->mode = THINKING_STRUCTURAL;
         else
             tc->mode = THINKING_OFF;
         free(mode_str);
@@ -978,8 +973,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
 
     fprintf(out, "[thinking]\n");
     const char *mode_str = cfg->thinking.mode == THINKING_ON ? "yes"
-                         : cfg->thinking.mode == THINKING_EDRM ? "edrm"
-                         : cfg->thinking.mode == THINKING_STRUCTURAL ? "structural" : "no";
+                         : cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
     fprintf(out, "mode = \"%s\"\n", mode_str);
     fprintf(out, "budget = %d\n\n", cfg->thinking.budget);
 
@@ -1251,8 +1245,6 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 cfg->thinking.mode = THINKING_ON;
             else if (strcmp(mode_str, "edrm") == 0)
                 cfg->thinking.mode = THINKING_EDRM;
-            else if (strcmp(mode_str, "structural") == 0)
-                cfg->thinking.mode = THINKING_STRUCTURAL;
             else
                 cfg->thinking.mode = THINKING_OFF;
             free(mode_str);

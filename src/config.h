@@ -14,10 +14,9 @@
 #define THINKING_OFF   0
 #define THINKING_ON    1
 #define THINKING_EDRM  2
-#define THINKING_STRUCTURAL 3  /* two-call: reason (no tools) → act (tools) */
 
 typedef struct {
-    int    mode;              /* THINKING_OFF / THINKING_ON / THINKING_EDRM / THINKING_STRUCTURAL */
+    int    mode;              /* THINKING_OFF / THINKING_ON / THINKING_EDRM */
     int    probe_tokens;      /* EDRM: tokens to generate in probe (default 30) */
     int    probe_n_probs;     /* EDRM: top-N logprobs to request (default 10) */
     float  probe_temperature; /* EDRM: probe sampling temperature (default 0.6) */

@@ -55,7 +55,6 @@ typedef struct {
     float chars_per_token;   /* EMA-calibrated chars/token ratio */
     int   enable_thinking;   /* EDRM routing result (0/1) */
     int   thinking_budget;   /* thinking token budget */
-    int   structural_thinking; /* 1 = two-call structural reasoning mode */
 } react_runtime_t;
 
 typedef struct {
