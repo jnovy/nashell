@@ -79,6 +79,12 @@ void journal_parse_compaction_stats(cJSON *params, journal_compaction_stats_t *s
  * Consolidates 3 near-identical skip lists that were diverging. */
 int journal_is_structural_tool(const char *tool);
 
+/* Reduced structural filter for lexical search.
+ * Keeps "query" and "memory_context" searchable since they contain
+ * user input and matched skills/lessons — the most useful content
+ * for pattern-based search. */
+int journal_is_structural_tool_search(const char *tool);
+
 /* ── Chunk extraction for session-level RAG ─────────── */
 
 /* Extracted semantic chunks from a journal for embedding.

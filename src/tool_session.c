@@ -160,9 +160,15 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
             /* Show all per-line matches */
             for (int j = 0; j < r->n_matches; j++) {
                 ss_match_t *m = &r->matches[j];
-                str_appendf(&out, "  R%dS%d [%s]: %s\n",
-                            m->react_loop, m->step, m->tool,
-                            m->snippet ? m->snippet : "");
+                if (m->react_loop < 0) {
+                    /* File-based match (session.md / reactR*.md) */
+                    str_appendf(&out, "  [%s]: %s\n",
+                                m->tool, m->snippet ? m->snippet : "");
+                } else {
+                    str_appendf(&out, "  R%dS%d [%s]: %s\n",
+                                m->react_loop, m->step, m->tool,
+                                m->snippet ? m->snippet : "");
+                }
             }
             if (r->match_count > r->n_matches) {
                 str_appendf(&out, "  ... and %d more match%s\n",
@@ -193,9 +199,14 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
                             r->match_count == 1 ? "" : "s");
                 for (int j = 0; j < r->n_matches; j++) {
                     ss_match_t *m = &r->matches[j];
-                    str_appendf(&out, "  R%dS%d [%s]: %s\n",
-                                m->react_loop, m->step, m->tool,
-                                m->snippet ? m->snippet : "");
+                    if (m->react_loop < 0) {
+                        str_appendf(&out, "  [%s]: %s\n",
+                                    m->tool, m->snippet ? m->snippet : "");
+                    } else {
+                        str_appendf(&out, "  R%dS%d [%s]: %s\n",
+                                    m->react_loop, m->step, m->tool,
+                                    m->snippet ? m->snippet : "");
+                    }
                 }
                 if (r->match_count > r->n_matches) {
                     str_appendf(&out, "  ... and %d more match%s\n",

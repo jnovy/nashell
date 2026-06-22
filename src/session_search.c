@@ -294,8 +294,8 @@ static int scan_journal_lexical(const char *session_dir,
         char tool[64];
         parse_journal_fields(line_buf, &rl, &step, tool, sizeof(tool));
 
-        /* Skip structural noise */
-        if (journal_is_structural_tool(tool)) continue;
+        /* Skip structural noise (reduced filter: keeps query/memory_context) */
+        if (journal_is_structural_tool_search(tool)) continue;
 
         count++;
 
@@ -355,6 +355,136 @@ static int scan_journal_lexical(const char *session_dir,
 }
 
 
+/* Scan a single file for lexical matches, appending to scored->matches.
+ * Used for session.md and reactR*.md files.
+ * scored->match_count must already include prior matches (used as base offset).
+ * Returns number of new matches found in this file. */
+static int scan_file_lexical(const char *filepath, const char *filename,
+                              const char *pattern, int use_regex,
+                              regex_t *compiled_re,
+                              scored_session_t *scored) {
+    FILE *f = fopen(filepath, "r");
+    if (!f) return 0;
+
+    char *line_buf = malloc(SS_JLINE_MAX);
+    if (!line_buf) { fclose(f); return 0; }
+
+    int count = 0;
+    /* match_cap tracks the allocated capacity of scored->matches.
+     * n_matches tracks the actual stored count. */
+    int match_cap = scored->n_matches;   /* current allocation */
+
+    while (fgets(line_buf, SS_JLINE_MAX, f)) {
+        const char *match_pos = NULL;
+        size_t match_len = 0;
+
+        if (use_regex) {
+            regmatch_t pmatch[1];
+            if (regexec(compiled_re, line_buf, 1, pmatch, 0) == 0) {
+                match_pos = line_buf + pmatch[0].rm_so;
+                match_len = (size_t)(pmatch[0].rm_eo - pmatch[0].rm_so);
+            }
+        } else {
+            match_pos = strcasestr(line_buf, pattern);
+            if (match_pos) match_len = strlen(pattern);
+        }
+
+        if (!match_pos) continue;
+        count++;
+
+        /* Append to matches array if under cap */
+        int idx = scored->match_count + count - 1;
+        if (idx >= SS_MAX_MATCHES_PER_SESSION) continue;
+
+        /* Allocate or grow array if needed */
+        if (!scored->matches || idx >= match_cap) {
+            int old_cap = match_cap;
+            int new_cap = (idx + 1) * 2;
+            if (new_cap < 16) new_cap = 16;
+            if (new_cap > SS_MAX_MATCHES_PER_SESSION)
+                new_cap = SS_MAX_MATCHES_PER_SESSION;
+            if (new_cap < idx + 1) new_cap = idx + 1;
+            ss_match_t *new_m = realloc(scored->matches,
+                                        (size_t)new_cap * sizeof(ss_match_t));
+            if (new_m) {
+                memset(new_m + old_cap, 0,
+                       (size_t)(new_cap - old_cap) * sizeof(ss_match_t));
+                scored->matches = new_m;
+                match_cap = new_cap;
+            } else {
+                continue;  /* allocation failed, skip storing */
+            }
+        }
+        scored->matches[idx].snippet =
+            extract_match_snippet(line_buf, match_pos, match_len);
+        scored->matches[idx].react_loop = -1;
+        scored->matches[idx].step = -1;
+        snprintf(scored->matches[idx].tool,
+                 sizeof(scored->matches[idx].tool), "%s", filename);
+    }
+
+    fclose(f);
+    free(line_buf);
+
+    /* Update n_matches to reflect actual stored count */
+    if (count > 0) {
+        int new_stored = scored->match_count + count;
+        if (new_stored > SS_MAX_MATCHES_PER_SESSION)
+            new_stored = SS_MAX_MATCHES_PER_SESSION;
+        scored->n_matches = new_stored;
+    }
+
+    return count;
+}
+
+
+/* Scan session.md and reactR*.md files for lexical matches.
+ * Supplements scan_journal_lexical to cover user-visible session content.
+ * Returns total number of additional matches found. */
+static int scan_session_files_lexical(const char *session_dir,
+                                       const char *pattern, int use_regex,
+                                       regex_t *compiled_re,
+                                       scored_session_t *scored) {
+    int total = 0;
+    int n;
+    char fpath[NASH_PATH_MAX];
+
+    /* Scan session.md */
+    snprintf(fpath, sizeof(fpath), "%s/session.md", session_dir);
+    n = scan_file_lexical(fpath, "session.md", pattern, use_regex,
+                          compiled_re, scored);
+    scored->match_count += n;
+    total += n;
+
+    /* Scan reactR*.md files */
+    DIR *d = opendir(session_dir);
+    if (d) {
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            if (strncmp(de->d_name, "reactR", 6) == 0 &&
+                strlen(de->d_name) > 3 &&
+                strcmp(de->d_name + strlen(de->d_name) - 3, ".md") == 0) {
+                snprintf(fpath, sizeof(fpath), "%s/%s", session_dir,
+                         de->d_name);
+                n = scan_file_lexical(fpath, de->d_name, pattern,
+                                      use_regex, compiled_re, scored);
+                scored->match_count += n;
+                total += n;
+            }
+        }
+        closedir(d);
+    }
+
+    /* Recalculate lexical score with updated match_count */
+    if (total > 0) {
+        scored->lexical = log1p((double)scored->match_count) / log1p(20.0);
+        if (scored->lexical > 1.0) scored->lexical = 1.0;
+    }
+
+    return total;
+}
+
+
 /* Phase 2 main: run lexical scan on selected sessions.
  *
  * Strategy:
@@ -379,6 +509,8 @@ static int phase_lexical(session_index_t *idx,
                      ? *n_scored : SS_FUSED_LEXICAL_BUDGET;
         for (int i = 0; i < budget; i++) {
             total_matches += scan_journal_lexical(
+                scored[i].dir, pattern, use_regex, compiled_re, &scored[i]);
+            total_matches += scan_session_files_lexical(
                 scored[i].dir, pattern, use_regex, compiled_re, &scored[i]);
         }
     } else {
@@ -462,6 +594,8 @@ static int phase_lexical(session_index_t *idx,
         /* Scan ALL sessions — no budget limit in pure lexical mode */
         for (int i = 0; i < n; i++) {
             total_matches += scan_journal_lexical(
+                scored[i].dir, pattern, use_regex, compiled_re, &scored[i]);
+            total_matches += scan_session_files_lexical(
                 scored[i].dir, pattern, use_regex, compiled_re, &scored[i]);
         }
     }

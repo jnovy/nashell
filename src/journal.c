@@ -198,6 +198,19 @@ int journal_is_structural_tool(const char *tool) {
            strcmp(tool, "compaction") == 0;
 }
 
+/* Reduced structural filter for lexical search.
+ * Keeps "query" and "memory_context" searchable — these contain
+ * user input text and matched skills/lessons that are the most
+ * useful content for pattern-based search. */
+int journal_is_structural_tool_search(const char *tool) {
+    if (!tool) return 0;
+    return strcmp(tool, "system") == 0 ||
+           strcmp(tool, "context") == 0 ||
+           strcmp(tool, "spec") == 0 ||
+           strcmp(tool, "log") == 0 ||
+           strcmp(tool, "compaction") == 0;
+}
+
 /* DUP1 FIX: Extract shared evicted-count flush logic.
  * Appends an eviction summary line to `out` and resets counters. */
 static void journal_flush_evicted(str_t *out, int *evicted_count,
