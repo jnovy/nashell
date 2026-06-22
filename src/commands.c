@@ -16,6 +16,36 @@
 #include "embedding.h"
 #include <time.h>
 
+/* Strip markdown links: [text](url) → text.
+ * Returns a new malloc'd string. Caller must free. */
+static char *strip_md_links(const char *src) {
+    if (!src) return strdup("");
+    size_t len = strlen(src);
+    char *out = malloc(len + 1);
+    if (!out) return strdup("");
+    size_t oi = 0;
+    for (size_t i = 0; i < len; ) {
+        if (src[i] == '[') {
+            /* Look for ](url) */
+            const char *close_bracket = strchr(src + i + 1, ']');
+            if (close_bracket && close_bracket[1] == '(') {
+                const char *close_paren = strchr(close_bracket + 2, ')');
+                if (close_paren) {
+                    /* Copy just the link text (between [ and ]) */
+                    size_t text_len = (size_t)(close_bracket - (src + i + 1));
+                    memcpy(out + oi, src + i + 1, text_len);
+                    oi += text_len;
+                    i = (size_t)(close_paren - src) + 1;
+                    continue;
+                }
+            }
+        }
+        out[oi++] = src[i++];
+    }
+    out[oi] = '\0';
+    return out;
+}
+
 /* Comparator for qsort — descending string order (newest first) */
 static int cmp_str_desc(const void *a, const void *b) {
     return strcmp(*(const char **)b, *(const char **)a);
@@ -716,45 +746,20 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
         ses_count = ses_results.count;
     }
 
-    /* ── Build display (TUI) + md_file (search.md with hyperlinks) ── */
-    str_t display = str_new(4096);
+    /* ── Build md_file (search.md with hyperlinks) ── */
     str_t md_file = str_new(4096);
 
-    /* Header — identical for both */
-    {
-        const char *hdr = "# Memory Search Results\n\n";
-        str_append_cstr(&display, hdr);
-        str_append_cstr(&md_file, hdr);
-    }
-    if (query) {
-        str_appendf(&display, "**Query:** %s\n", query);
-        str_appendf(&md_file, "**Query:** %s\n", query);
-    }
-    if (key) {
-        str_appendf(&display, "**Key:** %s\n", key);
-        str_appendf(&md_file, "**Key:** %s\n", key);
-    }
-    if (pattern) {
-        str_appendf(&display, "**Pattern:** `%s`%s\n",
-                     pattern, use_regex ? " (regex)" : "");
-        str_appendf(&md_file, "**Pattern:** `%s`%s\n",
-                     pattern, use_regex ? " (regex)" : "");
-    }
-    if (days > 0) {
-        str_appendf(&display, "**Days:** %d\n", days);
-        str_appendf(&md_file, "**Days:** %d\n", days);
-    }
-    {
-        str_appendf(&display, "**Results:** %d memory, %d session\n\n",
-                    mem_count, ses_count);
-        str_appendf(&md_file, "**Results:** %d memory, %d session\n\n",
-                    mem_count, ses_count);
-    }
+    str_append_cstr(&md_file, "# Memory Search Results\n\n");
+    if (query)   str_appendf(&md_file, "**Query:** %s\n", query);
+    if (key)     str_appendf(&md_file, "**Key:** %s\n", key);
+    if (pattern) str_appendf(&md_file, "**Pattern:** `%s`%s\n",
+                             pattern, use_regex ? " (regex)" : "");
+    if (days > 0) str_appendf(&md_file, "**Days:** %d\n", days);
+    str_appendf(&md_file, "**Results:** %d memory, %d session\n\n",
+                mem_count, ses_count);
 
-    if (mem_count == 0 && ses_count == 0) {
-        str_append_cstr(&display, "*No matches found.*\n");
+    if (mem_count == 0 && ses_count == 0)
         str_append_cstr(&md_file, "*No matches found.*\n");
-    }
 
     /* ── Interleave results by score ────────────── */
     {
@@ -771,29 +776,19 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
                 ? ses_results.results[si].composite_score : -1.0;
 
             if (mem_score >= ses_score && mi < mem_count) {
-                /* Emit memory result — same in both */
+                /* Emit memory result */
                 memory_entry_t *e = &mem_results.entries[mi];
-                str_appendf(&display,
-                    "### %d. 🧠 %s  (score: %.3f)\n\n",
-                    rank, e->key, e->relevance);
                 str_appendf(&md_file,
                     "### %d. 🧠 %s  (score: %.3f)\n\n",
                     rank, e->key, e->relevance);
-                str_append_cstr(&display, e->value);
                 str_append_cstr(&md_file, e->value);
-                str_append_cstr(&display, "\n\n");
                 str_append_cstr(&md_file, "\n\n");
                 double vscore = (e->recall_hits + 1.0) /
                                 (e->recall_hits + e->recall_misses + 2.0);
-                str_appendf(&display,
-                    "hits: %d misses: %d vscore: %.2f pinned: %s\n\n",
-                    e->recall_hits, e->recall_misses,
-                    vscore, e->pinned ? "yes" : "no");
                 str_appendf(&md_file,
                     "hits: %d misses: %d vscore: %.2f pinned: %s\n\n",
                     e->recall_hits, e->recall_misses,
                     vscore, e->pinned ? "yes" : "no");
-                str_append_cstr(&display, "---\n\n");
                 str_append_cstr(&md_file, "---\n\n");
                 mi++;
             } else if (si < ses_count) {
@@ -811,48 +806,29 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
                 int has_lex = (r->n_matches > 0);
                 int has_sem = (r->semantic_score > 0.01);
 
-                /* Header line — same for both */
-                str_appendf(&display,
-                    "### %d. 📅 %s  %s  (score: %.3f",
-                    rank, ts_buf, conf_labels[r->confidence],
-                    r->composite_score);
                 str_appendf(&md_file,
                     "### %d. 📅 %s  %s  (score: %.3f",
                     rank, ts_buf, conf_labels[r->confidence],
                     r->composite_score);
-                if (has_sem) {
-                    str_appendf(&display, " sem=%.2f", r->semantic_score);
+                if (has_sem)
                     str_appendf(&md_file, " sem=%.2f", r->semantic_score);
-                }
-                if (has_lex) {
-                    str_appendf(&display, " lex=%.2f matches=%d",
-                                r->lexical_score, r->match_count);
+                if (has_lex)
                     str_appendf(&md_file, " lex=%.2f matches=%d",
                                 r->lexical_score, r->match_count);
-                }
-                str_append_cstr(&display, ")\n\n");
                 str_append_cstr(&md_file, ")\n\n");
 
-                /* Session dir — plain in display, hyperlinked in md_file */
-                if (r->session_dir) {
-                    str_appendf(&display, "    %s\n\n", r->session_dir);
+                /* Session dir — hyperlinked in md, strip_md_links
+                 * will produce plain text for TUI display */
+                if (r->session_dir)
                     str_appendf(&md_file, "    [%s](%s)\n\n",
                                 r->session_dir, r->session_dir);
-                }
 
-                /* Chunk preview — same for both */
-                if (r->chunk_preview && r->chunk_preview[0]) {
-                    str_appendf(&display, "%s\n\n", r->chunk_preview);
+                if (r->chunk_preview && r->chunk_preview[0])
                     str_appendf(&md_file, "%s\n\n", r->chunk_preview);
-                }
 
-                /* Per-line lexical matches — plain in display,
-                 * RXSY as hyperlinks in md_file */
+                /* Per-line lexical matches — RXSY as hyperlinks */
                 for (int j = 0; j < r->n_matches; j++) {
                     ss_match_t *m = &r->matches[j];
-                    str_appendf(&display, "  R%dS%d [%s]: %s\n",
-                                m->react_loop, m->step, m->tool,
-                                m->snippet ? m->snippet : "");
                     if (r->session_dir) {
                         str_appendf(&md_file,
                             "  [R%dS%d](%s/R%dS%d) [%s]: %s\n",
@@ -867,17 +843,11 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
                                     m->snippet ? m->snippet : "");
                     }
                 }
-                if (r->match_count > r->n_matches) {
-                    str_appendf(&display, "  ... and %d more match%s\n",
-                                r->match_count - r->n_matches,
-                                (r->match_count - r->n_matches) == 1
-                                    ? "" : "es");
+                if (r->match_count > r->n_matches)
                     str_appendf(&md_file, "  ... and %d more match%s\n",
                                 r->match_count - r->n_matches,
                                 (r->match_count - r->n_matches) == 1
                                     ? "" : "es");
-                }
-                str_append_cstr(&display, "\n---\n\n");
                 str_append_cstr(&md_file, "\n---\n\n");
                 si++;
             }
@@ -898,9 +868,10 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
             fclose(fp);
         }
     }
-    str_free(&md_file);
 
-    char *banner = str_steal(&display);
+    /* ── Derive TUI display by stripping markdown links ── */
+    char *banner = strip_md_links(str_cstr(&md_file));
+    str_free(&md_file);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_banner(ui, banner);
     ui_state_set_status(ui, STATUS_READY,
