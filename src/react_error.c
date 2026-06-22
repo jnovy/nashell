@@ -26,14 +26,19 @@ static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
     int imp = (int)chat->msgs[mi].importance;
     int rec = (int)chat->msgs[mi].recoverability;
     int msg_len = (int)chat->msgs[mi].content_len;
+    /* Review Issue #1 FIX: Use shared constants from react_internal.h
+     * instead of hardcoded values — prevents drift vs progressive scorer. */
     int pos_norm = (n_evictable > 1)
-        ? (ri * 19 / (n_evictable - 1)) : 0;
+        ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
     int size_bonus = 0;
-    if (msg_len > 200) {
-        size_bonus = (rec > 0) ? (msg_len / 500) * rec : msg_len / 1000;
-        if (size_bonus > 90) size_bonus = 90;
+    if (msg_len > REACT_SCORE_SIZE_THRESH) {
+        size_bonus = (rec > 0) ? (msg_len / REACT_SCORE_SIZE_DIV) * rec
+                               : msg_len / (REACT_SCORE_SIZE_DIV * 2);
+        if (size_bonus > REACT_SCORE_SIZE_MAX) size_bonus = REACT_SCORE_SIZE_MAX;
     }
-    return imp * 100 - rec * 10 - size_bonus + pos_norm;
+    return imp * REACT_SCORE_IMP_WEIGHT
+         - rec * REACT_SCORE_REC_WEIGHT
+         - size_bonus + pos_norm;
 }
 
 /* Emergency eviction — removes enough evictable messages to reach ~80% of

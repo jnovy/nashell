@@ -23,13 +23,7 @@
 #include "compress.h"
 
 /* ── Algorithm-internal constants (stable, not policy-configurable) ── */
-/* Score formula coefficients for progressive eviction scoring. */
-#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
-#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
-#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
-#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
-#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
-#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
+/* Score formula coefficients now in react_internal.h (shared with emergency scorer). */
 /* Breadcrumb brief preview truncation (chars). */
 #define REACT_BREADCRUMB_BRIEF_LEN  80
 /* Minimum tool content length to include in eviction summary. */
@@ -307,12 +301,16 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                                ev_mem.entries[j].key) == 0) { dup = 1; break; }
                 }
                 if (!dup && ev_mem.entries[j].relevance > ev_min_rel) {
-                    char hint[2048];
-                    snprintf(hint, sizeof(hint),
+                    /* Review Issue #5 FIX: Use str_t to avoid silent
+                     * truncation of large memory values at 2048 chars. */
+                    str_t hint = str_new(256);
+                    str_appendf(&hint,
                         "[MEMORY RECOVERY — post-eviction]\n"
                         "--- %s ---\n%s",
                         ev_mem.entries[j].key, ev_mem.entries[j].value);
-                    llm_chat_insert_typed(chat, pos, "user", hint, LLM_MSG_MEMORY_HINT);
+                    llm_chat_insert_typed(chat, pos, "user",
+                        str_cstr(&hint), LLM_MSG_MEMORY_HINT);
+                    str_free(&hint);
                     tool_track_recalled_key(ctx->tools, ev_mem.entries[j].key);
                     pos++;
                     ev_injected++;

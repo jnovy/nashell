@@ -22,6 +22,16 @@
 #include <dirent.h>
 #include <stdint.h>
 
+/* ── Eviction Scoring Constants ────────────────────── */
+/* Shared between progressive (react_eviction.c) and emergency (react_error.c)
+ * scorers.  Change here to keep both in sync — see Review Issue #1. */
+#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
+#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
+#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
+#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
+#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
+#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
+
 /* ── Eviction Policy ───────────────────────────────── */
 /* Computed once at eviction entry from config.  Replaces 20+ scattered
  * #defines with a single struct whose fields are either direct from config
@@ -58,7 +68,7 @@ typedef struct {
     int compress_min_chars;   /* compress_min_len / 2 = 400 */
     int compress_min_units;   /* 4 (always) */
 
-    long floor_min_chars;     /* 4000 (absolute floor) */
+    long floor_min_chars;     /* 7000 (absolute floor — ~2000 tokens at 3.5 cpt) */
 } eviction_policy_t;
 
 /* Compute policy from config.  Call once at start of react_maybe_evict(). */

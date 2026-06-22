@@ -190,7 +190,6 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
     }
     /* FLAW 2 FIX: Track augmentation budget to prevent query dilution.
      * User query terms are primary; augmented content is secondary context. */
-    size_t base_len = buf.len;  /* user query portion */
     size_t augment_remaining = REACT_BM25_MAX_AUGMENT_CHARS;
 
     /* Augment with recent assistant thoughts (last 3 exchanges) */
@@ -221,7 +220,6 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
         }
         free(sp);
     }
-    (void)base_len;  /* used conceptually for budget tracking */
     return str_steal(&buf);
 }
 

@@ -126,8 +126,8 @@ static int is_stopword(const char *word) {
         "so", "up", "out", "if", "about", "who", "get", "which", "go",
         "when", "can", "no", "just", "than", "been", "its", "also", "is",
         "was", "are", "were", "has", "had", "did", "does", "am",
-        /* Programming */
-        "int", "char", "void", "const", "return", "if", "else", "for",
+        /* Programming ("if" and "for" already in English list above) */
+        "int", "char", "void", "const", "return", "else",
         "while", "struct", "null", "true", "false", "static",
         "function", "var", "let", "new", "class", "string",
         NULL
