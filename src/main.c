@@ -44,6 +44,7 @@
 #include "matrix.h"
 #include "banner.h"
 #include "commands.h"
+#include "agents.h"
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
 
@@ -312,6 +313,10 @@ int main(int argc, char **argv) {
     int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
     int matrix_mode = 0;                  /* --matrix: Matrix bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
+    int agents_mode = 0;                  /* --agents: scan workspaces, run due agents */
+    int agents_list = 0;                  /* --agents --list: show agent table */
+    int agents_dry_run = 0;               /* --agents --dry-run: show what would run */
+    const char *agents_force_id = NULL;    /* --agents --force ID: run specific agent */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -374,6 +379,14 @@ int main(int argc, char **argv) {
             cfg->workspace = strdup(argv[++i]);
         } else if (strcmp(argv[i], "--isolated") == 0) {
             cfg->workspace_isolated = 1;
+        } else if (strcmp(argv[i], "--agents") == 0) {
+            agents_mode = 1;
+        } else if (strcmp(argv[i], "--list") == 0) {
+            agents_list = 1;
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            agents_dry_run = 1;
+        } else if (strcmp(argv[i], "--force") == 0 && i + 1 < argc) {
+            agents_force_id = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -402,6 +415,18 @@ int main(int argc, char **argv) {
             printf("  --telegram            Telegram Bot bridge (implies --daemon)\n");
             printf("  --matrix              Matrix bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
+            printf("\nAgents (autonomous scheduled workflows):\n");
+            printf("  --agents              Scan workspaces, run due agents, exit\n");
+            printf("  --agents --list       Show all discovered agents and status\n");
+            printf("  --agents --dry-run    Show what would run without executing\n");
+            printf("  --agents --force ID   Run specific agent regardless of schedule\n");
+            printf("\nTUI commands (inside interactive session):\n");
+            printf("  /agents               List all agents with schedule and status\n");
+            printf("  /agents show ID       Show agent detail (config, last result)\n");
+            printf("  /agents run ID        Run agent with live TUI output\n");
+            printf("  /agents due           Show agents currently due\n");
+            printf("  /agents history [ID]  Show execution history\n");
+            printf("  /agents result ID     Show latest result for an agent\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -566,8 +591,8 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Print banner (skip in headless playbook mode) */
-    if (!play_arg)
+    /* Print banner (skip in headless playbook/agents mode) */
+    if (!play_arg && !agents_mode)
         print_banner(cfg, props_json, nash_dir, matched_profile_file);
 
     /* Shared store + memory (workspace-aware) */
@@ -866,6 +891,74 @@ int main(int argc, char **argv) {
         playbook_free(pb);
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return ok ? 0 : 1;
+    }
+
+    /* Agents mode: scan workspaces, build calendar, run due agents */
+    if (agents_mode) {
+        /* Acquire lock (separate from daemon lock — uses agents.lock) */
+        {
+            char lock_path[NASH_PATH_MAX];
+            snprintf(lock_path, sizeof(lock_path), "%s/agents", nash_dir);
+            mkdir(lock_path, 0755);
+        }
+
+        /* Install signal handlers for graceful shutdown */
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = shutdown_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGINT, &sa, NULL);
+
+        /* Scan + schedule */
+        agent_queue_t *q = agent_scan(nash_dir);
+        if (!q) {
+            fprintf(stderr, "[agents] error: scan failed\n");
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 1;
+        }
+        agent_queue_load(q, nash_dir);
+        agent_queue_schedule(q, time(NULL));
+
+        if (agents_list) {
+            agent_queue_print(q, stdout);
+            agent_queue_free(q);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 0;
+        }
+
+        if (agents_dry_run) {
+            fprintf(stderr, "[agents] DRY RUN — would execute:\n");
+            int n = 0;
+            for (int i = 0; i < q->n_agents; i++) {
+                if (!q->agents[i].is_due) continue;
+                n++;
+                char tstr[32] = "never run";
+                if (q->agents[i].last_run > 0) {
+                    int ago = (int)(time(NULL) - q->agents[i].last_run);
+                    if (ago < 3600) snprintf(tstr, sizeof(tstr), "%dm ago", ago / 60);
+                    else snprintf(tstr, sizeof(tstr), "%dh ago", ago / 3600);
+                }
+                fprintf(stderr, "  %d. %-40s (due: %s, timeout: %ds)\n",
+                        n, q->agents[i].id, tstr, q->agents[i].timeout);
+            }
+            if (n == 0) fprintf(stderr, "  (no agents due)\n");
+            agent_queue_free(q);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 0;
+        }
+
+        /* Execute due agents */
+        int n_fail = agent_execute(q, nash_dir, shared_store, cfg,
+                                   provider, server_model,
+                                   agents_force_id, &shutdown_requested);
+
+        /* Save updated queue */
+        agent_queue_save(q, nash_dir);
+        agent_queue_free(q);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+        return n_fail > 0 ? 1 : 0;
     }
 
     /* Daemon mode: watch mailbox inbox for tasks, process them sequentially */

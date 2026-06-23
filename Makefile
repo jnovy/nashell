@@ -53,6 +53,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/searxng.c \
           src/banner.c \
           src/commands.c \
+          src/agents.c \
           src/repomap.c \
           src/display.c \
           src/display_vnc.c \
@@ -120,6 +121,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/searxng.c \
           src/banner.c \
           src/commands.c \
+          src/agents.c \
           src/repomap.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 

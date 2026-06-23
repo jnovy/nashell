@@ -7,12 +7,13 @@
 #include <errno.h>
 
 #include "commands.h"
+#include "agents.h"
 #include "cJSON.h"
-#include "ui_state_internal.h"
 #include "str.h"
 #include "nash_limits.h"
 #include "scratchpad.h"
 #include "tui.h"
+#include "ui_state_internal.h"
 #include "session_search.h"
 #include "embedding.h"
 #include <time.h>
@@ -1247,6 +1248,507 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
     }
 }
 
+/* ── /agents [list|show|run|history|due|result] ────────────────── */
+
+/* Helper: find an agent by exact or suffix match.
+ * Returns pointer into q->agents[] or NULL. */
+static const agent_entry_t *agent_find(const agent_queue_t *q, const char *id) {
+    /* Exact match */
+    for (int i = 0; i < q->n_agents; i++)
+        if (strcmp(q->agents[i].id, id) == 0) return &q->agents[i];
+    /* Suffix match: "daily-ai-news" matches "ai-news/daily-ai-news" */
+    int id_len = (int)strlen(id);
+    const agent_entry_t *match = NULL;
+    int n_matches = 0;
+    for (int i = 0; i < q->n_agents; i++) {
+        int aid_len = (int)strlen(q->agents[i].id);
+        if (aid_len > id_len &&
+            q->agents[i].id[aid_len - id_len - 1] == '/' &&
+            strcmp(q->agents[i].id + aid_len - id_len, id) == 0) {
+            match = &q->agents[i];
+            n_matches++;
+        }
+    }
+    return (n_matches == 1) ? match : NULL;
+}
+
+static int cmd_agents_list(command_ctx_t *ctx) {
+    ui_state_t *ui = ctx->ui;
+
+    agent_queue_t *q = agent_scan(ctx->nash_dir);
+    if (!q) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents: scan failed");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+    agent_queue_load(q, ctx->nash_dir);
+    agent_queue_schedule(q, time(NULL));
+
+    str_t display = str_new(2048);
+    str_appendf(&display, "# Agents\n\n");
+
+    if (q->n_agents == 0) {
+        str_appendf(&display,
+            "No agents found.\n\n"
+            "Create agent definitions in "
+            "`~/.nash/workspaces/<name>/agents/<agent>.yaml`\n");
+    } else {
+        str_appendf(&display,
+            "| Agent | Schedule | Last Run | Status | Due |\n"
+            "|-------|----------|----------|--------|-----|\n");
+
+        time_t now = time(NULL);
+        for (int i = 0; i < q->n_agents; i++) {
+            const agent_entry_t *a = &q->agents[i];
+
+            char last_run_str[64];
+            if (a->last_run == 0)
+                snprintf(last_run_str, sizeof(last_run_str), "never");
+            else {
+                char durbuf[32];
+                fmt_duration((double)(now - a->last_run), durbuf, sizeof(durbuf));
+                snprintf(last_run_str, sizeof(last_run_str), "%s ago", durbuf);
+            }
+
+            char status_str[64];
+            if (a->last_run == 0)
+                snprintf(status_str, sizeof(status_str), "-");
+            else {
+                char durbuf[32];
+                fmt_duration((double)a->last_duration, durbuf, sizeof(durbuf));
+                snprintf(status_str, sizeof(status_str), "%s %s (%s)",
+                         (a->last_status && strcmp(a->last_status, "ok") == 0) ? "ok" : "FAIL",
+                         a->last_status ? a->last_status : "?", durbuf);
+            }
+
+            str_appendf(&display, "| %s | `%s` | %s | %s | %s |\n",
+                        a->id, a->schedule_str,
+                        last_run_str, status_str,
+                        a->is_due ? "**yes**" : "no");
+        }
+
+        str_appendf(&display,
+            "\n**%d agents**, %d due now\n\n"
+            "Commands: `/agents show ID`, `/agents run ID`, "
+            "`/agents history`, `/agents result ID`\n",
+            q->n_agents, q->n_due);
+    }
+
+    char *banner = str_steal(&display);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_banner(ui, banner);
+    ui_state_set_status(ui, STATUS_READY, "Agent list");
+    pthread_mutex_unlock(&ui->mtx);
+    free(banner);
+    tui_render(ui);
+
+    agent_queue_free(q);
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
+    ui_state_t *ui = ctx->ui;
+    while (*id == ' ') id++;
+
+    agent_queue_t *q = agent_scan(ctx->nash_dir);
+    if (!q) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents show: scan failed");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+    agent_queue_load(q, ctx->nash_dir);
+    agent_queue_schedule(q, time(NULL));
+
+    const agent_entry_t *found = agent_find(q, id);
+    if (!found) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents show: agent not found");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        agent_queue_free(q);
+        return CMD_CONTINUE;
+    }
+
+    str_t display = str_new(2048);
+    str_appendf(&display, "# Agent: %s\n\n", found->id);
+    str_appendf(&display, "**Workspace**: %s  \n", found->workspace_name);
+    str_appendf(&display, "**File**: `%s`  \n", found->agent_file);
+    str_appendf(&display, "**Schedule**: `%s`  \n", found->schedule_str);
+    str_appendf(&display, "**Timeout**: %ds  \n", found->timeout);
+    str_appendf(&display, "**Enabled**: %s  \n", found->enabled ? "yes" : "no");
+    str_appendf(&display, "**Due now**: %s  \n\n", found->is_due ? "**yes**" : "no");
+
+    if (found->last_run > 0) {
+        char timebuf[64];
+        struct tm tm;
+        localtime_r(&found->last_run, &tm);
+        strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
+        char durbuf[32];
+        fmt_duration((double)found->last_duration, durbuf, sizeof(durbuf));
+        str_appendf(&display,
+            "## Last Run\n"
+            "**Time**: %s  \n"
+            "**Duration**: %s  \n"
+            "**Status**: %s  \n\n",
+            timebuf, durbuf,
+            found->last_status ? found->last_status : "?");
+    } else {
+        str_appendf(&display, "## Last Run\nNever executed\n\n");
+    }
+
+    if (found->next_due > 0 && !found->schedule.is_startup) {
+        char timebuf[64];
+        struct tm tm;
+        localtime_r(&found->next_due, &tm);
+        strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
+        str_appendf(&display, "**Next due**: %s\n\n", timebuf);
+    }
+
+    /* Latest result snippet */
+    char result_path[NASH_PATH_MAX];
+    snprintf(result_path, sizeof(result_path),
+             "%s/agents/results/%s/latest.md", ctx->nash_dir, found->id);
+    size_t rlen = 0;
+    char *result_content = slurp_file(result_path, &rlen);
+    if (result_content) {
+        str_appendf(&display, "## Latest Result\n\n");
+        if (rlen > 500) {
+            result_content[500] = '\0';
+            str_appendf(&display, "%s\n\n*...truncated. Use `/agents result %s` for full output.*\n",
+                        result_content, found->id);
+        } else {
+            str_appendf(&display, "%s\n", result_content);
+        }
+        free(result_content);
+    }
+
+    str_appendf(&display, "\n---\n`/agents run %s` to execute now\n", found->id);
+
+    char *banner = str_steal(&display);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_banner(ui, banner);
+    ui_state_set_status(ui, STATUS_READY, "Agent detail");
+    pthread_mutex_unlock(&ui->mtx);
+    free(banner);
+    tui_render(ui);
+
+    agent_queue_free(q);
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
+    ui_state_t *ui = ctx->ui;
+    while (*id == ' ') id++;
+
+    if (*ctx->inferring) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR,
+            "Wait for inference to finish before running an agent");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    agent_queue_t *q = agent_scan(ctx->nash_dir);
+    if (!q) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents run: scan failed");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+    agent_queue_load(q, ctx->nash_dir);
+
+    const agent_entry_t *found = agent_find(q, id);
+    if (!found) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents run: agent not found");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        agent_queue_free(q);
+        return CMD_CONTINUE;
+    }
+
+    playbook_t *pb = playbook_load(found->agent_file);
+    if (!pb) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR,
+            "/agents run: cannot load agent playbook");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        agent_queue_free(q);
+        return CMD_CONTINUE;
+    }
+
+    /* Inject agent-specific template variables */
+    int new_nvars = pb->n_vars + 3;
+    pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
+    pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
+    pb->var_keys[pb->n_vars]       = strdup("workspace_name");
+    pb->var_values[pb->n_vars]     = strdup(found->workspace_name);
+    pb->var_keys[pb->n_vars + 1]   = strdup("workspace_dir");
+    pb->var_values[pb->n_vars + 1] = strdup(found->workspace_dir);
+    pb->var_keys[pb->n_vars + 2]   = strdup("agent_id");
+    pb->var_values[pb->n_vars + 2] = strdup(found->id);
+    pb->n_vars = new_nvars;
+
+    *ctx->pargs = (playbook_args_t){
+        .playbook     = pb,
+        .nash_dir     = (char *)ctx->nash_dir,
+        .store        = ctx->store,
+        .memory       = ctx->memory,
+        .cfg          = ctx->cfg,
+        .provider     = ctx->provider,
+        .server_model = (char *)ctx->server_model,
+        .ui           = ui,
+        .playbook_ok  = 0,
+        .done         = 0,
+    };
+
+    ctx->provider->abort_retry = 0;
+    pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
+    *ctx->inferring = 3;
+
+    pthread_mutex_lock(&ui->mtx);
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Running agent: %s", found->id);
+    ui_state_set_status(ui, STATUS_RUNNING, msg);
+    pthread_mutex_unlock(&ui->mtx);
+    tui_render(ui);
+
+    agent_queue_free(q);
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
+    ui_state_t *ui = ctx->ui;
+    if (filter_id) while (*filter_id == ' ') filter_id++;
+
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/agents/history.jsonl", ctx->nash_dir);
+
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        str_t display = str_new(256);
+        str_appendf(&display, "# Agent History\n\nNo history yet.\n");
+        char *banner = str_steal(&display);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_banner(ui, banner);
+        ui_state_set_status(ui, STATUS_READY, "Agent history");
+        pthread_mutex_unlock(&ui->mtx);
+        free(banner);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    str_t display = str_new(4096);
+    if (filter_id && *filter_id)
+        str_appendf(&display, "# Agent History: %s\n\n", filter_id);
+    else
+        str_appendf(&display, "# Agent History\n\n");
+
+    str_appendf(&display,
+        "| Time | Agent | Status | Duration |\n"
+        "|------|-------|--------|----------|\n");
+
+    char line[4096];
+    char *lines[256];
+    int n_lines = 0;
+    while (fgets(line, sizeof(line), f) && n_lines < 256) {
+        if (filter_id && *filter_id) {
+            if (!strstr(line, filter_id)) continue;
+        }
+        lines[n_lines++] = strdup(line);
+    }
+    fclose(f);
+
+    /* Display newest first (last 50) */
+    int start = n_lines > 50 ? n_lines - 50 : 0;
+    for (int i = n_lines - 1; i >= start; i--) {
+        cJSON *ev = cJSON_Parse(lines[i]);
+        if (!ev) { free(lines[i]); continue; }
+
+        const char *aid = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "id"));
+        const char *st  = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
+        double ts_d = 0;
+        cJSON *ts_item = cJSON_GetObjectItem(ev, "ts");
+        if (ts_item) ts_d = cJSON_GetNumberValue(ts_item);
+        int dur = 0;
+        cJSON *dur_item = cJSON_GetObjectItem(ev, "dur");
+        if (dur_item) dur = (int)cJSON_GetNumberValue(dur_item);
+
+        char timebuf[64];
+        time_t t = (time_t)ts_d;
+        struct tm tm;
+        localtime_r(&t, &tm);
+        strftime(timebuf, sizeof(timebuf), "%m-%d %H:%M", &tm);
+
+        char durbuf[32];
+        fmt_duration((double)dur, durbuf, sizeof(durbuf));
+
+        str_appendf(&display, "| %s | %s | %s %s | %s |\n",
+                    timebuf,
+                    aid ? aid : "?",
+                    (st && strcmp(st, "ok") == 0) ? "ok" : "FAIL",
+                    st ? st : "?",
+                    durbuf);
+
+        cJSON_Delete(ev);
+        free(lines[i]);
+    }
+    for (int i = 0; i < start; i++) free(lines[i]);
+
+    if (n_lines == 0)
+        str_appendf(&display, "\nNo history entries%s\n",
+                    (filter_id && *filter_id) ? " for this agent" : "");
+    else
+        str_appendf(&display, "\nShowing %d of %d entries\n",
+                    n_lines - start, n_lines);
+
+    char *banner = str_steal(&display);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_banner(ui, banner);
+    ui_state_set_status(ui, STATUS_READY, "Agent history");
+    pthread_mutex_unlock(&ui->mtx);
+    free(banner);
+    tui_render(ui);
+
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents_due(command_ctx_t *ctx) {
+    ui_state_t *ui = ctx->ui;
+
+    agent_queue_t *q = agent_scan(ctx->nash_dir);
+    if (!q) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/agents due: scan failed");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+    agent_queue_load(q, ctx->nash_dir);
+    agent_queue_schedule(q, time(NULL));
+
+    str_t display = str_new(1024);
+    str_appendf(&display, "# Agents Due Now\n\n");
+
+    int n = 0;
+    for (int i = 0; i < q->n_agents; i++) {
+        if (!q->agents[i].is_due) continue;
+        n++;
+        const agent_entry_t *a = &q->agents[i];
+        char since[64] = "never run";
+        if (a->last_run > 0) {
+            char durbuf[32];
+            fmt_duration((double)(time(NULL) - a->last_run), durbuf, sizeof(durbuf));
+            snprintf(since, sizeof(since), "%s ago", durbuf);
+        }
+        str_appendf(&display, "%d. **%s** — schedule: `%s`, last: %s, timeout: %ds\n",
+                    n, a->id, a->schedule_str, since, a->timeout);
+    }
+
+    if (n == 0)
+        str_appendf(&display, "No agents are due right now.\n");
+    else
+        str_appendf(&display,
+            "\n`/agents run ID` to run one, or `nash --agents` from CLI to run all.\n");
+
+    char *banner = str_steal(&display);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_banner(ui, banner);
+    ui_state_set_status(ui, STATUS_READY, n > 0 ? "Agents due" : "No agents due");
+    pthread_mutex_unlock(&ui->mtx);
+    free(banner);
+    tui_render(ui);
+
+    agent_queue_free(q);
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
+    ui_state_t *ui = ctx->ui;
+    while (*id == ' ') id++;
+
+    /* Try exact ID first, then resolve via scan */
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path),
+             "%s/agents/results/%s/latest.md", ctx->nash_dir, id);
+
+    size_t clen = 0;
+    char *content = slurp_file(path, &clen);
+    if (!content) {
+        /* Suffix resolve: scan to find full agent ID */
+        agent_queue_t *q = agent_scan(ctx->nash_dir);
+        if (q) {
+            const agent_entry_t *found = agent_find(q, id);
+            if (found) {
+                snprintf(path, sizeof(path),
+                         "%s/agents/results/%s/latest.md", ctx->nash_dir, found->id);
+                content = slurp_file(path, &clen);
+            }
+            agent_queue_free(q);
+        }
+    }
+
+    if (!content) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR,
+            "/agents result: no result found (agent never run or ID wrong)");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_banner(ui, content);
+    ui_state_set_status(ui, STATUS_READY, "Agent result");
+    pthread_mutex_unlock(&ui->mtx);
+    free(content);
+    tui_render(ui);
+
+    return CMD_CONTINUE;
+}
+
+static int cmd_agents(command_ctx_t *ctx, const char *args) {
+    while (*args == ' ') args++;
+
+    /* Default: /agents with no args → list */
+    if (*args == '\0' || strcmp(args, "list") == 0) {
+        return cmd_agents_list(ctx);
+    }
+    if (strncmp(args, "show ", 5) == 0) {
+        return cmd_agents_show(ctx, args + 5);
+    }
+    if (strncmp(args, "run ", 4) == 0) {
+        return cmd_agents_run(ctx, args + 4);
+    }
+    if (strcmp(args, "history") == 0) {
+        return cmd_agents_history(ctx, NULL);
+    }
+    if (strncmp(args, "history ", 8) == 0) {
+        return cmd_agents_history(ctx, args + 8);
+    }
+    if (strcmp(args, "due") == 0) {
+        return cmd_agents_due(ctx);
+    }
+    if (strncmp(args, "result ", 7) == 0) {
+        return cmd_agents_result(ctx, args + 7);
+    }
+
+    ui_state_t *ui = ctx->ui;
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_status(ui, STATUS_ERROR,
+        "/agents: unknown subcommand (list|show|run|history|due|result)");
+    pthread_mutex_unlock(&ui->mtx);
+    tui_render(ui);
+    return CMD_CONTINUE;
+}
+
 /* ── Main dispatch ─────────────────────────────────────────────── */
 int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     char *sq = *submitted_query;
@@ -1310,6 +1812,13 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     if (strcmp(sq, "/todo") == 0 ||
         strncmp(sq, "/todo ", 6) == 0) {
         int rc = cmd_todo(ctx, strlen(sq) > 5 ? sq + 6 : "");
+        free(sq);
+        *submitted_query = NULL;
+        return rc;
+    }
+    if (strcmp(sq, "/agents") == 0 ||
+        strncmp(sq, "/agents ", 8) == 0) {
+        int rc = cmd_agents(ctx, strlen(sq) > 7 ? sq + 8 : "");
         free(sq);
         *submitted_query = NULL;
         return rc;
