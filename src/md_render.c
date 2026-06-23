@@ -625,42 +625,61 @@ void md_doc_free(md_doc_t *doc) {
     free(doc);
 }
 
-/* ── OSC 8 terminal hyperlinks ── */
+/* ── OSC 8 terminal hyperlinks (deferred) ── */
 
-/* Write a raw byte to the window using waddch, bypassing ncurses'
- * escape processing. This ensures OSC 8 sequences reach the terminal
- * unmodified. */
-static void raw_waddch(WINDOW *win, char c) {
-    waddch(win, (chtype)(unsigned char)c);
+/* Deferred OSC 8 link list — populated during md_render(), flushed
+ * after doupdate() by md_osc8_flush().  This avoids the fundamental
+ * problem that ncurses' waddch() renders ESC (0x1B) as ^[ caret
+ * notation instead of passing it through to the terminal. */
+md_osc8_link_t md_osc8_links[MD_OSC8_MAX];
+int            md_osc8_count = 0;
+
+/* Record a deferred OSC 8 link to be emitted after doupdate(). */
+static void defer_osc8_link(int vis_line, int col, const char *uri) {
+    if (md_osc8_count >= MD_OSC8_MAX) return;
+    md_osc8_link_t *lk = &md_osc8_links[md_osc8_count++];
+    lk->row = vis_line;
+    lk->col_start = col;
+    lk->col_end = col;  /* filled in by defer_osc8_end */
+    if (uri[0] == '/' && strncmp(uri, "file://", 7) != 0)
+        snprintf(lk->uri, sizeof(lk->uri), "file://%s", uri);
+    else
+        snprintf(lk->uri, sizeof(lk->uri), "%s", uri);
 }
 
-/* Emit an OSC 8 hyperlink start sequence: ESC ] 8 ; ; URI ESC \
- * The terminal will treat all subsequent text as clickable until the
- * end sequence (ESC ] 8 ; ; ESC \) is emitted.
- *
- * We write each byte individually via waddch to avoid ncurses
- * interpreting the ESC character as a cursor movement command. */
-static void emit_osc8_start(WINDOW *win, const char *uri) {
-    raw_waddch(win, '\033');
-    raw_waddch(win, ']');
-    raw_waddch(win, '8');
-    raw_waddch(win, ';');
-    raw_waddch(win, ';');
-    while (*uri)
-        raw_waddch(win, *uri++);
-    raw_waddch(win, '\033');
-    raw_waddch(win, '\\');
+/* Mark the end column of the most recent deferred link. */
+static void defer_osc8_end(int col_end) {
+    if (md_osc8_count > 0)
+        md_osc8_links[md_osc8_count - 1].col_end = col_end;
 }
 
-/* Emit an OSC 8 hyperlink end sequence: ESC ] 8 ; ; ESC \ */
-static void emit_osc8_end(WINDOW *win) {
-    raw_waddch(win, '\033');
-    raw_waddch(win, ']');
-    raw_waddch(win, '8');
-    raw_waddch(win, ';');
-    raw_waddch(win, ';');
-    raw_waddch(win, '\033');
-    raw_waddch(win, '\\');
+/* Emit all deferred OSC 8 sequences directly to stdout.
+ * Called AFTER doupdate() so screen content is already rendered.
+ * win_row_offset: absolute screen row of the window (getbegy). */
+void md_osc8_flush(int win_row_offset) {
+    for (int i = 0; i < md_osc8_count; i++) {
+        md_osc8_link_t *lk = &md_osc8_links[i];
+        int abs_row = win_row_offset + lk->row + 1;  /* 1-based */
+        int abs_col = lk->col_start + 1;               /* 1-based */
+        /* Position cursor at link start */
+        printf("\033[%d;%dH", abs_row, abs_col);
+        /* OSC 8 start: ESC ] 8 ; ; URI ST */
+        printf("\033]8;;%s\033\\", lk->uri);
+        /* Move cursor past link text (the text is already rendered
+         * by ncurses — we just need to "claim" the columns as part
+         * of the hyperlink by re-outputting spaces wouldn't work,
+         * so we skip forward and let the terminal associate the
+         * positioned region).  The terminal tracks the hyperlink
+         * state and associates subsequent output with it. */
+        int link_len = lk->col_end - lk->col_start;
+        if (link_len > 0)
+            printf("\033[%dC", link_len);
+        /* OSC 8 end: ESC ] 8 ; ; ST */
+        printf("\033]8;;\033\\");
+    }
+    if (md_osc8_count > 0)
+        fflush(stdout);
+    md_osc8_count = 0;
 }
 
 /* Check if a URI is a web URL (http:// or https://) */
@@ -677,16 +696,19 @@ static int is_linkable_uri(const char *uri) {
         || uri[0] == '/';
 }
 
-/* Emit OSC 8 start, auto-prefixing absolute paths with file:// */
+/* Legacy wrappers — now just record deferred links instead of
+ * writing ESC bytes via waddch (which doesn't work). */
 static void emit_osc8_link_start(WINDOW *win, const char *uri) {
-    if (uri[0] == '/' && strncmp(uri, "file://", 7) != 0) {
-        /* Build file:// URI for absolute path */
-        char buf[4096];
-        snprintf(buf, sizeof(buf), "file://%s", uri);
-        emit_osc8_start(win, buf);
-    } else {
-        emit_osc8_start(win, uri);
-    }
+    int y, x;
+    getyx(win, y, x);
+    defer_osc8_link(y, x, uri);
+}
+
+static void emit_osc8_end(WINDOW *win) {
+    int y, x;
+    getyx(win, y, x);
+    defer_osc8_end(x);
+    (void)y;
 }
 
 /* ── Render helpers ── */
@@ -807,15 +829,15 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                 int x = -tbl_sx;
                 wattron(win, COLOR_PAIR(C_DIM));
                 for (int ci = 0; ci < num_cols; ci++) {
-                    if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                    if (x >= 0 && x < cols) mvwaddstr(win, vis_line, x, "\xe2\x94\xbc"); /* ┼ */
                     x++;
                     int w = col_widths[ci] + 2;
                     for (int k = 0; k < w; k++) {
-                        if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_HLINE);
+                        if (x >= 0 && x < cols) mvwaddstr(win, vis_line, x, "\xe2\x94\x80"); /* ─ */
                         x++;
                     }
                 }
-                if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ACS_PLUS);
+                if (x >= 0 && x < cols) mvwaddstr(win, vis_line, x, "\xe2\x94\xbc"); /* ┼ */
                 wattroff(win, COLOR_PAIR(C_DIM));
             } else {
                 /* Check if header (next row is separator) */
@@ -836,7 +858,7 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                     if (*cp == '|') { cp++; ci++; continue; }
                     if (x >= 0 && x < cols) {
                         wattron(win, COLOR_PAIR(C_DIM));
-                        mvwaddch(win, vis_line, x, ACS_VLINE);
+                        mvwaddstr(win, vis_line, x, "\xe2\x94\x82"); /* │ */
                         wattroff(win, COLOR_PAIR(C_DIM));
                     }
                     x++;
@@ -868,7 +890,7 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                 }
                 if (x >= 0 && x < cols) {
                     wattron(win, COLOR_PAIR(C_DIM));
-                    mvwaddch(win, vis_line, x, ACS_VLINE);
+                    mvwaddstr(win, vis_line, x, "\xe2\x94\x82"); /* │ */
                     wattroff(win, COLOR_PAIR(C_DIM));
                 }
             }
@@ -901,6 +923,9 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
 int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int cursor_link, int focus) {
     if (!win || !doc || !doc->source) return 0;
+
+    /* Reset deferred OSC 8 link list for this render cycle */
+    md_osc8_count = 0;
 
     int rows = getmaxy(win);
     int cols = getmaxx(win);
@@ -1160,10 +1185,15 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             advance_render_line(&render_line, lines_consumed);
 
         } else if (strncmp(line_buf, "---", 3) == 0) {
-            /* Horizontal rule */
+            /* Horizontal rule — use Unicode ─ (U+2500) instead of ACS_HLINE
+             * to avoid garbled output when ACS charset mapping is broken
+             * (common in UTF-8 terminals where ncurses ACS falls back to
+             * VT100 line-drawing characters that display as garbage). */
             if (visible) {
                 wattron(win, COLOR_PAIR(C_DIM));
-                mvwhline(win, vis_line, 0, ACS_HLINE, cols);
+                wmove(win, vis_line, 0);
+                for (int hx = 0; hx < cols; hx++)
+                    waddstr(win, "\xe2\x94\x80"); /* ─ U+2500 */
                 wattroff(win, COLOR_PAIR(C_DIM));
             }
 
@@ -1206,7 +1236,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 if (visible) {
                     /* Draw the first │ */
                     wattron(win, COLOR_PAIR(C_DIM));
-                    mvwaddch(win, vis_line, 0, ACS_VLINE);
+                    mvwaddstr(win, vis_line, 0, "\xe2\x94\x82"); /* │ */
                     wattroff(win, COLOR_PAIR(C_DIM));
 
                     lines_consumed = render_inline_wrapped(win, vis_line, 2, bq_text, bq_len, usable);
@@ -1221,7 +1251,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 int cvl = (render_line + i) - scroll_y;
                 if (cvl >= 0 && cvl < rows) {
                     wattron(win, COLOR_PAIR(C_DIM));
-                    mvwaddch(win, cvl, 0, ACS_VLINE);
+                    mvwaddstr(win, cvl, 0, "\xe2\x94\x82"); /* │ */
                     wattroff(win, COLOR_PAIR(C_DIM));
                 }
             }

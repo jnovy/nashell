@@ -39,6 +39,32 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 /* Get the rendered line number of a link (for auto-scrolling to keep cursor visible) */
 int md_link_line(md_doc_t *doc, int link_idx);
 
+/* ── Deferred OSC 8 hyperlinks ──
+ * ncurses' waddch cannot pass ESC (0x1B) to the terminal — it renders
+ * as ^[ caret notation.  Instead, we collect link positions during
+ * md_render and emit the OSC 8 sequences directly to stdout after
+ * ncurses' doupdate() has flushed the screen buffer. */
+
+typedef struct {
+    int  row;        /* screen row (0-based, relative to window) */
+    int  col_start;  /* first column of link text */
+    int  col_end;    /* one past last column of link text */
+    char uri[4096];  /* resolved URI (file:// prefixed if needed) */
+} md_osc8_link_t;
+
+/* Max deferred links per render cycle */
+#define MD_OSC8_MAX 64
+
+/* Deferred link list — populated by md_render, flushed by md_osc8_flush */
+extern md_osc8_link_t md_osc8_links[];
+extern int            md_osc8_count;
+
+/* Emit all deferred OSC 8 sequences directly to stdout.
+ * Must be called AFTER ncurses doupdate() so the screen content
+ * is already rendered and cursor positioning sequences work.
+ * win_row_offset: the window's absolute row on screen (from getbegy). */
+void md_osc8_flush(int win_row_offset);
+
 /* Find the rendered line number of a heading matching a #fragment anchor.
  * fragment: the anchor string WITHOUT the leading '#' (e.g., "1-current-state").
  * The document must have been rendered at least once (md_render called) so that

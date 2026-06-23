@@ -925,6 +925,13 @@ void tui_render(ui_state_t *ui) {
      * This is ncurses' built-in double-buffer: all changes are computed
      * in memory, then written to the terminal in one batch. */
     doupdate();
+
+    /* Emit deferred OSC 8 hyperlink sequences directly to stdout.
+     * Must happen AFTER doupdate() since ncurses' waddch cannot pass
+     * ESC bytes to the terminal (renders them as ^[ caret notation). */
+    if (md_osc8_count > 0)
+        md_osc8_flush(getbegy(win_main));
+
     ui->dirty = 0;
 
     pthread_mutex_unlock(&ui->mtx);
