@@ -8,6 +8,7 @@
 
 #include "commands.h"
 #include "cJSON.h"
+#include "ui_state_internal.h"
 #include "str.h"
 #include "nash_limits.h"
 #include "scratchpad.h"
@@ -892,6 +893,61 @@ static int cmd_todo_path(command_ctx_t *ctx, char *buf, size_t sz) {
     return 0;
 }
 
+/* Check if user is currently viewing todo.md */
+static int viewing_todo(ui_state_t *ui) {
+    if (!ui->current_filepath) return 0;
+    const char *base = strrchr(ui->current_filepath, '/');
+    base = base ? base + 1 : ui->current_filepath;
+    return strcmp(base, "todo.md") == 0;
+}
+
+/* Regenerate the rendered todo.md in session_dir from workspace todo.md.
+ * If the user is viewing todo.md, reload it so the change is visible. */
+static void cmd_todo_refresh(ui_state_t *ui, const char *ws_todo_path,
+                             const char *ws_name) {
+    if (!ui->session_dir) return;
+
+    char tpath[NASH_PATH_MAX];
+    snprintf(tpath, sizeof(tpath), "%s/todo.md", ui->session_dir);
+
+    /* Build rendered content */
+    str_t out = str_new(1024);
+    str_append_cstr(&out, "# TODO List");
+    if (ws_name) str_appendf(&out, " (%s)", ws_name);
+    str_append_cstr(&out, "\n\n");
+
+    FILE *f = fopen(ws_todo_path, "r");
+    if (f) {
+        int num = 0, open = 0, done_n = 0;
+        char linebuf[4096];
+        while (fgets(linebuf, sizeof(linebuf), f)) {
+            size_t len = strlen(linebuf);
+            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+                linebuf[--len] = '\0';
+            if (len == 0) continue;
+            num++;
+            str_appendf(&out, "%d. %s\n", num, linebuf);
+            if (strstr(linebuf, "- [ ]")) open++;
+            else if (strstr(linebuf, "- [x]")) done_n++;
+        }
+        fclose(f);
+        if (num == 0)
+            str_append_cstr(&out, "*No items yet.* Use `/todo add <text>` to add one.\n");
+        else
+            str_appendf(&out, "\n**%d open, %d done** — `/todo add|done|remove|purge`\n",
+                        open, done_n);
+    } else {
+        str_append_cstr(&out, "*No items yet.* Use `/todo add <text>` to add one.\n");
+    }
+
+    FILE *tf = fopen(tpath, "w");
+    if (tf) { fputs(str_cstr(&out), tf); fclose(tf); }
+    str_free(&out);
+
+    if (viewing_todo(ui))
+        ui_state_reload_file(ui);
+}
+
 static int cmd_todo(command_ctx_t *ctx, const char *args) {
     ui_state_t *ui = ctx->ui;
     char fpath[NASH_PATH_MAX];
@@ -938,6 +994,7 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
         snprintf(status, sizeof(status), "Added: %s", text);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
+        cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1000,6 +1057,7 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
         free(lines);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
+        cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1061,6 +1119,7 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
         free(lines);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
+        cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1107,6 +1166,7 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
         snprintf(status, sizeof(status), "Purged %d completed items, %d remaining", purged, kept);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
+        cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1158,13 +1218,30 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
             }
         }
 
-        char *banner = strdup(str_cstr(&out));
-        str_free(&out);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_banner(ui, banner);
-        ui_state_set_status(ui, STATUS_READY, "TODO list");
-        pthread_mutex_unlock(&ui->mtx);
-        free(banner);
+        /* Write rendered TODO to {session_dir}/todo.md and navigate there.
+         * This keeps session.md clean — TODO gets its own file. */
+        if (ui->session_dir) {
+            char tpath[NASH_PATH_MAX];
+            snprintf(tpath, sizeof(tpath), "%s/todo.md", ui->session_dir);
+            FILE *tf = fopen(tpath, "w");
+            if (tf) {
+                fputs(str_cstr(&out), tf);
+                fclose(tf);
+            }
+            str_free(&out);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_READY, "TODO list");
+            free(ui->current_filepath);
+            ui->current_filepath = strdup(tpath);
+            ui->scroll_y = 0;
+            ui->scroll_x = 0;
+            ui->cursor_link = 0;
+            ui->search_active = 0;
+            ui_state_reload_file(ui);
+            pthread_mutex_unlock(&ui->mtx);
+        } else {
+            str_free(&out);
+        }
         tui_render(ui);
         return CMD_CONTINUE;
     }
