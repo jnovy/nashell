@@ -148,9 +148,9 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->vscore_exponent < 0)         cfg->vscore_exponent = 0.3f;
     if (cfg->tool_retry_limit <= 0)       cfg->tool_retry_limit = 3;
     /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
-    /* max_react_steps: -1 sentinel from TOML parsing means "not set".
-     * 0 = unlimited (valid user value), so only replace negative sentinels. */
-    if (cfg->max_react_steps < 0)         cfg->max_react_steps = 0;
+    /* max_react_steps: -1 = unlimited (default). Positive = hard limit.
+     * TOML parsing uses -1 as the default sentinel, which is also the
+     * unlimited value, so no replacement needed for negative sentinels. */
 
 
     /* [memory_belief_entropy] defaults — sentinel-guarded like other sections.
@@ -1686,7 +1686,7 @@ int config_write_default(const char *path) {
         "\n"
         "# Context management\n"
         "scratchpad_max = 0           # max scratchpad chars (0 = auto: 5%% of context)\n"
-        "max_react_steps = 0          # max steps per react loop (0 = unlimited)\n"
+        "max_react_steps = -1         # max steps per react loop (-1 = unlimited)\n"
         "context_eviction_pct = 70    # context usage %% that triggers message eviction\n"
         "eviction_floor_pct = 20      # min retained context as %% of non-head budget\n"
         "scratchpad_budget_pct = 15   # scratchpad as %% of context budget\n"

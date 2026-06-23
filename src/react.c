@@ -751,7 +751,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int tools_executed = 0;              /* Hallucination guard: real tools executed */
     int total_errors = 0;                /* Error budget: total tool errors across session */
 
-    for (int step = resume_step; ctx->max_steps == 0 || step < ctx->max_steps; step++) {
+    for (int step = resume_step; ctx->max_steps < 0 || step < ctx->max_steps; step++) {
         /* Check for pause request at the TOP of the loop — this catches
          * pause_requested set during error recovery paths that `continue`
          * back to the loop header (parse_error, unknown_tool, server_error,
