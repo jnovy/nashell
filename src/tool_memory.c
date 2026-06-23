@@ -543,7 +543,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_store",
+    tool_journal(ctx, "memory_store",
                    params, alias, strlen(value), 0, NULL, NULL);
 
     char *ref_copy = alias ? strdup(alias) : NULL;
@@ -763,7 +763,7 @@ finish:;
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "memory_search",
+    tool_journal(ctx, "memory_search",
                    params, alias, out.len, total_results, NULL, NULL);
 
     memory_results_free(&mem_results);

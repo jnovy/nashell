@@ -265,7 +265,7 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
     }
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "session_search",
+    tool_journal(ctx, "session_search",
                    params, alias, out.len, total_matches > 0 ? total_matches : result_count,
                    NULL, NULL);
 

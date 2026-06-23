@@ -99,7 +99,7 @@ tool_result_t tools_memory_key_op(tool_ctx_t *ctx, cJSON *params,
         char *_h = store_save(ctx->store, _p ? _p : "{}");
         char *_a = tool_register_alias(ctx, _h ? _h : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, tool_name,
+        tool_journal(ctx, tool_name,
                        params, _a, _p ? strlen(_p) : 0, 0, NULL, NULL);
         free(_a); free(_h); free(_p);
     }
@@ -522,7 +522,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     }
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "shell_exec", params, alias,
+    tool_journal(ctx, "shell_exec", params, alias,
                    out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
 
     char *ref_copy = strdup(alias);
@@ -551,7 +551,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "done", params, alias,
+    tool_journal(ctx, "done", params, alias,
                    strlen(result), 0, NULL, NULL);
 
     char *ref_copy = strdup(alias);
@@ -605,7 +605,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "plan",
+    tool_journal(ctx, "plan",
                    params, alias, strlen(result), steps, NULL, NULL);
 
     char *ref_copy = alias ? strdup(alias) : NULL;
@@ -744,9 +744,18 @@ _Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == TOOL_REGISTRY
                "TOOL_HANDLERS count must match TOOL_REGISTRY_COUNT");
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
+    ctx->journal_done = 0;  /* reset — tool_journal() sets to 1 */
+
     /* Tool filter: check whitelist/blacklist before dispatch */
-    if (!tool_filter_allows(&ctx->tool_filter, action))
-        return tools_make_error("tool not available in this context");
+    if (!tool_filter_allows(&ctx->tool_filter, action)) {
+        char fmsg[256];
+        snprintf(fmsg, sizeof(fmsg),
+                 "'%s' is not available in this context. "
+                 "Use a different tool or approach.", action);
+        tool_result_t r = tools_make_error(fmsg);
+        tool_journal(ctx, action, params, NULL, 0, 0, fmsg, NULL);
+        return r;
+    }
 
     /* Dispatch via unified registry lookup (Fix #11).
      * TOOL_REGISTRY[i].name provides the name, TOOL_HANDLERS[i] the handler.
@@ -774,14 +783,30 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                                     "Re-call with the required parameter.",
                                     action, item->valuestring);
                                 cJSON_Delete(schema);
-                                return tools_make_error(err);
+                                tool_result_t r = tools_make_error(err);
+                                tool_journal(ctx, action, params, NULL,
+                                             0, 0, err, NULL);
+                                return r;
                             }
                         }
                     }
                     cJSON_Delete(schema);
                 }
             }
-            return TOOL_HANDLERS[i](ctx, params);
+            tool_result_t result = TOOL_HANDLERS[i](ctx, params);
+            /* Fallback: if the handler didn't call tool_journal(), journal
+             * the result here.  This catches error paths that return via
+             * tools_make_error() without explicit journaling. */
+            if (!ctx->journal_done) {
+                const char *err = NULL;
+                if (!result.success && result.meta) {
+                    cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
+                    if (ej && ej->valuestring) err = ej->valuestring;
+                }
+                tool_journal(ctx, action, params, result.store_ref,
+                             0, 0, err, NULL);
+            }
+            return result;
         }
     }
 
@@ -807,12 +832,29 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
 
         if (best_idx >= 0) {
             /* Re-check tool filter for the recovered name */
-            if (!tool_filter_allows(&ctx->tool_filter, best_name))
-                return tools_make_error("tool not available in this context");
-            fprintf(stderr, "[tool] recovered concatenated tool name: "
-                    "'%s' → '%s' (dropped suffix: '%s')\n",
+            if (!tool_filter_allows(&ctx->tool_filter, best_name)) {
+                char fmsg[256];
+                snprintf(fmsg, sizeof(fmsg),
+                         "'%s' is not available in this context. "
+                         "Use a different tool or approach.", best_name);
+                tool_result_t r = tools_make_error(fmsg);
+                tool_journal(ctx, best_name, params, NULL, 0, 0, fmsg, NULL);
+                return r;
+            }
+            nash_log("[tool] recovered concatenated tool name: "
+                    "'%s' → '%s' (dropped suffix: '%s')",
                     action, best_name, action + best_len);
-            return TOOL_HANDLERS[best_idx](ctx, params);
+            tool_result_t result = TOOL_HANDLERS[best_idx](ctx, params);
+            if (!ctx->journal_done) {
+                const char *err = NULL;
+                if (!result.success && result.meta) {
+                    cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
+                    if (ej && ej->valuestring) err = ej->valuestring;
+                }
+                tool_journal(ctx, best_name, params, result.store_ref,
+                             0, 0, err, NULL);
+            }
+            return result;
         }
     }
 
@@ -823,7 +865,9 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
         if (i > 0) pos += snprintf(msg + pos, sizeof(msg) - pos, ", ");
         pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_REGISTRY[i].name);
     }
-    return tools_make_error(msg);
+    tool_result_t r = tools_make_error(msg);
+    tool_journal(ctx, action, params, NULL, 0, 0, msg, NULL);
+    return r;
 }
 
 void tool_result_free(tool_result_t *r) {

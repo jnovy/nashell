@@ -4,6 +4,7 @@
  * See docs/design-device-control.md §3.1, §6.1 */
 
 #include "display.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,13 +59,13 @@ display_t *display_open(const display_config_t *cfg) {
     case DISPLAY_VNC:
         return display_open_vnc(cfg);
     case DISPLAY_WEBCAM:
-        fprintf(stderr, "[display] webcam backend not yet implemented (Phase 2)\n");
+        nash_log("[display] webcam backend not yet implemented (Phase 2)");
         return NULL;
     case DISPLAY_CMD:
-        fprintf(stderr, "[display] command backend not yet implemented (Phase 3)\n");
+        nash_log("[display] command backend not yet implemented (Phase 3)");
         return NULL;
     default:
-        fprintf(stderr, "[display] unknown backend type %d\n", cfg->type);
+        nash_log("[display] unknown backend type %d", cfg->type);
         return NULL;
     }
 }

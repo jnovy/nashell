@@ -115,6 +115,10 @@ typedef struct {
     int            pre_compact_warned;       /* 1 = pre-compaction warning already fired */
     /* v4 unified memory: session index for L3 search via memory_recall */
     session_index_t *session_idx;
+    /* Journal enforcement: set by tool_journal(), checked by tool_execute().
+     * If a handler returns without setting this, tool_execute() adds a
+     * fallback journal entry — so no tool call is ever invisible. */
+    int            journal_done;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

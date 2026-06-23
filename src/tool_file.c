@@ -194,7 +194,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     }
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_read", params, alias,
+    tool_journal(ctx, "file_read", params, alias,
                    display_len, display_lines, NULL, NULL);
 
     char *ref_copy = strdup(alias);
@@ -261,7 +261,7 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_write", params, alias,
+    tool_journal(ctx, "file_write", params, alias,
                    len, count_lines(content), NULL, NULL);
 
     char *ref_copy = strdup(alias);
@@ -598,7 +598,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "post_ref", post_alias);
 
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "file_edit", params, diff_alias,
+        tool_journal(ctx, "file_edit", params, diff_alias,
                        diff_len, 0, NULL, NULL);
 
         free(content);

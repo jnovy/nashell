@@ -44,7 +44,7 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         char *w_hash = store_save(ctx->store, content);
         char *w_alias = tool_register_alias(ctx, w_hash ? w_hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, w_alias,
+        tool_journal(ctx, "notes", params, w_alias,
                        strlen(content), 0, NULL, NULL);
         free(w_alias); free(w_hash);
         return tools_make_result(1, meta, NULL);
@@ -70,7 +70,7 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         char *a_hash = store_save(ctx->store, content);
         char *a_alias = tool_register_alias(ctx, a_hash ? a_hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, a_alias,
+        tool_journal(ctx, "notes", params, a_alias,
                        strlen(content), 0, NULL, NULL);
         free(a_alias); free(a_hash);
         return tools_make_result(1, meta, NULL);
@@ -95,7 +95,7 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
             char *c_hash = store_save(ctx->store, c_str ? c_str : "{}");
             char *c_alias = tool_register_alias(ctx, c_hash ? c_hash : "");
             tools_inject_thought(ctx, params);
-            journal_append(ctx->journal, ctx->react_loop, ctx->step, "notes", params, c_alias,
+            tool_journal(ctx, "notes", params, c_alias,
                            0, 0, NULL, NULL);
             free(c_alias); free(c_hash); free(c_str);
         }

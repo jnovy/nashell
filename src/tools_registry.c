@@ -103,16 +103,16 @@ const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"description\":\"Operation: add, list, done, remove, purge\"},\"text\":{\"type\":\"string\",\"description\":\"TODO text (for add)\"},\"index\":{\"type\":\"integer\",\"description\":\"Item number (for done/remove)\"}},\"required\":[\"op\"]}"},
     {"device_control",
      "Control a device's GUI (computer, phone, tablet, kiosk). Takes a screenshot "
-     "and/or performs keyboard/mouse actions. Actions: screenshot, click, "
+     "and/or performs keyboard/mouse actions. Commands: screenshot, click, "
      "double_click, type, key, scroll, drag, wait.",
      "{\"type\":\"object\",\"properties\":{"
-       "\"action\":{\"type\":\"string\",\"description\":"
-         "\"Action: screenshot, click, double_click, type, key, scroll, drag, wait\"},"
+       "\"command\":{\"type\":\"string\",\"description\":"
+         "\"Command: screenshot, click, double_click, type, key, scroll, drag, wait\"},"
        "\"x\":{\"type\":\"integer\",\"description\":\"X coordinate (pixels)\"},"
        "\"y\":{\"type\":\"integer\",\"description\":\"Y coordinate (pixels)\"},"
-       "\"text\":{\"type\":\"string\",\"description\":\"Text to type (for type action)\"},"
+       "\"text\":{\"type\":\"string\",\"description\":\"Text to type (for type command)\"},"
        "\"key_name\":{\"type\":\"string\",\"description\":"
-         "\"Key name (for key action): enter, tab, escape, ctrl+c, etc.\"},"
+         "\"Key name (for key command): enter, tab, escape, ctrl+c, etc.\"},"
        "\"button\":{\"type\":\"string\",\"description\":"
          "\"Mouse button: left, right, middle (default: left)\"},"
        "\"direction\":{\"type\":\"string\",\"description\":"
@@ -123,8 +123,8 @@ const tool_def_t TOOL_REGISTRY[] = {
        "\"end_x\":{\"type\":\"integer\",\"description\":\"Drag end X\"},"
        "\"end_y\":{\"type\":\"integer\",\"description\":\"Drag end Y\"},"
        "\"duration_ms\":{\"type\":\"integer\",\"description\":"
-         "\"Wait duration in ms (for wait action, max 10000)\"}"
-     "},\"required\":[\"action\"]}"},
+         "\"Wait duration in ms (for wait command, max 10000)\"}"
+     "},\"required\":[\"command\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };
 

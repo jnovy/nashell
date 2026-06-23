@@ -162,7 +162,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char *hash = store_save(ctx->store, line);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "todo",
+        tool_journal(ctx, "todo",
                        params, alias, strlen(line), 0, NULL, NULL);
         free(alias); free(hash);
         return tools_make_result(1, meta, NULL);
@@ -194,7 +194,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(empty)");
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "todo",
+        tool_journal(ctx, "todo",
                        params, alias, out.len, count, NULL, NULL);
 
         char *ref_copy = strdup(alias);
@@ -236,7 +236,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char *hash = store_save(ctx->store, lines[idx - 1]);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "todo",
+        tool_journal(ctx, "todo",
                        params, alias, strlen(lines[idx - 1]), 0, NULL, NULL);
         free(alias); free(hash);
         todo_free_lines(lines, count);
@@ -273,7 +273,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char *hash = store_save(ctx->store, removed);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "todo",
+        tool_journal(ctx, "todo",
                        params, alias, strlen(removed), 0, NULL, NULL);
         free(alias); free(hash); free(removed);
         todo_free_lines(lines, count);
@@ -311,7 +311,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char *hash = store_save(ctx->store, info);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "todo",
+        tool_journal(ctx, "todo",
                        params, alias, strlen(info), 0, NULL, NULL);
         free(alias); free(hash);
         todo_free_lines(lines, kept);

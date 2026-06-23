@@ -127,7 +127,7 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "grep_search", params, alias,
+    tool_journal(ctx, "grep_search", params, alias,
                    out.len, matches, NULL, NULL);
 
     char *ref_copy = strdup(alias);
@@ -257,7 +257,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "ref", alias);
 
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "glob_search", params, alias,
+        tool_journal(ctx, "glob_search", params, alias,
                        out.len, matches, NULL, NULL);
 
         char *ref_copy = strdup(alias);
@@ -365,7 +365,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "glob_search", params, alias,
+    tool_journal(ctx, "glob_search", params, alias,
                    out.len, matches, NULL, NULL);
 
     char *ref_copy = strdup(alias);

@@ -427,6 +427,10 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
         cJSON_AddStringToObject(meta, "content", analysis);
     }
 
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "image_analyze",
+                   params, alias, strlen(analysis), 0, NULL, NULL);
+
     tool_result_t result = tools_make_result(1, meta, hash);
     result.importance = 2;  /* high — user explicitly requested analysis */
 

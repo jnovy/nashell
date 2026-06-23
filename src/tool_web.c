@@ -135,7 +135,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     /* Content stored to .store/ — model reads via file_read(ref) */
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_fetch",
+    tool_journal(ctx, "web_fetch",
                    params, alias, store_len, count_lines(store_data), NULL, NULL);
 
     char *ref_copy = alias ? strdup(alias) : NULL;
@@ -178,7 +178,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
         char *err_hash = store_save(ctx->store, errmsg);
         char *err_alias = tool_register_alias(ctx, err_hash ? err_hash : "");
         tools_inject_thought(ctx, params);
-        journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
+        tool_journal(ctx, "web_search",
                        params, err_alias, strlen(errmsg), 0, errmsg, NULL);
         free(err_hash);
         free(err_alias);
@@ -197,7 +197,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
-    journal_append(ctx->journal, ctx->react_loop, ctx->step, "web_search",
+    tool_journal(ctx, "web_search",
                    params, alias, strlen(results_text), result_count, NULL, NULL);
 
     char *ref_copy = alias ? strdup(alias) : NULL;

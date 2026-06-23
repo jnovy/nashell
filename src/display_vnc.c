@@ -9,6 +9,7 @@
  * See docs/design-device-control.md §6.1 */
 
 #include "display.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,7 +85,7 @@ static int recv_exact(int fd, void *buf, size_t n) {
         ssize_t r = recv(fd, p, remaining, 0);
         if (r <= 0) {
             if (r < 0 && errno == EINTR) continue;
-            fprintf(stderr, "[display_vnc] connection closed (wanted %zu, got %zu)\n",
+            nash_log("[display_vnc] connection closed (wanted %zu, got %zu)",
                     n, n - remaining);
             return -1;
         }
@@ -102,7 +103,7 @@ static int send_exact(int fd, const void *buf, size_t n) {
         ssize_t w = send(fd, p, remaining, MSG_NOSIGNAL);
         if (w <= 0) {
             if (w < 0 && errno == EINTR) continue;
-            fprintf(stderr, "[display_vnc] send failed: %s\n", strerror(errno));
+            nash_log("[display_vnc] send failed: %s", strerror(errno));
             return -1;
         }
         p += w;
@@ -195,7 +196,7 @@ static int rfb_connect(display_t *d) {
 
     int rc = getaddrinfo(host, port_str, &hints, &res);
     if (rc != 0 || !res) {
-        fprintf(stderr, "[display_vnc] DNS lookup failed for %s: %s\n",
+        nash_log("[display_vnc] DNS lookup failed for %s: %s",
                 host, gai_strerror(rc));
         return -1;
     }
@@ -203,7 +204,7 @@ static int rfb_connect(display_t *d) {
     /* TCP connect */
     int fd = socket(res->ai_family, SOCK_STREAM, 0);
     if (fd < 0) {
-        fprintf(stderr, "[display_vnc] socket(): %s\n", strerror(errno));
+        nash_log("[display_vnc] socket(): %s", strerror(errno));
         freeaddrinfo(res);
         return -1;
     }
@@ -218,7 +219,7 @@ static int rfb_connect(display_t *d) {
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-        fprintf(stderr, "[display_vnc] connect to %s:%d failed: %s\n",
+        nash_log("[display_vnc] connect to %s:%d failed: %s",
                 host, port, strerror(errno));
         close(fd);
         freeaddrinfo(res);
@@ -248,7 +249,7 @@ static int rfb_connect(display_t *d) {
                 char *msg = malloc(msg_len + 1);
                 if (msg && recv_exact(fd, msg, msg_len) == 0) {
                     msg[msg_len] = '\0';
-                    fprintf(stderr, "[display_vnc] server rejected: %s\n", msg);
+                    nash_log("[display_vnc] server rejected: %s", msg);
                 }
                 free(msg);
             }
@@ -280,14 +281,14 @@ static int rfb_connect(display_t *d) {
         if (recv_exact(fd, challenge, 16) < 0) goto fail;
 
         if (!d->cfg.vnc_password || !d->cfg.vnc_password[0]) {
-            fprintf(stderr, "[display_vnc] server requires password but none configured\n");
+            nash_log("[display_vnc] server requires password but none configured");
             goto fail;
         }
 
         vnc_des_encrypt(d->cfg.vnc_password, challenge, response);
         if (send_exact(fd, response, 16) < 0) goto fail;
     } else {
-        fprintf(stderr, "[display_vnc] no supported security type\n");
+        nash_log("[display_vnc] no supported security type");
         goto fail;
     }
 
@@ -295,7 +296,7 @@ static int rfb_connect(display_t *d) {
     uint8_t result_buf[4];
     if (recv_exact(fd, result_buf, 4) < 0) goto fail;
     if (rd32(result_buf) != 0) {
-        fprintf(stderr, "[display_vnc] authentication failed\n");
+        nash_log("[display_vnc] authentication failed");
         goto fail;
     }
 
@@ -316,7 +317,7 @@ static int rfb_connect(display_t *d) {
         if (name) {
             if (recv_exact(fd, name, name_len) < 0) { free(name); goto fail; }
             name[name_len] = '\0';
-            fprintf(stderr, "[display_vnc] connected to %s:%d — \"%s\" (%dx%d)\n",
+            nash_log("[display_vnc] connected to %s:%d — \"%s\" (%dx%d)",
                     host, port, name, d->native_w, d->native_h);
             free(name);
         }
@@ -558,7 +559,7 @@ static int parse_tight_rect(display_t *d, int rx, int ry, int rw, int rh) {
         int zrc = inflate(zs, Z_SYNC_FLUSH);
         free(comp);
         if (zrc != Z_OK && zrc != Z_STREAM_END) {
-            fprintf(stderr, "[display_vnc] zlib inflate failed: %d\n", zrc);
+            nash_log("[display_vnc] zlib inflate failed: %d", zrc);
             free(raw);
             return -1;
         }
@@ -780,7 +781,7 @@ static char *display_capture_vnc(display_t *d) {
                     }
 
                 } else {
-                    fprintf(stderr, "[display_vnc] unsupported encoding %d, skipping rect\n", enc);
+                    nash_log("[display_vnc] unsupported encoding %d, skipping rect", enc);
                     /* Cannot skip unknown encoding — we don't know its size */
                     return NULL;
                 }
@@ -815,7 +816,7 @@ static char *display_capture_vnc(display_t *d) {
             }
 
         } else {
-            fprintf(stderr, "[display_vnc] unknown server message type %d\n", msg_type);
+            nash_log("[display_vnc] unknown server message type %d", msg_type);
             return NULL;
         }
     }
@@ -827,7 +828,7 @@ static char *display_capture_vnc(display_t *d) {
     if (!path) return NULL;
 
     if (write_jpeg(path, d->framebuffer, d->native_w, d->native_h, 85) != 0) {
-        fprintf(stderr, "[display_vnc] failed to write JPEG: %s\n", path);
+        nash_log("[display_vnc] failed to write JPEG: %s", path);
         free(path);
         return NULL;
     }

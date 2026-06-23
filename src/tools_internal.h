@@ -8,11 +8,26 @@
 #include "nash_limits.h"
 #include "str.h"
 #include "nash_log.h"
+#include "journal.h"
 
 /* ── Shared helper functions (defined in tools.c) ────────────────── */
 
 /* Inject the current step's thought into params cJSON before journal_append. */
 void tools_inject_thought(tool_ctx_t *ctx, cJSON *params);
+
+/* Journal a tool result and mark the step as journaled.
+ * Wraps journal_append with the common ctx->journal/react_loop/step prefix
+ * and sets ctx->journal_done = 1 so tool_execute() knows not to add a
+ * fallback entry.  All tool handlers should use this instead of calling
+ * journal_append directly. */
+static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
+                                cJSON *params, const char *ref,
+                                size_t size, int lines,
+                                const char *error, const char *tool_call_id) {
+    ctx->journal_done = 1;
+    journal_append(ctx->journal, ctx->react_loop, ctx->step,
+                   tool, params, ref, size, lines, error, tool_call_id);
+}
 
 /* Construct a tool_result_t from components. */
 tool_result_t tools_make_result(int success, cJSON *meta, char *ref);

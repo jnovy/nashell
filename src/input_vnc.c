@@ -9,6 +9,7 @@
  * See docs/design-device-control.md §6.2 */
 
 #include "input.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,7 +69,7 @@ static int send_exact(int fd, const void *buf, size_t n) {
         ssize_t w = send(fd, p, remaining, MSG_NOSIGNAL);
         if (w <= 0) {
             if (w < 0 && errno == EINTR) continue;
-            fprintf(stderr, "[input_vnc] send failed: %s\n", strerror(errno));
+            nash_log("[input_vnc] send failed: %s", strerror(errno));
             return -1;
         }
         p += w;
@@ -160,7 +161,7 @@ static uint32_t keyname_to_keysym(const char *name) {
     if (name[0] && !name[1])
         return (uint32_t)(unsigned char)name[0];
 
-    fprintf(stderr, "[input_vnc] unknown key name: %s\n", name);
+    nash_log("[input_vnc] unknown key name: %s", name);
     return 0;
 }
 
@@ -308,7 +309,7 @@ static int vnc_scroll(input_t *in, int x, int y,
     else if (strcasecmp(direction, "right") == 0)
         btn = VNC_BUTTON7;
     else {
-        fprintf(stderr, "[input_vnc] unknown scroll direction: %s\n", direction);
+        nash_log("[input_vnc] unknown scroll direction: %s", direction);
         return -1;
     }
 

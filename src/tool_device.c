@@ -52,7 +52,7 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
         cfg->device_control.screenshot_delay_ms);
 
     if (!g_device_session) {
-        fprintf(stderr, "[tool_device] failed to open device session\n");
+        nash_log("[tool_device] failed to open device session");
     } else {
         /* Auto-detect dimensions from display backend (VNC ServerInit, etc.)
          * and set input coordinate mapping accordingly. */
@@ -61,9 +61,9 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
         if (fw > 0 && fh > 0) {
             /* Model sees native coords directly (no downscaling yet) */
             input_set_dimensions(g_device_session->input, fw, fh, fw, fh);
-            fprintf(stderr, "[tool_device] device session ready (%dx%d)\n", fw, fh);
+            nash_log("[tool_device] device session ready (%dx%d)", fw, fh);
         } else {
-            fprintf(stderr, "[tool_device] device session ready (dimensions unknown)\n");
+            nash_log("[tool_device] device session ready (dimensions unknown)");
         }
     }
 
@@ -102,7 +102,7 @@ static tool_result_t do_click(device_session_t *s, cJSON *params, int double_cli
     cJSON *jx = cJSON_GetObjectItem(params, "x");
     cJSON *jy = cJSON_GetObjectItem(params, "y");
     if (!jx || !jy)
-        return tools_make_error("click requires x and y coordinates");
+        return tools_make_error("click requires 'x' and 'y' coordinates (integer pixel values)");
 
     int x = jx->valueint;
     int y = jy->valueint;
@@ -137,7 +137,7 @@ static tool_result_t do_click(device_session_t *s, cJSON *params, int double_cli
 static tool_result_t do_type_text(device_session_t *s, cJSON *params) {
     cJSON *jtext = cJSON_GetObjectItem(params, "text");
     if (!jtext || !jtext->valuestring)
-        return tools_make_error("type requires 'text' parameter");
+        return tools_make_error("type requires 'text' parameter (the string to type into the focused element)");
 
     int rc = input_type(s->input, jtext->valuestring);
     if (rc != 0) return tools_make_error("type failed");
@@ -158,12 +158,12 @@ static tool_result_t do_type_text(device_session_t *s, cJSON *params) {
 static tool_result_t do_key(device_session_t *s, cJSON *params) {
     cJSON *jkey = cJSON_GetObjectItem(params, "key_name");
     if (!jkey || !jkey->valuestring)
-        return tools_make_error("key requires 'key_name' parameter");
+        return tools_make_error("key requires 'key_name' parameter (e.g. enter, tab, escape, backspace, ctrl+c, alt+tab)");
 
     int rc = input_key(s->input, jkey->valuestring);
     if (rc != 0) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "key '%s' failed", jkey->valuestring);
+        snprintf(msg, sizeof(msg), "key '%s' failed — check spelling. Common keys: enter, tab, escape, backspace, delete, space, ctrl+c, alt+tab, super", jkey->valuestring);
         return tools_make_error(msg);
     }
 
@@ -188,7 +188,7 @@ static tool_result_t do_scroll(device_session_t *s, cJSON *params) {
 
     cJSON *jdir = cJSON_GetObjectItem(params, "direction");
     if (!jdir || !jdir->valuestring)
-        return tools_make_error("scroll requires 'direction' parameter");
+        return tools_make_error("scroll requires 'direction' parameter (up, down, left, right)");
 
     cJSON *jamt = cJSON_GetObjectItem(params, "amount");
     int amount = jamt ? jamt->valueint : 3;
@@ -216,7 +216,7 @@ static tool_result_t do_drag(device_session_t *s, cJSON *params) {
     cJSON *jex = cJSON_GetObjectItem(params, "end_x");
     cJSON *jey = cJSON_GetObjectItem(params, "end_y");
     if (!jsx || !jsy || !jex || !jey)
-        return tools_make_error("drag requires start_x, start_y, end_x, end_y");
+        return tools_make_error("drag requires start_x, start_y, end_x, end_y (integer pixel coordinates)");
 
     cJSON *jbtn = cJSON_GetObjectItem(params, "button");
     const char *button = (jbtn && jbtn->valuestring) ? jbtn->valuestring : "left";
@@ -261,10 +261,14 @@ static tool_result_t do_wait(device_session_t *s, cJSON *params) {
 tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     tools_inject_thought(ctx, params);
 
-    /* Get the action */
-    cJSON *jaction = cJSON_GetObjectItem(params, "action");
+    /* Get the command (renamed from "action" to avoid collision with
+     * the tool-routing "action" key in the unified JSON object —
+     * see provider_anthropic.c build_unified) */
+    cJSON *jaction = cJSON_GetObjectItem(params, "command");
     if (!jaction || !jaction->valuestring)
-        return tools_make_error("device_control requires an 'action' parameter");
+        return tools_make_error(
+            "device_control requires a 'command' parameter "
+            "(screenshot, click, double_click, type, key, scroll, drag, wait)");
     const char *action = jaction->valuestring;
 
     /* Check if device control is configured */
@@ -293,35 +297,56 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error(msg);
     }
 
-    /* Dispatch action */
+    /* Dispatch command and capture result for journaling */
+    tool_result_t tr;
     if (strcmp(action, "screenshot") == 0)
-        return do_screenshot(s);
-    if (strcmp(action, "click") == 0)
-        return do_click(s, params, 0);
-    if (strcmp(action, "double_click") == 0)
-        return do_click(s, params, 1);
-    if (strcmp(action, "type") == 0)
-        return do_type_text(s, params);
-    if (strcmp(action, "key") == 0)
-        return do_key(s, params);
-    if (strcmp(action, "scroll") == 0)
-        return do_scroll(s, params);
-    if (strcmp(action, "drag") == 0)
-        return do_drag(s, params);
-    if (strcmp(action, "wait") == 0)
-        return do_wait(s, params);
-
-    /* Actions that will be implemented in later phases */
-    if (strcmp(action, "screenshot_diff") == 0 ||
-        strcmp(action, "screenshot_region") == 0 ||
-        strcmp(action, "find") == 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg),
+        tr = do_screenshot(s);
+    else if (strcmp(action, "click") == 0)
+        tr = do_click(s, params, 0);
+    else if (strcmp(action, "double_click") == 0)
+        tr = do_click(s, params, 1);
+    else if (strcmp(action, "type") == 0)
+        tr = do_type_text(s, params);
+    else if (strcmp(action, "key") == 0)
+        tr = do_key(s, params);
+    else if (strcmp(action, "scroll") == 0)
+        tr = do_scroll(s, params);
+    else if (strcmp(action, "drag") == 0)
+        tr = do_drag(s, params);
+    else if (strcmp(action, "wait") == 0)
+        tr = do_wait(s, params);
+    else if (strcmp(action, "screenshot_diff") == 0 ||
+             strcmp(action, "screenshot_region") == 0 ||
+             strcmp(action, "find") == 0) {
+        char emsg[128];
+        snprintf(emsg, sizeof(emsg),
                  "'%s' action requires the perception pipeline (Phase 2)", action);
-        return tools_make_error(msg);
+        tr = tools_make_error(emsg);
+    } else {
+        char emsg[256];
+        snprintf(emsg, sizeof(emsg),
+                 "unknown device_control command: '%s'. "
+                 "Valid commands: screenshot, click, double_click, type, key, scroll, drag, wait",
+                 action);
+        tr = tools_make_error(emsg);
     }
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "unknown device_control action: %s", action);
-    return tools_make_error(msg);
+    /* Journal the result so it appears in reactRX.md */
+    {
+        char *meta_str = tr.meta ? cJSON_PrintUnformatted(tr.meta) : NULL;
+        char *hash = store_save(ctx->store, meta_str ? meta_str : "{}");
+        char *alias = tool_register_alias(ctx, hash ? hash : "");
+        const char *err = NULL;
+        if (!tr.success && tr.meta) {
+            cJSON *ej = cJSON_GetObjectItem(tr.meta, "error");
+            if (ej && ej->valuestring) err = ej->valuestring;
+        }
+        tool_journal(ctx, "device_control", params, alias,
+                    meta_str ? strlen(meta_str) : 0, 0, err, NULL);
+        free(alias);
+        free(hash);
+        free(meta_str);
+    }
+
+    return tr;
 }

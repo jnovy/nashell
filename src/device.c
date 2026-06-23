@@ -6,6 +6,7 @@
  * See docs/design-device-control.md §3.4 */
 
 #include "device.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -20,7 +21,7 @@ device_session_t *device_session_open(const display_config_t *dcfg,
     /* Open display backend */
     s->display = display_open(dcfg);
     if (!s->display) {
-        fprintf(stderr, "[device] failed to open display backend\n");
+        nash_log("[device] failed to open display backend");
         free(s);
         return NULL;
     }
@@ -28,7 +29,7 @@ device_session_t *device_session_open(const display_config_t *dcfg,
     /* Open input backend */
     s->input = input_open(icfg);
     if (!s->input) {
-        fprintf(stderr, "[device] failed to open input backend\n");
+        nash_log("[device] failed to open input backend");
         display_close(s->display);
         free(s);
         return NULL;

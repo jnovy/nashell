@@ -4,6 +4,7 @@
  * See docs/design-device-control.md §3.2 */
 
 #include "input.h"
+#include "nash_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,13 +37,13 @@ input_t *input_open(const input_config_t *cfg) {
     case INPUT_VNC:
         return input_open_vnc(cfg);
     case INPUT_HID_BRIDGE:
-        fprintf(stderr, "[input] HID bridge backend not yet implemented (Phase 2)\n");
+        nash_log("[input] HID bridge backend not yet implemented (Phase 2)");
         return NULL;
     case INPUT_CMD:
-        fprintf(stderr, "[input] command backend not yet implemented (Phase 3)\n");
+        nash_log("[input] command backend not yet implemented (Phase 3)");
         return NULL;
     default:
-        fprintf(stderr, "[input] unknown backend type %d\n", cfg->type);
+        nash_log("[input] unknown backend type %d", cfg->type);
         return NULL;
     }
 }
