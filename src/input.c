@@ -52,6 +52,15 @@ void input_vnc_set_sock_fd(input_t *in, int sock_fd) {
         in->vnc_client = (void *)(intptr_t)sock_fd;
 }
 
+void input_set_dimensions(input_t *in, int native_w, int native_h,
+                          int model_w, int model_h) {
+    if (!in) return;
+    in->cfg.native_width  = native_w;
+    in->cfg.native_height = native_h;
+    in->cfg.model_width   = model_w;
+    in->cfg.model_height  = model_h;
+}
+
 int input_key(input_t *in, const char *keyname) {
     if (!in || !in->key_fn) return -1;
     return in->key_fn(in, keyname);

@@ -388,8 +388,6 @@ typedef struct {
         char  *webcam_device;
         char  *calibration_file;
         char  *capture_cmd;
-        int    screen_width;      /* target native resolution */
-        int    screen_height;
         char  *screenshot_dir;    /* default: /tmp/device_screenshots */
 
         /* Input backend: 0=VNC, 1=HID bridge, 2=command */

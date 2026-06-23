@@ -464,8 +464,6 @@ config_t *config_load(const char *path) {
         cfg->device_control.webcam_device = toml_str(dc, "webcam_device");
         cfg->device_control.calibration_file = toml_str(dc, "calibration_file");
         cfg->device_control.capture_cmd = toml_str(dc, "capture_cmd");
-        cfg->device_control.screen_width = toml_int(dc, "screen_width", 1920);
-        cfg->device_control.screen_height = toml_int(dc, "screen_height", 1080);
         cfg->device_control.screenshot_dir = toml_str(dc, "screenshot_dir");
 
         /* Input backend */

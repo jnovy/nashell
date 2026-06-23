@@ -32,8 +32,6 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
     dcfg.webcam_device = cfg->device_control.webcam_device;
     dcfg.calibration_file = cfg->device_control.calibration_file;
     dcfg.capture_cmd = cfg->device_control.capture_cmd;
-    dcfg.width = cfg->device_control.screen_width;
-    dcfg.height = cfg->device_control.screen_height;
     dcfg.screenshot_dir = cfg->device_control.screenshot_dir;
 
     /* Build input config */
@@ -44,12 +42,8 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
     icfg.key_cmd_fmt = cfg->device_control.key_cmd;
     icfg.type_cmd_fmt = cfg->device_control.type_cmd;
     icfg.click_cmd_fmt = cfg->device_control.click_cmd;
-    /* Native and model dimensions — for VNC, these are the same
-     * (native = VNC framebuffer, model = same). */
-    icfg.native_width = cfg->device_control.screen_width;
-    icfg.native_height = cfg->device_control.screen_height;
-    icfg.model_width = cfg->device_control.screen_width;
-    icfg.model_height = cfg->device_control.screen_height;
+    /* Dimensions auto-detected from display backend after open.
+     * input_set_dimensions() called below with VNC framebuffer size. */
 
     g_device_session = device_session_open(
         &dcfg, &icfg,
@@ -60,11 +54,16 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
     if (!g_device_session) {
         fprintf(stderr, "[tool_device] failed to open device session\n");
     } else {
-        /* For VNC: update model dimensions from actual framebuffer */
-        int fw, fh;
-        if (display_get_dimensions(g_device_session->display, &fw, &fh) == 0) {
-            /* The model sees native VNC coordinates directly */
+        /* Auto-detect dimensions from display backend (VNC ServerInit, etc.)
+         * and set input coordinate mapping accordingly. */
+        int fw = 0, fh = 0;
+        display_get_dimensions(g_device_session->display, &fw, &fh);
+        if (fw > 0 && fh > 0) {
+            /* Model sees native coords directly (no downscaling yet) */
+            input_set_dimensions(g_device_session->input, fw, fh, fw, fh);
             fprintf(stderr, "[tool_device] device session ready (%dx%d)\n", fw, fh);
+        } else {
+            fprintf(stderr, "[tool_device] device session ready (dimensions unknown)\n");
         }
     }
 

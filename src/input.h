@@ -52,6 +52,13 @@ input_t *input_open(const input_config_t *cfg);
  * Must be called after input_open() for INPUT_VNC type. */
 void input_vnc_set_sock_fd(input_t *in, int sock_fd);
 
+/* Update coordinate mapping dimensions (auto-detected from display).
+ * Called after display_open() to set native resolution from VNC/webcam.
+ * model_w/model_h = coordinate space the LLM sees (same as native when
+ * no downscaling is applied). */
+void input_set_dimensions(input_t *in, int native_w, int native_h,
+                          int model_w, int model_h);
+
 /* Keyboard actions */
 int input_key(input_t *in, const char *keyname);            /* press+release */
 int input_combo(input_t *in, const char **keys, int nkeys); /* key combination */
