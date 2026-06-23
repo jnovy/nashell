@@ -807,9 +807,23 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
             if (usage) {
                 cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
                 if (it) {
-                    st->stats->prompt_tokens = it->valueint;
-                    nash_log("[provider/sse] message_start: input_tokens=%d (valueint=%d, valuedouble=%.0f)",
-                             st->stats->prompt_tokens, it->valueint, it->valuedouble);
+                    /* Anthropic prompt caching: input_tokens only counts uncached tokens.
+                     * cache_read_input_tokens = tokens served from cache,
+                     * cache_creation_input_tokens = tokens written to new cache entry.
+                     * Store the breakdown, then set prompt_tokens = total so all
+                     * consumers (TUI, react calibration, context %) see the real count. */
+                    cJSON *cr = cJSON_GetObjectItem(usage, "cache_read_input_tokens");
+                    if (cr) st->stats->cache_read_tokens = cr->valueint;
+                    cJSON *cc = cJSON_GetObjectItem(usage, "cache_creation_input_tokens");
+                    if (cc) st->stats->cache_creation_tokens = cc->valueint;
+                    st->stats->prompt_tokens = it->valueint
+                                             + st->stats->cache_read_tokens
+                                             + st->stats->cache_creation_tokens;
+                    nash_log("[provider/sse] message_start: input_tokens=%d "
+                             "(uncached=%d cache_read=%d cache_create=%d)",
+                             st->stats->prompt_tokens, it->valueint,
+                             st->stats->cache_read_tokens,
+                             st->stats->cache_creation_tokens);
                 } else {
                     char *usage_str = cJSON_PrintUnformatted(usage);
                     nash_log("[provider/sse] message_start: no input_tokens in usage! usage=%s",
@@ -1518,10 +1532,27 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
          * other providers may not report it, in which case it stays 0. */
     }
 
-    if (stats)
-        nash_log("[provider/complete] final stats: prompt_tokens=%d completion_tokens=%d pp=%.1f gen=%.1f",
-                 stats->prompt_tokens, stats->completion_tokens,
-                 stats->prompt_per_second, stats->predicted_per_second);
+    if (stats) {
+        if (stats->cache_read_tokens || stats->cache_creation_tokens) {
+            /* prompt_tokens already includes cached tokens (set in SSE handler).
+             * Compute uncached = total - cache_read - cache_creation. */
+            int uncached = stats->prompt_tokens
+                         - stats->cache_read_tokens
+                         - stats->cache_creation_tokens;
+            nash_log("[provider/complete] final stats: prompt_tokens=%d "
+                     "(uncached=%d cache_read=%d cache_create=%d) "
+                     "completion_tokens=%d pp=%.1f gen=%.1f",
+                     stats->prompt_tokens, uncached,
+                     stats->cache_read_tokens, stats->cache_creation_tokens,
+                     stats->completion_tokens,
+                     stats->prompt_per_second, stats->predicted_per_second);
+        } else {
+            nash_log("[provider/complete] final stats: prompt_tokens=%d "
+                     "completion_tokens=%d pp=%.1f gen=%.1f",
+                     stats->prompt_tokens, stats->completion_tokens,
+                     stats->prompt_per_second, stats->predicted_per_second);
+        }
+    }
 
     free(req_body);
     result = build_sse_result(&st, chat);

@@ -634,8 +634,16 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
         if (usage) {
             cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
             cJSON *ot = cJSON_GetObjectItem(usage, "output_tokens");
-            if (it) stats->prompt_tokens = it->valueint;
             if (ot) stats->completion_tokens = ot->valueint;
+            /* Anthropic prompt caching: input_tokens = uncached only.
+             * Add cache_read + cache_creation to get the true total. */
+            cJSON *cr = cJSON_GetObjectItem(usage, "cache_read_input_tokens");
+            if (cr) stats->cache_read_tokens = cr->valueint;
+            cJSON *cc = cJSON_GetObjectItem(usage, "cache_creation_input_tokens");
+            if (cc) stats->cache_creation_tokens = cc->valueint;
+            if (it) stats->prompt_tokens = it->valueint
+                                         + stats->cache_read_tokens
+                                         + stats->cache_creation_tokens;
         }
     }
 

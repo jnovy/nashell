@@ -207,6 +207,8 @@ void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content);
 typedef struct {
     int    prompt_tokens;
     int    completion_tokens;
+    int    cache_read_tokens;      /* Anthropic: tokens served from prompt cache */
+    int    cache_creation_tokens;  /* Anthropic: tokens written to prompt cache */
     double prompt_per_second;
     double predicted_per_second;
     int    draft_n;
