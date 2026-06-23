@@ -376,6 +376,35 @@ typedef struct {
     int    profile_enable_pruning;     /* -1 = not set */
     int    profile_enable_compaction;  /* -1 = not set */
     int    profile_enable_scoring;     /* -1 = not set */
+
+    /* [device_control] — GUI control via VNC/webcam/HID bridge.
+     * See docs/design-device-control.md */
+    struct {
+        /* Display backend: 0=VNC, 1=webcam, 2=command */
+        int    display_type;
+        char  *vnc_host;
+        int    vnc_port;          /* default 5900 */
+        char  *vnc_password;
+        char  *webcam_device;
+        char  *calibration_file;
+        char  *capture_cmd;
+        int    screen_width;      /* target native resolution */
+        int    screen_height;
+        char  *screenshot_dir;    /* default: /tmp/device_screenshots */
+
+        /* Input backend: 0=VNC, 1=HID bridge, 2=command */
+        int    input_type;
+        char  *serial_port;
+        int    serial_baud;       /* default 115200 */
+        char  *key_cmd;
+        char  *type_cmd;
+        char  *click_cmd;
+
+        /* Safety */
+        int    max_actions;       /* hard limit per react loop (default 50) */
+        int    action_delay_ms;   /* pause after each action (default 500) */
+        int    screenshot_delay_ms; /* wait before screenshot (default 300) */
+    } device_control;
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.

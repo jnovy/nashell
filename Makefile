@@ -8,7 +8,10 @@ else
   ORT_LDFLAGS = -lonnxruntime
 endif
 
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm $(ORT_LDFLAGS)
+# VNC backend uses direct RFB protocol (no external VNC library).
+# Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
+#           OpenSSL/libcrypto (VNC DES authentication — already linked).
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz $(ORT_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -50,7 +53,13 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/searxng.c \
           src/banner.c \
           src/commands.c \
-          src/repomap.c
+          src/repomap.c \
+          src/display.c \
+          src/display_vnc.c \
+          src/input.c \
+          src/input_vnc.c \
+          src/device.c \
+          src/tool_device.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 

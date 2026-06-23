@@ -447,6 +447,47 @@ config_t *config_load(const char *path) {
         if (d.ok) cfg->telegram_chat_id = (long long)d.u.i;
     }
 
+    /* [device_control] — GUI control via VNC/webcam/HID bridge */
+    toml_table_t *dc = toml_table_in(root, "device_control");
+    if (dc) {
+        /* Display backend */
+        char *disp = toml_str(dc, "display");
+        if (disp) {
+            if (strcmp(disp, "webcam") == 0) cfg->device_control.display_type = 1;
+            else if (strcmp(disp, "command") == 0) cfg->device_control.display_type = 2;
+            else cfg->device_control.display_type = 0;  /* vnc (default) */
+            free(disp);
+        }
+        cfg->device_control.vnc_host = toml_str(dc, "vnc_host");
+        cfg->device_control.vnc_port = toml_int(dc, "vnc_port", 5900);
+        cfg->device_control.vnc_password = toml_str(dc, "vnc_password");
+        cfg->device_control.webcam_device = toml_str(dc, "webcam_device");
+        cfg->device_control.calibration_file = toml_str(dc, "calibration_file");
+        cfg->device_control.capture_cmd = toml_str(dc, "capture_cmd");
+        cfg->device_control.screen_width = toml_int(dc, "screen_width", 1920);
+        cfg->device_control.screen_height = toml_int(dc, "screen_height", 1080);
+        cfg->device_control.screenshot_dir = toml_str(dc, "screenshot_dir");
+
+        /* Input backend */
+        char *inp = toml_str(dc, "input");
+        if (inp) {
+            if (strcmp(inp, "hid") == 0) cfg->device_control.input_type = 1;
+            else if (strcmp(inp, "command") == 0) cfg->device_control.input_type = 2;
+            else cfg->device_control.input_type = 0;  /* vnc (default) */
+            free(inp);
+        }
+        cfg->device_control.serial_port = toml_str(dc, "serial_port");
+        cfg->device_control.serial_baud = toml_int(dc, "serial_baud", 115200);
+        cfg->device_control.key_cmd = toml_str(dc, "key_cmd");
+        cfg->device_control.type_cmd = toml_str(dc, "type_cmd");
+        cfg->device_control.click_cmd = toml_str(dc, "click_cmd");
+
+        /* Safety */
+        cfg->device_control.max_actions = toml_int(dc, "max_actions", 50);
+        cfg->device_control.action_delay_ms = toml_int(dc, "action_delay_ms", 500);
+        cfg->device_control.screenshot_delay_ms = toml_int(dc, "screenshot_delay_ms", 300);
+    }
+
     /* [thinking] — overrides old [client].thinking if both present */
     toml_table_t *thinking = toml_table_in(root, "thinking");
     if (thinking) {
@@ -529,6 +570,17 @@ void config_free(config_t *cfg) {
     free(cfg->searxng_url);
     free(cfg->telegram_bot_token);
     free(cfg->belief_entropy.anchor_question);
+    /* [device_control] strings */
+    free(cfg->device_control.vnc_host);
+    free(cfg->device_control.vnc_password);
+    free(cfg->device_control.webcam_device);
+    free(cfg->device_control.calibration_file);
+    free(cfg->device_control.capture_cmd);
+    free(cfg->device_control.screenshot_dir);
+    free(cfg->device_control.serial_port);
+    free(cfg->device_control.key_cmd);
+    free(cfg->device_control.type_cmd);
+    free(cfg->device_control.click_cmd);
     /* Free auto-generated max_tools allow list (owned by cfg, not profile) */
     if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
         for (int i = 0; i < cfg->n_profile_tools_allow; i++)
