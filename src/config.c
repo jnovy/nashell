@@ -149,8 +149,9 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->tool_retry_limit <= 0)       cfg->tool_retry_limit = 3;
     /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
     /* max_react_steps: -1 = unlimited (default). Positive = hard limit.
-     * TOML parsing uses -1 as the default sentinel, which is also the
-     * unlimited value, so no replacement needed for negative sentinels. */
+     * Backward compat: old configs had 0 = unlimited. Migrate 0 → -1
+     * so the loop condition (max_steps < 0 || step < max_steps) works. */
+    if (cfg->max_react_steps == 0)        cfg->max_react_steps = -1;
 
 
     /* [memory_belief_entropy] defaults — sentinel-guarded like other sections.
