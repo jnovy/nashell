@@ -111,6 +111,12 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
         url && url->valuestring)
         return url->valuestring;
+    if (strcmp(tool, "shell_exec") == 0) {
+        cJSON *cmd = cJSON_GetObjectItem(params, "command");
+        if (cmd && cmd->valuestring)
+            return cmd->valuestring;
+        return "";
+    }
     /* Context entry: show message count */
     if (strcmp(tool, "context") == 0) {
         cJSON *nm = cJSON_GetObjectItem(params, "n_messages");
@@ -160,11 +166,13 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         static char generic_desc[512];
         int pos = 0;
 
-        /* First pass: count visible (non-thought, non-default) params */
+        /* First pass: count visible (non-thought, non-action, non-default) params */
         int n_visible = 0;
         cJSON *child = params->child;
         while (child) {
-            if (child->string && strcmp(child->string, "thought") != 0) {
+            if (child->string &&
+                strcmp(child->string, "thought") != 0 &&
+                strcmp(child->string, "action") != 0) {
                 /* Skip false booleans (default values) */
                 if (!(cJSON_IsBool(child) && !cJSON_IsTrue(child)))
                     n_visible++;
@@ -178,6 +186,11 @@ static const char *extract_desc(const char *tool, cJSON *params) {
             if (!child->string) { child = child->next; continue; }
             /* Skip thought — rendered separately */
             if (strcmp(child->string, "thought") == 0) {
+                child = child->next;
+                continue;
+            }
+            /* Skip action — redundant with tool name column */
+            if (strcmp(child->string, "action") == 0) {
                 child = child->next;
                 continue;
             }

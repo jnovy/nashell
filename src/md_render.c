@@ -1069,6 +1069,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             while (*htext == ' ') htext++;
             int hlen = (int)strlen(htext);
             int pair = (level == 1) ? C_SUCCESS : C_FOCUS;
+            int lines_consumed = 1;
 
             /* Track link in heading (e.g., ### [text](uri)) */
             md_link_t *head_lk = NULL;
@@ -1138,13 +1139,25 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         render_segs_on_line(win, vis_line, 0, segs, n, cols);
                     }
                 } else {
-                    /* No link — render with inline formatting as before */
+                    /* No link — render with inline formatting + word wrapping */
                     inline_seg_t segs[MAX_INLINE_SEGS];
                     int n = parse_inline(htext, hlen, segs, MAX_INLINE_SEGS);
                     apply_attr_to_segs(segs, n, COLOR_PAIR(pair) | A_BOLD);
-                    render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                    int total_dcols = 0;
+                    for (int k = 0; k < n; k++)
+                        total_dcols += seg_display_cols(segs[k].text, segs[k].len);
+                    if (total_dcols <= cols) {
+                        render_segs_on_line(win, vis_line, 0, segs, n, cols);
+                    } else {
+                        lines_consumed = render_segs_wrapped(
+                            win, vis_line, 0, segs, n, cols);
+                    }
                 }
+            } else {
+                /* Off-screen: count wrapped lines for accurate render_line tracking */
+                lines_consumed = count_wrapped_lines(htext, hlen, cols);
             }
+            advance_render_line(&render_line, lines_consumed);
 
         } else if (strncmp(line_buf, "---", 3) == 0) {
             /* Horizontal rule */

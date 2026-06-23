@@ -457,8 +457,12 @@ config_t *config_load(const char *path) {
                 cfg->thinking.mode = THINKING_ON;
             else if (strcmp(mode_str, "edrm") == 0)
                 cfg->thinking.mode = THINKING_EDRM;
-            else  /* "no", "off", or anything else */
+            else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
+            else {
+                fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+                cfg->thinking.mode = THINKING_ON;
+            }
             free(mode_str);
         }
         cfg->thinking.probe_tokens     = toml_int(thinking, "probe_tokens", 0);
@@ -559,8 +563,12 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
             tc->mode = THINKING_ON;
         else if (strcmp(mode_str, "edrm") == 0)
             tc->mode = THINKING_EDRM;
-        else
+        else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
             tc->mode = THINKING_OFF;
+        else {
+            fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+            tc->mode = THINKING_ON;
+        }
         free(mode_str);
     }
     int b = toml_int(tbl, "budget", INT_MIN);
@@ -1245,8 +1253,12 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 cfg->thinking.mode = THINKING_ON;
             else if (strcmp(mode_str, "edrm") == 0)
                 cfg->thinking.mode = THINKING_EDRM;
-            else
+            else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
+            else {
+                fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+                cfg->thinking.mode = THINKING_ON;
+            }
             free(mode_str);
         }
         int b = toml_int(thinking, "budget", INT_MIN);
