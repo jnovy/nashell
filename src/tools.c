@@ -753,7 +753,12 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                  "'%s' is not available in this context. "
                  "Use a different tool or approach.", action);
         tool_result_t r = tools_make_error(fmsg);
-        tool_journal(ctx, action, params, NULL, 0, 0, fmsg, NULL);
+        /* Store error so failed steps get clickable links in reactRX.md */
+        char *fhash = store_save(ctx->store, fmsg);
+        char *falias = fhash ? tool_register_alias(ctx, fhash) : NULL;
+        tool_journal(ctx, action, params, falias, 0, 0, fmsg, NULL);
+        free(fhash);
+        free(falias);
         return r;
     }
 
@@ -784,8 +789,13 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                                     action, item->valuestring);
                                 cJSON_Delete(schema);
                                 tool_result_t r = tools_make_error(err);
-                                tool_journal(ctx, action, params, NULL,
+                                /* Store error so failed steps get clickable links in reactRX.md */
+                                char *ehash = store_save(ctx->store, err);
+                                char *ealias = ehash ? tool_register_alias(ctx, ehash) : NULL;
+                                tool_journal(ctx, action, params, ealias,
                                              0, 0, err, NULL);
+                                free(ehash);
+                                free(ealias);
                                 return r;
                             }
                         }
@@ -803,8 +813,19 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                     cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
                     if (ej && ej->valuestring) err = ej->valuestring;
                 }
-                tool_journal(ctx, action, params, result.store_ref,
-                             0, 0, err, NULL);
+                /* Store error text so failed steps get clickable links
+                 * in reactRX.md (matches tool_web.c precedent). */
+                const char *ref = result.store_ref;
+                char *fb_hash = NULL, *fb_alias = NULL;
+                if (!ref && err) {
+                    fb_hash = store_save(ctx->store, err);
+                    fb_alias = fb_hash ? tool_register_alias(ctx, fb_hash)
+                                       : NULL;
+                    if (fb_alias) ref = fb_alias;
+                }
+                tool_journal(ctx, action, params, ref, 0, 0, err, NULL);
+                free(fb_hash);
+                free(fb_alias);
             }
             return result;
         }
@@ -838,7 +859,11 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                          "'%s' is not available in this context. "
                          "Use a different tool or approach.", best_name);
                 tool_result_t r = tools_make_error(fmsg);
-                tool_journal(ctx, best_name, params, NULL, 0, 0, fmsg, NULL);
+                char *fh2 = store_save(ctx->store, fmsg);
+                char *fa2 = fh2 ? tool_register_alias(ctx, fh2) : NULL;
+                tool_journal(ctx, best_name, params, fa2, 0, 0, fmsg, NULL);
+                free(fh2);
+                free(fa2);
                 return r;
             }
             nash_log("[tool] recovered concatenated tool name: "
@@ -851,8 +876,16 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                     cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
                     if (ej && ej->valuestring) err = ej->valuestring;
                 }
-                tool_journal(ctx, best_name, params, result.store_ref,
-                             0, 0, err, NULL);
+                const char *ref = result.store_ref;
+                char *fb_h2 = NULL, *fb_a2 = NULL;
+                if (!ref && err) {
+                    fb_h2 = store_save(ctx->store, err);
+                    fb_a2 = fb_h2 ? tool_register_alias(ctx, fb_h2) : NULL;
+                    if (fb_a2) ref = fb_a2;
+                }
+                tool_journal(ctx, best_name, params, ref, 0, 0, err, NULL);
+                free(fb_h2);
+                free(fb_a2);
             }
             return result;
         }
@@ -866,7 +899,11 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
         pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_REGISTRY[i].name);
     }
     tool_result_t r = tools_make_error(msg);
-    tool_journal(ctx, action, params, NULL, 0, 0, msg, NULL);
+    char *uh = store_save(ctx->store, msg);
+    char *ua = uh ? tool_register_alias(ctx, uh) : NULL;
+    tool_journal(ctx, action, params, ua, 0, 0, msg, NULL);
+    free(uh);
+    free(ua);
     return r;
 }
 
