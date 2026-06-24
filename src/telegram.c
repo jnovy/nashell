@@ -663,6 +663,7 @@ int md_has_table(const char *md) {
                  * to confirm it's a table row, not just a shell pipe */
                 const char *r = q + 1;
                 while (*r && *r != '\n') {
+                    if (*r == '\\' && *(r + 1) == '|') { r += 2; continue; } /* skip \| */
                     if (*r == '|') return 1;  /* at least two |'s → table */
                     r++;
                 }
@@ -692,9 +693,29 @@ static int is_separator_row(const char *p) {
     return has_dash;
 }
 
+/* Find next unescaped '|' starting at p. Returns NULL if not found. */
+static char *find_unescaped_pipe(char *p) {
+    for (; *p; p++) {
+        if (*p == '\\' && *(p + 1) == '|') { p++; continue; } /* skip \| */
+        if (*p == '|') return p;
+    }
+    return NULL;
+}
+
+/* Unescape \| → | in-place. */
+static void unescape_pipes(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '\\' && *(r + 1) == '|') { *w++ = '|'; r += 2; }
+        else *w++ = *r++;
+    }
+    *w = '\0';
+}
+
 /* Parse pipe-delimited cells from a table row.
  * Returns number of cells parsed. Cells are trimmed and written to cells[].
- * Each cell points into 'buf' (a mutable copy the caller provides). */
+ * Each cell points into 'buf' (a mutable copy the caller provides).
+ * Escaped pipes (\|) are treated as literal pipe characters, not delimiters. */
 static int parse_table_cells(const char *line, const char *line_end,
                              char *buf, char **cells, int max_cells) {
     /* Copy line into buf */
@@ -710,8 +731,8 @@ static int parse_table_cells(const char *line, const char *line_end,
     if (*p == '|') p++;
 
     while (*p && ncells < max_cells) {
-        /* Find next '|' or end */
-        char *sep = strchr(p, '|');
+        /* Find next unescaped '|' or end */
+        char *sep = find_unescaped_pipe(p);
         char *cell_end = sep ? sep : (buf + len);
 
         /* Trim trailing whitespace */
@@ -725,6 +746,7 @@ static int parse_table_cells(const char *line, const char *line_end,
         /* Skip empty trailing cell (from trailing |) */
         if (*p == '\0' && sep && !*(sep + 1)) break;
         if (*p != '\0' || sep) {
+            unescape_pipes(p);
             cells[ncells++] = p;
         }
 
@@ -755,10 +777,11 @@ char *md_tables_to_bullets(const char *md) {
         while (*q == ' ' || *q == '\t') q++;
 
         if (*q == '|') {
-            /* Might be a table — look for second | on same line */
+            /* Might be a table — look for second unescaped | on same line */
             const char *r = q + 1;
             int second_pipe = 0;
             while (r < eol) {
+                if (*r == '\\' && r + 1 < eol && *(r + 1) == '|') { r += 2; continue; } /* skip \| */
                 if (*r == '|') { second_pipe = 1; break; }
                 r++;
             }
@@ -801,6 +824,7 @@ char *md_tables_to_bullets(const char *md) {
                         if (*rs != '|') break;
                         int has_second = 0;
                         for (const char *c = rs + 1; c < row_eol; c++) {
+                            if (*c == '\\' && c + 1 < row_eol && *(c + 1) == '|') { c++; continue; } /* skip \| */
                             if (*c == '|') { has_second = 1; break; }
                         }
                         if (!has_second) break;

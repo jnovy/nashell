@@ -558,7 +558,7 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     if (session_count > 1)
         qsort(session_names, (size_t)session_count, sizeof(char *), session_cmp_desc);
 
-    /* Search each session's scratchpad.md */
+    /* Search each session's scratchpad (JSONL or legacy .md) and journal */
     str_t md = str_new(4096);
     str_appendf(&md, "# 🔍 Search: \"%s\"\n\n", query);
 
@@ -566,72 +566,224 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     int max_matches = 150;
 
     for (int si = 0; si < session_count && total_matches < max_matches; si++) {
-        char sp_path[NASH_PATH_MAX + 64];
-        snprintf(sp_path, sizeof(sp_path), "%s/%s/scratchpad.md",
-                 sessions_dir, session_names[si]);
-
-        FILE *f = fopen(sp_path, "r");
-        if (!f) continue;
-
-        /* Read file line by line, search for query */
-        char line[NASH_PATH_MAX];
         int session_had_match = 0;
         char *current_section = NULL;
 
-        while (fgets(line, sizeof(line), f)) {
-            /* Track section headers */
-            if (line[0] == '#' && line[1] == '#' && line[2] == ' ') {
-                free(current_section);
-                /* Strip newline and leading ## */
-                char *p = line + 3;
-                char *nl = strchr(p, '\n');
-                if (nl) *nl = '\0';
-                current_section = strdup(p);
+        /* Helper macro: emit session header on first match */
+        #define EMIT_SESSION_HEADER() do { \
+            if (!session_had_match) { \
+                char ts_display[64]; \
+                time_t epoch = (time_t)strtol(session_names[si], NULL, 10); \
+                struct tm *tm_info = localtime(&epoch); \
+                if (tm_info) \
+                    strftime(ts_display, sizeof(ts_display), \
+                             "%Y-%m-%d %H:%M:%S", tm_info); \
+                else \
+                    snprintf(ts_display, sizeof(ts_display), "%s", \
+                             session_names[si]); \
+                /* Link to session.md for navigability */ \
+                char link_path[NASH_PATH_MAX + 64]; \
+                snprintf(link_path, sizeof(link_path), "%s/%s/session.md", \
+                         sessions_dir, session_names[si]); \
+                str_appendf(&md, "### [%s](%s)\n\n", ts_display, link_path); \
+                session_had_match = 1; \
+            } \
+        } while (0)
+
+        /* --- Phase 1: Search scratchpad (JSONL or legacy .md) --- */
+        {
+            char sp_path[NASH_PATH_MAX + 64];
+            int is_jsonl = 0;
+
+            snprintf(sp_path, sizeof(sp_path), "%s/%s/scratchpad.jsonl",
+                     sessions_dir, session_names[si]);
+            FILE *f = fopen(sp_path, "r");
+            if (f) {
+                is_jsonl = 1;
+            } else {
+                snprintf(sp_path, sizeof(sp_path), "%s/%s/scratchpad.md",
+                         sessions_dir, session_names[si]);
+                f = fopen(sp_path, "r");
             }
 
-            /* Case-insensitive search */
-            if (ui_ci_strstr(line, query)) {
-                if (!session_had_match) {
-                    /* Session header with link — show human-readable time */
-                    char ts_display[64];
-                    time_t epoch = (time_t)strtol(session_names[si], NULL, 10);
-                    struct tm *tm_info = localtime(&epoch);
-                    if (tm_info)
-                        strftime(ts_display, sizeof(ts_display),
-                                 "%Y-%m-%d %H:%M:%S", tm_info);
-                    else
-                        snprintf(ts_display, sizeof(ts_display), "%s",
-                                 session_names[si]);
-                    str_appendf(&md, "### [%s](%s)\n\n",
-                                ts_display, sp_path);
-                    session_had_match = 1;
-                }
+            if (f) {
+                if (is_jsonl) {
+                    /* Parse JSONL: each line is {"name":"..","content":"..","priority":N}
+                     * or {"name":"..","op":"clear"}.  We search within content fields,
+                     * using "name" as section context. */
+                    char jsonl_line[65536];
+                    while (fgets(jsonl_line, sizeof(jsonl_line), f) &&
+                           total_matches < max_matches) {
+                        cJSON *obj = cJSON_Parse(jsonl_line);
+                        if (!obj) continue;
 
-                /* Clean up the matched line for display */
-                char *nl = strchr(line, '\n');
-                if (nl) *nl = '\0';
-                /* Skip HTML comments like <!-- priority:N --> */
-                if (strstr(line, "<!--") != NULL) continue;
-                /* Skip empty lines */
-                if (line[0] == '\0') continue;
+                        /* Skip clear entries */
+                        cJSON *op = cJSON_GetObjectItem(obj, "op");
+                        if (op && cJSON_IsString(op) &&
+                            strcmp(op->valuestring, "clear") == 0) {
+                            cJSON_Delete(obj);
+                            continue;
+                        }
 
-                /* Show section context if available */
-                if (current_section) {
-                    str_appendf(&md, "- **%s**: %s\n",
-                                current_section, line);
+                        cJSON *name = cJSON_GetObjectItem(obj, "name");
+                        cJSON *content = cJSON_GetObjectItem(obj, "content");
+                        if (!content || !cJSON_IsString(content)) {
+                            cJSON_Delete(obj);
+                            continue;
+                        }
+
+                        const char *sec_name = (name && cJSON_IsString(name))
+                                               ? name->valuestring : NULL;
+
+                        /* Search within content line by line */
+                        char *text = strdup(content->valuestring);
+                        char *saveptr = NULL;
+                        char *cline = strtok_r(text, "\n", &saveptr);
+                        while (cline && total_matches < max_matches) {
+                            if (ui_ci_strstr(cline, query)) {
+                                if (cline[0] != '\0') {
+                                    EMIT_SESSION_HEADER();
+                                    if (sec_name) {
+                                        str_appendf(&md, "- **%s**: %s\n",
+                                                    sec_name, cline);
+                                    } else {
+                                        str_appendf(&md, "- %s\n", cline);
+                                    }
+                                    total_matches++;
+                                }
+                            }
+                            cline = strtok_r(NULL, "\n", &saveptr);
+                        }
+                        free(text);
+                        cJSON_Delete(obj);
+                    }
                 } else {
-                    str_appendf(&md, "- %s\n", line);
+                    /* Legacy scratchpad.md: read line by line */
+                    char line[NASH_PATH_MAX];
+                    while (fgets(line, sizeof(line), f)) {
+                        /* Track section headers */
+                        if (line[0] == '#' && line[1] == '#' && line[2] == ' ') {
+                            free(current_section);
+                            char *p = line + 3;
+                            char *nl = strchr(p, '\n');
+                            if (nl) *nl = '\0';
+                            current_section = strdup(p);
+                        }
+
+                        if (ui_ci_strstr(line, query)) {
+                            char *nl = strchr(line, '\n');
+                            if (nl) *nl = '\0';
+                            if (strstr(line, "<!--") != NULL) continue;
+                            if (line[0] == '\0') continue;
+
+                            EMIT_SESSION_HEADER();
+                            if (current_section) {
+                                str_appendf(&md, "- **%s**: %s\n",
+                                            current_section, line);
+                            } else {
+                                str_appendf(&md, "- %s\n", line);
+                            }
+                            total_matches++;
+                            if (total_matches >= max_matches) break;
+                        }
+                    }
                 }
-                total_matches++;
-                if (total_matches >= max_matches) break;
+                fclose(f);
             }
         }
+
+        /* --- Phase 2: Search journal.jsonl --- */
+        if (total_matches < max_matches) {
+            char jrnl_path[NASH_PATH_MAX + 64];
+            snprintf(jrnl_path, sizeof(jrnl_path), "%s/%s/journal.jsonl",
+                     sessions_dir, session_names[si]);
+            FILE *jf = fopen(jrnl_path, "r");
+            if (jf) {
+                char jline[65536];
+                while (fgets(jline, sizeof(jline), jf) &&
+                       total_matches < max_matches) {
+                    cJSON *obj = cJSON_Parse(jline);
+                    if (!obj) continue;
+
+                    cJSON *tool = cJSON_GetObjectItem(obj, "tool");
+                    if (!tool || !cJSON_IsString(tool)) {
+                        cJSON_Delete(obj);
+                        continue;
+                    }
+
+                    const char *tname = tool->valuestring;
+                    cJSON *params = cJSON_GetObjectItem(obj, "params");
+                    if (!params) { cJSON_Delete(obj); continue; }
+
+                    /* Extract searchable text based on tool type.
+                     * Skip "notes" — already covered by scratchpad search. */
+                    const char *search_text = NULL;
+                    const char *label = NULL;
+
+                    if (strcmp(tname, "query") == 0) {
+                        cJSON *t = cJSON_GetObjectItem(params, "text");
+                        if (t && cJSON_IsString(t)) {
+                            search_text = t->valuestring;
+                            label = "query";
+                        }
+                    } else if (strcmp(tname, "done") == 0) {
+                        cJSON *r = cJSON_GetObjectItem(params, "result");
+                        if (r && cJSON_IsString(r)) {
+                            search_text = r->valuestring;
+                            label = "result";
+                        }
+                    } else if (strcmp(tname, "plan") == 0) {
+                        cJSON *r = cJSON_GetObjectItem(params, "result");
+                        if (r && cJSON_IsString(r)) {
+                            search_text = r->valuestring;
+                            label = "plan";
+                        }
+                    } else if (strcmp(tname, "memory_store") == 0) {
+                        cJSON *k = cJSON_GetObjectItem(params, "key");
+                        cJSON *v = cJSON_GetObjectItem(params, "value");
+                        if (k && cJSON_IsString(k) &&
+                            ui_ci_strstr(k->valuestring, query)) {
+                            search_text = k->valuestring;
+                            label = "memory";
+                        } else if (v && cJSON_IsString(v)) {
+                            search_text = v->valuestring;
+                            label = "memory";
+                        }
+                    } else if (strcmp(tname, "user_ask") == 0) {
+                        cJSON *q = cJSON_GetObjectItem(params, "question");
+                        if (q && cJSON_IsString(q)) {
+                            search_text = q->valuestring;
+                            label = "ask";
+                        }
+                    }
+
+                    if (!search_text) { cJSON_Delete(obj); continue; }
+
+                    /* Search line by line within the extracted text */
+                    char *text = strdup(search_text);
+                    char *saveptr = NULL;
+                    char *cline = strtok_r(text, "\n", &saveptr);
+                    while (cline && total_matches < max_matches) {
+                        if (ui_ci_strstr(cline, query) && cline[0] != '\0') {
+                            EMIT_SESSION_HEADER();
+                            str_appendf(&md, "- **%s**: %s\n", label, cline);
+                            total_matches++;
+                        }
+                        cline = strtok_r(NULL, "\n", &saveptr);
+                    }
+                    free(text);
+                    cJSON_Delete(obj);
+                }
+                fclose(jf);
+            }
+        }
+
+        #undef EMIT_SESSION_HEADER
 
         if (session_had_match)
             str_append_cstr(&md, "\n");
 
         free(current_section);
-        fclose(f);
     }
 
     if (total_matches == 0) {

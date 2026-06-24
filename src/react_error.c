@@ -113,8 +113,14 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
     /* Fallback — mark at least one message if nothing was marked.
      * BUG4 FIX: Check that evicting the message (+ partner) won't violate
      * the compaction floor. Previously this fallback bypassed the floor
-     * check that evict_mark_candidates carefully enforces. */
+     * check that evict_mark_candidates carefully enforces.
+     * FIX #16: Score all eligible candidates and pick the one with the
+     * lowest eviction score (most evictable) instead of blindly picking
+     * the oldest message. Uses the same evict_score_emergency() scorer
+     * as the main path for consistency. */
     if (n_marked == 0 && remaining_nonhead > floor_chars) {
+        int best_i = -1, best_pair_ri = -1;
+        int best_score = INT_MAX;
         for (int i = 0; i < n_evictable; i++) {
             int mi = evict_start + i;
             if (chat->msgs[mi].importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
@@ -132,13 +138,20 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
             /* Floor guard: ensure remaining content stays above floor */
             if (remaining_nonhead - tail_chars - msg_chars - pair_chars < floor_chars)
                 continue;
-            evict_mark[i] = 1;
+            int score = evict_score_emergency(chat, mi, i, n_evictable, NULL);
+            if (score < best_score) {
+                best_score = score;
+                best_i = i;
+                best_pair_ri = pair_ri;
+            }
+        }
+        if (best_i >= 0) {
+            evict_mark[best_i] = 1;
             n_marked++;
-            if (pair_ri >= 0 && !evict_mark[pair_ri]) {
-                evict_mark[pair_ri] = 1;
+            if (best_pair_ri >= 0 && !evict_mark[best_pair_ri]) {
+                evict_mark[best_pair_ri] = 1;
                 n_marked++;
             }
-            break;
         }
     }
 

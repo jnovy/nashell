@@ -338,11 +338,25 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
     /* FIX #12: Use react_chat_usage_pct convenience helper */
     int usage_pct = react_chat_usage_pct(chat, context_budget);
 
-    /* Strategy 1: Strip scratchpad entirely */
+    /* Strategy 1: Strip scratchpad entirely
+     * FIX #14: Preserve the "evicted_context" scratchpad section across
+     * the strip. evict_build_breadcrumbs writes non-recoverable eviction
+     * summaries there (priority 2), and losing them means the LLM can
+     * never recall what was evicted. Save before strip, restore after. */
     if (usage_pct > target_pct) {
         nash_log("[eviction] post-finalize usage %d%% > target %d%% — "
                  "stripping scratchpad", usage_pct, target_pct);
+        /* Save evicted_context before strip */
+        char *saved_evicted = NULL;
+        int ec_idx = scratchpad_find(&ctx->tools->scratch, "evicted_context");
+        if (ec_idx >= 0 && ctx->tools->scratch.sections[ec_idx].content)
+            saved_evicted = strdup(ctx->tools->scratch.sections[ec_idx].content);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
+        /* Restore evicted_context if it existed */
+        if (saved_evicted) {
+            scratchpad_write(&ctx->tools->scratch, "evicted_context", saved_evicted, 2);
+            free(saved_evicted);
+        }
         usage_pct = react_chat_usage_pct(chat, context_budget);
     }
 
@@ -363,10 +377,28 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         /* DEDUP2 FIX: Reuse react_emergency_evict_and_reinject instead of
          * reimplementing the emergency_evict → inject_breadcrumbs sequence. */
         n_emergency = react_emergency_evict_and_reinject(ctx, chat);
-        if (n_emergency == 0) {
+        /* FIX #15: When emergency eviction found nothing (e.g. floor too
+         * restrictive, too few evictable messages, or all HIGH importance),
+         * retry with a more aggressive target (target_pct - 10, min 50%)
+         * which lowers the floor proportionally. This is a last resort
+         * before the outer HTTP-400 retry handler takes over. */
+        if (n_emergency == 0 &&
+            react_chat_usage_pct(chat, context_budget) > target_pct) {
+            int aggressive_pct = target_pct - 10;
+            if (aggressive_pct < 50) aggressive_pct = 50;
             nash_log("[eviction] WARNING: emergency eviction found nothing "
-                     "to evict, context remains at %d%% > target %d%%",
-                     react_chat_usage_pct(chat, context_budget), target_pct);
+                     "at target %d%% — retrying with aggressive target %d%%",
+                     target_pct, aggressive_pct);
+            n_emergency = react_emergency_evict(chat, context_budget,
+                                                aggressive_pct, ctx->tools->cfg);
+            if (n_emergency > 0) {
+                react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
+                                                   context_budget, aggressive_pct);
+            } else {
+                nash_log("[eviction] WARNING: aggressive emergency eviction "
+                         "also found nothing, context remains at %d%% > target %d%%",
+                         react_chat_usage_pct(chat, context_budget), target_pct);
+            }
         }
         usage_pct = react_chat_usage_pct(chat, context_budget);
     }
@@ -590,8 +622,11 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
         if (compressed) {
             int new_len = (int)strlen(compressed);
             /* FLAW 7 FIX: Guard against compress returning empty string,
-             * which would effectively delete the message content. */
-            if (new_len > 0 && new_len < old_len) {
+             * which would effectively delete the message content.
+             * FIX #13: Require at least 10% reduction — trivial compression
+             * (e.g. 1 char shorter) wastes the original content's coherence
+             * without meaningful space savings. */
+            if (new_len > 0 && new_len <= old_len * 9 / 10) {
                 llm_chat_replace_content(chat, i, compressed);
                 total_chars = chat->total_chars;
                 did_compress = 1;

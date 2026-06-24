@@ -2,8 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
+
+/* Forward declarations */
+static void todo_free_lines(char **lines, int count);
 
 /* ── Persistent per-workspace TODO list ──────────────── */
 /* Storage: {workspace_root}/todo.md  (or {nash_root}/todo.md if no workspace)
@@ -69,9 +73,21 @@ static int todo_load(const char *path, char ***lines_out) {
 
         if (count >= cap) {
             cap = cap ? cap * 2 : 16;
-            lines = realloc(lines, sizeof(char *) * (size_t)cap);
+            char **tmp = realloc(lines, sizeof(char *) * (size_t)cap);
+            if (!tmp) {
+                todo_free_lines(lines, count);
+                fclose(f);
+                return -1;
+            }
+            lines = tmp;
         }
-        lines[count++] = strdup(linebuf);
+        char *dup = strdup(linebuf);
+        if (!dup) {
+            todo_free_lines(lines, count);
+            fclose(f);
+            return -1;
+        }
+        lines[count++] = dup;
     }
     fclose(f);
     *lines_out = lines;
@@ -90,7 +106,11 @@ static int todo_save(const char *path, char **lines, int count) {
         fprintf(f, "%s\n", lines[i]);
 
     fclose(f);
-    return rename(tmp, path);
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
 }
 
 static void todo_free_lines(char **lines, int count) {
@@ -129,31 +149,45 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         else
             snprintf(line, sizeof(line), "- [ ] %s", text);
 
-        /* Append to file */
-        FILE *f = fopen(fpath, "a");
-        if (!f) {
-            /* Try creating parent dir */
+        /* Load existing lines, append new one, save atomically */
+        char **lines = NULL;
+        int count = todo_load(fpath, &lines);
+        if (count < 0)
+            return tools_make_error("cannot read todo.md");
+
+        /* Grow by one slot for the new item */
+        char **tmp = realloc(lines, sizeof(char *) * (size_t)(count + 1));
+        if (!tmp) {
+            todo_free_lines(lines, count);
+            return tools_make_error("cannot allocate memory for todo.md");
+        }
+        lines = tmp;
+        lines[count++] = strdup(line);
+        if (!lines[count - 1]) {
+            todo_free_lines(lines, count);
+            return tools_make_error("cannot allocate memory for todo.md");
+        }
+
+        /* Try creating parent dir if needed */
+        if (todo_save(fpath, lines, count) != 0) {
             char *slash = strrchr(fpath, '/');
             if (slash) {
                 *slash = '\0';
                 mkdir(fpath, 0755);
                 *slash = '/';
-                f = fopen(fpath, "a");
             }
-            if (!f)
-                return tools_make_error("cannot open todo.md for writing");
+            if (todo_save(fpath, lines, count) != 0) {
+                todo_free_lines(lines, count);
+                return tools_make_error("cannot write todo.md");
+            }
         }
-        fprintf(f, "%s\n", line);
-        fclose(f);
 
-        /* Count items for index */
-        char **lines;
-        int count = todo_load(fpath, &lines);
+        int index = count;
         todo_free_lines(lines, count);
 
         cJSON *meta = cJSON_CreateObject();
         cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddNumberToObject(meta, "index", count);
+        cJSON_AddNumberToObject(meta, "index", index);
         cJSON_AddStringToObject(meta, "item", line);
         if (ctx->ws && ctx->ws->name)
             cJSON_AddStringToObject(meta, "workspace", ctx->ws->name);
@@ -191,7 +225,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         else
             cJSON_AddStringToObject(meta, "items", "(no items)");
 
-        char *hash = store_save(ctx->store, out.len > 0 ? out.data : "(empty)");
+        char *hash = store_save(ctx->store, out.data);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         tools_inject_thought(ctx, params);
         tool_journal(ctx, "todo",
