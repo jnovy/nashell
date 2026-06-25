@@ -271,11 +271,15 @@ static char *extract_thought(cJSON *params) {
 /* ── Session MD generation ───────────────────────────────── */
 
 void ui_state_generate_session_md(ui_state_t *ui) {
-    if (!ui || !ui->session_dir) return;
+    if (!ui) return;
 
-    /* During /agent run, don't overwrite the main session's session.md.
-     * The agent renders into its own reactR*.md in a separate session dir. */
-    if (ui->agent_view) return;
+    /* Determine the session directory to generate session.md for.
+     * During /agent run, generate session.md for the agent's session dir. */
+    const char *session_dir = ui->session_dir;
+    if (ui->agent_view && ui->playbook_session_dir) {
+        session_dir = ui->playbook_session_dir;
+    }
+    if (!session_dir) return;
 
     str_t md = str_new(8192);
 
@@ -287,7 +291,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
 
     /* Read journal for query list */
     char jpath[NASH_PATH_MAX];
-    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ui->session_dir);
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
     FILE *f = fopen(jpath, "r");
     if (!f) {
         if (md.len == 0)
@@ -623,7 +627,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
 write_out:;
     char *md_str = str_steal(&md);
     char spath[NASH_PATH_MAX];
-    snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
+    snprintf(spath, sizeof(spath), "%s/session.md", session_dir);
     write_md_file(spath, md_str);
     free(md_str);
 }
@@ -1078,7 +1082,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         if (show_preview && si->ref) {
             char rpath[NASH_PATH_MAX];
-            snprintf(rpath, sizeof(rpath), "%s/%s", ui->session_dir, si->ref);
+            snprintf(rpath, sizeof(rpath), "%s/%s", eff_dir, si->ref);
 
             if (is_plan) {
                 /* Plan: read full file and render as markdown (no code

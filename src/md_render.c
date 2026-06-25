@@ -198,12 +198,46 @@ static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int 
         if (try_parse_marker(&p, end, "`", 1, COLOR_PAIR(C_STREAM), segs, &n, max_segs))
             continue;
 
-        /* Regular text: collect until next formatting marker */
+        /* Markdown link: [text](url) — render only text with link color */
+        if (*p == '[') {
+            const char *bracket_end = NULL;
+            for (const char *s = p + 1; s < end; s++) {
+                if (*s == ']') { bracket_end = s; break; }
+                if (*s == '\n') break;  /* links don't span lines */
+            }
+            if (bracket_end && bracket_end + 1 < end && bracket_end[1] == '(') {
+                const char *paren_end = NULL;
+                for (const char *s = bracket_end + 2; s < end; s++) {
+                    if (*s == ')') { paren_end = s; break; }
+                    if (*s == '\n') break;
+                }
+                if (paren_end) {
+                    int link_text_len = (int)(bracket_end - p - 1);
+                    if (link_text_len > 0) {
+                        segs[n].text = p + 1;
+                        segs[n].len = link_text_len;
+                        segs[n].attr = COLOR_PAIR(C_FOCUS);
+                        n++;
+                    }
+                    p = paren_end + 1;
+                    continue;
+                }
+            }
+            /* Not a valid link — fall through, '[' consumed as regular text */
+        }
+
+        /* Regular text: collect until next formatting marker or link */
         const char *start = p;
         while (p < end) {
             if (*p == '`') break;
             if (*p == '*' && p + 1 < end && p[1] == '*') break;
             if (*p == '*') break;
+            /* Break on '[' only if it looks like a markdown link [text](url) */
+            if (*p == '[' && p != start) {
+                const char *be = memchr(p + 1, ']', end - p - 1);
+                if (be && be + 1 < end && be[1] == '(')
+                    break;
+            }
             p++;
         }
         int seg_len = (int)(p - start);
