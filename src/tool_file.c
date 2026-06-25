@@ -498,8 +498,13 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                           (size_t)old_lines[old_cnt - 1 - suffix].len) == 0)
                 suffix++;
 
-            /* Emit common prefix as context */
-            for (int i = 0; i < prefix; i++) {
+            /* Emit common prefix as context (capped to ctx_before lines,
+             * showing only the lines closest to the actual change) */
+            int prefix_skip = prefix > ctx_before ? prefix - ctx_before : 0;
+            /* Advance line numbers past skipped prefix lines */
+            old_lnum += prefix_skip;
+            new_lnum += prefix_skip;
+            for (int i = prefix_skip; i < prefix; i++) {
                 dline_t *dl = &new_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
@@ -537,8 +542,10 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 actual_added++;
             }
 
-            /* Emit common suffix as context */
-            for (int i = old_cnt - suffix; i < old_cnt; i++) {
+            /* Emit common suffix as context (capped to ctx_before lines,
+             * showing only the lines closest to the actual change) */
+            int suffix_show = suffix > ctx_before ? ctx_before : suffix;
+            for (int i = old_cnt - suffix; i < old_cnt - suffix + suffix_show; i++) {
                 dline_t *dl = &new_lines[new_cnt - suffix + (i - (old_cnt - suffix))];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
@@ -549,6 +556,10 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 old_lnum++;
                 new_lnum++;
             }
+            /* Advance line numbers past any remaining suffix lines we didn't show */
+            int suffix_skip = suffix - suffix_show;
+            old_lnum += suffix_skip;
+            new_lnum += suffix_skip;
 
             free(old_lines);
             free(new_lines);

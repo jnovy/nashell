@@ -1374,6 +1374,18 @@ int main(int argc, char **argv) {
             /* Check if playbook thread completed */
             if (inferring == 3 && pargs_tui.done) {
                 pthread_join(infer_tid, NULL);
+
+                /* Log to agent history if this was an /agent run */
+                if (pargs_tui.agent_id) {
+                    int dur = (int)(time(NULL) - pargs_tui.agent_start_time);
+                    const char *status = pargs_tui.playbook_ok ? "ok" : "fail";
+                    agent_entry_t tmp_agent = { .id = pargs_tui.agent_id };
+                    agent_history_append(pargs_tui.nash_dir, &tmp_agent,
+                                         dur, status, NULL);
+                    free(pargs_tui.agent_id);
+                    pargs_tui.agent_id = NULL;
+                }
+
                 pthread_mutex_lock(&ui->mtx);
                 if (pargs_tui.playbook_ok) {
                     char done_msg[256];

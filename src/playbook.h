@@ -89,6 +89,9 @@ typedef struct {
     /* Inter-pass pause */
     volatile int     waiting_for_user;
     char            *inter_pass_message;
+    /* Agent tracking (for interactive /agent run history logging) */
+    char            *agent_id;          /* NULL when not an agent run */
+    time_t           agent_start_time;  /* wall-clock start (for duration calc) */
 } playbook_args_t;
 
 /* ── API ─────────────────────────────────────────────── */

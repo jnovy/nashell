@@ -1706,8 +1706,10 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         .provider     = ctx->provider,
         .server_model = (char *)ctx->server_model,
         .ui           = ui,
-        .playbook_ok  = 0,
-        .done         = 0,
+        .playbook_ok      = 0,
+        .done             = 0,
+        .agent_id         = strdup(found->id),
+        .agent_start_time = time(NULL),
     };
 
     ctx->provider->abort_retry = 0;
