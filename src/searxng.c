@@ -381,13 +381,12 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
         }
     }
 
-    /* If no results, check if all engines are down */
-    if (count == 0) {
-        int n_unresponsive = searxng_count_unresponsive(root);
-        if (n_unresponsive > 0) {
-            searxng_log_unresponsive(root);
+    /* Check for degraded engines (always log for diagnostics) */
+    int n_unresponsive = searxng_count_unresponsive(root);
+    if (n_unresponsive > 0) {
+        searxng_log_unresponsive(root);
+        if (count == 0)
             *all_unresponsive = 1;
-        }
     }
 
     cJSON_Delete(root);
@@ -402,8 +401,8 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
 }
 
 /* Perform a search using SearXNG JSON API.
- * If all engines are unresponsive (e.g. container networking broken),
- * automatically restarts the container and retries once.
+ * On any failure (0 results), immediately restart the container to clear
+ * all engine suspensions/bans/CAPTCHAs, then retry once.
  * Returns a formatted results string (caller frees), or NULL on failure.
  * *out_count receives the number of results. */
 char *searxng_search(const char *searxng_url, const char *query,
@@ -412,28 +411,26 @@ char *searxng_search(const char *searxng_url, const char *query,
     char *result = searxng_search_once(searxng_url, query, out_count, timeout,
                                         &all_unresponsive);
 
-    /* If we got results, great — return them */
+    /* If we got results, return them */
     if (result) return result;
 
-    /* If engines are unresponsive, restart container and retry once */
-    if (all_unresponsive) {
-        nash_log("[nash] web_search: 0 results because all SearXNG engines "
-                 "timed out — auto-recovering...");
+    /* Always go nuclear: restart container to reset all engine state */
+    nash_log("[nash] web_search: 0 results for '%s'%s "
+             "— restarting container...",
+             query, all_unresponsive ? " (engines unresponsive)" : "");
 
-        if (searxng_restart_container(searxng_url) == 0) {
-            /* Retry the search after restart */
-            int retry_unresponsive = 0;
-            result = searxng_search_once(searxng_url, query, out_count, timeout,
-                                          &retry_unresponsive);
-            if (result) {
-                nash_log("[nash] web_search: retry after container restart "
-                         "succeeded (%d results)", *out_count);
-                return result;
-            }
+    if (searxng_restart_container(searxng_url) == 0) {
+        int retry_unresponsive = 0;
+        result = searxng_search_once(searxng_url, query, out_count, timeout,
+                                      &retry_unresponsive);
+        if (result) {
             nash_log("[nash] web_search: retry after container restart "
-                     "still returned 0 results%s",
-                     retry_unresponsive ? " (engines still unresponsive)" : "");
+                     "succeeded (%d results)", *out_count);
+            return result;
         }
+        nash_log("[nash] web_search: retry after container restart "
+                 "still returned 0 results%s",
+                 retry_unresponsive ? " (engines still unresponsive)" : "");
     }
 
     return NULL;
