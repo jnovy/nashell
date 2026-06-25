@@ -25,6 +25,7 @@ typedef enum {
 
 typedef struct {
     char      *filepath;     /* absolute path to .md file */
+    char      *label;        /* display label for breadcrumb (NULL = use filepath) */
     int        scroll_y;     /* saved scroll position */
     int        scroll_x;     /* saved horizontal scroll */
     int        cursor_link;  /* saved cursor position */
@@ -153,6 +154,8 @@ typedef struct {
 
     /* ── Agent view flag ── */
     int            agent_view;       /* 1 = viewing agent output (skip session.md regen) */
+    int            agent_running;    /* 1 = playbook worker is active (don't clear agent_view on Esc) */
+    char          *current_label;    /* breadcrumb label for current view (NULL = use filepath) */
 
     /* ── Deferred regeneration flags ── */
     /* Set by the inference thread's event handler (under mtx) to request

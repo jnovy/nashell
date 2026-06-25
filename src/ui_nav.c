@@ -147,6 +147,8 @@ void ui_state_enter(ui_state_t *ui) {
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
         entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+        entry->label = ui->current_label;  /* transfer ownership */
+        ui->current_label = NULL;
         entry->scroll_y = ui->scroll_y;
         entry->scroll_x = ui->scroll_x;
         entry->cursor_link = ui->cursor_link;
@@ -248,6 +250,8 @@ void ui_state_enter(ui_state_t *ui) {
     }
     nav_entry_t *raw_entry = &ui->nav_stack[ui->nav_depth];
     raw_entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    raw_entry->label = ui->current_label;  /* transfer ownership */
+    ui->current_label = NULL;
     raw_entry->scroll_y = ui->scroll_y;
     raw_entry->scroll_x = ui->scroll_x;
     raw_entry->cursor_link = ui->cursor_link;
@@ -382,8 +386,10 @@ void ui_state_back(ui_state_t *ui) {
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
 
         /* Leaving agent view — clear flag so session.md regen resumes,
-         * and clear playbook provenance so react MD uses main session. */
-        if (ui->agent_view && ui->nav_depth == 0) {
+         * and clear playbook provenance so react MD uses main session.
+         * Only clear if the agent is no longer running; pressing Escape
+         * during an active run should NOT drop the agent_view gate. */
+        if (ui->agent_view && ui->nav_depth == 0 && !ui->agent_running) {
             ui->agent_view = 0;
             free(ui->playbook_session_dir);
             ui->playbook_session_dir = NULL;
@@ -392,6 +398,9 @@ void ui_state_back(ui_state_t *ui) {
         free(ui->current_filepath);
         ui->current_filepath = entry->filepath;
         entry->filepath = NULL;
+        free(ui->current_label);
+        ui->current_label = entry->label;   /* restore ownership */
+        entry->label = NULL;
         ui->scroll_y = entry->scroll_y;
         ui->scroll_x = entry->scroll_x;
         ui->cursor_link = entry->cursor_link;
@@ -423,6 +432,30 @@ void ui_state_back(ui_state_t *ui) {
 
 /* ── Push transient content onto nav stack ───────────────── */
 
+/* Derive a display label from a push_content name.
+ * "agents" → "Agents", "agent-detail" → "Agent Detail", etc. */
+static char *prettify_label(const char *name) {
+    if (!name) return NULL;
+    size_t len = strlen(name);
+    char *label = malloc(len + 1);
+    if (!label) return NULL;
+    int capitalize = 1;
+    size_t j = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (name[i] == '-') {
+            label[j++] = ' ';
+            capitalize = 1;
+        } else if (capitalize) {
+            label[j++] = (char)toupper((unsigned char)name[i]);
+            capitalize = 0;
+        } else {
+            label[j++] = name[i];
+        }
+    }
+    label[j] = '\0';
+    return label;
+}
+
 void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdown) {
     if (!ui || !markdown || !ui->session_dir) return;
 
@@ -442,6 +475,8 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
     }
     nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
     entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    entry->label = ui->current_label;   /* transfer ownership */
+    ui->current_label = NULL;
     entry->scroll_y = ui->scroll_y;
     entry->scroll_x = ui->scroll_x;
     entry->cursor_link = ui->cursor_link;
@@ -451,6 +486,7 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
     /* 3. Navigate to the new file */
     free(ui->current_filepath);
     ui->current_filepath = strdup(path);
+    ui->current_label = prettify_label(name);
     ui->scroll_y = 0;
     ui->scroll_x = 0;
     ui->cursor_link = 0;
@@ -549,6 +585,9 @@ void ui_state_search(ui_state_t *ui, const char *query) {
                 free(ui->current_filepath);
                 ui->current_filepath = entry->filepath;
                 entry->filepath = NULL;
+                free(ui->current_label);
+                ui->current_label = entry->label;
+                entry->label = NULL;
                 ui->scroll_y = entry->scroll_y;
                 ui->scroll_x = entry->scroll_x;
                 ui->cursor_link = entry->cursor_link;
@@ -854,6 +893,8 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
         entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+        entry->label = ui->current_label;  /* transfer ownership */
+        ui->current_label = NULL;
         entry->scroll_y = ui->scroll_y;
         entry->scroll_x = ui->scroll_x;
         entry->cursor_link = ui->cursor_link;
@@ -927,9 +968,14 @@ static char *resolve_store_alias(const char *session_dir, const char *filepath) 
 }
 
 /* Append a breadcrumb segment for `filepath`, resolving store hashes
- * to their symlink aliases (e.g. "R0S3") or truncating to 15 chars. */
+ * to their symlink aliases (e.g. "R0S3") or truncating to 15 chars.
+ * If `label` is non-NULL, use it instead of deriving from filepath. */
 static void breadcrumb_append(str_t *s, const char *filepath,
-                              const char *session_dir) {
+                              const char *session_dir, const char *label) {
+    if (label) {
+        str_append_cstr(s, label);
+        return;
+    }
     const char *base = strrchr(filepath, '/');
     base = base ? base + 1 : filepath;
 
@@ -955,12 +1001,14 @@ char *ui_state_breadcrumb(ui_state_t *ui) {
     str_t s = str_new(256);
     for (int i = 0; i < ui->nav_depth; i++) {
         if (ui->nav_stack[i].filepath) {
-            breadcrumb_append(&s, ui->nav_stack[i].filepath, ui->session_dir);
+            breadcrumb_append(&s, ui->nav_stack[i].filepath,
+                              ui->session_dir, ui->nav_stack[i].label);
             str_append_cstr(&s, " > ");
         }
     }
     if (ui->current_filepath) {
-        breadcrumb_append(&s, ui->current_filepath, ui->session_dir);
+        breadcrumb_append(&s, ui->current_filepath,
+                          ui->session_dir, ui->current_label);
     }
     return str_steal(&s);
 }

@@ -785,13 +785,13 @@ void *playbook_worker(void *arg) {
         scratchpad_save(&shared_scratch, state_dir);
     }
 
-    /* Change 3: Clear playbook session dir on UI when done */
+    /* Clear playbook session dir on UI when done.
+     * session.md regeneration is handled by main.c after pthread_join,
+     * where agent_view is also cleared to ungate the regen. */
     if (pa->ui) {
         pthread_mutex_lock(&pa->ui->mtx);
         free(pa->ui->playbook_session_dir);
         pa->ui->playbook_session_dir = NULL;
-        /* Regenerate session.md so completed passes show final ✓ status */
-        ui_state_generate_session_md(pa->ui);
         pthread_mutex_unlock(&pa->ui->mtx);
     }
 

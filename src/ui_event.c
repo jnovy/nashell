@@ -159,6 +159,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
             ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->label = ui->current_label;  /* transfer ownership */
+            ui->current_label = NULL;
             ne->scroll_y = ui->scroll_y;
             ne->scroll_x = ui->scroll_x;
             ne->cursor_link = ui->cursor_link;
@@ -299,6 +301,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
             ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->label = ui->current_label;  /* transfer ownership */
+            ui->current_label = NULL;
             ne->scroll_y = ui->scroll_y;
             ne->scroll_x = ui->scroll_x;
             ne->cursor_link = ui->cursor_link;

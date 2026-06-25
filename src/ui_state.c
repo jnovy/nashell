@@ -77,8 +77,10 @@ void ui_state_free(ui_state_t *ui) {
     }
     free(ui->pb_passes);
     free(ui->nash_dir);
+    free(ui->current_label);
     for (int i = 0; i < ui->nav_depth; i++) {
         free(ui->nav_stack[i].filepath);
+        free(ui->nav_stack[i].label);
         md_doc_free(ui->nav_stack[i].saved_doc);
     }
     free(ui->nav_stack);

@@ -788,6 +788,16 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                 while (ts < te && *ts == ' ') ts++;
                 while (te > ts && *(te-1) == ' ') te--;
                 int w = (int)(te - ts);
+                /* Compute display width excluding inline markdown markers
+                 * so column widths reflect rendered text, not raw markup */
+                {
+                    inline_seg_t tw_segs[MAX_INLINE_SEGS];
+                    int tw_n = parse_inline(ts, w, tw_segs, MAX_INLINE_SEGS);
+                    int dw = 0;
+                    for (int si = 0; si < tw_n; si++)
+                        dw += seg_display_cols(tw_segs[si].text, tw_segs[si].len);
+                    w = dw;
+                }
                 int is_dash = 1;
                 for (const char *dp = ts; dp < te; dp++)
                     if (*dp != '-' && *dp != ':') { is_dash = 0; break; }
@@ -871,16 +881,20 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                     int pw = (ci < num_cols) ? col_widths[ci] : tlen;
                     if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
                     x++;
-                    if (is_header) wattron(win, A_BOLD);
+                    /* Parse inline markdown in cell text (bold, italic, code) */
+                    int dcols = 0;
                     if (tlen > 0) {
-                        for (int ti = 0; ti < tlen; ti++) {
-                            if (x >= 0 && x < cols)
-                                mvwaddch(win, vis_line, x, (chtype)(unsigned char)ts[ti]);
-                            x++;
-                        }
+                        inline_seg_t cell_segs[MAX_INLINE_SEGS];
+                        int cell_n = parse_inline(ts, tlen, cell_segs, MAX_INLINE_SEGS);
+                        if (is_header)
+                            apply_attr_to_segs(cell_segs, cell_n, A_BOLD);
+                        for (int si = 0; si < cell_n; si++)
+                            dcols += seg_display_cols(cell_segs[si].text, cell_segs[si].len);
+                        if (x >= 0 && x < cols)
+                            render_segs_on_line(win, vis_line, x, cell_segs, cell_n, cols - x);
+                        x += dcols;
                     }
-                    if (is_header) wattroff(win, A_BOLD);
-                    int tx = x + (pw - tlen) + 1;
+                    int tx = x + (pw - dcols) + 1;
                     while (x < tx) {
                         if (x >= 0 && x < cols)
                             mvwaddch(win, vis_line, x, ' ');

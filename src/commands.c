@@ -1710,7 +1710,8 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     *ctx->inferring = 3;
 
     pthread_mutex_lock(&ui->mtx);
-    ui->agent_view = 1;  /* Don't overwrite main session.md during agent run */
+    ui->agent_view = 1;     /* Don't overwrite main session.md during agent run */
+    ui->agent_running = 1;   /* Prevent Escape from clearing agent_view mid-run */
     char msg[256];
     snprintf(msg, sizeof(msg), "Running agent: %s", found->id);
     ui_state_set_status(ui, STATUS_RUNNING, msg);

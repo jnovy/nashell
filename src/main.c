@@ -1383,6 +1383,12 @@ int main(int argc, char **argv) {
                 } else {
                     ui_state_set_status(ui, STATUS_ERROR, "Playbook failed");
                 }
+                /* Agent finished — clear gates so session.md regen resumes.
+                 * The user stays on the agent's reactRX.md until they press
+                 * Escape, but session.md must be regenerable for when they do. */
+                ui->agent_view = 0;
+                ui->agent_running = 0;
+                ui_state_generate_session_md(ui);
                 pthread_mutex_unlock(&ui->mtx);
                 playbook_free(pargs_tui.playbook);
                 pargs_tui.playbook = NULL;
