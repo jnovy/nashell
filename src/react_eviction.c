@@ -292,7 +292,7 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
 
             memory_results_t ev_mem = ctx->tools->ws
                 ? workspace_recall(ctx->tools->ws, ev_query, ev_candidates)
-                : memory_recall(ctx->tools->memory, ev_query, ev_candidates);
+                : memory_query(ctx->tools->memory, ev_query, ev_candidates);
 
             int ev_injected = 0;
             for (int j = 0; j < ev_mem.count && ev_injected < 2; j++) {

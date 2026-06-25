@@ -868,7 +868,7 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     }
 
     /* Concatenated tool name recovery: when the model emits a garbled name
-     * like "file_readfile_read" or "shell_execmemory_recall", try to find
+     * like "file_readfile_read" or "shell_execmemory_search", try to find
      * a known tool name as a prefix.  Pick the longest matching prefix to
      * avoid false positives (e.g. "done" matching "donefile_read"). */
     {
@@ -996,6 +996,11 @@ char *tools_system_prompt(void) {
         "- Call done with the final answer when finished.\n"
         "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
         "Never reference notes content — include all data directly in done result.\n"
+        "\n"
+        "Predict before acting:\n"
+        "- Before each tool call, mentally predict what the tool will return.\n"
+        "- If your prediction suggests the action won't achieve your goal, "
+        "refine the action before executing.\n"
         "\n"
         "Clarification seeking:\n"
         "- Before selecting your first action, assess request_uncertainty on a 0-1 "

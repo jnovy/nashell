@@ -90,7 +90,7 @@ passes:
       Memory store is at: {{memory_dir}}
 
       CAPABILITIES:
-      - memory_recall to check for existing related memories
+      - memory_search to check for existing related memories
       - memory_store to create new entries
       - file_read to examine existing memory entries
 

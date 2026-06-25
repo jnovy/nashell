@@ -95,7 +95,7 @@ else
 fi
 
 # Recall the memory
-run_test "Memory recall" "use memory_recall to search for 'secret number'" "42"
+run_test "Memory search" "use memory_search to search for 'secret number'" "42"
 
 echo ""
 echo "--- Store ---"

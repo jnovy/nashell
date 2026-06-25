@@ -12,7 +12,7 @@ static void test_store_and_recall(void) {
     int rc = memory_store(m, "lesson:addition", "2+2=4", 0, NULL, NULL, 0);
     ASSERT_EQ(rc, 0);
 
-    memory_results_t results = memory_recall(m, "addition", 5);
+    memory_results_t results = memory_query(m, "addition", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_EQ(results.entries[0].key, "lesson:addition");
     ASSERT_STR_EQ(results.entries[0].value, "2+2=4");
@@ -31,7 +31,7 @@ static void test_tags(void) {
     
     memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", 0, NULL, NULL, 0);
 
-    memory_results_t results = memory_recall(m, "redis", 5);
+    memory_results_t results = memory_query(m, "redis", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_CONTAINS(results.entries[0].key, "redis");
 
@@ -94,11 +94,11 @@ static void test_prune(void) {
 
     memory_prune(m, 0, 999);
 
-    memory_results_t r1 = memory_recall(m, "strategy", 5);
+    memory_results_t r1 = memory_query(m, "strategy", 5);
     ASSERT_GT(r1.count, 0);
     memory_results_free(&r1);
 
-    memory_results_t r2 = memory_recall(m, "lesson", 5);
+    memory_results_t r2 = memory_query(m, "lesson", 5);
     ASSERT_GT(r2.count, 0);
     memory_results_free(&r2);
 
@@ -115,7 +115,7 @@ static void test_overwrite(void) {
     memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0);
     memory_store(m, "fact:pi", "3.14159", 0, NULL, NULL, 0);
 
-    memory_results_t results = memory_recall(m, "pi", 5);
+    memory_results_t results = memory_query(m, "pi", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_EQ(results.entries[0].value, "3.14159");
 
@@ -132,7 +132,7 @@ static void test_no_match(void) {
 
     memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0);
 
-    memory_results_t results = memory_recall(m, "nonexistent_xyz", 5);
+    memory_results_t results = memory_query(m, "nonexistent_xyz", 5);
     ASSERT_EQ(results.count, 0);
 
     memory_results_free(&results);
@@ -288,7 +288,7 @@ static void test_skill_store_and_recall(void) {
                  0, NULL, NULL, 0);
 
     /* Recall by skill name */
-    memory_results_t results = memory_recall(m, "compile", 5);
+    memory_results_t results = memory_query(m, "compile", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_CONTAINS(results.entries[0].key, "skill:");
     ASSERT_STR_CONTAINS(results.entries[0].value, "gcc");
@@ -329,7 +329,7 @@ static void test_skill_recall_by_tag(void) {
     memory_store(m, "skill:docker-deploy", "docker compose up -d", 0, NULL, NULL, 0);
 
     /* Recall by keyword in key */
-    memory_results_t results = memory_recall(m, "docker", 5);
+    memory_results_t results = memory_query(m, "docker", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_CONTAINS(results.entries[0].key, "skill:");
 
@@ -352,7 +352,7 @@ static void test_skill_not_pruned(void) {
     memory_prune(m, 0, 999);
 
     /* Skill should survive (protected type like strategy/lesson) */
-    memory_results_t results = memory_recall(m, "skill:", 5);
+    memory_results_t results = memory_query(m, "skill:", 5);
     /* Note: skill may or may not be protected depending on implementation */
     /* At minimum, verify no crash */
     memory_results_free(&results);
@@ -526,7 +526,7 @@ static void test_pin_preserves_value(void) {
     memory_pin(m, "lesson:redis-v7");
 
     /* Recall and verify value preserved */
-    memory_results_t results = memory_recall(m, "redis-v7", 5);
+    memory_results_t results = memory_query(m, "redis-v7", 5);
     ASSERT_GT(results.count, 0);
     ASSERT_STR_EQ(results.entries[0].value, "HMSET renamed to HSET");
     ASSERT_EQ(results.entries[0].pinned, 1);

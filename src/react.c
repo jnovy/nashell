@@ -1418,7 +1418,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         action_name, path_s);
                     memory_results_t cy_mem = ctx->tools->ws
                         ? workspace_recall(ctx->tools->ws, cycle_query, cy_candidates)
-                        : memory_recall(ctx->tools->memory, cycle_query, cy_candidates);
+                        : memory_query(ctx->tools->memory, cycle_query, cy_candidates);
                     int cy_injected = 0;
                     for (int cj = 0; cj < cy_mem.count && cy_injected < 1; cj++) {
                         int cdup = 0;
@@ -1857,7 +1857,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ? ctx->tools->cfg->error_recall_candidates : 3;
                 memory_results_t err_mem = ctx->tools->ws
                     ? workspace_recall(ctx->tools->ws, err_query, err_candidates)
-                    : memory_recall(ctx->tools->memory, err_query, err_candidates);
+                    : memory_query(ctx->tools->memory, err_query, err_candidates);
                 int err_max_inject = ctx->tools->cfg
                     ? ctx->tools->cfg->error_recall_max_inject : 1;
                 double err_min_rel = ctx->tools->cfg

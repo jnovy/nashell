@@ -52,7 +52,7 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 ├─────────────────────────────────────────────────────┤
 │  L3: Session History (searchable, evolving)         │
 │  sessions/<ts>/journal.jsonl + summary.txt + .emb   │
-│  Grows naturally, searchable via /? and memory_recall│
+│  Grows naturally, searchable via /? and memory_search│
 ├─────────────────────────────────────────────────────┤
 │  L4: Curated Memory (persistent, small)             │
 │  .memory/ — only explicitly stored entries          │
@@ -89,7 +89,7 @@ React loop (tool calls)
     │   ├── Breadcrumbs for recoverable content
     │   ├── Eviction-triggered re-retrieval (L4 → L1, query = breadcrumbs)
     │   └── evicted_context → scratchpad
-    └── Agent may call memory_recall → searches L4 + L3
+    └── Agent may call memory_search → searches L4 + L3
     │
     ▼
 done (task complete)
@@ -107,10 +107,10 @@ react_post_loop()
 Sessions provide natural knowledge formation without automated pipelines:
 
 1. Agent works on task, encounters problem X
-2. `memory_recall("problem X")` → returns session matches (L3) since no curated memory exists yet
+2. `memory_search("problem X")` → returns session matches (L3) since no curated memory exists yet
 3. Agent reads the relevant session journal
 4. Agent extracts the pattern and calls `memory_store` explicitly
-5. Future tasks: `memory_recall("problem X")` → returns the stored pattern (L4 curated memory now ranks above raw session matches)
+5. Future tasks: `memory_search("problem X")` → returns the stored pattern (L4 curated memory now ranks above raw session matches)
 
 **Experience** (sessions) → **Recognition** (search) → **Crystallization** (memory_store)
 
@@ -376,7 +376,7 @@ score = semantic_similarity * recency
 
 #### Unified Recall
 
-There is no separate `session_search` tool. Instead, `memory_recall` queries **both** L4 (curated memory) and L3 (session history) in a single call. Results are labeled by source:
+There is no separate `session_search` tool. Instead, `memory_search` queries **both** L4 (curated memory) and L3 (session history) in a single call. Results are labeled by source:
 
 ```
 [RECALLED MEMORY — lesson:segfault-null-check]
@@ -532,7 +532,7 @@ Every message in the LLM context carries an importance level (`CRITICAL` / `HIGH
 | Importance | Message Types |
 |------------|---------------|
 | **CRITICAL** | System prompt, user query, scratchpad, `done` results |
-| **HIGH** | `grep_search`, `memory_recall`, recent assistant turns |
+| **HIGH** | `grep_search`, `memory_search`, recent assistant turns |
 | **NORMAL** | `file_read`, `shell_exec`, `web_fetch` |
 | **LOW** | Errors, hints, deduplicated results |
 
@@ -613,7 +613,7 @@ Nash provides a full ncurses-based TUI with:
 | `/cwd DIR` | Change working directory; creates the directory if it doesn't exist (`mkdir -p`) |
 | `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
 | `/runs show ID` | Display details of a specific playbook run |
-| `/memory_recall QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
+| `/memory_search QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
 | `/ms QUERY` | Full-parameter memory search (alias: `/memory_search`). Supports `-q` query, `-k` key, `-p` pattern, `-r` regex, `-n` max results, `-d` days. Searches both curated memory (L4) and session journals (L3) |
 | `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
 | `/?query` | Cross-session scratchpad search (live incremental results) |
@@ -709,7 +709,7 @@ System: "Perform CAUSAL ANALYSIS (not narrative summary)..."
 
 The model calls `memory_store` to persist lessons, then `done` to finish reflection. Failed tasks get a different prompt focused on failure analysis.
 
-After reflection and scratchpad pruning, nash generates a searchable session summary by calling `journal_manifest()` and embedding the output as `summary.txt` + `summary.emb`. This makes the session discoverable via `memory_recall` and `/? query` for all future sessions.
+After reflection and scratchpad pruning, nash generates a searchable session summary by calling `journal_manifest()` and embedding the output as `summary.txt` + `summary.emb`. This makes the session discoverable via `memory_search` and `/? query` for all future sessions.
 
 ### Playbooks — Multi-Pass Task Orchestration
 

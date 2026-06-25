@@ -5,7 +5,7 @@
  *   ./tests/test_memory_context "your query here" [--memory-dir DIR] [--threshold N]
  *
  * Loads the memory store, initializes embeddings (if configured), runs
- * memory_recall with the given query, and prints all results with their
+ * memory_query with the given query, and prints all results with their
  * relevance scores and metadata. Useful for:
  *   - Validating that the scoring formula produces sensible results
  *   - Tuning recall_min_score threshold
@@ -137,7 +137,7 @@ int main(int argc, char *argv[]) {
     print_separator();
 
     /* Run memory recall */
-    memory_results_t results = memory_recall(m, query, max_results);
+    memory_results_t results = memory_query(m, query, max_results);
 
     printf("\nResults: %d memories matched (above threshold %.4f)\n\n",
            results.count, threshold);

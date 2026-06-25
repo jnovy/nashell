@@ -553,7 +553,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 }
 
 /* ── memory_search (v4.4 unified: curated memory + session history) ── */
-/* Single search tool that replaces both memory_recall and session_search.
+/* Single search tool that replaces both memory_query and session_search.
  * Searches curated L4 memory (lessons, skills, strategies, facts) and
  * L3 session history (journal.jsonl), ranks all results by relevance,
  * and returns an interleaved result set labeled by source. */
@@ -608,7 +608,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
         if (ctx->memory || ctx->ws) {
             mem_results = ctx->ws
                 ? workspace_recall(ctx->ws, key, 1)
-                : memory_recall(ctx->memory, key, 1);
+                : memory_query(ctx->memory, key, 1);
             for (int i = 0; i < mem_results.count; i++) {
                 memory_entry_t *e = &mem_results.entries[i];
                 str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
@@ -623,10 +623,10 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
 
     /* ── L4: Curated memory search ──────────────── */
     if (query && (ctx->memory || ctx->ws)) {
-        int mem_max = max_results > 0 ? (max_results < 10 ? max_results : 10) : 5;
+        int mem_max = max_results > 0 ? max_results : 5;
         mem_results = ctx->ws
             ? workspace_recall(ctx->ws, query, mem_max)
-            : memory_recall(ctx->memory, query, mem_max);
+            : memory_query(ctx->memory, query, mem_max);
         mem_count = mem_results.count;
     }
 
@@ -665,7 +665,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
     {
         int mi = 0, si = 0;
         int total_emitted = 0;
-        int emit_limit = max_results > 0 ? max_results : 20;
+        int emit_limit = max_results > 0 ? max_results : 10;  /* default: mem(5) + ses(5) */
 
         static const char *conf_labels[] = {"LOW", "MEDIUM", "HIGH"};
 
@@ -676,7 +676,8 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                 ? ses_results.results[si].composite_score : -1.0;
 
             if (mem_score >= ses_score && mi < mem_count) {
-                /* Emit memory result */
+                /* Emit memory result (>= means memory wins ties — intentional:
+                 * curated memory is higher quality than raw session logs) */
                 memory_entry_t *e = &mem_results.entries[mi];
                 str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
                 tool_track_recalled_key(ctx, e->key);

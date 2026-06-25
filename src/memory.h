@@ -25,7 +25,7 @@
  *     the equivalent navigational signal.
  *
  * Loaded once at memory_new(), updated incrementally on store/delete.
- * memory_recall() iterates the in-memory array instead of scanning
+ * memory_query() iterates the in-memory array instead of scanning
  * the filesystem, reducing recall from O(n) file reads to O(n) array
  * scan + O(k) file reads for top-k results only. */
 typedef struct {
@@ -85,12 +85,12 @@ typedef struct {
 
     /* Thread safety: protects idx and all index-dependent operations.
      * The inference thread (react_run → tools) and the main thread
-     * (/memory_recall command) can both access memory concurrently.
+     * (/ms command) can both access memory concurrently.
      * All public memory_*() functions acquire this lock internally. */
     pthread_mutex_t mtx;
 
     /* P1: In-memory index — populated by memory_new(), updated by
-     * memory_store()/memory_delete(). Used by memory_recall() and
+     * memory_store()/memory_delete(). Used by memory_query() and
      * memory_build_index() to avoid filesystem scans. */
     mem_index_t idx;
 } memory_t;
@@ -138,7 +138,7 @@ typedef struct {
      * receive a score boost (+0.5), implementing associative retrieval. */
     char **refs;          /* array of related memory keys */
     int    n_refs;
-    double relevance;     /* final composite score from last memory_recall */
+    double relevance;     /* final composite score from last memory_query */
     double raw_relevance; /* semantic+substring blend [0,1] before importance/vscore */
     double importance;    /* log access frequency [0,1] */
     double belief_entropy; /* ℋ_BE — forward-looking quality signal (MMPO). -1 = not computed */
@@ -190,10 +190,10 @@ int memory_pin(memory_t *m, const char *key);
 /* Unpin an existing memory (set pinned=false). Returns 0 on success, -1 if not found. */
 int memory_unpin(memory_t *m, const char *key);
 
-/* Search memories by query (substring match on key + value).
+/* Search memories by query (hybrid semantic + substring scoring).
  * Returns up to max_results matches, sorted by relevance.
  * Caller must free with memory_results_free(). */
-memory_results_t memory_recall(memory_t *m, const char *query, int max_results);
+memory_results_t memory_query(memory_t *m, const char *query, int max_results);
 
 /* Build a compact memory summary (counts by type only).
  * Format: "Memory: N entries (X lessons, Y strategies, Z skills, ...)"

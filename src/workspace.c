@@ -37,9 +37,9 @@ static void mkdirp(const char *path) {
 /* Check if a key exists in a memory_t's index. */
 static int mem_has_key(memory_t *m, const char *key) {
     if (!m || !key) return 0;
-    /* Use memory_recall with max_results=1 as a quick existence check?
+    /* Use memory_query with max_results=1 as a quick existence check?
      * No — we need exact key match.  Check the index directly via
-     * a zero-length recall that just checks the hash map.
+     * a zero-length query that just checks the hash map.
      * Actually, the simplest approach: try to load the entry JSON. */
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
@@ -140,11 +140,11 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
 
     /* If no workspace, just search global */
     if (!ws->workspace) {
-        return memory_recall(ws->global, query, max_results);
+        return memory_query(ws->global, query, max_results);
     }
 
     /* 1. Recall from workspace */
-    memory_results_t ws_results = memory_recall(ws->workspace, query, max_results);
+    memory_results_t ws_results = memory_query(ws->workspace, query, max_results);
 
     /* 2. If isolated, return workspace results only */
     if (ws->isolated) {
@@ -152,7 +152,7 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
     }
 
     /* 3. Recall from global */
-    memory_results_t gl_results = memory_recall(ws->global, query, max_results);
+    memory_results_t gl_results = memory_query(ws->global, query, max_results);
 
     /* Apply weight discount to global results */
     for (int i = 0; i < gl_results.count; i++)

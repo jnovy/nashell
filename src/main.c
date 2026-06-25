@@ -643,7 +643,7 @@ int main(int argc, char **argv) {
                                   cfg->embedding.max_input_chars);
     }
 
-    /* v4 unified memory: load session index for L3 search via memory_recall.
+    /* v4 unified memory: load session index for L3 search via memory_query.
      * Scans sessions/<ts>/ for chunks.emb (v4.1) or summary.emb (legacy). */
     session_index_t *session_idx = NULL;
     {

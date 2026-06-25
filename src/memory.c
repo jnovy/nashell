@@ -545,7 +545,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
         memory_embed_entry(m, key, value);
 
         /* FIX #4: Reload embedding into cached index entry so
-         * memory_recall() sees it immediately (not after restart).
+         * memory_query() sees it immediately (not after restart).
          * Previously the embedding was written to disk but the index
          * entry retained has_emb=0 until process restart. */
         mem_index_entry_t *ie = mem_index_find(&m->idx, key);
@@ -684,7 +684,7 @@ static double score_entry_hybrid(const char *key, const char *value,
          * FIX HIGH#5: Exact key match floor — when substring score is high
          * (≥3.0, indicating exact key match), use the maximum of the blended
          * score and the pure substring score. This prevents enabling embeddings
-         * from degrading exact-key recall (e.g. memory_recall("lesson:foo")
+         * from degrading exact-key recall (e.g. memory_query("lesson:foo")
          * where key matches perfectly but semantic similarity is low). */
         double w_total = (double)(w_sem + w_sub);
         if (w_total < 0.001) w_total = 1.0;  /* guard against zero weights */
@@ -783,11 +783,11 @@ static int scored_cmp_desc(const void *a, const void *b) {
     return 0;
 }
 
-/* Forward declaration — used by memory_recall to persist access_count. */
+/* Forward declaration — used by memory_query to persist access_count. */
 static int memory_increment_field(memory_t *m, const char *key,
                                    const char *field);
 
-/* P1: memory_recall rewritten to use in-memory index cache.
+/* P1: memory_query rewritten to use in-memory index cache.
  * Eliminates O(n) filesystem reads per recall — iterates the cached
  * index array instead of scanning the directory.
  *
@@ -800,7 +800,7 @@ static int memory_increment_field(memory_t *m, const char *key,
  *     without I/O during the scoring phase.
  *   DCPM [arXiv:2606.09483, Jun 2026] — dual-process cognitive memory
  *     with synchronous fast-path access. Index iteration IS the fast path. */
-memory_results_t memory_recall(memory_t *m, const char *query, int max_results) {
+memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     memory_results_t results = {0};
     if (!m || !query || m->idx.count == 0) return results;
 
@@ -1041,7 +1041,7 @@ memory_results_t memory_recall(memory_t *m, const char *query, int max_results) 
     pthread_mutex_unlock(&m->mtx);
 
     /* FIX #7: Removed automatic access_count increment on every recall.
-     * Previously, every memory_recall() incremented access_count for ALL
+     * Previously, every memory_query() incremented access_count for ALL
      * returned results — even those the LLM never uses. With error-triggered
      * recall, scratchpad-enriched recall, and reflection recall happening
      * per react loop, popular memories' access_count inflated far beyond

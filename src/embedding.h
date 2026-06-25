@@ -12,7 +12,7 @@
  * dense vector representations that capture semantic relationships —
  * a continuous, context-aware scoring mechanism.
  *
- * Graceful degradation: if no embedding backend is available, memory_recall
+ * Graceful degradation: if no embedding backend is available, memory_query
  * falls back to the existing substring-based scoring. */
 
 #include <stddef.h>

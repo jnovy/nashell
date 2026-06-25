@@ -52,7 +52,7 @@ static fail_mechanism_t classify_mechanism(const char *tool, const char *error,
     if (!tool) return FMECH_OTHER;
 
     /* Tool name concatenation: LLM emitted two tool names joined together
-     * e.g. "web_fetchweb_search", "memory_recallshell_exec" */
+     * e.g. "web_fetchweb_search", "memory_searchshell_exec" */
     if (strcmp(tool, "unknown_tool") == 0 && error) {
         if (strstr(error, "unknown tool:"))
             return FMECH_WRONG_TOOL;

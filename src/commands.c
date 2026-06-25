@@ -642,7 +642,7 @@ static int ms_parse_args(const char *input, ms_args_t *args) {
 }
 
 /* ── /memory_search — full hybrid search (curated memory + sessions) ── */
-static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
+static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
     ui_state_t *ui = ctx->ui;
 
     ms_args_t args;
@@ -673,7 +673,7 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
         if (ctx->memory || ctx->ws) {
             mem_results = ctx->ws
                 ? workspace_recall(ctx->ws, key, 1)
-                : memory_recall(ctx->memory, key, 1);
+                : memory_query(ctx->memory, key, 1);
             mem_count = mem_results.count;
         }
         if (mem_count == 0) {
@@ -692,7 +692,7 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
         int mem_max = max_results > 0 ? (max_results < 10 ? max_results : 10) : 5;
         mem_results = ctx->ws
             ? workspace_recall(ctx->ws, query, mem_max)
-            : memory_recall(ctx->memory, query, mem_max);
+            : memory_query(ctx->memory, query, mem_max);
         mem_count = mem_results.count;
     }
 
@@ -1987,15 +1987,14 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
         *submitted_query = NULL;
         return rc;
     }
-    if (strncmp(sq, "/memory_search ", 15) == 0 ||
-        strncmp(sq, "/memory_recall ", 15) == 0) {
-        int rc = cmd_memory_recall(ctx, sq + 15);
+    if (strncmp(sq, "/memory_search ", 15) == 0) {
+        int rc = cmd_memory_query(ctx, sq + 15);
         free(sq);
         *submitted_query = NULL;
         return rc;
     }
     if (strncmp(sq, "/ms ", 4) == 0) {
-        int rc = cmd_memory_recall(ctx, sq + 4);
+        int rc = cmd_memory_query(ctx, sq + 4);
         free(sq);
         *submitted_query = NULL;
         return rc;

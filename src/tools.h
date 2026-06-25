@@ -114,7 +114,7 @@ typedef struct {
     int            last_notes_step;          /* step when notes() last used (-1 = never) */
     int            file_reads_since_notes;   /* file_read calls since last notes() */
     int            pre_compact_warned;       /* 1 = pre-compaction warning already fired */
-    /* v4 unified memory: session index for L3 search via memory_recall */
+    /* v4 unified memory: session index for L3 search via memory_query */
     session_index_t *session_idx;
     /* Journal enforcement: set by tool_journal(), checked by tool_execute().
      * If a handler returns without setting this, tool_execute() adds a

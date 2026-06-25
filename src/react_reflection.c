@@ -345,7 +345,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                  * already exists before storing. This prevents reflection from
                  * creating near-duplicate entries on every task.
                  * B4 fix: Load existing entry's cached .emb file directly instead
-                 * of calling memory_recall() (which generates a query embedding)
+                 * of calling memory_query() (which generates a query embedding)
                  * and then re-embedding the existing entry. Saves 2 API calls. */
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");

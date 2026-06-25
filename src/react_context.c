@@ -399,7 +399,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         }
         memory_results_t all_memories = ctx->tools->ws
             ? workspace_recall(ctx->tools->ws, str_cstr(&recall_query), max_candidates)
-            : memory_recall(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
+            : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
         /* Review B5: Replaced INJECT_TYPE macro with debuggable static function calls */

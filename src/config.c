@@ -531,9 +531,7 @@ config_t *config_load(const char *path) {
     /* [tools] — per-tool toggles (e.g., memory_search = false) */
     toml_table_t *tools_sec = toml_table_in(root, "tools");
     if (tools_sec) {
-        /* Accept both new "memory_search" and legacy "memory_recall" config keys */
         toml_datum_t mr = toml_bool_in(tools_sec, "memory_search");
-        if (!mr.ok) mr = toml_bool_in(tools_sec, "memory_recall");
         if (mr.ok && !mr.u.b) {
             /* Block the memory_search tool */
             int n = cfg->n_profile_tools_block;
@@ -934,7 +932,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
 
     /* [react] flags → store on cfg for main.c to apply to react_flags_t.
      * Only override if the profile explicitly sets the value (not -1 = inherit).
-     * This preserves user config.toml settings (e.g., tools.memory_recall = false
+     * This preserves user config.toml settings (e.g., tools.memory_search = false
      * sets profile_inject_memory = 0) unless the model profile explicitly overrides. */
     if (p->inject_memory >= 0) cfg->profile_inject_memory = p->inject_memory;
     if (p->inject_prev_result >= 0) cfg->profile_inject_prev_result = p->inject_prev_result;
@@ -947,7 +945,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
      * These point into the profile's arrays (no copy needed — profile
      * lives as long as cfg).
      * Only override if the profile explicitly sets a filter — preserve
-     * user config.toml settings (e.g., tools.memory_recall = false). */
+     * user config.toml settings (e.g., tools.memory_search = false). */
     if (p->n_tools_allow > 0) {
         cfg->profile_tools_allow = p->tools_allow;
         cfg->n_profile_tools_allow = p->n_tools_allow;
@@ -1424,10 +1422,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
 
         /* [tools] memory_search = true/false — shorthand to disable memory_search
          * tool (hidden from model) and automatic memory injection. When false,
-         * adds "memory_search" to the block list and sets inject_memory = false.
-         * Also accepts legacy "memory_recall" config key for backward compat. */
+         * adds "memory_search" to the block list and sets inject_memory = false. */
         { toml_datum_t mr = toml_bool_in(tools, "memory_search");
-          if (!mr.ok) mr = toml_bool_in(tools, "memory_recall");
           if (mr.ok && !mr.u.b) {
               /* Add "memory_search" to the block list */
               int n = cfg->n_profile_tools_block;

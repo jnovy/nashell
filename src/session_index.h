@@ -3,7 +3,7 @@
 
 /* Session index: in-memory index of past session summaries with embeddings.
  * Enables semantic search across session history via /? query and
- * unified memory_recall (L3 tier in unified memory architecture v4).
+ * unified memory_query (L3 tier in unified memory architecture v4).
  *
  * v4.1: Per-chunk journal RAG — each session gets N chunk embeddings
  * (agent thoughts + tool outputs) instead of just 1 summary embedding.
