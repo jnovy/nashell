@@ -270,6 +270,10 @@ static char *extract_thought(cJSON *params) {
 void ui_state_generate_session_md(ui_state_t *ui) {
     if (!ui || !ui->session_dir) return;
 
+    /* During /agent run, don't overwrite the main session's session.md.
+     * The agent renders into its own reactR*.md in a separate session dir. */
+    if (ui->agent_view) return;
+
     str_t md = str_new(8192);
 
     /* Banner */
@@ -1108,9 +1112,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         free(desc_clean);
 
         /* Preview: show for last step or explicitly expanded steps.
-         * Plan tool always shows full preview rendered as markdown. */
+         * Plan tool always shows full preview rendered as markdown.
+         * file_edit always shows its diff preview. */
         int is_plan = (strcmp(si->tool, "plan") == 0);
-        int show_preview = is_last || is_plan;
+        int is_file_edit = (strcmp(si->tool, "file_edit") == 0);
+        int show_preview = is_last || is_plan || is_file_edit;
         if (!show_preview && si->ref) {
             for (int ei = 0; ei < ui->expanded_count; ei++) {
                 if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
@@ -1141,7 +1147,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             } else {
                 FILE *cf = fopen(rpath, "r");
                 if (cf) {
-                    if (strcmp(si->tool, "file_edit") == 0)
+                    if (is_file_edit)
                         str_append_cstr(&md, "```diff\n");
                     else
                         str_append_cstr(&md, "```\n");

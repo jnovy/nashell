@@ -92,12 +92,14 @@ static int cmd_fork(command_ctx_t *ctx, const char *arg) {
      * session starts with an empty scratchpad. */
     scratchpad_save(&tools->scratch, new_dir);
     /* Switch to forked session */
+    session_lock_release(tools->session_lock_fd);  /* release old session lock */
     journal_free(*ctx->journal);
     free(session_dir);
     *ctx->session_dir = new_dir;
     *ctx->journal = journal_new(new_dir);
     tools->journal = *ctx->journal;
     tools->session_dir = new_dir;
+    tools->session_lock_fd = session_lock_acquire(new_dir);  /* lock new session */
     alias_map_clear(tools->aliases);
     ui_state_set_status(ui, STATUS_READY, "Forked — ready for new query");
     tui_render(ui);
@@ -1442,7 +1444,7 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
     }
 }
 
-/* ── /agents [list|show|run|history|due|result] ────────────────── */
+/* ── /agent [list|show|run|history|due|result] ────────────────── */
 
 /* Helper: find an agent by exact or suffix match.
  * Returns pointer into q->agents[] or NULL. */
@@ -1472,7 +1474,7 @@ static int cmd_agents_list(command_ctx_t *ctx) {
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents: scan failed");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent: scan failed");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1487,7 +1489,7 @@ static int cmd_agents_list(command_ctx_t *ctx) {
         str_appendf(&display,
             "No agents found.\n\n"
             "Create agent definitions in "
-            "`~/.nash/workspaces/<name>/agents/<agent>.yaml`\n");
+            "`~/.nash/workspaces/<name>/agent/<agent>.yaml`\n");
     } else {
         str_appendf(&display,
             "| Agent | Schedule | Last Run | Status | Due |\n"
@@ -1525,8 +1527,8 @@ static int cmd_agents_list(command_ctx_t *ctx) {
 
         str_appendf(&display,
             "\n**%d agents**, %d due now\n\n"
-            "Commands: `/agents show ID`, `/agents run ID`, "
-            "`/agents history`, `/agents result ID`\n",
+            "Commands: `/agent show ID`, `/agent run ID`, "
+            "`/agent history`, `/agent result ID`\n",
             q->n_agents, q->n_due);
     }
 
@@ -1549,7 +1551,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents show: scan failed");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent show: scan failed");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1560,7 +1562,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
     const agent_entry_t *found = agent_find(q, id);
     if (!found) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents show: agent not found");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent show: agent not found");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         agent_queue_free(q);
@@ -1605,14 +1607,14 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
     /* Latest result snippet */
     char result_path[NASH_PATH_MAX];
     snprintf(result_path, sizeof(result_path),
-             "%s/agents/results/%s/latest.md", ctx->nash_dir, found->id);
+             "%s/agent/results/%s/latest.md", ctx->nash_dir, found->id);
     size_t rlen = 0;
     char *result_content = slurp_file(result_path, &rlen);
     if (result_content) {
         str_appendf(&display, "## Latest Result\n\n");
         if (rlen > 500) {
             result_content[500] = '\0';
-            str_appendf(&display, "%s\n\n*...truncated. Use `/agents result %s` for full output.*\n",
+            str_appendf(&display, "%s\n\n*...truncated. Use `/agent result %s` for full output.*\n",
                         result_content, found->id);
         } else {
             str_appendf(&display, "%s\n", result_content);
@@ -1620,7 +1622,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
         free(result_content);
     }
 
-    str_appendf(&display, "\n---\n`/agents run %s` to execute now\n", found->id);
+    str_appendf(&display, "\n---\n`/agent run %s` to execute now\n", found->id);
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
@@ -1650,7 +1652,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents run: scan failed");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent run: scan failed");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1660,7 +1662,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     const agent_entry_t *found = agent_find(q, id);
     if (!found) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents run: agent not found");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent run: agent not found");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         agent_queue_free(q);
@@ -1671,7 +1673,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     if (!pb) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
-            "/agents run: cannot load agent playbook");
+            "/agent run: cannot load agent playbook");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         agent_queue_free(q);
@@ -1708,6 +1710,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     *ctx->inferring = 3;
 
     pthread_mutex_lock(&ui->mtx);
+    ui->agent_view = 1;  /* Don't overwrite main session.md during agent run */
     char msg[256];
     snprintf(msg, sizeof(msg), "Running agent: %s", found->id);
     ui_state_set_status(ui, STATUS_RUNNING, msg);
@@ -1723,7 +1726,7 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
     if (filter_id) while (*filter_id == ' ') filter_id++;
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/agents/history.jsonl", ctx->nash_dir);
+    snprintf(path, sizeof(path), "%s/agent/history.jsonl", ctx->nash_dir);
 
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -1820,7 +1823,7 @@ static int cmd_agents_due(command_ctx_t *ctx) {
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agents due: scan failed");
+        ui_state_set_status(ui, STATUS_ERROR, "/agent due: scan failed");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1850,7 +1853,7 @@ static int cmd_agents_due(command_ctx_t *ctx) {
         str_appendf(&display, "No agents are due right now.\n");
     else
         str_appendf(&display,
-            "\n`/agents run ID` to run one, or `nash --agents` from CLI to run all.\n");
+            "\n`/agent run ID` to run one, or `nash --agent` from CLI to run all.\n");
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
@@ -1871,7 +1874,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
     /* Try exact ID first, then resolve via scan */
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path),
-             "%s/agents/results/%s/latest.md", ctx->nash_dir, id);
+             "%s/agent/results/%s/latest.md", ctx->nash_dir, id);
 
     size_t clen = 0;
     char *content = slurp_file(path, &clen);
@@ -1882,7 +1885,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
             const agent_entry_t *found = agent_find(q, id);
             if (found) {
                 snprintf(path, sizeof(path),
-                         "%s/agents/results/%s/latest.md", ctx->nash_dir, found->id);
+                         "%s/agent/results/%s/latest.md", ctx->nash_dir, found->id);
                 content = slurp_file(path, &clen);
             }
             agent_queue_free(q);
@@ -1892,7 +1895,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
     if (!content) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
-            "/agents result: no result found (agent never run or ID wrong)");
+            "/agent result: no result found (agent never run or ID wrong)");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         return CMD_CONTINUE;
@@ -1911,7 +1914,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
 static int cmd_agents(command_ctx_t *ctx, const char *args) {
     while (*args == ' ') args++;
 
-    /* Default: /agents with no args → list */
+    /* Default: /agent with no args → list */
     if (*args == '\0' || strcmp(args, "list") == 0) {
         return cmd_agents_list(ctx);
     }
@@ -1937,7 +1940,7 @@ static int cmd_agents(command_ctx_t *ctx, const char *args) {
     ui_state_t *ui = ctx->ui;
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_ERROR,
-        "/agents: unknown subcommand (list|show|run|history|due|result)");
+        "/agent: unknown subcommand (list|show|run|history|due|result)");
     pthread_mutex_unlock(&ui->mtx);
     tui_render(ui);
     return CMD_CONTINUE;
@@ -2010,9 +2013,9 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
         *submitted_query = NULL;
         return rc;
     }
-    if (strcmp(sq, "/agents") == 0 ||
-        strncmp(sq, "/agents ", 8) == 0) {
-        int rc = cmd_agents(ctx, strlen(sq) > 7 ? sq + 8 : "");
+    if (strcmp(sq, "/agent") == 0 ||
+        strncmp(sq, "/agent ", 7) == 0) {
+        int rc = cmd_agents(ctx, strlen(sq) > 6 ? sq + 7 : "");
         free(sq);
         *submitted_query = NULL;
         return rc;

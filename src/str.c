@@ -12,6 +12,8 @@
 #include <curl/curl.h>
 #include <dirent.h>
 #include <stdint.h>
+#include <sys/file.h>
+#include <fcntl.h>
 
 str_t str_new(size_t initial_cap) {
     str_t s;
@@ -294,6 +296,41 @@ char *create_session_dir(const char *nash_dir) {
              sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     mkdir(path, 0755);
     return strdup(path);
+}
+
+/* ── Session locking ─────────────────────────────────────────────── */
+
+int session_lock_acquire(const char *session_dir) {
+    if (!session_dir) return -1;
+
+    char lock_path[1120];
+    snprintf(lock_path, sizeof(lock_path), "%s/.lock", session_dir);
+
+    int fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "[session] warning: cannot create lock file %s: %s\n",
+                lock_path, strerror(errno));
+        return -1;
+    }
+
+    if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
+        if (errno == EWOULDBLOCK) {
+            fprintf(stderr,
+                    "[session] ERROR: session %s is already in use by another process\n",
+                    session_dir);
+        } else {
+            fprintf(stderr, "[session] warning: flock(%s) failed: %s\n",
+                    lock_path, strerror(errno));
+        }
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+void session_lock_release(int fd) {
+    if (fd >= 0) close(fd);  /* flock is automatically released on close */
 }
 
 char *slurp_file(const char *path, size_t *out_len) {

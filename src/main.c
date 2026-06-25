@@ -216,6 +216,7 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
     tools->memory = memory;
     tools->ws = ws;
     tools->session_dir = session_dir;
+    tools->session_lock_fd = session_lock_acquire(session_dir);
     tools->cfg = cfg;
     tools->provider = provider;
     tools->react_loop = journal_max_react_loop(journal) + 1;
@@ -258,6 +259,8 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
     alias_map_free(tools->aliases);
     free(tools->last_spec_hash);
     tools->last_spec_hash = NULL;
+    session_lock_release(tools->session_lock_fd);
+    tools->session_lock_fd = -1;
     journal_free(journal);
 }
 
@@ -313,10 +316,10 @@ int main(int argc, char **argv) {
     int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
     int matrix_mode = 0;                  /* --matrix: Matrix bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
-    int agents_mode = 0;                  /* --agents: scan workspaces, run due agents */
-    int agents_list = 0;                  /* --agents --list: show agent table */
-    int agents_dry_run = 0;               /* --agents --dry-run: show what would run */
-    const char *agents_force_id = NULL;    /* --agents --force ID: run specific agent */
+    int agents_mode = 0;                  /* --agent: scan workspaces, run due agents */
+    int agents_list = 0;                  /* --agent --list: show agent table */
+    int agents_dry_run = 0;               /* --agent --dry-run: show what would run */
+    const char *agents_force_id = NULL;    /* --agent --force ID: run specific agent */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             free(cfg->api_base);
@@ -379,7 +382,7 @@ int main(int argc, char **argv) {
             cfg->workspace = strdup(argv[++i]);
         } else if (strcmp(argv[i], "--isolated") == 0) {
             cfg->workspace_isolated = 1;
-        } else if (strcmp(argv[i], "--agents") == 0) {
+        } else if (strcmp(argv[i], "--agent") == 0) {
             agents_mode = 1;
         } else if (strcmp(argv[i], "--list") == 0) {
             agents_list = 1;
@@ -416,17 +419,17 @@ int main(int argc, char **argv) {
             printf("  --matrix              Matrix bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nAgents (autonomous scheduled workflows):\n");
-            printf("  --agents              Scan workspaces, run due agents, exit\n");
-            printf("  --agents --list       Show all discovered agents and status\n");
-            printf("  --agents --dry-run    Show what would run without executing\n");
-            printf("  --agents --force ID   Run specific agent regardless of schedule\n");
+            printf("  --agent              Scan workspaces, run due agents, exit\n");
+            printf("  --agent --list       Show all discovered agents and status\n");
+            printf("  --agent --dry-run    Show what would run without executing\n");
+            printf("  --agent --force ID   Run specific agent regardless of schedule\n");
             printf("\nTUI commands (inside interactive session):\n");
-            printf("  /agents               List all agents with schedule and status\n");
-            printf("  /agents show ID       Show agent detail (config, last result)\n");
-            printf("  /agents run ID        Run agent with live TUI output\n");
-            printf("  /agents due           Show agents currently due\n");
-            printf("  /agents history [ID]  Show execution history\n");
-            printf("  /agents result ID     Show latest result for an agent\n");
+            printf("  /agent               List all agents with schedule and status\n");
+            printf("  /agent show ID       Show agent detail (config, last result)\n");
+            printf("  /agent run ID        Run agent with live TUI output\n");
+            printf("  /agent due           Show agents currently due\n");
+            printf("  /agent history [ID]  Show execution history\n");
+            printf("  /agent result ID     Show latest result for an agent\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
@@ -591,7 +594,7 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Print banner (skip in headless playbook/agents mode) */
+    /* Print banner (skip in headless playbook/agent mode) */
     if (!play_arg && !agents_mode)
         print_banner(cfg, props_json, nash_dir, matched_profile_file);
 
@@ -894,12 +897,12 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    /* Agents mode: scan workspaces, build calendar, run due agents */
+    /* Agent mode: scan workspaces, build calendar, run due agents */
     if (agents_mode) {
-        /* Acquire lock (separate from daemon lock — uses agents.lock) */
+        /* Acquire lock (separate from daemon lock — uses agent.lock) */
         {
             char lock_path[NASH_PATH_MAX];
-            snprintf(lock_path, sizeof(lock_path), "%s/agents", nash_dir);
+            snprintf(lock_path, sizeof(lock_path), "%s/agent", nash_dir);
             mkdir(lock_path, 0755);
         }
 
@@ -915,7 +918,7 @@ int main(int argc, char **argv) {
         /* Scan + schedule */
         agent_queue_t *q = agent_scan(nash_dir);
         if (!q) {
-            fprintf(stderr, "[agents] error: scan failed\n");
+            fprintf(stderr, "[agent] error: scan failed\n");
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
@@ -930,7 +933,7 @@ int main(int argc, char **argv) {
         }
 
         if (agents_dry_run) {
-            fprintf(stderr, "[agents] DRY RUN — would execute:\n");
+            fprintf(stderr, "[agent] DRY RUN — would execute:\n");
             int n = 0;
             for (int i = 0; i < q->n_agents; i++) {
                 if (!q->agents[i].is_due) continue;
@@ -944,7 +947,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  %d. %-40s (due: %s, timeout: %ds)\n",
                         n, q->agents[i].id, tstr, q->agents[i].timeout);
             }
-            if (n == 0) fprintf(stderr, "  (no agents due)\n");
+            if (n == 0) fprintf(stderr, "  (no agent definitions due)\n");
             agent_queue_free(q);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 0;

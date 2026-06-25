@@ -53,6 +53,15 @@ int mkdir_p(const char *path, mode_t mode);
  * Returns strdup'd path. Caller must free. */
 char *create_session_dir(const char *nash_dir);
 
+/* Acquire an exclusive flock on <session_dir>/.lock.
+ * Returns the lock fd (>= 0) on success, -1 on failure.
+ * Non-blocking: if another process holds the lock, logs a warning
+ * and returns -1 (caller decides whether to abort or continue). */
+int session_lock_acquire(const char *session_dir);
+
+/* Release and close a session lock fd. Safe to call with fd == -1. */
+void session_lock_release(int fd);
+
 /* ── HTTP helpers (libcurl) ─────────────────────────────────────────
  * Perform a simple HTTP GET.  Stores response body into *out (str_t).
  * Caller must str_free(*out) on success.

@@ -574,6 +574,7 @@ void *playbook_worker(void *arg) {
             .journal = pass_journal,
             .memory = pa->memory,
             .session_dir = pass_dir,
+            .session_lock_fd = session_lock_acquire(pass_dir),
             .cfg = pa->cfg,
             .provider = pa->provider,
             .react_loop = pass_react_loop,
@@ -643,6 +644,7 @@ void *playbook_worker(void *arg) {
          * For PB_SCRATCH_ISOLATED: sections must be freed here. */
         scratchpad_free(&pass_tools.scratch);
         alias_map_free(pass_tools.aliases);
+        session_lock_release(pass_tools.session_lock_fd);
         journal_free(pass_journal);
         free(pass_dir);
 

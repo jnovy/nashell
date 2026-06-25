@@ -71,6 +71,7 @@ typedef struct {
     workspace_t   *ws;            /* workspace: two-layer memory (global + workspace) */
     config_t      *cfg;           /* configuration (tool limits, etc.) */
     char          *session_dir;   /* .sessions/<id>/ */
+    int            session_lock_fd; /* flock fd for exclusive session access (-1 = none) */
     scratchpad_t   scratch;       /* section-based scratchpad */
     provider_t    *provider;     /* provider abstraction (FIX #3: for consolidation) */
     int            step;          /* current step number (within react loop) */
@@ -123,6 +124,10 @@ typedef struct {
 
 /* Track a recalled memory key for post-task validation scoring */
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
+
+/* Scan session_dir for existing R<loop>S<N> symlinks and return the
+ * highest sequence number found, or -1 if none exist. */
+int alias_scan_max_seq(const char *session_dir, int react_loop);
 
 /* Register a store hash as a step alias, returns alias string like "R1S0".
  * Caller must free the returned string. */

@@ -251,6 +251,36 @@ const char *alias_map_reverse_lookup(alias_map_t *map, const char *hash) {
 
 /* ── public alias API (thin wrappers over hash map) ───── */
 
+/* Scan session_dir for existing R<loop>S<N> symlinks and return the
+ * highest N found, or -1 if none exist.  Used by react_run() to set
+ * next_seq past any refs created by earlier queries in the same session,
+ * preventing alias collisions and stale symlink shadowing. */
+int alias_scan_max_seq(const char *session_dir, int react_loop) {
+    if (!session_dir) return -1;
+    DIR *d = opendir(session_dir);
+    if (!d) return -1;
+
+    char prefix[32];
+    int prefix_len = snprintf(prefix, sizeof(prefix), "R%dS", react_loop);
+    int max_seq = -1;
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strncmp(ent->d_name, prefix, (size_t)prefix_len) != 0)
+            continue;
+        /* Parse the sequence number after the prefix */
+        const char *seq_str = ent->d_name + prefix_len;
+        char *endp;
+        long seq = strtol(seq_str, &endp, 10);
+        if (endp != seq_str && *endp == '\0' && seq >= 0) {
+            if ((int)seq > max_seq)
+                max_seq = (int)seq;
+        }
+    }
+    closedir(d);
+    return max_seq;
+}
+
 char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     if (!ctx || !ctx->aliases) {
         nash_log("[tools] CRITICAL: tool_register_alias called with NULL ctx/aliases");
@@ -269,7 +299,13 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
         char target[NASH_PATH_MAX];
         snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, alias_buf);
         snprintf(target, sizeof(target), "../../store/%s", hash);
-        symlink(target, link_path);  /* ignore EEXIST */
+        /* Force-overwrite: remove stale symlink from previous query in
+         * same session before creating the new one.  Without this, a
+         * second react_run() in the same session reuses R0S0, R0S1, ...
+         * but the old symlinks survive (symlink() returns EEXIST) and
+         * point to the *previous* query's store content. */
+        unlink(link_path);           /* remove stale symlink if exists */
+        symlink(target, link_path);  /* may still fail (e.g. dir gone) */
     }
 
     /* Return a copy of the alias string. Caller must free.

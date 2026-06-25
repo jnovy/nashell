@@ -520,6 +520,8 @@ const char *react_get_action_desc(cJSON *action, const char *action_name,
         return "[saving notes]";
     if (strcmp(action_name, "done") == 0)
         return thought;
+    if (strcmp(action_name, "file_edit") == 0)
+        return NULL;
 
     /* Generic: look up first required param from the registry schema */
     for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
@@ -677,10 +679,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     else if (ctx->tools->memory)
         memory_git_defer(ctx->tools->memory);
 
-    /* Reset alias sequence counter so new aliases start at R<N>S0.
-     * Do NOT clear the hash map — old aliases (R0S0, R0S1, etc.) must
-     * remain resolvable for cross-loop file_read("R0S5") references. */
-    ctx->tools->aliases->next_seq = 0;
+    /* Set alias sequence counter past any existing symlinks in the session
+     * directory so new aliases don't collide with refs from earlier queries.
+     * Without this, each react_run() would start at R<N>S0 and silently
+     * shadow symlinks created by previous queries in the same session. */
+    ctx->tools->aliases->next_seq =
+        alias_scan_max_seq(ctx->tools->session_dir, ctx->tools->react_loop) + 1;
 
     /* Check for checkpoint — resume interrupted task */
     int resume_step = 0;

@@ -3,9 +3,9 @@
  *
  * Scans workspaces for agent definitions (YAML files with cron schedules),
  * builds a time-sorted execution calendar, and runs due agents sequentially
- * via playbook_worker(). Invoked by `nash --agents`.
+ * via playbook_worker(). Invoked by `nash --agent`.
  *
- * Agent YAML files live in ~/.nash/workspaces/NAME/agents/ as .yaml files.
+ * Agent YAML files live in ~/.nash/workspaces/NAME/agent/ as .yaml files.
  * They extend the standard playbook format with: schedule, timeout, enabled.
  */
 
@@ -164,7 +164,7 @@ time_t agent_next_occurrence(const agent_schedule_t *sched, time_t after) {
 /* ── Recursive workspace scanner ─────────────────────── */
 
 /* Scan a directory for workspaces. A directory is a workspace if it contains
- * an agents/ subdirectory with .yaml files. Handles nested workspaces like
+ * an agent/ subdirectory with .yaml files. Handles nested workspaces like
  * rh/container-tools by recursing into subdirectories.
  *
  * ws_prefix: relative workspace name prefix (e.g., "rh" when scanning rh/)
@@ -173,13 +173,13 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                                 const char *ws_prefix,
                                 agent_entry_t **agents, int *n_agents,
                                 int *cap_agents) {
-    /* Check if this directory has an agents/ subdirectory */
+    /* Check if this directory has an agent/ subdirectory */
     char agents_dir[NASH_PATH_MAX];
-    snprintf(agents_dir, sizeof(agents_dir), "%s/agents", dir_path);
+    snprintf(agents_dir, sizeof(agents_dir), "%s/agent", dir_path);
 
     struct stat st;
     if (stat(agents_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
-        /* Scan .yaml files in agents/ */
+        /* Scan .yaml files in agent/ */
         DIR *dp = opendir(agents_dir);
         if (dp) {
             struct dirent *de;
@@ -224,7 +224,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 /* Parse schedule */
                 agent_schedule_t parsed_sched;
                 if (agent_parse_schedule(sched_str, &parsed_sched) != 0) {
-                    fprintf(stderr, "[agents] warning: bad schedule '%s' in %s\n",
+                    fprintf(stderr, "[agent] warning: bad schedule '%s' in %s\n",
                             sched_str, yaml_path);
                     yaml_free(root);
                     continue;
@@ -266,7 +266,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
     struct dirent *de;
     while ((de = readdir(dp)) != NULL) {
         if (de->d_name[0] == '.') continue;
-        if (strcmp(de->d_name, "agents") == 0) continue; /* skip agents dir itself */
+        if (strcmp(de->d_name, "agent") == 0) continue; /* skip agent dir itself */
         if (strcmp(de->d_name, ".memory") == 0) continue;
         if (strcmp(de->d_name, "memory") == 0) continue;
 
@@ -319,7 +319,7 @@ int agent_queue_load(agent_queue_t *q, const char *nash_dir) {
     if (!q || !nash_dir) return -1;
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/agents/queue.json", nash_dir);
+    snprintf(path, sizeof(path), "%s/agent/queue.json", nash_dir);
 
     cJSON *root = slurp_json(path);
     if (!root) return 0; /* no queue file yet — first run */
@@ -365,9 +365,9 @@ int agent_queue_load(agent_queue_t *q, const char *nash_dir) {
 int agent_queue_save(const agent_queue_t *q, const char *nash_dir) {
     if (!q || !nash_dir) return -1;
 
-    /* Ensure agents/ directory exists */
+    /* Ensure agent/ directory exists */
     char agents_dir[NASH_PATH_MAX];
-    snprintf(agents_dir, sizeof(agents_dir), "%s/agents", nash_dir);
+    snprintf(agents_dir, sizeof(agents_dir), "%s/agent", nash_dir);
     mkdirp(agents_dir);
 
     cJSON *root = cJSON_CreateObject();
@@ -397,15 +397,15 @@ int agent_queue_save(const agent_queue_t *q, const char *nash_dir) {
 
     /* Atomic write: .tmp + rename */
     char tmp_path[NASH_PATH_MAX], final_path[NASH_PATH_MAX];
-    snprintf(tmp_path, sizeof(tmp_path), "%s/agents/queue.json.tmp", nash_dir);
-    snprintf(final_path, sizeof(final_path), "%s/agents/queue.json", nash_dir);
+    snprintf(tmp_path, sizeof(tmp_path), "%s/agent/queue.json.tmp", nash_dir);
+    snprintf(final_path, sizeof(final_path), "%s/agent/queue.json", nash_dir);
 
     int rc = write_file(tmp_path, json_str, strlen(json_str));
     free(json_str);
     if (rc != 0) return -1;
 
     if (rename(tmp_path, final_path) != 0) {
-        fprintf(stderr, "[agents] error: rename %s → %s: %s\n",
+        fprintf(stderr, "[agent] error: rename %s → %s: %s\n",
                 tmp_path, final_path, strerror(errno));
         return -1;
     }
@@ -466,11 +466,11 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
     if (!nash_dir || !agent) return -1;
 
     char agents_dir[NASH_PATH_MAX];
-    snprintf(agents_dir, sizeof(agents_dir), "%s/agents", nash_dir);
+    snprintf(agents_dir, sizeof(agents_dir), "%s/agent", nash_dir);
     mkdirp(agents_dir);
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/agents/history.jsonl", nash_dir);
+    snprintf(path, sizeof(path), "%s/agent/history.jsonl", nash_dir);
 
     FILE *f = fopen(path, "a");
     if (!f) return -1;
@@ -557,7 +557,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             continue;
         }
 
-        fprintf(stderr, "[agents] ▶ %s\n", a->id);
+        fprintf(stderr, "[agent] ▶ %s\n", a->id);
 
         /* Create workspace for this agent */
         workspace_t *agent_ws = workspace_new(nash_dir, a->workspace_name,
@@ -567,7 +567,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         /* Load playbook from agent YAML */
         playbook_t *pb = playbook_load(a->agent_file);
         if (!pb) {
-            fprintf(stderr, "[agents] ✗ failed to load agent '%s'\n", a->id);
+            fprintf(stderr, "[agent] ✗ failed to load agent '%s'\n", a->id);
             n_fail++;
             workspace_free(agent_ws);
             continue;
@@ -626,7 +626,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
         char durbuf[32];
         fmt_duration(dur, durbuf, sizeof(durbuf));
-        fprintf(stderr, "[agents] %s %s (%s, %s)\n",
+        fprintf(stderr, "[agent] %s %s (%s, %s)\n",
                 pargs.playbook_ok ? "✓" : "✗",
                 a->id, status, durbuf);
 
@@ -636,7 +636,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         workspace_free(agent_ws);
     }
 
-    fprintf(stderr, "[agents] done: %d scanned, %d due, %d ok, %d failed\n",
+    fprintf(stderr, "[agent] done: %d scanned, %d due, %d ok, %d failed\n",
             q->n_agents, q->n_due, n_ok, n_fail);
 
     return n_fail;

@@ -151,6 +151,9 @@ typedef struct {
     int           *page_search_lines;   /* rendered line numbers of matches */
     int            page_search_lines_cap; /* allocated capacity */
 
+    /* ── Agent view flag ── */
+    int            agent_view;       /* 1 = viewing agent output (skip session.md regen) */
+
     /* ── Deferred regeneration flags ── */
     /* Set by the inference thread's event handler (under mtx) to request
      * expensive file I/O without holding the mutex during the actual I/O.

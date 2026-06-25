@@ -381,6 +381,14 @@ void ui_state_back(ui_state_t *ui) {
         ui->nav_depth--;
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
 
+        /* Leaving agent view — clear flag so session.md regen resumes,
+         * and clear playbook provenance so react MD uses main session. */
+        if (ui->agent_view && ui->nav_depth == 0) {
+            ui->agent_view = 0;
+            free(ui->playbook_session_dir);
+            ui->playbook_session_dir = NULL;
+        }
+
         free(ui->current_filepath);
         ui->current_filepath = entry->filepath;
         entry->filepath = NULL;
