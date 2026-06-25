@@ -1199,7 +1199,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 
         } else if (line_buf[0] == '~' && line_buf[1] == '>'
                    && line_buf[2] == ' ') {
-            /* Green thought paragraph — renders text in green (C_SUCCESS)
+            /* Thought paragraph — renders text in normal color (white)
              * with word-wrapping, no decoration bar. */
             const char *gp_text = line_buf + 3;
             int gp_len = (int)strlen(gp_text);
@@ -1208,7 +1208,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 if (visible) {
                     inline_seg_t segs[MAX_INLINE_SEGS];
                     int n = parse_inline(gp_text, gp_len, segs, MAX_INLINE_SEGS);
-                    apply_attr_to_segs(segs, n, COLOR_PAIR(C_SUCCESS));
+                    apply_attr_to_segs(segs, n, COLOR_PAIR(C_NORMAL));
                     int total_dcols = 0;
                     for (int k = 0; k < n; k++)
                         total_dcols += seg_display_cols(segs[k].text, segs[k].len);

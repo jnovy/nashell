@@ -990,7 +990,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             } \
         } while (0)
 
-        /* Helper: emit thought text as a green paragraph (using ~> prefix).
+        /* Helper: emit thought text as a normal paragraph (using ~> prefix).
          * Each line of the thought becomes a separate ~> line.
          * If thought is a single long line, emit it as one ~> line
          * (md_render.c will word-wrap it). */
