@@ -520,9 +520,6 @@ const char *react_get_action_desc(cJSON *action, const char *action_name,
         return "[saving notes]";
     if (strcmp(action_name, "done") == 0)
         return thought;
-    if (strcmp(action_name, "file_edit") == 0)
-        return NULL;
-
     /* Generic: look up first required param from the registry schema */
     for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
         if (strcmp(action_name, TOOL_REGISTRY[i].name) != 0)

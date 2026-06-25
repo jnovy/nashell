@@ -263,8 +263,21 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
     free(ui->banner);
     ui->banner = banner ? strdup(banner) : NULL;
     ui_state_generate_session_md(ui);
-    if (viewing_session(ui))
+    if (viewing_session(ui)) {
         ui_state_reload_file(ui);
+    } else if (banner && ui->session_dir) {
+        /* Navigate to session.md so the banner is visible even when
+         * the user is viewing a different file (e.g. a react output).
+         * Slash commands like /agent and /runs set banners that the
+         * user expects to see immediately. */
+        char spath[NASH_PATH_MAX];
+        snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
+        free(ui->current_filepath);
+        ui->current_filepath = strdup(spath);
+        ui->scroll_y = 0;
+        ui->cursor_link = 0;
+        ui_state_reload_file(ui);
+    }
 }
 
 void ui_state_add_query(ui_state_t *ui, const char *query_text) {

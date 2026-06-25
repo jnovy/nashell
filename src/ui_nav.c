@@ -421,6 +421,43 @@ void ui_state_back(ui_state_t *ui) {
     ui->dirty = 1;
 }
 
+/* ── Push transient content onto nav stack ───────────────── */
+
+void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdown) {
+    if (!ui || !markdown || !ui->session_dir) return;
+
+    /* 1. Write content to a dot-file (hidden from session listings) */
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/.cmd-%s.md", ui->session_dir, name);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fputs(markdown, f);
+    fclose(f);
+
+    /* 2. Push current view onto nav stack */
+    if (ui->nav_depth >= ui->nav_cap) {
+        ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+        ui->nav_stack = realloc(ui->nav_stack,
+                                (size_t)ui->nav_cap * sizeof(nav_entry_t));
+    }
+    nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
+    entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    entry->scroll_y = ui->scroll_y;
+    entry->scroll_x = ui->scroll_x;
+    entry->cursor_link = ui->cursor_link;
+    entry->saved_doc = NULL;
+    ui->nav_depth++;
+
+    /* 3. Navigate to the new file */
+    free(ui->current_filepath);
+    ui->current_filepath = strdup(path);
+    ui->scroll_y = 0;
+    ui->scroll_x = 0;
+    ui->cursor_link = 0;
+    ui_state_reload_file(ui);
+    ui->dirty = 1;
+}
+
 void ui_state_page_up(ui_state_t *ui) {
     if (!ui) return;
     /* Page-up while react loop is running → user takes scroll control */

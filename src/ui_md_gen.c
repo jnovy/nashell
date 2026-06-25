@@ -108,6 +108,9 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         }
         return path->valuestring;
     }
+    if ((strcmp(tool, "file_edit") == 0 || strcmp(tool, "file_write") == 0) &&
+        path && path->valuestring)
+        return path->valuestring;
     if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
         url && url->valuestring)
         return url->valuestring;
@@ -1155,10 +1158,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                     int line_count = 0;
                     size_t total = 0;
                     size_t n;
+                    /* file_edit: show full diff without truncation */
+                    int max_lines = is_file_edit ? INT_MAX : 5;
+                    size_t max_bytes = is_file_edit ? SIZE_MAX : 8000;
                     while ((n = fread(cbuf, 1, sizeof(cbuf)-1, cf)) > 0
-                           && total < 8000 && line_count < 5) {
+                           && total < max_bytes && line_count < max_lines) {
                         cbuf[n] = '\0';
-                        for (size_t k = 0; k < n && line_count < 5; k++) {
+                        for (size_t k = 0; k < n && line_count < max_lines; k++) {
                             str_append(&md, &cbuf[k], 1);
                             total++;
                             if (cbuf[k] == '\n') line_count++;

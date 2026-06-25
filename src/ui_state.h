@@ -182,6 +182,11 @@ void ui_state_back(ui_state_t *ui);      /* pop nav stack (Esc) */
 void ui_state_page_up(ui_state_t *ui);
 void ui_state_page_down(ui_state_t *ui);
 
+/* Push transient markdown content (command output) onto the nav stack.
+ * Writes `markdown` to a hidden .cmd-{name}.md file in session_dir and
+ * navigates to it.  ESC naturally pops back to the previous view. */
+void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdown);
+
 /* ── Input editing ───────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch);

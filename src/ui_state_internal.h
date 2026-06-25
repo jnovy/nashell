@@ -26,6 +26,8 @@
 #include <libgen.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <limits.h>
+#include <stdint.h>
 
 /* ── Shared helpers ──────────────────────────────────────── */
 

@@ -283,7 +283,7 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
         }
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_banner(ui, banner);
+        ui_state_push_content(ui, "playbooks", banner);
         ui_state_set_status(ui, STATUS_READY, "Playbook list");
         pthread_mutex_unlock(&ui->mtx);
         free(banner);
@@ -413,7 +413,7 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
 
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_banner(ui, banner);
+        ui_state_push_content(ui, "run-detail", banner);
         ui_state_set_status(ui, STATUS_READY, "Run log");
         pthread_mutex_unlock(&ui->mtx);
         free(banner);
@@ -511,7 +511,7 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
 
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_banner(ui, banner);
+        ui_state_push_content(ui, "runs", banner);
         ui_state_set_status(ui, STATUS_READY, "Run list");
         pthread_mutex_unlock(&ui->mtx);
         free(banner);
@@ -846,7 +846,7 @@ static int cmd_memory_recall(command_ctx_t *ctx, const char *input) {
     char *banner = strdup(str_cstr(&md_file));
     str_free(&md_file);
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, banner);
+    ui_state_push_content(ui, "memory-search", banner);
     ui_state_set_status(ui, STATUS_READY,
         "Memory search complete");
     pthread_mutex_unlock(&ui->mtx);
@@ -1534,7 +1534,7 @@ static int cmd_agents_list(command_ctx_t *ctx) {
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, banner);
+    ui_state_push_content(ui, "agents", banner);
     ui_state_set_status(ui, STATUS_READY, "Agent list");
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
@@ -1626,7 +1626,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, banner);
+    ui_state_push_content(ui, "agent-detail", banner);
     ui_state_set_status(ui, STATUS_READY, "Agent detail");
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
@@ -1734,7 +1734,7 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
         str_appendf(&display, "# Agent History\n\nNo history yet.\n");
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
-        ui_state_set_banner(ui, banner);
+        ui_state_push_content(ui, "agent-history", banner);
         ui_state_set_status(ui, STATUS_READY, "Agent history");
         pthread_mutex_unlock(&ui->mtx);
         free(banner);
@@ -1808,7 +1808,7 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, banner);
+    ui_state_push_content(ui, "agent-history", banner);
     ui_state_set_status(ui, STATUS_READY, "Agent history");
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
@@ -1857,7 +1857,7 @@ static int cmd_agents_due(command_ctx_t *ctx) {
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, banner);
+    ui_state_push_content(ui, "agents-due", banner);
     ui_state_set_status(ui, STATUS_READY, n > 0 ? "Agents due" : "No agents due");
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
@@ -1902,7 +1902,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
     }
 
     pthread_mutex_lock(&ui->mtx);
-    ui_state_set_banner(ui, content);
+    ui_state_push_content(ui, "agent-result", content);
     ui_state_set_status(ui, STATUS_READY, "Agent result");
     pthread_mutex_unlock(&ui->mtx);
     free(content);
