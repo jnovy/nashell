@@ -569,7 +569,12 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
         cJSON *q_p = cJSON_CreateObject();
         cJSON_AddStringToObject(q_p, "text", user_query);
-        cJSON_AddNumberToObject(q_p, "parent_loop", ctx->parent_loop);
+        /* Guard against self-referencing parent_loop (parent == self is
+         * nonsensical and breaks DFS root detection in session.md). */
+        int effective_parent = ctx->parent_loop;
+        if (effective_parent == ctx->tools->react_loop)
+            effective_parent = -1;
+        cJSON_AddNumberToObject(q_p, "parent_loop", effective_parent);
         char *q_hash = store_save(ctx->tools->store, user_query);
         char *q_alias = q_hash ? tool_register_alias(ctx->tools, q_hash) : NULL;
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, q_alias,

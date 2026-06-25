@@ -482,10 +482,12 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         int *dfs_depth = malloc((size_t)stack_cap * sizeof(int));
         int stop = 0;
 
-        /* Find roots: parent_loop == -1, or parent not found in qinfos.
+        /* Find roots: parent_loop == -1, self-referencing (parent == self),
+         * or parent not found in qinfos.
          * Push in reverse order so first root is processed first. */
         for (int i = qcount - 1; i >= 0; i--) {
-            int is_root = (qinfos[i].parent_loop < 0);
+            int is_root = (qinfos[i].parent_loop < 0 ||
+                           qinfos[i].parent_loop == qinfos[i].react_loop);
             if (!is_root) {
                 /* Check if parent exists in qinfos */
                 int found = 0;
