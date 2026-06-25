@@ -130,6 +130,9 @@ static int is_stopword(const char *word) {
         "int", "char", "void", "const", "return", "else",
         "while", "struct", "null", "true", "false", "static",
         "function", "var", "let", "new", "class", "string",
+        "switch", "case", "break", "continue", "default", "goto",
+        "public", "private", "protected", "interface", "impl", "trait",
+        "include", "define", "ifdef", "endif", "pragma",
         NULL
     };
     for (int i = 0; stopwords[i]; i++) {
@@ -373,7 +376,7 @@ static int cmp_index_asc(const void *a, const void *b) {
 /* B6 FIX: Shared chunk assembly helper. Writes chunks into `out` buffer up to
  * max_chars, appending COMPRESS_TAG if truncated. `indices` maps iteration order
  * to chunk[] indices (NULL = direct 0..count-1). Returns bytes written. */
-static size_t emit_chunks(char *out, size_t out_cap, char **chunks,
+static size_t emit_chunks(char *out, char **chunks,
                           const int *indices, int count, int max_chars,
                           int total_chunks) {
     size_t pos = 0;
@@ -389,7 +392,7 @@ static size_t emit_chunks(char *out, size_t out_cap, char **chunks,
         out[pos++] = '\n';
         emitted++;
     }
-    if (emitted < total_chunks && pos + COMPRESS_TAG_LEN < out_cap) {
+    if (emitted < total_chunks && pos + COMPRESS_TAG_LEN <= (size_t)max_chars) {
         memcpy(out + pos, COMPRESS_TAG, COMPRESS_TAG_LEN);
         pos += COMPRESS_TAG_LEN;
     }
@@ -432,7 +435,7 @@ char *compress_to_relevant(const char *text, const char *query,
         size_t out_cap = total + COMPRESS_TAG_LEN + 1;
         char *out = malloc(out_cap);
         if (out)
-            emit_chunks(out, out_cap, chunks, NULL, n_chunks, max_chars,
+            emit_chunks(out, chunks, NULL, n_chunks, max_chars,
                         n_chunks);
         free_chunks(chunks, n_chunks);
         return out;
@@ -490,8 +493,8 @@ char *compress_to_relevant(const char *text, const char *query,
         else if (i == 1) scored[i].score += bonus_scale * 0.73f;
         else if (i == 2) scored[i].score += bonus_scale * 0.47f;
         /* FLAW 1 FIX: Guard tail bonus against overlap with head region.
-         * Previously when n_chunks<=4, middle chunks got BOTH head+tail
-         * bonuses, inverting the intended ranking. */
+         * The i>2 guard prevents chunks 0-2 (head-boosted) from also
+         * receiving the tail bonus, regardless of n_chunks. */
         if (i >= n_chunks - 2 && i > 2) scored[i].score += bonus_scale * 0.5f;
     }
 
@@ -514,7 +517,7 @@ char *compress_to_relevant(const char *text, const char *query,
     int *indices = malloc((size_t)keep * sizeof(int));
     if (indices) {
         for (int i = 0; i < keep; i++) indices[i] = scored[i].index;
-        emit_chunks(out, out_cap, chunks, indices, keep, max_chars, n_chunks);
+        emit_chunks(out, chunks, indices, keep, max_chars, n_chunks);
         free(indices);
     } else {
         out[0] = '\0';

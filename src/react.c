@@ -966,8 +966,28 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             log_parse_error(ctx, step + 1, "parse_error", response,
                             "LLM response was not valid JSON");
 
-            /* Retry — tell model to use tool_calls */
-            llm_chat_add(chat, "assistant", response);
+            /* Retry — tell model to use tool_calls.
+             * Truncate the malformed response before injecting into context:
+             * the model only needs a short excerpt to understand what went
+             * wrong — injecting 10K+ tokens of non-JSON prose is pure waste
+             * (observed: 55s / 10518 tokens burned in session 1782390827). */
+            #define PARSE_ERR_PREVIEW_LEN 500
+            size_t resp_len = strlen(response);
+            if (resp_len > PARSE_ERR_PREVIEW_LEN + 40) {
+                char *trunc = malloc(PARSE_ERR_PREVIEW_LEN + 64);
+                if (trunc) {
+                    snprintf(trunc, PARSE_ERR_PREVIEW_LEN + 64,
+                             "%.*s\n[...truncated %zu chars...]",
+                             PARSE_ERR_PREVIEW_LEN, response,
+                             resp_len - PARSE_ERR_PREVIEW_LEN);
+                    llm_chat_add(chat, "assistant", trunc);
+                    free(trunc);
+                } else {
+                    llm_chat_add(chat, "assistant", response);
+                }
+            } else {
+                llm_chat_add(chat, "assistant", response);
+            }
             llm_chat_add(chat, "user",
                 "Your response was plain text, not a JSON tool call. "
                 "If you are finished, call the `done` tool with your result. "
