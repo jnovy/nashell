@@ -265,17 +265,9 @@ static inline long react_calc_floor_chars_pol(const llm_chat_t *chat,
     long floor = base * pol->floor_pct / 100;
     return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
 }
-/* Convenience wrapper using default policy from config. */
-static inline long react_calc_floor_chars(const llm_chat_t *chat,
-                                          int evict_start, int evict_end,
-                                          long context_budget,
-                                          long known_head_chars,
-                                          long known_tail_chars) {
-    eviction_policy_t pol = react_eviction_policy(NULL);
-    return react_calc_floor_chars_pol(chat, evict_start, evict_end,
-                                      context_budget, known_head_chars,
-                                      known_tail_chars, &pol);
-}
+/* BUG 5 FIX: Removed dead react_calc_floor_chars() convenience wrapper that
+ * called react_eviction_policy(NULL), using hardcoded defaults instead of
+ * user config. All callers use react_calc_floor_chars_pol() directly. */
 
 /* Compute context_budget in chars from provider config. */
 static inline long react_context_budget(const react_ctx_t *ctx) {
@@ -525,10 +517,12 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
 
 /* Shared emergency breadcrumb + scratchpad injection.
  * Injects breadcrumb summary + MEMORY_HINT + scratchpad (budget-guarded).
- * Used by evict_finalize strategy-2 and react_emergency_evict_and_reinject. */
+ * Used by evict_finalize strategy-2 and react_emergency_evict_and_reinject.
+ * skip_sp: when true, suppress scratchpad re-injection (used when Strategy 1
+ * already stripped SP and re-injecting would defeat the strip). */
 void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
                                          int n_evicted, long context_budget,
-                                         int target_pct);
+                                         int target_pct, int skip_sp);
 
 /* D3 FIX: Emergency evict + scratchpad re-injection helper.
  * Combines react_emergency_evict + react_reinject_scratchpad into one call.

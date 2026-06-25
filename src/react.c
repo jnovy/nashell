@@ -286,11 +286,25 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                 }
                 continue;
             }
-            /* Fallback: strstr check on raw JSON */
-            if (strstr(chat->msgs[pi].tool_calls_json, msg->tool_call_id)) {
-                if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-                    return -1;
-                return pi;
+            /* Fallback: strstr check on raw JSON.
+             * BUG 4 FIX: Match the quoted form "<tool_call_id>" to prevent
+             * substring false positives (e.g. "call_12" matching "call_123"). */
+            {
+                size_t id_len = strlen(msg->tool_call_id);
+                char *quoted_id = malloc(id_len + 3);  /* '"' + id + '"' + NUL */
+                if (quoted_id) {
+                    quoted_id[0] = '"';
+                    memcpy(quoted_id + 1, msg->tool_call_id, id_len);
+                    quoted_id[id_len + 1] = '"';
+                    quoted_id[id_len + 2] = '\0';
+                    int found = strstr(chat->msgs[pi].tool_calls_json, quoted_id) != NULL;
+                    free(quoted_id);
+                    if (found) {
+                        if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                            return -1;
+                        return pi;
+                    }
+                }
             }
         }
     }
@@ -1990,8 +2004,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     "references before context compaction evicts the file contents. "
                     "Use notes(op=\"append\", section=\"findings\", content=\"...\").",
                     LLM_MSG_MEMORY_HINT);
-                /* Reset to allow re-nudging after another batch */
-                ctx->tools->file_reads_since_notes = 0;
+                /* DESIGN 2 FIX: Don't reset the counter here — it creates a
+                 * gap where the model can accumulate 5 more file_reads without
+                 * re-nudging even if it ignored this nudge. The counter is
+                 * properly reset at line 1703 when notes() is actually called. */
             }
         }
 

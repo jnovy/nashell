@@ -187,7 +187,7 @@ long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
  * fixing inconsistency where react_emergency_evict_and_reinject always re-injected. */
 void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
                                          int n_evicted, long context_budget,
-                                         int target_pct) {
+                                         int target_pct, int skip_sp) {
     int kh = react_compute_keep_head(chat);
 
     /* DESIGN1 FIX: Compute SP budget BEFORE injecting breadcrumb + hint.
@@ -213,8 +213,10 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
         llm_chat_insert_typed(chat, kh + 1,
             "user", EVICT_COMPACT_HINT, LLM_MSG_MEMORY_HINT);
     }
-    /* Re-inject scratchpad only if room permits (based on pre-injection budget) */
-    if (can_inject_sp) {
+    /* Re-inject scratchpad only if room permits (based on pre-injection budget).
+     * BUG 1+2 FIX: skip_sp suppresses re-injection when Strategy 1 already
+     * stripped the scratchpad — re-injecting would defeat the strip. */
+    if (can_inject_sp && !skip_sp) {
         react_reinject_scratchpad(ctx, chat, kh);
     }
 }
@@ -374,9 +376,15 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
          * coexisting with the emergency breadcrumb — two EVICTION_SUMMARYs. */
         llm_chat_remove_by_type(chat, LLM_MSG_EVICTION_SUMMARY);
         llm_chat_remove_by_type(chat, LLM_MSG_MEMORY_HINT);
-        /* DEDUP2 FIX: Reuse react_emergency_evict_and_reinject instead of
-         * reimplementing the emergency_evict → inject_breadcrumbs sequence. */
-        n_emergency = react_emergency_evict_and_reinject(ctx, chat);
+        /* BUG 1+2 FIX: Call react_emergency_evict + inject_breadcrumbs directly
+         * with skip_sp=1 to prevent re-injecting the scratchpad that Strategy 1
+         * just stripped. Using react_emergency_evict_and_reinject would re-inject
+         * SP (skip_sp=0), defeating Strategy 1's strip. */
+        n_emergency = react_emergency_evict(chat, context_budget, target_pct,
+                                            ctx->tools->cfg);
+        react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
+                                           context_budget, target_pct,
+                                           /*skip_sp=*/1);
         /* FIX #15: When emergency eviction found nothing (e.g. floor too
          * restrictive, too few evictable messages, or all HIGH importance),
          * retry with a more aggressive target (target_pct - 10, min 50%)
@@ -393,7 +401,8 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                                                 aggressive_pct, ctx->tools->cfg);
             if (n_emergency > 0) {
                 react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
-                                                   context_budget, aggressive_pct);
+                                                   context_budget, aggressive_pct,
+                                                   /*skip_sp=*/1);
             } else {
                 nash_log("[eviction] WARNING: aggressive emergency eviction "
                          "also found nothing, context remains at %d%% > target %d%%",

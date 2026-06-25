@@ -177,7 +177,8 @@ int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     /* D1 FIX: Use shared helper for breadcrumb + hint + SP injection.
      * BUG #4 FIX: SP re-injection is now budget-guarded (matching
      * evict_finalize) — previously always re-injected regardless of usage. */
-    react_inject_emergency_breadcrumbs(ctx, chat, n_evict, cb, target_pct);
+    react_inject_emergency_breadcrumbs(ctx, chat, n_evict, cb, target_pct,
+                                       /*skip_sp=*/0);
     return n_evict;
 }
 
@@ -351,15 +352,30 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         for (int ms = 0; ms < backoff_ms && !ctx->pause_requested; ms += 100)
             usleep(100000);
     } else if (*consecutive_null == 3) {
-        /* Tier 1: Remove the last assistant+tool_result pair */
+        /* Tier 1: Remove the last assistant+tool_result pair.
+         * BUG 3 FIX: Walk backward to find the actual last tool_result,
+         * skipping injected hint/summary messages (MEMORY_HINT, EVICTION_SUMMARY,
+         * etc.). Then find its partner tool_call. This prevents orphaning a
+         * tool_call when a MEMORY_HINT nudge is the last message. */
         ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
         react_emit(on_event, userdata, &ev);
-        if (chat->n_msgs >= 2) {
-            int remove_from = chat->n_msgs - 2;
-            int kh = react_compute_keep_head(chat);
-            if (remove_from < kh) remove_from = kh;
+        int kh = react_compute_keep_head(chat);
+        int tr_idx = -1; /* last tool_result index */
+        for (int i = chat->n_msgs - 1; i >= kh; i--) {
+            if (chat->msgs[i].tool_call_id) {
+                tr_idx = i;
+                break;
+            }
+        }
+        if (tr_idx >= 0) {
+            /* Find the partner tool_call for this result */
+            int tc_idx = react_find_tool_partner(chat, tr_idx, kh, chat->n_msgs);
+            int remove_from = (tc_idx >= kh) ? tc_idx : tr_idx;
             if (remove_from < chat->n_msgs)
                 llm_chat_remove_range(chat, remove_from, chat->n_msgs);
+        } else if (chat->n_msgs > kh) {
+            /* No tool_result found — fall back to removing last message */
+            llm_chat_remove_range(chat, chat->n_msgs - 1, chat->n_msgs);
         }
     } else if (*consecutive_null == 4) {
         /* Tier 2: Reformulate scratchpad (strip code blocks) */

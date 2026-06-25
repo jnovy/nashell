@@ -244,7 +244,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 tcal_entry_t *older = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
                 int n_recent = 0, n_older = 0;
 
-                memory_t *mem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                /* DESIGN 1 FIX: Use global memory when workspace is active,
+                 * instead of NULL which silently disabled temporal calendar. */
+                memory_t *mem = ctx->tools->ws
+                    ? ctx->tools->ws->global : ctx->tools->memory;
                 if (mem && recent && older) {
                     pthread_mutex_lock(&mem->mtx);
                     for (int mi = 0; mi < mem->idx.count; mi++) {
@@ -257,6 +260,22 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                         }
                     }
                     pthread_mutex_unlock(&mem->mtx);
+                }
+                /* DESIGN 1 FIX: Also scan workspace-layer memory if present,
+                 * so project-specific entries appear in the temporal calendar. */
+                if (ctx->tools->ws && ctx->tools->ws->workspace && recent && older) {
+                    memory_t *ws_mem = ctx->tools->ws->workspace;
+                    pthread_mutex_lock(&ws_mem->mtx);
+                    for (int mi = 0; mi < ws_mem->idx.count; mi++) {
+                        const mem_index_entry_t *e = &ws_mem->idx.entries[mi];
+                        if (!e->key || !e->description) continue;
+                        if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
+                            recent[n_recent++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                        } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
+                            older[n_older++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                        }
+                    }
+                    pthread_mutex_unlock(&ws_mem->mtx);
                 }
 
                 /* Sort by timestamp descending (insertion sort — small N) */
@@ -322,7 +341,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             int do_episodic = ctx->tools->cfg
                 ? ctx->tools->cfg->episodic_recall : 1;
             if (do_episodic && ctx->tools->session_idx) {
-                memory_t *ep_mem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                /* DESIGN 1 FIX: Use global memory when workspace is active,
+                 * instead of NULL which silently disabled episodic recall. */
+                memory_t *ep_mem = ctx->tools->ws
+                    ? ctx->tools->ws->global : ctx->tools->memory;
                 embed_ctx_t *emb_ctx = ep_mem ? memory_embed_ctx(ep_mem) : NULL;
                 if (emb_ctx && emb_ctx->available) {
                     embed_vec_t query_emb = embed_text(emb_ctx, user_query);
@@ -400,7 +422,10 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             int assoc_depth = ctx->tools->cfg
                 ? ctx->tools->cfg->associative_depth : 1;
             if (assoc_depth > 0) {
-                memory_t *amem = ctx->tools->ws ? NULL : ctx->tools->memory;
+                /* DESIGN 1 FIX: Use global memory when workspace is active,
+                 * instead of NULL which silently disabled associative graph walk. */
+                memory_t *amem = ctx->tools->ws
+                    ? ctx->tools->ws->global : ctx->tools->memory;
                 if (amem) {
                     str_t assoc_msg = str_new(2048);
                     int assoc_added = 0;
