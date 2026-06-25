@@ -27,6 +27,10 @@ static int run_container_cmd(const char *runtime, const char *action, const char
     if (pid < 0) return -1;
     if (pid == 0) {
         setsid();
+        /* FIX: chdir to /tmp so podman's pasta networking helper doesn't
+         * try to write .lock files in nash's session directory, which
+         * triggers SELinux AVC denials (pasta_t can't write user_home_t). */
+        if (chdir("/tmp") != 0) chdir("/");
         /* Child: redirect all stdio to /dev/null */
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
@@ -166,6 +170,10 @@ static int searxng_start_with_runtime(const char *runtime, int port, const char 
     if (pid < 0) return -1;
     if (pid == 0) {
         setsid();
+        /* FIX: chdir to /tmp so podman's pasta networking helper doesn't
+         * try to write .lock files in nash's session directory, which
+         * triggers SELinux AVC denials (pasta_t can't write user_home_t). */
+        if (chdir("/tmp") != 0) chdir("/");
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
         execlp(runtime, runtime, "run", "-d", "--name", "nash-searxng",
