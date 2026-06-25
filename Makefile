@@ -122,7 +122,13 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/banner.c \
           src/commands.c \
           src/agents.c \
-          src/repomap.c
+          src/repomap.c \
+          src/display.c \
+          src/display_vnc.c \
+          src/input.c \
+          src/input_vnc.c \
+          src/device.c \
+          src/tool_device.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

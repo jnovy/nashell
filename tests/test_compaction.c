@@ -3,7 +3,7 @@
  *
  * Tests cover:
  *   - Inline helpers: react_usage_pct, react_head_chars, react_tail_chars,
- *     react_calc_floor_chars, react_scratchpad_budget, react_format_scratchpad_msg,
+ *     react_calc_floor_chars_pol, react_scratchpad_budget, react_format_scratchpad_msg,
  *     evict_adjust_boundaries
  *   - Partner map: build, pair matching, HIGH-importance exclusion
  *   - Mark-sweep: evict_sweep_marked, evict_mark_candidates
@@ -134,13 +134,14 @@ static void test_calc_floor_chars_with_tail(void) {
     long context_budget = react_calc_total_chars(chat) * 2; /* 50% usage */
 
     /* With tail_chars */
-    long floor_with_tail = react_calc_floor_chars(chat, keep_head, evict_end,
-                                                   context_budget,
-                                                   head_chars, tail_chars_val);
+    eviction_policy_t pol = react_eviction_policy(NULL);
+    long floor_with_tail = react_calc_floor_chars_pol(chat, keep_head, evict_end,
+                                                      context_budget,
+                                                      head_chars, tail_chars_val, &pol);
     /* Without tail_chars (old behavior, passing 0) */
-    long floor_no_tail = react_calc_floor_chars(chat, keep_head, evict_end,
-                                                 context_budget,
-                                                 head_chars, 0);
+    long floor_no_tail = react_calc_floor_chars_pol(chat, keep_head, evict_end,
+                                                     context_budget,
+                                                     head_chars, 0, &pol);
 
     /* Floor with tail should be <= floor without tail because the
      * evictable region is smaller when tail is excluded */
@@ -156,8 +157,9 @@ static void test_calc_floor_chars_with_tail(void) {
 static void test_calc_floor_chars_minimum(void) {
     /* With a tiny budget, floor should clamp to minimum */
     llm_chat_t *chat = make_test_chat(2, 50);
-    long floor = react_calc_floor_chars(chat, 2, chat->n_msgs,
-                                         1000, 200, 0);
+    eviction_policy_t pol3 = react_eviction_policy(NULL);
+    long floor = react_calc_floor_chars_pol(chat, 2, chat->n_msgs,
+                                             1000, 200, 0, &pol3);
     { eviction_policy_t dpol2 = react_eviction_policy(NULL);
     ASSERT_EQ((int)floor, (int)dpol2.floor_min_chars); }
     llm_chat_free(chat);
@@ -688,13 +690,14 @@ static void test_fix5_floor_with_large_tail(void) {
     long tail_chars_val = react_tail_chars(chat, evict_end);
     long budget = 50000;
 
+    eviction_policy_t pol5 = react_eviction_policy(NULL);
     /* Floor WITH tail subtracted */
-    long floor_correct = react_calc_floor_chars(chat, evict_start, evict_end,
-                                                 budget, head_chars, tail_chars_val);
+    long floor_correct = react_calc_floor_chars_pol(chat, evict_start, evict_end,
+                                                     budget, head_chars, tail_chars_val, &pol5);
 
     /* Floor WITHOUT tail (old bug) */
-    long floor_buggy = react_calc_floor_chars(chat, evict_start, evict_end,
-                                               budget, head_chars, 0);
+    long floor_buggy = react_calc_floor_chars_pol(chat, evict_start, evict_end,
+                                                   budget, head_chars, 0, &pol5);
 
     /* The correct floor should be smaller (base is smaller when tail excluded) */
     ASSERT(floor_correct < floor_buggy);

@@ -10,7 +10,7 @@ static void test_defaults(void) {
     ASSERT_NOT_NULL(cfg);
     ASSERT_NOT_NULL(cfg->api_base);
     ASSERT_GT(cfg->max_tokens, 0);
-    ASSERT(cfg->max_react_steps >= 0);  /* 0 = unlimited, valid default */
+    ASSERT(cfg->max_react_steps == -1 || cfg->max_react_steps > 0);  /* -1 = unlimited (default), >0 = hard limit */
     ASSERT_GT(cfg->shell_timeout, -1);
     ASSERT_GT(cfg->file_max_size, 0);
     ASSERT_GT(cfg->memory_index_max, 0);
