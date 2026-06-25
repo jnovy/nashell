@@ -222,6 +222,12 @@ typedef struct {
  * first object is returned; the rest are silently discarded. */
 cJSON *llm_parse_action(const char *response, int *multi_count);
 
+/* Parse XML-formatted tool calls (Qwen3/3.5/3.6 format).
+ * Handles Format A (<tool_call>{"name":"X","arguments":{...}}</tool_call>)
+ * and Format B (<tool_call><function=X><parameter=K>V</parameter></tool_call>).
+ * Returns cJSON {action, params...} or NULL if no tool call found. */
+cJSON *parse_xml_tool_call(const char *text, int *multi_count);
+
 /* Fetch server info */
 int llm_fetch_context_size(const char *api_base);
 char *llm_fetch_model_name(const char *api_base);

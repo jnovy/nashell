@@ -1,4 +1,5 @@
 #include "provider.h"
+#include "llm.h"
 #include "tools.h"
 #include "tools_registry.h"
 #include "str.h"
@@ -1046,6 +1047,57 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
             chat->last_tool_calls_json = NULL;
         }
     } else if (st->thinking_content.len > 0) {
+        /* Qwen3/3.5/3.6 bug: the model sometimes emits tool call XML inside
+         * its reasoning/thinking block instead of as proper structured
+         * tool_calls.  llama.cpp surfaces this as delta.reasoning_content,
+         * which we accumulated into st->thinking_content.  Before treating
+         * this as a thought-only response, scan for leaked <tool_call> XML
+         * and extract it using the same parser as llm_parse_action().
+         * See: llama.cpp #20837, #22684; QwenLM/Qwen3 #1817. */
+        const char *tc = str_cstr(&st->thinking_content);
+        int extracted_tool = 0;
+        if (strstr(tc, "<tool_call>")) {
+            cJSON *extracted = parse_xml_tool_call(tc, NULL);
+            if (extracted) {
+                nash_log("[provider] extracted leaked tool call from "
+                         "reasoning_content (Qwen thinking bug workaround)");
+
+                /* Get tool name from parsed result before serializing */
+                const char *name = "unknown";
+                cJSON *action_item = cJSON_GetObjectItem(extracted, "action");
+                if (action_item && cJSON_IsString(action_item))
+                    name = action_item->valuestring;
+
+                if (chat) {
+                    /* No server-assigned tool_call_id since this was in
+                     * reasoning — generate a synthetic one */
+                    free(chat->last_tool_call_id);
+                    chat->last_tool_call_id = strdup("call_extracted_0");
+
+                    /* Build minimal tool_calls JSON for history threading */
+                    cJSON *tc_arr = cJSON_CreateArray();
+                    cJSON *tc_obj = cJSON_CreateObject();
+                    cJSON_AddStringToObject(tc_obj, "id",
+                                            "call_extracted_0");
+                    cJSON_AddStringToObject(tc_obj, "type", "function");
+                    cJSON *fn = cJSON_CreateObject();
+                    cJSON_AddStringToObject(fn, "name", name);
+                    cJSON_AddStringToObject(fn, "arguments", "{}");
+                    cJSON_AddItemToObject(tc_obj, "function", fn);
+                    cJSON_AddItemToArray(tc_arr, tc_obj);
+                    free(chat->last_tool_calls_json);
+                    chat->last_tool_calls_json =
+                        cJSON_PrintUnformatted(tc_arr);
+                    cJSON_Delete(tc_arr);
+                }
+
+                result = cJSON_PrintUnformatted(extracted);
+                cJSON_Delete(extracted);
+                extracted_tool = 1;
+            }
+        }
+
+        if (!extracted_tool) {
         /* Thinking-only response: the model spent all its tokens on extended
          * thinking (reasoning) without producing any text or tool calls.
          * This happens when max_tokens is hit during the thinking phase.
@@ -1061,7 +1113,6 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
          * the most actionable (conclusions/plans), and we don't want to
          * flood context with a full 16K-token reasoning dump. */
         cJSON *obj = cJSON_CreateObject();
-        const char *tc = str_cstr(&st->thinking_content);
         size_t tc_len = st->thinking_content.len;
         const size_t MAX_THINKING_CHARS = 8000;
         if (tc_len > MAX_THINKING_CHARS) {
@@ -1077,6 +1128,7 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
             free(chat->last_tool_calls_json);
             chat->last_tool_calls_json = NULL;
         }
+        } /* !extracted_tool */
     }
 
     return result;

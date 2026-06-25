@@ -350,7 +350,7 @@ char *llm_chat_serialize(llm_chat_t *chat) {
  * Returns a cJSON object matching our unified format:
  *   {"action":"func_name", "param1":"value1", ...}
  * or NULL if no XML tool call is found. */
-static cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
+cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
     if (!text) return NULL;
 
     /* Find <tool_call> tag */
