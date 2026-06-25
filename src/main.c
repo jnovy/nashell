@@ -822,12 +822,13 @@ int main(int argc, char **argv) {
 
         /* Configure and run optimization */
         optimize_config_t opt = {
-            .max_rounds   = rounds,
-            .student      = provider,
-            .reflection   = reflection_provider,
-            .profile_path = profile_path,
-            .split_filter = regression_split,
-            .verbose      = 1,
+            .max_rounds     = rounds,
+            .proposal_width = 2,  /* Self-Harness K=2: two parallel proposals per round */
+            .student        = provider,
+            .reflection     = reflection_provider,
+            .profile_path   = profile_path,
+            .split_filter   = regression_split,
+            .verbose        = 1,
         };
 
         prompt_candidate_t best = optimize_run(

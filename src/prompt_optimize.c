@@ -1,15 +1,14 @@
 /*
- * GEPA-inspired prompt optimization for Nash.
+ * Self-Harness prompt optimization for Nash.
  *
- * Implements an iterative optimization loop connecting the existing
- * regression scorer to an LLM reflection step that rewrites
- * system_prompt_extra.
+ * Implements the Self-Harness iterative loop [arXiv:2606.09498]:
+ *   Stage 1: Weakness Mining — cluster failures by signature
+ *   Stage 2: Harness Proposal — K diverse, minimal candidate edits
+ *   Stage 3: Proposal Validation — accept only non-regressive edits
  *
- * Based on: DSPy GEPA optimizer (Stanford NLP, 2025-2026)
- *   - Separate reflection LM proposes improved instructions
- *   - Textual feedback from metric failures guides the reflection
- *   - Budget control: light (3), medium (6), heavy (10) rounds
- *   - Held-in/held-out split prevents overfitting (Self-Harness gate)
+ * The loop merges all accepted edits per round (not just best-of-1),
+ * tracks rejected proposals across rounds to avoid re-proposing,
+ * and provides execution traces from journal_manifest() as evidence.
  */
 
 #include "prompt_optimize.h"
@@ -25,16 +24,11 @@
 
 /* ── Forward declarations for helpers in react.c ────── */
 
-/* extract_llm_text_output is static in react.c, so we reimplement
- * a minimal version here for the reflection response. */
 static char *extract_text_from_response(const char *raw) {
     if (!raw || !raw[0]) return NULL;
-
-    /* Skip leading whitespace */
     raw = skip_whitespace(raw);
     if (!*raw) return NULL;
 
-    /* Case 1: JSON with "content" field */
     if (raw[0] == '{') {
         cJSON *j = cJSON_Parse(raw);
         if (j) {
@@ -44,14 +38,12 @@ static char *extract_text_from_response(const char *raw) {
                 cJSON_Delete(j);
                 return result;
             }
-            /* Check for "result" field (done action) */
             cJSON *r = cJSON_GetObjectItem(j, "result");
             if (r && cJSON_IsString(r) && r->valuestring && r->valuestring[0]) {
                 char *result = strdup(r->valuestring);
                 cJSON_Delete(j);
                 return result;
             }
-            /* Check for "thought" field as fallback */
             cJSON *t = cJSON_GetObjectItem(j, "thought");
             if (t && cJSON_IsString(t) && t->valuestring && t->valuestring[0]) {
                 char *result = strdup(t->valuestring);
@@ -62,189 +54,449 @@ static char *extract_text_from_response(const char *raw) {
         }
     }
 
-    /* Case 2: Code-fenced output — strip ``` wrapper */
     if (strncmp(raw, "```", 3) == 0) {
         const char *start = raw + 3;
         while (*start && *start != '\n') start++;
         if (*start == '\n') start++;
         const char *end = strstr(start, "\n```");
-        if (end) {
-            return strndup(start, end - start);
-        }
+        if (end) return strndup(start, end - start);
     }
 
-    /* Case 3: Plain text */
     return strdup(raw);
 }
 
-/* ── Phase 1: Textual Feedback from Failures ────────── */
+/* ════════════════════════════════════════════════════════
+ * Stage 1: Weakness Mining [§3.2]
+ *
+ * "The evaluation system analyzes the trace as evidence for why
+ *  the evaluator rejected the run. It identifies the terminal
+ *  failure reason exposed by the verifier, the agent-side behavior
+ *  connected to that terminal failure, and the causal status of
+ *  that behavior within the trace."
+ *                               — Self-Harness, §3.2
+ * ════════════════════════════════════════════════════════ */
+
+static const char *cause_str(sh_cause_t c) {
+    switch (c) {
+        case SH_CAUSE_NO_DONE:        return "no_done";
+        case SH_CAUSE_WRONG_RESULT:   return "wrong_result";
+        case SH_CAUSE_WRONG_TOOL:     return "wrong_tool";
+        case SH_CAUSE_TOO_MANY_STEPS: return "too_many_steps";
+        case SH_CAUSE_ERRORS:         return "errors";
+        case SH_CAUSE_OTHER:          return "other";
+    }
+    return "other";
+}
+
+static const char *mechanism_str(sh_mechanism_t m) {
+    switch (m) {
+        case SH_MECH_TOOL_CHOICE:    return "wrong_tool_choice";
+        case SH_MECH_TASK_ABANDON:   return "task_abandonment";
+        case SH_MECH_LOOP:           return "unproductive_loop";
+        case SH_MECH_INCOMPLETE:     return "incomplete_result";
+        case SH_MECH_ERROR_CASCADE:  return "error_cascade";
+        case SH_MECH_OVER_EXPLORE:   return "over_exploration";
+        case SH_MECH_OTHER:          return "other";
+    }
+    return "other";
+}
+
+static const char *status_str(sh_status_t s) {
+    switch (s) {
+        case SH_STATUS_CAUSAL:       return "causal";
+        case SH_STATUS_CONTRIBUTING: return "contributing";
+        case SH_STATUS_UNKNOWN:      return "unknown";
+    }
+    return "unknown";
+}
+
+/* Classify a single query failure into a failure signature.
+ * Implements φ(r_i) = (c_i, q_i, m_i) from §3.2. */
+static sh_signature_t classify_failure(const query_result_t *qr) {
+    sh_signature_t sig = {
+        .cause = SH_CAUSE_OTHER,
+        .status = SH_STATUS_UNKNOWN,
+        .mechanism = SH_MECH_OTHER,
+    };
+
+    int has_status_fail = 0, has_contains_fail = 0;
+    int has_tool_fail = 0, has_steps_fail = 0, has_error_fail = 0;
+
+    for (int i = 0; i < qr->n_crit_results; i++) {
+        if (qr->crit_results[i].passed) continue;
+        const char *desc = qr->crit_results[i].criterion_desc;
+        if (!desc) continue;
+
+        if (strstr(desc, "status("))           has_status_fail = 1;
+        else if (strstr(desc, "contains("))    has_contains_fail = 1;
+        else if (strstr(desc, "not_contains(")) has_contains_fail = 1;
+        else if (strstr(desc, "tool_used("))   has_tool_fail = 1;
+        else if (strstr(desc, "tool_not_used(")) has_tool_fail = 1;
+        else if (strstr(desc, "max_steps("))   has_steps_fail = 1;
+        else if (strstr(desc, "no_error"))     has_error_fail = 1;
+        else if (strstr(desc, "regex("))       has_contains_fail = 1;
+    }
+
+    if (has_status_fail) {
+        sig.cause = SH_CAUSE_NO_DONE;
+        sig.status = SH_STATUS_CAUSAL;
+        sig.mechanism = SH_MECH_TASK_ABANDON;
+    } else if (has_tool_fail) {
+        sig.cause = SH_CAUSE_WRONG_TOOL;
+        sig.status = SH_STATUS_CAUSAL;
+        sig.mechanism = SH_MECH_TOOL_CHOICE;
+    } else if (has_steps_fail) {
+        sig.cause = SH_CAUSE_TOO_MANY_STEPS;
+        sig.status = SH_STATUS_CAUSAL;
+        sig.mechanism = qr->steps_used > 15 ? SH_MECH_LOOP : SH_MECH_OVER_EXPLORE;
+    } else if (has_error_fail) {
+        sig.cause = SH_CAUSE_ERRORS;
+        sig.status = SH_STATUS_CONTRIBUTING;
+        sig.mechanism = SH_MECH_ERROR_CASCADE;
+    } else if (has_contains_fail) {
+        sig.cause = SH_CAUSE_WRONG_RESULT;
+        sig.status = SH_STATUS_CAUSAL;
+        sig.mechanism = SH_MECH_INCOMPLETE;
+    }
+
+    return sig;
+}
+
+static int sig_equals(const sh_signature_t *a, const sh_signature_t *b) {
+    return a->cause == b->cause && a->status == b->status && a->mechanism == b->mechanism;
+}
+
+static char *build_crit_detail(const query_result_t *qr) {
+    str_t s = str_new(256);
+    for (int i = 0; i < qr->n_crit_results; i++) {
+        if (qr->crit_results[i].passed) continue;
+        str_appendf(&s, "  ✗ %s: %s\n",
+                    qr->crit_results[i].criterion_desc,
+                    qr->crit_results[i].detail ? qr->crit_results[i].detail : "failed");
+    }
+    return str_steal(&s);
+}
+
+static char *truncate_trace(const char *trace, int max_chars) {
+    if (!trace) return strdup("(no trace available)");
+    int len = (int)strlen(trace);
+    if (len <= max_chars) return strdup(trace);
+    char *t = malloc(max_chars + 20);
+    memcpy(t, trace, max_chars);
+    strcpy(t + max_chars, "\n...[truncated]");
+    return t;
+}
+
+sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report) {
+    if (!report) return NULL;
+
+    sh_evidence_t *bundle = calloc(1, sizeof(sh_evidence_t));
+    str_t pass_summary = str_new(512);
+
+    for (int i = 0; i < report->n_bank_results; i++) {
+        bank_result_t *br = &report->bank_results[i];
+        for (int j = 0; j < br->n_results; j++) {
+            if (br->results[j].passed) {
+                bundle->total_passes++;
+                str_appendf(&pass_summary, "  ✓ %s (%.0f%%, %d steps)\n",
+                            br->results[j].query_id,
+                            br->results[j].score * 100,
+                            br->results[j].steps_used);
+            } else {
+                bundle->total_failures++;
+            }
+        }
+    }
+    bundle->passing_summary = str_steal(&pass_summary);
+
+    if (bundle->total_failures == 0) return bundle;
+
+    /* Cluster failures by exact signature agreement (§3.2) */
+    int clusters_cap = 8;
+    bundle->clusters = calloc(clusters_cap, sizeof(sh_cluster_t));
+
+    for (int i = 0; i < report->n_bank_results; i++) {
+        bank_result_t *br = &report->bank_results[i];
+        for (int j = 0; j < br->n_results; j++) {
+            query_result_t *qr = &br->results[j];
+            if (qr->passed) continue;
+
+            sh_signature_t sig = classify_failure(qr);
+
+            /* Find or create cluster */
+            int ci = -1;
+            for (int k = 0; k < bundle->n_clusters; k++) {
+                if (sig_equals(&bundle->clusters[k].sig, &sig)) { ci = k; break; }
+            }
+
+            if (ci < 0) {
+                if (bundle->n_clusters >= clusters_cap) {
+                    clusters_cap *= 2;
+                    bundle->clusters = realloc(bundle->clusters,
+                                               clusters_cap * sizeof(sh_cluster_t));
+                }
+                ci = bundle->n_clusters++;
+                sh_cluster_t *fc = &bundle->clusters[ci];
+                memset(fc, 0, sizeof(*fc));
+                fc->sig = sig;
+                fc->query_ids = calloc(16, sizeof(char *));
+                fc->trace_excerpts = calloc(16, sizeof(char *));
+                fc->crit_details = calloc(16, sizeof(char *));
+            }
+
+            sh_cluster_t *fc = &bundle->clusters[ci];
+            int idx = fc->n_entries;
+            if (idx >= 16 && (idx & (idx - 1)) == 0) {
+                int nc = idx * 2;
+                fc->query_ids = realloc(fc->query_ids, nc * sizeof(char *));
+                fc->trace_excerpts = realloc(fc->trace_excerpts, nc * sizeof(char *));
+                fc->crit_details = realloc(fc->crit_details, nc * sizeof(char *));
+            }
+            fc->query_ids[idx] = strdup(qr->query_id);
+            fc->trace_excerpts[idx] = truncate_trace(qr->trace_summary, 600);
+            fc->crit_details[idx] = build_crit_detail(qr);
+            fc->n_entries = idx + 1;
+            fc->count = idx + 1;
+        }
+    }
+
+    /* Sort clusters by support count descending (§3.2) */
+    for (int i = 0; i < bundle->n_clusters - 1; i++)
+        for (int j = i + 1; j < bundle->n_clusters; j++)
+            if (bundle->clusters[j].count > bundle->clusters[i].count) {
+                sh_cluster_t tmp = bundle->clusters[i];
+                bundle->clusters[i] = bundle->clusters[j];
+                bundle->clusters[j] = tmp;
+            }
+
+    return bundle;
+}
+
+void optimize_free_evidence_bundle(sh_evidence_t *b) {
+    if (!b) return;
+    for (int i = 0; i < b->n_clusters; i++) {
+        sh_cluster_t *fc = &b->clusters[i];
+        for (int j = 0; j < fc->n_entries; j++) {
+            free(fc->query_ids[j]);
+            free(fc->trace_excerpts[j]);
+            free(fc->crit_details[j]);
+        }
+        free(fc->query_ids);
+        free(fc->trace_excerpts);
+        free(fc->crit_details);
+    }
+    free(b->clusters);
+    free(b->passing_summary);
+    free(b);
+}
+
+/* ════════════════════════════════════════════════════════
+ * Evidence Formatting [§3.3]
+ * ════════════════════════════════════════════════════════ */
+
+char *optimize_format_evidence(const sh_evidence_t *bundle,
+                               const rejected_proposal_t *rejected,
+                               int n_rejected) {
+    if (!bundle) return NULL;
+    str_t fb = str_new(8192);
+
+    str_appendf(&fb, "EVALUATION RESULTS: %d passed, %d failed\n\n",
+                bundle->total_passes, bundle->total_failures);
+
+    if (bundle->passing_summary && bundle->passing_summary[0]) {
+        str_append_cstr(&fb, "PASSING BEHAVIORS (preserve these):\n");
+        str_append_cstr(&fb, bundle->passing_summary);
+        str_append_cstr(&fb, "\n");
+    }
+
+    if (bundle->n_clusters > 0) {
+        str_append_cstr(&fb, "FAILURE PATTERNS (ordered by frequency):\n\n");
+        for (int i = 0; i < bundle->n_clusters; i++) {
+            sh_cluster_t *fc = &bundle->clusters[i];
+            str_appendf(&fb, "Pattern %d: %s/%s/%s (%d failure%s)\n",
+                i + 1, cause_str(fc->sig.cause),
+                status_str(fc->sig.status),
+                mechanism_str(fc->sig.mechanism),
+                fc->count, fc->count > 1 ? "s" : "");
+
+            str_append_cstr(&fb, "  Affected queries: ");
+            for (int j = 0; j < fc->n_entries; j++) {
+                if (j > 0) str_append_cstr(&fb, ", ");
+                str_append_cstr(&fb, fc->query_ids[j]);
+            }
+            str_append_cstr(&fb, "\n");
+
+            for (int j = 0; j < fc->n_entries && j < 3; j++) {
+                str_appendf(&fb, "  [%s] Criterion failures:\n%s",
+                            fc->query_ids[j], fc->crit_details[j]);
+                if (fc->trace_excerpts[j] &&
+                    strcmp(fc->trace_excerpts[j], "(no trace available)") != 0)
+                    str_appendf(&fb, "  [%s] Execution trace:\n%s\n",
+                                fc->query_ids[j], fc->trace_excerpts[j]);
+            }
+            str_append_cstr(&fb, "\n");
+        }
+    }
+
+    if (rejected && n_rejected > 0) {
+        str_append_cstr(&fb, "PREVIOUSLY REJECTED PROPOSALS (do not re-propose):\n");
+        for (int i = 0; i < n_rejected; i++)
+            str_appendf(&fb, "  Round %d: d_in=%+.1f%%, d_ho=%+.1f%%\n",
+                        rejected[i].round,
+                        rejected[i].delta_in * 100,
+                        rejected[i].delta_out * 100);
+        str_append_cstr(&fb, "\n");
+    }
+
+    str_append_cstr(&fb,
+        "EDITABLE SURFACE: system_prompt_extra (model-specific rules "
+        "appended to the system prompt).\n");
+    return str_steal(&fb);
+}
 
 char *optimize_format_feedback(const regression_report_t *report) {
     if (!report) return NULL;
-
     str_t fb = str_new(4096);
-
     str_appendf(&fb, "REGRESSION TEST RESULTS: %.1f%% overall (%d/%d passed)\n\n",
                 report->overall_score * 100,
                 report->total_passed, report->total_queries);
-
     if (report->held_in_score >= 0)
         str_appendf(&fb, "Held-in score:  %.1f%%\n", report->held_in_score * 100);
     if (report->held_out_score >= 0)
         str_appendf(&fb, "Held-out score: %.1f%%\n", report->held_out_score * 100);
-
     str_append_cstr(&fb, "\n");
-
-    int has_failures = 0;
 
     for (int i = 0; i < report->n_bank_results; i++) {
         bank_result_t *br = &report->bank_results[i];
-
         for (int j = 0; j < br->n_results; j++) {
             query_result_t *qr = &br->results[j];
-
             if (qr->passed) {
-                /* Brief mention of passes */
-                str_appendf(&fb, "✓ PASS: %s (%.0f%%, %d steps)\n",
+                str_appendf(&fb, "PASS: %s (%.0f%%, %d steps)\n",
                             qr->query_id, qr->score * 100, qr->steps_used);
                 continue;
             }
-
-            has_failures = 1;
-
-            str_appendf(&fb, "\n✗ FAIL: %s (score: %.0f%%, %d steps)\n",
+            str_appendf(&fb, "\nFAIL: %s (score: %.0f%%, %d steps)\n",
                         qr->query_id, qr->score * 100, qr->steps_used);
-
-            /* Show each failed criterion with detail */
             for (int k = 0; k < qr->n_crit_results; k++) {
                 criterion_result_t *cr = &qr->crit_results[k];
-                if (cr->passed) {
-                    str_appendf(&fb, "  ✓ %s\n", cr->criterion_desc);
-                } else {
-                    str_appendf(&fb, "  ✗ %s: %s\n",
-                                cr->criterion_desc,
+                if (!cr->passed)
+                    str_appendf(&fb, "  x %s: %s\n", cr->criterion_desc,
                                 cr->detail ? cr->detail : "failed");
-                }
             }
-
-            /* Show truncated result text for context */
             if (qr->result_text) {
                 int rlen = (int)strlen(qr->result_text);
                 int show = rlen > 300 ? 300 : rlen;
-                str_appendf(&fb, "  Agent result (first %d chars): %.*s%s\n",
-                            show, show, qr->result_text,
-                            rlen > 300 ? "..." : "");
-            } else {
-                str_append_cstr(&fb, "  Agent result: (none — task did not complete)\n");
+                str_appendf(&fb, "  Result (%d chars): %.*s%s\n",
+                            show, show, qr->result_text, rlen > 300 ? "..." : "");
             }
         }
     }
-
-    if (!has_failures) {
-        str_append_cstr(&fb, "\nAll tests passed. No failures to address.\n");
-    }
-
     return str_steal(&fb);
 }
 
-/* ── Phase 2: Reflection LM Prompt Rewriter ─────────── */
+/* ════════════════════════════════════════════════════════
+ * Stage 2: Harness Proposal [§3.3]
+ * ════════════════════════════════════════════════════════ */
 
 static const char *REFLECTION_SYSTEM_PROMPT =
-    "You are an expert prompt engineer optimizing system instructions for an "
-    "autonomous coding agent called Nash. Nash uses a ReAct loop with tools "
-    "(file_read, file_write, file_edit, shell_exec, grep_search, glob_search, "
-    "web_fetch, web_search, memory_store, memory_search, notes, done, plan, user_ask).\n\n"
-    "Your task: given the current system prompt rules and regression test results, "
-    "propose IMPROVED instructions that will make the agent pass more tests.\n\n"
-    "Guidelines:\n"
-    "- Focus on rules that prevent observed failure modes\n"
-    "- Remove instructions that seem to cause confusion or overconstraint\n"
-    "- Make implicit requirements explicit\n"
-    "- Keep rules concise and actionable\n"
-    "- Do NOT include tool definitions or general agent behavior — only model-specific rules\n"
-    "- The output will be injected as [MODEL-SPECIFIC RULES] in the system prompt\n"
+    "You are the Self-Harness proposer for Nash, an autonomous coding agent.\n\n"
+    "CONTEXT: Nash uses a ReAct loop with tools (file_read, file_write, file_edit, "
+    "shell_exec, grep_search, glob_search, web_fetch, web_search, memory_store, "
+    "memory_search, notes, done, plan, user_ask). You are improving the MODEL-SPECIFIC "
+    "RULES section of its system prompt.\n\n"
+    "SELF-HARNESS PROTOCOL [arXiv:2606.09498]:\n"
+    "You will receive structured evidence of the agent's failures, including:\n"
+    "- Failure patterns clustered by signature (cause/status/mechanism)\n"
+    "- Execution traces showing the agent's actual behavior\n"
+    "- Records of passing behaviors that must be preserved\n"
+    "- Previously rejected proposals to avoid re-proposing\n\n"
+    "YOUR TASK — propose a BOUNDED, MINIMAL edit to the system prompt rules:\n"
+    "1. Select ONE primary failure pattern to address\n"
+    "2. Propose ONE new rule (1-3 sentences) targeting that specific mechanism\n"
+    "3. You may also mark ONE existing rule for removal if it causes harm\n"
+    "4. Output the COMPLETE updated rule set with your change applied\n\n"
+    "CONSTRAINTS:\n"
+    "- Each proposal must target a DIFFERENT failure pattern than others in this round\n"
+    "- Keep rules concise and actionable — not generic advice\n"
+    "- Preserve rules that correspond to passing behaviors\n"
+    "- Do NOT rewrite the entire prompt — make minimal targeted changes\n"
+    "- Do NOT include tool definitions or general agent behavior\n"
     "- Output ONLY the new prompt text, no explanations or commentary\n"
     "- Keep it under 500 words\n";
 
 char *optimize_reflect(provider_t *reflection_lm,
                        const char *current_prompt,
-                       const char *feedback_summary,
-                       int round, int max_rounds) {
-    if (!reflection_lm || !feedback_summary) return NULL;
+                       const char *evidence_text,
+                       int round, int max_rounds,
+                       int proposal_idx, int proposal_width) {
+    if (!reflection_lm || !evidence_text) return NULL;
 
     llm_chat_t *chat = llm_chat_new();
-
-    /* System prompt for the reflection LM */
     llm_chat_add(chat, "system", REFLECTION_SYSTEM_PROMPT);
 
-    /* User message with current state and feedback */
     str_t user_msg = str_new(8192);
-
-    str_appendf(&user_msg, "OPTIMIZATION ROUND %d of %d\n\n", round, max_rounds);
+    str_appendf(&user_msg, "SELF-HARNESS ROUND %d of %d — Proposal %d of %d\n\n",
+                round, max_rounds, proposal_idx + 1, proposal_width);
 
     str_append_cstr(&user_msg, "CURRENT SYSTEM PROMPT RULES:\n");
-    if (current_prompt && current_prompt[0]) {
+    if (current_prompt && current_prompt[0])
         str_appendf(&user_msg, "---\n%s\n---\n\n", current_prompt);
-    } else {
+    else
         str_append_cstr(&user_msg, "---\n(empty — no model-specific rules yet)\n---\n\n");
+
+    str_appendf(&user_msg, "%s\n", evidence_text);
+
+    if (proposal_width > 1) {
+        str_appendf(&user_msg,
+            "\nDIVERSITY REQUIREMENT: This is proposal %d of %d. "
+            "Target Pattern %d from the failure list above.\n",
+            proposal_idx + 1, proposal_width,
+            (proposal_idx < 6 ? proposal_idx + 1 : 1));
     }
 
-    str_appendf(&user_msg, "%s\n", feedback_summary);
-
-    if (round > 1) {
-        str_append_cstr(&user_msg,
-            "\nThis is round ");
-        str_appendf(&user_msg, "%d", round);
-        str_append_cstr(&user_msg,
-            " — previous rounds already attempted fixes. "
-            "Try a DIFFERENT approach: restructure rules, remove underperforming "
-            "instructions, or add rules targeting different failure modes.\n");
-    }
+    if (round > 1)
+        str_appendf(&user_msg,
+            "\nRound %d — try a DIFFERENT approach from previously rejected proposals.\n",
+            round);
 
     str_append_cstr(&user_msg,
-        "\nBased on the test results above, propose improved system prompt rules. "
-        "Output ONLY the new prompt text.\n");
+        "\nPropose your MINIMAL, TARGETED edit. Output ONLY the complete updated prompt text.\n");
 
     llm_chat_add(chat, "user", str_cstr(&user_msg));
     str_free(&user_msg);
 
-    /* Call the reflection LM */
     llm_stats_t stats = {0};
     char *raw_response = provider_complete(reflection_lm, chat, &stats);
-
     llm_chat_free(chat);
 
     if (!raw_response) {
-        fprintf(stderr, "[optimize] reflection LM returned no response\n");
+        fprintf(stderr, "[self-harness] proposal %d/%d failed — no response\n",
+                proposal_idx + 1, proposal_width);
         return NULL;
     }
 
-    /* Extract text from response */
     char *text = extract_text_from_response(raw_response);
     free(raw_response);
-
     if (!text) {
-        fprintf(stderr, "[optimize] failed to extract text from reflection response\n");
+        fprintf(stderr, "[self-harness] proposal %d/%d — failed to extract text\n",
+                proposal_idx + 1, proposal_width);
         return NULL;
     }
 
-    /* Trim leading/trailing whitespace */
     char *start = (char *)skip_whitespace(text);
     rtrim_whitespace(start);
-
     char *result = strdup(start);
     free(text);
 
-    fprintf(stderr, "[optimize] reflection LM proposed %zu char prompt (round %d)\n",
-            strlen(result), round);
-
+    fprintf(stderr, "[self-harness] proposal %d/%d: %zu chars (round %d)\n",
+            proposal_idx + 1, proposal_width, strlen(result), round);
     return result;
 }
 
-/* ── Phase 3: The Optimization Loop ─────────────────── */
+/* ════════════════════════════════════════════════════════
+ * Stage 3: Proposal Validation [§3.4]
+ * ════════════════════════════════════════════════════════ */
 
-/* Score a prompt: temporarily set system_prompt_extra, run regression, return score.
- * If out_report is non-NULL, stores the report for feedback extraction (caller frees). */
 static prompt_candidate_t score_prompt(const char *prompt_text,
                                         int round,
                                         optimize_config_t *opt,
@@ -257,19 +509,15 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
     prompt_candidate_t cand = {0};
     cand.prompt_text = prompt_text ? strdup(prompt_text) : NULL;
     cand.round = round;
-
     if (out_report) *out_report = NULL;
 
-    /* Temporarily override system_prompt_extra */
     const char *saved_extra = cfg->system_prompt_extra;
     cfg->system_prompt_extra = prompt_text;
 
-    /* Run regression */
     regression_report_t *report = regression_run(
         banks, n_banks, opt->split_filter,
         opt->student, cfg, memory, store, nash_dir);
 
-    /* Restore original */
     cfg->system_prompt_extra = saved_extra;
 
     if (report) {
@@ -278,121 +526,101 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
         cand.held_out_score = report->held_out_score;
         cand.total_passed = report->total_passed;
         cand.total_queries = report->total_queries;
-
-        if (out_report)
-            *out_report = report;  /* caller takes ownership */
-        else
-            regression_free_report(report);
+        if (out_report) *out_report = report;
+        else regression_free_report(report);
     }
-
     return cand;
 }
 
-/* Check if candidate is better than current best using Self-Harness acceptance rule:
- * Must not regress on either split, and must improve on at least one. */
-static int is_better(const prompt_candidate_t *candidate,
-                     const prompt_candidate_t *best) {
-    /* Simple case: strictly higher overall score */
-    if (candidate->score > best->score + 0.001)
-        return 1;
+/* Self-Harness acceptance rule [§3.4]:
+ * Δ_in ≥ 0 AND Δ_ho ≥ 0 AND max(Δ_in, Δ_ho) > 0 */
+static int passes_acceptance_rule(const prompt_candidate_t *candidate,
+                                  const prompt_candidate_t *baseline,
+                                  double *out_d_in, double *out_d_ho) {
+    double d_in = 0, d_ho = 0;
+    if (candidate->held_in_score >= 0 && baseline->held_in_score >= 0)
+        d_in = candidate->held_in_score - baseline->held_in_score;
+    if (candidate->held_out_score >= 0 && baseline->held_out_score >= 0)
+        d_ho = candidate->held_out_score - baseline->held_out_score;
 
-    /* Tie-breaking: if overall is similar, check splits */
-    if (candidate->score >= best->score - 0.001) {
-        /* Check Self-Harness acceptance rule on splits */
-        if (candidate->held_in_score >= 0 && best->held_in_score >= 0 &&
-            candidate->held_out_score >= 0 && best->held_out_score >= 0) {
-            double d_in  = candidate->held_in_score  - best->held_in_score;
-            double d_out = candidate->held_out_score - best->held_out_score;
-            /* Accept if neither split regresses and at least one improves */
-            if (d_in >= -0.001 && d_out >= -0.001 &&
-                (d_in > 0.001 || d_out > 0.001))
-                return 1;
-        }
+    if (out_d_in) *out_d_in = d_in;
+    if (out_d_ho) *out_d_ho = d_ho;
 
-        /* Tie-break on pass count */
-        if (candidate->total_passed > best->total_passed)
-            return 1;
+    if (candidate->held_in_score >= 0 && baseline->held_in_score >= 0 &&
+        candidate->held_out_score >= 0 && baseline->held_out_score >= 0) {
+        double max_d = d_in > d_ho ? d_in : d_ho;
+        return (d_in >= -0.001 && d_ho >= -0.001 && max_d > 0.001);
     }
-
-    return 0;
+    if (candidate->held_in_score >= 0 && baseline->held_in_score >= 0)
+        return d_in > 0.001;
+    if (candidate->held_out_score >= 0 && baseline->held_out_score >= 0)
+        return d_ho > 0.001;
+    return (candidate->score > baseline->score + 0.001);
 }
 
-/* Write winning prompt to model profile .toml */
+/* MergeAccepted [§3.4]: pick accepted candidate with best score.
+ * For text-blob harness surfaces, we use last-writer-wins with best delta. */
+static char *merge_accepted_prompts(prompt_candidate_t *accepted, int n) {
+    if (n == 0) return strdup("");
+    if (n == 1) return strdup(accepted[0].prompt_text);
+    int best = 0;
+    for (int i = 1; i < n; i++)
+        if (accepted[i].score > accepted[best].score) best = i;
+    return strdup(accepted[best].prompt_text);
+}
+
 static int write_prompt_to_profile(const char *profile_path,
                                     const char *prompt_text) {
     if (!profile_path || !prompt_text) return -1;
-
     char *data = slurp_file(profile_path, NULL);
     if (!data) {
-        fprintf(stderr, "[optimize] cannot read profile: %s\n", profile_path);
+        fprintf(stderr, "[self-harness] cannot read profile: %s\n", profile_path);
         return -1;
     }
 
     str_t out = str_new(strlen(data) + strlen(prompt_text) + 256);
-
-    /* Strategy: find existing system_prompt_extra and replace it,
-     * or append if not found. */
     char *spe = strstr(data, "system_prompt_extra");
     if (spe) {
-        /* Write everything before system_prompt_extra */
         str_append(&out, data, spe - data);
-
-        /* Write the new value */
         str_append_cstr(&out, "system_prompt_extra = \"\"\"\n");
         str_append_cstr(&out, prompt_text);
         if (prompt_text[strlen(prompt_text) - 1] != '\n')
             str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\"\"\"\n");
 
-        /* Skip past the old value:
-         * Find the end of the old system_prompt_extra value */
         char *val_start = spe + strlen("system_prompt_extra");
-        /* Skip whitespace and = */
         while (*val_start == ' ' || *val_start == '=') val_start++;
-
         if (strncmp(val_start, "\"\"\"", 3) == 0) {
-            /* Multi-line string: find closing """ */
             char *closing = strstr(val_start + 3, "\"\"\"");
-            if (closing) {
-                val_start = closing + 3;
-                /* Skip trailing newline */
-                if (*val_start == '\n') val_start++;
-            }
+            if (closing) { val_start = closing + 3; if (*val_start == '\n') val_start++; }
         } else if (*val_start == '"') {
-            /* Single-line string: find closing " */
             char *closing = strchr(val_start + 1, '"');
-            if (closing) {
-                val_start = closing + 1;
-                if (*val_start == '\n') val_start++;
-            }
+            if (closing) { val_start = closing + 1; if (*val_start == '\n') val_start++; }
         }
-
-        /* Write the rest of the file */
         str_append_cstr(&out, val_start);
     } else {
-        /* No existing system_prompt_extra — append at end */
         str_append_cstr(&out, data);
-        if (data[strlen(data) - 1] != '\n')
-            str_append_cstr(&out, "\n");
+        if (data[strlen(data) - 1] != '\n') str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\nsystem_prompt_extra = \"\"\"\n");
         str_append_cstr(&out, prompt_text);
         if (prompt_text[strlen(prompt_text) - 1] != '\n')
             str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\"\"\"\n");
     }
-
     free(data);
 
     int rc = write_file(profile_path, str_cstr(&out), out.len);
     str_free(&out);
-
     if (rc == 0)
-        fprintf(stderr, "[optimize] wrote optimized prompt to %s\n", profile_path);
+        fprintf(stderr, "[self-harness] wrote optimized prompt to %s\n", profile_path);
     else
-        fprintf(stderr, "[optimize] ERROR: failed to write %s\n", profile_path);
-
+        fprintf(stderr, "[self-harness] ERROR: failed to write %s\n", profile_path);
     return rc;
 }
+
+/* ════════════════════════════════════════════════════════
+ * Algorithm 1: The Self-Harness Loop [arXiv:2606.09498]
+ * ════════════════════════════════════════════════════════ */
 
 prompt_candidate_t optimize_run(optimize_config_t *opt,
                                 query_bank_t *banks, int n_banks,
@@ -404,10 +632,13 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     best.held_in_score = -1;
     best.held_out_score = -1;
 
-    fprintf(stderr, "\n╔══════════════════════════════════════════╗\n");
-    fprintf(stderr, "║      Nash Prompt Optimization (GEPA)    ║\n");
-    fprintf(stderr, "╚══════════════════════════════════════════╝\n\n");
-    fprintf(stderr, "  Budget: %d rounds\n", opt->max_rounds);
+    int K = opt->proposal_width > 0 ? opt->proposal_width : 2;
+
+    fprintf(stderr, "\n╔══════════════════════════════════════════════════╗\n");
+    fprintf(stderr, "║  Nash Self-Harness Optimizer [arXiv:2606.09498]  ║\n");
+    fprintf(stderr, "╚══════════════════════════════════════════════════╝\n\n");
+    fprintf(stderr, "  Rounds (T): %d\n", opt->max_rounds);
+    fprintf(stderr, "  Proposal width (K): %d\n", K);
     fprintf(stderr, "  Student model: %s\n",
             opt->student && opt->student->cfg.model_id
                 ? opt->student->cfg.model_id : "(unknown)");
@@ -418,21 +649,22 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
         fprintf(stderr, "  Profile: %s\n", opt->profile_path);
     fprintf(stderr, "\n");
 
-    /* Step 1: Score the current (baseline) prompt */
+    /* Rejected proposal history */
+    int rejected_cap = 16;
+    rejected_proposal_t *rejected = calloc(rejected_cap, sizeof(rejected_proposal_t));
+    int n_rejected = 0;
+
+    /* Round 0: Baseline */
     const char *current_prompt = cfg->system_prompt_extra;
+    fprintf(stderr, "━━━ Round 0: Baseline Evaluation ━━━\n");
 
-    fprintf(stderr, "━━━ Round 0: Baseline ━━━\n");
-    fprintf(stderr, "  Current prompt: %s\n\n",
-            current_prompt && current_prompt[0]
-                ? "(existing rules)" : "(empty)");
-
-    /* For the baseline, run regression with current prompt */
     regression_report_t *baseline_report = regression_run(
         banks, n_banks, opt->split_filter,
         opt->student, cfg, memory, store, nash_dir);
 
     if (!baseline_report) {
-        fprintf(stderr, "[optimize] baseline regression run failed\n");
+        fprintf(stderr, "[self-harness] baseline regression run failed\n");
+        free(rejected);
         return best;
     }
 
@@ -444,159 +676,216 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     best.total_queries = baseline_report->total_queries;
     best.round = 0;
 
-    fprintf(stderr, "\n  Baseline: %.1f%% (%d/%d passed)\n\n",
+    fprintf(stderr, "\n  Baseline: %.1f%% (%d/%d passed)\n",
             best.score * 100, best.total_passed, best.total_queries);
+    if (best.held_in_score >= 0)
+        fprintf(stderr, "  Held-in:  %.1f%%\n", best.held_in_score * 100);
+    if (best.held_out_score >= 0)
+        fprintf(stderr, "  Held-out: %.1f%%\n", best.held_out_score * 100);
 
-    /* If already perfect, nothing to optimize */
     if (best.score >= 0.999) {
-        fprintf(stderr, "  ✓ Perfect score — nothing to optimize!\n\n");
+        fprintf(stderr, "  Perfect score — stopping!\n");
         regression_free_report(baseline_report);
+        free(rejected);
         return best;
     }
 
-    /* Format baseline feedback for first reflection round */
-    char *feedback = optimize_format_feedback(baseline_report);
+    sh_evidence_t *evidence = optimize_build_evidence_bundle(baseline_report);
     regression_free_report(baseline_report);
 
-    /* Step 2: Optimization loop */
     char *current = current_prompt ? strdup(current_prompt) : strdup("");
+    prompt_candidate_t round_baseline = best;
+    round_baseline.prompt_text = strdup(current);
 
+    /* ── Self-Harness iteration loop ── */
     for (int round = 1; round <= opt->max_rounds; round++) {
-        fprintf(stderr, "━━━ Round %d/%d ━━━\n", round, opt->max_rounds);
+        fprintf(stderr, "\n━━━ Self-Harness Round %d/%d ━━━\n", round, opt->max_rounds);
 
-        /* Reflect: ask LM to propose improved prompt */
-        char *candidate_text = optimize_reflect(
-            opt->reflection, current, feedback,
-            round, opt->max_rounds);
+        if (!evidence || evidence->total_failures == 0) {
+            fprintf(stderr, "  No failures — stopping early\n");
+            break;
+        }
+        fprintf(stderr, "  Evidence: %d patterns, %d failures\n",
+                evidence->n_clusters, evidence->total_failures);
 
-        free(feedback);
-        feedback = NULL;
+        char *evidence_text = optimize_format_evidence(evidence, rejected, n_rejected);
 
-        if (!candidate_text) {
-            fprintf(stderr, "  ✗ Reflection failed — skipping round\n\n");
+        /* Stage 2: Parallel Propose */
+        fprintf(stderr, "  Generating %d proposals...\n", K);
+        char **cand_texts = calloc(K, sizeof(char *));
+        int n_valid = 0;
+        for (int k = 0; k < K; k++) {
+            cand_texts[k] = optimize_reflect(opt->reflection, current,
+                evidence_text, round, opt->max_rounds, k, K);
+            if (cand_texts[k]) n_valid++;
+        }
+        free(evidence_text);
+
+        if (n_valid == 0) {
+            fprintf(stderr, "  All proposals failed — skipping round\n");
+            free(cand_texts);
             continue;
         }
 
-        /* Score the candidate — also get the report for feedback */
-        fprintf(stderr, "  Scoring candidate...\n");
-        regression_report_t *cand_report = NULL;
-        prompt_candidate_t candidate = score_prompt(
-            candidate_text, round,
-            opt, banks, n_banks, cfg, memory, store, nash_dir, &cand_report);
-        free(candidate_text);
+        /* Stage 3: Validate each candidate */
+        prompt_candidate_t *accepted_list = calloc(K, sizeof(prompt_candidate_t));
+        int n_accepted = 0;
+        regression_report_t *best_report = NULL;
 
-        fprintf(stderr, "\n  Candidate: %.1f%% (%d/%d passed)",
-                candidate.score * 100,
-                candidate.total_passed, candidate.total_queries);
-        if (candidate.held_in_score >= 0)
-            fprintf(stderr, "  [held-in: %.1f%%]", candidate.held_in_score * 100);
-        if (candidate.held_out_score >= 0)
-            fprintf(stderr, "  [held-out: %.1f%%]", candidate.held_out_score * 100);
-        fprintf(stderr, "\n");
+        for (int k = 0; k < K; k++) {
+            if (!cand_texts[k]) continue;
+            fprintf(stderr, "\n  ── Candidate %d/%d ──\n", k + 1, K);
 
-        /* Compare against best */
-        if (is_better(&candidate, &best)) {
-            fprintf(stderr, "  ★ New best! (%.1f%% → %.1f%%)\n\n",
-                    best.score * 100, candidate.score * 100);
-            optimize_free_candidate(&best);
-            best = candidate;
+            regression_report_t *rpt = NULL;
+            prompt_candidate_t cand = score_prompt(cand_texts[k], round,
+                opt, banks, n_banks, cfg, memory, store, nash_dir, &rpt);
 
-            /* Update current prompt for next reflection round */
-            free(current);
-            current = best.prompt_text ? strdup(best.prompt_text) : strdup("");
+            fprintf(stderr, "  Score: %.1f%% (%d/%d)",
+                    cand.score * 100, cand.total_passed, cand.total_queries);
+            if (cand.held_in_score >= 0)
+                fprintf(stderr, " [in: %.1f%%]", cand.held_in_score * 100);
+            if (cand.held_out_score >= 0)
+                fprintf(stderr, " [out: %.1f%%]", cand.held_out_score * 100);
 
-            /* Reuse this report for feedback in the next round */
-            if (round < opt->max_rounds && cand_report) {
-                feedback = optimize_format_feedback(cand_report);
+            double d_in = 0, d_ho = 0;
+            int accept = passes_acceptance_rule(&cand, &round_baseline, &d_in, &d_ho);
 
-                /* If perfect, stop early */
-                if (best.score >= 0.999) {
-                    fprintf(stderr, "  ✓ Perfect score — stopping early!\n\n");
-                    free(feedback);
-                    feedback = NULL;
-                    regression_free_report(cand_report);
-                    break;
+            if (accept) {
+                fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                        d_in * 100, d_ho * 100);
+                accepted_list[n_accepted] = cand;
+                accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
+                n_accepted++;
+                if (!best_report || cand.score > best.score) {
+                    if (best_report) regression_free_report(best_report);
+                    best_report = rpt;
+                    rpt = NULL;
                 }
+            } else {
+                fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                        d_in * 100, d_ho * 100);
+                if (n_rejected >= rejected_cap) {
+                    rejected_cap *= 2;
+                    rejected = realloc(rejected,
+                        rejected_cap * sizeof(rejected_proposal_t));
+                }
+                rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
+                rejected[n_rejected].audit = NULL;
+                rejected[n_rejected].round = round;
+                rejected[n_rejected].delta_in = d_in;
+                rejected[n_rejected].delta_out = d_ho;
+                n_rejected++;
             }
-        } else {
-            fprintf(stderr, "  → Not better than current best (%.1f%%)\n\n",
-                    best.score * 100);
-            optimize_free_candidate(&candidate);
-
-            /* Use the candidate's report for feedback anyway —
-             * shows the reflection LM what the CURRENT best still fails on */
-            if (round < opt->max_rounds && cand_report) {
-                feedback = optimize_format_feedback(cand_report);
-            }
+            if (rpt) regression_free_report(rpt);
+            optimize_free_candidate(&cand);
         }
 
-        if (cand_report)
-            regression_free_report(cand_report);
+        /* Merge accepted (§3.4) */
+        if (n_accepted > 0) {
+            fprintf(stderr, "\n  Merging %d accepted proposal%s\n",
+                    n_accepted, n_accepted > 1 ? "s" : "");
+            char *merged = merge_accepted_prompts(accepted_list, n_accepted);
+            free(current);
+            current = merged;
+
+            for (int a = 0; a < n_accepted; a++) {
+                if (accepted_list[a].score > best.score) {
+                    optimize_free_candidate(&best);
+                    best.prompt_text = strdup(accepted_list[a].prompt_text);
+                    best.score = accepted_list[a].score;
+                    best.held_in_score = accepted_list[a].held_in_score;
+                    best.held_out_score = accepted_list[a].held_out_score;
+                    best.total_passed = accepted_list[a].total_passed;
+                    best.total_queries = accepted_list[a].total_queries;
+                    best.round = round;
+                }
+            }
+
+            optimize_free_candidate(&round_baseline);
+            round_baseline.prompt_text = strdup(current);
+            round_baseline.score = best.score;
+            round_baseline.held_in_score = best.held_in_score;
+            round_baseline.held_out_score = best.held_out_score;
+            round_baseline.total_passed = best.total_passed;
+            round_baseline.total_queries = best.total_queries;
+        } else {
+            fprintf(stderr, "\n  No proposals accepted — h_{t+1} = h_t\n");
+        }
+
+        /* Rebuild evidence for next round */
+        optimize_free_evidence_bundle(evidence);
+        evidence = best_report ? optimize_build_evidence_bundle(best_report) : NULL;
+        if (best_report) regression_free_report(best_report);
+
+        for (int a = 0; a < n_accepted; a++)
+            optimize_free_candidate(&accepted_list[a]);
+        free(accepted_list);
+        for (int k = 0; k < K; k++) free(cand_texts[k]);
+        free(cand_texts);
+
+        if (best.score >= 0.999) {
+            fprintf(stderr, "  Perfect score — stopping early!\n");
+            break;
+        }
     }
 
+    /* Cleanup */
     free(current);
-    free(feedback);
+    optimize_free_candidate(&round_baseline);
+    optimize_free_evidence_bundle(evidence);
+    for (int i = 0; i < n_rejected; i++) {
+        free(rejected[i].prompt_text);
+        free(rejected[i].audit);
+    }
+    free(rejected);
 
     /* Print final results */
-    fprintf(stderr, "\n╔══════════════════════════════════════════╗\n");
-    fprintf(stderr, "║       Optimization Results              ║\n");
-    fprintf(stderr, "╚══════════════════════════════════════════╝\n\n");
-    fprintf(stderr, "  Best score: %.1f%% (%d/%d passed) — from round %d\n",
+    fprintf(stderr, "\n╔══════════════════════════════════════════════════╗\n");
+    fprintf(stderr, "║       Self-Harness Optimization Results          ║\n");
+    fprintf(stderr, "╚══════════════════════════════════════════════════╝\n\n");
+    fprintf(stderr, "  Best score: %.1f%% (%d/%d) from round %d\n",
             best.score * 100, best.total_passed, best.total_queries, best.round);
     if (best.held_in_score >= 0)
         fprintf(stderr, "  Held-in:  %.1f%%\n", best.held_in_score * 100);
     if (best.held_out_score >= 0)
         fprintf(stderr, "  Held-out: %.1f%%\n", best.held_out_score * 100);
 
-    fprintf(stderr, "\n  Winning prompt:\n");
-    fprintf(stderr, "  ──────────────────────────────────────\n");
+    fprintf(stderr, "\n  Winning prompt:\n  ───────────────\n");
     if (best.prompt_text && best.prompt_text[0]) {
-        /* Print with indentation */
         const char *line = best.prompt_text;
         while (line && *line) {
             const char *nl = strchr(line, '\n');
-            if (nl) {
-                fprintf(stderr, "  %.*s\n", (int)(nl - line), line);
-                line = nl + 1;
-            } else {
-                fprintf(stderr, "  %s\n", line);
-                break;
-            }
+            if (nl) { fprintf(stderr, "  %.*s\n", (int)(nl - line), line); line = nl + 1; }
+            else { fprintf(stderr, "  %s\n", line); break; }
         }
     } else {
         fprintf(stderr, "  (empty)\n");
     }
-    fprintf(stderr, "  ──────────────────────────────────────\n\n");
+    fprintf(stderr, "  ───────────────\n\n");
 
-    /* Write to profile if requested */
-    if (opt->profile_path && best.prompt_text && best.round > 0) {
+    if (opt->profile_path && best.prompt_text && best.round > 0)
         write_prompt_to_profile(opt->profile_path, best.prompt_text);
-    } else if (best.round == 0) {
+    else if (best.round == 0)
         fprintf(stderr, "  No improvement found — keeping original prompt.\n\n");
-    }
 
     return best;
 }
 
-/* ── Utility functions ──────────────────────────────── */
-
 int optimize_parse_budget(const char *budget_str) {
     if (!budget_str) return -1;
-
     if (strcmp(budget_str, "light") == 0)  return OPTIMIZE_LIGHT;
     if (strcmp(budget_str, "medium") == 0) return OPTIMIZE_MEDIUM;
     if (strcmp(budget_str, "heavy") == 0)  return OPTIMIZE_HEAVY;
-
-    /* Try parsing as integer */
     int n = atoi(budget_str);
     if (n > 0 && n <= 50) return n;
-
     return -1;
 }
 
 void optimize_free_candidate(prompt_candidate_t *c) {
     if (!c) return;
     free(c->prompt_text);
+    free(c->audit);
     c->prompt_text = NULL;
+    c->audit = NULL;
     c->score = 0;
 }

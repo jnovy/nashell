@@ -81,6 +81,7 @@ typedef struct {
     criterion_result_t *crit_results;
     int n_crit_results;
     char *result_text;         /* final result from react_run (for diagnostics) */
+    char *trace_summary;       /* Self-Harness: compact execution trace from journal_manifest() */
 } query_result_t;
 
 typedef struct {

@@ -470,6 +470,12 @@ static query_result_t run_single_query(const test_query_t *tq,
     qr.steps_used = ja.total_steps;
     qr.result_text = result ? strdup(result) : NULL;
 
+    /* Self-Harness [arXiv:2606.09498]: capture execution trace for weakness mining.
+     * journal_manifest() builds a compact step-by-step summary of the agent's
+     * tool calls, thoughts, and outputs — the behavioral evidence the paper's
+     * BuildEvidenceBundle stage needs to identify failure mechanisms. */
+    qr.trace_summary = journal_manifest(journal, 200);
+
     /* Evaluate all criteria */
     qr.n_crit_results = tq->n_criteria;
     qr.crit_results = calloc(tq->n_criteria, sizeof(criterion_result_t));
@@ -868,6 +874,7 @@ void regression_free_report(regression_report_t *report) {
             query_result_t *qr = &br->results[j];
             free(qr->query_id);
             free(qr->result_text);
+            free(qr->trace_summary);
             for (int k = 0; k < qr->n_crit_results; k++) {
                 free(qr->crit_results[k].criterion_desc);
                 free(qr->crit_results[k].detail);
