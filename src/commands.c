@@ -1446,9 +1446,14 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
 
 /* ── /agent [list|show|run|history|due|result] ────────────────── */
 
-/* Helper: find an agent by exact or suffix match.
+/* Helper: find an agent by numeric index (1-based), exact, or suffix match.
  * Returns pointer into q->agents[] or NULL. */
 static const agent_entry_t *agent_find(const agent_queue_t *q, const char *id) {
+    /* Numeric index: "1", "2", etc. (1-based) */
+    char *endp;
+    long idx = strtol(id, &endp, 10);
+    if (*endp == '\0' && endp != id && idx >= 1 && idx <= q->n_agents)
+        return &q->agents[idx - 1];
     /* Exact match */
     for (int i = 0; i < q->n_agents; i++)
         if (strcmp(q->agents[i].id, id) == 0) return &q->agents[i];
@@ -1492,8 +1497,8 @@ static int cmd_agents_list(command_ctx_t *ctx) {
             "`~/.nash/workspaces/<name>/agent/<agent>.yaml`\n");
     } else {
         str_appendf(&display,
-            "| Agent | Schedule | Last Run | Status | Due |\n"
-            "|-------|----------|----------|--------|-----|\n");
+            "| # | Agent | Schedule | Last Run | Status | Due |\n"
+            "|---|-------|----------|----------|--------|-----|\n");
 
         time_t now = time(NULL);
         for (int i = 0; i < q->n_agents; i++) {
@@ -1519,16 +1524,16 @@ static int cmd_agents_list(command_ctx_t *ctx) {
                          a->last_status ? a->last_status : "?", durbuf);
             }
 
-            str_appendf(&display, "| %s | `%s` | %s | %s | %s |\n",
-                        a->id, a->schedule_str,
+            str_appendf(&display, "| %d | %s | `%s` | %s | %s | %s |\n",
+                        i + 1, a->id, a->schedule_str,
                         last_run_str, status_str,
                         a->is_due ? "**yes**" : "no");
         }
 
         str_appendf(&display,
             "\n**%d agents**, %d due now\n\n"
-            "Commands: `/agent show ID`, `/agent run ID`, "
-            "`/agent history`, `/agent result ID`\n",
+            "Commands: `/agent show ID|#`, `/agent run ID|#`, "
+            "`/agent history`, `/agent result ID|#`\n",
             q->n_agents, q->n_due);
     }
 
