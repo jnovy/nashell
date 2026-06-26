@@ -944,7 +944,7 @@ void tui_render(ui_state_t *ui) {
      * Must happen AFTER doupdate() since ncurses' waddch cannot pass
      * ESC bytes to the terminal (renders them as ^[ caret notation). */
     if (md_osc8_count > 0)
-        md_osc8_flush(getbegy(win_main));
+        md_osc8_flush(win_main, getbegy(win_main));
 
     ui->dirty = 0;
 

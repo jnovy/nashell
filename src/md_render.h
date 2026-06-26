@@ -62,8 +62,10 @@ extern int            md_osc8_count;
 /* Emit all deferred OSC 8 sequences directly to stdout.
  * Must be called AFTER ncurses doupdate() so the screen content
  * is already rendered and cursor positioning sequences work.
+ * win: the ncurses window containing the rendered text (used to read
+ *      link text back via mvwinnstr for re-output between OSC 8 tags).
  * win_row_offset: the window's absolute row on screen (from getbegy). */
-void md_osc8_flush(int win_row_offset);
+void md_osc8_flush(WINDOW *win, int win_row_offset);
 
 /* Find the rendered line number of a heading matching a #fragment anchor.
  * fragment: the anchor string WITHOUT the leading '#' (e.g., "1-current-state").

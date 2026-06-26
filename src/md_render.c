@@ -922,7 +922,7 @@ static void defer_osc8_end(int col_end) {
 /* Emit all deferred OSC 8 sequences directly to stdout.
  * Called AFTER doupdate() so screen content is already rendered.
  * win_row_offset: absolute screen row of the window (getbegy). */
-void md_osc8_flush(int win_row_offset) {
+void md_osc8_flush(WINDOW *win, int win_row_offset) {
     if (md_osc8_count == 0) return;
     /* Save cursor position (DECSC) — restore after emitting OSC 8
      * sequences so ncurses' internal cursor tracking stays in sync
@@ -932,19 +932,27 @@ void md_osc8_flush(int win_row_offset) {
         md_osc8_link_t *lk = &md_osc8_links[i];
         int abs_row = win_row_offset + lk->row + 1;  /* 1-based */
         int abs_col = lk->col_start + 1;               /* 1-based */
+        int link_len = lk->col_end - lk->col_start;
+        if (link_len <= 0) continue;
+        /* Read the link text back from the ncurses window so we can
+         * re-output it between OSC 8 open/close.  Terminals associate
+         * the hyperlink attribute with CHARACTERS WRITTEN to the screen,
+         * not with cursor movement — so we must re-output the actual
+         * characters for the link to be clickable/hoverable. */
+        char text_buf[512];
+        if (link_len >= (int)sizeof(text_buf))
+            link_len = (int)sizeof(text_buf) - 1;
+        int got = mvwinnstr(win, lk->row, lk->col_start, text_buf, link_len);
+        if (got <= 0) continue;
+        text_buf[got] = '\0';
         /* Position cursor at link start */
         printf("\033[%d;%dH", abs_row, abs_col);
         /* OSC 8 start: ESC ] 8 ; ; URI ST */
         printf("\033]8;;%s\033\\", lk->uri);
-        /* Move cursor past link text (the text is already rendered
-         * by ncurses — we just need to "claim" the columns as part
-         * of the hyperlink by re-outputting spaces wouldn't work,
-         * so we skip forward and let the terminal associate the
-         * positioned region).  The terminal tracks the hyperlink
-         * state and associates subsequent output with it. */
-        int link_len = lk->col_end - lk->col_start;
-        if (link_len > 0)
-            printf("\033[%dC", link_len);
+        /* Re-output the link text — the terminal now tags these
+         * characters with the hyperlink attribute, making them
+         * clickable and showing the URL on hover. */
+        printf("%s", text_buf);
         /* OSC 8 end: ESC ] 8 ; ; ST */
         printf("\033]8;;\033\\");
     }
@@ -1043,11 +1051,17 @@ static int render_segment(WINDOW *win, int row, int col, const char *text,
  *   render_line: in/out — starts at current render line, ends after last table row
  *   src_line: in/out — source line tracking
  *   out_src: output — updated to point past last table row (for main loop)
+ *   doc: parsed MD document (for link tracking; may be NULL)
+ *   link_idx: in/out — index into doc->links[] (may be NULL)
+ *   cursor_link: selected link index for cursor highlight (-1 = none)
+ *   focus: 1 = pane has focus (cursor visible), 0 = no focus
  *
  * Returns: number of render lines consumed by the table. */
 static int render_table(WINDOW *win, const char *src, int num_rows,
                         int scroll_y, int scroll_x, int rows, int cols,
-                        int *render_line, int *src_line, const char **out_src) {
+                        int *render_line, int *src_line, const char **out_src,
+                        md_doc_t *doc, int *link_idx, int cursor_link,
+                        int focus) {
     #define MAX_TABLE_COLS 20
 
     /* Pass 1: scan ALL consecutive | lines to find max column widths */
@@ -1159,13 +1173,36 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                     int pw = (ci < num_cols) ? col_widths[ci] : tlen;
                     if (x >= 0 && x < cols) mvwaddch(win, vis_line, x, ' ');
                     x++;
-                    /* Parse inline markdown in cell text (bold, italic, code) */
+                    /* Parse inline markdown in cell text (bold, italic, code, links) */
                     int dcols = 0;
                     if (tlen > 0) {
                         inline_seg_t cell_segs[MAX_INLINE_SEGS];
                         int cell_n = parse_inline(ts, tlen, cell_segs, MAX_INLINE_SEGS);
                         if (is_header)
                             apply_attr_to_segs(cell_segs, cell_n, A_BOLD);
+                        /* Check if any segment is a link — if so, track it
+                         * in doc->links[] for cursor navigation */
+                        int cell_has_link = 0;
+                        for (int si = 0; si < cell_n; si++) {
+                            if (cell_segs[si].url && cell_segs[si].url_len > 0) {
+                                cell_has_link = 1;
+                                break;
+                            }
+                        }
+                        int is_cursor = 0;
+                        if (cell_has_link && doc && link_idx &&
+                            *link_idx < doc->link_count) {
+                            doc->links[*link_idx].render_line = *render_line;
+                            is_cursor = (focus && *link_idx == cursor_link);
+                            if (is_cursor) {
+                                /* Highlight the entire link text with reverse */
+                                for (int si = 0; si < cell_n; si++) {
+                                    if (cell_segs[si].url && cell_segs[si].url_len > 0)
+                                        cell_segs[si].attr = A_REVERSE | A_BOLD;
+                                }
+                            }
+                            (*link_idx)++;
+                        }
                         for (int si = 0; si < cell_n; si++)
                             dcols += seg_display_cols(cell_segs[si].text, cell_segs[si].len);
                         if (x >= 0 && x < cols)
@@ -1184,6 +1221,28 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                     wattron(win, COLOR_PAIR(C_DIM));
                     mvwaddstr(win, vis_line, x, "\xe2\x94\x82"); /* │ */
                     wattroff(win, COLOR_PAIR(C_DIM));
+                }
+            }
+        } else {
+            /* Off-screen: still need to track links so link_idx stays
+             * synchronized with doc->links[].  Scan the row text for
+             * [text](uri) patterns and advance link_idx for each. */
+            if (doc && link_idx) {
+                const char *lp = tbuf;
+                while ((lp = strchr(lp, '[')) != NULL) {
+                    const char *be = strchr(lp + 1, ']');
+                    if (be && be[1] == '(') {
+                        const char *pe = strchr(be + 2, ')');
+                        if (pe) {
+                            if (*link_idx < doc->link_count) {
+                                doc->links[*link_idx].render_line = *render_line;
+                                (*link_idx)++;
+                            }
+                            lp = pe + 1;
+                            continue;
+                        }
+                    }
+                    lp++;
                 }
             }
         }
@@ -1851,7 +1910,8 @@ step_line_done:
             const char *out_src = src;
             (void)render_table(win, src, table_rows,
                                 scroll_y, scroll_x, rows, cols,
-                                &render_line, &src_line, &out_src);
+                                &render_line, &src_line, &out_src,
+                                doc, &link_idx, cursor_link, focus);
             /* render_table() sets out_src to the last row; skip the main
              * loop's advance for all but the last row. */
             if (out_src != src) {
