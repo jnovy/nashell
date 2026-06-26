@@ -470,6 +470,29 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* CWD-based workspace auto-detection: if no -w was given, check if CWD
+     * is inside ~/.nash/workspaces/<name>/ and auto-activate that workspace. */
+    if (!cfg->workspace || !cfg->workspace[0]) {
+        char cwd_auto[NASH_PATH_MAX];
+        if (getcwd(cwd_auto, sizeof(cwd_auto))) {
+            char ws_prefix[NASH_PATH_MAX];
+            snprintf(ws_prefix, sizeof(ws_prefix), "%s/workspaces/", nash_dir);
+            size_t pfx_len = strlen(ws_prefix);
+            if (strncmp(cwd_auto, ws_prefix, pfx_len) == 0 && cwd_auto[pfx_len]) {
+                /* CWD is under workspaces/ — extract workspace name.
+                 * e.g. ~/.nash/workspaces/rh/container-tools → "rh/container-tools" */
+                free(cfg->workspace);
+                cfg->workspace = strdup(cwd_auto + pfx_len);
+                /* Strip trailing slash if any */
+                size_t wlen = strlen(cfg->workspace);
+                if (wlen > 0 && cfg->workspace[wlen - 1] == '/')
+                    cfg->workspace[wlen - 1] = '\0';
+                fprintf(stderr, "[info] auto-detected workspace from CWD: %s\n",
+                        cfg->workspace);
+            }
+        }
+    }
+
     /* Per-workspace config overlay: ~/.nash/workspaces/<name>/config.toml
      * Allows workspace-specific provider, limits, and other settings.
      * Applied after global config + spec overlay, before provider creation. */
