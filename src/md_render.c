@@ -48,6 +48,73 @@ static int is_web_uri(const char *uri);
 
 /* ── Helpers (Items 3-9) ── */
 
+/* Decode one UTF-8 character starting at s[0..max_bytes-1].
+ * Stores the codepoint in *cp and returns the number of bytes consumed.
+ * On invalid sequences, sets *cp = s[0] and returns 1 (treat as 1-col). */
+static int utf8_decode(const char *s, int max_bytes, wchar_t *cp) {
+    unsigned char c = (unsigned char)s[0];
+    if (c < 0x80) { *cp = c; return 1; }
+    int len; wchar_t val;
+    if      ((c & 0xE0) == 0xC0) { len = 2; val = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; val = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; val = c & 0x07; }
+    else { *cp = c; return 1; }
+    if (len > max_bytes) { *cp = c; return 1; }
+    for (int i = 1; i < len; i++) {
+        if (((unsigned char)s[i] & 0xC0) != 0x80) { *cp = c; return 1; }
+        val = (val << 6) | ((unsigned char)s[i] & 0x3F);
+    }
+    *cp = val;
+    return len;
+}
+
+/* Return the display width (columns) of a Unicode codepoint.
+ * Handles CJK, emoji, and other wide characters without wcwidth(). */
+static int codepoint_width(wchar_t cp) {
+    /* Zero-width characters */
+    if (cp == 0) return 0;
+    /* Control characters */
+    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
+    /* Combining marks (most common ranges) */
+    if ((cp >= 0x0300 && cp <= 0x036F) ||   /* combining diacriticals */
+        (cp >= 0x1AB0 && cp <= 0x1AFF) ||   /* combining diacriticals ext */
+        (cp >= 0x1DC0 && cp <= 0x1DFF) ||   /* combining diacriticals supplement */
+        (cp >= 0x20D0 && cp <= 0x20FF) ||   /* combining for symbols */
+        (cp >= 0xFE00 && cp <= 0xFE0F) ||   /* variation selectors */
+        (cp >= 0xFE20 && cp <= 0xFE2F) ||   /* combining half marks */
+        (cp >= 0xE0100 && cp <= 0xE01EF) || /* variation selectors supplement */
+        cp == 0x200B || cp == 0x200C ||     /* zero-width space/non-joiner */
+        cp == 0x200D || cp == 0xFEFF)       /* zero-width joiner / BOM */
+        return 0;
+    /* Wide characters: CJK, emoji, fullwidth forms */
+    if ((cp >= 0x1100 && cp <= 0x115F) ||   /* Hangul Jamo */
+        cp == 0x2329 || cp == 0x232A ||     /* angle brackets */
+        (cp >= 0x2E80 && cp <= 0x303E) ||   /* CJK radicals..symbols */
+        (cp >= 0x3040 && cp <= 0x33BF) ||   /* Hiragana..CJK compat */
+        (cp >= 0x3400 && cp <= 0x4DBF) ||   /* CJK ext A */
+        (cp >= 0x4E00 && cp <= 0xA4CF) ||   /* CJK unified..Yi */
+        (cp >= 0xA960 && cp <= 0xA97C) ||   /* Hangul Jamo ext A */
+        (cp >= 0xAC00 && cp <= 0xD7A3) ||   /* Hangul syllables */
+        (cp >= 0xF900 && cp <= 0xFAFF) ||   /* CJK compat ideographs */
+        (cp >= 0xFE10 && cp <= 0xFE19) ||   /* vertical forms */
+        (cp >= 0xFE30 && cp <= 0xFE6B) ||   /* CJK compat forms */
+        (cp >= 0xFF01 && cp <= 0xFF60) ||   /* fullwidth forms */
+        (cp >= 0xFFE0 && cp <= 0xFFE6) ||   /* fullwidth signs */
+        (cp >= 0x1F000 && cp <= 0x1FBFF) || /* emoji & symbols (Mahjong..symbols) */
+        (cp >= 0x20000 && cp <= 0x2FFFF) || /* CJK ext B..compatibility */
+        (cp >= 0x30000 && cp <= 0x3FFFF))   /* CJK ext G+ */
+        return 2;
+    return 1;
+}
+
+/* Return the display width (columns) of one UTF-8 character. */
+static int utf8_char_width(const char *s, int max_bytes) {
+    wchar_t cp;
+    utf8_decode(s, max_bytes, &cp);
+    int w = codepoint_width(cp);
+    return (w > 0) ? w : 1;
+}
+
 /* Count display columns for a segment (delegates to utf8_display_len).
  * Item 3: eliminated duplicate UTF-8 column counting — seg_display_cols
  * and utf8_display_len were 100% identical. */
@@ -58,12 +125,14 @@ static int seg_display_cols(const char *text, int len) {
 /* Get the byte offset within a segment that corresponds to a given column offset.
  * Returns byte position where the segment should be split. */
 static int seg_col_to_byte(const char *text, int seg_len, int col_offset) {
-    int col = 0;
-    for (int i = 0; i < seg_len && text[i]; i++) {
-        if ((text[i] & 0xC0) != 0x80) {
-            if (col == col_offset) return i;
-            col++;
-        }
+    int col = 0, i = 0;
+    while (i < seg_len && text[i]) {
+        if (col >= col_offset) return i;
+        int w = utf8_char_width(text + i, seg_len - i);
+        wchar_t cp;
+        int clen = utf8_decode(text + i, seg_len - i, &cp);
+        col += w;
+        i += clen;
     }
     return seg_len;
 }
@@ -921,11 +990,13 @@ static void emit_osc8_end(WINDOW *win) {
  * For ASCII, 1 byte = 1 column. For multi-byte UTF-8, we count
  * only the leading bytes (skip continuation bytes 10xxxxxx). */
 static int utf8_display_len(const char *s, int max_bytes) {
-    int cols = 0;
-    for (int i = 0; i < max_bytes && s[i]; i++) {
-        /* Skip UTF-8 continuation bytes (10xxxxxx) */
-        if ((s[i] & 0xC0) != 0x80)
-            cols++;
+    int cols = 0, i = 0;
+    while (i < max_bytes && s[i]) {
+        int w = utf8_char_width(s + i, max_bytes - i);
+        wchar_t cp;
+        int clen = utf8_decode(s + i, max_bytes - i, &cp);
+        cols += w;
+        i += clen;
     }
     return cols;
 }
@@ -941,10 +1012,13 @@ static int render_segment(WINDOW *win, int row, int col, const char *text,
         /* Find byte position that fits in max_cols display columns */
         int cols = 0;
         int byte_pos = 0;
-        while (byte_pos < len && cols < max_cols) {
-            if ((text[byte_pos] & 0xC0) != 0x80)
-                cols++;
-            byte_pos++;
+        while (byte_pos < len) {
+            int w = utf8_char_width(text + byte_pos, len - byte_pos);
+            if (cols + w > max_cols) break;
+            wchar_t cp;
+            int clen = utf8_decode(text + byte_pos, len - byte_pos, &cp);
+            cols += w;
+            byte_pos += clen;
         }
         len = byte_pos;
         display_cols = cols;
