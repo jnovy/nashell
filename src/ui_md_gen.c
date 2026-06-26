@@ -137,6 +137,12 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         }
         return ctx_desc;
     }
+    /* System prompt: show model name */
+    if (strcmp(tool, "system") == 0) {
+        cJSON *model = cJSON_GetObjectItem(params, "model");
+        if (model && model->valuestring) return model->valuestring;
+        return "system prompt";
+    }
     /* Legacy context entry (pre-split) */
     if (strcmp(tool, "context") == 0) {
         cJSON *nm = cJSON_GetObjectItem(params, "n_messages");
@@ -720,11 +726,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 if (qtext && qtext->valuestring)
                     query_text = strdup(qtext->valuestring);
             }
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        if (strcmp(tool, "system") == 0) {
             cJSON_Delete(entry);
             continue;
         }
