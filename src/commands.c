@@ -1482,13 +1482,18 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
         return CMD_CONTINUE;
     }
 
-    /* /todo  or  /todo list — display all items */
+    /* /todo  or  /todo list — display all items
+     * /todo -w — show aggregated todos from all workspaces */
     {
+        /* Parse -w flag (all-workspaces view) */
+        int show_all = (strcmp(args, "-w") == 0 ||
+                        strcmp(args, "list -w") == 0);
+
         /* Check for unknown subcommand first */
-        if (strcmp(args, "list") != 0 && args[0] != '\0') {
+        if (!show_all && strcmp(args, "list") != 0 && args[0] != '\0') {
             char status[256];
             snprintf(status, sizeof(status),
-                "Unknown subcommand. Usage: /todo [list|add <text>|done <N>|remove <N>|purge]");
+                "Unknown subcommand. Usage: /todo [list|add <text>|done <N>|remove <N>|purge|-w]");
             pthread_mutex_lock(&ui->mtx);
             ui_state_set_status(ui, STATUS_ERROR, status);
             pthread_mutex_unlock(&ui->mtx);
@@ -1496,8 +1501,8 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
             return CMD_CONTINUE;
         }
 
-        /* No workspace active → aggregate all workspaces */
-        if (!ctx->ws || !ctx->ws->name)
+        /* Explicit -w flag → aggregate all workspaces */
+        if (show_all)
             return cmd_todo_list_all(ctx);
 
         str_t out = str_new(1024);
