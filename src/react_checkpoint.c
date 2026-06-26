@@ -145,7 +145,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
             if (llen > 0) {
                 link_target[llen] = '\0';
-                /* Extract hash from "../../store/<hash>" */
+                /* Extract hash from "<store_dir>/<hash>" (or legacy "../../store/<hash>") */
                 const char *slash = strrchr(link_target, '/');
                 if (slash) {
                     slash++;  /* skip the '/' */

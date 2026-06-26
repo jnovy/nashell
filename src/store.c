@@ -177,26 +177,68 @@ static void scan_session_refs(const char *sess_dir, const char *store_dir,
     closedir(d);
 }
 
+/* Scan all session subdirectories within a "sessions/" directory */
+static void scan_sessions_dir(const char *sessions_path, const char *store_dir,
+                              hashset_t *refs) {
+    DIR *sd = opendir(sessions_path);
+    if (!sd) return;
+    struct dirent *de;
+    while ((de = readdir(sd))) {
+        if (de->d_name[0] == '.') continue;
+        char sess_dir[NASH_PATH_MAX];
+        if ((size_t)snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
+                 sessions_path, de->d_name) >= sizeof(sess_dir))
+            continue;
+        scan_session_refs(sess_dir, store_dir, refs);
+    }
+    closedir(sd);
+}
+
+/* Recursively walk a directory tree looking for "sessions/" subdirectories.
+ * This handles nested workspaces (e.g. workspaces/rh/container-tools/sessions/). */
+static void scan_tree_for_sessions(const char *dir_path, const char *store_dir,
+                                   hashset_t *refs, int depth) {
+    if (depth > 5) return;  /* safety limit */
+    DIR *d = opendir(dir_path);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        char child[NASH_PATH_MAX];
+        if ((size_t)snprintf(child, sizeof(child), "%s/%s",
+                 dir_path, de->d_name) >= sizeof(child))
+            continue;
+        struct stat st;
+        if (stat(child, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+        if (strcmp(de->d_name, "sessions") == 0) {
+            /* Found a sessions/ directory — scan its children */
+            scan_sessions_dir(child, store_dir, refs);
+        } else if (strcmp(de->d_name, "memory") != 0 &&
+                   strcmp(de->d_name, "agent") != 0) {
+            /* Recurse into subdirectories (skip memory/ and agent/ trees) */
+            scan_tree_for_sessions(child, store_dir, refs, depth + 1);
+        }
+    }
+    closedir(d);
+}
+
 int store_gc(store_t *s, const char *nash_dir) {
     if (!s || !nash_dir) return -1;
 
     /* Phase 1: Collect all referenced hashes from session symlinks */
     hashset_t refs = {0};
+
+    /* Scan global sessions: nash_dir/sessions/ */
     char sessions_path[NASH_PATH_MAX];
     snprintf(sessions_path, sizeof(sessions_path), "%s/sessions", nash_dir);
-    DIR *sd = opendir(sessions_path);
-    if (sd) {
-        struct dirent *de;
-        while ((de = readdir(sd))) {
-            if (de->d_name[0] == '.') continue;
-            char sess_dir[NASH_PATH_MAX];
-            if ((size_t)snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
-                     sessions_path, de->d_name) >= sizeof(sess_dir))
-                continue;
-            scan_session_refs(sess_dir, s->dir, &refs);
-        }
-        closedir(sd);
-    }
+    scan_sessions_dir(sessions_path, s->dir, &refs);
+
+    /* Scan workspace sessions: nash_dir/workspaces/<name>/sessions/
+     * and nested workspaces: nash_dir/workspaces/a/b/sessions/ */
+    char workspaces_path[NASH_PATH_MAX];
+    snprintf(workspaces_path, sizeof(workspaces_path), "%s/workspaces", nash_dir);
+    scan_tree_for_sessions(workspaces_path, s->dir, &refs, 0);
 
     /* Phase 2: Delete unreferenced store entries */
     int removed = 0;

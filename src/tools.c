@@ -293,12 +293,14 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
 
     alias_map_insert(ctx->aliases, alias_buf, hash ? hash : "");
 
-    /* Create symlink in session directory: R1S0 → ../store/hash */
-    if (ctx->session_dir && hash && hash[0]) {
+    /* Create symlink in session directory: R1S0 → <store_dir>/hash
+     * Use absolute path to the store — relative "../../store" breaks for
+     * nested workspaces (e.g. workspaces/rh/container-tools/sessions/SID). */
+    if (ctx->session_dir && ctx->store && ctx->store->dir && hash && hash[0]) {
         char link_path[NASH_PATH_MAX];
         char target[NASH_PATH_MAX];
         snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, alias_buf);
-        snprintf(target, sizeof(target), "../../store/%s", hash);
+        snprintf(target, sizeof(target), "%s/%s", ctx->store->dir, hash);
         /* Force-overwrite: remove stale symlink from previous query in
          * same session before creating the new one.  Without this, a
          * second react_run() in the same session reuses R0S0, R0S1, ...
