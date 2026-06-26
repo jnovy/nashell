@@ -9,6 +9,8 @@
  */
 
 #include "ui_state_internal.h"
+#include <fcntl.h>
+#include <sys/wait.h>
 
 /* ── Navigation helpers ──────────────────────────────────── */
 
@@ -123,6 +125,30 @@ void ui_state_enter(ui_state_t *ui) {
 
     const char *uri = ui->doc->links[idx].uri;
     if (!uri) return;
+
+    /* Open http/https links in external browser via xdg-open */
+    if (strncmp(uri, "http://", 7) == 0 || strncmp(uri, "https://", 8) == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            /* Child: detach from terminal, redirect output to /dev/null */
+            setsid();
+            int devnull = open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                dup2(devnull, STDIN_FILENO);
+                dup2(devnull, STDOUT_FILENO);
+                dup2(devnull, STDERR_FILENO);
+                if (devnull > 2) close(devnull);
+            }
+            execlp("xdg-open", "xdg-open", uri, (char *)NULL);
+            _exit(127);
+        }
+        /* Parent: reap zombie asynchronously (SIGCHLD default ignores) */
+        if (pid > 0) {
+            /* Non-blocking waitpid — xdg-open may take a while */
+            waitpid(pid, NULL, WNOHANG);
+        }
+        return;
+    }
 
     /* Handle #anchor links (same-document section navigation) */
     if (uri[0] == '#') {

@@ -32,6 +32,8 @@ typedef struct {
     const char *text;
     int         len;      /* byte length */
     int         attr;     /* ncurses attribute (0 = default) */
+    const char *url;      /* URL pointer for [text](url) links (NULL if not a link) */
+    int         url_len;  /* URL byte length (0 if not a link) */
 } inline_seg_t;
 
 /* Forward declarations */
@@ -39,6 +41,10 @@ static int utf8_display_len(const char *s, int max_bytes);
 static int render_segment(WINDOW *win, int row, int col, const char *text,
                           int len, int max_cols);
 static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs);
+static void defer_osc8_link(int vis_line, int col, const char *uri);
+static void defer_osc8_end(int col_end);
+static int is_linkable_uri(const char *uri);
+static int is_web_uri(const char *uri);
 
 /* ── Helpers (Items 3-9) ── */
 
@@ -163,6 +169,8 @@ static int try_parse_marker(const char **pp, const char *end,
         segs[*n].text = start;
         segs[*n].len = (int)(p - start);
         segs[*n].attr = attr;
+        segs[*n].url = NULL;
+        segs[*n].url_len = 0;
         (*n)++;
         p += mlen;
     } else {
@@ -174,6 +182,8 @@ static int try_parse_marker(const char **pp, const char *end,
                 segs[*n].text = start - mlen;
                 segs[*n].len = mlen + (int)(p - start);
                 segs[*n].attr = 0;
+                segs[*n].url = NULL;
+                segs[*n].url_len = 0;
                 (*n)++;
             }
         }
@@ -219,6 +229,8 @@ static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int 
                         segs[n].text = p + 1;
                         segs[n].len = link_text_len;
                         segs[n].attr = COLOR_PAIR(C_FOCUS);
+                        segs[n].url = bracket_end + 2;
+                        segs[n].url_len = (int)(paren_end - (bracket_end + 2));
                         n++;
                     }
                     p = paren_end + 1;
@@ -247,6 +259,8 @@ static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int 
             segs[n].text = start;
             segs[n].len = seg_len;
             segs[n].attr = 0;
+            segs[n].url = NULL;
+            segs[n].url_len = 0;
             n++;
         }
     }
@@ -263,11 +277,27 @@ static int render_segs_on_line(WINDOW *win, int row, int col,
         if (segs[i].len <= 0) continue;
         int remaining = col + max_width - x;
         if (remaining <= 0) break;
+        /* OSC 8 hyperlink start for link segments */
+        int has_osc8 = 0;
+        if (segs[i].url && segs[i].url_len > 0) {
+            char url_buf[4096];
+            int ulen = segs[i].url_len;
+            if (ulen >= (int)sizeof(url_buf)) ulen = (int)sizeof(url_buf) - 1;
+            memcpy(url_buf, segs[i].url, ulen);
+            url_buf[ulen] = '\0';
+            if (is_linkable_uri(url_buf)) {
+                defer_osc8_link(row, x, url_buf);
+                has_osc8 = 1;
+            }
+        }
         if (segs[i].attr)
             wattron(win, segs[i].attr);
         x += render_segment(win, row, x, segs[i].text, segs[i].len, remaining);
         if (segs[i].attr)
             wattroff(win, segs[i].attr);
+        /* OSC 8 hyperlink end */
+        if (has_osc8)
+            defer_osc8_end(x);
     }
     return x - col;
 }
@@ -289,6 +319,8 @@ static int split_segment(inline_seg_t *segs, int *n_segs, int max_segs,
     segs[seg_idx + 1].text = seg->text + split_byte;
     segs[seg_idx + 1].len = seg->len - split_byte;
     segs[seg_idx + 1].attr = seg->attr;
+    segs[seg_idx + 1].url = seg->url;
+    segs[seg_idx + 1].url_len = seg->url_len;
     seg->len = split_byte;
     (*n_segs)++;
     return 1;
