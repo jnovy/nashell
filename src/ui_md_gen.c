@@ -154,6 +154,38 @@ static const char *extract_desc(const char *tool, cJSON *params) {
         }
         return "full LLM context";
     }
+    /* User query: show truncated first line */
+    if (strcmp(tool, "query") == 0) {
+        cJSON *text = cJSON_GetObjectItem(params, "text");
+        if (text && text->valuestring) {
+            static char query_desc[128];
+            const char *s = text->valuestring;
+            const char *nl = strchr(s, '\n');
+            int len = nl ? (int)(nl - s) : (int)strlen(s);
+            if (len > 80) len = 80;
+            snprintf(query_desc, sizeof(query_desc), "%.*s%s",
+                     len, s, (nl || (int)strlen(s) > 80) ? "..." : "");
+            return query_desc;
+        }
+        return "user query";
+    }
+    /* Memory recall context: show matched count summary */
+    if (strcmp(tool, "memory_context") == 0) {
+        static char mc_desc[128];
+        cJSON *skills = cJSON_GetObjectItem(params, "skills_matched");
+        cJSON *lessons = cJSON_GetObjectItem(params, "lessons_matched");
+        cJSON *strategies = cJSON_GetObjectItem(params, "strategies_matched");
+        int ns = skills ? cJSON_GetArraySize(skills) : 0;
+        int nl = lessons ? cJSON_GetArraySize(lessons) : 0;
+        int nst = strategies ? cJSON_GetArraySize(strategies) : 0;
+        int total = ns + nl + nst;
+        if (total > 0)
+            snprintf(mc_desc, sizeof(mc_desc), "recall: %d matched (%ds %dl %dst)",
+                     total, ns, nl, nst);
+        else
+            snprintf(mc_desc, sizeof(mc_desc), "recall context");
+        return mc_desc;
+    }
     /* System log entries: show the message */
     if (strcmp(tool, "log") == 0) {
         cJSON *msg = cJSON_GetObjectItem(params, "message");
@@ -714,8 +746,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 free(query_text);
                 query_text = strdup(text->valuestring);
             }
-            cJSON_Delete(entry);
-            continue;
+            /* Fall through to step collection so query appears as a
+             * browsable step with clickable store ref in reactRX.md */
         }
 
         if (strcmp(tool, "memory_context") == 0) {
@@ -726,8 +758,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 if (qtext && qtext->valuestring)
                     query_text = strdup(qtext->valuestring);
             }
-            cJSON_Delete(entry);
-            continue;
+            /* Fall through to step collection so recall context appears
+             * as a browsable step with clickable store ref in reactRX.md */
         }
 
         /* Skip internal-only entries that belong in the journal audit
