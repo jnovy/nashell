@@ -437,8 +437,8 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
  * message cost, so a small tool_call message whose partner is a 10KB
  * tool_result will score lower (more likely to be evicted), which is correct
  * since recoverable content with large payloads should be freed first. */
-static int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
-                                   int n_evictable, void *userdata) {
+int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
+                            int n_evictable, void *userdata) {
     int imp = (int)chat->msgs[mi].importance;
     int rec = (int)chat->msgs[mi].recoverability;
     int msg_len = (int)chat->msgs[mi].content_len;

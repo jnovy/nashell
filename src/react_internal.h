@@ -574,6 +574,11 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int step,
                    react_event_fn on_event, void *userdata);
 
+/* ── Step 3: Progressive scoring callback (exposed for testing) ────── */
+
+int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
+                            int n_evictable, void *userdata);
+
 /* ── Step 2.5: Tool Lifecycle — Stale/Superseded Read Detection ────── */
 
 /* Pichay [arXiv:2603.09023]: Replace stale/superseded file_read results
