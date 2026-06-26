@@ -10,14 +10,16 @@ typedef struct {
     char *path;       /* full path to journal.jsonl (NULL until created) */
     char *session_dir;/* resolved session directory (NULL until created) */
     char *nash_dir;   /* base dir for lazy session creation (NULL if not lazy) */
+    char *workspace;  /* workspace name for lazy session routing (NULL = global) */
     int   lazy_created;/* 0=directory not yet created, 1=created */
     pthread_mutex_t mtx;  /* FIX CRIT2: thread-safe append/read */
 } journal_t;
 
 journal_t *journal_new(const char *session_dir);
 /* Lazy: directory is not created until the first journal_append().
- * If the program exits without any append, no session directory exists. */
-journal_t *journal_new_lazy(const char *nash_dir);
+ * If the program exits without any append, no session directory exists.
+ * workspace: workspace name for routing (NULL = global sessions dir). */
+journal_t *journal_new_lazy(const char *nash_dir, const char *workspace);
 void       journal_free(journal_t *j);
 /* Returns session_dir once created, NULL if not yet created */
 const char *journal_session_dir(journal_t *j);

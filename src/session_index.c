@@ -138,16 +138,16 @@ static char *make_chunk_preview(const char *chunk_text) {
 
 /* ── Lifecycle ──────────────────────────────────────── */
 
-session_index_t *session_index_load(const char *sessions_dir) {
-    if (!sessions_dir) return NULL;
+/* Load sessions from a directory into an existing index.
+ * Scans sessions_dir for subdirectories with chunks.emb or summary.emb.
+ * Returns number of sessions added, -1 on error. */
+int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
+    if (!idx || !sessions_dir) return -1;
 
     DIR *d = opendir(sessions_dir);
-    if (!d) return NULL;
+    if (!d) return 0;  /* directory doesn't exist — not an error */
 
-    session_index_t *idx = calloc(1, sizeof(session_index_t));
-    if (!idx) { closedir(d); return NULL; }
-    pthread_mutex_init(&idx->mtx, NULL);
-
+    int added = 0;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (ent->d_name[0] == '.') continue;
@@ -213,8 +213,20 @@ session_index_t *session_index_load(const char *sessions_dir) {
         }
 
         idx->count++;
+        added++;
     }
     closedir(d);
+    return added;
+}
+
+session_index_t *session_index_load(const char *sessions_dir) {
+    if (!sessions_dir) return NULL;
+
+    session_index_t *idx = calloc(1, sizeof(session_index_t));
+    if (!idx) return NULL;
+    pthread_mutex_init(&idx->mtx, NULL);
+
+    session_index_load_dir(idx, sessions_dir);
 
     /* Sort by timestamp (newest first) */
     if (idx->count > 1) {

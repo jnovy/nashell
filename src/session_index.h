@@ -55,6 +55,11 @@ typedef struct {
  * Returns NULL on error or if sessions_dir does not exist. */
 session_index_t *session_index_load(const char *sessions_dir);
 
+/* Load additional sessions from another directory into an existing index.
+ * Used to merge workspace sessions into the global index.
+ * Returns number of sessions added, -1 on error. */
+int session_index_load_dir(session_index_t *idx, const char *sessions_dir);
+
 /* Add a just-completed session to the in-memory index.
  * manifest: journal_manifest() output (owned by caller).
  * emb: single summary embedding (legacy, may be NULL).

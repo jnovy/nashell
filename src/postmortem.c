@@ -536,45 +536,59 @@ static void cluster_failures(failure_list_t *list,
 
 /* ── Public API ──────────────────────────────────────── */
 
+/* Collect session directories (with journals) from a sessions/ directory.
+ * Appends full paths to *dirs, updating *n_dirs and *dirs_cap. */
+static void pm_collect_sessions(const char *sessions_dir,
+                                char ***dirs, int *n_dirs, int *dirs_cap) {
+    DIR *d = opendir(sessions_dir);
+    if (!d) return;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        size_t name_len = strlen(ent->d_name);
+        if (strlen(sessions_dir) + name_len + 20 >= NASH_PATH_MAX)
+            continue;
+        char path[NASH_PATH_MAX + 256];
+        snprintf(path, sizeof(path), "%s/%s/journal.jsonl", sessions_dir, ent->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        if (*n_dirs >= *dirs_cap) {
+            *dirs_cap *= 2;
+            *dirs = realloc(*dirs, (size_t)*dirs_cap * sizeof(char *));
+        }
+        snprintf(path, sizeof(path), "%s/%s", sessions_dir, ent->d_name);
+        (*dirs)[(*n_dirs)++] = strdup(path);
+    }
+    closedir(d);
+}
+
 postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) {
     postmortem_report_t *report = calloc(1, sizeof(postmortem_report_t));
 
-    char sessions_dir[NASH_PATH_MAX];
-    snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
-
-    DIR *d = opendir(sessions_dir);
-    if (!d) return report;
-
-    /* Collect session dirs, sorted by name (timestamp) descending */
+    /* Collect session dirs from global + all workspaces */
     int dirs_cap = 64;
     char **dirs = calloc(dirs_cap, sizeof(char *));
     int n_dirs = 0;
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        /* Skip names that would overflow the path buffer */
-        size_t name_len = strlen(ent->d_name);
-        if (strlen(sessions_dir) + name_len + 20 >= NASH_PATH_MAX)
-            continue;
+    char sessions_dir[NASH_PATH_MAX];
+    snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
+    pm_collect_sessions(sessions_dir, &dirs, &n_dirs, &dirs_cap);
 
-        /* Build paths — overflow guarded above */
-        char path[NASH_PATH_MAX + 256];
-        snprintf(path, sizeof(path), "%s/%s/journal.jsonl", sessions_dir, ent->d_name);
-
-        /* Only include directories that have a journal */
-        struct stat st;
-        if (stat(path, &st) != 0) continue;
-
-        if (n_dirs >= dirs_cap) {
-            dirs_cap *= 2;
-            dirs = realloc(dirs, dirs_cap * sizeof(char *));
+    /* Scan workspace sessions: workspaces/<name>/sessions/ */
+    char ws_base[NASH_PATH_MAX];
+    snprintf(ws_base, sizeof(ws_base), "%s/workspaces", nash_dir);
+    DIR *wd = opendir(ws_base);
+    if (wd) {
+        struct dirent *we;
+        while ((we = readdir(wd)) != NULL) {
+            if (we->d_name[0] == '.') continue;
+            char ws_sessions[NASH_PATH_MAX];
+            snprintf(ws_sessions, sizeof(ws_sessions), "%s/%s/sessions",
+                     ws_base, we->d_name);
+            pm_collect_sessions(ws_sessions, &dirs, &n_dirs, &dirs_cap);
         }
-
-        snprintf(path, sizeof(path), "%s/%s", sessions_dir, ent->d_name);
-        dirs[n_dirs++] = strdup(path);
+        closedir(wd);
     }
-    closedir(d);
 
     /* Sort descending by name (newest first) */
     for (int i = 0; i < n_dirs - 1; i++) {

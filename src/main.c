@@ -470,6 +470,20 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Per-workspace config overlay: ~/.nash/workspaces/<name>/config.toml
+     * Allows workspace-specific provider, limits, and other settings.
+     * Applied after global config + spec overlay, before provider creation. */
+    if (cfg->workspace && cfg->workspace[0]) {
+        char ws_config[NASH_PATH_MAX];
+        snprintf(ws_config, sizeof(ws_config), "%s/workspaces/%s/config.toml",
+                 nash_dir, cfg->workspace);
+        struct stat ws_st;
+        if (stat(ws_config, &ws_st) == 0) {
+            fprintf(stderr, "[info] loading workspace config: %s\n", ws_config);
+            config_load_spec_overlay(cfg, ws_config);
+        }
+    }
+
     /* ── Postmortem mode: no LLM needed ── */
     if (postmortem_mode) {
         postmortem_report_t *pm = postmortem_analyze(nash_dir, postmortem_sessions);
@@ -660,6 +674,13 @@ int main(int argc, char **argv) {
         snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
         session_idx = session_index_load(sessions_dir);
 
+        /* Also load workspace sessions into the same index */
+        if (cfg->workspace && cfg->workspace[0] && session_idx) {
+            char *ws_sessions = sessions_base_dir(nash_dir, cfg->workspace);
+            session_index_load_dir(session_idx, ws_sessions);
+            free(ws_sessions);
+        }
+
         /* v4.1: Backfill chunk embeddings for sessions without chunks.emb.
          * Runs at startup, skips sessions already processed.
          * ~5ms per chunk via ONNX, ~5 chunks/session avg. */
@@ -668,6 +689,13 @@ int main(int argc, char **argv) {
             if (backfill_embed) {
                 session_index_chunk_backfill(sessions_dir, backfill_embed,
                                             session_idx);
+                /* Also backfill workspace sessions */
+                if (cfg->workspace && cfg->workspace[0]) {
+                    char *ws_sessions = sessions_base_dir(nash_dir, cfg->workspace);
+                    session_index_chunk_backfill(ws_sessions, backfill_embed,
+                                                session_idx);
+                    free(ws_sessions);
+                }
             }
         }
 
@@ -686,19 +714,37 @@ int main(int argc, char **argv) {
      * being accumulated is the count of unconsolidated writes. */
     int dream_new_count = 0;
     if (cfg->dream_reminder_threshold > 0 && memory) {
+        /* Check .last_dream in the active memory dir.
+         * When workspace is active, check workspace memory dir;
+         * otherwise check global memory dir. */
         char dream_ts_path[NASH_PATH_MAX];
-        snprintf(dream_ts_path, sizeof(dream_ts_path), "%s/memory/.last_dream",
-                 nash_dir);
+        if (ws && ws->workspace) {
+            snprintf(dream_ts_path, sizeof(dream_ts_path),
+                     "%s/workspaces/%s/.memory/.last_dream",
+                     nash_dir, cfg->workspace);
+        } else {
+            snprintf(dream_ts_path, sizeof(dream_ts_path),
+                     "%s/memory/.last_dream", nash_dir);
+        }
         struct stat dream_st;
 
         if (stat(dream_ts_path, &dream_st) != 0) {
             /* No .last_dream file — never dreamed, count all entries */
             dream_new_count = memory_count(memory);
+            if (ws && ws->workspace)
+                dream_new_count += memory_count(ws->workspace);
         } else {
             double last_dream_epoch = (double)dream_st.st_mtime;
             for (int i = 0; i < memory_count(memory); i++) {
                 if (memory->idx.entries[i].created_at > last_dream_epoch)
                     dream_new_count++;
+            }
+            /* Also count new workspace entries */
+            if (ws && ws->workspace) {
+                for (int i = 0; i < memory_count(ws->workspace); i++) {
+                    if (ws->workspace->idx.entries[i].created_at > last_dream_epoch)
+                        dream_new_count++;
+                }
             }
         }
     }
@@ -1227,7 +1273,7 @@ int main(int argc, char **argv) {
         journal_t *journal;
         if (!session_dir) {
             /* Lazy session: directory created on first journal_append */
-            journal = journal_new_lazy(nash_dir);
+            journal = journal_new_lazy(nash_dir, cfg->workspace);
             lazy_session = 1;
         } else {
             journal = journal_new(session_dir);

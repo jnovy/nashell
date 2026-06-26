@@ -425,7 +425,7 @@ static query_result_t run_single_query(const test_query_t *tq,
     fprintf(stderr, "  [regression] running: %s ... ", tq->id);
 
     /* Create a fresh session for this test */
-    journal_t *journal = journal_new_lazy(nash_dir);
+    journal_t *journal = journal_new_lazy(nash_dir, NULL);  /* regression: no workspace */
 
     tool_ctx_t tools = {
         .store = store,

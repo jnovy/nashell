@@ -9,6 +9,7 @@
  */
 
 #include "ui_state_internal.h"
+#include "str.h"
 #include <fcntl.h>
 #include <sys/wait.h>
 
@@ -594,7 +595,34 @@ void ui_state_page_down(ui_state_t *ui) {
 /* Compare session directory names in reverse order (newest first).
  * Session dirs are named <epoch>.<nanos>, so reverse strcmp = newest first. */
 static int session_cmp_desc(const void *a, const void *b) {
-    return strcmp(*(const char **)b, *(const char **)a);
+    /* Compare by basename (epoch timestamp) for proper chronological sorting.
+     * Handles both basenames and full paths. */
+    const char *sa = *(const char **)a;
+    const char *sb = *(const char **)b;
+    const char *ba = strrchr(sa, '/');
+    const char *bb = strrchr(sb, '/');
+    return strcmp(bb ? bb + 1 : sb, ba ? ba + 1 : sa);
+}
+
+/* Collect session directory full paths from a sessions/ directory.
+ * Appends to *names array, updating *count and *cap. */
+static void collect_session_dirs(const char *sessions_dir,
+                                 char ***names, int *count, int *cap) {
+    DIR *dir = opendir(sessions_dir);
+    if (!dir) return;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
+        if (*count >= *cap) {
+            *cap = *cap ? *cap * 2 : 256;
+            *names = realloc(*names, (size_t)*cap * sizeof(char *));
+        }
+        char full[NASH_PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", sessions_dir, ent->d_name);
+        (*names)[(*count)++] = strdup(full);
+    }
+    closedir(dir);
 }
 
 void ui_state_search(ui_state_t *ui, const char *query) {
@@ -643,30 +671,24 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     char sessions_dir[NASH_PATH_MAX + 16];
     snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", nash_dir);
 
-    /* Collect session directories */
-    DIR *dir = opendir(sessions_dir);
-    if (!dir) return;
-
-    char **session_names = NULL;
+    /* Collect session directories (full paths) from global + workspace */
+    char **session_dirs = NULL;
     int session_count = 0;
     int session_cap = 0;
 
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (ent->d_name[0] == '.') continue;
-        /* Only include dirs that look like epoch timestamps (digit at start) */
-        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
-        if (session_count >= session_cap) {
-            session_cap = session_cap ? session_cap * 2 : 256;
-            session_names = realloc(session_names, (size_t)session_cap * sizeof(char *));
-        }
-        session_names[session_count++] = strdup(ent->d_name);
-    }
-    closedir(dir);
+    collect_session_dirs(sessions_dir, &session_dirs, &session_count, &session_cap);
 
-    /* Sort newest first */
-    if (session_count > 1)
-        qsort(session_names, (size_t)session_count, sizeof(char *), session_cmp_desc);
+    /* Also collect from workspace sessions directory */
+    if (ui->workspace_name && ui->workspace_name[0]) {
+        char *ws_sessions = sessions_base_dir(nash_dir, ui->workspace_name);
+        collect_session_dirs(ws_sessions, &session_dirs, &session_count, &session_cap);
+        free(ws_sessions);
+    }
+
+    if (session_count == 0) { free(session_dirs); return; }
+
+    /* Sort newest first (by basename = epoch timestamp) */
+    qsort(session_dirs, (size_t)session_count, sizeof(char *), session_cmp_desc);
 
     /* Search each session's scratchpad (JSONL or legacy .md) and journal */
     str_t md = str_new(4096);
@@ -683,18 +705,19 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         #define EMIT_SESSION_HEADER() do { \
             if (!session_had_match) { \
                 char ts_display[64]; \
-                time_t epoch = (time_t)strtol(session_names[si], NULL, 10); \
+                const char *_bn = strrchr(session_dirs[si], '/'); \
+                _bn = _bn ? _bn + 1 : session_dirs[si]; \
+                time_t epoch = (time_t)strtol(_bn, NULL, 10); \
                 struct tm *tm_info = localtime(&epoch); \
                 if (tm_info) \
                     strftime(ts_display, sizeof(ts_display), \
                              "%Y-%m-%d %H:%M:%S", tm_info); \
                 else \
-                    snprintf(ts_display, sizeof(ts_display), "%s", \
-                             session_names[si]); \
+                    snprintf(ts_display, sizeof(ts_display), "%s", _bn); \
                 /* Link to session.md for navigability */ \
                 char link_path[NASH_PATH_MAX + 64]; \
-                snprintf(link_path, sizeof(link_path), "%s/%s/session.md", \
-                         sessions_dir, session_names[si]); \
+                snprintf(link_path, sizeof(link_path), "%s/session.md", \
+                         session_dirs[si]); \
                 str_appendf(&md, "### [%s](%s)\n\n", ts_display, link_path); \
                 session_had_match = 1; \
             } \
@@ -705,14 +728,14 @@ void ui_state_search(ui_state_t *ui, const char *query) {
             char sp_path[NASH_PATH_MAX + 64];
             int is_jsonl = 0;
 
-            snprintf(sp_path, sizeof(sp_path), "%s/%s/scratchpad.jsonl",
-                     sessions_dir, session_names[si]);
+            snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.jsonl",
+                     session_dirs[si]);
             FILE *f = fopen(sp_path, "r");
             if (f) {
                 is_jsonl = 1;
             } else {
-                snprintf(sp_path, sizeof(sp_path), "%s/%s/scratchpad.md",
-                         sessions_dir, session_names[si]);
+                snprintf(sp_path, sizeof(sp_path), "%s/scratchpad.md",
+                         session_dirs[si]);
                 f = fopen(sp_path, "r");
             }
 
@@ -805,8 +828,8 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         /* --- Phase 2: Search journal.jsonl --- */
         if (total_matches < max_matches) {
             char jrnl_path[NASH_PATH_MAX + 64];
-            snprintf(jrnl_path, sizeof(jrnl_path), "%s/%s/journal.jsonl",
-                     sessions_dir, session_names[si]);
+            snprintf(jrnl_path, sizeof(jrnl_path), "%s/journal.jsonl",
+                     session_dirs[si]);
             FILE *jf = fopen(jrnl_path, "r");
             if (jf) {
                 char jline[65536];
@@ -905,10 +928,10 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         str_append_cstr(&md, summary);
     }
 
-    /* Free session names */
+    /* Free session dirs */
     for (int i = 0; i < session_count; i++)
-        free(session_names[i]);
-    free(session_names);
+        free(session_dirs[i]);
+    free(session_dirs);
 
     /* If this is the first search, push current view onto nav stack */
     if (!ui->search_active) {

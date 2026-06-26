@@ -144,6 +144,7 @@ typedef struct {
     /* ── Cross-session scratchpad search ── */
     int            search_active;     /* 1 = search results shown in main pane */
     char          *nash_dir;          /* ~/.nash (for finding sessions) */
+    char          *workspace_name;    /* workspace name (NULL = global-only) */
 
     /* ── In-page text search (? prefix) ── */
     char          *page_search_term;  /* current search term (NULL = inactive) */

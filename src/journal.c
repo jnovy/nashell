@@ -71,11 +71,12 @@ journal_t *journal_new(const char *session_dir) {
 
 /* Lazy journal: session directory is not created until first journal_append().
  * If program exits without any append, no session directory exists. */
-journal_t *journal_new_lazy(const char *nash_dir) {
+journal_t *journal_new_lazy(const char *nash_dir, const char *workspace) {
     journal_t *j = calloc(1, sizeof(*j));
     if (!j) return NULL;
     pthread_mutex_init(&j->mtx, NULL);  /* FIX CRIT2: thread-safe journal */
     j->nash_dir = strdup(nash_dir);
+    j->workspace = (workspace && workspace[0]) ? strdup(workspace) : NULL;
     j->lazy_created = 0;
     return j;
 }
@@ -86,6 +87,7 @@ void journal_free(journal_t *j) {
     free(j->path);
     free(j->session_dir);
     free(j->nash_dir);
+    free(j->workspace);
     free(j);
 }
 
@@ -101,13 +103,12 @@ static int journal_create_lazy_session(journal_t *j) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
 
-    char sessions_base[1024];
-    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", j->nash_dir);
-    mkdir(sessions_base, 0755);
+    char *base = sessions_base_dir(j->nash_dir, j->workspace);
 
     char path[1088];
     snprintf(path, sizeof(path), "%s/%ld.%05ld",
-             sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+             base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+    free(base);
     mkdir(path, 0755);
 
     j->session_dir = strdup(path);
