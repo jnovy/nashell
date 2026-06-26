@@ -24,6 +24,20 @@
  * No new dependencies — uses existing libcurl (http_post/http_get) and cJSON.
  */
 
+/* Topic-to-workspace mapping entry (from [telegram.topics] config) */
+#define TG_MAX_TOPIC_MAP 32
+typedef struct {
+    long long thread_id;         /* Telegram message_thread_id */
+    char     *workspace;         /* workspace name */
+} tg_topic_map_entry_t;
+
+/* Route map: maps task_id -> thread_id for reply routing */
+#define TG_MAX_ROUTE_MAP 64
+typedef struct {
+    char      task_id[64];       /* task ID (e.g. "tg684abc12") */
+    long long thread_id;         /* source topic's thread_id (0 = general) */
+} tg_route_entry_t;
+
 typedef struct {
     char     *bot_token;         /* Telegram bot token from @BotFather */
     long long chat_id;           /* Authorized chat ID */
@@ -32,6 +46,14 @@ typedef struct {
     char     *config_path;       /* path to config.toml (for saving setup) */
     volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
     int       rich_supported;    /* 1 = sendRichMessage available (Bot API 10.1+) */
+
+    /* Topic-to-workspace mapping (from [telegram.topics] in config.toml) */
+    tg_topic_map_entry_t topic_map[TG_MAX_TOPIC_MAP];
+    int       topic_map_count;
+
+    /* Reply routing: task_id -> thread_id (circular buffer) */
+    tg_route_entry_t route_map[TG_MAX_ROUTE_MAP];
+    int       route_map_next;    /* next write index (circular) */
 } telegram_ctx_t;
 
 /* Initialize telegram context from config.

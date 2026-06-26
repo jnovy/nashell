@@ -14,6 +14,7 @@
  */
 
 #include "matrix.h"
+#include "mailbox.h"
 #include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
@@ -54,7 +55,8 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename);
 static int  mx_config_save(matrix_ctx_t *ctx);
 static int  mx_config_load(matrix_ctx_t *ctx);
 static void mx_write_task(const char *mailbox_dir, const char *task_id,
-                          const char *text);
+                          const char *text, const char *workspace,
+                          const char *route_token);
 static void mx_write_answer(const char *mailbox_dir, const char *ask_id,
                             const char *text);
 static void mx_write_cmd_new(const char *mailbox_dir);
@@ -123,6 +125,10 @@ void matrix_free(matrix_ctx_t *ctx) {
     free(ctx->since_token);
     free(ctx->mailbox_dir);
     free(ctx->config_path);
+    for (int i = 0; i < ctx->room_map_count; i++) {
+        free(ctx->room_map[i].room_id);
+        free(ctx->room_map[i].workspace);
+    }
     memset(ctx, 0, sizeof(*ctx));
 }
 
@@ -1384,7 +1390,8 @@ static int mx_api_create_room(matrix_ctx_t *ctx, const char *name,
 /* ── Mailbox interaction ─────────────────────────────────── */
 
 static void mx_write_task(const char *mailbox_dir, const char *task_id,
-                          const char *text) {
+                          const char *text, const char *workspace,
+                          const char *route_token) {
     char tmp_path[512], final_path[512];
     snprintf(tmp_path, sizeof(tmp_path), "%s/inbox/task_%s.tmp",
              mailbox_dir, task_id);
@@ -1393,6 +1400,13 @@ static void mx_write_task(const char *mailbox_dir, const char *task_id,
 
     FILE *f = fopen(tmp_path, "w");
     if (!f) return;
+    /* Write workspace routing metadata headers if applicable */
+    if (workspace && workspace[0])
+        fprintf(f, "X-Workspace: %s\n", workspace);
+    if (route_token && route_token[0])
+        fprintf(f, "X-Route-Token: %s\n", route_token);
+    if ((workspace && workspace[0]) || (route_token && route_token[0]))
+        fputs("---\n", f);
     fputs(text, f);
     fclose(f);
     rename(tmp_path, final_path);
@@ -1442,24 +1456,34 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
     if (!content) return;
     unlink(path);
 
+    /* Parse and strip any route token headers from outbox file content.
+     * Result files from mailbox_write_result_routed() may have:
+     *   X-Route-Token: <room_id>
+     *   ---
+     *   <actual content>
+     */
+    char *route_token = NULL;
+    char *actual_content = mailbox_parse_headers(content, NULL, &route_token);
+    free(route_token);  /* not used for routing yet -- single room mode */
+
     if (strncmp(filename, "result_", 7) == 0) {
-        /* Task result → convert any markdown tables to bullet-point lists
+        /* Task result -> convert any markdown tables to bullet-point lists
          * for inline display, then send as formatted HTML message. */
-        char *display = md_has_table(content)
-                        ? md_tables_to_bullets(content) : NULL;
-        const char *text = display ? display : content;
+        char *display = md_has_table(actual_content)
+                        ? md_tables_to_bullets(actual_content) : NULL;
+        const char *text = display ? display : actual_content;
         mx_api_send_markdown(ctx, text);
         free(display);
     } else if (strncmp(filename, "ask_", 4) == 0) {
-        /* user_ask question → send with prompt */
-        str_t msg = str_new(strlen(content) + 64);
-        str_append_cstr(&msg, "❓ ");
-        str_append_cstr(&msg, content);
+        /* user_ask question -> send with prompt */
+        str_t msg = str_new(strlen(actual_content) + 64);
+        str_append_cstr(&msg, "\xe2\x9d\x93 ");
+        str_append_cstr(&msg, actual_content);
         str_append_cstr(&msg, "\n\n_(Reply to answer)_");
 
-        str_t html = str_new(strlen(content) + 128);
-        str_append_cstr(&html, "❓ ");
-        char *html_content = md_to_html(content);
+        str_t html = str_new(strlen(actual_content) + 128);
+        str_append_cstr(&html, "\xe2\x9d\x93 ");
+        char *html_content = md_to_html(actual_content);
         str_append_cstr(&html, html_content);
         free(html_content);
         str_append_cstr(&html, "<br/><br/><i>(Reply to answer)</i>");
@@ -1472,13 +1496,13 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
          * Suppress [done] notifications — the result itself is already
          * sent via result_* so this would just duplicate the "completed"
          * message in the chat. */
-        if (strncmp(content, "[done]", 6) == 0) {
+        if (strncmp(actual_content, "[done]", 6) == 0) {
             free(content);
             return;
         }
-        str_t msg = str_new(strlen(content) + 16);
-        str_append_cstr(&msg, "📋 ");
-        str_append_cstr(&msg, content);
+        str_t msg = str_new(strlen(actual_content) + 16);
+        str_append_cstr(&msg, "\xf0\x9f\x93\x8b ");
+        str_append_cstr(&msg, actual_content);
         mx_api_send_message(ctx, msg.data, NULL);
         str_free(&msg);
     } else if (strncmp(filename, "image_", 6) == 0) {
@@ -1728,7 +1752,8 @@ void *matrix_run(void *arg) {
                              (long)ts.tv_sec, ts.tv_nsec / 100000L);
 
                     fprintf(stderr, "[matrix] creating task_%s\n", task_id);
-                    mx_write_task(ctx->mailbox_dir, task_id, msg_text);
+                    mx_write_task(ctx->mailbox_dir, task_id, msg_text,
+                                  NULL, ctx->room_id);
                     mx_api_send_message(ctx, is_reply
                         ? "⏳ Continuing..." : "⏳ Processing...", NULL);
 
@@ -1813,7 +1838,7 @@ void *matrix_run(void *arg) {
                         fprintf(stderr,
                                 "[matrix] creating image task_%s\n", task_id);
                         mx_write_task(ctx->mailbox_dir, task_id,
-                                     task_text.data);
+                                     task_text.data, NULL, ctx->room_id);
                         str_free(&task_text);
                         mx_api_send_message(ctx,
                             "📷 Analyzing image...", NULL);

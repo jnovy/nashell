@@ -68,4 +68,46 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
 /* Generate a unique message ID. Returns static buffer (not thread-safe). */
 const char *mailbox_gen_id(void);
 
+/* ── Extended mailbox protocol with workspace routing ────── */
+
+/*
+ * Task files can carry optional metadata headers for workspace routing:
+ *
+ *   X-Workspace: rh
+ *   X-Route-Token: 12345
+ *   ---
+ *   actual query text
+ *
+ * Files without headers are treated as global workspace (backward compat).
+ * The route_token is opaque — bridges use it to route replies back to the
+ * correct Telegram topic / Matrix room.
+ */
+
+/* Parsed task with optional workspace routing metadata */
+typedef struct {
+    char *task_id;      /* from filename: task_{id} */
+    char *workspace;    /* X-Workspace header value (NULL = global) */
+    char *route_token;  /* X-Route-Token value (NULL = none) */
+    char *query;        /* actual query text (after --- separator) */
+} mailbox_task_t;
+
+/* Free a mailbox_task_t (all fields + struct itself). */
+void mailbox_task_free(mailbox_task_t *task);
+
+/* Wait for next task, parsing metadata headers.
+ * Returns NULL on timeout/error/cmd_* wakeup (same as mailbox_wait_task). */
+mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec);
+
+/* Write task result with route_token header for bridge reply routing.
+ * If route_token is NULL, writes plain result (same as mailbox_write_result). */
+void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
+                                 const char *result, const char *route_token);
+
+/* Parse metadata headers from task file content.
+ * Modifies content in-place: returns pointer to query text (after ---).
+ * Fills workspace_out and route_token_out (caller must free).
+ * If no headers found, returns content unchanged with NULLs. */
+char *mailbox_parse_headers(char *content, char **workspace_out,
+                            char **route_token_out);
+
 #endif /* MAILBOX_H */

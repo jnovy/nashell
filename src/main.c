@@ -1114,20 +1114,48 @@ int main(int argc, char **argv) {
             fprintf(stderr, "[matrix] bot bridge active — send messages to the Matrix room\n");
         }
 
-        /* ── Persistent session state for daemon mode ──────────────────
-         * Like the TUI, we maintain ONE session across all tasks so that
-         * context (scratchpad, previous result, journal) propagates between
-         * consecutive messages.  The /new or /clear Telegram command (or a
-         * cmd_new file in the inbox) resets the session. */
-        char *session_dir = create_session_dir(nash_dir, cfg->workspace);
-        journal_t *journal = journal_new(session_dir);
-        tool_ctx_t tools;
-        session_init_tools(&tools, shared_store, journal, memory,
-                           ws, session_dir, cfg, provider);
-        react_ctx_t react;
-        session_init_react(&react, provider, &tools, cfg);
+        /* ── Workspace context pool for daemon mode ────────────────────
+         * Maintains a pool of workspace sessions keyed by workspace name.
+         * Each workspace has its own session_dir, journal, tool_ctx, react_ctx.
+         * Tasks arriving with X-Workspace headers are routed to the
+         * appropriate workspace slot.  Slots are lazily created on first
+         * message to a workspace.
+         *
+         * When no workspace is specified (legacy or global), the default
+         * slot (index 0, ws_name from cfg->workspace) is used.
+         */
+        #define DAEMON_MAX_WS_SLOTS 16
+        typedef struct {
+            char        *name;          /* workspace name (NULL = global) */
+            workspace_t *ws;
+            memory_t    *mem;           /* ws->global shortcut */
+            char        *session_dir;
+            journal_t   *journal;
+            tool_ctx_t   tools;
+            react_ctx_t  react;
+            int          active;        /* 1 = initialized */
+        } daemon_ws_slot_t;
 
-        fprintf(stderr, "[daemon] session: %s\n", session_dir);
+        daemon_ws_slot_t ws_pool[DAEMON_MAX_WS_SLOTS];
+        memset(ws_pool, 0, sizeof(ws_pool));
+        int ws_pool_count = 0;
+
+        /* Initialize default slot (from cfg->workspace or global) */
+        {
+            daemon_ws_slot_t *s = &ws_pool[0];
+            s->name = cfg->workspace ? strdup(cfg->workspace) : NULL;
+            s->ws = ws;  /* reuse the ws already created at L655 */
+            s->mem = ws ? ws->global : NULL;
+            s->session_dir = create_session_dir(nash_dir, cfg->workspace);
+            s->journal = journal_new(s->session_dir);
+            session_init_tools(&s->tools, shared_store, s->journal, s->mem,
+                               s->ws, s->session_dir, cfg, provider);
+            session_init_react(&s->react, provider, &s->tools, cfg);
+            s->active = 1;
+            ws_pool_count = 1;
+            fprintf(stderr, "[daemon] default session: %s (workspace: %s)\n",
+                    s->session_dir, s->name ? s->name : "global");
+        }
 
         while (!shutdown_requested) {
             /* ── Check for session reset command (cmd_new in inbox) ──── */
@@ -1136,46 +1164,40 @@ int main(int argc, char **argv) {
                 snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
                 if (access(cmd_path, F_OK) == 0) {
                     unlink(cmd_path);
-                    fprintf(stderr, "\n[daemon] === session reset ===\n");
+                    fprintf(stderr, "\n[daemon] === session reset (all slots) ===\n");
 
-                    /* Save scratchpad before cleanup */
-                    if (tools.scratch.count > 0)
-                        scratchpad_save(&tools.scratch, session_dir);
-
-                    /* Cleanup old session */
-                    free(react.last_query);  react.last_query = NULL;
-                    free(react.last_result); react.last_result = NULL;
-                    session_cleanup(&tools, &react, journal);
-                    if (is_dir_empty(session_dir))
-                        rmdir(session_dir);
-                    free(session_dir);
-
-                    /* Create fresh session */
-                    session_dir = create_session_dir(nash_dir, cfg->workspace);
-                    journal = journal_new(session_dir);
-                    session_init_tools(&tools, shared_store, journal, memory,
-                                       ws, session_dir, cfg, provider);
-                    session_init_react(&react, provider, &tools, cfg);
-
-                    fprintf(stderr, "[daemon] new session: %s\n", session_dir);
+                    /* Reset all active slots */
+                    for (int si = 0; si < ws_pool_count; si++) {
+                        daemon_ws_slot_t *s = &ws_pool[si];
+                        if (!s->active) continue;
+                        if (s->tools.scratch.count > 0)
+                            scratchpad_save(&s->tools.scratch, s->session_dir);
+                        free(s->react.last_query);  s->react.last_query = NULL;
+                        free(s->react.last_result); s->react.last_result = NULL;
+                        session_cleanup(&s->tools, &s->react, s->journal);
+                        if (is_dir_empty(s->session_dir))
+                            rmdir(s->session_dir);
+                        free(s->session_dir);
+                        s->session_dir = create_session_dir(nash_dir, s->name);
+                        s->journal = journal_new(s->session_dir);
+                        session_init_tools(&s->tools, shared_store, s->journal,
+                                           s->mem, s->ws, s->session_dir,
+                                           cfg, provider);
+                        session_init_react(&s->react, provider, &s->tools, cfg);
+                        fprintf(stderr, "[daemon] reset slot '%s': %s\n",
+                                s->name ? s->name : "global", s->session_dir);
+                    }
                     continue;
                 }
             }
 
-            char *task_id = NULL;
-            char *task_query = mailbox_wait_task(mbox_dir, &task_id, 0);
-            if (!task_query) {
+            /* Wait for next task (with workspace metadata) */
+            mailbox_task_t *task = mailbox_wait_task_ex(mbox_dir, 0);
+            if (!task) {
                 if (shutdown_requested) break;
-                /* NULL return may be a cmd_* wakeup — loop back to
-                 * the cmd_new check without delay.  Only sleep if
-                 * no command file is pending (genuine error case). */
                 char cmd_chk[NASH_PATH_MAX];
                 snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
                 if (access(cmd_chk, F_OK) != 0) {
-                    /* Brief pause — the bridge thread may be about to
-                     * write a task file (cmd_new arrives first, task
-                     * follows ~100ms later).  Don't log: this is normal
-                     * during the cmd_new → task handoff window. */
                     usleep(200000);  /* 200ms */
                 }
                 continue;
@@ -1188,77 +1210,145 @@ int main(int argc, char **argv) {
                 if (access(cmd_path, F_OK) == 0) {
                     unlink(cmd_path);
                     fprintf(stderr, "\n[daemon] === session reset (during wait) ===\n");
-                    if (tools.scratch.count > 0)
-                        scratchpad_save(&tools.scratch, session_dir);
-                    free(react.last_query);  react.last_query = NULL;
-                    free(react.last_result); react.last_result = NULL;
-                    session_cleanup(&tools, &react, journal);
-                    if (is_dir_empty(session_dir))
-                        rmdir(session_dir);
-                    free(session_dir);
-                    session_dir = create_session_dir(nash_dir, cfg->workspace);
-                    journal = journal_new(session_dir);
-                    session_init_tools(&tools, shared_store, journal, memory,
-                                       ws, session_dir, cfg, provider);
-                    session_init_react(&react, provider, &tools, cfg);
-                    fprintf(stderr, "[daemon] new session: %s\n", session_dir);
-                    /* Re-process the task in the new session (fall through) */
+                    for (int si = 0; si < ws_pool_count; si++) {
+                        daemon_ws_slot_t *s = &ws_pool[si];
+                        if (!s->active) continue;
+                        if (s->tools.scratch.count > 0)
+                            scratchpad_save(&s->tools.scratch, s->session_dir);
+                        free(s->react.last_query);  s->react.last_query = NULL;
+                        free(s->react.last_result); s->react.last_result = NULL;
+                        session_cleanup(&s->tools, &s->react, s->journal);
+                        if (is_dir_empty(s->session_dir))
+                            rmdir(s->session_dir);
+                        free(s->session_dir);
+                        s->session_dir = create_session_dir(nash_dir, s->name);
+                        s->journal = journal_new(s->session_dir);
+                        session_init_tools(&s->tools, shared_store, s->journal,
+                                           s->mem, s->ws, s->session_dir,
+                                           cfg, provider);
+                        session_init_react(&s->react, provider, &s->tools, cfg);
+                    }
                 }
             }
 
-            fprintf(stderr, "\n[daemon] === task: %s (R%d) ===\n",
-                    task_id ? task_id : "unknown", tools.react_loop);
-            fprintf(stderr, "[daemon] query: %.200s%s\n", task_query,
-                    strlen(task_query) > 200 ? "..." : "");
+            /* Find or create workspace slot for this task */
+            const char *task_ws = task->workspace;  /* NULL = default */
+            daemon_ws_slot_t *slot = NULL;
+
+            /* Look for existing slot */
+            for (int si = 0; si < ws_pool_count; si++) {
+                daemon_ws_slot_t *s = &ws_pool[si];
+                if (!s->active) continue;
+                /* Match: both NULL (global), or same name */
+                if (!task_ws && !s->name) { slot = s; break; }
+                if (task_ws && s->name && strcmp(task_ws, s->name) == 0) {
+                    slot = s; break;
+                }
+            }
+
+            /* Create new slot if needed */
+            if (!slot && ws_pool_count < DAEMON_MAX_WS_SLOTS) {
+                daemon_ws_slot_t *s = &ws_pool[ws_pool_count];
+                s->name = task_ws ? strdup(task_ws) : NULL;
+                int ws_iso = cfg->workspace_isolated ||
+                             (cfg->workspace_global_recall == 0);
+                double gw = cfg->workspace_global_weight;
+                s->ws = workspace_new(nash_dir, s->name, ws_iso, gw);
+                s->mem = s->ws ? s->ws->global : NULL;
+                if (server_model && s->mem)
+                    s->mem->model = strdup(server_model);
+                if (server_model && s->ws && s->ws->workspace)
+                    s->ws->workspace->model = strdup(server_model);
+                workspace_set_recall_config(s->ws, cfg->recall_min_score,
+                                            cfg->recall_blend_semantic,
+                                            cfg->recall_blend_substring,
+                                            cfg->vscore_exponent);
+                s->session_dir = create_session_dir(nash_dir, s->name);
+                s->journal = journal_new(s->session_dir);
+                session_init_tools(&s->tools, shared_store, s->journal,
+                                   s->mem, s->ws, s->session_dir,
+                                   cfg, provider);
+                session_init_react(&s->react, provider, &s->tools, cfg);
+                s->active = 1;
+                ws_pool_count++;
+                slot = s;
+                fprintf(stderr, "[daemon] created workspace slot '%s': %s\n",
+                        s->name ? s->name : "global", s->session_dir);
+            }
+
+            if (!slot) {
+                /* Pool full — use default slot */
+                slot = &ws_pool[0];
+                fprintf(stderr, "[daemon] workspace pool full, using default\n");
+            }
+
+            fprintf(stderr, "\n[daemon] === task: %s (R%d, ws=%s) ===\n",
+                    task->task_id ? task->task_id : "unknown",
+                    slot->tools.react_loop,
+                    slot->name ? slot->name : "global");
+            fprintf(stderr, "[daemon] query: %.200s%s\n", task->query,
+                    strlen(task->query) > 200 ? "..." : "");
 
             mailbox_ctx_t mbox = {
-                .react_ctx = &react,
+                .react_ctx = &slot->react,
                 .mailbox_dir = mbox_dir,
-                .session_dir = session_dir,
+                .session_dir = slot->session_dir,
                 .timeout_sec = mailbox_timeout,
             };
 
-            char *result = react_run(&react, task_query, mailbox_on_event, &mbox);
+            char *result = react_run(&slot->react, task->query,
+                                     mailbox_on_event, &mbox);
 
-            /* Write result to outbox */
-            if (task_id) {
-                mailbox_write_result(mbox_dir, task_id, result);
+            /* Write result to outbox (with route token for bridge routing) */
+            if (task->task_id) {
+                mailbox_write_result_routed(mbox_dir, task->task_id,
+                                           result, task->route_token);
             }
 
             if (result) {
                 fprintf(stderr, "[daemon] task %s completed (R%d)\n",
-                        task_id ? task_id : "unknown", tools.react_loop);
+                        task->task_id ? task->task_id : "unknown",
+                        slot->tools.react_loop);
                 printf("%s\n", result);
             } else {
                 fprintf(stderr, "[daemon] task %s failed (no result)\n",
-                        task_id ? task_id : "unknown");
+                        task->task_id ? task->task_id : "unknown");
             }
 
             /* Propagate context to next react loop (like TUI does) */
-            if (react.last_query) free(react.last_query);
-            if (react.last_result) free(react.last_result);
-            react.last_query = strdup(task_query);
-            react.last_result = result ? strdup(result) : NULL;
-            tools.react_loop++;
+            free(slot->react.last_query);
+            free(slot->react.last_result);
+            slot->react.last_query = strdup(task->query);
+            slot->react.last_result = result ? strdup(result) : NULL;
+            slot->tools.react_loop++;
 
             /* Tier 1 dreaming */
-            memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
+            memory_prune(slot->mem, cfg->prune_min_score,
+                         cfg->prune_min_evidence);
 
             free(result);
-            free(task_id);
-            free(task_query);
+            mailbox_task_free(task);
         }
 
-        /* Graceful shutdown — cleanup persistent session */
+        /* Graceful shutdown — cleanup all workspace slots */
         fprintf(stderr, "[daemon] shutting down...\n");
-        if (tools.scratch.count > 0)
-            scratchpad_save(&tools.scratch, session_dir);
-        free(react.last_query);  react.last_query = NULL;
-        free(react.last_result); react.last_result = NULL;
-        session_cleanup(&tools, &react, journal);
-        if (is_dir_empty(session_dir))
-            rmdir(session_dir);
-        free(session_dir);
+        for (int si = 0; si < ws_pool_count; si++) {
+            daemon_ws_slot_t *s = &ws_pool[si];
+            if (!s->active) continue;
+            if (s->tools.scratch.count > 0)
+                scratchpad_save(&s->tools.scratch, s->session_dir);
+            free(s->react.last_query);  s->react.last_query = NULL;
+            free(s->react.last_result); s->react.last_result = NULL;
+            session_cleanup(&s->tools, &s->react, s->journal);
+            if (is_dir_empty(s->session_dir))
+                rmdir(s->session_dir);
+            free(s->session_dir);
+            /* Don't free ws_pool[0].ws — it's the shared 'ws' freed later */
+            if (si > 0 && s->ws) {
+                workspace_free(s->ws);
+            }
+            free(s->name);
+        }
         if (telegram_mode && tg_thread) {
             pthread_join(tg_thread, NULL);
             telegram_free(&tg_ctx);

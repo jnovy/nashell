@@ -490,3 +490,134 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
      * for terminal output */
     tui_on_event(ev, (void *)mbox->session_dir);
 }
+
+
+/* ── Extended mailbox protocol (workspace routing) ────────── */
+
+char *mailbox_parse_headers(char *content, char **workspace_out,
+                            char **route_token_out) {
+    if (workspace_out) *workspace_out = NULL;
+    if (route_token_out) *route_token_out = NULL;
+    if (!content) return content;
+
+    /* Quick check: does this look like it has headers?
+     * Headers must start with "X-" at the beginning of the content. */
+    if (strncmp(content, "X-", 2) != 0)
+        return content;  /* no headers — entire content is the query */
+
+    /* Parse lines until we hit "---" separator or a non-header line */
+    char *p = content;
+    while (*p) {
+        /* Find end of current line */
+        char *eol = strchr(p, '\n');
+        if (!eol) break;  /* no newline found — treat rest as query */
+
+        /* Check for --- separator */
+        if (p[0] == '-' && p[1] == '-' && p[2] == '-' &&
+            (p[3] == '\n' || p[3] == '\r' || p[3] == '\0')) {
+            /* Skip past separator + newline */
+            char *query = eol + 1;
+            return query;
+        }
+
+        /* Parse "X-Key: value" header */
+        if (strncmp(p, "X-", 2) == 0) {
+            char *colon = strchr(p, ':');
+            if (colon && colon < eol) {
+                /* Extract key */
+                size_t klen = (size_t)(colon - p);
+                /* Extract value (skip ": ") */
+                char *val = colon + 1;
+                while (*val == ' ') val++;
+                size_t vlen = (size_t)(eol - val);
+                /* Strip trailing whitespace */
+                while (vlen > 0 && (val[vlen-1] == '\r' || val[vlen-1] == ' '))
+                    vlen--;
+
+                if (klen == 11 && strncmp(p, "X-Workspace", 11) == 0) {
+                    if (workspace_out && vlen > 0)
+                        *workspace_out = strndup(val, vlen);
+                } else if (klen == 13 && strncmp(p, "X-Route-Token", 13) == 0) {
+                    if (route_token_out && vlen > 0)
+                        *route_token_out = strndup(val, vlen);
+                }
+            }
+        } else {
+            /* Not a header line and not --- — no headers present.
+             * Return entire content as query. */
+            return content;
+        }
+
+        p = eol + 1;
+    }
+
+    /* Reached end without --- separator — treat entire content as query */
+    return content;
+}
+
+void mailbox_task_free(mailbox_task_t *task) {
+    if (!task) return;
+    free(task->task_id);
+    free(task->workspace);
+    free(task->route_token);
+    /* task->query points into the same allocation as the original content,
+     * but we strdup it in wait_task_ex, so free it */
+    free(task->query);
+    free(task);
+}
+
+mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec) {
+    char *task_id = NULL;
+    char *raw_query = mailbox_wait_task(mailbox_dir, &task_id, timeout_sec);
+    if (!raw_query) return NULL;
+
+    mailbox_task_t *task = calloc(1, sizeof(*task));
+    if (!task) {
+        free(raw_query);
+        free(task_id);
+        return NULL;
+    }
+    task->task_id = task_id;
+
+    /* Parse metadata headers from the raw content */
+    char *ws = NULL, *rt = NULL;
+    char *query_start = mailbox_parse_headers(raw_query, &ws, &rt);
+    task->workspace = ws;
+    task->route_token = rt;
+
+    /* query_start points into raw_query — strdup for independent ownership */
+    task->query = strdup(query_start);
+    free(raw_query);
+
+    return task;
+}
+
+void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
+                                 const char *result, const char *route_token) {
+    if (!route_token || !route_token[0]) {
+        /* No routing — use plain write */
+        mailbox_write_result(mailbox_dir, task_id, result);
+        return;
+    }
+
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/outbox/result_%s",
+             mailbox_dir, task_id);
+
+    /* Build content with route token header */
+    const char *res = result ? result : "(no result)";
+    size_t hdr_len = strlen("X-Route-Token: ") + strlen(route_token) +
+                     strlen("\n---\n");
+    size_t total = hdr_len + strlen(res) + 2;
+    char *buf = malloc(total);
+    if (!buf) {
+        mailbox_write_result(mailbox_dir, task_id, result);
+        return;
+    }
+    snprintf(buf, total, "X-Route-Token: %s\n---\n%s", route_token, res);
+
+    write_file_atomic(path, buf);
+    free(buf);
+    fprintf(stderr, "[mailbox] routed result written: %s (token=%s)\n",
+            path, route_token);
+}
