@@ -311,6 +311,8 @@ int main(int argc, char **argv) {
     const char *load_spec_path = NULL;    /* --load-spec FILE: overlay spec on config */
     const char *optimize_budget = NULL;   /* --optimize BUDGET: GEPA prompt optimization */
     const char *reflect_model_arg = NULL; /* --reflect-model MODEL: reflection LM for optimization */
+    int optimize_epochs = 1;              /* --epochs N: SkillOpt multi-epoch training (default 1) */
+    int optimize_edit_budget = 4;         /* --edit-budget N: initial edit budget L_0 (default 4) */
     int mailbox_mode = 0;                 /* --mailbox: enable file-based mailbox for user_ask */
     int daemon_mode = 0;                  /* --daemon: watch mailbox inbox for tasks */
     int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
@@ -361,6 +363,11 @@ int main(int argc, char **argv) {
             optimize_budget = argv[++i];
         } else if (strcmp(argv[i], "--reflect-model") == 0 && i + 1 < argc) {
             reflect_model_arg = argv[++i];
+        } else if (strcmp(argv[i], "--epochs") == 0 && i + 1 < argc) {
+            optimize_epochs = atoi(argv[++i]);
+            if (optimize_epochs < 1) optimize_epochs = 1;
+        } else if (strcmp(argv[i], "--edit-budget") == 0 && i + 1 < argc) {
+            optimize_edit_budget = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--mailbox") == 0) {
             mailbox_mode = 1;
         } else if (strcmp(argv[i], "--daemon") == 0) {
@@ -406,6 +413,8 @@ int main(int argc, char **argv) {
             printf("  --postmortem-sessions N  Sessions to scan (default 50)\n");
             printf("  --optimize BUDGET     GEPA prompt optimization (light/medium/heavy/N)\n");
             printf("  --reflect-model MODEL Reflection LM for optimization\n");
+            printf("  --epochs N            SkillOpt multi-epoch training (default 1)\n");
+            printf("  --edit-budget N       Initial edit budget L_0 (default 4, cosine decay)\n");
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
@@ -825,13 +834,18 @@ int main(int argc, char **argv) {
 
         /* Configure and run optimization */
         optimize_config_t opt = {
-            .max_rounds     = rounds,
-            .proposal_width = 2,  /* Self-Harness K=2: two parallel proposals per round */
-            .student        = provider,
-            .reflection     = reflection_provider,
-            .profile_path   = profile_path,
-            .split_filter   = regression_split,
-            .verbose        = 1,
+            .max_rounds       = rounds,
+            .proposal_width   = 2,  /* Self-Harness K=2: two parallel proposals per round */
+            .student          = provider,
+            .reflection       = reflection_provider,
+            .profile_path     = profile_path,
+            .split_filter     = regression_split,
+            .verbose          = 1,
+            /* SkillOpt extensions [arXiv:2605.23904v2] */
+            .n_epochs         = optimize_epochs,
+            .edit_budget_init = optimize_edit_budget,
+            .edit_budget_floor = optimize_edit_budget > 2 ? 2 : 1,
+            .minibatch_size   = 0,  /* 0 = all-at-once (default) */
         };
 
         prompt_candidate_t best = optimize_run(

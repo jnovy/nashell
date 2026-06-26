@@ -21,6 +21,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 /* ── Forward declarations for helpers in react.c ────── */
 
@@ -339,12 +344,25 @@ char *optimize_format_evidence(const sh_evidence_t *bundle,
     }
 
     if (rejected && n_rejected > 0) {
-        str_append_cstr(&fb, "PREVIOUSLY REJECTED PROPOSALS (do not re-propose):\n");
-        for (int i = 0; i < n_rejected; i++)
+        str_append_cstr(&fb, "PREVIOUSLY REJECTED PROPOSALS (do not re-propose similar edits):\n");
+        for (int i = 0; i < n_rejected; i++) {
             str_appendf(&fb, "  Round %d: d_in=%+.1f%%, d_ho=%+.1f%%\n",
                         rejected[i].round,
                         rejected[i].delta_in * 100,
                         rejected[i].delta_out * 100);
+            /* SkillOpt: feed rejected text excerpt + audit as negative feedback */
+            if (rejected[i].prompt_text && rejected[i].prompt_text[0]) {
+                int plen = (int)strlen(rejected[i].prompt_text);
+                int show = plen > 200 ? 200 : plen;
+                str_appendf(&fb, "    Rejected text: %.*s%s\n",
+                            show, rejected[i].prompt_text,
+                            plen > 200 ? "..." : "");
+            }
+            if (rejected[i].audit && rejected[i].audit[0])
+                str_appendf(&fb, "    Reason: %s\n", rejected[i].audit);
+            else
+                str_appendf(&fb, "    Reason: regression on validation set\n");
+        }
         str_append_cstr(&fb, "\n");
     }
 
@@ -428,7 +446,9 @@ char *optimize_reflect(provider_t *reflection_lm,
                        const char *current_prompt,
                        const char *evidence_text,
                        int round, int max_rounds,
-                       int proposal_idx, int proposal_width) {
+                       int proposal_idx, int proposal_width,
+                       int edit_budget,
+                       const char *slow_guidance) {
     if (!reflection_lm || !evidence_text) return NULL;
 
     llm_chat_t *chat = llm_chat_new();
@@ -437,6 +457,20 @@ char *optimize_reflect(provider_t *reflection_lm,
     str_t user_msg = str_new(8192);
     str_appendf(&user_msg, "SELF-HARNESS ROUND %d of %d — Proposal %d of %d\n\n",
                 round, max_rounds, proposal_idx + 1, proposal_width);
+
+    /* SkillOpt: bounded textual learning rate [arXiv:2605.23904v2, §3.3] */
+    if (edit_budget > 0)
+        str_appendf(&user_msg,
+            "EDIT BUDGET: You may make AT MOST %d edit operations "
+            "(add/delete/replace) this round. Fewer is better.\n\n",
+            edit_budget);
+
+    /* SkillOpt: slow/meta update — cross-epoch longitudinal guidance */
+    if (slow_guidance && slow_guidance[0])
+        str_appendf(&user_msg,
+            "LONGITUDINAL GUIDANCE (from previous epoch analysis — "
+            "DO NOT delete this, use it to inform your edits):\n%s\n\n",
+            slow_guidance);
 
     str_append_cstr(&user_msg, "CURRENT SYSTEM PROMPT RULES:\n");
     if (current_prompt && current_prompt[0])
@@ -619,7 +653,122 @@ static int write_prompt_to_profile(const char *profile_path,
 }
 
 /* ════════════════════════════════════════════════════════
- * Algorithm 1: The Self-Harness Loop [arXiv:2606.09498]
+ * SkillOpt slow update [arXiv:2605.23904v2, §3.4]
+ *
+ * At each epoch boundary, compare the skill at epoch start vs end.
+ * Generates longitudinal guidance for the next epoch's proposals.
+ * ════════════════════════════════════════════════════════ */
+
+static char *slow_update(provider_t *reflection_lm,
+                         const char *prev_skill,
+                         const char *curr_skill,
+                         const sh_evidence_t *prev_evidence,
+                         const sh_evidence_t *curr_evidence) {
+    if (!reflection_lm) return NULL;
+    if (!prev_skill) prev_skill = "(empty)";
+    if (!curr_skill) curr_skill = "(empty)";
+
+    /* If skill didn't change, no guidance needed */
+    if (strcmp(prev_skill, curr_skill) == 0) {
+        fprintf(stderr, "  [slow-update] skill unchanged — skipping\n");
+        return NULL;
+    }
+
+    llm_chat_t *chat = llm_chat_new();
+    llm_chat_add(chat, "system",
+        "You are the SkillOpt slow-update analyzer [arXiv:2605.23904v2].\n\n"
+        "You will receive two versions of an agent's skill document (before/after "
+        "one epoch of optimization) plus evaluation summaries.\n\n"
+        "YOUR TASK: Write 2-4 sentences of LONGITUDINAL GUIDANCE for the next epoch.\n"
+        "Categorize observed changes into:\n"
+        "  - Improvements: failure patterns that were resolved\n"
+        "  - Regressions: passing behaviors that broke\n"
+        "  - Persistent failures: still failing despite edits\n"
+        "  - Stable successes: consistently passing\n\n"
+        "Focus your guidance on:\n"
+        "  1. What kinds of edits worked vs didn't\n"
+        "  2. Which persistent failure patterns need different approaches\n"
+        "  3. Which rules are load-bearing and must be preserved\n\n"
+        "Be specific and actionable. Output ONLY the guidance text.\n");
+
+    str_t user_msg = str_new(4096);
+    str_append_cstr(&user_msg, "SKILL AT EPOCH START:\n---\n");
+    str_append_cstr(&user_msg, prev_skill);
+    str_append_cstr(&user_msg, "\n---\n\nSKILL AT EPOCH END:\n---\n");
+    str_append_cstr(&user_msg, curr_skill);
+    str_append_cstr(&user_msg, "\n---\n\n");
+
+    if (prev_evidence) {
+        str_appendf(&user_msg, "EVAL AT EPOCH START: %d passed, %d failed\n",
+                    prev_evidence->total_passes, prev_evidence->total_failures);
+        for (int i = 0; i < prev_evidence->n_clusters && i < 4; i++)
+            str_appendf(&user_msg, "  Pattern: %s/%s (%d failures)\n",
+                        cause_str(prev_evidence->clusters[i].sig.cause),
+                        mechanism_str(prev_evidence->clusters[i].sig.mechanism),
+                        prev_evidence->clusters[i].count);
+    }
+
+    if (curr_evidence) {
+        str_appendf(&user_msg, "\nEVAL AT EPOCH END: %d passed, %d failed\n",
+                    curr_evidence->total_passes, curr_evidence->total_failures);
+        for (int i = 0; i < curr_evidence->n_clusters && i < 4; i++)
+            str_appendf(&user_msg, "  Pattern: %s/%s (%d failures)\n",
+                        cause_str(curr_evidence->clusters[i].sig.cause),
+                        mechanism_str(curr_evidence->clusters[i].sig.mechanism),
+                        curr_evidence->clusters[i].count);
+    }
+
+    str_append_cstr(&user_msg,
+        "\nWrite 2-4 sentences of longitudinal guidance for the next epoch.\n");
+
+    llm_chat_add(chat, "user", str_cstr(&user_msg));
+    str_free(&user_msg);
+
+    llm_stats_t stats = {0};
+    char *raw = provider_complete(reflection_lm, chat, &stats);
+    llm_chat_free(chat);
+
+    if (!raw) {
+        fprintf(stderr, "  [slow-update] LLM call failed\n");
+        return NULL;
+    }
+
+    char *text = extract_text_from_response(raw);
+    free(raw);
+
+    if (text) {
+        fprintf(stderr, "  [slow-update] generated %zu chars of guidance\n", strlen(text));
+    }
+    return text;
+}
+
+/* ════════════════════════════════════════════════════════
+ * Cosine edit budget schedule [arXiv:2605.23904v2, §3.3]
+ *
+ * L_t = floor + (init - floor) * cos(π * t / (2 * T))
+ * Decays from L_0 to L_min over T rounds per epoch.
+ * ════════════════════════════════════════════════════════ */
+
+static int compute_edit_budget(int init, int floor_val, int round, int max_rounds) {
+    if (init <= 0) return 0;  /* 0 = unlimited */
+    if (max_rounds <= 1) return init;
+    double progress = (double)round / (double)max_rounds;
+    if (progress > 1.0) progress = 1.0;
+    double decayed = floor_val + (init - floor_val) * cos(M_PI * progress / 2.0);
+    int budget = (int)(decayed + 0.5);
+    if (budget < floor_val) budget = floor_val;
+    if (budget < 1) budget = 1;
+    return budget;
+}
+
+/* ════════════════════════════════════════════════════════
+ * Algorithm 1: SkillOpt Loop [arXiv:2605.23904v2]
+ *
+ * Extends Self-Harness [arXiv:2606.09498] with:
+ *   - Multi-epoch training with slow/meta update
+ *   - Bounded textual learning rate with cosine decay
+ *   - Enriched rejected-edit feedback as negative gradients
+ *   - Optional minibatch reflection
  * ════════════════════════════════════════════════════════ */
 
 prompt_candidate_t optimize_run(optimize_config_t *opt,
@@ -633,12 +782,21 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     best.held_out_score = -1;
 
     int K = opt->proposal_width > 0 ? opt->proposal_width : 2;
+    int n_epochs = opt->n_epochs > 1 ? opt->n_epochs : 1;
+    int edit_init = opt->edit_budget_init > 0 ? opt->edit_budget_init : 4;
+    int edit_floor = opt->edit_budget_floor > 0 ? opt->edit_budget_floor : 2;
+    /* int mb_size = opt->minibatch_size > 0 ? opt->minibatch_size : 0; */
 
     fprintf(stderr, "\n╔══════════════════════════════════════════════════╗\n");
-    fprintf(stderr, "║  Nash Self-Harness Optimizer [arXiv:2606.09498]  ║\n");
+    if (n_epochs > 1)
+        fprintf(stderr, "║  Nash SkillOpt Optimizer [arXiv:2605.23904v2]   ║\n");
+    else
+        fprintf(stderr, "║  Nash Self-Harness Optimizer [arXiv:2606.09498]  ║\n");
     fprintf(stderr, "╚══════════════════════════════════════════════════╝\n\n");
-    fprintf(stderr, "  Rounds (T): %d\n", opt->max_rounds);
+    fprintf(stderr, "  Rounds per epoch (T): %d\n", opt->max_rounds);
+    fprintf(stderr, "  Epochs (E): %d\n", n_epochs);
     fprintf(stderr, "  Proposal width (K): %d\n", K);
+    fprintf(stderr, "  Edit budget: %d→%d (cosine decay)\n", edit_init, edit_floor);
     fprintf(stderr, "  Student model: %s\n",
             opt->student && opt->student->cfg.model_id
                 ? opt->student->cfg.model_id : "(unknown)");
@@ -649,14 +807,14 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
         fprintf(stderr, "  Profile: %s\n", opt->profile_path);
     fprintf(stderr, "\n");
 
-    /* Rejected proposal history */
+    /* Rejected proposal history (persists across epochs) */
     int rejected_cap = 16;
     rejected_proposal_t *rejected = calloc(rejected_cap, sizeof(rejected_proposal_t));
     int n_rejected = 0;
 
     /* Round 0: Baseline */
     const char *current_prompt = cfg->system_prompt_extra;
-    fprintf(stderr, "━━━ Round 0: Baseline Evaluation ━━━\n");
+    fprintf(stderr, "━━━ Baseline Evaluation ━━━\n");
 
     regression_report_t *baseline_report = regression_run(
         banks, n_banks, opt->split_filter,
@@ -697,140 +855,238 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     prompt_candidate_t round_baseline = best;
     round_baseline.prompt_text = strdup(current);
 
-    /* ── Self-Harness iteration loop ── */
-    for (int round = 1; round <= opt->max_rounds; round++) {
-        fprintf(stderr, "\n━━━ Self-Harness Round %d/%d ━━━\n", round, opt->max_rounds);
+    /* SkillOpt: cross-epoch longitudinal guidance */
+    char *slow_guidance = NULL;
+    int stop_early = 0;
 
-        if (!evidence || evidence->total_failures == 0) {
-            fprintf(stderr, "  No failures — stopping early\n");
-            break;
+    /* ══ Epoch loop [arXiv:2605.23904v2, §3.2] ══ */
+    for (int epoch = 0; epoch < n_epochs && !stop_early; epoch++) {
+        char *epoch_start_skill = strdup(current);
+        sh_evidence_t *epoch_start_evidence = NULL;
+
+        if (n_epochs > 1)
+            fprintf(stderr, "\n╔═ Epoch %d/%d ═══════════════════════════════════╗\n",
+                    epoch + 1, n_epochs);
+
+        /* Capture epoch-start evidence for slow update */
+        if (evidence) {
+            /* Shallow snapshot: just copy the summary counts */
+            epoch_start_evidence = calloc(1, sizeof(sh_evidence_t));
+            epoch_start_evidence->total_passes = evidence->total_passes;
+            epoch_start_evidence->total_failures = evidence->total_failures;
+            epoch_start_evidence->n_clusters = evidence->n_clusters;
+            epoch_start_evidence->clusters = calloc(
+                evidence->n_clusters > 0 ? evidence->n_clusters : 1,
+                sizeof(sh_cluster_t));
+            for (int i = 0; i < evidence->n_clusters; i++) {
+                epoch_start_evidence->clusters[i].sig = evidence->clusters[i].sig;
+                epoch_start_evidence->clusters[i].count = evidence->clusters[i].count;
+                /* Don't deep-copy strings — only used for summary in slow_update */
+            }
         }
-        fprintf(stderr, "  Evidence: %d patterns, %d failures\n",
-                evidence->n_clusters, evidence->total_failures);
 
-        char *evidence_text = optimize_format_evidence(evidence, rejected, n_rejected);
+        /* ── Inner round loop (Self-Harness iteration) ── */
+        for (int round = 1; round <= opt->max_rounds; round++) {
+            int global_round = epoch * opt->max_rounds + round;
+            if (n_epochs > 1)
+                fprintf(stderr, "\n━━━ Epoch %d, Round %d/%d (global %d) ━━━\n",
+                        epoch + 1, round, opt->max_rounds, global_round);
+            else
+                fprintf(stderr, "\n━━━ Self-Harness Round %d/%d ━━━\n",
+                        round, opt->max_rounds);
 
-        /* Stage 2: Parallel Propose */
-        fprintf(stderr, "  Generating %d proposals...\n", K);
-        char **cand_texts = calloc(K, sizeof(char *));
-        int n_valid = 0;
-        for (int k = 0; k < K; k++) {
-            cand_texts[k] = optimize_reflect(opt->reflection, current,
-                evidence_text, round, opt->max_rounds, k, K);
-            if (cand_texts[k]) n_valid++;
-        }
-        free(evidence_text);
+            if (!evidence || evidence->total_failures == 0) {
+                fprintf(stderr, "  No failures — stopping early\n");
+                stop_early = 1;
+                break;
+            }
+            fprintf(stderr, "  Evidence: %d patterns, %d failures\n",
+                    evidence->n_clusters, evidence->total_failures);
 
-        if (n_valid == 0) {
-            fprintf(stderr, "  All proposals failed — skipping round\n");
-            free(cand_texts);
-            continue;
-        }
+            /* SkillOpt: compute cosine-decayed edit budget */
+            int edit_budget = compute_edit_budget(edit_init, edit_floor,
+                                                  round, opt->max_rounds);
+            if (edit_budget > 0)
+                fprintf(stderr, "  Edit budget: %d\n", edit_budget);
 
-        /* Stage 3: Validate each candidate */
-        prompt_candidate_t *accepted_list = calloc(K, sizeof(prompt_candidate_t));
-        int n_accepted = 0;
-        regression_report_t *best_report = NULL;
+            char *evidence_text = optimize_format_evidence(evidence,
+                                                           rejected, n_rejected);
 
-        for (int k = 0; k < K; k++) {
-            if (!cand_texts[k]) continue;
-            fprintf(stderr, "\n  ── Candidate %d/%d ──\n", k + 1, K);
+            /* Stage 2: Parallel Propose */
+            fprintf(stderr, "  Generating %d proposals...\n", K);
+            char **cand_texts = calloc(K, sizeof(char *));
+            int n_valid = 0;
+            for (int k = 0; k < K; k++) {
+                cand_texts[k] = optimize_reflect(opt->reflection, current,
+                    evidence_text, round, opt->max_rounds, k, K,
+                    edit_budget, slow_guidance);
+                if (cand_texts[k]) n_valid++;
+            }
+            free(evidence_text);
 
-            regression_report_t *rpt = NULL;
-            prompt_candidate_t cand = score_prompt(cand_texts[k], round,
-                opt, banks, n_banks, cfg, memory, store, nash_dir, &rpt);
+            if (n_valid == 0) {
+                fprintf(stderr, "  All proposals failed — skipping round\n");
+                free(cand_texts);
+                continue;
+            }
 
-            fprintf(stderr, "  Score: %.1f%% (%d/%d)",
-                    cand.score * 100, cand.total_passed, cand.total_queries);
-            if (cand.held_in_score >= 0)
-                fprintf(stderr, " [in: %.1f%%]", cand.held_in_score * 100);
-            if (cand.held_out_score >= 0)
-                fprintf(stderr, " [out: %.1f%%]", cand.held_out_score * 100);
+            /* Stage 3: Validate each candidate */
+            prompt_candidate_t *accepted_list = calloc(K, sizeof(prompt_candidate_t));
+            int n_accepted = 0;
+            regression_report_t *best_report = NULL;
 
-            double d_in = 0, d_ho = 0;
-            int accept = passes_acceptance_rule(&cand, &round_baseline, &d_in, &d_ho);
+            for (int k = 0; k < K; k++) {
+                if (!cand_texts[k]) continue;
+                fprintf(stderr, "\n  ── Candidate %d/%d ──\n", k + 1, K);
 
-            if (accept) {
-                fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
-                        d_in * 100, d_ho * 100);
-                accepted_list[n_accepted] = cand;
-                accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
-                n_accepted++;
-                if (!best_report || cand.score > best.score) {
-                    if (best_report) regression_free_report(best_report);
-                    best_report = rpt;
-                    rpt = NULL;
+                regression_report_t *rpt = NULL;
+                prompt_candidate_t cand = score_prompt(cand_texts[k], global_round,
+                    opt, banks, n_banks, cfg, memory, store, nash_dir, &rpt);
+
+                fprintf(stderr, "  Score: %.1f%% (%d/%d)",
+                        cand.score * 100, cand.total_passed, cand.total_queries);
+                if (cand.held_in_score >= 0)
+                    fprintf(stderr, " [in: %.1f%%]", cand.held_in_score * 100);
+                if (cand.held_out_score >= 0)
+                    fprintf(stderr, " [out: %.1f%%]", cand.held_out_score * 100);
+
+                double d_in = 0, d_ho = 0;
+                int accept = passes_acceptance_rule(&cand, &round_baseline,
+                                                    &d_in, &d_ho);
+
+                if (accept) {
+                    fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                            d_in * 100, d_ho * 100);
+                    accepted_list[n_accepted] = cand;
+                    accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
+                    n_accepted++;
+                    if (!best_report || cand.score > best.score) {
+                        if (best_report) regression_free_report(best_report);
+                        best_report = rpt;
+                        rpt = NULL;
+                    }
+                } else {
+                    fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                            d_in * 100, d_ho * 100);
+                    if (n_rejected >= rejected_cap) {
+                        rejected_cap *= 2;
+                        rejected = realloc(rejected,
+                            rejected_cap * sizeof(rejected_proposal_t));
+                    }
+                    rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
+                    /* SkillOpt: generate brief rejection audit */
+                    {
+                        str_t audit = str_new(128);
+                        if (d_in < -0.001 && d_ho < -0.001)
+                            str_appendf(&audit, "Regressed on both held-in (%.1f%%) "
+                                        "and held-out (%.1f%%)", d_in * 100, d_ho * 100);
+                        else if (d_in < -0.001)
+                            str_appendf(&audit, "Regressed on held-in (%.1f%%) "
+                                        "despite held-out improvement", d_in * 100);
+                        else if (d_ho < -0.001)
+                            str_appendf(&audit, "Regressed on held-out (%.1f%%) "
+                                        "despite held-in improvement", d_ho * 100);
+                        else
+                            str_appendf(&audit, "No net improvement (d_in=%.1f%%, "
+                                        "d_ho=%.1f%%)", d_in * 100, d_ho * 100);
+                        rejected[n_rejected].audit = str_steal(&audit);
+                    }
+                    rejected[n_rejected].round = global_round;
+                    rejected[n_rejected].delta_in = d_in;
+                    rejected[n_rejected].delta_out = d_ho;
+                    n_rejected++;
                 }
+                if (rpt) regression_free_report(rpt);
+                optimize_free_candidate(&cand);
+            }
+
+            /* Merge accepted (§3.4) */
+            if (n_accepted > 0) {
+                fprintf(stderr, "\n  Merging %d accepted proposal%s\n",
+                        n_accepted, n_accepted > 1 ? "s" : "");
+                char *merged = merge_accepted_prompts(accepted_list, n_accepted);
+                free(current);
+                current = merged;
+
+                for (int a = 0; a < n_accepted; a++) {
+                    if (accepted_list[a].score > best.score) {
+                        optimize_free_candidate(&best);
+                        best.prompt_text = strdup(accepted_list[a].prompt_text);
+                        best.score = accepted_list[a].score;
+                        best.held_in_score = accepted_list[a].held_in_score;
+                        best.held_out_score = accepted_list[a].held_out_score;
+                        best.total_passed = accepted_list[a].total_passed;
+                        best.total_queries = accepted_list[a].total_queries;
+                        best.round = global_round;
+                    }
+                }
+
+                optimize_free_candidate(&round_baseline);
+                round_baseline.prompt_text = strdup(current);
+                round_baseline.score = best.score;
+                round_baseline.held_in_score = best.held_in_score;
+                round_baseline.held_out_score = best.held_out_score;
+                round_baseline.total_passed = best.total_passed;
+                round_baseline.total_queries = best.total_queries;
             } else {
-                fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
-                        d_in * 100, d_ho * 100);
-                if (n_rejected >= rejected_cap) {
-                    rejected_cap *= 2;
-                    rejected = realloc(rejected,
-                        rejected_cap * sizeof(rejected_proposal_t));
-                }
-                rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
-                rejected[n_rejected].audit = NULL;
-                rejected[n_rejected].round = round;
-                rejected[n_rejected].delta_in = d_in;
-                rejected[n_rejected].delta_out = d_ho;
-                n_rejected++;
-            }
-            if (rpt) regression_free_report(rpt);
-            optimize_free_candidate(&cand);
-        }
-
-        /* Merge accepted (§3.4) */
-        if (n_accepted > 0) {
-            fprintf(stderr, "\n  Merging %d accepted proposal%s\n",
-                    n_accepted, n_accepted > 1 ? "s" : "");
-            char *merged = merge_accepted_prompts(accepted_list, n_accepted);
-            free(current);
-            current = merged;
-
-            for (int a = 0; a < n_accepted; a++) {
-                if (accepted_list[a].score > best.score) {
-                    optimize_free_candidate(&best);
-                    best.prompt_text = strdup(accepted_list[a].prompt_text);
-                    best.score = accepted_list[a].score;
-                    best.held_in_score = accepted_list[a].held_in_score;
-                    best.held_out_score = accepted_list[a].held_out_score;
-                    best.total_passed = accepted_list[a].total_passed;
-                    best.total_queries = accepted_list[a].total_queries;
-                    best.round = round;
-                }
+                fprintf(stderr, "\n  No proposals accepted — h_{t+1} = h_t\n");
             }
 
-            optimize_free_candidate(&round_baseline);
-            round_baseline.prompt_text = strdup(current);
-            round_baseline.score = best.score;
-            round_baseline.held_in_score = best.held_in_score;
-            round_baseline.held_out_score = best.held_out_score;
-            round_baseline.total_passed = best.total_passed;
-            round_baseline.total_queries = best.total_queries;
-        } else {
-            fprintf(stderr, "\n  No proposals accepted — h_{t+1} = h_t\n");
+            /* Rebuild evidence for next round */
+            optimize_free_evidence_bundle(evidence);
+            evidence = best_report ? optimize_build_evidence_bundle(best_report) : NULL;
+            if (best_report) regression_free_report(best_report);
+
+            for (int a = 0; a < n_accepted; a++)
+                optimize_free_candidate(&accepted_list[a]);
+            free(accepted_list);
+            for (int k = 0; k < K; k++) free(cand_texts[k]);
+            free(cand_texts);
+
+            if (best.score >= 0.999) {
+                fprintf(stderr, "  Perfect score — stopping early!\n");
+                stop_early = 1;
+                break;
+            }
+        } /* end inner round loop */
+
+        /* ── Epoch boundary: slow update [arXiv:2605.23904v2, §3.4] ── */
+        if (n_epochs > 1 && !stop_early && epoch < n_epochs - 1) {
+            fprintf(stderr, "\n═══ Epoch %d/%d boundary — slow update ═══\n",
+                    epoch + 1, n_epochs);
+
+            free(slow_guidance);
+            slow_guidance = slow_update(opt->reflection,
+                                        epoch_start_skill, current,
+                                        epoch_start_evidence, evidence);
+
+            if (slow_guidance)
+                fprintf(stderr, "  Guidance: %.120s%s\n",
+                        slow_guidance, strlen(slow_guidance) > 120 ? "..." : "");
+
+            /* Re-eval at epoch boundary to get fresh evidence for next epoch */
+            if (!evidence) {
+                regression_report_t *epoch_end_report = regression_run(
+                    banks, n_banks, opt->split_filter,
+                    opt->student, cfg, memory, store, nash_dir);
+                if (epoch_end_report) {
+                    evidence = optimize_build_evidence_bundle(epoch_end_report);
+                    regression_free_report(epoch_end_report);
+                }
+            }
         }
 
-        /* Rebuild evidence for next round */
-        optimize_free_evidence_bundle(evidence);
-        evidence = best_report ? optimize_build_evidence_bundle(best_report) : NULL;
-        if (best_report) regression_free_report(best_report);
-
-        for (int a = 0; a < n_accepted; a++)
-            optimize_free_candidate(&accepted_list[a]);
-        free(accepted_list);
-        for (int k = 0; k < K; k++) free(cand_texts[k]);
-        free(cand_texts);
-
-        if (best.score >= 0.999) {
-            fprintf(stderr, "  Perfect score — stopping early!\n");
-            break;
+        /* Cleanup epoch-start snapshot */
+        free(epoch_start_skill);
+        if (epoch_start_evidence) {
+            free(epoch_start_evidence->clusters);
+            free(epoch_start_evidence);
         }
-    }
+    } /* end epoch loop */
 
     /* Cleanup */
     free(current);
+    free(slow_guidance);
     optimize_free_candidate(&round_baseline);
     optimize_free_evidence_bundle(evidence);
     for (int i = 0; i < n_rejected; i++) {
@@ -841,7 +1097,10 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
 
     /* Print final results */
     fprintf(stderr, "\n╔══════════════════════════════════════════════════╗\n");
-    fprintf(stderr, "║       Self-Harness Optimization Results          ║\n");
+    if (n_epochs > 1)
+        fprintf(stderr, "║       SkillOpt Optimization Results              ║\n");
+    else
+        fprintf(stderr, "║       Self-Harness Optimization Results          ║\n");
     fprintf(stderr, "╚══════════════════════════════════════════════════╝\n\n");
     fprintf(stderr, "  Best score: %.1f%% (%d/%d) from round %d\n",
             best.score * 100, best.total_passed, best.total_queries, best.round);

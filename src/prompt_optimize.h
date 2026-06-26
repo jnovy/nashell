@@ -119,13 +119,18 @@ typedef struct {
 /* ── Optimization configuration ─────────────────────── */
 
 typedef struct {
-    int         max_rounds;       /* budget: number of reflection rounds (T) */
+    int         max_rounds;       /* budget: number of reflection rounds per epoch (T) */
     int         proposal_width;   /* candidates per round (K), default 2 */
     provider_t *student;          /* model being optimized */
     provider_t *reflection;       /* model doing the reflecting (can be same) */
     const char *profile_path;     /* model profile .toml to update (NULL = don't write) */
     int         split_filter;     /* -1=all, SPLIT_HELD_IN, SPLIT_HELD_OUT */
     int         verbose;          /* print detailed progress */
+    /* SkillOpt extensions [arXiv:2605.23904v2] */
+    int         n_epochs;         /* training epochs (0/1 = GEPA mode, >1 = SkillOpt) */
+    int         edit_budget_init; /* L_0: max edits per step (0 = unlimited, default 4) */
+    int         edit_budget_floor;/* L_min: min edits at end of epoch (default 2) */
+    int         minibatch_size;   /* failures per reflection minibatch (0 = all-at-once) */
 } optimize_config_t;
 
 /* ── API ─────────────────────────────────────────────── */
@@ -151,12 +156,16 @@ char *optimize_format_feedback(const regression_report_t *report);
  * Ask the reflection LM to propose an improved prompt targeting a specific
  * failure cluster. Each call produces one candidate.
  * target_cluster: index into evidence bundle clusters (-1 = let LM choose).
+ * edit_budget: max add/delete/replace ops this round (0 = unlimited).
+ * slow_guidance: cross-epoch longitudinal guidance (NULL if epoch 0).
  * Returns malloc'd string. Caller must free. */
 char *optimize_reflect(provider_t *reflection_lm,
                        const char *current_prompt,
                        const char *evidence_text,
                        int round, int max_rounds,
-                       int proposal_idx, int proposal_width);
+                       int proposal_idx, int proposal_width,
+                       int edit_budget,
+                       const char *slow_guidance);
 
 /* Stage 3+: Full Self-Harness loop [Algorithm 1]
  * Returns the best candidate found. Caller must free candidate.prompt_text.
