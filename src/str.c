@@ -306,7 +306,7 @@ int session_lock_acquire(const char *session_dir) {
     char lock_path[1120];
     snprintf(lock_path, sizeof(lock_path), "%s/.lock", session_dir);
 
-    int fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (fd < 0) {
         fprintf(stderr, "[session] warning: cannot create lock file %s: %s\n",
                 lock_path, strerror(errno));

@@ -66,7 +66,7 @@ static int daemon_lock_fd = -1;
 static int daemon_lock_acquire(const char *nash_dir) {
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/daemon.lock", nash_dir);
-    daemon_lock_fd = open(path, O_CREAT | O_RDWR, 0644);
+    daemon_lock_fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0644);
     if (daemon_lock_fd < 0) {
         fprintf(stderr, "[daemon] warning: cannot create lock file %s: %s\n",
                 path, strerror(errno));

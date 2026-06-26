@@ -52,7 +52,7 @@ char *store_save(store_t *s, const char *content) {
     snprintf(path, sizeof(path), "%s/%s", s->dir, hex);
 
     /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
     if (fd >= 0) {
         ssize_t written = write(fd, content, clen);
         if (written < 0 || (size_t)written != clen) {
