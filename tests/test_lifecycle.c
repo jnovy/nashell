@@ -78,8 +78,9 @@ static char *make_lines(int n_lines) {
 /* file_read then file_edit on same path → content replaced */
 static void test_stale_read_edited(void) {
     llm_chat_t *chat = make_lifecycle_chat();
-    add_tool_pair(chat, 0, "file_read", "src/foo.c",
-                  "int foo(void) { return 42; }");
+    char *big_read = make_content(2000);  /* Must be > marker (~80 chars) */
+    add_tool_pair(chat, 0, "file_read", "src/foo.c", big_read);
+    free(big_read);
     add_tool_pair(chat, 1, "file_edit", "src/foo.c",
                   "Edit applied successfully.");
     finish_chat(chat);
@@ -87,7 +88,7 @@ static void test_stale_read_edited(void) {
     long chars_before = react_calc_total_chars(chat);
     int read_idx = 2;  /* 0=system, 1=tc, 2=file_read result */
 
-    ASSERT_STR_CONTAINS(chat->msgs[read_idx].content, "int foo");
+    ASSERT(chat->msgs[read_idx].content_len > 100);
 
     evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
 
