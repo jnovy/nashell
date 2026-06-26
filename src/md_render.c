@@ -1376,17 +1376,24 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
                     }
 
-                    /* 2. Render link text with link color */
+                    /* 2. Render link text with link color + OSC 8 */
+                    int step_has_osc8 = is_linkable_uri(step_lk->uri);
                     if (is_cursor)
                         wattron(win, A_REVERSE | A_BOLD);
                     else
                         wattron(win, COLOR_PAIR(C_FOCUS));
+
+                    if (step_has_osc8)
+                        emit_osc8_link_start(win, step_lk->uri);
 
                     int link_text_len = (int)(bracket_end - bracket - 1);
                     if (link_text_len > 0 && x < cols) {
                         x += render_segment(win, vis_line, x,
                                             bracket + 1, link_text_len, cols - x);
                     }
+
+                    if (step_has_osc8)
+                        emit_osc8_end(win);
 
                     if (is_cursor)
                         wattroff(win, A_REVERSE | A_BOLD);
@@ -1525,10 +1532,23 @@ step_line_done:
                         x += render_segs_on_line(win, vis_line, x, segs, n, cols - x);
                     }
                     wattron(win, COLOR_PAIR(C_FOCUS));
+                    /* Extract URI for OSC 8 clickable link */
+                    int uri_len = (int)(paren_end - bracket_end - 2);
+                    char uri_buf[512];
+                    int do_osc8 = 0;
+                    if (uri_len > 0 && uri_len < (int)sizeof(uri_buf)) {
+                        memcpy(uri_buf, bracket_end + 2, uri_len);
+                        uri_buf[uri_len] = '\0';
+                        do_osc8 = is_linkable_uri(uri_buf);
+                    }
+                    if (do_osc8)
+                        emit_osc8_link_start(win, uri_buf);
                     int link_text_len = (int)(bracket_end - bracket - 1);
                     if (link_text_len > 0 && x < cols)
                         x += render_segment(win, vis_line, x,
                                             bracket + 1, link_text_len, cols - x);
+                    if (do_osc8)
+                        emit_osc8_end(win);
                     wattroff(win, COLOR_PAIR(C_FOCUS));
                     const char *suffix = paren_end + 1;
                     int suffix_len = (int)strlen(suffix);
