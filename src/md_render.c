@@ -16,6 +16,8 @@
 /* Diff color pairs (must match tui.c) */
 #define CP_DIFF_ADD 15
 #define CP_DIFF_DEL 16
+#define CP_DIFF_ADD_HL 19  /* char-level highlight: brighter bg */
+#define CP_DIFF_DEL_HL 20
 
 /* ── Buffer size for line copying ── */
 #define LINE_BUF_SIZE NASH_PATH_MAX
@@ -528,14 +530,74 @@ static void parse_diff_parts(const char *line, int line_len,
     }
 }
 
+/* ── Character-level diff highlighting for paired -/+ lines ── */
+
+/* Compute the byte range within content that differs between two strings.
+ * Finds common prefix and common suffix, the middle portion is "changed".
+ * hl_start/hl_end are byte offsets into content_a (for del) or content_b (for add).
+ * If lines are identical, hl_start == hl_end (empty highlight). */
+static void compute_char_diff(const char *a, int a_len,
+                               const char *b, int b_len,
+                               int *hl_start_a, int *hl_end_a,
+                               int *hl_start_b, int *hl_end_b) {
+    /* Find common prefix length (in bytes) */
+    int prefix = 0;
+    int min_len = a_len < b_len ? a_len : b_len;
+    while (prefix < min_len && a[prefix] == b[prefix])
+        prefix++;
+
+    /* Find common suffix length (in bytes), not overlapping prefix */
+    int suffix = 0;
+    while (suffix < (a_len - prefix) && suffix < (b_len - prefix) &&
+           a[a_len - 1 - suffix] == b[b_len - 1 - suffix])
+        suffix++;
+
+    *hl_start_a = prefix;
+    *hl_end_a   = a_len - suffix;
+    *hl_start_b = prefix;
+    *hl_end_b   = b_len - suffix;
+
+    /* Clamp: if entire line changed, don't highlight (it's just a full change) */
+    if (prefix == 0 && suffix == 0 && a_len > 0 && b_len > 0) {
+        /* Check if lines share at least some content — if they share < 30%,
+         * skip char highlighting (too different to be useful) */
+        int shared = 0;
+        for (int i = 0; i < min_len; i++)
+            if (a[i] == b[i]) shared++;
+        if (shared * 100 / (min_len > 0 ? min_len : 1) < 30) {
+            *hl_start_a = *hl_end_a = -1;
+            *hl_start_b = *hl_end_b = -1;
+        }
+    }
+}
+
+/* Extract the code content portion from a diff line (after the +/- marker).
+ * Returns pointer to content and sets *out_len. The +/- marker itself is skipped. */
+static const char *diff_content_after_marker(const char *text, int text_len,
+                                              int *out_len) {
+    const char *lnum_start, *marker_pos, *content_start;
+    int lnum_len, content_len;
+    parse_diff_parts(text, text_len, &lnum_start, &lnum_len,
+                     &marker_pos, &content_start, &content_len);
+    /* content_start includes the +/- marker; skip it */
+    if (content_len > 0 && (*content_start == '+' || *content_start == '-')) {
+        content_start++;
+        content_len--;
+    }
+    *out_len = content_len;
+    return content_start;
+}
+
 /* Render a diff line with line number (dim) and colored background.
  * diff_type: 1 = add (green bg), -1 = remove (red bg), 2 = context.
  * text: the full line text.
  * text_len: byte length of text.
+ * hl_start, hl_end: byte offsets within the code content (after +/- marker)
+ *   for character-level highlighting.  -1 = no char highlight.
  * Returns number of display lines consumed. */
 static int render_diff_line(WINDOW *win, int row, int col,
                              int diff_type, const char *text, int text_len,
-                             int cols) {
+                             int cols, int hl_start, int hl_end) {
     if (text_len <= 0) return 1;
 
     /* Parse line number and content parts */
@@ -577,13 +639,64 @@ static int render_diff_line(WINDOW *win, int row, int col,
     }
 
     /* For add/remove lines, render content with colored background */
-    int pair = (diff_type > 0) ? CP_DIFF_ADD : CP_DIFF_DEL;
+    int pair    = (diff_type > 0) ? CP_DIFF_ADD    : CP_DIFF_DEL;
+    int pair_hl = (diff_type > 0) ? CP_DIFF_ADD_HL : CP_DIFF_DEL_HL;
 
     if (content_len > 0) {
-        wattron(win, COLOR_PAIR(pair));
-        mvwaddnstr(win, row, x, content_start, content_len);
-        wattroff(win, COLOR_PAIR(pair));
-        x += utf8_display_len(content_start, content_len);
+        /* Find offset of code content (after +/- marker) within content_start */
+        const char *code = content_start;
+        int code_len = content_len;
+        int marker_bytes = 0;
+        if (*content_start == '+' || *content_start == '-') {
+            marker_bytes = 1;
+            code = content_start + 1;
+            code_len = content_len - 1;
+        }
+
+        /* Render the +/- marker with normal diff bg */
+        if (marker_bytes > 0) {
+            wattron(win, COLOR_PAIR(pair));
+            mvwaddnstr(win, row, x, content_start, marker_bytes);
+            wattroff(win, COLOR_PAIR(pair));
+            x += marker_bytes;
+        }
+
+        /* Render code content with optional char-level highlighting */
+        if (hl_start >= 0 && hl_end > hl_start &&
+            hl_start < code_len) {
+            /* Clamp highlight range */
+            if (hl_end > code_len) hl_end = code_len;
+
+            /* Pre-highlight portion */
+            if (hl_start > 0) {
+                wattron(win, COLOR_PAIR(pair));
+                mvwaddnstr(win, row, x, code, hl_start);
+                wattroff(win, COLOR_PAIR(pair));
+                x += utf8_display_len(code, hl_start);
+            }
+            /* Highlighted portion (brighter bg) */
+            int hl_len = hl_end - hl_start;
+            wattron(win, COLOR_PAIR(pair_hl) | A_BOLD);
+            mvwaddnstr(win, row, x, code + hl_start, hl_len);
+            wattroff(win, COLOR_PAIR(pair_hl) | A_BOLD);
+            x += utf8_display_len(code + hl_start, hl_len);
+            /* Post-highlight portion */
+            int post_len = code_len - hl_end;
+            if (post_len > 0) {
+                wattron(win, COLOR_PAIR(pair));
+                mvwaddnstr(win, row, x, code + hl_end, post_len);
+                wattroff(win, COLOR_PAIR(pair));
+                x += utf8_display_len(code + hl_end, post_len);
+            }
+        } else {
+            /* No char highlight — render entire code content */
+            if (code_len > 0) {
+                wattron(win, COLOR_PAIR(pair));
+                mvwaddnstr(win, row, x, code, code_len);
+                wattroff(win, COLOR_PAIR(pair));
+                x += utf8_display_len(code, code_len);
+            }
+        }
     }
 
     /* Pad remaining columns with diff background */
@@ -1071,9 +1184,147 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             }
 
             if (diff_type != 0 && visible) {
+                /* Compute char-level highlight by pairing -/+ lines
+                 * within a hunk.  For a run of N '-' lines followed by
+                 * M '+' lines, pair them positionally (1st '-' with 1st '+',
+                 * 2nd with 2nd, etc.).  Unpaired lines get no highlight. */
+                int hl_start = -1, hl_end = -1;
+                if (diff_type == -1 && eol) {
+                    /* Find this line's index within the '-' run */
+                    int del_idx = 0;
+                    {
+                        const char *bp = src;
+                        while (bp > doc->source) {
+                            const char *pe = bp - 1;
+                            const char *ps = pe;
+                            while (ps > doc->source && ps[-1] != '\n') ps--;
+                            int pl = (int)(pe - ps);
+                            if (pl <= 0) break;
+                            char tb[LINE_BUF_SIZE];
+                            copy_to_buf(tb, sizeof(tb), ps, pl);
+                            if (is_diff_line(tb, pl) != -1) break;
+                            del_idx++;
+                            bp = ps;
+                        }
+                    }
+                    /* Scan forward past remaining '-' lines after this one */
+                    const char *scan = eol + 1;
+                    while (*scan) {
+                        const char *ne = strchr(scan, '\n');
+                        int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
+                        if (nl <= 0) break;
+                        char tb[LINE_BUF_SIZE];
+                        copy_to_buf(tb, sizeof(tb), scan, nl);
+                        if (is_diff_line(tb, nl) != -1) break;
+                        scan = ne ? ne + 1 : scan + nl;
+                    }
+                    /* scan now points to the first '+' line (or end).
+                     * Skip del_idx '+' lines to find our pair. */
+                    int plus_skip = del_idx;
+                    while (*scan && plus_skip > 0) {
+                        const char *ne = strchr(scan, '\n');
+                        int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
+                        if (nl <= 0) break;
+                        char tb[LINE_BUF_SIZE];
+                        copy_to_buf(tb, sizeof(tb), scan, nl);
+                        if (is_diff_line(tb, nl) != 1) break;
+                        plus_skip--;
+                        scan = ne ? ne + 1 : scan + nl;
+                    }
+                    if (plus_skip == 0 && *scan) {
+                        const char *ne = strchr(scan, '\n');
+                        int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
+                        if (nl > 0) {
+                            char pair_buf[LINE_BUF_SIZE];
+                            copy_to_buf(pair_buf, sizeof(pair_buf), scan, nl);
+                            if (is_diff_line(pair_buf, nl) == 1) {
+                                int a_len, b_len;
+                                const char *a = diff_content_after_marker(
+                                    line_buf, line_len, &a_len);
+                                const char *b = diff_content_after_marker(
+                                    pair_buf, nl, &b_len);
+                                int hsa, hea, hsb, heb;
+                                compute_char_diff(a, a_len, b, b_len,
+                                                  &hsa, &hea, &hsb, &heb);
+                                hl_start = hsa;
+                                hl_end = hea;
+                            }
+                        }
+                    }
+                } else if (diff_type == 1) {
+                    /* Find this line's index within the '+' run */
+                    int add_idx = 0;
+                    const char *first_plus = src;
+                    {
+                        const char *bp = src;
+                        while (bp > doc->source) {
+                            const char *pe = bp - 1;
+                            const char *ps = pe;
+                            while (ps > doc->source && ps[-1] != '\n') ps--;
+                            int pl = (int)(pe - ps);
+                            if (pl <= 0) break;
+                            char tb[LINE_BUF_SIZE];
+                            copy_to_buf(tb, sizeof(tb), ps, pl);
+                            if (is_diff_line(tb, pl) != 1) break;
+                            add_idx++;
+                            first_plus = ps;
+                            bp = ps;
+                        }
+                    }
+                    /* Walk back from first_plus through '-' lines */
+                    int del_count = 0;
+                    const char *first_del = first_plus;
+                    {
+                        const char *bp = first_plus;
+                        while (bp > doc->source) {
+                            const char *pe = bp - 1;
+                            const char *ps = pe;
+                            while (ps > doc->source && ps[-1] != '\n') ps--;
+                            int pl = (int)(pe - ps);
+                            if (pl <= 0) break;
+                            char tb[LINE_BUF_SIZE];
+                            copy_to_buf(tb, sizeof(tb), ps, pl);
+                            if (is_diff_line(tb, pl) != -1) break;
+                            del_count++;
+                            first_del = ps;
+                            bp = ps;
+                        }
+                    }
+                    /* Pair with add_idx-th '-' line if it exists */
+                    if (add_idx < del_count) {
+                        const char *tp = first_del;
+                        for (int i = 0; i < add_idx; i++) {
+                            const char *ne = strchr(tp, '\n');
+                            if (!ne) { tp = NULL; break; }
+                            tp = ne + 1;
+                        }
+                        if (tp) {
+                            const char *ne = strchr(tp, '\n');
+                            int nl = ne ? (int)(ne - tp) : (int)strlen(tp);
+                            if (nl > 0) {
+                                char pair_buf[LINE_BUF_SIZE];
+                                copy_to_buf(pair_buf, sizeof(pair_buf), tp, nl);
+                                if (is_diff_line(pair_buf, nl) == -1) {
+                                    int a_len, b_len;
+                                    const char *a = diff_content_after_marker(
+                                        pair_buf, nl, &a_len);
+                                    const char *b = diff_content_after_marker(
+                                        line_buf, line_len, &b_len);
+                                    int hsa, hea, hsb, heb;
+                                    compute_char_diff(a, a_len, b, b_len,
+                                                      &hsa, &hea, &hsb, &heb);
+                                    hl_start = hsb;
+                                    hl_end = heb;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 /* Diff line: render with line number + colored background */
                 int lines_consumed = render_diff_line(
-                    win, vis_line, 0, diff_type, line_buf, line_len, cols);
+                    win, vis_line, 0, diff_type, line_buf, line_len,
+                    cols, hl_start, hl_end);
                 if (lines_consumed > 1)
                     advance_render_line(&render_line, lines_consumed);
             } else if (diff_type != 0) {

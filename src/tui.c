@@ -72,6 +72,8 @@ static int   paste_len = 0;
 #define NC_CT_NORMAL    34  /* #DCE1F0 (220,225,240) — normal text */
 #define NC_CT_DIFF_ADD_BG 35  /* #1A2E1A (26,46,26) — diff add background */
 #define NC_CT_DIFF_DEL_BG 36  /* #2E1A1A (46,26,26) — diff del background */
+#define NC_CT_DIFF_ADD_HL 40  /* #2A5C2A (42,92,42) — diff add char-highlight bg */
+#define NC_CT_DIFF_DEL_HL 41  /* #5C2A2A (92,42,42) — diff del char-highlight bg */
 /* Search highlight colors */
 #define NC_CT_SEARCH_FG   37  /* #1E2030 (30,32,48)  — dark text on highlight */
 #define NC_CT_SEARCH_BG   38  /* #F9E2AF (249,226,175) — yellow/amber background */
@@ -88,6 +90,8 @@ static int   paste_len = 0;
 /* Diff color pairs: colored background for +/- diff lines */
 #define CP_DIFF_ADD      15  /* diff add: bg=#1A2E1A, fg=#A6E3A1 */
 #define CP_DIFF_DEL      16  /* diff del: bg=#2E1A1A, fg=#F38BA8 */
+#define CP_DIFF_ADD_HL   19  /* diff add char-highlight: bg=#2A5C2A, fg=#A6E3A1 */
+#define CP_DIFF_DEL_HL   20  /* diff del char-highlight: bg=#5C2A2A, fg=#F38BA8 */
 /* Search highlight color pairs */
 #define CP_SEARCH_MATCH  17  /* search match: bg=yellow, fg=dark */
 #define CP_SEARCH_CURRENT 18 /* current match: bg=orange, fg=dark */
@@ -127,6 +131,9 @@ static void init_true_colors(void) {
     /* Diff backgrounds — subtle tinted backgrounds for +/- lines */
     init_color(NC_CT_DIFF_ADD_BG, 26*1000/255, 46*1000/255, 26*1000/255);
     init_color(NC_CT_DIFF_DEL_BG, 46*1000/255, 26*1000/255, 26*1000/255);
+    /* Diff char-level highlight backgrounds — brighter tints for changed chars */
+    init_color(NC_CT_DIFF_ADD_HL, 42*1000/255, 92*1000/255, 42*1000/255);
+    init_color(NC_CT_DIFF_DEL_HL, 92*1000/255, 42*1000/255, 42*1000/255);
     /* Search highlight colors */
     init_color(NC_CT_SEARCH_FG,   30*1000/255,  32*1000/255,  48*1000/255);
     init_color(NC_CT_SEARCH_BG,  249*1000/255, 226*1000/255, 175*1000/255);
@@ -152,6 +159,9 @@ static void init_true_colors(void) {
     /* Diff pairs: fg on colored background */
     init_pair(CP_DIFF_ADD, NC_CT_GREEN,  NC_CT_DIFF_ADD_BG);
     init_pair(CP_DIFF_DEL, NC_CT_RED,    NC_CT_DIFF_DEL_BG);
+    /* Diff char-highlight pairs: brighter bg for changed characters */
+    init_pair(CP_DIFF_ADD_HL, NC_CT_GREEN, NC_CT_DIFF_ADD_HL);
+    init_pair(CP_DIFF_DEL_HL, NC_CT_RED,   NC_CT_DIFF_DEL_HL);
     /* Search highlight pairs */
     init_pair(CP_SEARCH_MATCH,  NC_CT_SEARCH_FG, NC_CT_SEARCH_BG);
     init_pair(CP_SEARCH_CURRENT, NC_CT_SEARCH_FG, NC_CT_SEARCH_CUR);
