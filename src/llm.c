@@ -340,6 +340,182 @@ char *llm_chat_serialize(llm_chat_t *chat) {
 
 /* ── Parse action from assistant response ────────────────────── */
 
+/* Helper: extract a JSON string value for a given key from partial/broken JSON.
+ * Finds "key":"value" (with optional whitespace around :) and returns a
+ * malloc'd copy of value (with JSON escapes preserved), or NULL. */
+static char *extract_json_string_value(const char *text, const char *key) {
+    if (!text || !key) return NULL;
+
+    /* Build search pattern: "key" */
+    size_t klen = strlen(key);
+    char *pattern = malloc(klen + 3);
+    if (!pattern) return NULL;
+    pattern[0] = '"';
+    memcpy(pattern + 1, key, klen);
+    pattern[klen + 1] = '"';
+    pattern[klen + 2] = '\0';
+
+    const char *kpos = strstr(text, pattern);
+    free(pattern);
+    if (!kpos) return NULL;
+
+    /* Skip past "key" and optional whitespace/colon */
+    const char *p = kpos + klen + 2;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == ':') p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '"') return NULL;
+    p++;  /* skip opening quote */
+
+    /* Find closing quote (handle escapes) */
+    const char *val_start = p;
+    while (*p && !(*p == '"' && *(p - 1) != '\\')) p++;
+    if (!*p) return NULL;
+
+    size_t vlen = (size_t)(p - val_start);
+    char *val = malloc(vlen + 1);
+    if (!val) return NULL;
+    memcpy(val, val_start, vlen);
+    val[vlen] = '\0';
+    return val;
+}
+
+/* Parse hybrid JSON+XML tool calls.
+ *
+ * Some Qwen models produce a hybrid format where the response starts as JSON
+ * but switches to XML for parameters mid-stream:
+ *
+ *   {"thought":"...","action":"file_read","<parameter=path>
+ *   /some/path
+ *   </parameter>
+ *   </function>
+ *   </tool_call>
+ *
+ * Or even:
+ *   {"thought":"...","action":"grep_search>
+ *   <parameter=pattern>
+ *   some_pattern
+ *   </parameter>
+ *
+ * This parser extracts the action name from the partial JSON prefix and
+ * the parameters from the XML <parameter=KEY>VALUE</parameter> blocks.
+ *
+ * Returns a cJSON object matching our unified format:
+ *   {"action":"func_name", "param1":"value1", ...}
+ * or NULL if no hybrid format is detected. */
+static cJSON *parse_hybrid_tool_call(const char *text) {
+    if (!text) return NULL;
+
+    /* Only trigger if <parameter= is present — our hybrid signature */
+    if (!strstr(text, "<parameter=")) return NULL;
+
+    cJSON *result = cJSON_CreateObject();
+    if (!result) return NULL;
+
+    /* Extract thought from partial JSON */
+    char *thought = extract_json_string_value(text, "thought");
+    if (thought) {
+        cJSON_AddStringToObject(result, "thought", thought);
+        free(thought);
+    }
+
+    /* Extract action name — try clean JSON value first */
+    char *action = extract_json_string_value(text, "action");
+    if (!action) {
+        /* Fallback: action name may be glued to XML, e.g. "action":"grep_search>
+         * Look for "action":" and grab text up to quote, >, or newline */
+        const char *apos = strstr(text, "\"action\"");
+        if (!apos) apos = strstr(text, "'action'");
+        if (apos) {
+            const char *p = apos + 8; /* skip "action" */
+            while (*p == ' ' || *p == '\t' || *p == ':') p++;
+            if (*p == '"') p++;
+            const char *astart = p;
+            while (*p && *p != '"' && *p != '>' && *p != '\n' &&
+                   *p != '<' && *p != ',') p++;
+            size_t alen = (size_t)(p - astart);
+            if (alen > 0 && alen < 256) {
+                action = malloc(alen + 1);
+                if (action) {
+                    memcpy(action, astart, alen);
+                    action[alen] = '\0';
+                }
+            }
+        }
+    }
+
+    if (!action || !action[0]) {
+        free(action);
+        cJSON_Delete(result);
+        return NULL;
+    }
+
+    cJSON_AddStringToObject(result, "action", action);
+    free(action);
+
+    /* Extract parameters from <parameter=KEY>VALUE</parameter> blocks */
+    const char *p = text;
+    while (p && *p) {
+        const char *param_tag = strstr(p, "<parameter=");
+        if (!param_tag) break;
+
+        /* Extract parameter name */
+        const char *pname_start = param_tag + strlen("<parameter=");
+        const char *pname_end = pname_start;
+        while (*pname_end && *pname_end != '>' && *pname_end != '\n')
+            pname_end++;
+
+        char pname[256];
+        size_t pname_len = (size_t)(pname_end - pname_start);
+        if (pname_len >= sizeof(pname)) pname_len = sizeof(pname) - 1;
+        memcpy(pname, pname_start, pname_len);
+        pname[pname_len] = '\0';
+        /* Trim trailing whitespace */
+        while (pname_len > 0 && (pname[pname_len-1] == ' ' ||
+               pname[pname_len-1] == '\t')) {
+            pname[--pname_len] = '\0';
+        }
+
+        /* Extract value: everything between > and </parameter> */
+        const char *val_start = pname_end;
+        if (*val_start == '>') val_start++;
+        if (*val_start == '\n') val_start++;
+
+        const char *val_end = strstr(val_start, "</parameter>");
+        if (!val_end) {
+            /* No closing tag — take rest up to </function> or end */
+            val_end = strstr(val_start, "</function>");
+            if (!val_end) val_end = val_start + strlen(val_start);
+        }
+
+        /* Trim trailing whitespace from value */
+        while (val_end > val_start && (val_end[-1] == '\n' ||
+               val_end[-1] == '\r' || val_end[-1] == ' '))
+            val_end--;
+
+        size_t val_len = (size_t)(val_end - val_start);
+        char *val = malloc(val_len + 1);
+        if (val) {
+            memcpy(val, val_start, val_len);
+            val[val_len] = '\0';
+            cJSON_AddStringToObject(result, pname, val);
+            free(val);
+        }
+
+        /* Advance past </parameter> */
+        const char *close = strstr(val_start, "</parameter>");
+        if (close) {
+            p = close + strlen("</parameter>");
+        } else {
+            break;
+        }
+    }
+
+    nash_log("[llm] parsed hybrid JSON+XML tool call (action=%s)",
+             cJSON_GetObjectItem(result, "action")->valuestring);
+    return result;
+}
+
 /* Parse Qwen-style XML tool calls.
  *
  * Qwen models are trained with two XML formats for tool calling:
@@ -630,7 +806,12 @@ cJSON *llm_parse_action(const char *response, int *multi_count) {
             }
             free(repaired);
         }
-        /* JSON repair also failed — try Qwen XML tool call format */
+        /* JSON repair also failed — try hybrid JSON+XML format
+         * (Qwen models sometimes start JSON then switch to XML parameters) */
+        if (!action) {
+            action = parse_hybrid_tool_call(response);
+        }
+        /* Still failed — try pure Qwen XML tool call format */
         if (!action) {
             action = parse_xml_tool_call(response, multi_count);
         }
