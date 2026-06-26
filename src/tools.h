@@ -145,8 +145,11 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params);
 /* Free a tool result */
 void tool_result_free(tool_result_t *r);
 
-/* System prompt with tool descriptions */
-char *tools_system_prompt(void);  /* caller must free() */
+/* System prompt with tool descriptions.
+ * session_dir: full path to session directory (epoch extracted via basename).
+ * workspace:   workspace name (may contain '/', e.g. "rh/container-tools"), or NULL.
+ * A session-scoped temp directory instruction is included in the prompt. */
+char *tools_system_prompt(const char *session_dir, const char *workspace);  /* caller must free() */
 
 /* FIX CRIT1: Process deferred memory consolidations after task completion.
  * Runs the LLM-based consolidation that was queued during memory_store calls,

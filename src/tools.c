@@ -954,7 +954,7 @@ void tool_result_free(tool_result_t *r) {
 
 /* ── system prompt ───────────────────────────────────── */
 
-char *tools_system_prompt(void) {
+char *tools_system_prompt(const char *session_dir, const char *workspace) {
     /* Returns a newly heap-allocated string. Caller must free(). */
 
     /* UTC timestamp (gmtime_r is thread-safe unlike gmtime) */
@@ -969,14 +969,30 @@ char *tools_system_prompt(void) {
     if (!getcwd(cwdbuf, sizeof(cwdbuf)))
         snprintf(cwdbuf, sizeof(cwdbuf), "(unknown)");
 
-    char *buf = malloc(NASH_PATH_MAX);
+    /* Session-scoped temporary directory: /tmp/.nash/[<workspace>/]<epoch> */
+    char tmpdir[NASH_PATH_MAX];
+    const char *epoch = "";
+    if (session_dir) {
+        const char *slash = strrchr(session_dir, '/');
+        epoch = slash ? slash + 1 : session_dir;
+    }
+    if (workspace && workspace[0])
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s/%s", workspace, epoch);
+    else
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
+
+    char *buf = malloc(NASH_PATH_MAX * 2);
     if (!buf) return strdup("");
 
-    snprintf(buf, NASH_PATH_MAX,
+    snprintf(buf, NASH_PATH_MAX * 2,
         "You are an autonomous coding agent. Solve the user's task step by step "
         "using the available tools.\n"
         "\n"
         "Now is %s. CWD: %s\n"
+        "\n"
+        "Temporary directory: %s\n"
+        "Use for scratch files, build artifacts, and intermediate outputs. "
+        "Pre-created; cleaned on reboot.\n"
         "\n"
         "Store-and-reference pattern:\n"
         "- Most tool outputs are stored to disk. You see only metadata with a ref "
@@ -1011,7 +1027,7 @@ char *tools_system_prompt(void) {
         "- If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
         "other tool. Asking early is far better than discovering ambiguity mid-task.\n"
         "- Do NOT guess when the user's intent is unclear — ask.\n",
-        timebuf, cwdbuf);
+        timebuf, cwdbuf, tmpdir);
 
     return buf;
 }

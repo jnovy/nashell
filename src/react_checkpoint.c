@@ -43,7 +43,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     cJSON_Delete(cp);
 
     /* Step 1: Add system prompt (fresh — may have changed) */
-    react_add_system_prompt(chat, ctx->tools->cfg);
+    react_add_system_prompt(chat, ctx->tools->cfg, ctx->tools->session_dir);
 
     /* v5: No manifest injection — scratchpad carries all cross-loop state. */
 

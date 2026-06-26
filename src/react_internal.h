@@ -434,10 +434,11 @@ const char *react_json_get_str(cJSON *obj, const char *key);
 
 /* Build the full system prompt string. Returns malloc'd string — caller frees.
  * Used for both chat injection and journal logging (Fix #12). */
-char *react_build_system_prompt(const config_t *cfg);
+char *react_build_system_prompt(const config_t *cfg, const char *session_dir);
 
 /* Add system prompt to chat, appending model-specific rules if configured. */
-void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg);
+void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg,
+                             const char *session_dir);
 
 /* Emit a react event (NULL-safe). */
 void react_emit(react_event_fn fn, void *ud, react_event_t *ev);

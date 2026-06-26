@@ -336,8 +336,9 @@ void react_recover_tool_threading(llm_chat_t *chat) {
 /* Build the full system prompt string (base + model-specific rules).
  * Returns malloc'd string — caller must free.
  * Used for both chat injection and journal logging (Fix #12). */
-char *react_build_system_prompt(const config_t *cfg) {
-    char *base = tools_system_prompt();
+char *react_build_system_prompt(const config_t *cfg, const char *session_dir) {
+    const char *workspace = cfg ? cfg->workspace : NULL;
+    char *base = tools_system_prompt(session_dir, workspace);
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
         size_t len = strlen(base) + strlen(extra) + 64;
@@ -353,8 +354,9 @@ char *react_build_system_prompt(const config_t *cfg) {
 
 /* Add system prompt to chat, appending model-specific rules if configured.
  * Uses react_build_system_prompt() to avoid duplication (Fix #12). */
-void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg) {
-    char *prompt = react_build_system_prompt(cfg);
+void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg,
+                             const char *session_dir) {
+    char *prompt = react_build_system_prompt(cfg, session_dir);
     llm_chat_add_typed(chat, "system", prompt, LLM_MSG_SYSTEM);
     free(prompt);
 }

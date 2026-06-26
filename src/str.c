@@ -302,11 +302,23 @@ char *create_session_dir(const char *nash_dir, const char *workspace) {
 
     char *base = sessions_base_dir(nash_dir, workspace);
 
+    char epoch[64];
+    snprintf(epoch, sizeof(epoch), "%ld.%05ld",
+             (long)tp.tv_sec, tp.tv_nsec / 10000);
+
     char path[1088];
-    snprintf(path, sizeof(path), "%s/%ld.%05ld",
-             base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+    snprintf(path, sizeof(path), "%s/%s", base, epoch);
     free(base);
     mkdir(path, 0755);
+
+    /* Pre-create session-scoped temporary directory under /tmp/.nash/ */
+    char tmpdir[1088];
+    if (workspace && workspace[0])
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s/%s", workspace, epoch);
+    else
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
+    mkdir_p(tmpdir, 0755);
+
     return strdup(path);
 }
 
