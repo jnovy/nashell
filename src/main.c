@@ -1762,9 +1762,20 @@ int main(int argc, char **argv) {
                         ui_state_generate_session_md(ui);
                     if (do_react || do_session || do_reload) {
                         ui_state_reload_file(ui);
-                        /* Request deferred auto-scroll */
-                        if (ui->doc && !ui->user_scrolled)
-                            ui->needs_auto_scroll = 1;
+                        /* Request deferred auto-scroll — only when viewing the
+                         * active react loop's file, not when user navigated
+                         * elsewhere (e.g. session.md, a different reactRX.md) */
+                        if (ui->doc && !ui->user_scrolled) {
+                            const char *fp = ui->current_filepath;
+                            if (fp) {
+                                char expect[64];
+                                snprintf(expect, sizeof(expect), "reactR%d.md", cur_loop);
+                                const char *base = strrchr(fp, '/');
+                                base = base ? base + 1 : fp;
+                                if (strcmp(base, expect) == 0)
+                                    ui->needs_auto_scroll = 1;
+                            }
+                        }
                         ui->dirty = 1;
                     }
                     pthread_mutex_unlock(&ui->mtx);
