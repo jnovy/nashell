@@ -584,22 +584,40 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         free(q_hash);
     }
 
-    /* Log the full initial LLM context (all messages) as a single
-     * journal entry so the TUI can show exactly what the LLM received. */
+    /* Log each preamble injection as a separate journal entry so the
+     * TUI/reactRX.md can show them as individually browsable sections
+     * with clickable store refs. Replaces the old monolithic "context"
+     * blob that concatenated everything into a single unreadable entry. */
     {
-        char *ctx_text = llm_chat_serialize(chat);
-        if (ctx_text && ctx_text[0]) {
-            char *ctx_hash = store_save(ctx->tools->store, ctx_text);
-            char *ctx_alias = ctx_hash ? tool_register_alias(ctx->tools, ctx_hash) : NULL;
-            cJSON *ctx_p = cJSON_CreateObject();
-            cJSON_AddNumberToObject(ctx_p, "n_messages", chat->n_msgs);
+        for (int mi = 0; mi < chat->n_msgs; mi++) {
+            llm_msg_t *m = &chat->msgs[mi];
+            const char *tn = NULL;
+            switch (m->msg_type) {
+                case LLM_MSG_MEMORY_INDEX: tn = "ctx:memory";      break;
+                case LLM_MSG_PINNED:       tn = "ctx:pinned";      break;
+                case LLM_MSG_TEMPORAL:     tn = "ctx:temporal";    break;
+                case LLM_MSG_EPISODIC:     tn = "ctx:episodic";   break;
+                case LLM_MSG_SKILLS:       tn = "ctx:skills";     break;
+                case LLM_MSG_LESSONS:      tn = "ctx:lessons";    break;
+                case LLM_MSG_STRATEGIES:   tn = "ctx:strategies"; break;
+                case LLM_MSG_ANTIPATTERNS: tn = "ctx:antipatterns"; break;
+                case LLM_MSG_MEMORY_HINT:  tn = "ctx:associated"; break;
+                case LLM_MSG_REPO_MAP:     tn = "ctx:repomap";    break;
+                case LLM_MSG_SCRATCHPAD:   tn = "ctx:scratchpad"; break;
+                case LLM_MSG_PREV_RESULT:  tn = "ctx:prev_result"; break;
+                default: break;
+            }
+            if (!tn || !m->content || !m->content[0]) continue;
+            char *hash = store_save(ctx->tools->store, m->content);
+            char *alias = hash ? tool_register_alias(ctx->tools, hash) : NULL;
+            cJSON *p = cJSON_CreateObject();
+            cJSON_AddNumberToObject(p, "size", (double)m->content_len);
             journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
-                           "context", ctx_p, ctx_alias,
-                           strlen(ctx_text), count_lines(ctx_text), NULL, NULL);
-            cJSON_Delete(ctx_p);
-            free(ctx_alias);
-            free(ctx_hash);
+                           tn, p, alias,
+                           m->content_len, count_lines(m->content), NULL, NULL);
+            cJSON_Delete(p);
+            free(alias);
+            free(hash);
         }
-        free(ctx_text);
     }
 }

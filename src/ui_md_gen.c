@@ -120,14 +120,31 @@ static const char *extract_desc(const char *tool, cJSON *params) {
             return cmd->valuestring;
         return "";
     }
-    /* Context entry: show message count */
+    /* Context injection sections: ctx:memory, ctx:temporal, etc.
+     * Show human-readable size and section-specific labels. */
+    if (strncmp(tool, "ctx:", 4) == 0) {
+        static char ctx_desc[128];
+        cJSON *sz = cJSON_GetObjectItem(params, "size");
+        int size = sz ? (int)cJSON_GetNumberValue(sz) : 0;
+        const char *section = tool + 4;
+        if (size > 0) {
+            const char *unit = "chars";
+            int display = size;
+            if (size >= 1000) { display = size / 1000; unit = "K"; }
+            snprintf(ctx_desc, sizeof(ctx_desc), "%s (%d%s)", section, display, unit);
+        } else {
+            snprintf(ctx_desc, sizeof(ctx_desc), "%s", section);
+        }
+        return ctx_desc;
+    }
+    /* Legacy context entry (pre-split) */
     if (strcmp(tool, "context") == 0) {
         cJSON *nm = cJSON_GetObjectItem(params, "n_messages");
         if (nm) {
-            static char ctx_desc[64];
-            snprintf(ctx_desc, sizeof(ctx_desc), "%d messages",
+            static char ctx_desc_legacy[64];
+            snprintf(ctx_desc_legacy, sizeof(ctx_desc_legacy), "%d messages",
                      (int)cJSON_GetNumberValue(nm));
-            return ctx_desc;
+            return ctx_desc_legacy;
         }
         return "full LLM context";
     }
@@ -370,7 +387,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 qi->react_loop = loop;
                 qi->parent_loop = -1;  /* unknown parent — treat as root */
             }
-        } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0) {
+        } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0
+                        && strncmp(tool, "ctx:", 4) != 0) {
             for (int i = qcount - 1; i >= 0; i--) {
                 if (qinfos[i].react_loop == loop) {
                     qinfos[i].step_count++;
@@ -438,7 +456,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 qi->session_dir = strdup(pbi->session_dir);
                 free(qi->pass_label);
                 qi->pass_label = pbi->pass_label ? strdup(pbi->pass_label) : NULL;
-            } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0) {
+            } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0
+                            && strncmp(tool, "ctx:", 4) != 0) {
                 /* Count steps and detect done — match by session_dir + loop */
                 for (int i = qcount - 1; i >= 0; i--) {
                     if (qinfos[i].react_loop == loop &&
