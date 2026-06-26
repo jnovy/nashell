@@ -295,13 +295,22 @@ static int split_segment(inline_seg_t *segs, int *n_segs, int max_segs,
 /* Render a set of segments with word-wrapping across display lines.
  * Segments are split at word boundaries respecting formatting boundaries.
  * Returns number of display lines consumed. */
-static int render_segs_wrapped(WINDOW *win, int start_row, int col,
-                               inline_seg_t *segs, int n_segs, int usable_width) {
-    (void)col;  /* col is used indirectly via render_segs_on_line */
+/* Extended word-wrapped segment renderer.
+ * cont_col / cont_width: column and width for continuation lines.
+ * Pass cont_col == col && cont_width == usable_width for uniform indent.
+ * Pass cont_col == 0  && cont_width == full_cols to wrap continuations
+ * at full terminal width (e.g. step-line suffix after [tool](uri)). */
+static int render_segs_wrapped_ex(WINDOW *win, int start_row, int col,
+                                  inline_seg_t *segs, int n_segs,
+                                  int usable_width,
+                                  int cont_col, int cont_width) {
     if (usable_width < 5) usable_width = 5;
+    if (cont_width < 5) cont_width = 5;
 
     int current_row = start_row;
     int lines_used = 1;
+    int cur_col = col;
+    int cur_width = usable_width;
 
     while (n_segs > 0) {
         /* Find how many full segments fit on this line */
@@ -312,17 +321,17 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
 
         for (int i = 0; i < n_segs; i++) {
             int dc = seg_display_cols(segs[i].text, segs[i].len);
-            if (x + dc <= usable_width) {
+            if (x + dc <= cur_width) {
                 x += dc;
                 fit_count++;
             } else {
                 /* Check if we can fit a partial segment */
-                int remaining = usable_width - x;
+                int remaining = cur_width - x;
                 if (remaining > 0 && segs[i].len > 0) {
                     /* Find last space within the segment that fits */
                     int split_at = seg_col_to_byte(segs[i].text, segs[i].len, remaining);
                     /* Item 7: use shared word-boundary helper */
-                    int min_split = (usable_width / 4 < split_at) ? usable_width / 4 : 1;
+                    int min_split = (cur_width / 4 < split_at) ? cur_width / 4 : 1;
                     int last_space = find_word_boundary(segs[i].text, split_at, min_split);
                     if (last_space >= min_split) {
                         partial_seg = i;
@@ -365,7 +374,7 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
             }
             if (render_count > n_segs) render_count = n_segs;
             if (render_count < 0) render_count = 0;
-            render_segs_on_line(win, current_row, col, segs, render_count, usable_width);
+            render_segs_on_line(win, current_row, cur_col, segs, render_count, cur_width);
         } else {
             /* Even a single character doesn't fit — render one char to avoid infinite loop */
             if (n_segs > 0 && segs[0].len > 0) {
@@ -375,7 +384,7 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
                 if (b < segs[0].len) {
                     split_segment(segs, &n_segs, 256, 0, b + 1);
                 }
-                render_segs_on_line(win, current_row, col, segs, 1, usable_width);
+                render_segs_on_line(win, current_row, cur_col, segs, 1, cur_width);
             }
         }
 
@@ -395,10 +404,19 @@ static int render_segs_wrapped(WINDOW *win, int start_row, int col,
         if (n_segs > 0) {
             current_row++;
             lines_used++;
+            /* Switch to continuation column/width after first line */
+            cur_col = cont_col;
+            cur_width = cont_width;
         }
     }
 
     return lines_used;
+}
+
+static int render_segs_wrapped(WINDOW *win, int start_row, int col,
+                               inline_seg_t *segs, int n_segs, int usable_width) {
+    return render_segs_wrapped_ex(win, start_row, col, segs, n_segs,
+                                 usable_width, col, usable_width);
 }
 
 /* Render inline formatting with word-wrapping.
@@ -1376,8 +1394,8 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         wattroff(win, COLOR_PAIR(C_FOCUS));
 
                     /* 3. Render suffix (after )) with step color + wrapping.
-                     * Continuation lines are indented to column x (after tool
-                     * name) so long thoughts wrap neatly instead of truncating. */
+                     * First line starts at column x; continuation lines
+                     * wrap at full terminal width (col 0). */
                     const char *suffix = paren_end + 1;
                     int suffix_len = (int)strlen(suffix);
                     if (suffix_len > 0 && x < cols) {
@@ -1391,8 +1409,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         if (total_dcols <= remaining) {
                             render_segs_on_line(win, vis_line, x, segs, n, remaining);
                         } else {
-                            lines_consumed = render_segs_wrapped(
-                                win, vis_line, x, segs, n, remaining);
+                            lines_consumed = render_segs_wrapped_ex(
+                                win, vis_line, x, segs, n, remaining,
+                                0, cols);
                         }
                     }
                 } else if (step_has_link) {
@@ -1423,8 +1442,19 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         int suffix_len = (int)strlen(suffix);
                         if (suffix_len > 0 && x < cols) {
                             int remaining = cols - x;
-                            lines_consumed = count_wrapped_lines(
-                                suffix, suffix_len, remaining);
+                            /* First line uses remaining width, continuations
+                             * use full terminal width (matches render path). */
+                            inline_seg_t csegs[MAX_INLINE_SEGS];
+                            int cn = parse_inline(suffix, suffix_len, csegs, MAX_INLINE_SEGS);
+                            int total_dcols = 0;
+                            for (int k = 0; k < cn; k++)
+                                total_dcols += seg_display_cols(csegs[k].text, csegs[k].len);
+                            if (total_dcols <= remaining) {
+                                lines_consumed = 1;
+                            } else {
+                                int after_first = total_dcols - remaining;
+                                lines_consumed = 1 + (after_first + cols - 1) / cols;
+                            }
                         }
                     }
                 }
