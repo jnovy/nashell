@@ -755,18 +755,248 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     return NULL;
 }
 
+/* ── Step 2.5: Tool Lifecycle — Stale Read Detection ───── */
+
+/* Pichay [arXiv:2603.09023] + Headroom read_lifecycle:
+ * Detect file_read results that are STALE (file was subsequently edited)
+ * or SUPERSEDED (same file was re-read later). Replace stale content with
+ * a compact marker ("paging handle") and downgrade importance to LOW.
+ *
+ * Pichay empirical data: 67% of file reads are stale, 12% superseded.
+ * Replacing them with ~80-char markers yields up to 93% context reduction.
+ * Fault rate (model needs to re-read): 0.025% across 1.4M evictions.
+ *
+ * Must run BEFORE the mark phase so stale reads score lowest and get
+ * evicted first. Inline replacement gives immediate space savings even
+ * before mark-then-sweep fires. */
+static void evict_lifecycle_stale_reads(llm_chat_t *chat,
+                                        int evict_start, int evict_end) {
+    if (evict_end <= evict_start) return;
+
+    /* Walk forward through evictable region. For each file_read, check if
+     * any LATER message has a file_edit/file_write or another file_read on
+     * the same path. Simple O(n²) scan — n_evictable is typically < 200. */
+    int n_replaced = 0;
+    for (int i = evict_start; i < evict_end; i++) {
+        const llm_msg_t *m = &chat->msgs[i];
+        if (!m->tool_name || !m->tool_path) continue;
+        if (strcmp(m->tool_name, "file_read") != 0) continue;
+        if (m->importance >= LLM_MSG_IMPORTANCE_HIGH) continue;
+
+        /* Check if any later message edits or re-reads this path */
+        int stale_reason = 0;  /* 1=edited, 2=superseded */
+        int stale_by = -1;     /* index of the message that made it stale */
+        for (int j = i + 1; j < chat->n_msgs; j++) {
+            const llm_msg_t *later = &chat->msgs[j];
+            if (!later->tool_name || !later->tool_path) continue;
+            if (strcmp(later->tool_path, m->tool_path) != 0) continue;
+            if (strcmp(later->tool_name, "file_edit") == 0 ||
+                strcmp(later->tool_name, "file_write") == 0) {
+                stale_reason = 1;
+                stale_by = j;
+                break;  /* edited — definitely stale */
+            }
+            if (strcmp(later->tool_name, "file_read") == 0) {
+                stale_reason = 2;
+                stale_by = j;
+                /* Don't break — a later edit is more definitive */
+            }
+        }
+
+        if (!stale_reason) continue;
+
+        /* Replace content with compact paging handle.
+         * The original content is still accessible via store_alias if needed. */
+        const char *reason_str = (stale_reason == 1) ? "edited" : "re-read";
+        char marker[256];
+        snprintf(marker, sizeof(marker),
+                 "[Stale: read %s (%zu chars). File was %s in msg %d. "
+                 "Re-read if needed.]",
+                 m->tool_path, m->content_len, reason_str, stale_by + 1);
+
+        /* Replace content — llm_chat_replace_content updates content_len
+         * and total_chars incrementally. */
+        llm_chat_replace_content(chat, i, strdup(marker));
+
+        /* Downgrade importance so mark phase evicts these first */
+        chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
+        chat->msgs[i].recoverability = LLM_RECOVER_FILE;
+        n_replaced++;
+    }
+
+    if (n_replaced > 0)
+        nash_log("[lifecycle] replaced %d stale/superseded file reads "
+                 "with compact markers\n", n_replaced);
+}
+
+/* ── Step 4.5: Type-Aware Pre-Compression ──────────────── */
+
+/* CWL [arXiv:2606.11213] graduated compression + Complexity Trap
+ * [arXiv:2508.21433] validation: simple type-aware masking matches
+ * LLM summarization quality while being free (no model calls).
+ *
+ * Applied AFTER sweep (marked messages already removed) but BEFORE
+ * BM25 compression. Targets specific tool output patterns that
+ * compress poorly with generic BM25 but well with structure-aware logic:
+ *   - grep_search: head+tail truncation for large result sets
+ *   - shell_exec: head+tail truncation for long outputs
+ *   - glob_search: truncate long file lists
+ *
+ * Returns number of messages compressed. */
+static int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
+                               int compress_min_len) {
+    int upper = chat->n_msgs - keep_tail;
+    if (upper <= keep_head) return 0;
+
+    int did_compress = 0;
+
+    for (int i = keep_head; i < upper; i++) {
+        llm_msg_t *m = &chat->msgs[i];
+        if (!m->tool_name || !m->content) continue;
+        if (m->importance > LLM_MSG_IMPORTANCE_NORMAL) continue;
+        if ((int)m->content_len < compress_min_len) continue;
+
+        /* ── shell_exec: head + tail truncation ── */
+        if (strcmp(m->tool_name, "shell_exec") == 0 && (int)m->content_len > 2000) {
+            const char *content = m->content;
+            int len = (int)m->content_len;
+            int head_keep = 500;
+            int tail_keep = 500;
+
+            /* Find line boundary near head_keep */
+            while (head_keep < len && content[head_keep] != '\n') head_keep++;
+            if (head_keep < len) head_keep++;  /* include the newline */
+
+            /* Find line boundary near len - tail_keep */
+            int tail_start = len - tail_keep;
+            while (tail_start > head_keep && content[tail_start] != '\n') tail_start--;
+            if (tail_start > head_keep) tail_start++;  /* start after newline */
+
+            if (tail_start <= head_keep) continue;  /* not enough to truncate */
+
+            int truncated_lines = 0;
+            for (int c = head_keep; c < tail_start; c++)
+                if (content[c] == '\n') truncated_lines++;
+
+            size_t new_len = (size_t)head_keep + 60 + (size_t)(len - tail_start);
+            char *compressed = malloc(new_len + 1);
+            if (!compressed) continue;
+
+            int written = snprintf(compressed, new_len + 1,
+                "%.*s\n...[ %d lines truncated ]...\n%s",
+                head_keep, content, truncated_lines, content + tail_start);
+            if (written > 0 && written <= (int)(len * 9 / 10)) {
+                llm_chat_replace_content(chat, i, compressed);
+                did_compress++;
+            } else {
+                free(compressed);
+            }
+        }
+
+        /* ── glob_search: truncate long file lists ── */
+        else if (strcmp(m->tool_name, "glob_search") == 0) {
+            const char *content = m->content;
+            int len = (int)m->content_len;
+
+            /* Count lines (each line is a file path) */
+            int n_lines = 0;
+            for (int c = 0; c < len; c++)
+                if (content[c] == '\n') n_lines++;
+
+            if (n_lines <= 50) continue;  /* not worth truncating */
+
+            /* Keep first 20 lines + last 10 lines */
+            int keep_first = 20, keep_last = 10;
+            int line = 0;
+            int head_end = 0;
+            for (int c = 0; c < len && line < keep_first; c++) {
+                if (content[c] == '\n') { line++; head_end = c + 1; }
+            }
+
+            int tail_lines_seen = 0;
+            int tail_begin = len;
+            for (int c = len - 1; c >= head_end; c--) {
+                if (content[c] == '\n') {
+                    tail_lines_seen++;
+                    if (tail_lines_seen >= keep_last) { tail_begin = c + 1; break; }
+                }
+            }
+
+            if (tail_begin <= head_end) continue;
+
+            int omitted = n_lines - keep_first - keep_last;
+            size_t new_len = (size_t)head_end + 80 + (size_t)(len - tail_begin);
+            char *compressed = malloc(new_len + 1);
+            if (!compressed) continue;
+
+            int written = snprintf(compressed, new_len + 1,
+                "%.*s...[ %d more files omitted (%d total) ]...\n%s",
+                head_end, content, omitted, n_lines, content + tail_begin);
+            if (written > 0 && written <= (int)(len * 9 / 10)) {
+                llm_chat_replace_content(chat, i, compressed);
+                did_compress++;
+            } else {
+                free(compressed);
+            }
+        }
+
+        /* ── grep_search: head+tail truncation for large result sets ── */
+        else if (strcmp(m->tool_name, "grep_search") == 0 && (int)m->content_len > 2000) {
+            const char *content = m->content;
+            int len = (int)m->content_len;
+            int head_keep = 800;
+            int tail_keep = 400;
+
+            /* Find line boundary near head_keep */
+            while (head_keep < len && content[head_keep] != '\n') head_keep++;
+            if (head_keep < len) head_keep++;
+
+            int tail_start = len - tail_keep;
+            while (tail_start > head_keep && content[tail_start] != '\n') tail_start--;
+            if (tail_start > head_keep) tail_start++;
+
+            if (tail_start <= head_keep) continue;
+
+            int omitted_lines = 0;
+            for (int c = head_keep; c < tail_start; c++)
+                if (content[c] == '\n') omitted_lines++;
+
+            size_t new_len = (size_t)head_keep + 60 + (size_t)(len - tail_start);
+            char *compressed = malloc(new_len + 1);
+            if (!compressed) continue;
+
+            int written = snprintf(compressed, new_len + 1,
+                "%.*s\n...[ %d matches omitted ]...\n%s",
+                head_keep, content, omitted_lines, content + tail_start);
+            if (written > 0 && written <= (int)(len * 9 / 10)) {
+                llm_chat_replace_content(chat, i, compressed);
+                did_compress++;
+            } else {
+                free(compressed);
+            }
+        }
+    }
+
+    if (did_compress > 0)
+        nash_log("[lifecycle] type-aware compression: %d messages compressed\n",
+                 did_compress);
+    return did_compress;
+}
+
 /* ── Main Entry Point: Mark-then-Sweep ────────────────── */
 
 /* Proposal B: Replace 3-pass + post-verify with mark-then-sweep.
  * All proposals (A–E) and bug fixes (FLAW 1–8) are implemented here.
  *
  * Architecture:
- *   1. Cleanup: Remove stale injected messages
- *   2. Partner map: Build once (Proposal E)
- *   3. Mark: Score all evictable messages, mark lowest for eviction
- *   4. Sweep: Remove marked messages in reverse order
- *   5. Compress: BM25 compress surviving messages (Proposal D: target_pct)
- *   6. Finalize: Re-inject scratchpad + breadcrumbs + hint (Proposal A)
+ *   1.   Cleanup: Remove stale injected messages
+ *   2.   Partner map: Build once (Proposal E)
+ *   2.5  Lifecycle: Replace stale/superseded file reads [Pichay 2603.09023]
+ *   3.   Mark: Score all evictable messages, mark lowest for eviction
+ *   4.   Sweep: Remove marked messages in reverse order
+ *   4.5  Type-compress: Structure-aware pre-compression [CWL 2606.11213]
+ *   5.   Compress: BM25 compress surviving messages (Proposal D: target_pct)
+ *   6.   Finalize: Re-inject scratchpad + breadcrumbs + hint (Proposal A)
  */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
@@ -836,6 +1066,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         goto finalize_no_evict;
 
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
+
+    /* ── Step 2.5: Lifecycle — replace stale/superseded file reads ── */
+    evict_lifecycle_stale_reads(chat, evict_start, evict_end);
 
     /* ── Step 3: Mark phase — score and select messages for eviction ── */
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
@@ -915,6 +1148,12 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
     free(evict_mark);
     evict_free_partner_map(&pmap);
+
+    /* ── Step 4.5: Type-aware pre-compression [arXiv:2508.21433] ── */
+    /* CWL graduated compression: apply structure-aware truncation BEFORE
+     * generic BM25. Shell output, grep results, and glob lists compress
+     * much better with type-specific head+tail logic than BM25 extraction. */
+    evict_type_compress(chat, keep_head, keep_tail, pol.compress_min_len);
 
     /* ── Step 5: Compress phase — BM25 compress surviving messages ── */
     /* Flaw 1 FIX: Compress runs AFTER sweep so it only processes messages

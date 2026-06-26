@@ -1675,6 +1675,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             /* CWL §3 [arXiv:2606.11213]: Set recoverability based on tool type.
              * Messages whose content is persisted elsewhere can be evicted more
              * aggressively because the agent can recover them via file_read.
+             * Pichay [arXiv:2603.09023]: GC vs Paging distinction —
+             *   file_read → RECOVER_FILE (addressable, can always re-read)
+             *   file_write/edit → RECOVER_FILE (effects persisted)
+             *   shell_exec/grep/glob → RECOVER_STORE (ephemeral, only in store)
              * LCM-Lite [arXiv:2605.04050]: Copy store ref alias to enable
              * breadcrumb generation during eviction. */
             llm_recoverability_t recover = LLM_RECOVER_NONE;
@@ -1682,6 +1686,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (strcmp(action_name, "file_write") == 0 ||
                     strcmp(action_name, "file_edit") == 0)
                     recover = LLM_RECOVER_FILE;
+                else if (strcmp(action_name, "file_read") == 0)
+                    recover = LLM_RECOVER_FILE;  /* Pichay: addressable, re-requestable */
                 else if (strcmp(action_name, "memory_store") == 0 ||
                          strcmp(action_name, "memory_pin") == 0)
                     recover = LLM_RECOVER_MEMORY;
@@ -1692,6 +1698,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     recover = LLM_RECOVER_STORE;
             }
             chat->msgs[chat->n_msgs - 1].recoverability = recover;
+
+            /* Lifecycle [arXiv:2603.09023]: Record tool name and path for
+             * stale-read detection and type-aware compression in eviction.
+             * tool_name enables type-specific compress strategies.
+             * tool_path enables tracking which file_reads are stale
+             * (file was subsequently edited) or superseded (re-read). */
+            if (action_name) {
+                chat->msgs[chat->n_msgs - 1].tool_name = strdup(action_name);
+                const char *tp = react_json_get_str(action, "path");
+                if (tp)
+                    chat->msgs[chat->n_msgs - 1].tool_path = strdup(tp);
+            }
+
             /* FIX #2: Look up existing alias instead of registering a new one.
              * Previously called tool_register_alias() which created a SECOND alias
              * for the same store ref, inflating alias numbering 2× and creating

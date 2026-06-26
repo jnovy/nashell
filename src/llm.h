@@ -122,6 +122,13 @@ typedef struct {
     llm_msg_importance_t importance; /* eviction priority (Harness-1 §3.2) */
     llm_recoverability_t recoverability; /* CWL §3: how recoverable is this content? */
     char *store_alias;       /* LCM-Lite: store ref alias (e.g. "R0S5") for breadcrumb eviction */
+    char *tool_name;         /* Lifecycle [arXiv:2603.09023]: tool that produced this result
+                              * (e.g. "file_read", "grep_search"). Enables stale-read detection
+                              * and type-aware compression in the eviction pipeline. */
+    char *tool_path;         /* Lifecycle: primary path/target argument of the tool call.
+                              * For file_read/file_edit/file_write: the file path.
+                              * For grep_search/glob_search: the search path.
+                              * NULL for tools without a path argument. */
 } llm_msg_t;
 
 /* Chat completion request/response */

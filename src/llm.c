@@ -26,6 +26,8 @@ void llm_msg_free_fields(llm_msg_t *m) {
     free(m->tool_calls_json);
     free(m->tool_call_id_outbound);
     free(m->store_alias);
+    free(m->tool_name);
+    free(m->tool_path);
 }
 
 /* Ensure the msgs array has room for at least one more entry.
