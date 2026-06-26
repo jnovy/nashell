@@ -140,13 +140,13 @@ static void init_true_colors(void) {
     init_color(NC_CT_SEARCH_CUR, 250*1000/255, 179*1000/255, 135*1000/255);
 
     /* Create color pairs combining bg + fg */
-    init_pair(CP_STATUS_READY,  NC_STATUS_BG, NC_STATUS_READY);
-    init_pair(CP_STATUS_RUNNING, NC_STATUS_BG, NC_STATUS_RUN);
-    init_pair(CP_STATUS_AWAIT,  NC_STATUS_BG, NC_STATUS_AWAIT);
-    init_pair(CP_STATUS_DONE,   NC_STATUS_BG, NC_STATUS_DONE);
-    init_pair(CP_STATUS_ERROR,  NC_STATUS_BG, NC_STATUS_ERR);
-    init_pair(CP_INPUT_ACTIVE,  NC_INPUT_BG,  NC_INPUT_FG);
-    init_pair(CP_INPUT_DIM,     NC_INPUT_BG,  NC_INPUT_DIM);
+    init_pair(CP_STATUS_READY,  NC_STATUS_READY, NC_STATUS_BG);
+    init_pair(CP_STATUS_RUNNING, NC_STATUS_RUN, NC_STATUS_BG);
+    init_pair(CP_STATUS_AWAIT,  NC_STATUS_AWAIT, NC_STATUS_BG);
+    init_pair(CP_STATUS_DONE,   NC_STATUS_DONE,  NC_STATUS_BG);
+    init_pair(CP_STATUS_ERROR,  NC_STATUS_ERR,   NC_STATUS_BG);
+    init_pair(CP_INPUT_ACTIVE,  NC_INPUT_FG,  NC_INPUT_BG);
+    init_pair(CP_INPUT_DIM,     NC_INPUT_DIM, NC_INPUT_BG);
     /* Content pairs: fg on transparent/default bg */
     init_pair(C_NORMAL,   NC_CT_NORMAL, -1);
     init_pair(C_SUCCESS,  NC_CT_GREEN,  -1);

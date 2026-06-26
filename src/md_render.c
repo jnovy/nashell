@@ -854,6 +854,11 @@ static void defer_osc8_end(int col_end) {
  * Called AFTER doupdate() so screen content is already rendered.
  * win_row_offset: absolute screen row of the window (getbegy). */
 void md_osc8_flush(int win_row_offset) {
+    if (md_osc8_count == 0) return;
+    /* Save cursor position (DECSC) — restore after emitting OSC 8
+     * sequences so ncurses' internal cursor tracking stays in sync
+     * with the real terminal cursor on the next doupdate(). */
+    printf("\0337");  /* DECSC: save cursor position */
     for (int i = 0; i < md_osc8_count; i++) {
         md_osc8_link_t *lk = &md_osc8_links[i];
         int abs_row = win_row_offset + lk->row + 1;  /* 1-based */
@@ -874,8 +879,10 @@ void md_osc8_flush(int win_row_offset) {
         /* OSC 8 end: ESC ] 8 ; ; ST */
         printf("\033]8;;\033\\");
     }
-    if (md_osc8_count > 0)
-        fflush(stdout);
+    /* Restore cursor position (DECRC) so terminal cursor returns to
+     * where ncurses left it after doupdate(). */
+    printf("\0338");  /* DECRC: restore cursor position */
+    fflush(stdout);
     md_osc8_count = 0;
 }
 
