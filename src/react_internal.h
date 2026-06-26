@@ -574,6 +574,22 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int step,
                    react_event_fn on_event, void *userdata);
 
+/* ── Step 2.5: Tool Lifecycle — Stale/Superseded Read Detection ────── */
+
+/* Pichay [arXiv:2603.09023]: Replace stale/superseded file_read results
+ * with compact paging handles. Runs before the mark phase. */
+void evict_lifecycle_stale_reads(llm_chat_t *chat,
+                                int evict_start, int evict_end);
+
+/* ── Step 4.5: Type-Aware Pre-Compression ────── */
+
+/* CWL [arXiv:2606.11213] + Complexity Trap [arXiv:2508.21433]: Structure-aware
+ * compression for specific tool output types (shell_exec, glob_search,
+ * grep_search). Runs after sweep, before BM25 compression.
+ * Returns number of messages compressed. */
+int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
+                        int compress_min_len);
+
 /* ── Post-Loop (Reflection, Promotion, Pruning) ────── */
 
 /* Run post-loop phases: validation scoring, reflection, promotion, pruning. */

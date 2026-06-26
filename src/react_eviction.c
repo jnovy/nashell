@@ -769,8 +769,8 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
  * Must run BEFORE the mark phase so stale reads score lowest and get
  * evicted first. Inline replacement gives immediate space savings even
  * before mark-then-sweep fires. */
-static void evict_lifecycle_stale_reads(llm_chat_t *chat,
-                                        int evict_start, int evict_end) {
+void evict_lifecycle_stale_reads(llm_chat_t *chat,
+                                int evict_start, int evict_end) {
     if (evict_end <= evict_start) return;
 
     /* Walk forward through evictable region. For each file_read, check if
@@ -843,8 +843,8 @@ static void evict_lifecycle_stale_reads(llm_chat_t *chat,
  *   - glob_search: truncate long file lists
  *
  * Returns number of messages compressed. */
-static int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
-                               int compress_min_len) {
+int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
+                        int compress_min_len) {
     int upper = chat->n_msgs - keep_tail;
     if (upper <= keep_head) return 0;
 

@@ -953,6 +953,126 @@ static void cmd_todo_refresh(ui_state_t *ui, const char *ws_todo_path,
     pthread_mutex_unlock(&ui->mtx);
 }
 
+/* Render a single todo.md file into output buffer.
+ * Returns number of items found (0 if file missing/empty).
+ * Adds *open_out and *done_out counts. */
+static int cmd_todo_render_file(str_t *out, const char *path,
+                                int *open_out, int *done_out) {
+    int num = 0, open = 0, done_n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char linebuf[4096];
+    while (fgets(linebuf, sizeof(linebuf), f)) {
+        size_t len = strlen(linebuf);
+        while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
+            linebuf[--len] = '\0';
+        if (len == 0) continue;
+        num++;
+        str_appendf(out, "%d. %s\n", num, linebuf);
+        if (strstr(linebuf, "- [ ]")) open++;
+        else if (strstr(linebuf, "- [x]")) done_n++;
+    }
+    fclose(f);
+    if (open_out) *open_out += open;
+    if (done_out) *done_out += done_n;
+    return num;
+}
+
+/* List todos from all workspaces (called when no workspace is active).
+ * Enumerates {nash_dir}/workspaces/NAME/todo.md and {nash_dir}/todo.md. */
+static int cmd_todo_list_all(command_ctx_t *ctx) {
+    ui_state_t *ui = ctx->ui;
+    str_t out = str_new(2048);
+    str_append_cstr(&out, "# TODO List (all workspaces)\n\n");
+
+    int total_open = 0, total_done = 0, any_items = 0;
+
+    /* Global todo */
+    {
+        char gpath[NASH_PATH_MAX];
+        snprintf(gpath, sizeof(gpath), "%s/todo.md", ctx->nash_dir);
+        if (access(gpath, F_OK) == 0) {
+            str_append_cstr(&out, "## global\n\n");
+            int go = 0, gd = 0;
+            int n = cmd_todo_render_file(&out, gpath, &go, &gd);
+            if (n > 0) {
+                str_appendf(&out, "  *%d open, %d done*\n\n", go, gd);
+                total_open += go;
+                total_done += gd;
+                any_items = 1;
+            } else {
+                str_append_cstr(&out, "*No items.*\n\n");
+            }
+        }
+    }
+
+    /* Enumerate workspaces */
+    {
+        char ws_dir[NASH_PATH_MAX];
+        snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces", ctx->nash_dir);
+        DIR *d = opendir(ws_dir);
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                char tpath[NASH_PATH_MAX];
+                snprintf(tpath, sizeof(tpath), "%s/%s/todo.md",
+                         ws_dir, ent->d_name);
+                /* Only show workspaces that have a todo.md */
+                if (access(tpath, F_OK) != 0) continue;
+                int wo = 0, wd = 0;
+                str_appendf(&out, "## %s\n\n", ent->d_name);
+                int n = cmd_todo_render_file(&out, tpath, &wo, &wd);
+                if (n > 0) {
+                    str_appendf(&out, "  *%d open, %d done*\n\n", wo, wd);
+                    total_open += wo;
+                    total_done += wd;
+                    any_items = 1;
+                } else {
+                    str_append_cstr(&out, "*No items.*\n\n");
+                }
+            }
+            closedir(d);
+        }
+    }
+
+    if (!any_items)
+        str_append_cstr(&out, "*No TODO items in any workspace.*\n");
+    else
+        str_appendf(&out, "---\n**Total: %d open, %d done**\n",
+                    total_open, total_done);
+
+    /* Write to session_dir/todo.md and navigate */
+    if (ui->session_dir) {
+        char tpath[NASH_PATH_MAX];
+        snprintf(tpath, sizeof(tpath), "%s/todo.md", ui->session_dir);
+        FILE *tf = fopen(tpath, "w");
+        if (tf) { fputs(str_cstr(&out), tf); fclose(tf); }
+        str_free(&out);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, "TODO list (all workspaces)");
+        free(ui->current_filepath);
+        ui->current_filepath = NULL;
+        char *new_path = strdup(tpath);
+        if (!new_path) {
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        ui->current_filepath = new_path;
+        ui->scroll_y = 0;
+        ui->scroll_x = 0;
+        ui->cursor_link = 0;
+        ui->search_active = 0;
+        ui_state_reload_file(ui);
+        pthread_mutex_unlock(&ui->mtx);
+    } else {
+        str_free(&out);
+    }
+    tui_render(ui);
+    return CMD_CONTINUE;
+}
+
 static int cmd_todo(command_ctx_t *ctx, const char *args) {
     ui_state_t *ui = ctx->ui;
     char fpath[NASH_PATH_MAX];
@@ -1364,17 +1484,8 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
 
     /* /todo  or  /todo list — display all items */
     {
-        str_t out = str_new(1024);
-        str_append_cstr(&out, "# TODO List");
-        if (ctx->ws && ctx->ws->name)
-            str_appendf(&out, " (%s)", ctx->ws->name);
-        str_append_cstr(&out, "\n\n");
-
-        FILE *f = fopen(fpath, "r");
         /* Check for unknown subcommand first */
         if (strcmp(args, "list") != 0 && args[0] != '\0') {
-            if (f) fclose(f);
-            str_free(&out);
             char status[256];
             snprintf(status, sizeof(status),
                 "Unknown subcommand. Usage: /todo [list|add <text>|done <N>|remove <N>|purge]");
@@ -1385,6 +1496,17 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
             return CMD_CONTINUE;
         }
 
+        /* No workspace active → aggregate all workspaces */
+        if (!ctx->ws || !ctx->ws->name)
+            return cmd_todo_list_all(ctx);
+
+        str_t out = str_new(1024);
+        str_append_cstr(&out, "# TODO List");
+        if (ctx->ws && ctx->ws->name)
+            str_appendf(&out, " (%s)", ctx->ws->name);
+        str_append_cstr(&out, "\n\n");
+
+        FILE *f = fopen(fpath, "r");
         if (!f) {
             str_append_cstr(&out, "*No items yet.* Use `/todo add <text>` to add one.\n");
         } else {
