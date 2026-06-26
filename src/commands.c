@@ -33,7 +33,7 @@ static int cmd_fork(command_ctx_t *ctx, const char *arg) {
     react_ctx_t *react = ctx->react;
     ui_state_t *ui = ctx->ui;
 
-    char *new_dir = create_session_dir(ctx->nash_dir);
+    char *new_dir = create_session_dir(ctx->nash_dir, ctx->cfg->workspace);
     /* Copy journal lines where step <= fork_step */
     char src_j[NASH_PATH_MAX], dst_j[NASH_PATH_MAX];
     snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
@@ -120,9 +120,10 @@ static int cmd_name(command_ctx_t *ctx, const char *name) {
         tui_render(ui);
         return CMD_CONTINUE;
     }
-    char sessions_base[1024], link_path[1088];
-    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", ctx->nash_dir);
-    snprintf(link_path, sizeof(link_path), "%s/%s", sessions_base, name);
+    char *sb = sessions_base_dir(ctx->nash_dir, ctx->cfg->workspace);
+    char link_path[1088];
+    snprintf(link_path, sizeof(link_path), "%s/%s", sb, name);
+    free(sb);
     /* Remove existing symlink if present */
     unlink(link_path);
     /* Create symlink */

@@ -1050,7 +1050,7 @@ int main(int argc, char **argv) {
          * context (scratchpad, previous result, journal) propagates between
          * consecutive messages.  The /new or /clear Telegram command (or a
          * cmd_new file in the inbox) resets the session. */
-        char *session_dir = create_session_dir(nash_dir);
+        char *session_dir = create_session_dir(nash_dir, cfg->workspace);
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools;
         session_init_tools(&tools, shared_store, journal, memory,
@@ -1082,7 +1082,7 @@ int main(int argc, char **argv) {
                     free(session_dir);
 
                     /* Create fresh session */
-                    session_dir = create_session_dir(nash_dir);
+                    session_dir = create_session_dir(nash_dir, cfg->workspace);
                     journal = journal_new(session_dir);
                     session_init_tools(&tools, shared_store, journal, memory,
                                        ws, session_dir, cfg, provider);
@@ -1127,7 +1127,7 @@ int main(int argc, char **argv) {
                     if (is_dir_empty(session_dir))
                         rmdir(session_dir);
                     free(session_dir);
-                    session_dir = create_session_dir(nash_dir);
+                    session_dir = create_session_dir(nash_dir, cfg->workspace);
                     journal = journal_new(session_dir);
                     session_init_tools(&tools, shared_store, journal, memory,
                                        ws, session_dir, cfg, provider);
@@ -1314,7 +1314,7 @@ int main(int argc, char **argv) {
         /* Interactive TUI needs session_dir immediately for journal display,
          * so always create it eagerly (lazy sessions break TUI rendering). */
         if (!session_dir) {
-            session_dir = create_session_dir(nash_dir);
+            session_dir = create_session_dir(nash_dir, cfg->workspace);
         }
         journal_t *journal = journal_new(session_dir);
         tool_ctx_t tools;
@@ -1330,6 +1330,8 @@ int main(int argc, char **argv) {
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
         ui->nash_dir = strdup(nash_dir);  /* for /? cross-session search */
+        if (ws && ws->name)
+            ui->workspace_name = strdup(ws->name);  /* for status bar breadcrumb */
         /* Pass model name + context info for nashell-style status bar */
         if (server_model)
             ui->model_name = strdup(server_model);

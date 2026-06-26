@@ -49,9 +49,15 @@ struct cJSON *slurp_json(const char *path);
  * Returns 0 on success, -1 on failure. */
 int mkdir_p(const char *path, mode_t mode);
 
-/* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/
+/* Create session directory under the appropriate sessions base:
+ *   workspace set: <nash_dir>/workspaces/<workspace>/sessions/<epoch.NNNNN>/
+ *   workspace NULL: <nash_dir>/sessions/<epoch.NNNNN>/
  * Returns strdup'd path. Caller must free. */
-char *create_session_dir(const char *nash_dir);
+char *create_session_dir(const char *nash_dir, const char *workspace);
+
+/* Return the sessions base directory for a workspace (or global).
+ * Creates the directory if it doesn't exist. Returns strdup'd path. */
+char *sessions_base_dir(const char *nash_dir, const char *workspace);
 
 /* Acquire an exclusive flock on <session_dir>/.lock.
  * Returns the lock fd (>= 0) on success, -1 on failure.

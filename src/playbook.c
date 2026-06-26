@@ -465,7 +465,7 @@ void *playbook_worker(void *arg) {
     char *shared_session_dir = NULL;
 
     if (pb->session_mode == PB_SESSION_SHARED) {
-        shared_session_dir = create_session_dir(pa->nash_dir);
+        shared_session_dir = create_session_dir(pa->nash_dir, pa->cfg->workspace);
     }
 
     int playbook_ok = 1;
@@ -541,7 +541,7 @@ void *playbook_worker(void *arg) {
         /* Create session */
         char *pass_dir;
         if (pb->session_mode == PB_SESSION_PER_PASS) {
-            pass_dir = create_session_dir(pa->nash_dir);
+            pass_dir = create_session_dir(pa->nash_dir, pa->cfg->workspace);
         } else {
             pass_dir = strdup(shared_session_dir);
         }

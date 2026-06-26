@@ -282,18 +282,30 @@ int mkdir_p(const char *path, mode_t mode) {
     return 0;
 }
 
-/* Create session directory: <nash_dir>/sessions/<epoch.NNNNN>/ */
-char *create_session_dir(const char *nash_dir) {
+/* Return sessions base directory, workspace-aware. */
+char *sessions_base_dir(const char *nash_dir, const char *workspace) {
+    char buf[1024];
+    if (workspace && workspace[0]) {
+        snprintf(buf, sizeof(buf), "%s/workspaces/%s", nash_dir, workspace);
+        mkdir(buf, 0755);  /* ensure workspace dir exists */
+        snprintf(buf, sizeof(buf), "%s/workspaces/%s/sessions", nash_dir, workspace);
+    } else {
+        snprintf(buf, sizeof(buf), "%s/sessions", nash_dir);
+    }
+    mkdir(buf, 0755);
+    return strdup(buf);
+}
+
+char *create_session_dir(const char *nash_dir, const char *workspace) {
     struct timespec tp;
     clock_gettime(CLOCK_REALTIME, &tp);
 
-    char sessions_base[1024];
-    snprintf(sessions_base, sizeof(sessions_base), "%s/sessions", nash_dir);
-    mkdir(sessions_base, 0755);
+    char *base = sessions_base_dir(nash_dir, workspace);
 
-    char path[1088];  /* sessions_base (1024) + "/" + epoch.nanos (~30) */
+    char path[1088];
     snprintf(path, sizeof(path), "%s/%ld.%05ld",
-             sessions_base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+             base, (long)tp.tv_sec, tp.tv_nsec / 10000);
+    free(base);
     mkdir(path, 0755);
     return strdup(path);
 }
