@@ -961,11 +961,17 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 paste_buf[paste_len++] = '\t';
             goto paste_done;
         } else if (ch >= 32 && ch != 127) {
-            /* Accept printable ASCII and Unicode codepoints (ncursesw).
-             * Encode codepoint to UTF-8 bytes in paste buffer. */
+            /* Accept printable ASCII, raw UTF-8 bytes, and Unicode codepoints.
+             *
+             * During bracketed paste with nodelay(TRUE), getch() often returns
+             * raw UTF-8 bytes (0x80-0xFF) instead of assembled codepoints.
+             * Values in 0x80-0xFF are stored as-is (they're already valid
+             * UTF-8 bytes — lead or continuation). Values >= 0x100 are
+             * assembled codepoints from ncursesw and need encoding. */
             char utf8[4];
             int nb;
-            if (ch < 0x80) {
+            if (ch < 0x100) {
+                /* ASCII (< 0x80) or raw UTF-8 byte (0x80-0xFF): store as-is */
                 utf8[0] = (char)ch; nb = 1;
             } else if (ch < 0x800) {
                 utf8[0] = (char)(0xC0 | (ch >> 6));
@@ -1473,10 +1479,13 @@ int tui_input(ui_state_t *ui, char **out_query) {
     handle_default:
         if (ui->focus == FOCUS_QUERY && ch >= 32 && ch != 127) {
             if (paste_mode) {
-                /* During bracketed paste, encode codepoint to UTF-8 bytes */
+                /* During bracketed paste with nodelay(TRUE), getch() may
+                 * return raw UTF-8 bytes (0x80-0xFF) instead of assembled
+                 * codepoints. Store bytes as-is; only encode for ch >= 0x100. */
                 char utf8[4];
                 int nb;
-                if (ch < 0x80) {
+                if (ch < 0x100) {
+                    /* ASCII or raw UTF-8 byte: store as-is */
                     utf8[0] = (char)ch; nb = 1;
                 } else if (ch < 0x800) {
                     utf8[0] = (char)(0xC0 | (ch >> 6));
