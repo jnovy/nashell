@@ -602,4 +602,28 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                      const char *final_result, int task_succeeded,
                      react_event_fn on_event, void *userdata);
 
+/* ── Plan-Then-Shed: Preamble Degradation ────── */
+
+/* After plan() executes, preamble injections have informed the plan and are
+ * now dead weight. Walk chat messages and downgrade preamble types from
+ * NORMAL to LOW so they shed first on the next eviction pass.
+ * Pinned knowledge stays HIGH — it's pinned for a reason. */
+static inline void react_degrade_preamble(llm_chat_t *chat) {
+    for (int i = 0; i < chat->n_msgs; i++) {
+        switch (chat->msgs[i].msg_type) {
+            case LLM_MSG_MEMORY_INDEX:
+            case LLM_MSG_TEMPORAL:
+            case LLM_MSG_EPISODIC:
+            case LLM_MSG_SKILLS:
+            case LLM_MSG_LESSONS:
+            case LLM_MSG_STRATEGIES:
+            case LLM_MSG_ANTIPATTERNS:
+                chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 #endif /* REACT_INTERNAL_H */

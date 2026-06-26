@@ -85,14 +85,21 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
          * cycle anyway, so CRITICAL protection was only relevant between
          * evictions where it wasted context budget. */
         case LLM_MSG_EVICTION_SUMMARY:
-        case LLM_MSG_MEMORY_INDEX:
         case LLM_MSG_PINNED:
+        case LLM_MSG_PREV_RESULT:
+            return LLM_MSG_IMPORTANCE_HIGH;
+        /* Plan-then-shed preamble: these inform planning but become
+         * dead weight after plan() executes. Start NORMAL so they
+         * survive initial eviction passes; react_degrade_preamble()
+         * downgrades them to LOW after plan(). */
+        case LLM_MSG_MEMORY_INDEX:
+        case LLM_MSG_TEMPORAL:
+        case LLM_MSG_EPISODIC:
         case LLM_MSG_SKILLS:
         case LLM_MSG_LESSONS:
         case LLM_MSG_STRATEGIES:
         case LLM_MSG_ANTIPATTERNS:
-        case LLM_MSG_PREV_RESULT:
-            return LLM_MSG_IMPORTANCE_HIGH;
+            return LLM_MSG_IMPORTANCE_NORMAL;
         case LLM_MSG_ERROR:
         case LLM_MSG_MEMORY_HINT:
         case LLM_MSG_REPO_MAP:
