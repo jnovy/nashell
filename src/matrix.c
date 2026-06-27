@@ -68,6 +68,21 @@ static int  mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
                               const char *filename, const char *mimetype,
                               size_t filesize);
 
+/* Room-aware send variants (for multi-room workspace routing) */
+static int  mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
+                                const char *text, const char *html);
+static int  mx_api_send_markdown_to(matrix_ctx_t *ctx, const char *room_id,
+                                    const char *md_text);
+static int  mx_api_send_image_to(matrix_ctx_t *ctx, const char *room_id,
+                                 const char *mxc_url, const char *filename,
+                                 const char *mimetype, size_t filesize);
+
+/* Room-to-workspace mapping helpers */
+static const char *mx_workspace_for_room(matrix_ctx_t *ctx, const char *room_id);
+static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
+                             const char *room_id);
+static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id);
+
 /* Defined in telegram.c — shared markdown→HTML converter */
 extern char *md_to_html(const char *md);
 /* Defined in telegram.c — check if markdown contains tables */
@@ -98,6 +113,41 @@ static char *url_encode(const char *s) {
     }
     *p = '\0';
     return out;
+}
+
+
+/* ── Room-to-workspace mapping helpers ───────────────────── */
+
+/* Look up workspace name for a given room_id from room_map config */
+static const char *mx_workspace_for_room(matrix_ctx_t *ctx, const char *room_id) {
+    if (!room_id) return NULL;
+    for (int i = 0; i < ctx->room_map_count; i++) {
+        if (strcmp(ctx->room_map[i].room_id, room_id) == 0)
+            return ctx->room_map[i].workspace;
+    }
+    return NULL;
+}
+
+/* Record task_id -> room_id mapping for reply routing (circular buffer) */
+static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
+                             const char *room_id) {
+    int idx = ctx->route_map_next;
+    snprintf(ctx->route_map[idx].task_id, sizeof(ctx->route_map[idx].task_id),
+             "%s", task_id);
+    snprintf(ctx->route_map[idx].room_id, sizeof(ctx->route_map[idx].room_id),
+             "%s", room_id);
+    ctx->route_map_next = (idx + 1) % MX_MAX_ROUTE_MAP;
+}
+
+/* Look up source room_id for a given task_id */
+__attribute__((unused))
+static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id) {
+    for (int i = 0; i < MX_MAX_ROUTE_MAP; i++) {
+        if (ctx->route_map[i].task_id[0] &&
+            strcmp(ctx->route_map[i].task_id, task_id) == 0)
+            return ctx->route_map[i].room_id;
+    }
+    return NULL;
 }
 
 
@@ -162,6 +212,26 @@ static int mx_config_load(matrix_ctx_t *ctx) {
 
         d = toml_string_in(mx, "since_token");
         if (d.ok) ctx->since_token = d.u.s;
+
+        /* Parse [matrix.rooms] — room-to-workspace mapping */
+        toml_table_t *rooms_tbl = toml_table_in(mx, "rooms");
+        if (rooms_tbl) {
+            ctx->room_map_count = 0;
+            for (int ri = 0; ; ri++) {
+                const char *key = toml_key_in(rooms_tbl, ri);
+                if (!key) break;
+                if (ctx->room_map_count >= MX_MAX_ROOM_MAP) break;
+                toml_datum_t rd = toml_string_in(rooms_tbl, key);
+                if (rd.ok) {
+                    int idx = ctx->room_map_count++;
+                    ctx->room_map[idx].room_id = strdup(key);
+                    ctx->room_map[idx].workspace = rd.u.s;
+                    fprintf(stderr, "[matrix] room %s -> workspace '%s'\n",
+                            ctx->room_map[idx].room_id,
+                            ctx->room_map[idx].workspace);
+                }
+            }
+        }
     }
     toml_free(root);
     return (ctx->homeserver && ctx->access_token && ctx->room_id) ? 0 : -1;
@@ -480,16 +550,63 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
         ctx->since_token = strdup(next_batch->valuestring);
     }
 
-    /* Extract timeline events from our room */
-    if (ctx->room_id) {
+    /* Extract timeline events from ALL joined rooms.
+     * Attach "_room_id" to each event so the message handler can
+     * route to the correct workspace. */
+    {
         cJSON *rooms = cJSON_GetObjectItem(root, "rooms");
         cJSON *join = rooms ? cJSON_GetObjectItem(rooms, "join") : NULL;
-        cJSON *room = join ? cJSON_GetObjectItem(join, ctx->room_id) : NULL;
-        cJSON *timeline = room ? cJSON_GetObjectItem(room, "timeline") : NULL;
-        cJSON *events = timeline ? cJSON_GetObjectItem(timeline, "events") : NULL;
+        if (join) {
+            cJSON *all_events = NULL;
+            cJSON *room_node = NULL;
+            cJSON_ArrayForEach(room_node, join) {
+                /* room_node->string is the room_id (object key) */
+                if (!room_node->string) continue;
 
-        if (events && cJSON_IsArray(events) && cJSON_GetArraySize(events) > 0) {
-            *out_events = cJSON_DetachItemFromObject(timeline, "events");
+                /* Only process rooms we care about:
+                 * the default room OR any room in room_map */
+                int dominated = 0;
+                if (ctx->room_id &&
+                    strcmp(room_node->string, ctx->room_id) == 0)
+                    dominated = 1;
+                if (!dominated) {
+                    for (int ri = 0; ri < ctx->room_map_count; ri++) {
+                        if (strcmp(room_node->string,
+                                  ctx->room_map[ri].room_id) == 0) {
+                            dominated = 1;
+                            break;
+                        }
+                    }
+                }
+                if (!dominated) continue;
+
+                cJSON *timeline = cJSON_GetObjectItem(room_node, "timeline");
+                cJSON *events = timeline
+                    ? cJSON_GetObjectItem(timeline, "events") : NULL;
+                if (!events || !cJSON_IsArray(events) ||
+                    cJSON_GetArraySize(events) == 0)
+                    continue;
+
+                /* Tag each event with the source room_id */
+                cJSON *ev = NULL;
+                cJSON_ArrayForEach(ev, events) {
+                    cJSON_AddStringToObject(ev, "_room_id",
+                                            room_node->string);
+                }
+
+                /* Merge into combined array */
+                if (!all_events) {
+                    all_events = cJSON_DetachItemFromObject(timeline,
+                                                           "events");
+                } else {
+                    /* Move each event from this array to all_events */
+                    while (cJSON_GetArraySize(events) > 0) {
+                        cJSON *item = cJSON_DetachItemFromArray(events, 0);
+                        cJSON_AddItemToArray(all_events, item);
+                    }
+                }
+            }
+            *out_events = all_events;
         }
     }
 
@@ -502,9 +619,10 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
  * If html is provided, sends a formatted message.
  * If html is NULL, sends plain text only.
  */
-static int mx_api_send_message_inner(matrix_ctx_t *ctx, const char *text,
-                                     const char *html, int retries_left) {
-    char *enc_room = url_encode(ctx->room_id);
+static int mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
+                                     const char *text, const char *html,
+                                     int retries_left) {
+    char *enc_room = url_encode(room_id);
     char url[MX_URL_MAX * 2];
     long long txn = __sync_fetch_and_add(&ctx->txn_counter, 1);
     snprintf(url, sizeof(url),
@@ -577,7 +695,8 @@ static int mx_api_send_message_inner(matrix_ctx_t *ctx, const char *text,
                         fprintf(stderr, "[matrix] rate limited, retrying in %dms\n",
                                 wait_ms);
                         usleep((useconds_t)wait_ms * 1000);
-                        return mx_api_send_message_inner(ctx, text, html,
+                        return mx_api_send_message_inner(ctx, room_id,
+                                                        text, html,
                                                         retries_left - 1);
                     }
                     fprintf(stderr, "[matrix] send error: %s\n",
@@ -599,7 +718,14 @@ static int mx_api_send_message_inner(matrix_ctx_t *ctx, const char *text,
 
 static int mx_api_send_message(matrix_ctx_t *ctx, const char *text,
                                const char *html) {
-    return mx_api_send_message_inner(ctx, text, html, 3);  /* up to 3 retries */
+    return mx_api_send_message_inner(ctx, ctx->room_id, text, html, 3);
+}
+
+/* Send a message to a specific room (for multi-room routing) */
+static int mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
+                               const char *text, const char *html) {
+    return mx_api_send_message_inner(ctx, room_id ? room_id : ctx->room_id,
+                                     text, html, 3);
 }
 
 /*
@@ -853,13 +979,25 @@ static char *mx_html_fixup(const char *html) {
     return str_steal(&out);
 }
 
-/* Send markdown as an HTML-formatted Matrix message */
+/* Send markdown as an HTML-formatted Matrix message (default room) */
+__attribute__((unused))
 static int mx_api_send_markdown(matrix_ctx_t *ctx, const char *md_text) {
     /* Convert markdown to HTML, then fix up for Matrix */
     char *tg_html = md_to_html(md_text);
     char *html = mx_html_fixup(tg_html);
     free(tg_html);
     int rc = mx_api_send_message(ctx, md_text, html);
+    free(html);
+    return rc;
+}
+
+/* Send markdown to a specific room (for multi-room routing) */
+static int mx_api_send_markdown_to(matrix_ctx_t *ctx, const char *room_id,
+                                   const char *md_text) {
+    char *tg_html = md_to_html(md_text);
+    char *html = mx_html_fixup(tg_html);
+    free(tg_html);
+    int rc = mx_api_send_to_room(ctx, room_id, md_text, html);
     free(html);
     return rc;
 }
@@ -1210,10 +1348,10 @@ static int mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
  *
  * Returns 0 on success, -1 on error.
  */
-static int mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
-                             const char *filename, const char *mimetype,
-                             size_t filesize) {
-    char *enc_room = url_encode(ctx->room_id);
+static int mx_api_send_image_to(matrix_ctx_t *ctx, const char *room_id,
+                                const char *mxc_url, const char *filename,
+                                const char *mimetype, size_t filesize) {
+    char *enc_room = url_encode(room_id);
     char url[MX_URL_MAX * 2];
     long long txn = __sync_fetch_and_add(&ctx->txn_counter, 1);
     snprintf(url, sizeof(url),
@@ -1288,6 +1426,15 @@ static int mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
     free(auth);
     free(body_str);
     return rc;
+}
+
+/* Backward-compatible wrapper: send image to default room */
+__attribute__((unused))
+static int mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
+                             const char *filename, const char *mimetype,
+                             size_t filesize) {
+    return mx_api_send_image_to(ctx, ctx->room_id, mxc_url, filename,
+                                mimetype, filesize);
 }
 
 
@@ -1464,7 +1611,10 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
      */
     char *route_token = NULL;
     char *actual_content = mailbox_parse_headers(content, NULL, &route_token);
-    free(route_token);  /* not used for routing yet -- single room mode */
+
+    /* Route to correct room: use route_token if present, else default room */
+    const char *target_room = (route_token && route_token[0])
+                              ? route_token : ctx->room_id;
 
     if (strncmp(filename, "result_", 7) == 0) {
         /* Task result -> convert any markdown tables to bullet-point lists
@@ -1472,7 +1622,7 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
         char *display = md_has_table(actual_content)
                         ? md_tables_to_bullets(actual_content) : NULL;
         const char *text = display ? display : actual_content;
-        mx_api_send_markdown(ctx, text);
+        mx_api_send_markdown_to(ctx, target_room, text);
         free(display);
     } else if (strncmp(filename, "ask_", 4) == 0) {
         /* user_ask question -> send with prompt */
@@ -1488,25 +1638,26 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
         free(html_content);
         str_append_cstr(&html, "<br/><br/><i>(Reply to answer)</i>");
 
-        mx_api_send_message(ctx, msg.data, html.data);
+        mx_api_send_to_room(ctx, target_room, msg.data, html.data);
         str_free(&msg);
         str_free(&html);
     } else if (strncmp(filename, "status_", 7) == 0) {
         /* Status notification.
-         * Suppress [done] notifications — the result itself is already
+         * Suppress [done] notifications -- the result itself is already
          * sent via result_* so this would just duplicate the "completed"
          * message in the chat. */
         if (strncmp(actual_content, "[done]", 6) == 0) {
+            free(route_token);
             free(content);
             return;
         }
         str_t msg = str_new(strlen(actual_content) + 16);
         str_append_cstr(&msg, "\xf0\x9f\x93\x8b ");
         str_append_cstr(&msg, actual_content);
-        mx_api_send_message(ctx, msg.data, NULL);
+        mx_api_send_to_room(ctx, target_room, msg.data, NULL);
         str_free(&msg);
     } else if (strncmp(filename, "image_", 6) == 0) {
-        /* Image file → upload to Matrix and send as m.image.
+        /* Image file -> upload to Matrix and send as m.image.
          * File format: first line = local file path
          *              optional second line = caption text */
         char *img_path = content;
@@ -1547,23 +1698,25 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
                 if (stat(img_path, &img_st) == 0)
                     fsize = (size_t)img_st.st_size;
 
-                mx_api_send_image(ctx, mxc_url, basename, mimetype, fsize);
+                mx_api_send_image_to(ctx, target_room, mxc_url, basename,
+                                     mimetype, fsize);
 
                 /* Send caption as a follow-up text message if present */
                 if (caption && caption[0]) {
-                    mx_api_send_markdown(ctx, caption);
+                    mx_api_send_markdown_to(ctx, target_room, caption);
                 }
 
                 fprintf(stderr, "[matrix] sent image: %s\n", basename);
             } else {
                 fprintf(stderr, "[matrix] failed to upload image: %s\n",
                         img_path);
-                mx_api_send_message(ctx,
-                    "⚠️ Failed to upload image to Matrix server.", NULL);
+                mx_api_send_to_room(ctx, target_room,
+                    "\xe2\x9a\xa0\xef\xb8\x8f Failed to upload image to Matrix server.", NULL);
             }
         }
     }
 
+    free(route_token);
     free(content);
 }
 
@@ -1598,7 +1751,11 @@ void *matrix_run(void *arg) {
         }
     }
     fprintf(stderr, "[matrix] logged in as %s\n", ctx->user_id);
-    fprintf(stderr, "[matrix] room: %s\n", ctx->room_id);
+    fprintf(stderr, "[matrix] default room: %s\n", ctx->room_id);
+    if (ctx->room_map_count > 0) {
+        fprintf(stderr, "[matrix] multi-room mode: %d workspace mappings\n",
+                ctx->room_map_count);
+    }
 
     /* Do initial sync if no since_token (to skip old history) */
     if (!ctx->since_token) {
@@ -1631,8 +1788,9 @@ void *matrix_run(void *arg) {
                 strerror(errno));
     }
 
-    /* Pending ask ID for routing replies as answers */
+    /* Pending ask ID and room for routing replies as answers */
     char pending_ask_id[128] = {0};
+    char pending_ask_room[256] = {0};
 
     /* Process any existing outbox files */
     mx_scan_outbox(ctx);
@@ -1658,6 +1816,12 @@ void *matrix_run(void *arg) {
             int n = cJSON_GetArraySize(events);
             for (int i = 0; i < n; i++) {
                 cJSON *ev = cJSON_GetArrayItem(events, i);
+
+                /* Extract source room_id (added by mx_api_sync) */
+                cJSON *ev_room_j = cJSON_GetObjectItem(ev, "_room_id");
+                const char *ev_room = (ev_room_j && ev_room_j->valuestring)
+                                      ? ev_room_j->valuestring : ctx->room_id;
+                const char *ev_workspace = mx_workspace_for_room(ctx, ev_room);
 
                 /* Only process m.room.message events */
                 cJSON *type = cJSON_GetObjectItem(ev, "type");
@@ -1685,8 +1849,8 @@ void *matrix_run(void *arg) {
                     if (!body_j || !body_j->valuestring) continue;
 
                     const char *msg_text = body_j->valuestring;
-                    fprintf(stderr, "[matrix] received from %s: %.100s%s\n",
-                            sender->valuestring, msg_text,
+                    fprintf(stderr, "[matrix] received from %s in %s: %.100s%s\n",
+                            sender->valuestring, ev_room, msg_text,
                             strlen(msg_text) > 100 ? "..." : "");
 
                     /* Handle commands */
@@ -1695,21 +1859,21 @@ void *matrix_run(void *arg) {
                         if (strcmp(cmd, "new") == 0 ||
                             strcmp(cmd, "clear") == 0) {
                             mx_write_cmd_new(ctx->mailbox_dir);
-                            mx_api_send_message(ctx,
-                                "🔄 Starting new session — context cleared.",
+                            mx_api_send_to_room(ctx, ev_room,
+                                "\xf0\x9f\x94\x84 Starting new session -- context cleared.",
                                 NULL);
-                            fprintf(stderr, "[matrix] !new → session reset\n");
+                            fprintf(stderr, "[matrix] !new -> session reset\n");
                             continue;
                         }
                         if (strcmp(cmd, "help") == 0) {
-                            mx_api_send_message(ctx,
-                                "🤖 Nash Bot Commands\n\n"
-                                "!new or !clear — Start a new session\n"
-                                "!help — Show this help\n\n"
+                            mx_api_send_to_room(ctx, ev_room,
+                                "\xf0\x9f\xa4\x96 Nash Bot Commands\n\n"
+                                "!new or !clear -- Start a new session\n"
+                                "!help -- Show this help\n\n"
                                 "Just type your query to interact with the agent.",
-                                "<b>🤖 Nash Bot Commands</b><br/><br/>"
-                                "<b>!new</b> or <b>!clear</b> — Start a new session<br/>"
-                                "<b>!help</b> — Show this help<br/><br/>"
+                                "<b>\xf0\x9f\xa4\x96 Nash Bot Commands</b><br/><br/>"
+                                "<b>!new</b> or <b>!clear</b> -- Start a new session<br/>"
+                                "<b>!help</b> -- Show this help<br/><br/>"
                                 "Just type your query to interact with the agent.");
                             continue;
                         }
@@ -1722,7 +1886,10 @@ void *matrix_run(void *arg) {
                         mx_write_answer(ctx->mailbox_dir, pending_ask_id,
                                        msg_text);
                         pending_ask_id[0] = 0;
-                        mx_api_send_message(ctx, "✓ Answer received", NULL);
+                        mx_api_send_to_room(ctx,
+                            pending_ask_room[0] ? pending_ask_room : ev_room,
+                            "\xe2\x9c\x93 Answer received", NULL);
+                        pending_ask_room[0] = 0;
                         continue;
                     }
 
@@ -1736,12 +1903,12 @@ void *matrix_run(void *arg) {
                     }
 
                     if (!is_reply) {
-                        /* New standalone message → reset session */
+                        /* New standalone message -> reset session */
                         mx_write_cmd_new(ctx->mailbox_dir);
-                        fprintf(stderr, "[matrix] new message → session reset\n");
+                        fprintf(stderr, "[matrix] new message -> session reset\n");
                         usleep(100000);  /* 100ms for daemon to process cmd_new */
                     } else {
-                        fprintf(stderr, "[matrix] reply → continuing session\n");
+                        fprintf(stderr, "[matrix] reply -> continuing session\n");
                     }
 
                     /* Create task */
@@ -1751,18 +1918,21 @@ void *matrix_run(void *arg) {
                     snprintf(task_id, sizeof(task_id), "mx%lx%04lx",
                              (long)ts.tv_sec, ts.tv_nsec / 100000L);
 
-                    fprintf(stderr, "[matrix] creating task_%s\n", task_id);
+                    fprintf(stderr, "[matrix] creating task_%s (room=%s ws=%s)\n",
+                            task_id, ev_room,
+                            ev_workspace ? ev_workspace : "(default)");
                     mx_write_task(ctx->mailbox_dir, task_id, msg_text,
-                                  NULL, ctx->room_id);
-                    mx_api_send_message(ctx, is_reply
-                        ? "⏳ Continuing..." : "⏳ Processing...", NULL);
+                                  ev_workspace, ev_room);
+                    mx_route_map_add(ctx, task_id, ev_room);
+                    mx_api_send_to_room(ctx, ev_room, is_reply
+                        ? "\xe2\x8f\xb3 Continuing..." : "\xe2\x8f\xb3 Processing...", NULL);
 
                 } else if (strcmp(msgtype->valuestring, "m.image") == 0) {
-                    /* Image message → download and create image analysis task */
+                    /* Image message -> download and create image analysis task */
                     cJSON *img_url = cJSON_GetObjectItem(content, "url");
                     if (!img_url || !img_url->valuestring) {
-                        mx_api_send_message(ctx,
-                            "⚠️ Image has no URL.", NULL);
+                        mx_api_send_to_room(ctx, ev_room,
+                            "\xe2\x9a\xa0\xef\xb8\x8f Image has no URL.", NULL);
                         continue;
                     }
 
@@ -1787,7 +1957,10 @@ void *matrix_run(void *arg) {
                         mx_write_answer(ctx->mailbox_dir, pending_ask_id,
                                        caption ? caption : "(image)");
                         pending_ask_id[0] = 0;
-                        mx_api_send_message(ctx, "✓ Answer received", NULL);
+                        mx_api_send_to_room(ctx,
+                            pending_ask_room[0] ? pending_ask_room : ev_room,
+                            "\xe2\x9c\x93 Answer received", NULL);
+                        pending_ask_room[0] = 0;
                         continue;
                     }
 
@@ -1804,11 +1977,11 @@ void *matrix_run(void *arg) {
                     if (!is_reply) {
                         mx_write_cmd_new(ctx->mailbox_dir);
                         fprintf(stderr,
-                                "[matrix] new image message → session reset\n");
+                                "[matrix] new image message -> session reset\n");
                         usleep(100000);  /* 100ms for daemon to process */
                     } else {
                         fprintf(stderr,
-                                "[matrix] image reply → continuing session\n");
+                                "[matrix] image reply -> continuing session\n");
                     }
 
                     /* Download the image */
@@ -1836,15 +2009,18 @@ void *matrix_run(void *arg) {
                                  (long)ts.tv_sec, ts.tv_nsec / 100000L);
 
                         fprintf(stderr,
-                                "[matrix] creating image task_%s\n", task_id);
+                                "[matrix] creating image task_%s (room=%s ws=%s)\n",
+                                task_id, ev_room,
+                                ev_workspace ? ev_workspace : "(default)");
                         mx_write_task(ctx->mailbox_dir, task_id,
-                                     task_text.data, NULL, ctx->room_id);
+                                     task_text.data, ev_workspace, ev_room);
+                        mx_route_map_add(ctx, task_id, ev_room);
                         str_free(&task_text);
-                        mx_api_send_message(ctx,
-                            "📷 Analyzing image...", NULL);
+                        mx_api_send_to_room(ctx, ev_room,
+                            "\xf0\x9f\x93\xb7 Analyzing image...", NULL);
                     } else {
-                        mx_api_send_message(ctx,
-                            "⚠️ Failed to download image from Matrix server.",
+                        mx_api_send_to_room(ctx, ev_room,
+                            "\xe2\x9a\xa0\xef\xb8\x8f Failed to download image from Matrix server.",
                             NULL);
                     }
                 }
@@ -1865,12 +2041,32 @@ void *matrix_run(void *arg) {
                 while (ptr < evbuf + nread) {
                     struct inotify_event *iev = (struct inotify_event *)ptr;
                     if (iev->len > 0 && iev->name[0] != '.') {
-                        /* Track ask_* files for pending ask routing */
+                        /* Track ask_* files for pending ask routing.
+                         * Read route_token from ask file to know which
+                         * room to send the answer acknowledgment to. */
                         if (strncmp(iev->name, "ask_", 4) == 0) {
                             size_t nlen = strlen(iev->name);
                             if (nlen < sizeof(pending_ask_id)) {
                                 snprintf(pending_ask_id, sizeof(pending_ask_id),
                                          "%s", iev->name + 4);
+                            }
+                            /* Read route_token from ask file before
+                             * it gets unlinked by process_outbox */
+                            char askpath[512];
+                            snprintf(askpath, sizeof(askpath),
+                                     "%s/outbox/%s", ctx->mailbox_dir,
+                                     iev->name);
+                            char *ask_data = slurp_file(askpath, NULL);
+                            if (ask_data) {
+                                char *ask_rt = NULL;
+                                mailbox_parse_headers(ask_data, NULL, &ask_rt);
+                                if (ask_rt && ask_rt[0]) {
+                                    snprintf(pending_ask_room,
+                                             sizeof(pending_ask_room),
+                                             "%s", ask_rt);
+                                }
+                                free(ask_rt);
+                                free(ask_data);
                             }
                         }
                         mx_process_outbox_file(ctx, iev->name);
