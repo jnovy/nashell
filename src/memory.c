@@ -1745,10 +1745,10 @@ int memory_init_embeddings(memory_t *m, const char *type,
                 embed_max_input_chars(m->embed));
     }
 
-    /* On first enable, embed any existing memories that lack .emb files */
+    /* Embed memories with missing, stale, or wrong-dimension .emb files */
     int embedded = memory_embed_all(m);
     if (embedded > 0) {
-        nash_log("[memory] generated embeddings for %d existing memories",
+        nash_log("[memory] (re)generated embeddings for %d memories",
                 embedded);
     }
 
@@ -1859,21 +1859,33 @@ int memory_embed_all(memory_t *m) {
         /* Check if embedding already exists AND has correct dimension.
          * The index caches has_emb + emb.dim from the .emb file loaded
          * at startup, so no disk I/O needed for already-embedded entries. */
+        char emb_path[NASH_PATH_MAX];
+        json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
+
         if (ie->has_emb) {
             if (m->embed->detected_dim > 0 && ie->emb.dim != m->embed->detected_dim) {
                 /* Wrong dimension (model changed) — delete stale .emb and re-embed */
-                char emb_path[NASH_PATH_MAX];
-                json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
                 unlink(emb_path);
                 embed_multi_vec_free(&ie->emb);
                 ie->has_emb = 0;
             } else {
-                continue;  /* correct dimension, skip */
+                /* Correct dimension — check if .json was modified after .emb
+                 * (e.g. external edit, git pull, file_edit bypass).
+                 * If so, the embedding is stale and must be regenerated. */
+                struct stat json_st, emb_st;
+                if (stat(ie->path, &json_st) == 0 &&
+                    stat(emb_path, &emb_st) == 0 &&
+                    json_st.st_mtime > emb_st.st_mtime) {
+                    /* .json is newer than .emb — stale embedding */
+                    unlink(emb_path);
+                    embed_multi_vec_free(&ie->emb);
+                    ie->has_emb = 0;
+                } else {
+                    continue;  /* up-to-date, skip */
+                }
             }
         } else {
             /* No embedding — check for corrupt .emb file on disk */
-            char emb_path[NASH_PATH_MAX];
-            json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
             struct stat st;
             if (stat(emb_path, &st) == 0) {
                 /* .emb exists but wasn't loaded (corrupt) — remove it */
