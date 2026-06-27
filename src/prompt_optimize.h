@@ -185,4 +185,21 @@ int optimize_parse_budget(const char *budget_str);
 void optimize_free_candidate(prompt_candidate_t *c);
 void optimize_free_evidence_bundle(sh_evidence_t *b);
 
+/* ── Per-query regression tracking [AHE-inspired] ─────── */
+
+/* A pass/fail flip between baseline and candidate reports */
+typedef struct {
+    const char *query_id;
+    int         was_pass;    /* baseline pass/fail */
+    int         now_pass;    /* candidate pass/fail */
+    double      delta_score; /* candidate score - baseline score */
+} query_flip_t;
+
+/* Compare two reports per-query. Returns flips array (caller frees).
+ * Sets *out_n_flips, *out_n_fixes, *out_n_regressions. */
+query_flip_t *optimize_compare_reports_per_query(
+        const regression_report_t *baseline,
+        const regression_report_t *candidate,
+        int *out_n_flips, int *out_n_fixes, int *out_n_regressions);
+
 #endif /* PROMPT_OPTIMIZE_H */

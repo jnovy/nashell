@@ -350,6 +350,24 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error("cannot write file");
     }
 
+    /* Smart wrapper: read-after-write verification [AHE-inspired].
+     * Catches silent write failures (disk full, permissions changed mid-write,
+     * NFS stale handles, etc.) at the tool level with zero token cost -- the
+     * agent never needs to re-read to confirm its edit applied. */
+    {
+        size_t verify_len = 0;
+        char *verify = slurp_file(path, &verify_len);
+        if (!verify || verify_len != result_len ||
+            memcmp(verify, result, result_len) != 0) {
+            free(verify);
+            free(content); free(result); free(pre_hash); free(pre_alias);
+            return tools_make_error(
+                "file_edit: write verification failed -- file content "
+                "does not match expected result (disk full? permissions?)");
+        }
+        free(verify);
+    }
+
     /* Store post-edit content */
     char *post_hash = store_save(ctx->store, result);
     char *post_alias = tool_register_alias(ctx, post_hash ? post_hash : "");

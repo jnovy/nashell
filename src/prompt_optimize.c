@@ -592,6 +592,117 @@ static int passes_acceptance_rule(const prompt_candidate_t *candidate,
     return (candidate->score > baseline->score + 0.001);
 }
 
+/* ════════════════════════════════════════════════════════
+ * Per-query regression tracking [AHE-inspired]
+ *
+ * Compares two regression reports query-by-query to find:
+ *   - Fixes:       pass in candidate, fail in baseline
+ *   - Regressions: fail in candidate, pass in baseline
+ *
+ * Closes regression blindness: the acceptance gate knows aggregate
+ * deltas, but per-query flips reveal WHICH queries are at risk.
+ * ════════════════════════════════════════════════════════ */
+
+/* Find a query_result by ID in a report. Returns NULL if not found. */
+static const query_result_t *find_query_in_report(
+        const regression_report_t *report, const char *query_id) {
+    if (!report || !query_id) return NULL;
+    for (int i = 0; i < report->n_bank_results; i++) {
+        bank_result_t *br = &report->bank_results[i];
+        for (int j = 0; j < br->n_results; j++) {
+            if (br->results[j].query_id &&
+                strcmp(br->results[j].query_id, query_id) == 0)
+                return &br->results[j];
+        }
+    }
+    return NULL;
+}
+
+/* Compare two reports per-query. Returns flips array (caller frees).
+ * *n_fixes and *n_regressions are set to counts.
+ * Public API: optimize_compare_reports_per_query() */
+query_flip_t *optimize_compare_reports_per_query(
+        const regression_report_t *baseline,
+        const regression_report_t *candidate,
+        int *out_n_flips, int *out_n_fixes, int *out_n_regressions) {
+    *out_n_flips = 0;
+    *out_n_fixes = 0;
+    *out_n_regressions = 0;
+    if (!baseline || !candidate) return NULL;
+
+    /* Count total queries in candidate for alloc */
+    int total = 0;
+    for (int i = 0; i < candidate->n_bank_results; i++)
+        total += candidate->bank_results[i].n_results;
+    if (total == 0) return NULL;
+
+    query_flip_t *flips = calloc((size_t)total, sizeof(query_flip_t));
+    int n = 0;
+
+    for (int i = 0; i < candidate->n_bank_results; i++) {
+        bank_result_t *br = &candidate->bank_results[i];
+        for (int j = 0; j < br->n_results; j++) {
+            query_result_t *cand_qr = &br->results[j];
+            const query_result_t *base_qr =
+                find_query_in_report(baseline, cand_qr->query_id);
+            if (!base_qr) continue;
+
+            if (base_qr->passed != cand_qr->passed) {
+                flips[n].query_id = cand_qr->query_id;
+                flips[n].was_pass = base_qr->passed;
+                flips[n].now_pass = cand_qr->passed;
+                flips[n].delta_score = cand_qr->score - base_qr->score;
+                if (cand_qr->passed && !base_qr->passed)
+                    (*out_n_fixes)++;
+                else
+                    (*out_n_regressions)++;
+                n++;
+            }
+        }
+    }
+    *out_n_flips = n;
+    return flips;
+}
+
+/* Format per-query flips for stderr logging */
+static void log_query_flips(const query_flip_t *flips, int n_flips,
+                            int n_fixes, int n_regressions) {
+    if (n_flips == 0) return;
+    fprintf(stderr, "  Per-query: %d fix%s, %d regression%s\n",
+            n_fixes, n_fixes != 1 ? "es" : "",
+            n_regressions, n_regressions != 1 ? "s" : "");
+    for (int i = 0; i < n_flips; i++) {
+        if (flips[i].now_pass)
+            fprintf(stderr, "    FIXED: %s (score %+.0f%%)\n",
+                    flips[i].query_id, flips[i].delta_score * 100);
+        else
+            fprintf(stderr, "    REGRESSED: %s (score %+.0f%%)\n",
+                    flips[i].query_id, flips[i].delta_score * 100);
+    }
+}
+
+/* Append flip info to a str_t for rejection audit */
+static void append_flip_audit(str_t *audit, const query_flip_t *flips,
+                              int n_flips, int n_fixes, int n_regressions) {
+    if (n_flips == 0) return;
+    str_appendf(audit, ". Per-query: %d fix%s, %d regression%s",
+                n_fixes, n_fixes != 1 ? "es" : "",
+                n_regressions, n_regressions != 1 ? "s" : "");
+    if (n_regressions > 0) {
+        str_append_cstr(audit, " [regressed: ");
+        int shown = 0;
+        for (int i = 0; i < n_flips && shown < 5; i++) {
+            if (!flips[i].now_pass) {
+                if (shown > 0) str_append_cstr(audit, ", ");
+                str_append_cstr(audit, flips[i].query_id);
+                shown++;
+            }
+        }
+        if (n_regressions > 5) str_append_cstr(audit, ", ...");
+        str_append_cstr(audit, "]");
+    }
+}
+
 /* MergeAccepted [§3.4]: pick accepted candidate with best score.
  * For text-blob harness surfaces, we use last-writer-wins with best delta. */
 static char *merge_accepted_prompts(prompt_candidate_t *accepted, int n) {
@@ -849,7 +960,11 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     }
 
     sh_evidence_t *evidence = optimize_build_evidence_bundle(baseline_report);
-    regression_free_report(baseline_report);
+
+    /* Keep baseline report alive for per-query regression tracking.
+     * round_baseline_report tracks the current baseline for flip detection. */
+    regression_report_t *round_baseline_report = baseline_report;
+    baseline_report = NULL;  /* ownership transferred */
 
     char *current = current_prompt ? strdup(current_prompt) : strdup("");
     prompt_candidate_t round_baseline = best;
@@ -950,6 +1065,11 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 if (cand.held_out_score >= 0)
                     fprintf(stderr, " [out: %.1f%%]", cand.held_out_score * 100);
 
+                /* Per-query regression tracking [AHE-inspired] */
+                int n_flips = 0, n_fixes = 0, n_regr = 0;
+                query_flip_t *flips = optimize_compare_reports_per_query(
+                    round_baseline_report, rpt, &n_flips, &n_fixes, &n_regr);
+
                 double d_in = 0, d_ho = 0;
                 int accept = passes_acceptance_rule(&cand, &round_baseline,
                                                     &d_in, &d_ho);
@@ -957,6 +1077,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 if (accept) {
                     fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
                             d_in * 100, d_ho * 100);
+                    log_query_flips(flips, n_flips, n_fixes, n_regr);
                     accepted_list[n_accepted] = cand;
                     accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
                     n_accepted++;
@@ -968,15 +1089,16 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 } else {
                     fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
                             d_in * 100, d_ho * 100);
+                    log_query_flips(flips, n_flips, n_fixes, n_regr);
                     if (n_rejected >= rejected_cap) {
                         rejected_cap *= 2;
                         rejected = realloc(rejected,
                             rejected_cap * sizeof(rejected_proposal_t));
                     }
                     rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
-                    /* SkillOpt: generate brief rejection audit */
+                    /* SkillOpt: generate brief rejection audit with per-query detail */
                     {
-                        str_t audit = str_new(128);
+                        str_t audit = str_new(256);
                         if (d_in < -0.001 && d_ho < -0.001)
                             str_appendf(&audit, "Regressed on both held-in (%.1f%%) "
                                         "and held-out (%.1f%%)", d_in * 100, d_ho * 100);
@@ -989,6 +1111,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                         else
                             str_appendf(&audit, "No net improvement (d_in=%.1f%%, "
                                         "d_ho=%.1f%%)", d_in * 100, d_ho * 100);
+                        append_flip_audit(&audit, flips, n_flips, n_fixes, n_regr);
                         rejected[n_rejected].audit = str_steal(&audit);
                     }
                     rejected[n_rejected].round = global_round;
@@ -996,6 +1119,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     rejected[n_rejected].delta_out = d_ho;
                     n_rejected++;
                 }
+                free(flips);
                 if (rpt) regression_free_report(rpt);
                 optimize_free_candidate(&cand);
             }
@@ -1028,13 +1152,21 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 round_baseline.held_out_score = best.held_out_score;
                 round_baseline.total_passed = best.total_passed;
                 round_baseline.total_queries = best.total_queries;
+
+                /* Update per-query baseline for next round's flip detection */
+                if (best_report) {
+                    regression_free_report(round_baseline_report);
+                    round_baseline_report = best_report;
+                    best_report = NULL;  /* ownership transferred */
+                }
             } else {
                 fprintf(stderr, "\n  No proposals accepted — h_{t+1} = h_t\n");
             }
 
             /* Rebuild evidence for next round */
             optimize_free_evidence_bundle(evidence);
-            evidence = best_report ? optimize_build_evidence_bundle(best_report) : NULL;
+            evidence = round_baseline_report
+                ? optimize_build_evidence_bundle(round_baseline_report) : NULL;
             if (best_report) regression_free_report(best_report);
 
             for (int a = 0; a < n_accepted; a++)
@@ -1088,6 +1220,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     free(current);
     free(slow_guidance);
     optimize_free_candidate(&round_baseline);
+    regression_free_report(round_baseline_report);
     optimize_free_evidence_bundle(evidence);
     for (int i = 0; i < n_rejected; i++) {
         free(rejected[i].prompt_text);
