@@ -33,4 +33,21 @@ char *repomap_build(const char *root_dir, const char *user_query,
                     const char **chat_files, int n_chat_files,
                     int max_chars);
 
+/* Extract definition symbols from in-memory file content.
+ *
+ * Reuses Phase 1 C/C++ parsing to extract function, type, and macro
+ * definitions without any disk I/O.  Used by eviction breadcrumbs to
+ * produce structural briefs instead of raw first-N-bytes.
+ *
+ * content:     file content (NUL-terminated)
+ * content_len: length in bytes
+ * filename:    original filename (extension used for language detection)
+ * out:         output buffer (comma-separated symbol names)
+ * out_cap:     output buffer capacity (including NUL)
+ *
+ * Returns chars written (0 if no symbols found or unsupported language).
+ * Output is always NUL-terminated. */
+int repomap_file_symbols(const char *content, int content_len,
+                         const char *filename, char *out, int out_cap);
+
 #endif /* REPOMAP_H */

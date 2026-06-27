@@ -21,11 +21,15 @@
 
 #include "react_internal.h"
 #include "compress.h"
+#include "embedding.h"
+#include "repomap.h"
 
 /* ── Algorithm-internal constants (stable, not policy-configurable) ── */
 /* Score formula coefficients now in react_internal.h (shared with emergency scorer). */
-/* Breadcrumb brief preview truncation (chars). */
+/* Breadcrumb brief preview truncation (chars — fallback when no structural symbols). */
 #define REACT_BREADCRUMB_BRIEF_LEN  80
+/* Structural breadcrumb capacity (chars — for repomap symbol extraction). */
+#define REACT_BREADCRUMB_STRUCT_LEN 200
 /* Minimum tool content length to include in eviction summary. */
 #define REACT_SUMMARY_TOOL_MIN_LEN  50
 /* Minimum per-component breadcrumb capacity (chars). */
@@ -470,6 +474,65 @@ int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
          - size_bonus + pos_norm;
 }
 
+/* ── Semantic-Aware Progressive Scoring ──────────────── */
+
+/* Adds a semantic relevance bonus to the base progressive score.
+ * The bonus (0..REACT_SCORE_SEMANTIC_WEIGHT) is derived from pre-computed
+ * cosine similarities between each message and the current task+reasoning.
+ * A LOW-importance message highly relevant to the current task (sim ~1.0)
+ * gets +40, potentially surviving over irrelevant NORMAL messages.
+ * The bonus can never override HIGH importance (those are skipped entirely
+ * by evict_mark_candidates before scoring).
+ *
+ * userdata = evict_score_ctx_t* (partner map + pre-computed similarities).
+ * When similarities is NULL, falls back to base formula (zero overhead). */
+int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
+                                     int n_evictable, void *userdata) {
+    const evict_score_ctx_t *sctx = (const evict_score_ctx_t *)userdata;
+
+    /* Compute base score (same formula as evict_score_progressive) */
+    int imp = (int)chat->msgs[mi].importance;
+    int rec = (int)chat->msgs[mi].recoverability;
+    int msg_len = (int)chat->msgs[mi].content_len;
+
+    /* Include partner size for tool_call messages */
+    const evict_partner_map_t *pmap = sctx ? sctx->pmap : NULL;
+    if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0
+        && chat->msgs[mi].tool_calls_json) {
+        int pi = pmap->partner[mi];
+        msg_len += (int)chat->msgs[pi].content_len;
+    }
+
+    int pos_norm = (n_evictable > 1)
+        ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
+
+    int size_bonus = 0;
+    if (msg_len > REACT_SCORE_SIZE_THRESH) {
+        if (rec > 0)
+            size_bonus = (msg_len / REACT_SCORE_SIZE_DIV) * rec;
+        else
+            size_bonus = msg_len / (REACT_SCORE_SIZE_DIV * 2);
+    }
+    if (size_bonus > REACT_SCORE_SIZE_MAX) size_bonus = REACT_SCORE_SIZE_MAX;
+
+    int base_score = imp * REACT_SCORE_IMP_WEIGHT
+                   - rec * REACT_SCORE_REC_WEIGHT
+                   - size_bonus + pos_norm;
+
+    /* Semantic relevance bonus from pre-computed similarities */
+    int semantic_bonus = 0;
+    if (sctx && sctx->similarities && mi < sctx->n_msgs) {
+        float sim = sctx->similarities[mi];
+        if (sim > 0.0f) {
+            semantic_bonus = (int)(sim * (float)REACT_SCORE_SEMANTIC_WEIGHT);
+            if (semantic_bonus > REACT_SCORE_SEMANTIC_WEIGHT)
+                semantic_bonus = REACT_SCORE_SEMANTIC_WEIGHT;
+        }
+    }
+
+    return base_score + semantic_bonus;
+}
+
 /* ── Review B4: Generic Mark-Candidates ───────────────── */
 
 /* Score, sort, and mark evictable messages using a caller-supplied scoring
@@ -705,16 +768,31 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                 seen_aliases[n_seen++] = alias;
             if (dup) continue;
 
-            char brief[REACT_BREADCRUMB_BRIEF_LEN + 1];
+            char brief[REACT_BREADCRUMB_STRUCT_LEN + 1];
             int msg_clen = (int)chat->msgs[mi].content_len;
-            int blen = msg_clen > REACT_BREADCRUMB_BRIEF_LEN
-                ? REACT_BREADCRUMB_BRIEF_LEN : msg_clen;
-            /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
-            blen = (int)utf8_clamp(content, (size_t)blen);
-            memcpy(brief, content, (size_t)blen);
-            brief[blen] = '\0';
-            for (int b = 0; brief[b]; b++)
-                if (brief[b] == '\n' || brief[b] == '\r') brief[b] = ' ';
+            int blen = 0;
+
+            /* Try structural extraction via repomap symbol parser.
+             * Gives "func1(), struct_t, MACRO" instead of raw first-N-bytes. */
+            if (chat->msgs[mi].tool_name
+                && strcmp(chat->msgs[mi].tool_name, "file_read") == 0
+                && chat->msgs[mi].tool_path) {
+                blen = repomap_file_symbols(content, msg_clen,
+                                            chat->msgs[mi].tool_path,
+                                            brief, REACT_BREADCRUMB_STRUCT_LEN);
+            }
+
+            /* Fallback: first N raw bytes (original behavior) */
+            if (blen == 0) {
+                blen = msg_clen > REACT_BREADCRUMB_BRIEF_LEN
+                    ? REACT_BREADCRUMB_BRIEF_LEN : msg_clen;
+                blen = (int)utf8_clamp(content, (size_t)blen);
+                memcpy(brief, content, (size_t)blen);
+                brief[blen] = '\0';
+                for (int b = 0; brief[b]; b++)
+                    if (brief[b] == '\n' || brief[b] == '\r') brief[b] = ' ';
+            }
+
             str_appendf(&breadcrumb, "- %s: %s (%s, %d chars)\n",
                 chat->msgs[mi].store_alias, brief, role, msg_clen);
             continue;
@@ -1127,12 +1205,117 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
         : (remaining_nonhead * effective_target_pct / 100);
     if (target_remaining < floor_chars) target_remaining = floor_chars;
 
+    /* ── Step 3.1: Build semantic scoring context ── */
+    /* Pre-compute cosine similarities between task and each evictable message.
+     * Uses existing ONNX embedding infrastructure (embedding.h).
+     * Graceful fallback: if embeddings unavailable, similarities stays NULL
+     * and the scorer uses the base formula only (zero overhead). */
+    evict_score_ctx_t score_ctx = {0};
+    score_ctx.pmap = &pmap;
+
+    embed_ctx_t *emb = memory_embed_ctx(ctx->tools->memory);
+    if (emb && emb->available) {
+        /* Build task text: user query + last assistant thought.
+         * This captures both WHAT the user asked and WHERE the model is. */
+        str_t task_text = str_new(512);
+
+        /* Find user query */
+        for (int i = 0; i < chat->n_msgs; i++) {
+            if (chat->msgs[i].msg_type == LLM_MSG_USER_QUERY
+                && chat->msgs[i].content) {
+                str_append_cstr(&task_text, chat->msgs[i].content);
+                break;
+            }
+        }
+
+        /* Append last assistant thought (recent reasoning direction) */
+        for (int i = chat->n_msgs - 1; i >= 0; i--) {
+            if (chat->msgs[i].role && strcmp(chat->msgs[i].role, "assistant") == 0
+                && chat->msgs[i].content && chat->msgs[i].content[0]) {
+                str_append_cstr(&task_text, "\n");
+                int tlen = (int)chat->msgs[i].content_len;
+                if (tlen > REACT_THOUGHT_TRUNC_LEN) tlen = REACT_THOUGHT_TRUNC_LEN;
+                str_append(&task_text, chat->msgs[i].content, (size_t)tlen);
+                break;
+            }
+        }
+
+        if (task_text.len > 0) {
+            /* Truncate to embedding model's max input */
+            int max_chars = embed_max_input_chars(emb);
+            if ((int)task_text.len > max_chars)
+                task_text.data[max_chars] = '\0';
+
+            embed_vec_t task_vec = embed_text(emb, task_text.data);
+            if (task_vec.data) {
+                /* Batch-embed all evictable messages (first 500 chars each) */
+                const char **texts = malloc((size_t)n_evictable * sizeof(char *));
+                char **trunc_bufs = calloc((size_t)n_evictable, sizeof(char *));
+
+                if (texts && trunc_bufs) {
+                    for (int i = 0; i < n_evictable; i++) {
+                        int mi = evict_start + i;
+                        const char *c = chat->msgs[mi].content;
+                        int cl = (int)chat->msgs[mi].content_len;
+                        if (!c || cl < 50) {
+                            texts[i] = "";
+                            continue;
+                        }
+                        if (cl > REACT_EMBED_TRUNC_CHARS) {
+                            trunc_bufs[i] = malloc(REACT_EMBED_TRUNC_CHARS + 1);
+                            if (trunc_bufs[i]) {
+                                memcpy(trunc_bufs[i], c, REACT_EMBED_TRUNC_CHARS);
+                                trunc_bufs[i][REACT_EMBED_TRUNC_CHARS] = '\0';
+                                texts[i] = trunc_bufs[i];
+                            } else {
+                                texts[i] = "";
+                            }
+                        } else {
+                            texts[i] = c;
+                        }
+                    }
+
+                    int out_count = 0;
+                    embed_vec_t *msg_vecs = embed_text_batch(emb, texts, n_evictable, &out_count);
+
+                    if (msg_vecs && out_count == n_evictable) {
+                        score_ctx.similarities = calloc((size_t)chat->n_msgs, sizeof(float));
+                        score_ctx.n_msgs = chat->n_msgs;
+                        if (score_ctx.similarities) {
+                            for (int i = 0; i < n_evictable; i++) {
+                                int mi = evict_start + i;
+                                score_ctx.similarities[mi] = embed_cosine_sim(
+                                    &task_vec, &msg_vecs[i]);
+                            }
+                        }
+                    }
+
+                    /* Cleanup batch results */
+                    if (msg_vecs) {
+                        for (int i = 0; i < out_count; i++)
+                            embed_vec_free(&msg_vecs[i]);
+                        free(msg_vecs);
+                    }
+                    for (int i = 0; i < n_evictable; i++)
+                        free(trunc_bufs[i]);
+                }
+                free(trunc_bufs);
+                free(texts);
+                embed_vec_free(&task_vec);
+            }
+        }
+        str_free(&task_text);
+    }
+
     int n_to_evict = evict_mark_candidates(chat, evict_start, evict_end,
                                             &pmap, floor_chars,
                                             remaining_nonhead, tail_chars,
                                             target_remaining,
-                                            evict_score_progressive, &pmap /* FIX #2 */,
+                                            evict_score_progressive_semantic,
+                                            &score_ctx,
                                             evict_mark);
+
+    free(score_ctx.similarities);  /* NULL-safe */
 
     /* ── Step 4: Sweep phase — remove marked messages + build breadcrumbs ── */
     char *bc_str = NULL;

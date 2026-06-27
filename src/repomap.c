@@ -447,8 +447,11 @@ static void extract_c_tags(rm_state_t *st, int file_idx) {
             }
         }
 
-        /* Function declarations in headers (extern or ending with ;) */
-        if (strchr(line, '(') && strchr(line, ';')) {
+        /* Function declarations in headers (extern or ending with ;).
+         * Must be non-indented to avoid matching statements inside
+         * function bodies (e.g. "if (x) return 1;"). */
+        if (line[0] != ' ' && line[0] != '\t' && line[0] != '/'
+            && strchr(line, '(') && strchr(line, ';')) {
             char fname[RM_MAX_IDENT_LEN];
             /* Try extracting function name before first '(' */
             const char *paren = strchr(line, '(');
@@ -462,8 +465,21 @@ static void extract_c_tags(rm_state_t *st, int file_idx) {
                 if (len > 1 && len < RM_MAX_IDENT_LEN) {
                     memcpy(fname, p, (size_t)len);
                     fname[len] = '\0';
+                    /* Filter control-flow keywords */
+                    static const char *kw[] = {
+                        "if", "for", "while", "switch", "return",
+                        "sizeof", "typeof", "case", "else", "do",
+                        "goto", NULL
+                    };
+                    int is_kw = 0;
+                    for (int k = 0; kw[k]; k++) {
+                        if (len == (int)strlen(kw[k])
+                            && strncmp(fname, kw[k], (size_t)len) == 0) {
+                            is_kw = 1; break;
+                        }
+                    }
                     /* Only if it looks like a declaration (has type before) */
-                    if (p > line)
+                    if (!is_kw && p > line)
                         add_tag(st, file_idx, lineno, fname, TAG_DEFINITION, SYM_FUNCTION);
                 }
             }
@@ -1061,4 +1077,123 @@ char *repomap_build(const char *root_dir, const char *user_query,
     }
 
     return str_steal(&out);
+}
+
+/* ── Per-file Symbol Extraction (for eviction breadcrumbs) ─────────── */
+
+/* Split in-memory content into a lines array (replaces load_file_lines I/O).
+ * Caller must free each line and the array itself. */
+static char **split_content_lines(const char *content, int content_len,
+                                  int *out_n_lines) {
+    *out_n_lines = 0;
+    if (!content || content_len <= 0) return NULL;
+
+    int cap = 128;
+    char **lines = malloc(sizeof(char *) * (size_t)cap);
+    if (!lines) return NULL;
+
+    const char *p = content;
+    const char *end = content + content_len;
+
+    while (p < end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        const char *line_end = nl ? nl : end;
+        int len = (int)(line_end - p);
+
+        /* Clamp to RM_MAX_LINE_LEN to match load_file_lines behavior */
+        if (len >= RM_MAX_LINE_LEN) len = RM_MAX_LINE_LEN - 1;
+
+        if (*out_n_lines >= cap) {
+            cap *= 2;
+            char **tmp = realloc(lines, sizeof(char *) * (size_t)cap);
+            if (!tmp) break;
+            lines = tmp;
+        }
+
+        lines[*out_n_lines] = malloc((size_t)(len + 1));
+        if (!lines[*out_n_lines]) break;
+        memcpy(lines[*out_n_lines], p, (size_t)len);
+        lines[*out_n_lines][len] = '\0';
+        (*out_n_lines)++;
+
+        p = nl ? nl + 1 : end;
+    }
+
+    return lines;
+}
+
+/* Suffix decoration for symbol type: "()" for functions, nothing for others. */
+static const char *sym_suffix(sym_type_t st) {
+    return (st == SYM_FUNCTION) ? "()" : "";
+}
+
+int repomap_file_symbols(const char *content, int content_len,
+                         const char *filename, char *out, int out_cap) {
+    if (!content || content_len <= 0 || !filename || !out || out_cap < 2) {
+        if (out && out_cap > 0) out[0] = '\0';
+        return 0;
+    }
+    out[0] = '\0';
+
+    /* Language detection via extension — only C/C++ has an extractor */
+    const char *dot = strrchr(filename, '.');
+    if (!dot) return 0;
+    int is_c = (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
+                strcmp(dot, ".cpp") == 0 || strcmp(dot, ".hpp") == 0 ||
+                strcmp(dot, ".cc") == 0 || strcmp(dot, ".hh") == 0);
+    if (!is_c) return 0;
+
+    /* Split content into lines */
+    int n_lines = 0;
+    char **lines = split_content_lines(content, content_len, &n_lines);
+    if (!lines || n_lines == 0) {
+        free(lines);
+        return 0;
+    }
+
+    /* Build minimal rm_state_t with one file entry */
+    rm_state_t st;
+    memset(&st, 0, sizeof(st));
+    st.n_files = 1;
+    st.files[0].lines = lines;
+    st.files[0].n_lines = n_lines;
+    /* path is only used for graph building, not needed here */
+    st.files[0].path[0] = '\0';
+
+    /* Run Phase 1 C tag extraction */
+    extract_c_tags(&st, 0);
+
+    /* Collect TAG_DEFINITION entries into output buffer */
+    int written = 0;
+    int n_syms = 0;
+    for (int i = 0; i < st.n_tags; i++) {
+        if (st.tags[i].kind != TAG_DEFINITION) continue;
+        if (st.tags[i].sym_type == SYM_INCLUDE) continue;  /* skip #include refs */
+
+        const char *name = st.tags[i].name;
+        const char *suf = sym_suffix(st.tags[i].sym_type);
+        int name_len = (int)strlen(name);
+        int suf_len = (int)strlen(suf);
+        int sep_len = (n_syms > 0) ? 2 : 0;  /* ", " separator */
+        int need = sep_len + name_len + suf_len;
+
+        if (written + need >= out_cap - 1) break;  /* no room */
+
+        if (n_syms > 0) {
+            out[written++] = ',';
+            out[written++] = ' ';
+        }
+        memcpy(out + written, name, (size_t)name_len);
+        written += name_len;
+        memcpy(out + written, suf, (size_t)suf_len);
+        written += suf_len;
+        n_syms++;
+    }
+    out[written] = '\0';
+
+    /* Cleanup */
+    for (int i = 0; i < n_lines; i++) free(lines[i]);
+    free(lines);
+
+    return written;
 }

@@ -31,6 +31,12 @@
 #define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
 #define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
 #define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
+#define REACT_SCORE_SEMANTIC_WEIGHT 40   /* max semantic relevance bonus (< half imp tier) */
+
+/* Truncation limit for message content before embedding (chars).
+ * The "topic" is usually in the first 500 chars; embedding the full
+ * content of large tool results would waste compute for marginal gain. */
+#define REACT_EMBED_TRUNC_CHARS     500
 
 /* ── Eviction Policy ───────────────────────────────── */
 /* Computed once at eviction entry from config.  Replaces 20+ scattered
@@ -160,6 +166,19 @@ typedef struct {
     int *partner;     /* partner[i] = partner index for msg i, or -1 */
     int  n_msgs;      /* number of messages (for bounds checking) */
 } evict_partner_map_t;
+
+/* Extended scoring context for semantic-aware eviction.
+ * Wraps the partner map (needed for size accounting) plus pre-computed
+ * cosine similarities between each message and the current task.
+ * When similarities is NULL, the scorer falls back to the base formula
+ * (zero overhead — graceful degradation when embeddings unavailable). */
+typedef struct {
+    evict_partner_map_t *pmap;        /* partner map (never NULL) */
+    float               *similarities; /* pre-computed cosine(task, msg[i]) per msg
+                                        * indexed by absolute msg index; NULL if
+                                        * embeddings unavailable */
+    int                  n_msgs;       /* length of similarities array */
+} evict_score_ctx_t;
 
 /* ── Generic Mark-Sweep (Review B4) ────────────────── */
 
@@ -579,6 +598,13 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
 
 int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
                             int n_evictable, void *userdata);
+
+/* Semantic-aware progressive scoring callback.
+ * Adds a semantic relevance bonus (0..REACT_SCORE_SEMANTIC_WEIGHT) from
+ * pre-computed cosine similarities stored in evict_score_ctx_t.
+ * Falls back to base formula when similarities array is NULL. */
+int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
+                                     int n_evictable, void *userdata);
 
 /* ── Step 2.5: Tool Lifecycle — Stale/Superseded Read Detection ────── */
 
