@@ -482,14 +482,10 @@ config_t *config_load(const char *path) {
         if (mode_str) {
             if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
                 cfg->thinking.mode = THINKING_ON;
-            else if (strcmp(mode_str, "edrm") == 0) {
-                fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
-                cfg->thinking.mode = THINKING_ON;
-            }
             else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
             else {
-                fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+                fprintf(stderr, "[config] unknown thinking mode \"%s\" -- defaulting to \"yes\"\n", mode_str);
                 cfg->thinking.mode = THINKING_ON;
             }
             free(mode_str);
@@ -593,14 +589,10 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
     if (mode_str) {
         if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
             tc->mode = THINKING_ON;
-        else if (strcmp(mode_str, "edrm") == 0) {
-            fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
-            tc->mode = THINKING_ON;
-        }
         else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
             tc->mode = THINKING_OFF;
         else {
-            fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+            fprintf(stderr, "[config] unknown thinking mode \"%s\" -- defaulting to \"yes\"\n", mode_str);
             tc->mode = THINKING_ON;
         }
         free(mode_str);
@@ -1282,14 +1274,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (mode_str) {
             if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
                 cfg->thinking.mode = THINKING_ON;
-            else if (strcmp(mode_str, "edrm") == 0) {
-                fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
-                cfg->thinking.mode = THINKING_ON;
-            }
             else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
             else {
-                fprintf(stderr, "[config] unknown thinking mode \"%s\" — defaulting to \"yes\"\n", mode_str);
+                fprintf(stderr, "[config] unknown thinking mode \"%s\" -- defaulting to \"yes\"\n", mode_str);
                 cfg->thinking.mode = THINKING_ON;
             }
             free(mode_str);

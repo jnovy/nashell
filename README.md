@@ -141,7 +141,7 @@ Nash supports four LLM providers through a unified vtable interface:
 
 | Provider | Endpoint | Features |
 |----------|----------|----------|
-| **Local** (llama.cpp) | Any OpenAI-compatible server | `chat_template_kwargs`, `reasoning_budget`, EDRM probing |
+| **Local** (llama.cpp) | Any OpenAI-compatible server | `chat_template_kwargs`, `reasoning_budget` |
 | **OpenAI** | `api.openai.com` | Strict mode (`additionalProperties: false`), prompt caching |
 | **Anthropic** | `api.anthropic.com` | `input_schema` format, extended thinking, prompt caching |
 | **Vertex AI** | Google Cloud | Anthropic-on-Vertex via `gcloud auth` token |
@@ -489,35 +489,18 @@ Key advantages over native thinking (`on` mode):
 
 The reasoning messages are marked LOW importance so they compress/evict early during context pressure, preventing accumulation.
 
-### EDRM — Entropy Dynamics Routing for Thinking Mode
-
-Nash implements **Entropy Dynamics Routing** based on [arXiv:2605.22873] to dynamically decide whether to enable extended thinking (chain-of-thought) for each LLM call. EDRM only works with local llama.cpp providers (requires logprobs):
-
-1. **Probe phase** — generate a short completion (~30 tokens) and analyze entropy dynamics
-2. **Compute descriptors** — mean entropy (h_mean), Spearman rank correlation (ρ_s), von Neumann ratio (VNR)
-3. **Route decision** — if entropy trajectory shows uncertainty (high h_mean, negative ρ_s, high VNR), enable thinking mode
-
-This avoids the latency and cost of always-on thinking while ensuring complex queries get the reasoning depth they need.
-
 Configuration:
 ```toml
 [thinking]
-mode = "structural"      # off | on | edrm | structural (default)
-probe_tokens = 30        # EDRM only
-probe_n_probs = 10       # EDRM only
-probe_temperature = 0.6  # EDRM: probe sampling temperature
-tau_rho = -0.1           # EDRM: Spearman correlation threshold
-tau_vnr = 1.5            # EDRM: von Neumann ratio threshold
-tau_h = 4.0              # EDRM: mean entropy threshold
-budget = -1              # -1=unrestricted, 0=none, N>0=max tokens (on/edrm only)
+mode = "on"              # off | on | structural (default: on)
+budget = -1              # -1=unrestricted, 0=none, N>0=max thinking tokens
 ```
 
 | Mode | Mechanism | Provider Requirement | Speed | Cost |
 |------|-----------|---------------------|-------|------|
 | `off` | No reasoning phase | Any | Fastest | Lowest |
 | `on` | Native thinking API | Anthropic/OpenAI/llama.cpp | Slowest | Highest |
-| `edrm` | Entropy probe → route to on/off | Local only (logprobs) | Variable | Variable |
-| **`structural`** | Two-call: reason (no tools) → act | **Any** | Fast | Low |
+| **`structural`** | Two-call: reason (no tools) -> act | **Any** | Fast | Low |
 
 ### Harness-1 Context Management
 
@@ -864,8 +847,8 @@ chars_per_token = 4.0
 native_context = 131072
 
 [thinking]
-mode = "edrm"
-budget = 8192                          # constrained — local model
+mode = "on"
+budget = 8192                          # constrained -- local model
 
 [client]
 temperature = 0.5                      # lower = fewer hallucinations
@@ -1136,7 +1119,7 @@ api_base = "http://192.168.1.18:8080"    # llama.cpp server
 # caching = false                         # prompt caching (Anthropic)
 
 [thinking]
-mode = "edrm"                             # off | on | edrm
+mode = "on"                               # off | on | structural
 budget = -1                               # -1=unrestricted, 0=none, N>0=max tokens
 
 [embedding]
@@ -1380,7 +1363,6 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 ### Cognitive Architecture
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
-| [EDRM / Entropy Phase Transitions](https://arxiv.org/abs/2605.22873) | 2026 | Entropy dynamics predict reasoning need | EDRM routing for thinking mode (probe → route → generate) |
 | [OpenDev / Terminal AI Agents](https://arxiv.org/abs/2603.05344) | 2026 | Structural thinking separation — remove tools during reasoning phase | Structural reasoning mode (default): two-call pattern (reason without tools → act with tools) |
 | [TriMem](https://arxiv.org/abs/2605.19952) | 2026 | Three-tier memory (working/episodic/semantic) | Scratchpad (working) + journal (episodic) + memory (semantic) |
 | ["Language Models Need Sleep"](https://arxiv.org/abs/2605.26099) | 2026 | Dreaming/consolidation essential for memory health | Post-loop Bayesian pruning + dedup + consolidation |

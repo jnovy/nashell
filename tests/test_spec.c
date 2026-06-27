@@ -58,7 +58,7 @@ static void test_profile_load_extended(void) {
         "system_prompt_extra = \"Be concise.\"\n"
         "\n"
         "[thinking]\n"
-        "mode = \"edrm\"\n"
+        "mode = \"on\"\n"
         "budget = 4096\n"
         "\n"
         "[client]\n"
@@ -119,7 +119,7 @@ static void test_profile_load_extended(void) {
     ASSERT_STR_CONTAINS(p->system_prompt_extra, "Be concise");
 
     /* Thinking */
-    ASSERT_EQ(p->thinking.mode, THINKING_EDRM);
+    ASSERT_EQ(p->thinking.mode, THINKING_ON);
     ASSERT_EQ(p->thinking.budget, 4096);
 
     /* Client */
@@ -200,7 +200,7 @@ static void test_apply_profile(void) {
         "system_prompt_extra = \"Model rules here.\"\n"
         "\n"
         "[thinking]\n"
-        "mode = \"edrm\"\n"
+        "mode = \"on\"\n"
         "budget = 8192\n"
         "\n"
         "[client]\n"
@@ -248,7 +248,7 @@ static void test_apply_profile(void) {
     ASSERT_EQ(cfg->memory_index_max, 40);
     ASSERT_EQ(cfg->cycling_detection, 1);
     ASSERT_STR_CONTAINS(cfg->system_prompt_extra, "Model rules here");
-    ASSERT_EQ(cfg->thinking.mode, THINKING_EDRM);
+    ASSERT_EQ(cfg->thinking.mode, THINKING_ON);
     ASSERT_EQ(cfg->thinking.budget, 8192);
 
     /* Verify react flags stored on cfg */
@@ -467,7 +467,7 @@ static void test_spec_roundtrip(void) {
     cfg1->recall_min_score = 0.35;
     cfg1->memory_index_max = 42;
     cfg1->cycling_detection = 1;
-    cfg1->thinking.mode = THINKING_EDRM;
+    cfg1->thinking.mode = THINKING_ON;
     cfg1->thinking.budget = 4096;
     cfg1->shell_timeout = 120;
     cfg1->web_timeout = 15;
@@ -497,7 +497,7 @@ static void test_spec_roundtrip(void) {
     ASSERT_DBL_EQ(cfg2->recall_min_score, 0.35, 0.01);
     ASSERT_EQ(cfg2->memory_index_max, 42);
     ASSERT_EQ(cfg2->cycling_detection, 1);
-    ASSERT_EQ(cfg2->thinking.mode, THINKING_EDRM);
+    ASSERT_EQ(cfg2->thinking.mode, THINKING_ON);
     ASSERT_EQ(cfg2->thinking.budget, 4096);
     ASSERT_EQ(cfg2->shell_timeout, 120);
     ASSERT_EQ(cfg2->web_timeout, 15);
