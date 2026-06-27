@@ -1018,6 +1018,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
         e->value = strdup(ie->value);
         e->description = ie->description ? strdup(ie->description) : NULL;
         e->pinned = ie->pinned;
+        e->created_at = ie->created_at; /* FIX: was missing — format_recency() needs this */
         e->recall_hits = ie->recall_hits;
         e->recall_misses = ie->recall_misses;
         e->belief_entropy = ie->belief_entropy;

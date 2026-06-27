@@ -362,6 +362,59 @@ static void test_skill_not_pruned(void) {
     free(dir);
 }
 
+/* ── test_skill_description_populated ──
+ * Verifies that memory_query() populates the description field
+ * (progressive disclosure: agents see description first, then load
+ * full value on demand via memory_search key=). */
+static void test_skill_description_populated(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    /* Store a skill with a multi-sentence value */
+    memory_store(m, "skill:progressive-test",
+                 "When debugging react loops, count total steps vs tool calls. "
+                 "This is the second sentence with more detail about the procedure. "
+                 "Step 3 involves checking token counts for anomalies.",
+                 0, NULL, NULL, 0);
+
+    memory_results_t results = memory_query(m, "progressive", 5);
+    ASSERT_GT(results.count, 0);
+    ASSERT_STR_EQ(results.entries[0].key, "skill:progressive-test");
+
+    /* Description should be populated (auto-generated first sentence) */
+    ASSERT_NOT_NULL(results.entries[0].description);
+    ASSERT(strlen(results.entries[0].description) > 0);
+    /* Description should be shorter than full value */
+    ASSERT(strlen(results.entries[0].description) < strlen(results.entries[0].value));
+    /* Description should contain the first sentence */
+    ASSERT_STR_CONTAINS(results.entries[0].description, "debugging react loops");
+
+    memory_results_free(&results);
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
+/* ── test_skill_created_at_populated ──
+ * Verifies that memory_query() copies created_at from index to results.
+ * (Bug fix: was previously missing, causing format_recency() to always show "unknown".) */
+static void test_skill_created_at_populated(void) {
+    char *dir = make_test_dir();
+    memory_t *m = memory_new(dir);
+
+    memory_store(m, "skill:recency-test", "test value", 0, NULL, NULL, 0);
+
+    memory_results_t results = memory_query(m, "recency", 5);
+    ASSERT_GT(results.count, 0);
+    /* created_at should be a recent epoch timestamp (> 2024-01-01) */
+    ASSERT(results.entries[0].created_at > 1704067200.0);
+
+    memory_results_free(&results);
+    memory_free(m);
+    rm_rf(dir);
+    free(dir);
+}
+
 /* ═══════════════════════════════════════════════════════════════
  * Priority 3: Error Eviction Pattern Tests
  * (Tests the error detection pattern used in react.c context management)
@@ -564,6 +617,8 @@ int main(void) {
     RUN_TEST(test_skill_in_index);
     RUN_TEST(test_skill_recall_by_tag);
     RUN_TEST(test_skill_not_pruned);
+    RUN_TEST(test_skill_description_populated);
+    RUN_TEST(test_skill_created_at_populated);
 
     /* Priority 3: Error Eviction Pattern */
     printf("\n  --- Error Eviction Pattern ---\n");

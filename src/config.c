@@ -63,6 +63,8 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
     if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 1;
     if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 1;
+    /* skill_full_disclosure: 0 = progressive disclosure (default via calloc),
+     * 1 = full text. No need for sentinel — calloc zero = desired default. */
     if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
     if (cfg->eviction_floor_pct <= 0)   cfg->eviction_floor_pct = 20;
     if (cfg->scratchpad_budget_pct <= 0) cfg->scratchpad_budget_pct = 15;
@@ -356,6 +358,7 @@ config_t *config_load(const char *path) {
         cfg->max_lessons_per_query = toml_int(limits, "max_lessons_per_query", -1);
         cfg->max_strategies_per_query = toml_int(limits, "max_strategies_per_query", -1);
         cfg->max_antipatterns_per_query = toml_int(limits, "max_antipatterns_per_query", -1);
+        cfg->skill_full_disclosure = toml_bl(limits, "skill_full_disclosure", 0);
         cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
         cfg->eviction_floor_pct   = toml_int(limits, "eviction_floor_pct", -1);
         cfg->scratchpad_budget_pct = toml_int(limits, "scratchpad_budget_pct", -1);

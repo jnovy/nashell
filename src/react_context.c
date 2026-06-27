@@ -30,16 +30,24 @@ static const char *format_recency(double created_at, char *buf, size_t bufsz) {
 /* Review B5: Converted from INJECT_TYPE macro to debuggable static function.
  * Injects relevant memories of a given type prefix into the chat context.
  * Change 3 (arXiv 2605.15184 Finding #6): Enriched rendering — includes
- * temporal recency and confidence metadata alongside memory content. */
+ * temporal recency and confidence metadata alongside memory content.
+ *
+ * Progressive disclosure (arXiv 2604.08224 §4.3.3): when summary_only=1,
+ * inject only the description (first sentence, ≤250 chars) instead of full
+ * value. The agent can call memory_search(key=...) to load full content
+ * on demand. Saves 350-1100 tokens/turn for skills. */
 static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
                                memory_results_t *all, const char *label,
                                const char *prefix, int plen, int max_count,
-                               llm_msg_type_t mtype) {
+                               llm_msg_type_t mtype, int summary_only) {
     if (max_count <= 0) return;
     int remaining = max_count;
     int added = 0;
     str_t msg = str_new(4096);
     str_appendf(&msg, "%s\n", label);
+    if (summary_only)
+        str_appendf(&msg, "(Summaries below. Call memory_search(key=\"<key>\") "
+                          "to load full content for any entry.)\n");
     for (int j = 0; j < all->count; j++) {
         if (all->entries[j].key &&
             strncmp(all->entries[j].key, prefix, (size_t)plen) == 0) {
@@ -51,10 +59,20 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
             int confidence = (int)(100.0 * (hits + 1.0) / (hits + misses + 2.0));
             char recency_buf[32];
             format_recency(all->entries[j].created_at, recency_buf, sizeof(recency_buf));
+
+            /* Progressive disclosure: summary_only renders description
+             * instead of full value, saving context tokens. */
+            const char *content;
+            if (summary_only && all->entries[j].description &&
+                all->entries[j].description[0]) {
+                content = all->entries[j].description;
+            } else {
+                content = all->entries[j].value ? all->entries[j].value : "";
+            }
+
             str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) ---\n%s\n",
                 all->entries[j].key, recency_buf,
-                hits + misses, confidence,
-                all->entries[j].value ? all->entries[j].value : "");
+                hits + misses, confidence, content);
             tool_track_recalled_key(tools, all->entries[j].key);
             remaining--;
             added++;
@@ -402,15 +420,20 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
-        /* Review B5: Replaced INJECT_TYPE macro with debuggable static function calls */
+        /* Review B5: Replaced INJECT_TYPE macro with debuggable static function calls.
+         * Progressive disclosure: skills use summary mode by default (description only)
+         * unless skill_full_disclosure is set. Other types always inject full text. */
+        int skill_summary = ctx->tools->cfg
+            ? !ctx->tools->cfg->skill_full_disclosure : 0;
         inject_memory_type(chat, ctx->tools, &all_memories,
-            "[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS);
+            "[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS,
+            skill_summary);
         inject_memory_type(chat, ctx->tools, &all_memories,
-            "[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS);
+            "[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS, 0);
         inject_memory_type(chat, ctx->tools, &all_memories,
-            "[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, LLM_MSG_STRATEGIES);
+            "[RELEVANT STRATEGIES]", "strategy:", 9, max_strategies, LLM_MSG_STRATEGIES, 0);
         inject_memory_type(chat, ctx->tools, &all_memories,
-            "[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS);
+            "[RELEVANT ANTI-PATTERNS]", "anti-pattern:", 13, max_antipatterns, LLM_MSG_ANTIPATTERNS, 0);
 
         /* ── Change 7: Associative Graph Walk (Depth-1 Ref Following) ──
          * When a recalled memory has refs[], follow them one level deep.

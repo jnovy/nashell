@@ -205,6 +205,11 @@ typedef struct {
     int    max_lessons_per_query;    /* max lessons loaded per query */
     int    max_strategies_per_query; /* max strategies loaded per query */
     int    max_antipatterns_per_query; /* max anti-patterns loaded per query */
+    int    skill_full_disclosure; /* 1 = inject full skill text into context (old behavior).
+                                  * 0 = progressive disclosure: inject description only,
+                                  * agent uses memory_search(key=...) for full content.
+                                  * Default 0 (summary mode — saves 350-1100 tokens/turn).
+                                  * Based on arXiv:2604.08224 §4.3.3 Progressive Disclosure. */
     int    context_eviction_pct; /* context usage % that triggers eviction */
     int    eviction_floor_pct;   /* min retained context as % of non-head budget (default 20) */
     int    scratchpad_budget_pct;/* scratchpad as % of context budget (default 15) */
