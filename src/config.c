@@ -180,21 +180,12 @@ void config_set_defaults(config_t *cfg) {
 
     cfg->stream = 1;     /* always on for now */
 
-    /* [thinking] defaults — EDRM is the default mode.
-     * Entropy-dynamics routing: probe → route → generate.
-     * Float fields use NAN as sentinel (0.0 is valid for all of them).
+    /* [thinking] defaults — always-on is the default mode.
      * budget uses INT_MIN as sentinel (0=no-thinking and -1=unrestricted are both valid). */
-    if (cfg->thinking.mode == THINKING_OFF && cfg->thinking.probe_tokens == 0
-        && isnan(cfg->thinking.tau_vnr) && isnan(cfg->thinking.tau_h)) {
-        /* Nothing was set by TOML parsing — default to EDRM */
-        cfg->thinking.mode = THINKING_EDRM;
+    if (cfg->thinking.mode == THINKING_OFF && cfg->thinking.budget == INT_MIN) {
+        /* Nothing was set by TOML parsing — default to ON */
+        cfg->thinking.mode = THINKING_ON;
     }
-    if (cfg->thinking.probe_tokens == 0)      cfg->thinking.probe_tokens = 30;
-    if (cfg->thinking.probe_n_probs == 0)     cfg->thinking.probe_n_probs = 10;
-    if (isnan(cfg->thinking.probe_temperature)) cfg->thinking.probe_temperature = 0.6f;
-    if (isnan(cfg->thinking.tau_rho))          cfg->thinking.tau_rho = -0.1f;
-    if (isnan(cfg->thinking.tau_vnr))          cfg->thinking.tau_vnr = 1.5f;
-    if (isnan(cfg->thinking.tau_h))            cfg->thinking.tau_h = 4.0f;
     if (cfg->thinking.budget == INT_MIN)       cfg->thinking.budget = -1; /* -1 = unrestricted */
     if (!cfg->search_engine) cfg->search_engine = strdup("searxng");
     if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
@@ -254,15 +245,8 @@ config_t *config_load(const char *path) {
     cfg->profile_enable_pruning = -1;
     cfg->profile_enable_compaction = -1;
     cfg->profile_enable_scoring = -1;
-    /* Thinking config sentinels: 0.0 is a valid value for these float
-     * fields (e.g. probe_temperature=0 means greedy, tau_rho=0 is a valid
-     * threshold). Use NAN so config_set_defaults can distinguish "not set"
-     * from "explicitly set to 0". budget uses INT_MIN since 0 means
+    /* Thinking config sentinel: budget uses INT_MIN since 0 means
      * "no thinking tokens" (valid) and -1 means "unrestricted" (also valid). */
-    cfg->thinking.probe_temperature = NAN;
-    cfg->thinking.tau_rho = NAN;
-    cfg->thinking.tau_vnr = NAN;
-    cfg->thinking.tau_h = NAN;
     cfg->thinking.budget = INT_MIN;
 
     FILE *f = fopen(path, "r");
@@ -498,8 +482,10 @@ config_t *config_load(const char *path) {
         if (mode_str) {
             if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
                 cfg->thinking.mode = THINKING_ON;
-            else if (strcmp(mode_str, "edrm") == 0)
-                cfg->thinking.mode = THINKING_EDRM;
+            else if (strcmp(mode_str, "edrm") == 0) {
+                fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
+                cfg->thinking.mode = THINKING_ON;
+            }
             else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
             else {
@@ -508,12 +494,6 @@ config_t *config_load(const char *path) {
             }
             free(mode_str);
         }
-        cfg->thinking.probe_tokens     = toml_int(thinking, "probe_tokens", 0);
-        cfg->thinking.probe_n_probs    = toml_int(thinking, "probe_n_probs", 0);
-        cfg->thinking.probe_temperature = (float)toml_dbl(thinking, "probe_temperature", NAN);
-        cfg->thinking.tau_rho          = (float)toml_dbl(thinking, "tau_rho", NAN);
-        cfg->thinking.tau_vnr          = (float)toml_dbl(thinking, "tau_vnr", NAN);
-        cfg->thinking.tau_h            = (float)toml_dbl(thinking, "tau_h", NAN);
         cfg->thinking.budget           = toml_int(thinking, "budget", INT_MIN);
     }
 
@@ -613,8 +593,10 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
     if (mode_str) {
         if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
             tc->mode = THINKING_ON;
-        else if (strcmp(mode_str, "edrm") == 0)
-            tc->mode = THINKING_EDRM;
+        else if (strcmp(mode_str, "edrm") == 0) {
+            fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
+            tc->mode = THINKING_ON;
+        }
         else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
             tc->mode = THINKING_OFF;
         else {
@@ -625,8 +607,6 @@ static void parse_thinking_from_toml(toml_table_t *tbl, thinking_config_t *tc) {
     }
     int b = toml_int(tbl, "budget", INT_MIN);
     if (b != INT_MIN) tc->budget = b;
-    int pt = toml_int(tbl, "probe_tokens", 0);
-    if (pt > 0) tc->probe_tokens = pt;
 }
 
 int config_load_model_profiles(config_t *cfg, const char *models_dir) {
@@ -1032,8 +1012,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "stream = %s\n\n", cfg->stream ? "true" : "false");
 
     fprintf(out, "[thinking]\n");
-    const char *mode_str = cfg->thinking.mode == THINKING_ON ? "yes"
-                         : cfg->thinking.mode == THINKING_EDRM ? "edrm" : "no";
+    const char *mode_str = cfg->thinking.mode == THINKING_ON ? "yes" : "no";
     fprintf(out, "mode = \"%s\"\n", mode_str);
     fprintf(out, "budget = %d\n\n", cfg->thinking.budget);
 
@@ -1303,8 +1282,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         if (mode_str) {
             if (strcmp(mode_str, "yes") == 0 || strcmp(mode_str, "on") == 0)
                 cfg->thinking.mode = THINKING_ON;
-            else if (strcmp(mode_str, "edrm") == 0)
-                cfg->thinking.mode = THINKING_EDRM;
+            else if (strcmp(mode_str, "edrm") == 0) {
+                fprintf(stderr, "[config] thinking mode \"edrm\" was removed — using \"yes\" instead\n");
+                cfg->thinking.mode = THINKING_ON;
+            }
             else if (strcmp(mode_str, "no") == 0 || strcmp(mode_str, "off") == 0)
                 cfg->thinking.mode = THINKING_OFF;
             else {
@@ -1636,17 +1617,9 @@ int config_write_default(const char *path) {
         "max_tokens = 16384\n"
         "stream = true\n"
         "\n"
-        "# Thinking mode: \"yes\" = always, \"no\" = never, \"edrm\" = adaptive (default)\n"
-        "# EDRM routing based on: \"When Do LLMs Reason? A Dynamical Systems View\n"
-        "# via Entropy Phase Transitions\" [arXiv:2605.22873]\n"
+        "# Thinking mode: \"yes\" = always (default), \"no\" = never\n"
         "[thinking]\n"
-        "mode = \"edrm\"\n"
-        "# probe_tokens = 30          # tokens to generate in entropy probe\n"
-        "# probe_n_probs = 10         # top-N logprobs to request\n"
-        "# probe_temperature = 0.6    # probe sampling temperature\n"
-        "# tau_rho = -0.1             # Spearman correlation threshold\n"
-        "# tau_vnr = 1.5              # von Neumann ratio threshold\n"
-        "# tau_h = 4.0                # mean entropy threshold\n"
+        "mode = \"yes\"\n"
         "# budget = -1                # thinking token budget: -1=unrestricted, 0=none, N>0=max tokens\n"
         "\n"
         "# Semantic embedding for memory matching (GDN-2 inspired)\n"

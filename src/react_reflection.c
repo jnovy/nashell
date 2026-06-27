@@ -313,7 +313,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
         /* FIX #9: Disable thinking mode for reflection — it's a lightweight
          * extraction task that doesn't need chain-of-thought. Without this,
-         * EDRM thinking mode leaks from the main task into reflection. */
+         * thinking mode leaks from the main task into reflection. */
         int saved_thinking = ctx->provider->cfg.enable_thinking;
         ctx->provider->cfg.enable_thinking = 0;
 

@@ -11,7 +11,7 @@ typedef struct {
     int   max_tokens;     /* max completion tokens */
     float temperature;    /* sampling temperature */
     int   context_size;   /* server's n_ctx (0 = unknown, fetched via /props) */
-    int   enable_thinking; /* 0=off, 1=on — set per-request by EDRM routing */
+    int   enable_thinking; /* 0=off, 1=on — set per-request by thinking mode */
     int   thinking_budget; /* -1=unrestricted, 0=none, N>0=max thinking tokens */
     char *last_error;          /* populated on LLM error — server message, curl error, etc.
                                 * Caller should free after reading. Set by provider_complete/stream. */
@@ -20,14 +20,6 @@ typedef struct {
     char *last_error_request;  /* raw request body that triggered the error.
                                 * The JSON we sent — shows exactly what was malformed. */
 } llm_config_t;
-
-/* EDRM entropy probe result — see [arXiv:2605.22873] */
-typedef struct {
-    float h_mean;    /* mean entropy over probe tokens */
-    float rho_s;     /* Spearman rank correlation (entropy vs step) */
-    float vnr;       /* von Neumann ratio (smoothness) */
-    int   route;     /* 0=direct (thinking off), 1=cot (thinking on) */
-} edrm_result_t;
 
 /* Belief Entropy probe result — see MMPO [arXiv:2605.30159]
  * ℋ_BE(m_t) = H(y | m_t, q) — entropy of response to anchor question q
@@ -39,15 +31,9 @@ typedef struct {
     int   ok;        /* 1 = probe succeeded, 0 = failed */
 } belief_entropy_result_t;
 
-/* EDRM entropy probe: generate a short completion and analyze entropy dynamics.
- * Returns routing decision based on entropy trajectory descriptors. */
 /* Apply chat template via server /apply-template endpoint.
  * Returns malloc'd formatted prompt string, or NULL on failure. */
 char *llm_apply_template(const char *api_base, const char *user_query);
-
-edrm_result_t llm_edrm_probe(const char *api_base, const char *prompt,
-                               int n_predict, int n_probs, float temperature,
-                               float tau_rho, float tau_vnr, float tau_h);
 
 /* Belief Entropy probe: send anchor question with memory context,
  * compute mean token-level entropy of response.

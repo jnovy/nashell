@@ -804,65 +804,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         struct timespec step_start;
         clock_gettime(CLOCK_MONOTONIC, &step_start);
 
-        /* EDRM routing: decide thinking mode before LLM call.
-         * On the first step of this run (step 0, or resume_step on checkpoint
-         * restore), probe entropy dynamics to determine if CoT is beneficial.
-         * Subsequent steps inherit the decision.
-         * See [arXiv:2605.22873] for the theory. */
+        /* Thinking mode: decide before LLM call on the first step.
+         * Subsequent steps inherit the decision. */
         if (ctx->tools->cfg && step == resume_step) {
             int mode = ctx->tools->cfg->thinking.mode;
 
-            /* EDRM only works with local llama.cpp servers (needs logprobs).
-             * For API providers (Vertex, Anthropic, OpenAI), skip EDRM and
-             * default to thinking OFF. */
-            int is_api_provider = ctx->provider &&
-                ctx->provider->type != PROVIDER_LOCAL;
-            if (is_api_provider && mode == THINKING_EDRM) {
-                mode = THINKING_OFF;
-            }
-
             if (mode == THINKING_ON) {
                 ctx->rt.enable_thinking = 1;
-            } else if (mode == THINKING_OFF) {
+            } else {
                 ctx->rt.enable_thinking = 0;
-            } else if (mode == THINKING_EDRM) {
-                /* Build probe prompt from user query.
-                 * #7: Use /apply-template for correct template, fallback to ChatML. */
-                str_t probe = str_new(8192);
-                char *templated = llm_apply_template(ctx->provider->cfg.api_base, user_query);
-                if (templated) {
-                    str_append_cstr(&probe, templated);
-                    free(templated);
-                } else {
-                    str_appendf(&probe,
-                        "<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n",
-                        user_query);
-                }
-
-                thinking_config_t *tc = &ctx->tools->cfg->thinking;
-                edrm_result_t edrm = llm_edrm_probe(
-                    ctx->provider->cfg.api_base, probe.data,
-                    tc->probe_tokens, tc->probe_n_probs,
-                    tc->probe_temperature,
-                    tc->tau_rho, tc->tau_vnr, tc->tau_h);
-                str_free(&probe);
-
-                ctx->rt.enable_thinking = edrm.route;
-
-                /* Log the routing decision */
-                {
-                    char msg[256];
-                    snprintf(msg, sizeof(msg),
-                        "EDRM: H̄=%.2f ρ=%.2f VNR=%.2f → %s",
-                        edrm.h_mean, edrm.rho_s, edrm.vnr,
-                        edrm.route ? "thinking ON" : "thinking OFF");
-                    react_event_t ev = {0};
-                    ev.react_loop = ctx->tools->react_loop;
-                    ev.type = REACT_EVENT_WARNING;
-                    ev.step = step + 1;
-                    ev.message = msg;
-                    react_emit(on_event, userdata, &ev);
-                }
             }
             /* Propagate thinking budget from config */
             ctx->rt.thinking_budget = ctx->tools->cfg->thinking.budget;
