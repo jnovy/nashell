@@ -81,11 +81,14 @@ void agent_queue_free(agent_queue_t *q);
 /* Print agent list table to FILE*. */
 void agent_queue_print(const agent_queue_t *q, FILE *out);
 
-/* Execute all due agents. Returns number of failures. */
+/* Execute all due agents. Returns number of failures.
+ * If mailbox_dir is non-NULL, results are written to the mailbox outbox
+ * so that bridge threads (Telegram, Matrix) can deliver them. */
 int agent_execute(agent_queue_t *q, const char *nash_dir,
                   store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
                   const char *force_id,
-                  volatile sig_atomic_t *shutdown_flag);
+                  volatile sig_atomic_t *shutdown_flag,
+                  const char *mailbox_dir);
 
 #endif /* AGENTS_H */

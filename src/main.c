@@ -975,6 +975,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[play] Playbook '%s' %s\n",
                 pb->name, ok ? "completed successfully" : "FAILED");
 
+        free(pargs.result_text);
         playbook_free(pb);
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return ok ? 0 : 1;
@@ -1039,7 +1040,8 @@ int main(int argc, char **argv) {
         /* Execute due agents */
         int n_fail = agent_execute(q, nash_dir, shared_store, cfg,
                                    provider, server_model,
-                                   agents_force_id, &shutdown_requested);
+                                   agents_force_id, &shutdown_requested,
+                                   NULL);
 
         /* Save updated queue */
         agent_queue_save(q, nash_dir);
@@ -1191,14 +1193,30 @@ int main(int argc, char **argv) {
                 }
             }
 
-            /* Wait for next task (with workspace metadata) */
-            mailbox_task_t *task = mailbox_wait_task_ex(mbox_dir, 0);
+            /* Wait for next task (with workspace metadata).
+             * Timeout allows periodic agent scheduling checks. */
+            mailbox_task_t *task = mailbox_wait_task_ex(mbox_dir, 60);
             if (!task) {
                 if (shutdown_requested) break;
                 char cmd_chk[NASH_PATH_MAX];
                 snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
                 if (access(cmd_chk, F_OK) != 0) {
-                    usleep(200000);  /* 200ms */
+                    /* No command pending -- check for due agents */
+                    agent_queue_t *aq = agent_scan(nash_dir);
+                    if (aq) {
+                        agent_queue_load(aq, nash_dir);
+                        agent_queue_schedule(aq, time(NULL));
+                        if (aq->n_due > 0) {
+                            fprintf(stderr, "[daemon] %d agent(s) due, running...\n",
+                                    aq->n_due);
+                            agent_execute(aq, nash_dir, shared_store, cfg,
+                                          provider, server_model,
+                                          NULL, &shutdown_requested,
+                                          mbox_dir);
+                            agent_queue_save(aq, nash_dir);
+                        }
+                        agent_queue_free(aq);
+                    }
                 }
                 continue;
             }
@@ -1577,6 +1595,8 @@ int main(int argc, char **argv) {
                 ui->agent_running = 0;
                 ui_state_generate_session_md(ui);
                 pthread_mutex_unlock(&ui->mtx);
+                free(pargs_tui.result_text);
+                pargs_tui.result_text = NULL;
                 playbook_free(pargs_tui.playbook);
                 pargs_tui.playbook = NULL;
                 inferring = 0;

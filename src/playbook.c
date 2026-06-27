@@ -795,7 +795,7 @@ void *playbook_worker(void *arg) {
         pthread_mutex_unlock(&pa->ui->mtx);
     }
 
-    free(prev_result);
+    pa->result_text = prev_result;  /* caller frees (NULL on failure) */
     free(shared_session_dir);
     scratchpad_free(&shared_scratch);
     pa->playbook_ok = playbook_ok;

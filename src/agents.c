@@ -12,6 +12,7 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #include "agents.h"
+#include "mailbox.h"
 #include "yaml_parse.h"
 #include "nash_limits.h"
 #include "str.h"
@@ -540,7 +541,8 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                   store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
                   const char *force_id,
-                  volatile sig_atomic_t *shutdown_flag) {
+                  volatile sig_atomic_t *shutdown_flag,
+                  const char *mailbox_dir) {
     if (!q || !nash_dir) return -1;
 
     int n_ok = 0, n_fail = 0;
@@ -623,6 +625,18 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         a->last_status = strdup(status);
 
         agent_history_append(nash_dir, a, dur, status, NULL);
+
+        /* Route result through mailbox so bridge threads deliver it */
+        if (mailbox_dir && pargs.result_text) {
+            char task_id[256];
+            snprintf(task_id, sizeof(task_id), "agent_%s", a->id);
+            /* Replace / with _ in task_id for filename safety */
+            for (char *p = task_id; *p; p++)
+                if (*p == '/') *p = '_';
+            mailbox_write_result_routed(mailbox_dir, task_id,
+                                        pargs.result_text, NULL);
+        }
+        free(pargs.result_text);
 
         char durbuf[32];
         fmt_duration(dur, durbuf, sizeof(durbuf));

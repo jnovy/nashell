@@ -92,6 +92,8 @@ typedef struct {
     /* Agent tracking (for interactive /agent run history logging) */
     char            *agent_id;          /* NULL when not an agent run */
     time_t           agent_start_time;  /* wall-clock start (for duration calc) */
+    /* Result text from last pass (caller must free; NULL on failure) */
+    char            *result_text;
 } playbook_args_t;
 
 /* ── API ─────────────────────────────────────────────── */
