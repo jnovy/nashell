@@ -966,6 +966,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
      * and accumulate into paste_buf. Only ESC sequences (for detecting the
      * paste-end bracket ESC[201~) pass through normally. */
     if (paste_mode && ui->focus == FOCUS_QUERY) {
+    paste_batch:  /* batch-read target: jump here from paste_done to process next char */
         if (ch == '\n' || ch == KEY_ENTER) {
             if (paste_len < PASTE_BUF_CAP - 1)
                 paste_buf[paste_len++] = '\n';
@@ -1572,6 +1573,15 @@ int tui_input(ui_state_t *ui, char **out_query) {
     }
 
 paste_done:
+    /* Batch-read optimization: while in paste_mode, keep reading characters
+     * without returning to the main loop (which sleeps 10ms per iteration).
+     * Without this, a 1000-char paste takes 1000 * 10ms = 10 seconds.
+     * We hold the mutex throughout the batch but paste accumulation is
+     * fast (just memcpy to paste_buf), so contention is minimal. */
+    if (paste_mode && ui->focus == FOCUS_QUERY) {
+        ch = getch();
+        if (ch != ERR) goto paste_batch;
+    }
     pthread_mutex_unlock(&ui->mtx);
     return 1;
 }
