@@ -94,6 +94,8 @@ typedef struct {
     time_t           agent_start_time;  /* wall-clock start (for duration calc) */
     /* Result text from last pass (caller must free; NULL on failure) */
     char            *result_text;
+    /* Session dir of the last pass (caller must free; NULL on failure) */
+    char            *last_session_dir;
 } playbook_args_t;
 
 /* ── API ─────────────────────────────────────────────── */

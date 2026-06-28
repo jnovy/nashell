@@ -976,6 +976,7 @@ int main(int argc, char **argv) {
                 pb->name, ok ? "completed successfully" : "FAILED");
 
         free(pargs.result_text);
+        free(pargs.last_session_dir);
         playbook_free(pb);
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return ok ? 0 : 1;
@@ -1563,10 +1564,10 @@ int main(int argc, char **argv) {
                                            pargs_tui.agent_id,
                                            pargs_tui.agent_start_time,
                                            dur, status);
-                    if (pargs_tui.result_text)
+                    if (pargs_tui.last_session_dir)
                         agent_save_result(pargs_tui.nash_dir,
                                           pargs_tui.agent_id,
-                                          pargs_tui.result_text);
+                                          pargs_tui.last_session_dir);
                     free(pargs_tui.agent_id);
                     pargs_tui.agent_id = NULL;
                 }
@@ -1589,6 +1590,8 @@ int main(int argc, char **argv) {
                 pthread_mutex_unlock(&ui->mtx);
                 free(pargs_tui.result_text);
                 pargs_tui.result_text = NULL;
+                free(pargs_tui.last_session_dir);
+                pargs_tui.last_session_dir = NULL;
                 playbook_free(pargs_tui.playbook);
                 pargs_tui.playbook = NULL;
                 inferring = 0;

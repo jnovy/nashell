@@ -518,16 +518,22 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
 }
 
 void agent_save_result(const char *nash_dir, const char *agent_id,
-                       const char *result_text) {
-    if (!nash_dir || !agent_id || !result_text) return;
+                       const char *session_dir) {
+    if (!nash_dir || !agent_id || !session_dir) return;
 
     char dir[NASH_PATH_MAX];
     snprintf(dir, sizeof(dir), "%s/agent/results/%s", nash_dir, agent_id);
     mkdirp(dir);
 
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/latest.md", dir);
-    write_file(path, result_text, strlen(result_text));
+    /* Symlink latest.md -> session's session.md (no duplication).
+     * Readers (slurp_file) follow symlinks transparently. */
+    char link_path[NASH_PATH_MAX];
+    snprintf(link_path, sizeof(link_path), "%s/latest.md", dir);
+    unlink(link_path);  /* remove old symlink/file */
+
+    char target[NASH_PATH_MAX];
+    snprintf(target, sizeof(target), "%s/session.md", session_dir);
+    symlink(target, link_path);
 }
 
 /* ── Queue printing ───────────────────────────────────── */
@@ -704,9 +710,9 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
         agent_history_append(nash_dir, a, dur, status, NULL);
 
-        /* Persist latest result for `/agent result` */
-        if (pargs.result_text)
-            agent_save_result(nash_dir, a->id, pargs.result_text);
+        /* Symlink latest.md -> session's session.md for `/agent result` */
+        if (pargs.last_session_dir)
+            agent_save_result(nash_dir, a->id, pargs.last_session_dir);
 
         /* Route result through mailbox so bridge threads deliver it */
         if (mailbox_dir && pargs.result_text) {
@@ -719,6 +725,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                                         pargs.result_text, NULL);
         }
         free(pargs.result_text);
+        free(pargs.last_session_dir);
 
         char durbuf[32];
         fmt_duration(dur, durbuf, sizeof(durbuf));

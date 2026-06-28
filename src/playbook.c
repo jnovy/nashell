@@ -638,6 +638,10 @@ void *playbook_worker(void *arg) {
         prev_result = result;
         free(prompt);
 
+        /* Track last successful pass's session dir (for agent result lookup) */
+        free(pa->last_session_dir);
+        pa->last_session_dir = pass_dir;  /* take ownership */
+
         /* Free section-based scratchpad.
          * For PB_SCRATCH_SHARED: already moved back to shared_scratch
          * (struct zeroed by scratchpad_move), so this is a no-op.
@@ -646,7 +650,6 @@ void *playbook_worker(void *arg) {
         alias_map_free(pass_tools.aliases);
         session_lock_release(pass_tools.session_lock_fd);
         journal_free(pass_journal);
-        free(pass_dir);
 
         if (pass_failed) {
             playbook_ok = 0;

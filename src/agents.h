@@ -95,10 +95,11 @@ const agent_entry_t *agent_find(const agent_queue_t *q, const char *id);
  * (workspace_name, workspace_dir, agent_id). Caller frees with playbook_free(). */
 playbook_t *agent_prepare_playbook(const agent_entry_t *a);
 
-/* Save agent result text to {nash_dir}/agent/results/{agent_id}/latest.md.
- * Creates directories as needed. */
+/* Point {nash_dir}/agent/results/{agent_id}/latest.md at the session's
+ * session.md via symlink.  Readers (slurp_file) follow it transparently,
+ * so the result is never duplicated on disk. */
 void agent_save_result(const char *nash_dir, const char *agent_id,
-                       const char *result_text);
+                       const char *session_dir);
 
 /* Execute all due agents. Returns number of failures.
  * If mailbox_dir is non-NULL, results are written to the mailbox outbox
