@@ -128,6 +128,58 @@ static const char *mx_workspace_for_room(matrix_ctx_t *ctx, const char *room_id)
     return NULL;
 }
 
+/* Dynamically add a room_id -> workspace mapping (auto-discovery).
+ * Returns the stored workspace name, or NULL if map is full. */
+static const char *mx_room_map_add(matrix_ctx_t *ctx,
+                                    const char *room_id,
+                                    const char *workspace) {
+    /* Check for duplicates */
+    for (int i = 0; i < ctx->room_map_count; i++) {
+        if (strcmp(ctx->room_map[i].room_id, room_id) == 0)
+            return ctx->room_map[i].workspace;
+    }
+    if (ctx->room_map_count >= MX_MAX_ROOM_MAP) {
+        fprintf(stderr, "[matrix] room_map full (%d), cannot auto-map "
+                "room %s\n", MX_MAX_ROOM_MAP, room_id);
+        return NULL;
+    }
+    int idx = ctx->room_map_count++;
+    ctx->room_map[idx].room_id = strdup(room_id);
+    ctx->room_map[idx].workspace = strdup(workspace);
+    fprintf(stderr, "[matrix] auto-discovered: room %s -> workspace '%s'\n",
+            room_id, workspace);
+    return ctx->room_map[idx].workspace;
+}
+
+/* Fetch the display name of a Matrix room via the state API.
+ * Returns a newly allocated sanitized workspace name, or NULL on failure.
+ * Caller must free(). */
+static char *mx_api_get_room_name(matrix_ctx_t *ctx, const char *room_id) {
+    char *enc_room = url_encode(room_id);
+    char url[MX_URL_MAX * 2];
+    snprintf(url, sizeof(url),
+             "%s/_matrix/client/v3/rooms/%s/state/m.room.name?access_token=%s",
+             ctx->homeserver, enc_room, ctx->access_token);
+    free(enc_room);
+
+    str_t resp = str_new(512);
+    int rc = http_get(url, 10, &resp);
+    char *result = NULL;
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *name = cJSON_GetObjectItem(rjson, "name");
+            if (name && name->valuestring && name->valuestring[0]) {
+                result = sanitize_workspace_name(name->valuestring);
+            }
+            cJSON_Delete(rjson);
+        }
+    }
+    str_free(&resp);
+    return result;
+}
+
 /* Record task_id -> room_id mapping for reply routing (circular buffer) */
 static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
                              const char *room_id) {
@@ -563,22 +615,9 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
                 /* room_node->string is the room_id (object key) */
                 if (!room_node->string) continue;
 
-                /* Only process rooms we care about:
-                 * the default room OR any room in room_map */
-                int dominated = 0;
-                if (ctx->room_id &&
-                    strcmp(room_node->string, ctx->room_id) == 0)
-                    dominated = 1;
-                if (!dominated) {
-                    for (int ri = 0; ri < ctx->room_map_count; ri++) {
-                        if (strcmp(room_node->string,
-                                  ctx->room_map[ri].room_id) == 0) {
-                            dominated = 1;
-                            break;
-                        }
-                    }
-                }
-                if (!dominated) continue;
+                /* Accept all joined rooms for auto-discovery.
+                 * Unknown rooms will get their workspace name resolved
+                 * dynamically via mx_api_get_room_name(). */
 
                 cJSON *timeline = cJSON_GetObjectItem(room_node, "timeline");
                 cJSON *events = timeline
@@ -1822,6 +1861,28 @@ void *matrix_run(void *arg) {
                 const char *ev_room = (ev_room_j && ev_room_j->valuestring)
                                       ? ev_room_j->valuestring : ctx->room_id;
                 const char *ev_workspace = mx_workspace_for_room(ctx, ev_room);
+
+                /* Auto-discover workspace for unknown rooms */
+                char *auto_room_ws = NULL;
+                if (!ev_workspace && ev_room) {
+                    /* Try to fetch the room's display name via Matrix API */
+                    auto_room_ws = mx_api_get_room_name(ctx, ev_room);
+                    if (auto_room_ws) {
+                        ev_workspace = mx_room_map_add(ctx, ev_room,
+                                                        auto_room_ws);
+                    }
+                    if (!ev_workspace) {
+                        /* Fallback: use a name derived from room_id.
+                         * Room IDs look like "!abc123:server" -- use hash */
+                        char fallback[80];
+                        unsigned int h = 0;
+                        for (const char *p = ev_room; *p; p++)
+                            h = h * 31 + (unsigned char)*p;
+                        snprintf(fallback, sizeof(fallback), "room-%08x", h);
+                        ev_workspace = mx_room_map_add(ctx, ev_room, fallback);
+                    }
+                    free(auto_room_ws);
+                }
 
                 /* Only process m.room.message events */
                 cJSON *type = cJSON_GetObjectItem(ev, "type");

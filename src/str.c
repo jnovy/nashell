@@ -539,3 +539,61 @@ const char *fmt_duration(double seconds, char *buf, size_t sz) {
     }
     return buf;
 }
+
+/* ── Workspace name sanitization ──────────────────────────────────── */
+
+char *sanitize_workspace_name(const char *display_name) {
+    if (!display_name || !display_name[0]) return NULL;
+
+    /* Allocate worst-case: same length + NUL */
+    size_t len = strlen(display_name);
+    char *buf = malloc(len + 1);
+    if (!buf) return NULL;
+
+    size_t j = 0;
+    for (size_t i = 0; i < len && j < 64; i++) {
+        unsigned char c = (unsigned char)display_name[i];
+        if (c >= 'A' && c <= 'Z') {
+            buf[j++] = (char)(c + 32);  /* lowercase */
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                   c == '.') {
+            buf[j++] = (char)c;
+        } else if (c == ' ' || c == '_' || c == '/' || c == '\\') {
+            /* Replace separators with hyphen (collapse later) */
+            buf[j++] = '-';
+        } else if (c >= 0x80) {
+            /* Skip multi-byte UTF-8 characters (emoji, accented chars) */
+            while (i + 1 < len && ((unsigned char)display_name[i + 1] & 0xC0) == 0x80)
+                i++;
+        }
+        /* All other ASCII chars (punctuation etc.) are dropped */
+    }
+    buf[j] = '\0';
+
+    /* Collapse multiple hyphens */
+    size_t w = 0;
+    for (size_t r = 0; r < j; r++) {
+        if (buf[r] == '-' && w > 0 && buf[w - 1] == '-')
+            continue;
+        buf[w++] = buf[r];
+    }
+    buf[w] = '\0';
+
+    /* Strip leading and trailing hyphens/dots */
+    size_t start = 0;
+    while (buf[start] == '-' || buf[start] == '.') start++;
+    size_t end = w;
+    while (end > start && (buf[end - 1] == '-' || buf[end - 1] == '.')) end--;
+
+    if (end <= start) {
+        free(buf);
+        return NULL;
+    }
+
+    /* Shift to start if needed */
+    if (start > 0)
+        memmove(buf, buf + start, end - start);
+    buf[end - start] = '\0';
+
+    return buf;
+}

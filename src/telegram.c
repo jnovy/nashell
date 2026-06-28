@@ -100,6 +100,29 @@ static const char *tg_workspace_for_thread(telegram_ctx_t *ctx,
     return NULL;  /* unmapped topic = global workspace */
 }
 
+/* Dynamically add a thread_id -> workspace mapping (auto-discovery).
+ * Returns the stored workspace name, or NULL if map is full. */
+static const char *tg_topic_map_add(telegram_ctx_t *ctx,
+                                    long long thread_id,
+                                    const char *workspace) {
+    /* Check for duplicates */
+    for (int i = 0; i < ctx->topic_map_count; i++) {
+        if (ctx->topic_map[i].thread_id == thread_id)
+            return ctx->topic_map[i].workspace;
+    }
+    if (ctx->topic_map_count >= TG_MAX_TOPIC_MAP) {
+        fprintf(stderr, "[telegram] topic_map full (%d), cannot auto-map "
+                "thread %lld\n", TG_MAX_TOPIC_MAP, thread_id);
+        return NULL;
+    }
+    int idx = ctx->topic_map_count++;
+    ctx->topic_map[idx].thread_id = thread_id;
+    ctx->topic_map[idx].workspace = strdup(workspace);
+    fprintf(stderr, "[telegram] auto-discovered: thread %lld -> workspace '%s'\n",
+            thread_id, workspace);
+    return ctx->topic_map[idx].workspace;
+}
+
 
 /* ── Initialization ──────────────────────────────────────── */
 
@@ -1763,6 +1786,57 @@ void *telegram_run(void *arg) {
                 long long msg_thread_id = (thread_j && cJSON_IsNumber(thread_j))
                                           ? (long long)thread_j->valuedouble : 0;
                 const char *msg_workspace = tg_workspace_for_thread(ctx, msg_thread_id);
+
+                /* Auto-discover topic names from service messages.
+                 * forum_topic_created/edited arrive as service messages
+                 * (no text/image), so we capture the name before the
+                 * content check that would skip them. */
+                char *auto_ws = NULL;  /* freed at end if not cached */
+                cJSON *ftc = cJSON_GetObjectItem(msg, "forum_topic_created");
+                if (ftc && msg_thread_id != 0) {
+                    cJSON *ftc_name = cJSON_GetObjectItem(ftc, "name");
+                    if (ftc_name && ftc_name->valuestring) {
+                        auto_ws = sanitize_workspace_name(ftc_name->valuestring);
+                        if (auto_ws) {
+                            msg_workspace = tg_topic_map_add(ctx, msg_thread_id,
+                                                             auto_ws);
+                        }
+                    }
+                }
+                cJSON *fte = cJSON_GetObjectItem(msg, "forum_topic_edited");
+                if (fte && msg_thread_id != 0) {
+                    cJSON *fte_name = cJSON_GetObjectItem(fte, "name");
+                    if (fte_name && fte_name->valuestring) {
+                        char *edited_ws = sanitize_workspace_name(fte_name->valuestring);
+                        if (edited_ws) {
+                            /* Update existing mapping if present */
+                            for (int ti = 0; ti < ctx->topic_map_count; ti++) {
+                                if (ctx->topic_map[ti].thread_id == msg_thread_id) {
+                                    free(ctx->topic_map[ti].workspace);
+                                    ctx->topic_map[ti].workspace = edited_ws;
+                                    msg_workspace = edited_ws;
+                                    edited_ws = NULL;
+                                    fprintf(stderr, "[telegram] topic renamed: "
+                                            "thread %lld -> '%s'\n",
+                                            msg_thread_id,
+                                            ctx->topic_map[ti].workspace);
+                                    break;
+                                }
+                            }
+                            free(edited_ws);  /* NULL if consumed above */
+                        }
+                    }
+                }
+
+                /* Auto-discover: unmapped non-zero thread -> fallback name */
+                if (!msg_workspace && msg_thread_id != 0) {
+                    char fallback[80];
+                    snprintf(fallback, sizeof(fallback), "topic-%lld",
+                             msg_thread_id);
+                    msg_workspace = tg_topic_map_add(ctx, msg_thread_id,
+                                                     fallback);
+                }
+                free(auto_ws);
 
                 /* Extract text content: from text field or caption (for photos) */
                 cJSON *text = cJSON_GetObjectItem(msg, "text");

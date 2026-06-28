@@ -173,4 +173,12 @@ typedef int (*dir_entry_cb)(const char *dirpath, const char *filename,
 void for_each_dir_entry(const char *dirpath, const char *suffix,
                         dir_entry_cb cb, void *user_data);
 
+/* ── Workspace name sanitization ─────────────────────────────────────
+ * Converts an arbitrary display name (topic name, room name) into a
+ * valid workspace name: lowercase, hyphens instead of spaces/underscores,
+ * only [a-z0-9.-] kept, collapsed hyphens, max 64 chars.
+ * Returns a newly allocated string, or NULL if the name is empty
+ * after sanitization.  Caller must free(). */
+char *sanitize_workspace_name(const char *display_name);
+
 #endif
