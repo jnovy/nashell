@@ -234,13 +234,27 @@ static int try_parse_marker(const char **pp, const char *end,
     }
 
     if (p + mlen <= end) {
-        /* Found closing marker — emit formatted segment */
-        segs[*n].text = start;
-        segs[*n].len = (int)(p - start);
-        segs[*n].attr = attr;
-        segs[*n].url = NULL;
-        segs[*n].url_len = 0;
-        (*n)++;
+        /* Found closing marker — recursively parse inner content for
+         * nested inline elements (e.g., links inside bold: **[text](url)**).
+         * Each sub-segment inherits the parent attribute (bold/italic). */
+        int inner_len = (int)(p - start);
+        int saved_n = *n;
+        int sub_n = parse_inline(start, inner_len,
+                                 segs + saved_n, max_segs - saved_n);
+        if (sub_n > 0) {
+            /* Apply parent attr to all sub-segments */
+            for (int si = saved_n; si < saved_n + sub_n; si++)
+                segs[si].attr |= attr;
+            *n = saved_n + sub_n;
+        } else {
+            /* Fallback: emit as single formatted segment */
+            segs[*n].text = start;
+            segs[*n].len = inner_len;
+            segs[*n].attr = attr;
+            segs[*n].url = NULL;
+            segs[*n].url_len = 0;
+            (*n)++;
+        }
         p += mlen;
     } else {
         /* No closing marker — render as literal */
