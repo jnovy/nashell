@@ -140,7 +140,7 @@ static void route_to_outbox(const char *nash_dir, const char *result,
 
     const char *task_id = mailbox_gen_id();
     mailbox_write_result(mbox_dir, task_id, msg.data);
-    fprintf(stderr, "[mailbox] result routed to outbox for bridge relay\n");
+    nash_log("[mailbox] result routed to outbox for bridge relay");
     str_free(&msg);
 }
 
