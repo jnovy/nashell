@@ -75,6 +75,12 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
                          int duration, const char *status,
                          const char *session_id);
 
+/* Update queue.json with execution results for a single agent (by ID).
+ * Performs scan + load + update + save internally. */
+int agent_queue_update_run(const char *nash_dir, const char *agent_id,
+                           time_t run_time, int duration,
+                           const char *status);
+
 /* Free queue and all entries. */
 void agent_queue_free(agent_queue_t *q);
 

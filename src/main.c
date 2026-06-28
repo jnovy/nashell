@@ -1575,6 +1575,10 @@ int main(int argc, char **argv) {
                     agent_entry_t tmp_agent = { .id = pargs_tui.agent_id };
                     agent_history_append(pargs_tui.nash_dir, &tmp_agent,
                                          dur, status, NULL);
+                    agent_queue_update_run(pargs_tui.nash_dir,
+                                           pargs_tui.agent_id,
+                                           pargs_tui.agent_start_time,
+                                           dur, status);
                     free(pargs_tui.agent_id);
                     pargs_tui.agent_id = NULL;
                 }

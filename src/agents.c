@@ -413,6 +413,37 @@ int agent_queue_save(const agent_queue_t *q, const char *nash_dir) {
     return 0;
 }
 
+/* Update queue.json with execution results for a single agent.
+ * Used by the TUI /agent run completion handler which doesn't hold
+ * a full agent_queue_t after the async playbook finishes. */
+int agent_queue_update_run(const char *nash_dir, const char *agent_id,
+                           time_t run_time, int duration,
+                           const char *status) {
+    if (!nash_dir || !agent_id) return -1;
+
+    agent_queue_t *q = agent_scan(nash_dir);
+    if (!q) return -1;
+
+    agent_queue_load(q, nash_dir);
+
+    /* Find and update the matching agent */
+    for (int i = 0; i < q->n_agents; i++) {
+        if (strcmp(q->agents[i].id, agent_id) != 0) continue;
+
+        q->agents[i].last_run = run_time;
+        q->agents[i].last_duration = duration;
+        free(q->agents[i].last_status);
+        q->agents[i].last_status = strdup(status ? status : "unknown");
+        q->agents[i].next_due = agent_next_occurrence(
+            &q->agents[i].schedule, run_time);
+        break;
+    }
+
+    int rc = agent_queue_save(q, nash_dir);
+    agent_queue_free(q);
+    return rc;
+}
+
 /* ── Schedule computation ─────────────────────────────── */
 
 static int cmp_next_due(const void *a, const void *b) {
@@ -623,6 +654,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         a->last_duration = dur;
         free(a->last_status);
         a->last_status = strdup(status);
+        a->next_due = agent_next_occurrence(&a->schedule, a->last_run);
 
         agent_history_append(nash_dir, a, dur, status, NULL);
 
