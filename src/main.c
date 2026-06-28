@@ -1692,8 +1692,13 @@ int main(int argc, char **argv) {
                 } else {
                     /* Clear stale pause_requested if redirect will take over */
                     react.pause_requested = 0;
-                    ui_state_set_status(ui, pending_redirect ? STATUS_READY : STATUS_ERROR,
-                        pending_redirect ? "Redirecting..." : "No result");
+                    if (pending_redirect) {
+                        ui_state_set_status(ui, STATUS_READY, "Redirecting...");
+                    } else if (ui->status != STATUS_ERROR) {
+                        /* Only set generic "No result" if a more descriptive
+                         * error wasn't already surfaced by REACT_EVENT_ERROR */
+                        ui_state_set_status(ui, STATUS_ERROR, "No result");
+                    }
                 }
                 pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
@@ -1706,7 +1711,10 @@ int main(int argc, char **argv) {
                 iargs.query = NULL;
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_load_journal(ui, journal);
-                ui_state_set_status(ui, STATUS_READY, "Ready");
+                /* Only reset to Ready on success.  On error (result==NULL)
+                 * preserve the STATUS_ERROR so the user actually sees it. */
+                if (react.last_result)
+                    ui_state_set_status(ui, STATUS_READY, "Ready");
                 pthread_mutex_unlock(&ui->mtx);
                 tui_render(ui);
             }

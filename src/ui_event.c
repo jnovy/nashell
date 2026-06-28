@@ -246,9 +246,20 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         break;
 
     case REACT_EVENT_DONE:
-        ui->status = STATUS_DONE;
-        free(ui->status_text);
-        ui->status_text = strdup("Done");
+        if (ev->result) {
+            ui->status = STATUS_DONE;
+            free(ui->status_text);
+            ui->status_text = strdup("Done");
+        } else {
+            /* Fatal error — react_run returned NULL.  Keep any prior
+             * STATUS_ERROR message from REACT_EVENT_ERROR if present;
+             * otherwise set a generic error status. */
+            if (ui->status != STATUS_ERROR) {
+                ui->status = STATUS_ERROR;
+                free(ui->status_text);
+                ui->status_text = strdup("Inference failed (no result)");
+            }
+        }
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
         if (ev->stats.prompt_tokens > 0) {
@@ -335,6 +346,17 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         break;
 
     case REACT_EVENT_ERROR:
+        /* Surface error message in the status bar so the user sees it */
+        if (ev->message && ev->message[0]) {
+            ui->status = STATUS_ERROR;
+            free(ui->status_text);
+            ui->status_text = strdup(ev->message);
+        }
+        /* Defer expensive file I/O to main loop */
+        ui->needs_react_regen = 1;
+        ui->needs_file_reload = 1;
+        break;
+
     case REACT_EVENT_WARNING:
         /* Defer expensive file I/O to main loop */
         ui->needs_react_regen = 1;
