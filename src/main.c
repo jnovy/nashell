@@ -101,6 +101,49 @@ static void daemon_lock_release(void) {
     }
 }
 
+/* Check if a daemon (--matrix/--telegram) is currently running.
+ * Returns 1 if daemon is running, 0 otherwise.
+ * Uses non-blocking flock() probe on daemon.lock. */
+static int daemon_is_running(const char *nash_dir) {
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/daemon.lock", nash_dir);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 0;  /* no lock file — no daemon */
+    int locked = (flock(fd, LOCK_EX | LOCK_NB) != 0);
+    if (!locked) flock(fd, LOCK_UN);  /* we grabbed it — release immediately */
+    close(fd);
+    return locked;
+}
+
+/* Route a result to the mailbox outbox so bridge threads (Matrix/Telegram)
+ * can relay it.  Only writes if a daemon is currently running.
+ * ws_name and agent_name are optional (NULL = omitted from prefix). */
+static void route_to_outbox(const char *nash_dir, const char *result,
+                            const char *ws_name, const char *agent_name) {
+    if (!result || !nash_dir) return;
+    if (!daemon_is_running(nash_dir)) return;
+
+    char mbox_dir[NASH_PATH_MAX];
+    if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) return;
+
+    /* Build prefixed result: "[workspace: X] [agent: Y]\n\nresult" */
+    str_t msg = str_new(strlen(result) + 128);
+    if (ws_name && ws_name[0]) {
+        str_appendf(&msg, "[workspace: %s]", ws_name);
+    }
+    if (agent_name && agent_name[0]) {
+        if (msg.len > 0) str_append_cstr(&msg, " ");
+        str_appendf(&msg, "[agent: %s]", agent_name);
+    }
+    if (msg.len > 0) str_append_cstr(&msg, "\n\n");
+    str_append_cstr(&msg, result);
+
+    const char *task_id = mailbox_gen_id();
+    mailbox_write_result(mbox_dir, task_id, msg.data);
+    fprintf(stderr, "[mailbox] result routed to outbox for bridge relay\n");
+    str_free(&msg);
+}
+
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
     if (cfg->data_dir && cfg->data_dir[0]) {
@@ -1439,6 +1482,9 @@ int main(int argc, char **argv) {
         /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
         memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
         int have_result = (result != NULL);
+        /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+        route_to_outbox(nash_dir, result,
+                        ws && ws->name ? ws->name : NULL, NULL);
         if (result) { printf("%s\n", result); free(result); }
         /* Save scratchpad if session was created */
         if (session_dir && tools.scratch.count > 0) {
@@ -1623,6 +1669,9 @@ int main(int argc, char **argv) {
                 /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
                 memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
                 char *result = iargs.result;
+                /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+                route_to_outbox(nash_dir, result,
+                                ws && ws->name ? ws->name : NULL, NULL);
                 pthread_mutex_lock(&ui->mtx);
                 if (result) {
                     ui_state_set_status(ui, STATUS_DONE, "Done");

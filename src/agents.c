@@ -721,8 +721,16 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             /* Replace / with _ in task_id for filename safety */
             for (char *p = task_id; *p; p++)
                 if (*p == '/') *p = '_';
+            /* Prefix result with workspace and agent name */
+            str_t prefixed = str_new(strlen(pargs.result_text) + 128);
+            if (a->workspace_name && a->workspace_name[0])
+                str_appendf(&prefixed, "[workspace: %s]", a->workspace_name);
+            str_appendf(&prefixed, "%s[agent: %s]\n\n",
+                        prefixed.len > 0 ? " " : "", a->id);
+            str_append_cstr(&prefixed, pargs.result_text);
             mailbox_write_result_routed(mailbox_dir, task_id,
-                                        pargs.result_text, NULL);
+                                        prefixed.data, NULL);
+            str_free(&prefixed);
         }
         free(pargs.result_text);
         free(pargs.last_session_dir);
