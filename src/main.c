@@ -1358,7 +1358,8 @@ int main(int argc, char **argv) {
             /* Write result to outbox (with route token for bridge routing) */
             if (task->task_id) {
                 mailbox_write_result_routed(mbox_dir, task->task_id,
-                                           result, task->route_token);
+                                           result, task->route_token,
+                                           task->workspace, task->query);
             }
 
             if (result) {

@@ -496,9 +496,11 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
 /* ── Extended mailbox protocol (workspace routing) ────────── */
 
 char *mailbox_parse_headers(char *content, char **workspace_out,
-                            char **route_token_out) {
+                            char **route_token_out,
+                            char **user_query_out) {
     if (workspace_out) *workspace_out = NULL;
     if (route_token_out) *route_token_out = NULL;
+    if (user_query_out) *user_query_out = NULL;
     if (!content) return content;
 
     /* Quick check: does this look like it has headers?
@@ -541,6 +543,9 @@ char *mailbox_parse_headers(char *content, char **workspace_out,
                 } else if (klen == 13 && strncmp(p, "X-Route-Token", 13) == 0) {
                     if (route_token_out && vlen > 0)
                         *route_token_out = strndup(val, vlen);
+                } else if (klen == 12 && strncmp(p, "X-User-Query", 12) == 0) {
+                    if (user_query_out && vlen > 0)
+                        *user_query_out = strndup(val, vlen);
                 }
             }
         } else {
@@ -582,7 +587,7 @@ mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec) {
 
     /* Parse metadata headers from the raw content */
     char *ws = NULL, *rt = NULL;
-    char *query_start = mailbox_parse_headers(raw_query, &ws, &rt);
+    char *query_start = mailbox_parse_headers(raw_query, &ws, &rt, NULL);
     task->workspace = ws;
     task->route_token = rt;
 
@@ -594,7 +599,9 @@ mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec) {
 }
 
 void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
-                                 const char *result, const char *route_token) {
+                                 const char *result, const char *route_token,
+                                 const char *workspace,
+                                 const char *user_query) {
     if (!route_token || !route_token[0]) {
         /* No routing — use plain write */
         mailbox_write_result(mailbox_dir, task_id, result);
@@ -605,17 +612,41 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
     snprintf(path, sizeof(path), "%s/outbox/result_%s",
              mailbox_dir, task_id);
 
-    /* Build content with route token header */
+    /* Build content with metadata headers.
+     * Format:
+     *   X-Route-Token: <room_id>
+     *   X-Workspace: <name>          (optional)
+     *   X-User-Query: <first line>   (optional, truncated for header safety)
+     *   ---
+     *   <result text>
+     */
     const char *res = result ? result : "(no result)";
-    size_t hdr_len = strlen("X-Route-Token: ") + strlen(route_token) +
-                     strlen("\n---\n");
-    size_t total = hdr_len + strlen(res) + 2;
+    str_t hdr = str_new(512);
+    str_appendf(&hdr, "X-Route-Token: %s\n", route_token);
+    if (workspace && workspace[0])
+        str_appendf(&hdr, "X-Workspace: %s\n", workspace);
+    if (user_query && user_query[0]) {
+        /* Truncate query to first line, max 200 chars for header safety */
+        char qbuf[201];
+        size_t qlen = strlen(user_query);
+        const char *nl = strchr(user_query, '\n');
+        if (nl && (size_t)(nl - user_query) < qlen) qlen = (size_t)(nl - user_query);
+        if (qlen > 200) qlen = 200;
+        memcpy(qbuf, user_query, qlen);
+        qbuf[qlen] = '\0';
+        str_appendf(&hdr, "X-User-Query: %s\n", qbuf);
+    }
+    str_append_cstr(&hdr, "---\n");
+
+    size_t total = hdr.len + strlen(res) + 2;
     char *buf = malloc(total);
     if (!buf) {
+        str_free(&hdr);
         mailbox_write_result(mailbox_dir, task_id, result);
         return;
     }
-    snprintf(buf, total, "X-Route-Token: %s\n---\n%s", route_token, res);
+    snprintf(buf, total, "%s%s", hdr.data, res);
+    str_free(&hdr);
 
     write_file_atomic(path, buf);
     free(buf);

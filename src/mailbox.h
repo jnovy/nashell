@@ -99,15 +99,21 @@ void mailbox_task_free(mailbox_task_t *task);
 mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec);
 
 /* Write task result with route_token header for bridge reply routing.
- * If route_token is NULL, writes plain result (same as mailbox_write_result). */
+ * If route_token is NULL, writes plain result (same as mailbox_write_result).
+ * workspace and user_query are optional (NULL = omitted) -- they are written
+ * as X-Workspace and X-User-Query headers so the bridge can recreate rooms
+ * and echo the original query. */
 void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
-                                 const char *result, const char *route_token);
+                                 const char *result, const char *route_token,
+                                 const char *workspace,
+                                 const char *user_query);
 
 /* Parse metadata headers from task file content.
  * Modifies content in-place: returns pointer to query text (after ---).
- * Fills workspace_out and route_token_out (caller must free).
+ * Fills workspace_out, route_token_out, and user_query_out (caller must free).
  * If no headers found, returns content unchanged with NULLs. */
 char *mailbox_parse_headers(char *content, char **workspace_out,
-                            char **route_token_out);
+                            char **route_token_out,
+                            char **user_query_out);
 
 #endif /* MAILBOX_H */

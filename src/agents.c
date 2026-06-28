@@ -738,7 +738,8 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                         prefixed.len > 0 ? " " : "", a->id);
             str_append_cstr(&prefixed, pargs.result_text);
             mailbox_write_result_routed(mailbox_dir, task_id,
-                                        prefixed.data, NULL);
+                                        prefixed.data, NULL,
+                                        NULL, NULL);
             str_free(&prefixed);
         }
         free(pargs.result_text);

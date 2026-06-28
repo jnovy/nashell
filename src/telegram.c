@@ -1717,7 +1717,7 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
      *   <actual content>
      */
     char *route_token = NULL;
-    char *actual_content = mailbox_parse_headers(content, NULL, &route_token);
+    char *actual_content = mailbox_parse_headers(content, NULL, &route_token, NULL);
     long long thread_id = route_token ? atoll(route_token) : 0;
     free(route_token);
 

@@ -86,6 +86,13 @@ static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
                              const char *room_id);
 static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id);
 
+/* Room existence check + auto-creation for ephemeral rooms */
+static int  mx_api_invite_user(matrix_ctx_t *ctx, const char *room_id,
+                                const char *user_id);
+static int  mx_is_room_joined(matrix_ctx_t *ctx, const char *room_id);
+static const char *mx_ensure_room(matrix_ctx_t *ctx, const char *room_id,
+                                   const char *workspace);
+
 /* Defined in telegram.c — shared markdown→HTML converter */
 extern char *md_to_html(const char *md);
 /* Defined in telegram.c — check if markdown contains tables */
@@ -347,6 +354,7 @@ void matrix_free(matrix_ctx_t *ctx) {
     free(ctx->user_id);
     free(ctx->room_id);
     free(ctx->since_token);
+    free(ctx->invite_user);
     free(ctx->nash_dir);
     free(ctx->mailbox_dir);
     free(ctx->config_path);
@@ -387,6 +395,9 @@ static int mx_config_load(matrix_ctx_t *ctx) {
 
         d = toml_string_in(mx, "since_token");
         if (d.ok) ctx->since_token = d.u.s;
+
+        d = toml_string_in(mx, "invite_user");
+        if (d.ok) ctx->invite_user = d.u.s;
 
         /* Parse [matrix.rooms] — room-to-workspace mapping */
         toml_table_t *rooms_tbl = toml_table_in(mx, "rooms");
@@ -449,6 +460,8 @@ static int mx_config_save(matrix_ctx_t *ctx) {
         fprintf(f, "room_id = \"%s\"\n", ctx->room_id);
     if (ctx->since_token)
         fprintf(f, "since_token = \"%s\"\n", ctx->since_token);
+    if (ctx->invite_user)
+        fprintf(f, "invite_user = \"%s\"\n", ctx->invite_user);
 
     fclose(f);
     return 0;
@@ -1749,6 +1762,163 @@ static void mx_write_cmd_new(const char *mailbox_dir) {
 }
 
 
+/* ── Room existence check + ephemeral room management ────── */
+
+/* Invite a user to a room.  Returns 0 on success, -1 on failure. */
+static int mx_api_invite_user(matrix_ctx_t *ctx, const char *room_id,
+                               const char *user_id) {
+    char *enc_room = url_encode(room_id);
+    char url[MX_URL_MAX * 2];
+    snprintf(url, sizeof(url),
+             "%s/_matrix/client/v3/rooms/%s/invite",
+             ctx->homeserver, enc_room);
+    free(enc_room);
+
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "user_id", user_id);
+    char *body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    char *auth = mx_auth_header(ctx);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t resp = str_new(256);
+    int rc = http_post(url, body_str, headers, 10, &resp);
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *err = cJSON_GetObjectItem(rjson, "errcode");
+            if (err && err->valuestring) {
+                fprintf(stderr, "[matrix] invite %s to %s failed: %s\n",
+                        user_id, room_id, err->valuestring);
+                rc = -1;
+            }
+            cJSON_Delete(rjson);
+        }
+    }
+
+    str_free(&resp);
+    curl_slist_free_all(headers);
+    free(auth);
+    free(body_str);
+    return rc;
+}
+
+/* Check if the bot is still a member of a room.
+ * Returns 1 if joined, 0 if not (room deleted, left, or error). */
+static int mx_is_room_joined(matrix_ctx_t *ctx, const char *room_id) {
+    if (!room_id || !room_id[0]) return 0;
+
+    /* Try to fetch room name state — succeeds only if we're in the room */
+    char *enc_room = url_encode(room_id);
+    char url[MX_URL_MAX * 2];
+    snprintf(url, sizeof(url),
+             "%s/_matrix/client/v3/rooms/%s/state/m.room.create?access_token=%s",
+             ctx->homeserver, enc_room, ctx->access_token);
+    free(enc_room);
+
+    str_t resp = str_new(256);
+    int rc = http_get(url, 10, &resp);
+    int joined = 0;
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            /* If there's no errcode, we got valid state -> we're in the room */
+            cJSON *err = cJSON_GetObjectItem(rjson, "errcode");
+            if (!err) joined = 1;
+            cJSON_Delete(rjson);
+        }
+    }
+    str_free(&resp);
+    return joined;
+}
+
+/* Remove a stale room_id from the room_map. */
+static void mx_room_map_remove(matrix_ctx_t *ctx, const char *room_id) {
+    for (int i = 0; i < ctx->room_map_count; i++) {
+        if (strcmp(ctx->room_map[i].room_id, room_id) == 0) {
+            free(ctx->room_map[i].room_id);
+            free(ctx->room_map[i].workspace);
+            /* Shift remaining entries down */
+            for (int j = i; j < ctx->room_map_count - 1; j++)
+                ctx->room_map[j] = ctx->room_map[j + 1];
+            ctx->room_map_count--;
+            return;
+        }
+    }
+}
+
+/* Ensure a room exists and the bot is joined.  If the room was deleted
+ * by the user, create a new one, invite the user, and update the room map.
+ * Returns a room_id pointer that is valid at least until the next
+ * room_map mutation (stored in room_map or falls back to input). */
+static const char *mx_ensure_room(matrix_ctx_t *ctx, const char *room_id,
+                                   const char *workspace) {
+    /* Quick check: is the bot still in this room? */
+    if (mx_is_room_joined(ctx, room_id))
+        return room_id;
+
+    fprintf(stderr, "[matrix] room %s is gone, recreating", room_id);
+    if (workspace && workspace[0])
+        fprintf(stderr, " for workspace '%s'", workspace);
+    fprintf(stderr, "\n");
+
+    /* Determine a name for the new room */
+    const char *room_name = workspace;
+    if (!room_name || !room_name[0]) {
+        /* Try to find workspace from the old room_id in room_map */
+        room_name = mx_workspace_for_room(ctx, room_id);
+    }
+    if (!room_name || !room_name[0])
+        room_name = "nash";  /* fallback */
+
+    /* Remove stale mapping */
+    mx_room_map_remove(ctx, room_id);
+
+    /* Create the new room */
+    char *new_room = mx_create_workspace_room(ctx, room_name);
+    if (!new_room) {
+        fprintf(stderr, "[matrix] failed to create replacement room\n");
+        return ctx->room_id;  /* fall back to default room */
+    }
+
+    /* Invite the configured user */
+    if (ctx->invite_user && ctx->invite_user[0]) {
+        if (mx_api_invite_user(ctx, new_room, ctx->invite_user) == 0) {
+            fprintf(stderr, "[matrix] invited %s to new room %s\n",
+                    ctx->invite_user, new_room);
+        }
+    }
+
+    /* Add to room map (this strdup's both strings, so we can free new_room) */
+    const char *mapped = mx_room_map_add(ctx, new_room, room_name);
+    (void)mapped;
+
+    /* Send welcome message */
+    char welcome[512];
+    snprintf(welcome, sizeof(welcome),
+             "\xf0\x9f\x94\x84 Room recreated for workspace **%s**.",
+             room_name);
+    mx_api_send_to_room(ctx, new_room, welcome, NULL);
+
+    /* Return the new room_id (pointer into room_map, stable until mutation) */
+    const char *result = NULL;
+    for (int i = 0; i < ctx->room_map_count; i++) {
+        if (strcmp(ctx->room_map[i].workspace, room_name) == 0) {
+            result = ctx->room_map[i].room_id;
+            break;
+        }
+    }
+
+    free(new_room);
+    return result ? result : ctx->room_id;
+}
+
+
 /* ── Outbox file processing ──────────────────────────────── */
 
 static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
@@ -1765,20 +1935,34 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
     if (!content) return;
     unlink(path);
 
-    /* Parse and strip any route token headers from outbox file content.
+    /* Parse metadata headers from outbox file content.
      * Result files from mailbox_write_result_routed() may have:
      *   X-Route-Token: <room_id>
+     *   X-Workspace: <name>
+     *   X-User-Query: <original query text>
      *   ---
      *   <actual content>
      */
-    char *route_token = NULL;
-    char *actual_content = mailbox_parse_headers(content, NULL, &route_token);
+    char *route_token = NULL, *workspace = NULL, *user_query = NULL;
+    char *actual_content = mailbox_parse_headers(content, &workspace,
+                                                  &route_token, &user_query);
 
     /* Route to correct room: use route_token if present, else default room */
     const char *target_room = (route_token && route_token[0])
                               ? route_token : ctx->room_id;
 
+    /* Ensure the target room still exists (user may have deleted it).
+     * If gone, auto-create a new room and update room_map. */
+    target_room = mx_ensure_room(ctx, target_room, workspace);
+
     if (strncmp(filename, "result_", 7) == 0) {
+        /* Post user query first as context (conversation style) */
+        if (user_query && user_query[0]) {
+            str_t qmsg = str_new(strlen(user_query) + 48);
+            str_appendf(&qmsg, "\xf0\x9f\x92\xac **Query:** %s", user_query);
+            mx_api_send_markdown_to(ctx, target_room, qmsg.data);
+            str_free(&qmsg);
+        }
         /* Task result -> convert any markdown tables to bullet-point lists
          * for inline display, then send as formatted HTML message. */
         char *display = md_has_table(actual_content)
@@ -1810,6 +1994,8 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
          * message in the chat. */
         if (strncmp(actual_content, "[done]", 6) == 0) {
             free(route_token);
+            free(workspace);
+            free(user_query);
             free(content);
             return;
         }
@@ -1879,6 +2065,8 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
     }
 
     free(route_token);
+    free(workspace);
+    free(user_query);
     free(content);
 }
 
@@ -2247,7 +2435,7 @@ void *matrix_run(void *arg) {
                             char *ask_data = slurp_file(askpath, NULL);
                             if (ask_data) {
                                 char *ask_rt = NULL;
-                                mailbox_parse_headers(ask_data, NULL, &ask_rt);
+                                mailbox_parse_headers(ask_data, NULL, &ask_rt, NULL);
                                 if (ask_rt && ask_rt[0]) {
                                     snprintf(pending_ask_room,
                                              sizeof(pending_ask_room),
