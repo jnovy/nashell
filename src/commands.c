@@ -1766,6 +1766,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         return CMD_CONTINUE;
     }
     agent_queue_load(q, ctx->nash_dir);
+    agent_queue_schedule(q, time(NULL));
 
     const agent_entry_t *found = agent_find(q, id);
     if (!found) {
@@ -1986,6 +1987,8 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
         /* Suffix resolve: scan to find full agent ID */
         agent_queue_t *q = agent_scan(ctx->nash_dir);
         if (q) {
+            agent_queue_load(q, ctx->nash_dir);
+            agent_queue_schedule(q, time(NULL));
             const agent_entry_t *found = agent_find(q, id);
             if (found) {
                 snprintf(path, sizeof(path),
