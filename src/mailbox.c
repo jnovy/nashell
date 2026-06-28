@@ -1,5 +1,6 @@
 #include "mailbox.h"
 #include "nash_limits.h"
+#include "nash_log.h"
 #include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,8 +89,8 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     snprintf(outpath, sizeof(outpath), "%s/outbox/ask_%s", mailbox_dir, msg_id);
     write_file_atomic(outpath, question);
 
-    fprintf(stderr, "[mailbox] question written: %s\n", outpath);
-    fprintf(stderr, "[mailbox] waiting for answer: inbox/ask_%s\n", msg_id);
+    nash_log("[mailbox] question written: %s", outpath);
+    nash_log("[mailbox] waiting for answer: inbox/ask_%s", msg_id);
 
     /* Wait for answer file in inbox via inotify */
     char inbox_dir[NASH_PATH_MAX];
@@ -108,14 +109,14 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     /* Set up inotify */
     int ifd = inotify_init1(IN_NONBLOCK);
     if (ifd < 0) {
-        fprintf(stderr, "[mailbox] inotify_init failed: %s, falling back to poll\n",
+        nash_log("[mailbox] inotify_init failed: %s, falling back to poll",
                 strerror(errno));
         /* Fallback: poll with stat() every second */
         time_t deadline = timeout_sec > 0 ? time(NULL) + timeout_sec : 0;
         while (1) {
             if (access(answer_file, F_OK) == 0) goto read_answer;
             if (deadline > 0 && time(NULL) >= deadline) {
-                fprintf(stderr, "[mailbox] timeout waiting for answer\n");
+                nash_log("[mailbox] timeout waiting for answer");
                 return NULL;
             }
             sleep(1);
@@ -124,7 +125,7 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
 
     int wd = inotify_add_watch(ifd, inbox_dir, IN_CREATE | IN_MOVED_TO);
     if (wd < 0) {
-        fprintf(stderr, "[mailbox] inotify_add_watch failed: %s\n",
+        nash_log("[mailbox] inotify_add_watch failed: %s",
                 strerror(errno));
         close(ifd);
         return NULL;
@@ -152,7 +153,7 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
                 int elapsed = (int)(time(NULL) - start);
                 remaining_ms = timeout_ms - elapsed * 1000;
                 if (remaining_ms <= 0) {
-                    fprintf(stderr, "[mailbox] timeout waiting for answer\n");
+                    nash_log("[mailbox] timeout waiting for answer");
                     inotify_rm_watch(ifd, wd);
                     close(ifd);
                     return NULL;
@@ -205,7 +206,7 @@ read_answer:
     /* Answer is just plain text — the entire file content IS the answer */
     answer = read_file(answer_file);
     if (!answer) {
-        fprintf(stderr, "[mailbox] failed to read answer file: %s\n",
+        nash_log("[mailbox] failed to read answer file: %s",
                 answer_file);
         return NULL;
     }
@@ -214,7 +215,7 @@ read_answer:
     unlink(answer_file);
     unlink(outpath);
 
-    fprintf(stderr, "[mailbox] received answer: %.80s%s\n",
+    nash_log("[mailbox] received answer: %.80s%s",
             answer, strlen(answer) > 80 ? "..." : "");
     return answer;
 }
@@ -248,7 +249,7 @@ void mailbox_write_result(const char *mailbox_dir, const char *task_id,
 
     /* Plain text: just the result */
     write_file_atomic(path, result ? result : "(no result)");
-    fprintf(stderr, "[mailbox] result written: %s\n", path);
+    nash_log("[mailbox] result written: %s", path);
 }
 
 
@@ -302,19 +303,19 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
     /* No existing tasks — watch with inotify */
     int ifd = inotify_init1(IN_NONBLOCK);
     if (ifd < 0) {
-        fprintf(stderr, "[mailbox] inotify_init failed: %s\n", strerror(errno));
+        nash_log("[mailbox] inotify_init failed: %s", strerror(errno));
         return NULL;
     }
 
     int wd = inotify_add_watch(ifd, inbox_dir, IN_CREATE | IN_MOVED_TO);
     if (wd < 0) {
-        fprintf(stderr, "[mailbox] inotify_add_watch failed: %s\n",
+        nash_log("[mailbox] inotify_add_watch failed: %s",
                 strerror(errno));
         close(ifd);
         return NULL;
     }
 
-    fprintf(stderr, "[mailbox] daemon: watching %s for tasks...\n", inbox_dir);
+    nash_log("[mailbox] daemon: watching %s for tasks...", inbox_dir);
 
     struct pollfd pfd = { .fd = ifd, .events = POLLIN };
     time_t start = time(NULL);
@@ -433,7 +434,7 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
     switch (ev->type) {
     case REACT_EVENT_USER_ASK: {
         /* Intercept user_ask: write to outbox, block until answer in inbox */
-        fprintf(stderr, "\n[mailbox/user_ask] %s\n",
+        nash_log("[mailbox/user_ask] %s",
                 ev->message ? ev->message : "?");
 
         char *answer = mailbox_ask(mbox->mailbox_dir, ev->message,
@@ -618,6 +619,6 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
 
     write_file_atomic(path, buf);
     free(buf);
-    fprintf(stderr, "[mailbox] routed result written: %s (token=%s)\n",
+    nash_log("[mailbox] routed result written: %s (token=%s)",
             path, route_token);
 }
