@@ -1130,7 +1130,7 @@ int main(int argc, char **argv) {
         pthread_t tg_thread = 0;
         telegram_ctx_t tg_ctx;
         if (telegram_mode) {
-            telegram_init(&tg_ctx, config_path, mbox_dir, &shutdown_requested);
+            telegram_init(&tg_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
             if (!tg_ctx.bot_token || !tg_ctx.chat_id) {
                 /* No config — run interactive setup */
                 if (telegram_setup(&tg_ctx) != 0) {
@@ -1148,7 +1148,7 @@ int main(int argc, char **argv) {
         pthread_t mx_thread = 0;
         matrix_ctx_t mx_ctx;
         if (matrix_mode) {
-            matrix_init(&mx_ctx, config_path, mbox_dir, &shutdown_requested);
+            matrix_init(&mx_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
             if (!mx_ctx.access_token || !mx_ctx.room_id) {
                 /* No config — run interactive setup */
                 if (matrix_setup(&mx_ctx) != 0) {

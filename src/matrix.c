@@ -67,6 +67,9 @@ static int  mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
 static int  mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
                               const char *filename, const char *mimetype,
                               size_t filesize);
+static char *mx_auth_header(matrix_ctx_t *ctx);
+static int  mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
+                                const char *text, const char *html);
 
 /* Room-aware send variants (for multi-room workspace routing) */
 static int  mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
@@ -180,6 +183,124 @@ static char *mx_api_get_room_name(matrix_ctx_t *ctx, const char *room_id) {
     return result;
 }
 
+/* Create a new Matrix room for a workspace and return its room_id.
+ * Returns a strdup'd room_id string, or NULL on failure.
+ * Unlike mx_api_create_room(), does NOT overwrite ctx->room_id. */
+static char *mx_create_workspace_room(matrix_ctx_t *ctx, const char *name) {
+    char url[MX_URL_MAX];
+    snprintf(url, sizeof(url), "%s/_matrix/client/v3/createRoom",
+             ctx->homeserver);
+
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "name", name);
+    char topic[256];
+    snprintf(topic, sizeof(topic), "Nash workspace: %s", name);
+    cJSON_AddStringToObject(body, "topic", topic);
+    cJSON_AddStringToObject(body, "preset", "private_chat");
+    cJSON_AddStringToObject(body, "visibility", "private");
+
+    char *body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    char *auth = mx_auth_header(ctx);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t resp = str_new(512);
+    int rc = http_post(url, body_str, headers, 15, &resp);
+    char *result = NULL;
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *rid = cJSON_GetObjectItem(rjson, "room_id");
+            if (rid && rid->valuestring) {
+                result = strdup(rid->valuestring);
+            } else {
+                cJSON *err = cJSON_GetObjectItem(rjson, "error");
+                fprintf(stderr, "[matrix] createRoom '%s' failed: %s\n",
+                        name, err ? err->valuestring : "unknown");
+            }
+            cJSON_Delete(rjson);
+        }
+    }
+
+    str_free(&resp);
+    curl_slist_free_all(headers);
+    free(auth);
+    free(body_str);
+    return result;
+}
+
+/* Scan ~/.nash/workspaces/ and create Matrix rooms for any
+ * workspace that doesn't already have a room mapping.
+ * Sends a welcome message to each newly created room. */
+static void mx_sync_workspaces(matrix_ctx_t *ctx) {
+    if (!ctx->nash_dir || !ctx->homeserver || !ctx->access_token) return;
+
+    char ws_dir[512];
+    snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces", ctx->nash_dir);
+
+    DIR *d = opendir(ws_dir);
+    if (!d) return;  /* no workspaces dir yet */
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
+
+        /* For DT_UNKNOWN, stat to confirm directory */
+        if (ent->d_type == DT_UNKNOWN) {
+            char full[1024];
+            snprintf(full, sizeof(full), "%s/%s", ws_dir, ent->d_name);
+            struct stat st;
+            if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        }
+
+        const char *ws_name = ent->d_name;
+
+        /* Check if this workspace already has a room mapping */
+        int found = 0;
+        for (int i = 0; i < ctx->room_map_count; i++) {
+            if (strcmp(ctx->room_map[i].workspace, ws_name) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) continue;
+
+        /* Check capacity */
+        if (ctx->room_map_count >= MX_MAX_ROOM_MAP) {
+            fprintf(stderr, "[matrix] room_map full, cannot sync "
+                    "workspace '%s'\n", ws_name);
+            break;
+        }
+
+        /* Create a Matrix room for this workspace */
+        fprintf(stderr, "[matrix] creating room for workspace '%s'\n",
+                ws_name);
+        char *room_id = mx_create_workspace_room(ctx, ws_name);
+        if (!room_id) {
+            fprintf(stderr, "[matrix] failed to create room for '%s'\n",
+                    ws_name);
+            continue;
+        }
+
+        /* Add to room map */
+        mx_room_map_add(ctx, room_id, ws_name);
+
+        /* Send a welcome message to the new room */
+        char welcome[256];
+        snprintf(welcome, sizeof(welcome),
+                 "\xf0\x9f\x93\x82 Workspace **%s** linked to this room.",
+                 ws_name);
+        mx_api_send_to_room(ctx, room_id, welcome, NULL);
+        free(room_id);
+    }
+    closedir(d);
+}
+
 /* Record task_id -> room_id mapping for reply routing (circular buffer) */
 static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
                              const char *room_id) {
@@ -206,10 +327,11 @@ static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id) {
 /* ── Initialization ──────────────────────────────────────── */
 
 int matrix_init(matrix_ctx_t *ctx, const char *config_path,
-                const char *mailbox_dir,
+                const char *nash_dir, const char *mailbox_dir,
                 volatile sig_atomic_t *shutdown) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->config_path = strdup(config_path);
+    ctx->nash_dir = strdup(nash_dir);
     ctx->mailbox_dir = strdup(mailbox_dir);
     ctx->shutdown = shutdown;
     ctx->txn_counter = (long long)time(NULL) * 1000;  /* unique start */
@@ -225,6 +347,7 @@ void matrix_free(matrix_ctx_t *ctx) {
     free(ctx->user_id);
     free(ctx->room_id);
     free(ctx->since_token);
+    free(ctx->nash_dir);
     free(ctx->mailbox_dir);
     free(ctx->config_path);
     for (int i = 0; i < ctx->room_map_count; i++) {
@@ -1837,6 +1960,10 @@ void *matrix_run(void *arg) {
     /* Send startup notification */
     mx_api_send_message(ctx, "🟢 Nash bot online", NULL);
 
+    /* Sync workspaces → create rooms for unmapped workspaces */
+    mx_sync_workspaces(ctx);
+    int ws_sync_counter = 0;
+
     /* Main loop */
     while (!*ctx->shutdown) {
         /* ── Phase 1: /sync for new messages ──────────────────── */
@@ -2144,6 +2271,12 @@ void *matrix_run(void *arg) {
         if (++save_counter >= 60) {  /* every ~60 sync cycles ≈ 5 min */
             mx_config_save(ctx);
             save_counter = 0;
+        }
+
+        /* Periodically re-sync workspaces (every ~60 sync cycles ≈ 5 min) */
+        if (++ws_sync_counter >= 60) {
+            mx_sync_workspaces(ctx);
+            ws_sync_counter = 0;
         }
     }
 

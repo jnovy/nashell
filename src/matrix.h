@@ -45,6 +45,7 @@ typedef struct {
     char     *config_path;       /* path to config.toml (for saving setup) */
     volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
     long long txn_counter;       /* incrementing txn ID for idempotent sends */
+    char     *nash_dir;          /* path to ~/.nash (for workspace scanning) */
 
     /* Room-to-workspace mapping (from [matrix.rooms] in config.toml) */
     mx_room_map_entry_t room_map[MX_MAX_ROOM_MAP];
@@ -59,7 +60,7 @@ typedef struct {
  * Loads access_token, room_id, homeserver from config.toml [matrix] section.
  * Returns 0 on success, -1 on error. */
 int matrix_init(matrix_ctx_t *ctx, const char *config_path,
-                const char *mailbox_dir,
+                const char *nash_dir, const char *mailbox_dir,
                 volatile sig_atomic_t *shutdown);
 
 /* Interactive first-run setup.

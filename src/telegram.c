@@ -123,14 +123,132 @@ static const char *tg_topic_map_add(telegram_ctx_t *ctx,
     return ctx->topic_map[idx].workspace;
 }
 
+/* Create a forum topic in the configured Telegram group.
+ * Returns the message_thread_id of the new topic, or -1 on failure.
+ * Also auto-maps the new topic to the given workspace name. */
+static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
+                                           const char *name) {
+    char url[TG_URL_MAX];
+    snprintf(url, sizeof(url), "%s%s/createForumTopic",
+             TG_API_BASE, ctx->bot_token);
+
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
+    cJSON_AddStringToObject(body, "name", name);
+
+    char *body_str = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    str_t resp = str_new(1024);
+    int rc = http_post(url, body_str, headers, 30, &resp);
+    long long thread_id = -1;
+
+    if (rc == 0 && resp.len > 0) {
+        cJSON *rjson = cJSON_Parse(resp.data);
+        if (rjson) {
+            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
+            if (ok && cJSON_IsTrue(ok)) {
+                cJSON *result = cJSON_GetObjectItem(rjson, "result");
+                if (result) {
+                    cJSON *tid = cJSON_GetObjectItem(result,
+                                                     "message_thread_id");
+                    if (tid && cJSON_IsNumber(tid))
+                        thread_id = (long long)tid->valuedouble;
+                }
+            } else {
+                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
+                fprintf(stderr, "[telegram] createForumTopic '%s' failed: %s\n",
+                        name, desc ? desc->valuestring : "unknown");
+            }
+            cJSON_Delete(rjson);
+        }
+    }
+
+    str_free(&resp);
+    curl_slist_free_all(headers);
+    free(body_str);
+    return thread_id;
+}
+
+/* Scan ~/.nash/workspaces/ and create Telegram forum topics for any
+ * workspace that doesn't already have a topic mapping.
+ * Sends a welcome message to each newly created topic. */
+static void tg_sync_workspaces(telegram_ctx_t *ctx) {
+    if (!ctx->nash_dir || !ctx->bot_token || !ctx->chat_id) return;
+
+    char ws_dir[512];
+    snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces", ctx->nash_dir);
+
+    DIR *d = opendir(ws_dir);
+    if (!d) return;  /* no workspaces dir yet */
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
+
+        /* For DT_UNKNOWN, stat to confirm directory */
+        if (ent->d_type == DT_UNKNOWN) {
+            char full[1024];
+            snprintf(full, sizeof(full), "%s/%s", ws_dir, ent->d_name);
+            struct stat st;
+            if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        }
+
+        const char *ws_name = ent->d_name;
+
+        /* Check if this workspace already has a topic mapping */
+        int found = 0;
+        for (int i = 0; i < ctx->topic_map_count; i++) {
+            if (strcmp(ctx->topic_map[i].workspace, ws_name) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) continue;
+
+        /* Check capacity */
+        if (ctx->topic_map_count >= TG_MAX_TOPIC_MAP) {
+            fprintf(stderr, "[telegram] topic_map full, cannot sync "
+                    "workspace '%s'\n", ws_name);
+            break;
+        }
+
+        /* Create a forum topic for this workspace */
+        fprintf(stderr, "[telegram] creating topic for workspace '%s'\n",
+                ws_name);
+        long long tid = tg_api_create_forum_topic(ctx, ws_name);
+        if (tid < 0) {
+            fprintf(stderr, "[telegram] failed to create topic for '%s'\n",
+                    ws_name);
+            continue;
+        }
+
+        /* Add to topic map */
+        tg_topic_map_add(ctx, tid, ws_name);
+
+        /* Send a welcome message to the new topic */
+        char welcome[256];
+        snprintf(welcome, sizeof(welcome),
+                 "\xf0\x9f\x93\x82 Workspace **%s** linked to this topic.",
+                 ws_name);
+        tg_api_send_message(ctx, welcome, NULL, tid);
+    }
+    closedir(d);
+}
+
 
 /* ── Initialization ──────────────────────────────────────── */
 
 int telegram_init(telegram_ctx_t *ctx, const char *config_path,
-                  const char *mailbox_dir,
+                  const char *nash_dir, const char *mailbox_dir,
                   volatile sig_atomic_t *shutdown) {
     memset(ctx, 0, sizeof(*ctx));
     ctx->config_path = strdup(config_path);
+    ctx->nash_dir = strdup(nash_dir);
     ctx->mailbox_dir = strdup(mailbox_dir);
     ctx->shutdown = shutdown;
     ctx->update_offset = 0;
@@ -143,6 +261,7 @@ int telegram_init(telegram_ctx_t *ctx, const char *config_path,
 
 void telegram_free(telegram_ctx_t *ctx) {
     free(ctx->bot_token);
+    free(ctx->nash_dir);
     free(ctx->mailbox_dir);
     free(ctx->config_path);
     for (int i = 0; i < ctx->topic_map_count; i++)
@@ -1726,6 +1845,10 @@ void *telegram_run(void *arg) {
     /* Process any existing outbox files */
     tg_scan_outbox(ctx);
 
+    /* Sync workspaces → create forum topics for unmapped workspaces */
+    tg_sync_workspaces(ctx);
+    int ws_sync_counter = 0;
+
     /* Main loop */
     while (!*ctx->shutdown) {
         /* ── Phase 1: Poll Telegram for updates (short timeout) ──── */
@@ -2017,6 +2140,12 @@ void *telegram_run(void *arg) {
         } else {
             /* Fallback: poll-based outbox scan */
             tg_scan_outbox(ctx);
+        }
+
+        /* Periodically re-sync workspaces (every ~30 iterations ≈ 60s) */
+        if (++ws_sync_counter >= 30) {
+            tg_sync_workspaces(ctx);
+            ws_sync_counter = 0;
         }
     }
 

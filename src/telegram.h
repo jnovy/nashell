@@ -46,6 +46,7 @@ typedef struct {
     char     *config_path;       /* path to config.toml (for saving setup) */
     volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
     int       rich_supported;    /* 1 = sendRichMessage available (Bot API 10.1+) */
+    char     *nash_dir;          /* path to ~/.nash (for workspace scanning) */
 
     /* Topic-to-workspace mapping (from [telegram.topics] in config.toml) */
     tg_topic_map_entry_t topic_map[TG_MAX_TOPIC_MAP];
@@ -60,7 +61,7 @@ typedef struct {
  * Loads bot_token and chat_id from config.toml [telegram] section.
  * Returns 0 on success, -1 on error. */
 int telegram_init(telegram_ctx_t *ctx, const char *config_path,
-                  const char *mailbox_dir,
+                  const char *nash_dir, const char *mailbox_dir,
                   volatile sig_atomic_t *shutdown);
 
 /* Interactive first-run setup.
