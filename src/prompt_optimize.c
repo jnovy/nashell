@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <math.h>
 
@@ -367,8 +368,11 @@ char *optimize_format_evidence(const sh_evidence_t *bundle,
     }
 
     str_append_cstr(&fb,
-        "EDITABLE SURFACE: system_prompt_extra (model-specific rules "
-        "appended to the system prompt).\n");
+        "EDITABLE SURFACES:\n"
+        "  1. system_prompt_extra — model-specific rules appended to system prompt\n"
+        "  2. tool descriptions — per-tool description overrides in function schema\n"
+        "Use === SYSTEM PROMPT === and === TOOL DESCRIPTIONS === section headers.\n"
+        "Include EXPECT_FIX: and AT_RISK: predictions for decision manifest.\n");
     return str_steal(&fb);
 }
 
@@ -420,27 +424,39 @@ static const char *REFLECTION_SYSTEM_PROMPT =
     "You are the Self-Harness proposer for Nash, an autonomous coding agent.\n\n"
     "CONTEXT: Nash uses a ReAct loop with tools (file_read, file_write, file_edit, "
     "shell_exec, grep_search, glob_search, web_fetch, web_search, memory_store, "
-    "memory_search, notes, done, plan, user_ask). You are improving the MODEL-SPECIFIC "
-    "RULES section of its system prompt.\n\n"
+    "memory_search, notes, done, plan, user_ask). You are improving the agent's "
+    "harness configuration.\n\n"
     "SELF-HARNESS PROTOCOL [arXiv:2606.09498]:\n"
     "You will receive structured evidence of the agent's failures, including:\n"
     "- Failure patterns clustered by signature (cause/status/mechanism)\n"
     "- Execution traces showing the agent's actual behavior\n"
     "- Records of passing behaviors that must be preserved\n"
-    "- Previously rejected proposals to avoid re-proposing\n\n"
-    "YOUR TASK — propose a BOUNDED, MINIMAL edit to the system prompt rules:\n"
+    "- Previously rejected proposals to avoid re-proposing\n"
+    "- Prediction accuracy from previous manifests (if available)\n\n"
+    "EDITABLE SURFACES:\n"
+    "1. System prompt rules (model-specific behavioral rules)\n"
+    "2. Tool descriptions (how tools are described in the function-calling schema)\n\n"
+    "YOUR TASK — propose a BOUNDED, MINIMAL edit:\n"
     "1. Select ONE primary failure pattern to address\n"
-    "2. Propose ONE new rule (1-3 sentences) targeting that specific mechanism\n"
+    "2. Propose ONE new rule OR tool description change targeting that mechanism\n"
     "3. You may also mark ONE existing rule for removal if it causes harm\n"
-    "4. Output the COMPLETE updated rule set with your change applied\n\n"
+    "4. Include PREDICTIONS about which queries will be fixed/at-risk\n\n"
+    "OUTPUT FORMAT (use these exact section headers):\n"
+    "=== SYSTEM PROMPT ===\n"
+    "<complete updated rule set>\n"
+    "=== TOOL DESCRIPTIONS ===\n"
+    "[tool_name] <new description for this tool>\n"
+    "(only include tools whose descriptions you want to change)\n"
+    "EXPECT_FIX: query_id1, query_id2\n"
+    "AT_RISK: query_id3\n\n"
     "CONSTRAINTS:\n"
     "- Each proposal must target a DIFFERENT failure pattern than others in this round\n"
     "- Keep rules concise and actionable — not generic advice\n"
     "- Preserve rules that correspond to passing behaviors\n"
     "- Do NOT rewrite the entire prompt — make minimal targeted changes\n"
-    "- Do NOT include tool definitions or general agent behavior\n"
-    "- Output ONLY the new prompt text, no explanations or commentary\n"
-    "- Keep it under 500 words\n";
+    "- Keep system prompt rules under 500 words\n"
+    "- Tool descriptions should be 1-3 sentences each\n"
+    "- EXPECT_FIX/AT_RISK predictions are REQUIRED — they are verified next round\n";
 
 char *optimize_reflect(provider_t *reflection_lm,
                        const char *current_prompt,
@@ -539,20 +555,38 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
                                         memory_t *memory,
                                         store_t *store,
                                         const char *nash_dir,
-                                        regression_report_t **out_report) {
+                                        regression_report_t **out_report,
+                                        char **tool_names,
+                                        char **tool_descs,
+                                        int n_tool_descs) {
     prompt_candidate_t cand = {0};
     cand.prompt_text = prompt_text ? strdup(prompt_text) : NULL;
     cand.round = round;
     if (out_report) *out_report = NULL;
 
+    /* Save and swap system_prompt_extra */
     const char *saved_extra = cfg->system_prompt_extra;
     cfg->system_prompt_extra = prompt_text;
+
+    /* Save and swap tool descriptions [Rec #2: AHE tool optimization] */
+    char **saved_td_names = cfg->profile_tool_desc_names;
+    char **saved_td_values = cfg->profile_tool_desc_values;
+    int saved_td_count = cfg->n_profile_tool_descs;
+    if (tool_names && n_tool_descs > 0) {
+        cfg->profile_tool_desc_names = tool_names;
+        cfg->profile_tool_desc_values = tool_descs;
+        cfg->n_profile_tool_descs = n_tool_descs;
+    }
 
     regression_report_t *report = regression_run(
         banks, n_banks, opt->split_filter,
         opt->student, cfg, memory, store, nash_dir);
 
+    /* Restore originals */
     cfg->system_prompt_extra = saved_extra;
+    cfg->profile_tool_desc_names = saved_td_names;
+    cfg->profile_tool_desc_values = saved_td_values;
+    cfg->n_profile_tool_descs = saved_td_count;
 
     if (report) {
         cand.score = report->overall_score;
@@ -1050,13 +1084,42 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
             int n_accepted = 0;
             regression_report_t *best_report = NULL;
 
+            /* Rec #7: Track manifests from this round for verification */
+            manifest_entry_t *round_manifests = calloc(K, sizeof(manifest_entry_t));
+            /* Rec #2: Track per-candidate tool description overrides */
+            char ***cand_td_names = calloc(K, sizeof(char **));
+            char ***cand_td_descs = calloc(K, sizeof(char **));
+            int *cand_td_counts = calloc(K, sizeof(int));
+
             for (int k = 0; k < K; k++) {
                 if (!cand_texts[k]) continue;
                 fprintf(stderr, "\n  ── Candidate %d/%d ──\n", k + 1, K);
 
+                /* Rec #2: Parse structured proposal (system prompt + tool descs) */
+                char **td_names = NULL, **td_descs = NULL;
+                int n_td = 0;
+                char *prompt_only = optimize_parse_proposal(cand_texts[k],
+                    &td_names, &td_descs, &n_td);
+                if (!prompt_only) prompt_only = strdup(cand_texts[k]);
+
+                /* Rec #7: Parse decision manifest predictions */
+                round_manifests[k] = optimize_parse_manifest(cand_texts[k]);
+                if (round_manifests[k].n_expect_fix > 0 ||
+                    round_manifests[k].n_at_risk > 0) {
+                    fprintf(stderr, "  Manifest: expect_fix=%d, at_risk=%d\n",
+                            round_manifests[k].n_expect_fix,
+                            round_manifests[k].n_at_risk);
+                }
+
+                /* Save parsed tool descs for potential later use */
+                cand_td_names[k] = td_names;
+                cand_td_descs[k] = td_descs;
+                cand_td_counts[k] = n_td;
+
                 regression_report_t *rpt = NULL;
-                prompt_candidate_t cand = score_prompt(cand_texts[k], global_round,
-                    opt, banks, n_banks, cfg, memory, store, nash_dir, &rpt);
+                prompt_candidate_t cand = score_prompt(prompt_only, global_round,
+                    opt, banks, n_banks, cfg, memory, store, nash_dir, &rpt,
+                    td_names, td_descs, n_td);
 
                 fprintf(stderr, "  Score: %.1f%% (%d/%d)",
                         cand.score * 100, cand.total_passed, cand.total_queries);
@@ -1069,6 +1132,18 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 int n_flips = 0, n_fixes = 0, n_regr = 0;
                 query_flip_t *flips = optimize_compare_reports_per_query(
                     round_baseline_report, rpt, &n_flips, &n_fixes, &n_regr);
+
+                /* Rec #7: Verify manifest predictions against actual flips */
+                if (round_manifests[k].n_expect_fix > 0 ||
+                    round_manifests[k].n_at_risk > 0) {
+                    optimize_verify_manifest(&round_manifests[k],
+                        flips, n_flips, n_fixes, n_regr);
+                    char *mf = optimize_format_manifest_feedback(&round_manifests[k]);
+                    if (mf) {
+                        fprintf(stderr, "  %s", mf);
+                        free(mf);
+                    }
+                }
 
                 double d_in = 0, d_ho = 0;
                 int accept = passes_acceptance_rule(&cand, &round_baseline,
@@ -1120,9 +1195,24 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     n_rejected++;
                 }
                 free(flips);
+                free(prompt_only);
                 if (rpt) regression_free_report(rpt);
                 optimize_free_candidate(&cand);
             }
+            /* Cleanup per-candidate tool desc allocations */
+            for (int k = 0; k < K; k++) {
+                for (int t = 0; t < cand_td_counts[k]; t++) {
+                    free(cand_td_names[k][t]);
+                    free(cand_td_descs[k][t]);
+                }
+                free(cand_td_names[k]);
+                free(cand_td_descs[k]);
+                optimize_free_manifest(&round_manifests[k]);
+            }
+            free(cand_td_names);
+            free(cand_td_descs);
+            free(cand_td_counts);
+            free(round_manifests);
 
             /* Merge accepted (§3.4) */
             if (n_accepted > 0) {
@@ -1260,6 +1350,23 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     else if (best.round == 0)
         fprintf(stderr, "  No improvement found — keeping original prompt.\n\n");
 
+    /* Rec #1: Generate lessons from failure patterns [AHE memory lever]
+     * Run after optimization loop so lessons capture the FINAL failure state —
+     * patterns that persisted despite prompt improvements are the ones worth
+     * encoding as long-term memory. */
+    if (opt->generate_lessons && evidence && evidence->total_failures > 0) {
+        fprintf(stderr, "\n━━━ Generating Lessons from Failure Patterns ━━━\n");
+        const char *model_name = (opt->student && opt->student->cfg.model_id)
+            ? opt->student->cfg.model_id : NULL;
+        int n_lessons = optimize_generate_lessons(opt->reflection,
+                                                   evidence, memory, model_name);
+        if (n_lessons > 0)
+            fprintf(stderr, "  %d lesson%s stored in memory\n",
+                    n_lessons, n_lessons > 1 ? "s" : "");
+        else
+            fprintf(stderr, "  No lessons generated\n");
+    }
+
     return best;
 }
 
@@ -1280,4 +1387,529 @@ void optimize_free_candidate(prompt_candidate_t *c) {
     c->prompt_text = NULL;
     c->audit = NULL;
     c->score = 0;
+}
+
+/* ════════════════════════════════════════════════════════
+ * Rec #1: Memory Lesson Generation [AHE ablation: +5.6pp]
+ *
+ * AHE's ablation showed long-term memory is the single most impactful
+ * harness component (+5.6pp overall, +11.6pp on hard tasks). This
+ * function analyzes failure clusters from the evidence bundle and
+ * generates actionable lessons that are stored in Nash's memory system.
+ *
+ * Each lesson encodes a boundary-case behavior pattern that the agent
+ * should remember across tasks — analogous to AHE's "12 boundary-case
+ * lessons" that drove their biggest gains.
+ * ════════════════════════════════════════════════════════ */
+
+static const char *LESSON_GEN_SYSTEM_PROMPT =
+    "You are a lesson extraction system for Nash, an autonomous coding agent.\n\n"
+    "CONTEXT: Nash uses a ReAct loop with tools (file_read, file_write, file_edit, "
+    "shell_exec, grep_search, glob_search, web_fetch, web_search, memory_store, "
+    "memory_search, notes, done, plan, user_ask). After running regression tests, "
+    "some queries failed. You will analyze the failure patterns and extract "
+    "reusable lessons.\n\n"
+    "YOUR TASK: Generate 1-3 concise, actionable lessons from the failure patterns.\n"
+    "Each lesson should:\n"
+    "  1. Identify a specific behavioral anti-pattern that caused failures\n"
+    "  2. Provide a concrete corrective rule (what to do instead)\n"
+    "  3. Be general enough to apply across similar tasks\n"
+    "  4. Be specific enough to be actionable (not generic advice)\n\n"
+    "OUTPUT FORMAT: Output each lesson as:\n"
+    "LESSON: <key-slug>\n"
+    "<lesson text — 2-4 sentences>\n"
+    "---\n\n"
+    "Example:\n"
+    "LESSON: verify-file-edit-applied\n"
+    "After using file_edit, always verify the edit was applied by reading the "
+    "modified region with file_read. file_edit silently fails when old_text "
+    "doesn't match exactly due to whitespace differences. A quick verification "
+    "read costs minimal tokens but prevents cascading errors.\n"
+    "---\n\n"
+    "Focus on the MOST impactful patterns — those affecting the most queries.\n"
+    "Do NOT generate lessons for patterns that are model-specific quirks.\n";
+
+int optimize_generate_lessons(provider_t *reflection_lm,
+                              const sh_evidence_t *evidence,
+                              memory_t *memory,
+                              const char *model_name) {
+    if (!reflection_lm || !evidence || !memory) return 0;
+    if (evidence->total_failures == 0) return 0;
+
+    llm_chat_t *chat = llm_chat_new();
+    llm_chat_add(chat, "system", LESSON_GEN_SYSTEM_PROMPT);
+
+    str_t user_msg = str_new(4096);
+    str_appendf(&user_msg, "FAILURE ANALYSIS (from regression testing on %s):\n\n",
+                model_name ? model_name : "unknown model");
+    str_appendf(&user_msg, "Total: %d passed, %d failed\n\n",
+                evidence->total_passes, evidence->total_failures);
+
+    for (int i = 0; i < evidence->n_clusters && i < 5; i++) {
+        sh_cluster_t *fc = &evidence->clusters[i];
+        str_appendf(&user_msg, "Pattern %d: %s/%s/%s (%d failure%s)\n",
+            i + 1, cause_str(fc->sig.cause),
+            status_str(fc->sig.status),
+            mechanism_str(fc->sig.mechanism),
+            fc->count, fc->count > 1 ? "s" : "");
+
+        str_append_cstr(&user_msg, "  Affected: ");
+        for (int j = 0; j < fc->n_entries && j < 5; j++) {
+            if (j > 0) str_append_cstr(&user_msg, ", ");
+            str_append_cstr(&user_msg, fc->query_ids[j]);
+        }
+        str_append_cstr(&user_msg, "\n");
+
+        for (int j = 0; j < fc->n_entries && j < 2; j++) {
+            str_appendf(&user_msg, "  [%s] Criteria:\n%s",
+                        fc->query_ids[j], fc->crit_details[j]);
+            if (fc->trace_excerpts[j] &&
+                strcmp(fc->trace_excerpts[j], "(no trace available)") != 0)
+                str_appendf(&user_msg, "  [%s] Trace:\n%s\n",
+                            fc->query_ids[j], fc->trace_excerpts[j]);
+        }
+        str_append_cstr(&user_msg, "\n");
+    }
+
+    str_append_cstr(&user_msg,
+        "\nExtract 1-3 lessons from these failures. "
+        "Output ONLY lessons in the specified format.\n");
+
+    llm_chat_add(chat, "user", str_cstr(&user_msg));
+    str_free(&user_msg);
+
+    llm_stats_t stats = {0};
+    char *raw = provider_complete(reflection_lm, chat, &stats);
+    llm_chat_free(chat);
+
+    if (!raw) {
+        fprintf(stderr, "[optimize] lesson generation failed — no response\n");
+        return 0;
+    }
+
+    char *text = extract_text_from_response(raw);
+    free(raw);
+    if (!text) return 0;
+
+    /* Parse lessons from output */
+    int n_stored = 0;
+    const char *p = text;
+    while ((p = strstr(p, "LESSON:")) != NULL) {
+        p += 7; /* skip "LESSON:" */
+        while (*p == ' ') p++;
+
+        /* Extract slug */
+        const char *slug_end = p;
+        while (*slug_end && *slug_end != '\n') slug_end++;
+        if (slug_end == p) { p = slug_end; continue; }
+
+        char slug[128];
+        int slug_len = (int)(slug_end - p);
+        if (slug_len > 120) slug_len = 120;
+        memcpy(slug, p, slug_len);
+        slug[slug_len] = '\0';
+        /* Sanitize slug */
+        for (int i = 0; i < slug_len; i++) {
+            if (slug[i] == ' ') slug[i] = '-';
+            else slug[i] = (char)tolower((unsigned char)slug[i]);
+        }
+
+        p = slug_end;
+        if (*p == '\n') p++;
+
+        /* Extract lesson body until "---" */
+        const char *body_end = strstr(p, "---");
+        if (!body_end) body_end = p + strlen(p);
+
+        int body_len = (int)(body_end - p);
+        while (body_len > 0 && (p[body_len - 1] == '\n' || p[body_len - 1] == ' '))
+            body_len--;
+
+        if (body_len < 10) { p = body_end; continue; }
+
+        char *value = strndup(p, body_len);
+
+        /* Build key: lesson:opt-<slug> */
+        char key[192];
+        snprintf(key, sizeof(key), "lesson:opt-%s", slug);
+
+        /* Store in memory (non-pinned, no journal ref) */
+        int rc = memory_store(memory, key, value, 0, NULL, NULL, 0);
+        if (rc == 0) {
+            fprintf(stderr, "[optimize] stored lesson: %s (%d chars)\n",
+                    key, body_len);
+            n_stored++;
+        }
+        free(value);
+
+        p = body_end;
+        if (strncmp(p, "---", 3) == 0) p += 3;
+    }
+
+    free(text);
+    fprintf(stderr, "[optimize] generated %d lesson%s from failure patterns\n",
+            n_stored, n_stored != 1 ? "s" : "");
+    return n_stored;
+}
+
+/* ════════════════════════════════════════════════════════
+ * Rec #2: Tool Description Optimization [AHE ablation: +3.3pp]
+ *
+ * Extends the optimizer to also target tool descriptions per model.
+ * Tool descriptions are part of the function-calling schema and directly
+ * influence how the model selects and uses tools. AHE's evolved harness
+ * created a 1364-line shell tool with auto-contextual hints — tool
+ * descriptions are the lighter-weight equivalent.
+ *
+ * The reflection LM outputs a structured format:
+ *   === SYSTEM PROMPT ===
+ *   <prompt text>
+ *   === TOOL DESCRIPTIONS ===
+ *   [tool_name] description text
+ *   [tool_name] description text
+ * ════════════════════════════════════════════════════════ */
+
+char *optimize_parse_proposal(const char *raw_text,
+                              char ***out_tool_names,
+                              char ***out_tool_descs,
+                              int *out_n_tool_descs) {
+    *out_tool_names = NULL;
+    *out_tool_descs = NULL;
+    *out_n_tool_descs = 0;
+
+    if (!raw_text || !raw_text[0]) return NULL;
+
+    /* Look for structured format markers */
+    const char *tool_section = strstr(raw_text, "=== TOOL DESCRIPTIONS ===");
+    const char *prompt_section = strstr(raw_text, "=== SYSTEM PROMPT ===");
+
+    /* If no structured markers, treat entire text as system prompt (backwards compat) */
+    if (!tool_section && !prompt_section)
+        return strdup(raw_text);
+
+    /* Extract system prompt portion */
+    char *prompt_text = NULL;
+    if (prompt_section) {
+        const char *start = prompt_section + strlen("=== SYSTEM PROMPT ===");
+        while (*start == '\n') start++;
+
+        const char *end = tool_section ? tool_section : (raw_text + strlen(raw_text));
+        while (end > start && (end[-1] == '\n' || end[-1] == ' ')) end--;
+        if (end > start)
+            prompt_text = strndup(start, end - start);
+    } else {
+        /* No prompt section marker — everything before tool section is prompt */
+        const char *end = tool_section;
+        while (end > raw_text && (end[-1] == '\n' || end[-1] == ' ')) end--;
+        if (end > raw_text)
+            prompt_text = strndup(raw_text, end - raw_text);
+    }
+
+    /* Parse tool descriptions */
+    if (tool_section) {
+        const char *p = tool_section + strlen("=== TOOL DESCRIPTIONS ===");
+        while (*p == '\n') p++;
+
+        int cap = 8;
+        char **names = calloc(cap, sizeof(char *));
+        char **descs = calloc(cap, sizeof(char *));
+        int n = 0;
+
+        while (*p) {
+            /* Expect [tool_name] description */
+            if (*p != '[') { p++; continue; }
+            p++; /* skip '[' */
+            const char *name_end = strchr(p, ']');
+            if (!name_end) break;
+
+            char *name = strndup(p, name_end - p);
+            p = name_end + 1;
+            while (*p == ' ') p++;
+
+            /* Description runs to next '[' at line start, or end */
+            const char *desc_end = p;
+            while (*desc_end) {
+                if (*desc_end == '\n' && desc_end[1] == '[') {
+                    break;
+                }
+                desc_end++;
+            }
+
+            /* Trim trailing whitespace */
+            while (desc_end > p && (desc_end[-1] == '\n' || desc_end[-1] == ' '))
+                desc_end--;
+
+            if (desc_end > p) {
+                if (n >= cap) {
+                    cap *= 2;
+                    names = realloc(names, cap * sizeof(char *));
+                    descs = realloc(descs, cap * sizeof(char *));
+                }
+                names[n] = name;
+                descs[n] = strndup(p, desc_end - p);
+                n++;
+            } else {
+                free(name);
+            }
+
+            p = desc_end;
+            while (*p == '\n') p++;
+        }
+
+        if (n > 0) {
+            *out_tool_names = names;
+            *out_tool_descs = descs;
+            *out_n_tool_descs = n;
+        } else {
+            free(names);
+            free(descs);
+        }
+    }
+
+    return prompt_text ? prompt_text : strdup("");
+}
+
+int optimize_write_tool_descs_to_profile(const char *profile_path,
+                                          char **tool_names,
+                                          char **tool_descs,
+                                          int n_tool_descs) {
+    if (!profile_path || !tool_names || n_tool_descs <= 0) return -1;
+
+    char *data = slurp_file(profile_path, NULL);
+    if (!data) return -1;
+
+    str_t out = str_new(strlen(data) + 2048);
+
+    /* Remove any existing [tools.*] sections */
+    const char *p = data;
+    while (*p) {
+        /* Check for [tools.X] section header */
+        if (p[0] == '[' && strncmp(p, "[tools.", 7) == 0) {
+            /* Skip until next section or end */
+            const char *next = p + 1;
+            while (*next) {
+                if (*next == '\n' && next[1] == '[') {
+                    next++;
+                    break;
+                }
+                next++;
+            }
+            p = next;
+            continue;
+        }
+        /* Copy character */
+        const char *nl = strchr(p, '\n');
+        if (nl) {
+            str_append(&out, p, nl - p + 1);
+            p = nl + 1;
+        } else {
+            str_append_cstr(&out, p);
+            break;
+        }
+    }
+
+    /* Append new tool description sections */
+    if (out.len > 0 && out.data[out.len - 1] != '\n')
+        str_append_cstr(&out, "\n");
+
+    for (int i = 0; i < n_tool_descs; i++) {
+        str_appendf(&out, "\n[tools.%s]\ndescription = \"\"\"\n%s\n\"\"\"\n",
+                    tool_names[i], tool_descs[i]);
+    }
+
+    free(data);
+    int rc = write_file(profile_path, str_cstr(&out), out.len);
+    str_free(&out);
+
+    if (rc == 0)
+        fprintf(stderr, "[optimize] wrote %d tool description override%s to %s\n",
+                n_tool_descs, n_tool_descs > 1 ? "s" : "", profile_path);
+    return rc;
+}
+
+/* ════════════════════════════════════════════════════════
+ * Rec #7: Decision Manifest [AHE Decision Observability]
+ *
+ * Each harness edit is paired with a falsifiable prediction:
+ *   - EXPECT_FIX: query IDs the proposer believes will be fixed
+ *   - AT_RISK: query IDs that might regress
+ *
+ * After evaluation, predictions are verified against actual flips.
+ * Prediction accuracy is fed back to the proposer in the next round,
+ * closing the observation-decision-verification loop.
+ *
+ * Based on AHE paper §3.3: "Every edit is paired with self-declared
+ * prediction, verified against next round outcomes."
+ * ════════════════════════════════════════════════════════ */
+
+manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
+    manifest_entry_t m = {0};
+    if (!proposal_text) return m;
+
+    /* Parse EXPECT_FIX: q1, q2, q3 */
+    const char *fix = strstr(proposal_text, "EXPECT_FIX:");
+    if (fix) {
+        fix += 11;
+        while (*fix == ' ') fix++;
+        const char *eol = strchr(fix, '\n');
+        if (!eol) eol = fix + strlen(fix);
+
+        int cap = 8;
+        m.expect_fix = calloc(cap, sizeof(char *));
+        const char *p = fix;
+        while (p < eol) {
+            while (p < eol && (*p == ' ' || *p == ',')) p++;
+            const char *start = p;
+            while (p < eol && *p != ',' && *p != '\n') p++;
+            const char *end = p;
+            while (end > start && end[-1] == ' ') end--;
+            if (end > start) {
+                if (m.n_expect_fix >= cap) {
+                    cap *= 2;
+                    m.expect_fix = realloc(m.expect_fix, cap * sizeof(char *));
+                }
+                m.expect_fix[m.n_expect_fix++] = strndup(start, end - start);
+            }
+        }
+    }
+
+    /* Parse AT_RISK: q1, q2 */
+    const char *risk = strstr(proposal_text, "AT_RISK:");
+    if (risk) {
+        risk += 8;
+        while (*risk == ' ') risk++;
+        const char *eol = strchr(risk, '\n');
+        if (!eol) eol = risk + strlen(risk);
+
+        int cap = 8;
+        m.at_risk = calloc(cap, sizeof(char *));
+        const char *p = risk;
+        while (p < eol) {
+            while (p < eol && (*p == ' ' || *p == ',')) p++;
+            const char *start = p;
+            while (p < eol && *p != ',' && *p != '\n') p++;
+            const char *end = p;
+            while (end > start && end[-1] == ' ') end--;
+            if (end > start) {
+                if (m.n_at_risk >= cap) {
+                    cap *= 2;
+                    m.at_risk = realloc(m.at_risk, cap * sizeof(char *));
+                }
+                m.at_risk[m.n_at_risk++] = strndup(start, end - start);
+            }
+        }
+    }
+
+    return m;
+}
+
+void optimize_verify_manifest(manifest_entry_t *manifest,
+                              const query_flip_t *flips, int n_flips,
+                              int n_fixes, int n_regressions) {
+    (void)n_fixes;
+    (void)n_regressions;
+    if (!manifest) return;
+    manifest->verified = 1;
+    manifest->correct_fixes = 0;
+    manifest->missed_fixes = 0;
+    manifest->correct_risks = 0;
+    manifest->missed_risks = 0;
+
+    /* Check predicted fixes against actual fixes */
+    for (int i = 0; i < manifest->n_expect_fix; i++) {
+        int found = 0;
+        for (int j = 0; j < n_flips; j++) {
+            if (flips[j].now_pass && flips[j].query_id &&
+                strcmp(flips[j].query_id, manifest->expect_fix[i]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) manifest->correct_fixes++;
+    }
+
+    /* Count actual fixes not in predictions */
+    for (int j = 0; j < n_flips; j++) {
+        if (!flips[j].now_pass) continue;
+        int predicted = 0;
+        for (int i = 0; i < manifest->n_expect_fix; i++) {
+            if (flips[j].query_id &&
+                strcmp(flips[j].query_id, manifest->expect_fix[i]) == 0) {
+                predicted = 1;
+                break;
+            }
+        }
+        if (!predicted) manifest->missed_fixes++;
+    }
+
+    /* Check predicted at-risk against actual regressions */
+    for (int i = 0; i < manifest->n_at_risk; i++) {
+        int found = 0;
+        for (int j = 0; j < n_flips; j++) {
+            if (!flips[j].now_pass && flips[j].query_id &&
+                strcmp(flips[j].query_id, manifest->at_risk[i]) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) manifest->correct_risks++;
+    }
+
+    /* Count actual regressions not in predictions */
+    for (int j = 0; j < n_flips; j++) {
+        if (flips[j].now_pass) continue;
+        int predicted = 0;
+        for (int i = 0; i < manifest->n_at_risk; i++) {
+            if (flips[j].query_id &&
+                strcmp(flips[j].query_id, manifest->at_risk[i]) == 0) {
+                predicted = 1;
+                break;
+            }
+        }
+        if (!predicted) manifest->missed_risks++;
+    }
+}
+
+char *optimize_format_manifest_feedback(const manifest_entry_t *manifest) {
+    if (!manifest || !manifest->verified) return NULL;
+
+    str_t fb = str_new(512);
+    str_append_cstr(&fb, "PREDICTION ACCURACY (from previous round's manifest):\n");
+
+    int total_fix_pred = manifest->n_expect_fix;
+    int total_risk_pred = manifest->n_at_risk;
+
+    if (total_fix_pred > 0)
+        str_appendf(&fb, "  Fix predictions: %d/%d correct (%.0f%% precision)\n",
+                    manifest->correct_fixes, total_fix_pred,
+                    total_fix_pred > 0
+                        ? 100.0 * manifest->correct_fixes / total_fix_pred : 0.0);
+
+    if (manifest->missed_fixes > 0)
+        str_appendf(&fb, "  Unpredicted fixes: %d (recall gap)\n",
+                    manifest->missed_fixes);
+
+    if (total_risk_pred > 0)
+        str_appendf(&fb, "  Risk predictions: %d/%d materialized (%.0f%% precision)\n",
+                    manifest->correct_risks, total_risk_pred,
+                    total_risk_pred > 0
+                        ? 100.0 * manifest->correct_risks / total_risk_pred : 0.0);
+
+    if (manifest->missed_risks > 0)
+        str_appendf(&fb, "  Unpredicted regressions: %d (BLIND SPOT — improve risk prediction)\n",
+                    manifest->missed_risks);
+
+    str_append_cstr(&fb,
+        "Use this feedback to improve prediction accuracy in your next proposal.\n\n");
+
+    return str_steal(&fb);
+}
+
+void optimize_free_manifest(manifest_entry_t *m) {
+    if (!m) return;
+    for (int i = 0; i < m->n_expect_fix; i++) free(m->expect_fix[i]);
+    free(m->expect_fix);
+    for (int i = 0; i < m->n_at_risk; i++) free(m->at_risk[i]);
+    free(m->at_risk);
+    memset(m, 0, sizeof(*m));
 }

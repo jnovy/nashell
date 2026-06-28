@@ -1355,6 +1355,78 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     }
     free(bm25_query);
 
+    /* ── Step 5.5: Reasoning summarization [Rec #6: Hybrid context management]
+     * Terminus 2 uses 3-step summarization for reasoning chains; Nash uses
+     * selective eviction. This hybrid approach compresses ASSISTANT reasoning
+     * messages (where narrative coherence > exact text) while preserving
+     * tool results exactly (where exact details matter).
+     *
+     * Heuristic: for long assistant messages, keep the first paragraph
+     * (initial reasoning/plan) and last paragraph (conclusion/decision),
+     * replacing the middle with a brief marker. No LLM call required. */
+    {
+        int reasoning_min = 1200; /* only compress assistant msgs > this */
+        total_chars = react_calc_total_chars(chat);
+        usage_pct = react_usage_pct(total_chars, context_budget);
+        if (usage_pct > target_pct) {
+            for (int mi = keep_head; mi < chat->n_msgs - keep_tail; mi++) {
+                if (!chat->msgs[mi].role ||
+                    strcmp(chat->msgs[mi].role, "assistant") != 0)
+                    continue;
+                if ((int)chat->msgs[mi].content_len < reasoning_min)
+                    continue;
+                /* Skip if it contains tool_calls JSON (those are structural) */
+                if (chat->msgs[mi].tool_calls_json)
+                    continue;
+
+                const char *c = chat->msgs[mi].content;
+                int clen = (int)chat->msgs[mi].content_len;
+
+                /* Find end of first paragraph (double newline or first 400 chars) */
+                const char *first_end = strstr(c, "\n\n");
+                int first_len;
+                if (first_end && (first_end - c) < 400)
+                    first_len = (int)(first_end - c);
+                else
+                    first_len = clen < 400 ? clen : 400;
+
+                /* Find start of last paragraph */
+                const char *last_start = c + clen;
+                for (int i = clen - 2; i > first_len; i--) {
+                    if (c[i] == '\n' && c[i+1] == '\n') {
+                        last_start = c + i + 2;
+                        break;
+                    }
+                }
+                int last_len = (int)(c + clen - last_start);
+                if (last_len > 400) {
+                    last_start = c + clen - 400;
+                    last_len = 400;
+                }
+
+                /* Only compress if we'd save significant space */
+                int new_len = first_len + last_len + 40;
+                if (new_len >= clen - 200) continue;
+
+                /* Build compressed version */
+                str_t compressed = str_new(new_len + 60);
+                str_append(&compressed, c, first_len);
+                str_append_cstr(&compressed,
+                    "\n\n[...reasoning compressed...]\n\n");
+                str_append(&compressed, last_start, last_len);
+
+                llm_chat_replace_content(chat, mi,
+                    str_steal(&compressed));
+                /* str_steal() took ownership — no str_free needed */
+
+                /* Re-check if we've compressed enough */
+                total_chars = react_calc_total_chars(chat);
+                usage_pct = react_usage_pct(total_chars, context_budget);
+                if (usage_pct <= target_pct) break;
+            }
+        }
+    }
+
     /* ── Step 6: Finalize (Proposal A) ── */
     /* B4 FIX: Reuse keep_head from step 5 — evict_compress only changes
      * content (llm_chat_replace_content), not message structure. */

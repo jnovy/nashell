@@ -116,6 +116,24 @@ typedef struct {
     double delta_out;
 } rejected_proposal_t;
 
+/* ── Decision manifest [AHE §3.3 Decision Observability] ────── */
+
+/* Predicted impact of a harness edit — each edit is paired with a
+ * falsifiable prediction, verified against the next round's results.
+ * Based on AHE paper's decision observability pillar. */
+typedef struct {
+    char **expect_fix;     /* query IDs the proposer expects to fix */
+    int    n_expect_fix;
+    char **at_risk;        /* query IDs the proposer thinks might regress */
+    int    n_at_risk;
+    /* Verification (filled in after next round's evaluation) */
+    int    verified;       /* 1 if predictions have been verified */
+    int    correct_fixes;  /* predicted fixes that actually fixed */
+    int    missed_fixes;   /* actual fixes that weren't predicted */
+    int    correct_risks;  /* predicted at-risk that actually regressed */
+    int    missed_risks;   /* actual regressions that weren't predicted */
+} manifest_entry_t;
+
 /* ── Optimization configuration ─────────────────────── */
 
 typedef struct {
@@ -131,6 +149,9 @@ typedef struct {
     int         edit_budget_init; /* L_0: max edits per step (0 = unlimited, default 4) */
     int         edit_budget_floor;/* L_min: min edits at end of epoch (default 2) */
     int         minibatch_size;   /* failures per reflection minibatch (0 = all-at-once) */
+    /* AHE-inspired extensions */
+    int         optimize_tool_descs; /* also optimize tool descriptions (default 0) */
+    int         generate_lessons;    /* generate memory lessons from failures (default 0) */
 } optimize_config_t;
 
 /* ── API ─────────────────────────────────────────────── */
@@ -201,5 +222,51 @@ query_flip_t *optimize_compare_reports_per_query(
         const regression_report_t *baseline,
         const regression_report_t *candidate,
         int *out_n_flips, int *out_n_fixes, int *out_n_regressions);
+
+/* ── Rec #1: Memory lesson generation [AHE ablation: +5.6pp] ── */
+
+/* Generate lessons from failure patterns and store in memory.
+ * Uses the reflection LM to analyze failure clusters and produce
+ * actionable lessons. Returns number of lessons stored. */
+int optimize_generate_lessons(provider_t *reflection_lm,
+                              const sh_evidence_t *evidence,
+                              memory_t *memory,
+                              const char *model_name);
+
+/* ── Rec #2: Tool description optimization [AHE ablation: +3.3pp] ── */
+
+/* Parse a structured reflection output containing both system_prompt_extra
+ * and tool description overrides. Returns the prompt text portion.
+ * tool_names/tool_descs/n_tool_descs are set to parsed tool overrides.
+ * Caller must free returned string and all tool_names[i]/tool_descs[i]. */
+char *optimize_parse_proposal(const char *raw_text,
+                              char ***out_tool_names,
+                              char ***out_tool_descs,
+                              int *out_n_tool_descs);
+
+/* Write tool description overrides to a model profile .toml file.
+ * Returns 0 on success. */
+int optimize_write_tool_descs_to_profile(const char *profile_path,
+                                          char **tool_names,
+                                          char **tool_descs,
+                                          int n_tool_descs);
+
+/* ── Rec #7: Decision manifest [AHE Decision Observability] ── */
+
+/* Parse predictions from a structured proposal output.
+ * Returns a manifest entry (caller must free with optimize_free_manifest). */
+manifest_entry_t optimize_parse_manifest(const char *proposal_text);
+
+/* Verify a manifest's predictions against actual query flips.
+ * Updates the manifest entry's verification fields in-place. */
+void optimize_verify_manifest(manifest_entry_t *manifest,
+                              const query_flip_t *flips, int n_flips,
+                              int n_fixes, int n_regressions);
+
+/* Format manifest verification results for feedback to next round. */
+char *optimize_format_manifest_feedback(const manifest_entry_t *manifest);
+
+/* Free a manifest entry's allocated memory. */
+void optimize_free_manifest(manifest_entry_t *m);
 
 #endif /* PROMPT_OPTIMIZE_H */

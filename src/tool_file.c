@@ -193,6 +193,61 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
+    /* Rec #5: Smart tool wrapper — auto-annotate with contextual hints [AHE]
+     * When reading a .c file, check for companion .h file and extract function
+     * signatures as structural context. This encodes the "auto-surfaces contract
+     * hints from files near each command" pattern from AHE's evolved harness. */
+    {
+        const char *ext = strrchr(path_j->valuestring, '.');
+        if (ext && strcmp(ext, ".c") == 0) {
+            /* Build companion .h path */
+            size_t base_len = (size_t)(ext - path_j->valuestring);
+            char *h_path = malloc(base_len + 3);
+            if (h_path) {
+                memcpy(h_path, path_j->valuestring, base_len);
+                strcpy(h_path + base_len, ".h");
+                struct stat h_st;
+                if (stat(h_path, &h_st) == 0 && S_ISREG(h_st.st_mode) &&
+                    h_st.st_size < 32768) {
+                    size_t h_len = 0;
+                    char *h_content = slurp_file(h_path, &h_len);
+                    if (h_content) {
+                        /* Extract function-like lines (contain '(' and end with ';') */
+                        str_t sigs = str_new(512);
+                        const char *lp = h_content;
+                        int sig_count = 0;
+                        while (*lp && sig_count < 20) {
+                            const char *le = strchr(lp, '\n');
+                            if (!le) le = lp + strlen(lp);
+                            int ll = (int)(le - lp);
+                            /* Heuristic: line has '(' and ends with ';' or '),' = likely signature */
+                            if (ll > 8 && ll < 300) {
+                                const char *paren = memchr(lp, '(', ll);
+                                if (paren && (lp[ll-1] == ';' || lp[ll-1] == ',')) {
+                                    /* Skip comments, #defines, typedefs */
+                                    if (lp[0] != '#' && lp[0] != '/' && lp[0] != '*' &&
+                                        !memchr(lp, '{', ll)) {
+                                        str_append(&sigs, lp, ll);
+                                        str_append_cstr(&sigs, "\n");
+                                        sig_count++;
+                                    }
+                                }
+                            }
+                            lp = *le ? le + 1 : le;
+                        }
+                        if (sig_count > 0) {
+                            cJSON_AddStringToObject(meta, "header_hint",
+                                str_cstr(&sigs));
+                        }
+                        str_free(&sigs);
+                        free(h_content);
+                    }
+                }
+                free(h_path);
+            }
+        }
+    }
+
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "file_read", params, alias,
                    display_len, display_lines, NULL, NULL);

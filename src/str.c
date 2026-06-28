@@ -1,5 +1,6 @@
 #include "str.h"
 #include "nash_limits.h"
+#include "nash_log.h"
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
@@ -332,18 +333,18 @@ int session_lock_acquire(const char *session_dir) {
 
     int fd = open(lock_path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (fd < 0) {
-        fprintf(stderr, "[session] warning: cannot create lock file %s: %s\n",
+        nash_log("[session] warning: cannot create lock file %s: %s",
                 lock_path, strerror(errno));
         return -1;
     }
 
     if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
         if (errno == EWOULDBLOCK) {
-            fprintf(stderr,
-                    "[session] ERROR: session %s is already in use by another process\n",
+            nash_log(
+                    "[session] ERROR: session %s is already in use by another process",
                     session_dir);
         } else {
-            fprintf(stderr, "[session] warning: flock(%s) failed: %s\n",
+            nash_log("[session] warning: flock(%s) failed: %s",
                     lock_path, strerror(errno));
         }
         close(fd);
