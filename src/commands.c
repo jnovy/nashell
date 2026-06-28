@@ -1620,9 +1620,11 @@ static int cmd_agents_list(command_ctx_t *ctx) {
             else {
                 char durbuf[32];
                 fmt_duration((double)a->last_duration, durbuf, sizeof(durbuf));
-                snprintf(status_str, sizeof(status_str), "%s %s (%s)",
-                         (a->last_status && strcmp(a->last_status, "ok") == 0) ? "ok" : "FAIL",
-                         a->last_status ? a->last_status : "?", durbuf);
+                if (a->last_status && strcmp(a->last_status, "ok") == 0)
+                    snprintf(status_str, sizeof(status_str), "ok (%s)", durbuf);
+                else
+                    snprintf(status_str, sizeof(status_str), "FAIL: %s (%s)",
+                             a->last_status ? a->last_status : "?", durbuf);
             }
 
             str_appendf(&display, "| %d | %s | `%s` | %s | %s | %s |\n",
@@ -1884,11 +1886,16 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
         char durbuf[32];
         fmt_duration((double)dur, durbuf, sizeof(durbuf));
 
-        str_appendf(&display, "| %s | %s | %s %s | %s |\n",
+        char status_str[128];
+        if (st && strcmp(st, "ok") == 0)
+            snprintf(status_str, sizeof(status_str), "ok");
+        else
+            snprintf(status_str, sizeof(status_str), "FAIL: %s", st ? st : "?");
+
+        str_appendf(&display, "| %s | %s | %s | %s |\n",
                     timebuf,
                     aid ? aid : "?",
-                    (st && strcmp(st, "ok") == 0) ? "ok" : "FAIL",
-                    st ? st : "?",
+                    status_str,
                     durbuf);
 
         cJSON_Delete(ev);
