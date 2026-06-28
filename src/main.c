@@ -1563,6 +1563,10 @@ int main(int argc, char **argv) {
                                            pargs_tui.agent_id,
                                            pargs_tui.agent_start_time,
                                            dur, status);
+                    if (pargs_tui.result_text)
+                        agent_save_result(pargs_tui.nash_dir,
+                                          pargs_tui.agent_id,
+                                          pargs_tui.result_text);
                     free(pargs_tui.agent_id);
                     pargs_tui.agent_id = NULL;
                 }

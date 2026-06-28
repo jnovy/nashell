@@ -517,6 +517,19 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
     return 0;
 }
 
+void agent_save_result(const char *nash_dir, const char *agent_id,
+                       const char *result_text) {
+    if (!nash_dir || !agent_id || !result_text) return;
+
+    char dir[NASH_PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/agent/results/%s", nash_dir, agent_id);
+    mkdirp(dir);
+
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/latest.md", dir);
+    write_file(path, result_text, strlen(result_text));
+}
+
 /* ── Queue printing ───────────────────────────────────── */
 
 void agent_queue_print(const agent_queue_t *q, FILE *out) {
@@ -690,6 +703,10 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         a->next_due = agent_next_occurrence(&a->schedule, a->last_run);
 
         agent_history_append(nash_dir, a, dur, status, NULL);
+
+        /* Persist latest result for `/agent result` */
+        if (pargs.result_text)
+            agent_save_result(nash_dir, a->id, pargs.result_text);
 
         /* Route result through mailbox so bridge threads deliver it */
         if (mailbox_dir && pargs.result_text) {
