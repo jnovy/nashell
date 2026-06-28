@@ -205,12 +205,8 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                     continue;
                 }
 
-                /* Get schedule */
+                /* Get schedule (NULL = manual-only agent) */
                 const char *sched_str = yaml_str(yaml_get(root, "schedule"));
-                if (!sched_str || !sched_str[0]) {
-                    yaml_free(root);
-                    continue; /* No schedule = not an agent, just a playbook */
-                }
 
                 /* Get name */
                 const char *name = yaml_str(yaml_get(root, "name"));
@@ -222,13 +218,18 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                     name = namebuf;
                 }
 
-                /* Parse schedule */
+                /* Parse schedule (if provided) */
                 agent_schedule_t parsed_sched;
-                if (agent_parse_schedule(sched_str, &parsed_sched) != 0) {
-                    fprintf(stderr, "[agent] warning: bad schedule '%s' in %s\n",
-                            sched_str, yaml_path);
-                    yaml_free(root);
-                    continue;
+                memset(&parsed_sched, 0, sizeof(parsed_sched));
+                int has_schedule = 0;
+                if (sched_str && sched_str[0]) {
+                    if (agent_parse_schedule(sched_str, &parsed_sched) != 0) {
+                        fprintf(stderr, "[agent] warning: bad schedule '%s' in %s\n",
+                                sched_str, yaml_path);
+                        yaml_free(root);
+                        continue;
+                    }
+                    has_schedule = 1;
                 }
 
                 /* Build agent entry */
@@ -247,8 +248,9 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 a->workspace_name = strdup(ws_prefix);
                 a->agent_file = strdup(yaml_path);
                 a->workspace_dir = strdup(dir_path);
-                a->schedule = parsed_sched;
-                a->schedule_str = strdup(sched_str);
+                if (has_schedule)
+                    a->schedule = parsed_sched;
+                a->schedule_str = strdup(has_schedule ? sched_str : "manual");
                 a->timeout = yaml_int(yaml_get(root, "timeout"), 0);
                 a->enabled = 1;
                 a->last_status = strdup("never");
@@ -463,6 +465,13 @@ void agent_queue_schedule(agent_queue_t *q, time_t now) {
 
     for (int i = 0; i < q->n_agents; i++) {
         agent_entry_t *a = &q->agents[i];
+
+        /* Manual-only agents (no schedule) are never automatically due */
+        if (a->schedule_str && strcmp(a->schedule_str, "manual") == 0) {
+            a->next_due = 0;
+            a->is_due = 0;
+            continue;
+        }
 
         if (a->schedule.is_startup) {
             /* @startup: always due */
