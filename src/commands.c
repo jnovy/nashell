@@ -244,7 +244,7 @@ static int cmd_dream(command_ctx_t *ctx) {
     };
     ctx->provider->abort_retry = 0;  /* reset before new inference */
     pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
-    *ctx->inferring = 3;
+    *ctx->inferring = INFER_PLAYBOOK;
     tui_render(ui);
     return CMD_CONTINUE;
 }
@@ -326,7 +326,7 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
     };
     ctx->provider->abort_retry = 0;  /* reset before new inference */
     pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
-    *ctx->inferring = 3;
+    *ctx->inferring = INFER_PLAYBOOK;
     tui_render(ui);
     return CMD_CONTINUE;
 }
@@ -1806,7 +1806,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
 
     ctx->provider->abort_retry = 0;
     pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
-    *ctx->inferring = 3;
+    *ctx->inferring = INFER_PLAYBOOK;
 
     pthread_mutex_lock(&ui->mtx);
     ui->agent_view = 1;     /* Don't overwrite main session.md during agent run */

@@ -14,6 +14,14 @@
 #include "workspace.h"
 #include "playbook.h"
 
+/* Inference state — what the worker thread is doing.
+ * Used as an atomic tri-state flag (0 = idle, nonzero = busy). */
+enum infer_state {
+    INFER_IDLE     = 0,   /* no worker thread running               */
+    INFER_REACT    = 1,   /* regular inference (react loop)          */
+    INFER_PLAYBOOK = 2,   /* playbook / agent run                    */
+};
+
 /* Context struct for TUI slash-command handlers.
  * Bundles all mutable/shared session state needed by commands.
  * Pointers-to-pointers are used for fields that /fork mutates. */

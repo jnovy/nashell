@@ -1018,6 +1018,10 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[play] Playbook '%s' %s\n",
                 pb->name, ok ? "completed successfully" : "FAILED");
 
+        /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+        route_to_outbox(nash_dir, pargs.result_text,
+                        ws && ws->name ? ws->name : NULL, pb->name);
+
         free(pargs.result_text);
         free(pargs.last_session_dir);
         playbook_free(pb);
@@ -1589,7 +1593,7 @@ int main(int argc, char **argv) {
          * FIX #13: Made atomic for defense in depth — currently only the
          * main thread reads/writes, but atomic_int prevents data races
          * if future code accesses it from another thread. */
-        atomic_int inferring = 0;
+        atomic_int inferring = INFER_IDLE;
         pthread_t infer_tid;
         /* Thread-shared args: static lifetime so they survive across loop
          * iterations.  Thread ownership contract:
@@ -1602,7 +1606,7 @@ int main(int argc, char **argv) {
         char *pending_redirect = NULL;  /* stashed query when user types during inference */
         while (running) {
             /* Check if playbook thread completed */
-            if (inferring == 3 && pargs_tui.done) {
+            if (inferring == INFER_PLAYBOOK && pargs_tui.done) {
                 pthread_join(infer_tid, NULL);
 
                 /* Log to agent history if this was an /agent run */
@@ -1623,6 +1627,11 @@ int main(int argc, char **argv) {
                     free(pargs_tui.agent_id);
                     pargs_tui.agent_id = NULL;
                 }
+
+                /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+                route_to_outbox(nash_dir, pargs_tui.result_text,
+                                ws && ws->name ? ws->name : NULL,
+                                pargs_tui.playbook ? pargs_tui.playbook->name : NULL);
 
                 pthread_mutex_lock(&ui->mtx);
                 if (pargs_tui.playbook_ok) {
@@ -1646,13 +1655,13 @@ int main(int argc, char **argv) {
                 pargs_tui.last_session_dir = NULL;
                 playbook_free(pargs_tui.playbook);
                 pargs_tui.playbook = NULL;
-                inferring = 0;
+                inferring = INFER_IDLE;
                 tui_render(ui);
             }
 
             /* Check if inference thread is paused and waiting for redirect.
              * Update status bar so user knows they can type a new query. */
-            if (inferring == 1 && react.pause_waiting &&
+            if (inferring == INFER_REACT && react.pause_waiting &&
                 ui->status != STATUS_READY) {
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_READY,
@@ -1662,9 +1671,9 @@ int main(int argc, char **argv) {
             }
 
             /* Check if inference thread completed */
-            if (inferring == 1 && iargs.done) {
+            if (inferring == INFER_REACT && iargs.done) {
                 pthread_join(infer_tid, NULL);
-                inferring = 0;
+                inferring = INFER_IDLE;
                 tools.react_loop++;  /* increment for next query */
                 /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
                 memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
@@ -1955,7 +1964,7 @@ int main(int argc, char **argv) {
                 provider->abort_retry = 0;  /* reset before new inference */
                 free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
                 pthread_create(&infer_tid, NULL, infer_worker, &iargs);
-                inferring = 1;
+                inferring = INFER_REACT;
                 tui_render(ui);
             }
 
@@ -2046,7 +2055,7 @@ int main(int argc, char **argv) {
         }
         if (inferring) {
             pthread_join(infer_tid, NULL);
-            inferring = 0;
+            inferring = INFER_IDLE;
             free(iargs.result);
             free(iargs.query);
         }
