@@ -1040,9 +1040,15 @@ int main(int argc, char **argv) {
 
         /* Execute due agents (re-scans internally to own the queue) */
         agent_queue_free(q);
+        /* If a daemon (--matrix/--telegram) is running, route agent results
+         * through its mailbox outbox so the bridge can deliver them. */
+        char mbox_dir[NASH_PATH_MAX];
+        const char *mbox = NULL;
+        if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) == 0)
+            mbox = mbox_dir;
         int n_fail = agent_run_due(nash_dir, shared_store, cfg, provider,
                                    server_model, agents_force_id,
-                                   &shutdown_requested, NULL);
+                                   &shutdown_requested, mbox);
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return n_fail > 0 ? 1 : 0;
     }
