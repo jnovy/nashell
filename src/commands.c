@@ -1574,33 +1574,6 @@ static int cmd_todo(command_ctx_t *ctx, const char *args) {
 
 /* ── /agent [list|show|run|history|due|result] ────────────────── */
 
-/* Helper: find an agent by numeric index (1-based), exact, or suffix match.
- * Returns pointer into q->agents[] or NULL. */
-static const agent_entry_t *agent_find(const agent_queue_t *q, const char *id) {
-    /* Numeric index: "1", "2", etc. (1-based) */
-    char *endp;
-    long idx = strtol(id, &endp, 10);
-    if (*endp == '\0' && endp != id && idx >= 1 && idx <= q->n_agents)
-        return &q->agents[idx - 1];
-    /* Exact match */
-    for (int i = 0; i < q->n_agents; i++)
-        if (strcmp(q->agents[i].id, id) == 0) return &q->agents[i];
-    /* Suffix match: "daily-ai-news" matches "ai-news/daily-ai-news" */
-    int id_len = (int)strlen(id);
-    const agent_entry_t *match = NULL;
-    int n_matches = 0;
-    for (int i = 0; i < q->n_agents; i++) {
-        int aid_len = (int)strlen(q->agents[i].id);
-        if (aid_len > id_len &&
-            q->agents[i].id[aid_len - id_len - 1] == '/' &&
-            strcmp(q->agents[i].id + aid_len - id_len, id) == 0) {
-            match = &q->agents[i];
-            n_matches++;
-        }
-    }
-    return (n_matches == 1) ? match : NULL;
-}
-
 static int cmd_agents_list(command_ctx_t *ctx) {
     ui_state_t *ui = ctx->ui;
 
@@ -1802,7 +1775,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         return CMD_CONTINUE;
     }
 
-    playbook_t *pb = playbook_load(found->agent_file);
+    playbook_t *pb = agent_prepare_playbook(found);
     if (!pb) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
@@ -1812,18 +1785,6 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         agent_queue_free(q);
         return CMD_CONTINUE;
     }
-
-    /* Inject agent-specific template variables */
-    int new_nvars = pb->n_vars + 3;
-    pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
-    pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
-    pb->var_keys[pb->n_vars]       = strdup("workspace_name");
-    pb->var_values[pb->n_vars]     = strdup(found->workspace_name);
-    pb->var_keys[pb->n_vars + 1]   = strdup("workspace_dir");
-    pb->var_values[pb->n_vars + 1] = strdup(found->workspace_dir);
-    pb->var_keys[pb->n_vars + 2]   = strdup("agent_id");
-    pb->var_values[pb->n_vars + 2] = strdup(found->id);
-    pb->n_vars = new_nvars;
 
     *ctx->pargs = (playbook_args_t){
         .playbook     = pb,

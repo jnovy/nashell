@@ -87,11 +87,27 @@ void agent_queue_free(agent_queue_t *q);
 /* Print agent list table to FILE*. */
 void agent_queue_print(const agent_queue_t *q, FILE *out);
 
+/* Find an agent in a queue by numeric index (1-based), exact ID, or suffix match.
+ * Returns pointer into q->agents or NULL. */
+const agent_entry_t *agent_find(const agent_queue_t *q, const char *id);
+
+/* Load playbook from agent YAML and inject template variables
+ * (workspace_name, workspace_dir, agent_id). Caller frees with playbook_free(). */
+playbook_t *agent_prepare_playbook(const agent_entry_t *a);
+
 /* Execute all due agents. Returns number of failures.
  * If mailbox_dir is non-NULL, results are written to the mailbox outbox
  * so that bridge threads (Telegram, Matrix) can deliver them. */
 int agent_execute(agent_queue_t *q, const char *nash_dir,
                   store_t *shared_store, config_t *cfg,
+                  provider_t *provider, const char *server_model,
+                  const char *force_id,
+                  volatile sig_atomic_t *shutdown_flag,
+                  const char *mailbox_dir);
+
+/* Unified scan + load + schedule + execute + save + free.
+ * Convenience wrapper for CLI and daemon agent execution paths. */
+int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
                   const char *force_id,
                   volatile sig_atomic_t *shutdown_flag,

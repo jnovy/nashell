@@ -566,6 +566,53 @@ void agent_queue_print(const agent_queue_t *q, FILE *out) {
         fprintf(out, "(no agents found)\n");
 }
 
+/* ── Helpers shared by execute + TUI ──────────────────── */
+
+const agent_entry_t *agent_find(const agent_queue_t *q, const char *id) {
+    if (!q || !id || !*id) return NULL;
+    /* Numeric index: "1", "2", etc. (1-based) */
+    char *endp;
+    long idx = strtol(id, &endp, 10);
+    if (*endp == '\0' && endp != id && idx >= 1 && idx <= q->n_agents)
+        return &q->agents[idx - 1];
+    /* Exact match */
+    for (int i = 0; i < q->n_agents; i++)
+        if (strcmp(q->agents[i].id, id) == 0) return &q->agents[i];
+    /* Suffix match: "daily-ai-news" matches "ai-news/daily-ai-news" */
+    int id_len = (int)strlen(id);
+    const agent_entry_t *match = NULL;
+    int n_matches = 0;
+    for (int i = 0; i < q->n_agents; i++) {
+        int aid_len = (int)strlen(q->agents[i].id);
+        if (aid_len > id_len &&
+            q->agents[i].id[aid_len - id_len - 1] == '/' &&
+            strcmp(q->agents[i].id + aid_len - id_len, id) == 0) {
+            match = &q->agents[i];
+            n_matches++;
+        }
+    }
+    return (n_matches == 1) ? match : NULL;
+}
+
+playbook_t *agent_prepare_playbook(const agent_entry_t *a) {
+    if (!a) return NULL;
+    playbook_t *pb = playbook_load(a->agent_file);
+    if (!pb) return NULL;
+
+    /* Inject agent-specific template variables */
+    int new_nvars = pb->n_vars + 3;
+    pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
+    pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
+    pb->var_keys[pb->n_vars]       = strdup("workspace_name");
+    pb->var_values[pb->n_vars]     = strdup(a->workspace_name);
+    pb->var_keys[pb->n_vars + 1]   = strdup("workspace_dir");
+    pb->var_values[pb->n_vars + 1] = strdup(a->workspace_dir);
+    pb->var_keys[pb->n_vars + 2]   = strdup("agent_id");
+    pb->var_values[pb->n_vars + 2] = strdup(a->id);
+    pb->n_vars = new_nvars;
+    return pb;
+}
+
 /* ── Agent execution ──────────────────────────────────── */
 
 int agent_execute(agent_queue_t *q, const char *nash_dir,
@@ -597,27 +644,13 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                                                0, cfg->workspace_global_weight);
         memory_t *agent_mem = agent_ws ? agent_ws->global : NULL;
 
-        /* Load playbook from agent YAML */
-        playbook_t *pb = playbook_load(a->agent_file);
+        playbook_t *pb = agent_prepare_playbook(a);
         if (!pb) {
             fprintf(stderr, "[agent] ✗ failed to load agent '%s'\n", a->id);
             n_fail++;
             workspace_free(agent_ws);
             continue;
         }
-
-        /* Inject agent-specific template variables into playbook */
-        /* We add workspace_name, workspace_dir, agent_id as vars */
-        int new_nvars = pb->n_vars + 3;
-        pb->var_keys = realloc(pb->var_keys, new_nvars * sizeof(char *));
-        pb->var_values = realloc(pb->var_values, new_nvars * sizeof(char *));
-        pb->var_keys[pb->n_vars]   = strdup("workspace_name");
-        pb->var_values[pb->n_vars] = strdup(a->workspace_name);
-        pb->var_keys[pb->n_vars + 1]   = strdup("workspace_dir");
-        pb->var_values[pb->n_vars + 1] = strdup(a->workspace_dir);
-        pb->var_keys[pb->n_vars + 2]   = strdup("agent_id");
-        pb->var_values[pb->n_vars + 2] = strdup(a->id);
-        pb->n_vars = new_nvars;
 
         /* Run with timeout */
         struct timespec start_ts;
@@ -685,6 +718,29 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
     fprintf(stderr, "[agent] done: %d scanned, %d due, %d ok, %d failed\n",
             q->n_agents, q->n_due, n_ok, n_fail);
 
+    return n_fail;
+}
+
+/* ── Unified scan + schedule + execute + save ─────────── */
+
+int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
+                  provider_t *provider, const char *server_model,
+                  const char *force_id,
+                  volatile sig_atomic_t *shutdown_flag,
+                  const char *mailbox_dir) {
+    agent_queue_t *q = agent_scan(nash_dir);
+    if (!q) {
+        fprintf(stderr, "[agent] error: scan failed\n");
+        return -1;
+    }
+    agent_queue_load(q, nash_dir);
+    agent_queue_schedule(q, time(NULL));
+
+    int n_fail = agent_execute(q, nash_dir, shared_store, cfg,
+                               provider, server_model,
+                               force_id, shutdown_flag, mailbox_dir);
+    agent_queue_save(q, nash_dir);
+    agent_queue_free(q);
     return n_fail;
 }
 
