@@ -108,6 +108,139 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
     return tools_make_result(1, meta, NULL);
 }
 
+/* ── Resolve perception.py path relative to executable ──────── */
+
+static const char *get_perception_script(void) {
+    static char script_path[1024] = {0};
+    if (script_path[0]) return script_path;
+
+    /* Try relative to executable: <exe_dir>/../scripts/perception.py */
+    char exe[512];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n > 0) {
+        exe[n] = '\0';
+        /* strip binary name */
+        char *slash = strrchr(exe, '/');
+        if (slash) *slash = '\0';
+        snprintf(script_path, sizeof(script_path),
+                 "%s/../scripts/perception.py", exe);
+        if (access(script_path, R_OK) == 0) return script_path;
+
+        /* Try <exe_dir>/scripts/perception.py (in-tree build) */
+        snprintf(script_path, sizeof(script_path),
+                 "%s/scripts/perception.py", exe);
+        if (access(script_path, R_OK) == 0) return script_path;
+    }
+    /* Fallback: look in source tree CWD */
+    snprintf(script_path, sizeof(script_path), "scripts/perception.py");
+    return script_path;
+}
+
+static tool_result_t do_screenshot_parse(device_session_t *s, cJSON *params) {
+    /* Optional delay before capture (for UI animations / page loads) */
+    cJSON *delay = cJSON_GetObjectItem(params, "delay_ms");
+    if (delay && cJSON_IsNumber(delay)) {
+        int ms = (int)delay->valuedouble;
+        if (ms < 0)    ms = 0;
+        if (ms > 10000) ms = 10000;
+        if (ms > 0)
+            usleep((unsigned)ms * 1000);
+    }
+
+    char *path = display_capture(s->display);
+    if (!path) return tools_make_error("screenshot capture failed");
+
+    s->screenshot_count++;
+
+    int w = 0, h = 0;
+    display_get_dimensions(s->display, &w, &h);
+
+    /* Run perception pipeline: OmniParser YOLO + Tesseract OCR */
+    const char *script = get_perception_script();
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd), "python3 '%s' '%s' 2>/dev/null", script, path);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        free(path);
+        return tools_make_error("failed to run perception pipeline");
+    }
+
+    /* Read JSON output from perception.py */
+    char *json_buf = NULL;
+    size_t json_len = 0;
+    size_t json_cap = 0;
+    char chunk[4096];
+    size_t nr;
+    while ((nr = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
+        if (json_len + nr + 1 > json_cap) {
+            json_cap = (json_len + nr + 1) * 2;
+            char *tmp = realloc(json_buf, json_cap);
+            if (!tmp) { free(json_buf); pclose(fp); free(path);
+                return tools_make_error("out of memory reading perception output"); }
+            json_buf = tmp;
+        }
+        memcpy(json_buf + json_len, chunk, nr);
+        json_len += nr;
+    }
+    int status = pclose(fp);
+
+    if (!json_buf || json_len == 0 || status != 0) {
+        free(json_buf);
+        free(path);
+        return tools_make_error("perception pipeline returned no output");
+    }
+    json_buf[json_len] = '\0';
+
+    /* Parse the JSON from perception.py */
+    cJSON *perception = cJSON_Parse(json_buf);
+    free(json_buf);
+
+    if (!perception) {
+        free(path);
+        return tools_make_error("failed to parse perception pipeline JSON output");
+    }
+
+    /* Check for error field */
+    cJSON *perr = cJSON_GetObjectItem(perception, "error");
+    if (perr && cJSON_IsString(perr)) {
+        char emsg[512];
+        snprintf(emsg, sizeof(emsg), "perception error: %s", perr->valuestring);
+        cJSON_Delete(perception);
+        free(path);
+        return tools_make_error(emsg);
+    }
+
+    /* Build result: include the summary as the main content,
+     * plus structured data for programmatic use */
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "action", "screenshot_parse");
+    cJSON_AddStringToObject(meta, "screenshot_path", path);
+    cJSON_AddNumberToObject(meta, "width", w);
+    cJSON_AddNumberToObject(meta, "height", h);
+    cJSON_AddNumberToObject(meta, "screenshot_number", s->screenshot_count);
+
+    /* Move fields from perception result into meta */
+    cJSON *summary = cJSON_DetachItemFromObject(perception, "summary");
+    if (summary) cJSON_AddItemToObject(meta, "summary", summary);
+
+    cJSON *widget_count = cJSON_GetObjectItem(perception, "widget_count");
+    if (widget_count) cJSON_AddNumberToObject(meta, "widget_count", widget_count->valuedouble);
+
+    cJSON *text_count = cJSON_GetObjectItem(perception, "text_count");
+    if (text_count) cJSON_AddNumberToObject(meta, "text_count", text_count->valuedouble);
+
+    cJSON *widgets = cJSON_DetachItemFromObject(perception, "widgets");
+    if (widgets) cJSON_AddItemToObject(meta, "widgets", widgets);
+
+    cJSON *texts = cJSON_DetachItemFromObject(perception, "texts");
+    if (texts) cJSON_AddItemToObject(meta, "texts", texts);
+
+    cJSON_Delete(perception);
+    free(path);
+    return tools_make_result(1, meta, NULL);
+}
+
 static tool_result_t do_click(device_session_t *s, cJSON *params,
                               const char *action_name, const char *button,
                               int dbl_click) {
@@ -349,7 +482,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     if (!jaction || !jaction->valuestring)
         return tools_make_error(
             "device_control requires a 'command' parameter "
-            "(screenshot, left_click, right_click, middle_click, double_click, "
+            "(screenshot, screenshot_parse, left_click, right_click, middle_click, double_click, "
             "triple_click, type, key, scroll, drag, move, long_press)");
     const char *action = jaction->valuestring;
 
@@ -383,6 +516,8 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     tool_result_t tr;
     if (strcmp(action, "screenshot") == 0)
         tr = do_screenshot(s, params);
+    else if (strcmp(action, "screenshot_parse") == 0)
+        tr = do_screenshot_parse(s, params);
     else if (strcmp(action, "left_click") == 0)
         tr = do_click(s, params, "left_click", "left", 0);
     else if (strcmp(action, "right_click") == 0)
@@ -416,7 +551,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         char emsg[256];
         snprintf(emsg, sizeof(emsg),
                  "unknown device_control command: '%s'. "
-                 "Valid: screenshot, left_click, right_click, middle_click, "
+                 "Valid: screenshot, screenshot_parse, left_click, right_click, middle_click, "
                  "double_click, triple_click, type, key, scroll, drag, move, long_press",
                  action);
         tr = tools_make_error(emsg);

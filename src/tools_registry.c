@@ -103,9 +103,11 @@ const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{\"op\":{\"type\":\"string\",\"description\":\"Operation: add, list, done, remove, purge\"},\"text\":{\"type\":\"string\",\"description\":\"TODO text (for add)\"},\"index\":{\"type\":\"integer\",\"description\":\"Item number (for done/remove)\"}},\"required\":[\"op\"]}"},
     {"device_control",
      "Control a device's GUI (computer, phone, tablet, kiosk). "
-     "Workflow: screenshot, then image_analyze to see the screen, then act, then screenshot to verify.\\n"
+     "Workflow: screenshot_parse to see+parse the screen (OmniParser + OCR), then act, then screenshot_parse to verify. "
+     "Use plain screenshot only when perception is not needed.\\n"
      "Commands and parameters:\\n"
-     "- screenshot: capture the screen. Optional delay_ms (max 10000) to wait for animations/loading\\n"
+     "- screenshot: capture the screen (raw image, no parsing). Optional delay_ms (max 10000)\\n"
+     "- screenshot_parse: capture + run OmniParser widget detection + Tesseract OCR. Returns detected widgets with coordinates and all screen text. Optional delay_ms\\n"
      "- left_click: x, y (required). Standard click\\n"
      "- right_click: x, y (required). Context menu\\n"
      "- middle_click: x, y (required)\\n"
@@ -121,7 +123,7 @@ const tool_def_t TOOL_REGISTRY[] = {
      "{\"type\":\"object\",\"properties\":{"
        "\"command\":{\"type\":\"string\",\"description\":"
          "\"Command to execute\","
-         "\"enum\":[\"screenshot\",\"left_click\",\"right_click\",\"middle_click\","
+         "\"enum\":[\"screenshot\",\"screenshot_parse\",\"left_click\",\"right_click\",\"middle_click\","
          "\"double_click\",\"triple_click\",\"type\",\"key\",\"scroll\",\"drag\","
          "\"move\",\"long_press\"]},"
        "\"x\":{\"type\":\"integer\",\"description\":\"X coordinate (pixels)\"},"
