@@ -98,7 +98,9 @@ static tool_result_t do_screenshot(device_session_t *s) {
     return tools_make_result(1, meta, NULL);
 }
 
-static tool_result_t do_click(device_session_t *s, cJSON *params, int double_click) {
+static tool_result_t do_click(device_session_t *s, cJSON *params,
+                              const char *action_name, const char *button,
+                              int dbl_click) {
     cJSON *jx = cJSON_GetObjectItem(params, "x");
     cJSON *jy = cJSON_GetObjectItem(params, "y");
     if (!jx || !jy)
@@ -107,16 +109,13 @@ static tool_result_t do_click(device_session_t *s, cJSON *params, int double_cli
     int x = jx->valueint;
     int y = jy->valueint;
 
-    cJSON *jbtn = cJSON_GetObjectItem(params, "button");
-    const char *button = (jbtn && jbtn->valuestring) ? jbtn->valuestring : "left";
-
     int rc;
-    if (double_click)
+    if (dbl_click)
         rc = input_double_click(s->input, x, y, button);
     else
         rc = input_click(s->input, x, y, button);
 
-    if (rc != 0) return tools_make_error("click failed");
+    if (rc != 0) return tools_make_error("click action failed");
 
     s->action_count++;
     s->consecutive_errors = 0;
@@ -126,7 +125,7 @@ static tool_result_t do_click(device_session_t *s, cJSON *params, int double_cli
         usleep(s->action_delay_ms * 1000);
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", double_click ? "double_click" : "click");
+    cJSON_AddStringToObject(meta, "action", action_name);
     cJSON_AddNumberToObject(meta, "x", x);
     cJSON_AddNumberToObject(meta, "y", y);
     cJSON_AddStringToObject(meta, "button", button);
@@ -138,13 +137,13 @@ static tool_result_t do_move(device_session_t *s, cJSON *params) {
     cJSON *jx = cJSON_GetObjectItem(params, "x");
     cJSON *jy = cJSON_GetObjectItem(params, "y");
     if (!jx || !jy)
-        return tools_make_error("mouse_move requires 'x' and 'y' coordinates (integer pixel values)");
+        return tools_make_error("move requires 'x' and 'y' coordinates (integer pixel values)");
 
     int x = jx->valueint;
     int y = jy->valueint;
 
     int rc = input_mouse_move(s->input, x, y);
-    if (rc != 0) return tools_make_error("mouse_move failed");
+    if (rc != 0) return tools_make_error("move failed");
 
     s->action_count++;
     s->consecutive_errors = 0;
@@ -153,7 +152,7 @@ static tool_result_t do_move(device_session_t *s, cJSON *params) {
         usleep(s->action_delay_ms * 1000);
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", "mouse_move");
+    cJSON_AddStringToObject(meta, "action", "move");
     cJSON_AddNumberToObject(meta, "x", x);
     cJSON_AddNumberToObject(meta, "y", y);
     cJSON_AddStringToObject(meta, "status", "ok");
@@ -328,24 +327,6 @@ static tool_result_t do_drag(device_session_t *s, cJSON *params) {
     return tools_make_result(1, meta, NULL);
 }
 
-static tool_result_t do_wait(device_session_t *s, cJSON *params) {
-    cJSON *jdur = cJSON_GetObjectItem(params, "duration_ms");
-    int dur_ms = jdur ? jdur->valueint : 1000;
-
-    /* Clamp to max 10 seconds */
-    if (dur_ms > 10000) dur_ms = 10000;
-    if (dur_ms < 0) dur_ms = 0;
-
-    usleep(dur_ms * 1000);
-
-    (void)s;
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", "wait");
-    cJSON_AddNumberToObject(meta, "duration_ms", dur_ms);
-    cJSON_AddStringToObject(meta, "status", "ok");
-    return tools_make_result(1, meta, NULL);
-}
-
 /* ── Main tool entry point ──────────────────────────────────── */
 
 tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
@@ -358,8 +339,8 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     if (!jaction || !jaction->valuestring)
         return tools_make_error(
             "device_control requires a 'command' parameter "
-            "(screenshot, click, double_click, triple_click, type, key, scroll, drag, "
-            "mouse_move, long_press, wait)");
+            "(screenshot, left_click, right_click, middle_click, double_click, "
+            "triple_click, type, key, scroll, drag, move, long_press)");
     const char *action = jaction->valuestring;
 
     /* Check if device control is configured */
@@ -392,10 +373,16 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     tool_result_t tr;
     if (strcmp(action, "screenshot") == 0)
         tr = do_screenshot(s);
-    else if (strcmp(action, "click") == 0)
-        tr = do_click(s, params, 0);
+    else if (strcmp(action, "left_click") == 0)
+        tr = do_click(s, params, "left_click", "left", 0);
+    else if (strcmp(action, "right_click") == 0)
+        tr = do_click(s, params, "right_click", "right", 0);
+    else if (strcmp(action, "middle_click") == 0)
+        tr = do_click(s, params, "middle_click", "middle", 0);
     else if (strcmp(action, "double_click") == 0)
-        tr = do_click(s, params, 1);
+        tr = do_click(s, params, "double_click", "left", 1);
+    else if (strcmp(action, "triple_click") == 0)
+        tr = do_triple_click(s, params);
     else if (strcmp(action, "type") == 0)
         tr = do_type_text(s, params);
     else if (strcmp(action, "key") == 0)
@@ -404,12 +391,8 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         tr = do_scroll(s, params);
     else if (strcmp(action, "drag") == 0)
         tr = do_drag(s, params);
-    else if (strcmp(action, "wait") == 0)
-        tr = do_wait(s, params);
-    else if (strcmp(action, "mouse_move") == 0)
+    else if (strcmp(action, "move") == 0)
         tr = do_move(s, params);
-    else if (strcmp(action, "triple_click") == 0)
-        tr = do_triple_click(s, params);
     else if (strcmp(action, "long_press") == 0)
         tr = do_long_press(s, params);
     else if (strcmp(action, "screenshot_diff") == 0 ||
@@ -423,8 +406,8 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         char emsg[256];
         snprintf(emsg, sizeof(emsg),
                  "unknown device_control command: '%s'. "
-                 "Valid commands: screenshot, click, double_click, triple_click, type, key, "
-                 "scroll, drag, mouse_move, long_press, wait",
+                 "Valid: screenshot, left_click, right_click, middle_click, "
+                 "double_click, triple_click, type, key, scroll, drag, move, long_press",
                  action);
         tr = tools_make_error(emsg);
     }
