@@ -1187,7 +1187,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             /* Auto-save done result for cross-loop inheritance.
              * Two mechanisms:
              * 1. Scratchpad section (R<N>_result) — may be pruned by post-reflection
-             * 2. session_dir/result.txt — survives pruning, loaded as [PREVIOUS RESULT]
+             * 2. session_dir/result.md — survives pruning, loaded as [PREVIOUS RESULT]
              *    in the next react loop. Provides reliable fallback for user follow-ups. */
             {
                 char sec_name[32];
@@ -1199,7 +1199,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
             if (ctx->tools->session_dir) {
                 char rpath[NASH_PATH_MAX];
-                snprintf(rpath, sizeof(rpath), "%s/result.txt",
+                snprintf(rpath, sizeof(rpath), "%s/result.md",
                          ctx->tools->session_dir);
                 write_file(rpath, final_result, strlen(final_result));
             }

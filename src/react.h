@@ -12,7 +12,7 @@
  * Default: all enabled (1). Playbooks/dream can selectively disable. */
 typedef struct {
     unsigned int inject_memory       : 1;  /* inject memory index + pinned + recall */
-    unsigned int inject_prev_result  : 1;  /* inject result.txt as [PREVIOUS RESULT] */
+    unsigned int inject_prev_result  : 1;  /* inject result.md as [PREVIOUS RESULT] */
     unsigned int enable_reflection   : 1;  /* post-task reflection (memory_store lessons) */
     unsigned int enable_pruning      : 1;  /* post-reflection scratchpad pruning */
     unsigned int enable_compaction   : 1;  /* LLM-based context eviction/summarization */

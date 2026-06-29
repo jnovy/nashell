@@ -427,7 +427,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
      * to intelligently merge and prune instead of blind accumulation.
      *
      * NOTE: The done result (R<N>_result section) is excluded from pruning.
-     * It is preserved for cross-loop follow-ups via result.txt. The LLM pruning
+     * It is preserved for cross-loop follow-ups via result.md. The LLM pruning
      * should only remove task-specific working notes, not the final result. */
     if (ctx->flags.enable_pruning && final_result && ctx->tools->scratch.count > 0) {
         /* Extract the R<N>_result section to preserve it across pruning */

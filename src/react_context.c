@@ -550,11 +550,16 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         free(serialized);
     }
 
-    /* Inject previous result — loaded from session_dir/result.txt. */
+    /* Inject previous result — loaded from session_dir/result.md. */
     if (ctx->flags.inject_prev_result && ctx->tools->session_dir) {
         char rpath[NASH_PATH_MAX];
-        snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
+        snprintf(rpath, sizeof(rpath), "%s/result.md", ctx->tools->session_dir);
         char *prev_result = slurp_file(rpath, NULL);
+        if (!prev_result) {
+            /* Backward compat: older sessions used result.txt */
+            snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
+            prev_result = slurp_file(rpath, NULL);
+        }
         if (prev_result && strlen(prev_result) > 0) {
             /* FIX #12: Use llm_chat_add_formatted to eliminate alloc pattern */
             llm_chat_add_formatted(chat, "user", LLM_MSG_PREV_RESULT,

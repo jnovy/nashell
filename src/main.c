@@ -1926,19 +1926,19 @@ int main(int argc, char **argv) {
                 react.parent_loop = parent_loop;
 
                 /* If branching (parent != latest completed loop), override
-                 * result.txt so [PREVIOUS RESULT] matches the branch point.
+                 * result.md so [PREVIOUS RESULT] matches the branch point.
                  * Scratchpad filtering is done non-destructively in react.c
                  * at injection time (using parent_loop + journal ancestor chain). */
                 int is_branch = (parent_loop >= 0 &&
                                  parent_loop != tools.react_loop - 1);
                 if (is_branch) {
-                    /* Override result.txt with parent's result from scratchpad */
+                    /* Override result.md with parent's result from scratchpad */
                     char sec_name[32];
                     snprintf(sec_name, sizeof(sec_name), "R%d_result", parent_loop);
                     int idx = scratchpad_find(&tools.scratch, sec_name);
                     if (idx >= 0) {
                         char rpath[NASH_PATH_MAX];
-                        snprintf(rpath, sizeof(rpath), "%s/result.txt", session_dir);
+                        snprintf(rpath, sizeof(rpath), "%s/result.md", session_dir);
                         write_file(rpath, tools.scratch.sections[idx].content,
                                    strlen(tools.scratch.sections[idx].content));
                     }
