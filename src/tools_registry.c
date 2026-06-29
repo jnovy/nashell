@@ -105,7 +105,7 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Control a device's GUI (computer, phone, tablet, kiosk). "
      "Workflow: screenshot, then image_analyze to see the screen, then act, then screenshot to verify.\\n"
      "Commands and parameters:\\n"
-     "- screenshot: capture the screen (no params)\\n"
+     "- screenshot: capture the screen. Optional delay_ms (max 10000) to wait for animations/loading\\n"
      "- left_click: x, y (required). Standard click\\n"
      "- right_click: x, y (required). Context menu\\n"
      "- middle_click: x, y (required)\\n"
@@ -139,7 +139,9 @@ const tool_def_t TOOL_REGISTRY[] = {
        "\"end_x\":{\"type\":\"integer\",\"description\":\"Drag end X\"},"
        "\"end_y\":{\"type\":\"integer\",\"description\":\"Drag end Y\"},"
        "\"hold_ms\":{\"type\":\"integer\",\"description\":"
-         "\"Hold duration in ms for long_press (default: 500, min: 100, max: 10000)\"}"
+         "\"Hold duration in ms for long_press (default: 500, min: 100, max: 10000)\"},"
+       "\"delay_ms\":{\"type\":\"integer\",\"description\":"
+         "\"Delay in ms before screenshot capture (max 10000). For UI animations/loading\"}"
      "},\"required\":[\"command\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };
