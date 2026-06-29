@@ -193,12 +193,6 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
     cJSON *text_count = cJSON_GetObjectItem(perception, "text_count");
     if (text_count) cJSON_AddNumberToObject(meta, "text_count", text_count->valuedouble);
 
-    cJSON *widgets = cJSON_DetachItemFromObject(perception, "widgets");
-    if (widgets) cJSON_AddItemToObject(meta, "widgets", widgets);
-
-    cJSON *texts = cJSON_DetachItemFromObject(perception, "texts");
-    if (texts) cJSON_AddItemToObject(meta, "texts", texts);
-
     cJSON_Delete(perception);
     free(path);
     return tools_make_result(1, meta, NULL);
@@ -511,8 +505,16 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
 
     /* Journal the result so it appears in reactRX.md */
     {
-        char *meta_str = tr.meta ? cJSON_Print(tr.meta) : NULL;
-        char *hash = store_save(ctx->store, meta_str ? meta_str : "{}");
+        char *store_content = NULL;
+        /* For screenshot results, store the compact summary as plain text
+         * instead of the full JSON meta — much more LLM-friendly */
+        cJSON *sumj = tr.meta ? cJSON_GetObjectItem(tr.meta, "summary") : NULL;
+        if (sumj && cJSON_IsString(sumj) && sumj->valuestring) {
+            store_content = strdup(sumj->valuestring);
+        } else {
+            store_content = tr.meta ? cJSON_Print(tr.meta) : strdup("{}");
+        }
+        char *hash = store_save(ctx->store, store_content ? store_content : "{}");
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         const char *err = NULL;
         if (!tr.success && tr.meta) {
@@ -520,10 +522,10 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
             if (ej && ej->valuestring) err = ej->valuestring;
         }
         tool_journal(ctx, "device_control", params, alias,
-                    meta_str ? strlen(meta_str) : 0, 0, err, NULL);
+                    store_content ? strlen(store_content) : 0, 0, err, NULL);
         free(alias);
         free(hash);
-        free(meta_str);
+        free(store_content);
     }
 
     return tr;
