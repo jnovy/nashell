@@ -757,6 +757,15 @@ static void render_bottom(ui_state_t *ui) {
                          "%s", ui->status_text);
     }
 
+    /* In-page search match count (? prefix) */
+    if (ui->page_search_term && ui->page_search_term[0]) {
+        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                         " │ ?%s: %d/%d",
+                         ui->page_search_term,
+                         ui->page_search_total > 0 ? ui->page_search_current + 1 : 0,
+                         ui->page_search_total);
+    }
+
     /* Breadcrumb path (shows current file in nav stack) */
     {
         char *crumb = ui_state_breadcrumb(ui);
