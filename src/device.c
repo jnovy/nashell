@@ -12,7 +12,6 @@
 
 device_session_t *device_session_open(const display_config_t *dcfg,
                                        const input_config_t *icfg,
-                                       int max_actions,
                                        int action_delay_ms,
                                        int screenshot_delay_ms) {
     device_session_t *s = calloc(1, sizeof(*s));
@@ -44,7 +43,6 @@ device_session_t *device_session_open(const display_config_t *dcfg,
     }
 
     /* Safety defaults */
-    s->max_actions        = max_actions > 0 ? max_actions : 50;
     s->action_delay_ms    = action_delay_ms >= 0 ? action_delay_ms : 500;
     s->screenshot_delay_ms = screenshot_delay_ms >= 0 ? screenshot_delay_ms : 300;
 

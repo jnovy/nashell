@@ -21,7 +21,6 @@ typedef struct {
     int             consecutive_errors; /* for retry/abort logic */
 
     /* Safety */
-    int             max_actions;        /* hard limit per react loop (default 50) */
     int             action_delay_ms;    /* ms to wait after each action (default 500) */
     int             screenshot_delay_ms;/* ms to wait after action before screenshot */
 } device_session_t;
@@ -30,7 +29,6 @@ typedef struct {
  * Returns NULL on error (display or input open failure). */
 device_session_t *device_session_open(const display_config_t *dcfg,
                                        const input_config_t *icfg,
-                                       int max_actions,
                                        int action_delay_ms,
                                        int screenshot_delay_ms);
 

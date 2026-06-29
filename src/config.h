@@ -393,7 +393,6 @@ typedef struct {
         char  *click_cmd;
 
         /* Safety */
-        int    max_actions;       /* hard limit per react loop (default 50) */
         int    action_delay_ms;   /* pause after each action (default 500) */
         int    screenshot_delay_ms; /* wait before screenshot (default 300) */
     } device_control;

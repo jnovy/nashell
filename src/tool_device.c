@@ -47,7 +47,6 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
 
     g_device_session = device_session_open(
         &dcfg, &icfg,
-        cfg->device_control.max_actions,
         cfg->device_control.action_delay_ms,
         cfg->device_control.screenshot_delay_ms);
 
@@ -465,16 +464,6 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error(
             "failed to initialize device session. Check [device_control] config "
             "and ensure the VNC server is reachable.");
-
-    /* Safety: check action limit */
-    if (s->action_count >= s->max_actions) {
-        char msg[128];
-        snprintf(msg, sizeof(msg),
-                 "action limit reached (%d/%d). Take a screenshot to "
-                 "verify state, then call done().",
-                 s->action_count, s->max_actions);
-        return tools_make_error(msg);
-    }
 
     /* Dispatch command and capture result for journaling */
     tool_result_t tr;

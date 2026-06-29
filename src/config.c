@@ -469,7 +469,6 @@ config_t *config_load(const char *path) {
         cfg->device_control.click_cmd = toml_str(dc, "click_cmd");
 
         /* Safety */
-        cfg->device_control.max_actions = toml_int(dc, "max_actions", 50);
         cfg->device_control.action_delay_ms = toml_int(dc, "action_delay_ms", 500);
         cfg->device_control.screenshot_delay_ms = toml_int(dc, "screenshot_delay_ms", 300);
     }

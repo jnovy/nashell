@@ -445,7 +445,6 @@ typedef struct {
     perception_result_t *prev_result;
 
     /* Safety */
-    int             max_actions;        /* hard limit per react loop (default 50) */
     int             action_delay_ms;    /* ms to wait after each action (default 500) */
     int             screenshot_delay_ms;/* ms to wait after action before screenshot (default 300) */
 } device_session_t;
@@ -1193,7 +1192,6 @@ omniparser_model = "~/models/omniparser/icon_detect/model.pt"
 screenshot_dir = "/tmp/device_screenshots"
 
 # Safety limits
-max_actions = 50           # hard limit per react loop
 action_delay_ms = 500      # pause after each action
 screenshot_delay_ms = 300  # wait before screenshot (let UI settle)
 
@@ -1232,7 +1230,6 @@ typedef struct {
     char *click_cmd;
 
     /* Safety */
-    int   max_actions;
     int   action_delay_ms;
     int   screenshot_delay_ms;
 } device_control_config_t;
@@ -1376,8 +1373,7 @@ external processes — they don't need to be linked into the nash binary.
 
 ## 12. Safety Considerations
 
-1. **Action limits**: Hard cap per react loop (`max_actions = 50`)
-2. **Delays**: Configurable pause between actions to prevent runaway clicks
+1. **Delays**: Configurable pause between actions to prevent runaway clicks
 3. **No terminal access by default**: Unlike Claude Code, nash runs on the
    CONTROLLING machine, not the target.  The target has no way to inject
    prompts back (unless the model reads on-screen text — mitigated by
