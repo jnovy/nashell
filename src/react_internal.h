@@ -645,6 +645,7 @@ static inline void react_degrade_preamble(llm_chat_t *chat) {
             case LLM_MSG_LESSONS:
             case LLM_MSG_STRATEGIES:
             case LLM_MSG_ANTIPATTERNS:
+            case LLM_MSG_TUI_VIEW:
                 chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
                 break;
             default:

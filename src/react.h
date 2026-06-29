@@ -99,6 +99,11 @@ typedef struct {
      * -1 = root (no parent), otherwise the react_loop ID of the parent.
      * Set by main thread before pthread_create. */
     int           parent_loop;
+
+    /* [INIT-ONLY] Path of file user was viewing in TUI at query time.
+     * NULL if not in TUI mode, viewing session.md, or no file loaded.
+     * Ownership: strdup'd by main thread, freed after pthread_join. */
+    char         *tui_viewing_file;
 } react_ctx_t;
 
 /* Run the react loop for a user query.

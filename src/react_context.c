@@ -571,6 +571,37 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         free(prev_result);
     }
 
+    /* ── TUI View Context ──────────────────────────────────────────
+     * When the user submits a query while viewing a specific file in the
+     * TUI (e.g., a reactRX.md from a previous loop, or a linked file),
+     * inject a truncated snapshot of that file so the LLM has context
+     * about what the user is looking at. Skip for session.md (generic
+     * overview) and NULL (no file / headless mode). */
+    if (ctx->tui_viewing_file && ctx->tui_viewing_file[0]) {
+        const char *base = strrchr(ctx->tui_viewing_file, '/');
+        base = base ? base + 1 : ctx->tui_viewing_file;
+        /* Skip session.md — it's just the overview, not specific context */
+        if (strcmp(base, "session.md") != 0) {
+            char *content = slurp_file(ctx->tui_viewing_file, NULL);
+            if (content && content[0]) {
+                size_t max_view_chars = 4000;
+                size_t clen = strlen(content);
+                int truncated = 0;
+                if (clen > max_view_chars) {
+                    content[max_view_chars] = '\0';
+                    truncated = 1;
+                }
+                llm_chat_add_formatted(chat, "user", LLM_MSG_TUI_VIEW,
+                    "[TUI VIEW CONTEXT]\n"
+                    "The user submitted this query while viewing: %s\n"
+                    "---\n%s%s",
+                    base, content,
+                    truncated ? "\n... (truncated)" : "");
+            }
+            free(content);
+        }
+    }
+
     /* User query */
     llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
 
@@ -633,6 +664,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 case LLM_MSG_REPO_MAP:     tn = "ctx:repomap";    break;
                 case LLM_MSG_SCRATCHPAD:   tn = "ctx:scratchpad"; break;
                 case LLM_MSG_PREV_RESULT:  tn = "ctx:prev_result"; break;
+                case LLM_MSG_TUI_VIEW:     tn = "ctx:tui_view";   break;
                 default: break;
             }
             if (!tn || !m->content || !m->content[0]) continue;

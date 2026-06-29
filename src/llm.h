@@ -68,6 +68,7 @@ typedef enum {
     LLM_MSG_TEMPORAL,        /* [TEMPORAL CONTEXT] chronological memory calendar */
     LLM_MSG_EPISODIC,        /* [RECALLED SESSION CHUNK] episodic journal recall */
     LLM_MSG_REPO_MAP,        /* [REPO MAP] structural codebase context */
+    LLM_MSG_TUI_VIEW,        /* [TUI VIEW CONTEXT] file user was viewing at query time */
 } llm_msg_type_t;
 
 /* Message importance level — controls eviction priority.

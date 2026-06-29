@@ -327,6 +327,8 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
     pthread_cond_destroy(&react->pause_cond);
     free(react->pause_query);
     react->pause_query = NULL;
+    free(react->tui_viewing_file);
+    react->tui_viewing_file = NULL;
     tool_free_deferred_consolidations(tools);
     scratchpad_free(&tools->scratch);
     alias_map_free(tools->aliases);
@@ -1999,6 +2001,11 @@ int main(int argc, char **argv) {
                     .ui = ui, .result = NULL, .done = 0,
                 };
                 provider->abort_retry = 0;  /* reset before new inference */
+                /* Snapshot the file the user is viewing so the LLM gets
+                 * context about what the user is looking at. */
+                free(react.tui_viewing_file);
+                react.tui_viewing_file = ui->current_filepath
+                    ? strdup(ui->current_filepath) : NULL;
                 free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
                 /* Forward query to bridge for session threading */
                 route_query_to_outbox(nash_dir, final_query,
