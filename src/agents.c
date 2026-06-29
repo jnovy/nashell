@@ -534,14 +534,16 @@ void agent_save_result(const char *nash_dir, const char *agent_id,
     snprintf(dir, sizeof(dir), "%s/agent/results/%s", nash_dir, agent_id);
     mkdirp(dir);
 
-    /* Symlink latest.md -> session's session.md (no duplication).
-     * Readers (slurp_file) follow symlinks transparently. */
+    /* Symlink latest.md -> session's result.txt (no duplication).
+     * Agent sessions run headless (no TUI) so session.md is never
+     * generated -- result.txt is written by the done tool handler
+     * and reliably contains the final result text. */
     char link_path[NASH_PATH_MAX];
     snprintf(link_path, sizeof(link_path), "%s/latest.md", dir);
     unlink(link_path);  /* remove old symlink/file */
 
     char target[NASH_PATH_MAX];
-    snprintf(target, sizeof(target), "%s/session.md", session_dir);
+    snprintf(target, sizeof(target), "%s/result.txt", session_dir);
     symlink(target, link_path);
 }
 
@@ -719,7 +721,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
         agent_history_append(nash_dir, a, dur, status, NULL);
 
-        /* Symlink latest.md -> session's session.md for `/agent result` */
+        /* Symlink latest.md -> session's result.txt for `/agent result` */
         if (pargs.last_session_dir)
             agent_save_result(nash_dir, a->id, pargs.last_session_dir);
 

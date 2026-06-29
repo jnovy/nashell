@@ -96,7 +96,7 @@ const agent_entry_t *agent_find(const agent_queue_t *q, const char *id);
 playbook_t *agent_prepare_playbook(const agent_entry_t *a);
 
 /* Point {nash_dir}/agent/results/{agent_id}/latest.md at the session's
- * session.md via symlink.  Readers (slurp_file) follow it transparently,
+ * result.txt via symlink.  Readers (slurp_file) follow it transparently,
  * so the result is never duplicated on disk. */
 void agent_save_result(const char *nash_dir, const char *agent_id,
                        const char *session_dir);
