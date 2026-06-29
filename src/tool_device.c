@@ -72,42 +72,6 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
 
 /* ── Action handlers ────────────────────────────────────────── */
 
-static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
-    /* Optional delay before capture (for UI animations / page loads) */
-    cJSON *delay = cJSON_GetObjectItem(params, "delay_ms");
-    if (delay && cJSON_IsNumber(delay)) {
-        int ms = (int)delay->valuedouble;
-        if (ms < 0)    ms = 0;
-        if (ms > 10000) ms = 10000;
-        if (ms > 0)
-            usleep((unsigned)ms * 1000);
-    }
-
-    char *path = display_capture(s->display);
-    if (!path) return tools_make_error("screenshot capture failed");
-
-    s->screenshot_count++;
-
-    /* For Phase 1: return screenshot path and dimensions.
-     * Phase 2+ will add perception pipeline (OmniParser + OCR). */
-    int w = 0, h = 0;
-    display_get_dimensions(s->display, &w, &h);
-
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", "screenshot");
-    cJSON_AddStringToObject(meta, "screenshot_path", path);
-    cJSON_AddNumberToObject(meta, "width", w);
-    cJSON_AddNumberToObject(meta, "height", h);
-    cJSON_AddNumberToObject(meta, "screenshot_number", s->screenshot_count);
-    cJSON_AddStringToObject(meta, "note",
-        "Screenshot saved to disk. Perception pipeline (widget detection + OCR) "
-        "will be added in Phase 2. For now, use image_analyze on the screenshot_path "
-        "to see the screen content.");
-
-    free(path);
-    return tools_make_result(1, meta, NULL);
-}
-
 /* ── Resolve perception.py path relative to executable ──────── */
 
 static const char *get_perception_script(void) {
@@ -136,7 +100,7 @@ static const char *get_perception_script(void) {
     return script_path;
 }
 
-static tool_result_t do_screenshot_parse(device_session_t *s, cJSON *params) {
+static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
     /* Optional delay before capture (for UI animations / page loads) */
     cJSON *delay = cJSON_GetObjectItem(params, "delay_ms");
     if (delay && cJSON_IsNumber(delay)) {
@@ -214,7 +178,7 @@ static tool_result_t do_screenshot_parse(device_session_t *s, cJSON *params) {
     /* Build result: include the summary as the main content,
      * plus structured data for programmatic use */
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", "screenshot_parse");
+    cJSON_AddStringToObject(meta, "action", "screenshot");
     cJSON_AddStringToObject(meta, "screenshot_path", path);
     cJSON_AddNumberToObject(meta, "width", w);
     cJSON_AddNumberToObject(meta, "height", h);
@@ -482,7 +446,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     if (!jaction || !jaction->valuestring)
         return tools_make_error(
             "device_control requires a 'command' parameter "
-            "(screenshot, screenshot_parse, left_click, right_click, middle_click, double_click, "
+            "(screenshot, left_click, right_click, middle_click, double_click, "
             "triple_click, type, key, scroll, drag, move, long_press)");
     const char *action = jaction->valuestring;
 
@@ -514,10 +478,9 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
 
     /* Dispatch command and capture result for journaling */
     tool_result_t tr;
-    if (strcmp(action, "screenshot") == 0)
+    if (strcmp(action, "screenshot") == 0 ||
+        strcmp(action, "screenshot_parse") == 0)   /* backward compat alias */
         tr = do_screenshot(s, params);
-    else if (strcmp(action, "screenshot_parse") == 0)
-        tr = do_screenshot_parse(s, params);
     else if (strcmp(action, "left_click") == 0)
         tr = do_click(s, params, "left_click", "left", 0);
     else if (strcmp(action, "right_click") == 0)
@@ -551,7 +514,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         char emsg[256];
         snprintf(emsg, sizeof(emsg),
                  "unknown device_control command: '%s'. "
-                 "Valid: screenshot, screenshot_parse, left_click, right_click, middle_click, "
+                 "Valid: screenshot, left_click, right_click, middle_click, "
                  "double_click, triple_click, type, key, scroll, drag, move, long_press",
                  action);
         tr = tools_make_error(emsg);
