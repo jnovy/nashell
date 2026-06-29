@@ -511,7 +511,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
 
     /* Journal the result so it appears in reactRX.md */
     {
-        char *meta_str = tr.meta ? cJSON_PrintUnformatted(tr.meta) : NULL;
+        char *meta_str = tr.meta ? cJSON_Print(tr.meta) : NULL;
         char *hash = store_save(ctx->store, meta_str ? meta_str : "{}");
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         const char *err = NULL;
