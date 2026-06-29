@@ -48,6 +48,8 @@ struct input_t {
     int  (*move_fn)(input_t *in, int x, int y);
     int  (*click_fn)(input_t *in, int x, int y, const char *button);
     int  (*dblclick_fn)(input_t *in, int x, int y, const char *button);
+    int  (*tripleclick_fn)(input_t *in, int x, int y, const char *button);
+    int  (*longpress_fn)(input_t *in, int x, int y, const char *button, int hold_ms);
     int  (*scroll_fn)(input_t *in, int x, int y, const char *direction, int amount);
     int  (*drag_fn)(input_t *in, int x1, int y1, int x2, int y2, const char *button);
     void (*close_fn)(input_t *in);
@@ -290,6 +292,34 @@ static int vnc_double_click(input_t *in, int x, int y, const char *button) {
     return 0;
 }
 
+static int vnc_triple_click(input_t *in, int x, int y, const char *button) {
+    vnc_click(in, x, y, button);
+    usleep(100000);  /* 100ms between clicks */
+    vnc_click(in, x, y, button);
+    usleep(100000);
+    vnc_click(in, x, y, button);
+    return 0;
+}
+
+static int vnc_long_press(input_t *in, int x, int y, const char *button,
+                          int hold_ms) {
+    int fd = get_sock_fd(in);
+    if (fd < 0) return -1;
+
+    int nx, ny;
+    map_coords(in, x, y, &nx, &ny);
+    uint8_t mask = button_mask_from_name(button);
+
+    /* Clamp hold duration: 100ms minimum, 10s maximum */
+    if (hold_ms < 100)   hold_ms = 100;
+    if (hold_ms > 10000) hold_ms = 10000;
+
+    /* Move, press, hold, release */
+    if (rfb_pointer_event(fd, nx, ny, mask) < 0) return -1;
+    usleep((unsigned)hold_ms * 1000);
+    return rfb_pointer_event(fd, nx, ny, 0);
+}
+
 static int vnc_scroll(input_t *in, int x, int y,
                       const char *direction, int amount) {
     int fd = get_sock_fd(in);
@@ -380,8 +410,10 @@ input_t *input_open_vnc(const input_config_t *cfg) {
     in->type_fn     = vnc_type_text;
     in->move_fn     = vnc_move;
     in->click_fn    = vnc_click;
-    in->dblclick_fn = vnc_double_click;
-    in->scroll_fn   = vnc_scroll;
+    in->dblclick_fn     = vnc_double_click;
+    in->tripleclick_fn  = vnc_triple_click;
+    in->longpress_fn    = vnc_long_press;
+    in->scroll_fn       = vnc_scroll;
     in->drag_fn     = vnc_drag;
     in->close_fn    = vnc_close;
 

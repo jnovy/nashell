@@ -104,12 +104,12 @@ const tool_def_t TOOL_REGISTRY[] = {
     {"device_control",
      "Control a device's GUI (computer, phone, tablet, kiosk). Takes a screenshot "
      "and/or performs keyboard/mouse actions. Commands: screenshot, click, "
-     "double_click, type, key, scroll, drag, mouse_move, wait. "
+     "double_click, triple_click, type, key, scroll, drag, mouse_move, long_press, wait. "
      "Only for visual/GUI tasks — do NOT use for non-GUI operations. "
      "For delays in CLI workflows, use shell_exec with sleep instead.",
      "{\"type\":\"object\",\"properties\":{"
        "\"command\":{\"type\":\"string\",\"description\":"
-         "\"Command: screenshot, click, double_click, type, key, scroll, drag, mouse_move, wait\"},"
+         "\"Command: screenshot, click, double_click, triple_click, type, key, scroll, drag, mouse_move, long_press, wait\"},"
        "\"x\":{\"type\":\"integer\",\"description\":\"X coordinate (pixels)\"},"
        "\"y\":{\"type\":\"integer\",\"description\":\"Y coordinate (pixels)\"},"
        "\"text\":{\"type\":\"string\",\"description\":\"Text to type (for type command)\"},"
@@ -125,7 +125,9 @@ const tool_def_t TOOL_REGISTRY[] = {
        "\"end_x\":{\"type\":\"integer\",\"description\":\"Drag end X\"},"
        "\"end_y\":{\"type\":\"integer\",\"description\":\"Drag end Y\"},"
        "\"duration_ms\":{\"type\":\"integer\",\"description\":"
-         "\"Wait before screenshot in ms (GUI timing only, max 10000). Not a generic sleep — use shell_exec with sleep for CLI delays.\"}"
+         "\"Wait before screenshot in ms (GUI timing only, max 10000). Not a generic sleep — use shell_exec with sleep for CLI delays.\"},"
+        "\"hold_ms\":{\"type\":\"integer\",\"description\":"
+          "\"Hold duration in ms for long_press command (default: 500, min: 100, max: 10000)\"}"
      "},\"required\":[\"command\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };

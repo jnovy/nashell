@@ -25,6 +25,8 @@ struct input_t {
     int  (*move_fn)(input_t *in, int x, int y);
     int  (*click_fn)(input_t *in, int x, int y, const char *button);
     int  (*dblclick_fn)(input_t *in, int x, int y, const char *button);
+    int  (*tripleclick_fn)(input_t *in, int x, int y, const char *button);
+    int  (*longpress_fn)(input_t *in, int x, int y, const char *button, int hold_ms);
     int  (*scroll_fn)(input_t *in, int x, int y, const char *direction, int amount);
     int  (*drag_fn)(input_t *in, int x1, int y1, int x2, int y2, const char *button);
     void (*close_fn)(input_t *in);
@@ -90,6 +92,16 @@ int input_click(input_t *in, int x, int y, const char *button) {
 int input_double_click(input_t *in, int x, int y, const char *button) {
     if (!in || !in->dblclick_fn) return -1;
     return in->dblclick_fn(in, x, y, button);
+}
+
+int input_triple_click(input_t *in, int x, int y, const char *button) {
+    if (!in || !in->tripleclick_fn) return -1;
+    return in->tripleclick_fn(in, x, y, button);
+}
+
+int input_long_press(input_t *in, int x, int y, const char *button, int hold_ms) {
+    if (!in || !in->longpress_fn) return -1;
+    return in->longpress_fn(in, x, y, button, hold_ms);
 }
 
 int input_scroll(input_t *in, int x, int y, const char *direction, int amount) {

@@ -68,6 +68,8 @@ int input_type(input_t *in, const char *text);              /* type string */
 int input_mouse_move(input_t *in, int x, int y);
 int input_click(input_t *in, int x, int y, const char *button);
 int input_double_click(input_t *in, int x, int y, const char *button);
+int input_triple_click(input_t *in, int x, int y, const char *button);
+int input_long_press(input_t *in, int x, int y, const char *button, int hold_ms);
 int input_scroll(input_t *in, int x, int y, const char *direction, int amount);
 int input_drag(input_t *in, int x1, int y1, int x2, int y2, const char *button);
 
