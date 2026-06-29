@@ -55,6 +55,13 @@ typedef struct {
     /* Reply routing: task_id -> source room_id (circular buffer) */
     mx_route_entry_t route_map[MX_MAX_ROUTE_MAP];
     int       route_map_next;    /* next write index (circular) */
+
+    /* Session threading: tracks thread root event_id per room */
+    struct {
+        char room_id[256];
+        char thread_event_id[256];  /* event_id of the thread root message */
+    } session_threads[MX_MAX_ROOM_MAP];
+    int       session_thread_count;
 } matrix_ctx_t;
 
 /* Initialize matrix context from config.

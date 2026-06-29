@@ -116,4 +116,30 @@ char *mailbox_parse_headers(char *content, char **workspace_out,
                             char **route_token_out,
                             char **user_query_out);
 
+/* ── Extended header parsing for session threading ────── */
+
+/* Parse all metadata headers including threading fields.
+ * Same as mailbox_parse_headers but also extracts:
+ *   X-Thread-Action: root|reply
+ *   X-Source: tui|agent|bridge
+ *   X-Agent-Name: <agent_id>
+ * Caller must free all output strings. */
+char *mailbox_parse_headers_full(char *content, char **workspace_out,
+                                 char **route_token_out,
+                                 char **user_query_out,
+                                 char **thread_action_out,
+                                 char **source_out,
+                                 char **agent_name_out);
+
+/* Write a query notification to outbox for bridge threads.
+ * Creates outbox/query_{id} with headers for session threading.
+ * thread_action: "root" = start new thread, "reply" = reply to existing.
+ * source: "tui" or "agent".
+ * agent_name: agent ID (NULL for TUI queries).
+ * route_token: workspace-specific room/thread routing (NULL = default). */
+void mailbox_write_query(const char *mailbox_dir, const char *query_id,
+                         const char *query_text, const char *workspace,
+                         const char *route_token, const char *thread_action,
+                         const char *source, const char *agent_name);
+
 #endif /* MAILBOX_H */

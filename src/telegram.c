@@ -45,10 +45,14 @@
 
 static int  tg_api_get_me(telegram_ctx_t *ctx, char *bot_name, size_t name_sz);
 static int  tg_api_get_updates(telegram_ctx_t *ctx, cJSON **out);
-static int  tg_api_send_message(telegram_ctx_t *ctx, const char *text,
-                                const char *parse_mode, long long thread_id);
-static int  tg_send_long(telegram_ctx_t *ctx, const char *text,
-                         const char *parse_mode, long long thread_id);
+static long long tg_api_send_message(telegram_ctx_t *ctx, const char *text,
+                                     const char *parse_mode, long long thread_id);
+static long long tg_api_send_message_reply(telegram_ctx_t *ctx, const char *text,
+                                           const char *parse_mode,
+                                           long long thread_id,
+                                           long long reply_to_message_id);
+static long long tg_send_long(telegram_ctx_t *ctx, const char *text,
+                              const char *parse_mode, long long thread_id);
 char *md_to_html(const char *md);
 static int  tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text,
                              long long thread_id);
@@ -87,6 +91,50 @@ static long long tg_route_map_lookup(telegram_ctx_t *ctx, const char *task_id) {
             return ctx->route_map[i].thread_id;
     }
     return 0;  /* not found — send to general/main chat */
+}
+
+/* ── Session thread tracking ─────────────────────────────── */
+
+/* Store the thread root message_id for a topic */
+static void tg_session_thread_set(telegram_ctx_t *ctx, long long thread_id,
+                                   long long root_message_id) {
+    for (int i = 0; i < ctx->session_thread_count; i++) {
+        if (ctx->session_threads[i].thread_id == thread_id) {
+            ctx->session_threads[i].root_message_id = root_message_id;
+            return;
+        }
+    }
+    if (ctx->session_thread_count < TG_MAX_TOPIC_MAP) {
+        int idx = ctx->session_thread_count++;
+        ctx->session_threads[idx].thread_id = thread_id;
+        ctx->session_threads[idx].root_message_id = root_message_id;
+    }
+}
+
+/* Get the thread root message_id for a topic (0 if none) */
+static long long tg_session_thread_get(telegram_ctx_t *ctx, long long thread_id) {
+    for (int i = 0; i < ctx->session_thread_count; i++) {
+        if (ctx->session_threads[i].thread_id == thread_id)
+            return ctx->session_threads[i].root_message_id;
+    }
+    return 0;
+}
+
+/* Clear the session thread for a specific topic */
+static void tg_session_thread_clear(telegram_ctx_t *ctx, long long thread_id) {
+    for (int i = 0; i < ctx->session_thread_count; i++) {
+        if (ctx->session_threads[i].thread_id == thread_id) {
+            for (int j = i; j < ctx->session_thread_count - 1; j++)
+                ctx->session_threads[j] = ctx->session_threads[j + 1];
+            ctx->session_thread_count--;
+            return;
+        }
+    }
+}
+
+/* Clear all session threads */
+static void tg_session_thread_clear_all(telegram_ctx_t *ctx) {
+    ctx->session_thread_count = 0;
 }
 
 /* Look up workspace name for a given thread_id from topic_map config */
@@ -590,8 +638,9 @@ static int tg_api_get_updates(telegram_ctx_t *ctx, cJSON **out) {
     return *out ? 0 : -1;
 }
 
-static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
-                           const char *parse_mode, long long thread_id) {
+static long long tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
+                                 const char *parse_mode, long long thread_id,
+                                 long long reply_to_message_id) {
     char url[TG_URL_MAX];
     snprintf(url, sizeof(url), "%s%s/sendMessage",
              TG_API_BASE, ctx->bot_token);
@@ -601,6 +650,12 @@ static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
     cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
     if (thread_id != 0)
         cJSON_AddNumberToObject(body, "message_thread_id", (double)thread_id);
+    if (reply_to_message_id != 0) {
+        cJSON *reply_params = cJSON_CreateObject();
+        cJSON_AddNumberToObject(reply_params, "message_id",
+                                (double)reply_to_message_id);
+        cJSON_AddItemToObject(body, "reply_parameters", reply_params);
+    }
     cJSON_AddStringToObject(body, "text", text);
     if (parse_mode)
         cJSON_AddStringToObject(body, "parse_mode", parse_mode);
@@ -617,8 +672,9 @@ static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
 
     str_t resp = str_new(1024);
     int rc = http_post(url, body_str, headers, 30, &resp);
+    long long result_msg_id = -1;
 
-    /* Check for API-level errors */
+    /* Check for API-level errors and extract message_id */
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
@@ -627,7 +683,14 @@ static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
                 cJSON *desc = cJSON_GetObjectItem(rjson, "description");
                 fprintf(stderr, "[telegram] sendMessage error: %s\n",
                         desc ? desc->valuestring : "unknown");
-                rc = -1;
+            } else {
+                /* Extract message_id from result */
+                cJSON *result = cJSON_GetObjectItem(rjson, "result");
+                if (result) {
+                    cJSON *mid = cJSON_GetObjectItem(result, "message_id");
+                    if (mid)
+                        result_msg_id = (long long)mid->valuedouble;
+                }
             }
             cJSON_Delete(rjson);
         }
@@ -636,27 +699,44 @@ static int tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
     str_free(&resp);
     curl_slist_free_all(headers);
     free(body_str);
-    return rc;
+    return result_msg_id;  /* -1 on error, message_id on success */
 }
 
 /* Send message with HTML fallback: if HTML parse fails, strip tags and retry
- * as plain text so the message is never lost */
-static int tg_api_send_message(telegram_ctx_t *ctx, const char *text,
-                               const char *parse_mode, long long thread_id) {
-    int rc = tg_api_send_raw(ctx, text, parse_mode, thread_id);
+ * as plain text so the message is never lost.
+ * Returns message_id on success, -1 on error. */
+static long long tg_api_send_message(telegram_ctx_t *ctx, const char *text,
+                                     const char *parse_mode, long long thread_id) {
+    long long mid = tg_api_send_raw(ctx, text, parse_mode, thread_id, 0);
 
     /* If HTML parse failed, retry without formatting */
-    if (rc == -1 && parse_mode && strcmp(parse_mode, "HTML") == 0) {
+    if (mid == -1 && parse_mode && strcmp(parse_mode, "HTML") == 0) {
         fprintf(stderr, "[telegram] HTML parse failed, retrying as plain text\n");
-        rc = tg_api_send_raw(ctx, text, NULL, thread_id);
+        mid = tg_api_send_raw(ctx, text, NULL, thread_id, 0);
     }
-    return rc;
+    return mid;
+}
+
+/* Send message as a reply to a specific message.
+ * Returns message_id on success, -1 on error. */
+static long long tg_api_send_message_reply(telegram_ctx_t *ctx, const char *text,
+                                           const char *parse_mode,
+                                           long long thread_id,
+                                           long long reply_to_message_id) {
+    long long mid = tg_api_send_raw(ctx, text, parse_mode, thread_id,
+                                    reply_to_message_id);
+
+    if (mid == -1 && parse_mode && strcmp(parse_mode, "HTML") == 0) {
+        fprintf(stderr, "[telegram] HTML parse failed, retrying as plain text\n");
+        mid = tg_api_send_raw(ctx, text, NULL, thread_id, reply_to_message_id);
+    }
+    return mid;
 }
 
 /* Send a long message: if it fits in TG_MSG_MAX, send as a regular message.
  * If it's longer, split into multiple messages at paragraph/line boundaries. */
-static int tg_send_long(telegram_ctx_t *ctx, const char *text,
-                        const char *parse_mode, long long thread_id) {
+static long long tg_send_long(telegram_ctx_t *ctx, const char *text,
+                              const char *parse_mode, long long thread_id) {
     size_t len = strlen(text);
     if (len <= TG_MSG_MAX) {
         return tg_api_send_message(ctx, text, parse_mode, thread_id);
@@ -665,7 +745,7 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
     /* Split long messages into multiple chunks */
     const char *pos = text;
     size_t remaining = len;
-    int rc = 0;
+    long long first_msg_id = -1;
 
     while (remaining > 0) {
         size_t chunk_len;
@@ -682,7 +762,7 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
             if (best > chunk_len / 4) {
                 chunk_len = best;
             } else {
-                /* No paragraph break — try last line break */
+                /* No paragraph break -- try last line break */
                 best = 0;
                 for (size_t i = 0; i < chunk_len; i++) {
                     if (pos[i] == '\n')
@@ -701,9 +781,10 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
         memcpy(chunk, pos, chunk_len);
         chunk[chunk_len] = '\0';
 
-        rc = tg_api_send_message(ctx, chunk, parse_mode, thread_id);
+        long long mid = tg_api_send_message(ctx, chunk, parse_mode, thread_id);
         free(chunk);
-        if (rc != 0) break;
+        if (mid == -1) break;
+        if (first_msg_id == -1) first_msg_id = mid;
 
         pos += chunk_len;
         remaining -= chunk_len;
@@ -712,7 +793,7 @@ static int tg_send_long(telegram_ctx_t *ctx, const char *text,
         if (remaining > 0) usleep(300000);  /* 300ms */
     }
 
-    return rc;
+    return first_msg_id;
 }
 
 
@@ -1710,20 +1791,43 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
     char *content = tg_read_outbox(path);
     if (!content) return;
 
-    /* Parse optional route token header from outbox file.
-     * Result files written by mailbox_write_result_routed() have:
-     *   X-Route-Token: <thread_id>
-     *   ---
-     *   <actual content>
-     */
-    char *route_token = NULL;
-    char *actual_content = mailbox_parse_headers(content, NULL, &route_token, NULL);
+    /* Parse all metadata headers including threading fields */
+    char *route_token = NULL, *workspace = NULL, *user_query = NULL;
+    char *thread_action = NULL, *source = NULL, *agent_name = NULL;
+    char *actual_content = mailbox_parse_headers_full(content, &workspace,
+                                                      &route_token, &user_query,
+                                                      &thread_action, &source,
+                                                      &agent_name);
     long long thread_id = route_token ? atoll(route_token) : 0;
-    free(route_token);
 
-    if (strncmp(filename, "result_", 7) == 0) {
+    /* Look up existing session thread for reply threading */
+    long long reply_to = tg_session_thread_get(ctx, thread_id);
+
+    if (strncmp(filename, "query_", 6) == 0) {
+        /* Query notification from TUI/agent -- becomes thread root or reply.
+         * Skip sending if the query text is empty (e.g. scheduled agents). */
+        if (thread_action && strcmp(thread_action, "root") == 0) {
+            tg_session_thread_clear(ctx, thread_id);
+            if (actual_content && actual_content[0]) {
+                str_t qmsg = str_new(strlen(actual_content) + 48);
+                str_appendf(&qmsg, "\xf0\x9f\x92\xac Query: %s", actual_content);
+                long long mid = tg_api_send_message(ctx, qmsg.data, NULL, thread_id);
+                if (mid > 0) {
+                    tg_session_thread_set(ctx, thread_id, mid);
+                    fprintf(stderr, "[telegram] thread root set: %lld\n", mid);
+                }
+                str_free(&qmsg);
+            }
+        } else if (actual_content && actual_content[0]) {
+            /* Reply in existing thread */
+            str_t qmsg = str_new(strlen(actual_content) + 48);
+            str_appendf(&qmsg, "\xf0\x9f\x92\xac Query: %s", actual_content);
+            tg_api_send_message_reply(ctx, qmsg.data, NULL, thread_id, reply_to);
+            str_free(&qmsg);
+        }
+    } else if (strncmp(filename, "result_", 7) == 0) {
         /* Task result -> convert any markdown tables to bullet-point lists
-         * for inline display, then send via Rich Message or HTML fallback. */
+         * for inline display, then send as threaded reply. */
         char *display = md_has_table(actual_content)
                         ? md_tables_to_bullets(actual_content) : NULL;
         const char *text = display ? display : actual_content;
@@ -1733,17 +1837,19 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
             if (tg_send_rich_long(ctx, text, thread_id) == 0) {
                 sent = 1;
             }
-            /* If rich_supported was just disabled (404/400), fall through */
         }
         if (!sent) {
-            /* Fallback: md_to_html + HTML parse_mode (split handles long) */
             char *html = md_to_html(text);
-            tg_send_long(ctx, html, "HTML", thread_id);
+            if (reply_to > 0) {
+                tg_api_send_message_reply(ctx, html, "HTML", thread_id, reply_to);
+            } else {
+                tg_send_long(ctx, html, "HTML", thread_id);
+            }
             free(html);
         }
         free(display);
     } else if (strncmp(filename, "ask_", 4) == 0) {
-        /* user_ask question -> send via Rich Message or HTML */
+        /* user_ask question -> send as threaded reply */
         int ask_sent = 0;
         if (ctx->rich_supported) {
             str_t msg = str_new(strlen(actual_content) + 64);
@@ -1758,26 +1864,34 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
             str_t msg = str_new(strlen(actual_content) + 64);
             str_append_cstr(&msg, "\xe2\x9d\x93 ");
             str_append_cstr(&msg, actual_content);
-            str_append_cstr(&msg, "\n\n<i>(Reply to this message to answer)</i>");
-            tg_api_send_message(ctx, msg.data, "HTML", thread_id);
+            str_append_cstr(&msg, "\n\\n<i>(Reply to this message to answer)</i>");
+            if (reply_to > 0) {
+                tg_api_send_message_reply(ctx, msg.data, "HTML", thread_id, reply_to);
+            } else {
+                tg_api_send_message(ctx, msg.data, "HTML", thread_id);
+            }
             str_free(&msg);
         }
     } else if (strncmp(filename, "status_", 7) == 0) {
-        /* Status notification.
-         * Suppress [done] notifications -- the result itself is already
-         * sent via result_* so this would just duplicate the "completed"
-         * message in the chat. */
         if (strncmp(actual_content, "[done]", 6) == 0) {
+            free(route_token); free(workspace); free(user_query);
+            free(thread_action); free(source); free(agent_name);
             free(content);
             return;
         }
         str_t msg = str_new(strlen(actual_content) + 16);
         str_append_cstr(&msg, "\xf0\x9f\x93\x8b ");
         str_append_cstr(&msg, actual_content);
-        tg_api_send_message(ctx, msg.data, NULL, thread_id);
+        if (reply_to > 0) {
+            tg_api_send_message_reply(ctx, msg.data, NULL, thread_id, reply_to);
+        } else {
+            tg_api_send_message(ctx, msg.data, NULL, thread_id);
+        }
         str_free(&msg);
     }
 
+    free(route_token); free(workspace); free(user_query);
+    free(thread_action); free(source); free(agent_name);
     free(content);
 }
 
@@ -2081,13 +2195,14 @@ void *telegram_run(void *arg) {
                 } else {
                     /* Plain text task query */
                     if (!is_reply) {
-                        /* New standalone message → reset session first */
+                        /* New standalone message -> reset session first */
                         tg_write_cmd_new(ctx->mailbox_dir);
-                        fprintf(stderr, "[telegram] new message → session reset\n");
+                        tg_session_thread_clear_all(ctx);
+                        fprintf(stderr, "[telegram] new message -> session reset\n");
                         /* Small delay so daemon processes cmd_new before task */
                         usleep(100000);  /* 100ms */
                     } else {
-                        fprintf(stderr, "[telegram] reply → continuing session\n");
+                        fprintf(stderr, "[telegram] reply -> continuing session\n");
                     }
                     char task_id[64];
                     struct timespec ts;
@@ -2099,10 +2214,26 @@ void *telegram_run(void *arg) {
                     tg_route_map_add(ctx, task_id, msg_thread_id);
                     tg_write_task(ctx->mailbox_dir, task_id, msg_text,
                                   msg_workspace, msg_thread_id);
-                    tg_api_send_message(ctx, is_reply
-                        ? "\xe2\x8f\xb3 Continuing..."
-                        : "\xe2\x8f\xb3 Processing...",
-                        NULL, msg_thread_id);
+
+                    /* Send ack -- for new sessions this becomes the thread root */
+                    {
+                        long long reply_root = tg_session_thread_get(ctx, msg_thread_id);
+                        long long ack_mid;
+                        if (is_reply && reply_root > 0) {
+                            ack_mid = tg_api_send_message_reply(ctx,
+                                "\xe2\x8f\xb3 Continuing...",
+                                NULL, msg_thread_id, reply_root);
+                        } else {
+                            ack_mid = tg_api_send_message(ctx,
+                                "\xe2\x8f\xb3 Processing...",
+                                NULL, msg_thread_id);
+                        }
+                        if (ack_mid > 0 && !is_reply) {
+                            tg_session_thread_set(ctx, msg_thread_id, ack_mid);
+                            fprintf(stderr, "[telegram] thread root set: %lld\n",
+                                    ack_mid);
+                        }
+                    }
                 }
             }
             cJSON_Delete(updates);

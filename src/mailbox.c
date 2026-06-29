@@ -602,8 +602,9 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
                                  const char *result, const char *route_token,
                                  const char *workspace,
                                  const char *user_query) {
-    if (!route_token || !route_token[0]) {
-        /* No routing — use plain write */
+    if ((!route_token || !route_token[0]) &&
+        (!workspace || !workspace[0])) {
+        /* No routing info at all — use plain write */
         mailbox_write_result(mailbox_dir, task_id, result);
         return;
     }
@@ -614,7 +615,7 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
 
     /* Build content with metadata headers.
      * Format:
-     *   X-Route-Token: <room_id>
+     *   X-Route-Token: <room_id>     (optional)
      *   X-Workspace: <name>          (optional)
      *   X-User-Query: <first line>   (optional, truncated for header safety)
      *   ---
@@ -622,7 +623,8 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
      */
     const char *res = result ? result : "(no result)";
     str_t hdr = str_new(512);
-    str_appendf(&hdr, "X-Route-Token: %s\n", route_token);
+    if (route_token && route_token[0])
+        str_appendf(&hdr, "X-Route-Token: %s\n", route_token);
     if (workspace && workspace[0])
         str_appendf(&hdr, "X-Workspace: %s\n", workspace);
     if (user_query && user_query[0]) {
@@ -650,6 +652,119 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
 
     write_file_atomic(path, buf);
     free(buf);
-    nash_log("[mailbox] routed result written: %s (token=%s)",
-            path, route_token);
+    nash_log("[mailbox] routed result written: %s (token=%s, ws=%s)",
+            path, route_token ? route_token : "(none)",
+            workspace ? workspace : "(none)");
+}
+
+
+/* ── Extended header parsing (session threading) ──────────── */
+
+char *mailbox_parse_headers_full(char *content, char **workspace_out,
+                                 char **route_token_out,
+                                 char **user_query_out,
+                                 char **thread_action_out,
+                                 char **source_out,
+                                 char **agent_name_out) {
+    if (thread_action_out) *thread_action_out = NULL;
+    if (source_out) *source_out = NULL;
+    if (agent_name_out) *agent_name_out = NULL;
+    if (workspace_out) *workspace_out = NULL;
+    if (route_token_out) *route_token_out = NULL;
+    if (user_query_out) *user_query_out = NULL;
+    if (!content) return content;
+
+    if (strncmp(content, "X-", 2) != 0)
+        return content;
+
+    char *p = content;
+    while (*p) {
+        char *eol = strchr(p, '\n');
+        if (!eol) break;
+
+        if (p[0] == '-' && p[1] == '-' && p[2] == '-' &&
+            (p[3] == '\n' || p[3] == '\r' || p[3] == '\0')) {
+            return eol + 1;
+        }
+
+        if (strncmp(p, "X-", 2) == 0) {
+            char *colon = strchr(p, ':');
+            if (colon && colon < eol) {
+                size_t klen = (size_t)(colon - p);
+                char *val = colon + 1;
+                while (*val == ' ') val++;
+                size_t vlen = (size_t)(eol - val);
+                while (vlen > 0 && (val[vlen-1] == '\r' || val[vlen-1] == ' '))
+                    vlen--;
+
+                if (klen == 11 && strncmp(p, "X-Workspace", 11) == 0) {
+                    if (workspace_out && vlen > 0)
+                        *workspace_out = strndup(val, vlen);
+                } else if (klen == 13 && strncmp(p, "X-Route-Token", 13) == 0) {
+                    if (route_token_out && vlen > 0)
+                        *route_token_out = strndup(val, vlen);
+                } else if (klen == 12 && strncmp(p, "X-User-Query", 12) == 0) {
+                    if (user_query_out && vlen > 0)
+                        *user_query_out = strndup(val, vlen);
+                } else if (klen == 15 && strncmp(p, "X-Thread-Action", 15) == 0) {
+                    if (thread_action_out && vlen > 0)
+                        *thread_action_out = strndup(val, vlen);
+                } else if (klen == 8 && strncmp(p, "X-Source", 8) == 0) {
+                    if (source_out && vlen > 0)
+                        *source_out = strndup(val, vlen);
+                } else if (klen == 12 && strncmp(p, "X-Agent-Name", 12) == 0) {
+                    if (agent_name_out && vlen > 0)
+                        *agent_name_out = strndup(val, vlen);
+                }
+            }
+        } else {
+            return content;
+        }
+
+        p = eol + 1;
+    }
+
+    return content;
+}
+
+
+/* ── Query notification for session threading ─────────────── */
+
+void mailbox_write_query(const char *mailbox_dir, const char *query_id,
+                         const char *query_text, const char *workspace,
+                         const char *route_token, const char *thread_action,
+                         const char *source, const char *agent_name) {
+    if (!mailbox_dir || !query_id) return;
+
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/outbox/query_%s",
+             mailbox_dir, query_id);
+
+    const char *text = query_text ? query_text : "";
+    str_t hdr = str_new(256);
+    if (workspace && workspace[0])
+        str_appendf(&hdr, "X-Workspace: %s\n", workspace);
+    if (route_token && route_token[0])
+        str_appendf(&hdr, "X-Route-Token: %s\n", route_token);
+    if (thread_action && thread_action[0])
+        str_appendf(&hdr, "X-Thread-Action: %s\n", thread_action);
+    if (source && source[0])
+        str_appendf(&hdr, "X-Source: %s\n", source);
+    if (agent_name && agent_name[0])
+        str_appendf(&hdr, "X-Agent-Name: %s\n", agent_name);
+    str_append_cstr(&hdr, "---\n");
+
+    size_t total = hdr.len + strlen(text) + 2;
+    char *buf = malloc(total);
+    if (!buf) {
+        str_free(&hdr);
+        return;
+    }
+    snprintf(buf, total, "%s%s", hdr.data, text);
+    str_free(&hdr);
+
+    write_file_atomic(path, buf);
+    free(buf);
+    nash_log("[mailbox] query notification written: %s (action=%s)",
+            path, thread_action ? thread_action : "none");
 }

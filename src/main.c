@@ -144,6 +144,36 @@ static void route_to_outbox(const char *nash_dir, const char *result,
     str_free(&msg);
 }
 
+/* Route a query notification to the mailbox outbox so bridge threads
+ * can show it as the thread root.  Only writes if a daemon is running.
+ * is_new_session: 1 = start new thread (root), 0 = reply in existing thread. */
+static void route_query_to_outbox(const char *nash_dir, const char *query,
+                                   const char *ws_name, const char *agent_name,
+                                   int is_new_session) {
+    if (!query || !nash_dir) return;
+    if (!daemon_is_running(nash_dir)) return;
+
+    char mbox_dir[NASH_PATH_MAX];
+    if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) return;
+
+    const char *query_id = mailbox_gen_id();
+    const char *source = agent_name ? "agent" : "tui";
+
+    /* For agents, show compact notification instead of full query */
+    char agent_text[256];
+    const char *text = query;
+    if (agent_name && agent_name[0]) {
+        snprintf(agent_text, sizeof(agent_text), "[agent %s executed]", agent_name);
+        text = agent_text;
+    }
+
+    mailbox_write_query(mbox_dir, query_id, text, ws_name,
+                        NULL /* route_token */,
+                        is_new_session ? "root" : "reply",
+                        source, agent_name);
+    nash_log("[mailbox] query routed to outbox for bridge relay");
+}
+
 /* Get the nash data directory: ~/.nash/ or config override */
 static char *get_nash_dir(const config_t *cfg) {
     if (cfg->data_dir && cfg->data_dir[0]) {
@@ -1473,8 +1503,14 @@ int main(int argc, char **argv) {
             };
             fprintf(stderr, "[mailbox] enabled — questions in %s/outbox/, answers in %s/inbox/\n",
                     mbox_dir, mbox_dir);
+            /* Forward query to bridge before processing */
+            route_query_to_outbox(nash_dir, query,
+                                  ws && ws->name ? ws->name : NULL, NULL, 1);
             result = react_run(&react, query, mailbox_on_event, &mbox);
         } else {
+            /* Forward query to bridge before processing */
+            route_query_to_outbox(nash_dir, query,
+                                  ws && ws->name ? ws->name : NULL, NULL, 1);
             result = react_run(&react, query, tui_on_event, NULL);
         }
         /* Resolve session_dir from journal for lazy sessions.
@@ -1964,6 +2000,10 @@ int main(int argc, char **argv) {
                 };
                 provider->abort_retry = 0;  /* reset before new inference */
                 free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
+                /* Forward query to bridge for session threading */
+                route_query_to_outbox(nash_dir, final_query,
+                                      ws && ws->name ? ws->name : NULL, NULL,
+                                      tools.react_loop == 0 ? 1 : 0);
                 pthread_create(&infer_tid, NULL, infer_worker, &iargs);
                 inferring = INFER_REACT;
                 tui_render(ui);

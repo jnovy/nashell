@@ -55,6 +55,13 @@ typedef struct {
     /* Reply routing: task_id -> thread_id (circular buffer) */
     tg_route_entry_t route_map[TG_MAX_ROUTE_MAP];
     int       route_map_next;    /* next write index (circular) */
+
+    /* Session threading: tracks reply thread root message_id per topic */
+    struct {
+        long long thread_id;         /* forum topic (0 = general) */
+        long long root_message_id;   /* message_id of the thread root */
+    } session_threads[TG_MAX_TOPIC_MAP];
+    int       session_thread_count;
 } telegram_ctx_t;
 
 /* Initialize telegram context from config.

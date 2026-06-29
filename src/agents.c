@@ -730,6 +730,14 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             /* Replace / with _ in task_id for filename safety */
             for (char *p = task_id; *p; p++)
                 if (*p == '/') *p = '_';
+
+            /* Write query notification first (thread root) */
+            char query_id[256];
+            snprintf(query_id, sizeof(query_id), "agentq_%s", task_id + 6);
+            mailbox_write_query(mailbox_dir, query_id, NULL,
+                                a->workspace_name, NULL,
+                                "root", "agent", a->id);
+
             /* Prefix result with workspace and agent name */
             str_t prefixed = str_new(strlen(pargs.result_text) + 128);
             if (a->workspace_name && a->workspace_name[0])
@@ -739,7 +747,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             str_append_cstr(&prefixed, pargs.result_text);
             mailbox_write_result_routed(mailbox_dir, task_id,
                                         prefixed.data, NULL,
-                                        NULL, NULL);
+                                        a->workspace_name, NULL);
             str_free(&prefixed);
         }
         free(pargs.result_text);
