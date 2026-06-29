@@ -104,12 +104,12 @@ const tool_def_t TOOL_REGISTRY[] = {
     {"device_control",
      "Control a device's GUI (computer, phone, tablet, kiosk). Takes a screenshot "
      "and/or performs keyboard/mouse actions. Commands: screenshot, click, "
-     "double_click, type, key, scroll, drag, wait. "
+     "double_click, type, key, scroll, drag, mouse_move, wait. "
      "Only for visual/GUI tasks — do NOT use for non-GUI operations. "
      "For delays in CLI workflows, use shell_exec with sleep instead.",
      "{\"type\":\"object\",\"properties\":{"
        "\"command\":{\"type\":\"string\",\"description\":"
-         "\"Command: screenshot, click, double_click, type, key, scroll, drag, wait\"},"
+         "\"Command: screenshot, click, double_click, type, key, scroll, drag, mouse_move, wait\"},"
        "\"x\":{\"type\":\"integer\",\"description\":\"X coordinate (pixels)\"},"
        "\"y\":{\"type\":\"integer\",\"description\":\"Y coordinate (pixels)\"},"
        "\"text\":{\"type\":\"string\",\"description\":\"Text to type (for type command)\"},"

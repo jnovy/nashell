@@ -134,6 +134,32 @@ static tool_result_t do_click(device_session_t *s, cJSON *params, int double_cli
     return tools_make_result(1, meta, NULL);
 }
 
+static tool_result_t do_move(device_session_t *s, cJSON *params) {
+    cJSON *jx = cJSON_GetObjectItem(params, "x");
+    cJSON *jy = cJSON_GetObjectItem(params, "y");
+    if (!jx || !jy)
+        return tools_make_error("mouse_move requires 'x' and 'y' coordinates (integer pixel values)");
+
+    int x = jx->valueint;
+    int y = jy->valueint;
+
+    int rc = input_mouse_move(s->input, x, y);
+    if (rc != 0) return tools_make_error("mouse_move failed");
+
+    s->action_count++;
+    s->consecutive_errors = 0;
+
+    if (s->action_delay_ms > 0)
+        usleep(s->action_delay_ms * 1000);
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "action", "mouse_move");
+    cJSON_AddNumberToObject(meta, "x", x);
+    cJSON_AddNumberToObject(meta, "y", y);
+    cJSON_AddStringToObject(meta, "status", "ok");
+    return tools_make_result(1, meta, NULL);
+}
+
 static tool_result_t do_type_text(device_session_t *s, cJSON *params) {
     cJSON *jtext = cJSON_GetObjectItem(params, "text");
     if (!jtext || !jtext->valuestring)
@@ -268,7 +294,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     if (!jaction || !jaction->valuestring)
         return tools_make_error(
             "device_control requires a 'command' parameter "
-            "(screenshot, click, double_click, type, key, scroll, drag, wait)");
+            "(screenshot, click, double_click, type, key, scroll, drag, mouse_move, wait)");
     const char *action = jaction->valuestring;
 
     /* Check if device control is configured */
@@ -315,6 +341,8 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         tr = do_drag(s, params);
     else if (strcmp(action, "wait") == 0)
         tr = do_wait(s, params);
+    else if (strcmp(action, "mouse_move") == 0)
+        tr = do_move(s, params);
     else if (strcmp(action, "screenshot_diff") == 0 ||
              strcmp(action, "screenshot_region") == 0 ||
              strcmp(action, "find") == 0) {
@@ -326,7 +354,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         char emsg[256];
         snprintf(emsg, sizeof(emsg),
                  "unknown device_control command: '%s'. "
-                 "Valid commands: screenshot, click, double_click, type, key, scroll, drag, wait",
+                 "Valid commands: screenshot, click, double_click, type, key, scroll, drag, mouse_move, wait",
                  action);
         tr = tools_make_error(emsg);
     }
