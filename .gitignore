@@ -11,6 +11,9 @@ tests/test_memory_context
 tests/test_spec
 tests/test_compaction
 tests/test_onnx_embed
+tests/test_compress
+tests/test_lifecycle
+tests/test_memory_query
 tools/chunk_backfill
 
 # Test bench results
