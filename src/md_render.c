@@ -933,6 +933,38 @@ static void defer_osc8_end(int col_end) {
         md_osc8_links[md_osc8_count - 1].col_end = col_end;
 }
 
+/* Convert ncurses color component (0-1000 range from init_color) to 0-255. */
+static int nc_to_rgb(int nc_val) {
+    return nc_val * 255 / 1000;
+}
+
+/* Emit SGR escape sequence reproducing the given ncurses attributes. */
+static void emit_sgr_for_attrs(attr_t attrs, short pair) {
+    printf("\033[0");  /* reset first */
+    if (attrs & A_BOLD)      printf(";1");
+    if (attrs & A_DIM)       printf(";2");
+    if (attrs & A_UNDERLINE) printf(";4");
+    if (attrs & A_REVERSE)   printf(";7");
+    if (pair > 0) {
+        short fg, bg;
+        if (pair_content(pair, &fg, &bg) == OK) {
+            if (fg >= 0) {
+                short r, g, b;
+                if (color_content(fg, &r, &g, &b) == OK)
+                    printf(";38;2;%d;%d;%d",
+                           nc_to_rgb(r), nc_to_rgb(g), nc_to_rgb(b));
+            }
+            if (bg >= 0) {
+                short r, g, b;
+                if (color_content(bg, &r, &g, &b) == OK)
+                    printf(";48;2;%d;%d;%d",
+                           nc_to_rgb(r), nc_to_rgb(g), nc_to_rgb(b));
+            }
+        }
+    }
+    printf("m");
+}
+
 /* Emit all deferred OSC 8 sequences directly to stdout.
  * Called AFTER doupdate() so screen content is already rendered.
  * win_row_offset: absolute screen row of the window (getbegy). */
@@ -945,29 +977,38 @@ void md_osc8_flush(WINDOW *win, int win_row_offset) {
     for (int i = 0; i < md_osc8_count; i++) {
         md_osc8_link_t *lk = &md_osc8_links[i];
         int abs_row = win_row_offset + lk->row + 1;  /* 1-based */
-        int abs_col = lk->col_start + 1;               /* 1-based */
         int link_len = lk->col_end - lk->col_start;
-        if (link_len <= 0) continue;
-        /* Read the link text back from the ncurses window so we can
-         * re-output it between OSC 8 open/close.  Terminals associate
-         * the hyperlink attribute with CHARACTERS WRITTEN to the screen,
-         * not with cursor movement — so we must re-output the actual
-         * characters for the link to be clickable/hoverable. */
-        char text_buf[512];
-        if (link_len >= (int)sizeof(text_buf))
-            link_len = (int)sizeof(text_buf) - 1;
-        int got = mvwinnstr(win, lk->row, lk->col_start, text_buf, link_len);
-        if (got <= 0) continue;
-        text_buf[got] = '\0';
+        if (link_len <= 0 || link_len > 512) continue;
+
         /* Position cursor at link start */
-        printf("\033[%d;%dH", abs_row, abs_col);
+        printf("\033[%d;%dH", abs_row, lk->col_start + 1);
         /* OSC 8 start: ESC ] 8 ; ; URI ST */
         printf("\033]8;;%s\033\\", lk->uri);
-        /* Re-output the link text — the terminal now tags these
-         * characters with the hyperlink attribute, making them
-         * clickable and showing the URL on hover. */
-        printf("%s", text_buf);
-        /* OSC 8 end: ESC ] 8 ; ; ST */
+
+        /* Re-output link text cell-by-cell, preserving ncurses
+         * attributes.  mvwinch() returns both character and attrs
+         * (bold, reverse, color pair, etc.) so cursor highlights
+         * and link colors survive the OSC 8 re-output. */
+        attr_t prev_attrs = 0;
+        short  prev_pair  = -1;
+        for (int c = 0; c < link_len; c++) {
+            chtype ch = mvwinch(win, lk->row, lk->col_start + c);
+            attr_t attrs = ch & A_ATTRIBUTES;
+            short  pair  = (short)PAIR_NUMBER(ch);
+            char   chr   = ch & A_CHARTEXT;
+            if (chr == '\0') chr = ' ';
+
+            /* Emit SGR only when attributes change */
+            if (c == 0 || attrs != prev_attrs || pair != prev_pair) {
+                emit_sgr_for_attrs(attrs, pair);
+                prev_attrs = attrs;
+                prev_pair  = pair;
+            }
+            putchar(chr);
+        }
+
+        /* SGR reset + OSC 8 end */
+        printf("\033[0m");
         printf("\033]8;;\033\\");
     }
     /* Restore cursor position (DECRC) so terminal cursor returns to
