@@ -81,6 +81,7 @@ int workspace_prune(workspace_t *ws, double min_score, int min_evidence);
 /* Increment hits/misses: searches workspace first, then global. */
 int workspace_increment_hits(workspace_t *ws, const char *key);
 int workspace_increment_misses(workspace_t *ws, const char *key);
+int workspace_increment_access(workspace_t *ws, const char *key);
 
 /* Set supersedes on the memory that contains new_key. */
 int workspace_set_supersedes(workspace_t *ws, const char *new_key,

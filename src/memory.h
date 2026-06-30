@@ -237,6 +237,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence);
  * Validation score = (hits+1)/(hits+misses+2) — Beta posterior mean. */
 int memory_increment_hits(memory_t *m, const char *key);
 int memory_increment_misses(memory_t *m, const char *key);
+int memory_increment_access(memory_t *m, const char *key);
 
 /* P2: Set supersedes field on a memory entry.
  * Creates a lineage chain: new_key supersedes old_key.

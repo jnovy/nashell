@@ -378,6 +378,12 @@ int workspace_increment_misses(workspace_t *ws, const char *key) {
     return memory_increment_misses(m, key);
 }
 
+int workspace_increment_access(workspace_t *ws, const char *key) {
+    memory_t *m = workspace_find_memory(ws, key);
+    if (!m) return -1;
+    return memory_increment_access(m, key);
+}
+
 /* ── supersedes ──────────────────────────────────────── */
 
 int workspace_set_supersedes(workspace_t *ws, const char *new_key,

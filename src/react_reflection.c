@@ -92,15 +92,26 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
      * consistently succeeding task types get promoted. The cold-start
      * exponent (vscore_exponent=0.3) already dampens vscore's influence
      * to limit the impact of noisy early signals. */
-    if (ctx->flags.enable_scoring && ctx->tools->memory &&
+    if (ctx->flags.enable_scoring &&
+        (ctx->tools->ws || ctx->tools->memory) &&
         ctx->tools->n_recalled_keys > 0) {
         for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
-            if (task_succeeded) {
-                memory_increment_hits(ctx->tools->memory,
-                                      ctx->tools->recalled_keys[i]);
+            const char *key = ctx->tools->recalled_keys[i];
+            if (ctx->tools->ws) {
+                /* Workspace-aware routing: workspace_find_memory()
+                 * locates the correct memory_t (workspace-local or
+                 * global) based on where the key actually lives. */
+                if (task_succeeded)
+                    workspace_increment_hits(ctx->tools->ws, key);
+                else
+                    workspace_increment_misses(ctx->tools->ws, key);
+                workspace_increment_access(ctx->tools->ws, key);
             } else {
-                memory_increment_misses(ctx->tools->memory,
-                                        ctx->tools->recalled_keys[i]);
+                if (task_succeeded)
+                    memory_increment_hits(ctx->tools->memory, key);
+                else
+                    memory_increment_misses(ctx->tools->memory, key);
+                memory_increment_access(ctx->tools->memory, key);
             }
         }
     }
@@ -121,13 +132,20 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             cJSON_AddItemToArray(keys_arr,
                 cJSON_CreateString(ctx->tools->recalled_keys[i]));
             /* Check if this key has zero evidence */
-            if (ctx->tools->memory) {
-                /* FIX CRITICAL #2: memory_find returns owned copy */
-                mem_index_entry_t *ie = memory_find(
-                    ctx->tools->memory, ctx->tools->recalled_keys[i]);
-                if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
-                    cold_start_count++;
-                memory_find_free(ie);
+            {
+                memory_t *km = NULL;
+                if (ctx->tools->ws)
+                    km = workspace_find_memory(ctx->tools->ws,
+                             ctx->tools->recalled_keys[i]);
+                else
+                    km = ctx->tools->memory;
+                if (km) {
+                    mem_index_entry_t *ie = memory_find(
+                        km, ctx->tools->recalled_keys[i]);
+                    if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
+                        cold_start_count++;
+                    memory_find_free(ie);
+                }
             }
         }
         cJSON_AddItemToObject(mq, "recalled_keys", keys_arr);

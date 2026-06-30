@@ -69,6 +69,19 @@ static char *generate_description(const char *value) {
         start++;
     if (!*start) return strdup("");
 
+    /* If the first line is a short heading (< 30 chars, no period),
+     * skip it and use the next content line.  This avoids all skills
+     * getting description "When to apply" from their ## header. */
+    const char *first_nl = strchr(start, '\n');
+    if (first_nl && (first_nl - start) < 30 &&
+        !memchr(start, '.', (size_t)(first_nl - start))) {
+        start = first_nl + 1;
+        while (*start == ' ' || *start == '\t' || *start == '#' ||
+               *start == '\n' || *start == '\r' || *start == '*')
+            start++;
+        if (!*start) return strdup("");
+    }
+
     /* Find first sentence end (.) or newline, whichever comes first */
     const char *dot = strchr(start, '.');
     const char *nl = strchr(start, '\n');
@@ -1581,6 +1594,10 @@ int memory_increment_hits(memory_t *m, const char *key) {
 
 int memory_increment_misses(memory_t *m, const char *key) {
     return memory_increment_field(m, key, "recall_misses");
+}
+
+int memory_increment_access(memory_t *m, const char *key) {
+    return memory_increment_field(m, key, "access_count");
 }
 
 int memory_update_scores(memory_t *m, const char *key,
