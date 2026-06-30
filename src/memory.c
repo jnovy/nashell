@@ -119,6 +119,7 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
     for (int i = 0; i < e->n_refs; i++) free(e->refs[i]);
     free(e->refs);
     if (e->has_emb) embed_multi_vec_free(&e->emb);
+    free(e->supersedes);
     memset(e, 0, sizeof(*e));
 }
 
@@ -274,6 +275,12 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
     if (ca && ca->valuestring) ie->created_at = atof(ca->valuestring);
     else if (ca) ie->created_at = cJSON_GetNumberValue(ca);
     ie->path = strdup(filepath);
+
+    /* Lesson lineage fields */
+    cJSON *ss = cJSON_GetObjectItem(entry, "supersedes");
+    ie->supersedes = (ss && ss->valuestring) ? strdup(ss->valuestring) : NULL;
+    cJSON *vn = cJSON_GetObjectItem(entry, "version");
+    ie->version = vn ? (int)cJSON_GetNumberValue(vn) : 0;
 
     /* Copy refs */
     cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
@@ -1032,9 +1039,12 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
         e->description = ie->description ? strdup(ie->description) : NULL;
         e->pinned = ie->pinned;
         e->created_at = ie->created_at; /* FIX: was missing — format_recency() needs this */
+        e->access_count = ie->access_count;
         e->recall_hits = ie->recall_hits;
         e->recall_misses = ie->recall_misses;
         e->belief_entropy = ie->belief_entropy;
+        e->supersedes = ie->supersedes ? strdup(ie->supersedes) : NULL;
+        e->version = ie->version;
         e->journal_ref = NULL;  /* loaded on demand if needed */
 
         /* Copy refs from index */
@@ -1605,6 +1615,29 @@ int memory_update_scores(memory_t *m, const char *key,
     if (!m || !key || (add_hits == 0 && add_misses == 0)) return -1;
     pthread_mutex_lock(&m->mtx);
 
+    /* Persist to disk -- load JSON, update fields, write back.
+     * Previously only updated in-memory index, relying on a fragile
+     * implicit contract with consolidation_carry_scores. */
+    cJSON *entry = memory_load_entry_json(m, key);
+    if (entry) {
+        cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
+        cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
+        int cur_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
+        int cur_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
+        if (rh) cJSON_SetNumberValue(rh, cur_hits + add_hits);
+        else    cJSON_AddNumberToObject(entry, "recall_hits", add_hits);
+        if (rm) cJSON_SetNumberValue(rm, cur_misses + add_misses);
+        else    cJSON_AddNumberToObject(entry, "recall_misses", add_misses);
+
+        char fname[512];
+        key_to_path(key, ".json", fname, sizeof(fname));
+        char path[NASH_PATH_MAX];
+        snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+        char *json = cJSON_Print(entry);
+        if (json) { write_file(path, json, strlen(json)); free(json); }
+        cJSON_Delete(entry);
+    }
+
     /* Update in-memory index so recall scoring sees the new values
      * immediately (without requiring a restart). */
     mem_index_entry_t *ie = mem_index_find(&m->idx, key);
@@ -1654,6 +1687,16 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     write_file(path, json, strlen(json));
     free(json);
     cJSON_Delete(entry);
+
+    /* Update in-memory index so supersedes/version are immediately visible */
+    {
+        mem_index_entry_t *ie = mem_index_find(&m->idx, new_key);
+        if (ie) {
+            free(ie->supersedes);
+            ie->supersedes = strdup(old_key);
+            ie->version = old_version + 1;
+        }
+    }
 
     pthread_mutex_unlock(&m->mtx);
     return 0;
@@ -1940,6 +1983,25 @@ int memory_embed_all(memory_t *m) {
         }
     }
 
+    /* Phase 3: Reload embeddings into in-memory index entries.
+     * Same pattern as memory_store FIX #4 -- without this, newly embedded
+     * entries retain has_emb=0 in the index and memory_query() won't use
+     * semantic matching until process restart. */
+    if (embedded > 0) {
+        pthread_mutex_lock(&m->mtx);
+        for (int i = 0; i < pending_count; i++) {
+            mem_index_entry_t *ie = mem_index_find(&m->idx, pending[i].key);
+            if (ie) {
+                char emb_path[NASH_PATH_MAX];
+                json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
+                if (ie->has_emb) embed_multi_vec_free(&ie->emb);
+                ie->emb = embed_multi_vec_load(emb_path);
+                ie->has_emb = (ie->emb.data && ie->emb.dim > 0) ? 1 : 0;
+            }
+        }
+        pthread_mutex_unlock(&m->mtx);
+    }
+
     /* Cleanup */
     for (int i = 0; i < pending_count; i++) {
         free(pending[i].key);
@@ -2015,6 +2077,8 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
     copy->recall_misses = src->recall_misses;
     copy->belief_entropy = src->belief_entropy;
     copy->created_at = src->created_at;
+    copy->supersedes = src->supersedes ? strdup(src->supersedes) : NULL;
+    copy->version = src->version;
     copy->n_refs = src->n_refs;
     if (src->refs && src->n_refs > 0) {
         copy->refs = calloc((size_t)src->n_refs, sizeof(char *));
@@ -2038,7 +2102,16 @@ void memory_find_free(mem_index_entry_t *entry) {
     free(entry->path);
     for (int i = 0; i < entry->n_refs; i++) free(entry->refs[i]);
     free(entry->refs);
+    free(entry->supersedes);
     free(entry);
+}
+
+int memory_has_key(memory_t *m, const char *key) {
+    if (!m || !key) return 0;
+    pthread_mutex_lock(&m->mtx);
+    int found = (mem_index_find(&m->idx, key) != NULL);
+    pthread_mutex_unlock(&m->mtx);
+    return found;
 }
 
 /* FIX #8: Re-index a single entry by reading its on-disk JSON into the

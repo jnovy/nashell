@@ -445,11 +445,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             int assoc_depth = ctx->tools->cfg
                 ? ctx->tools->cfg->associative_depth : 1;
             if (assoc_depth > 0) {
-                /* DESIGN 1 FIX: Use global memory when workspace is active,
-                 * instead of NULL which silently disabled associative graph walk. */
-                memory_t *amem = ctx->tools->ws
-                    ? ctx->tools->ws->global : ctx->tools->memory;
-                if (amem) {
+                /* Associative graph walk: for each recalled memory with refs,
+                 * look up the referenced entries and inject them.
+                 * Uses workspace_find_memory() per ref to handle refs pointing
+                 * to either workspace or global layer. */
+                {
                     str_t assoc_msg = str_new(2048);
                     int assoc_added = 0;
                     for (int j = 0; j < all_memories.count && assoc_added < 3; j++) {
@@ -465,7 +465,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                                 }
                             }
                             if (dup) continue;
-                            /* FIX CRITICAL #2: memory_find returns owned copy */
+                            /* Resolve ref to correct memory layer */
+                            memory_t *amem = ctx->tools->ws
+                                ? workspace_find_memory(ctx->tools->ws, ref_key)
+                                : ctx->tools->memory;
+                            if (!amem) continue;
                             mem_index_entry_t *ref_entry = memory_find(amem, ref_key);
                             if (ref_entry && ref_entry->value) {
                                 if (assoc_added == 0)

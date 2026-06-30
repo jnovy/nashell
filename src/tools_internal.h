@@ -62,9 +62,10 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params);
 tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params);
-/* LLM-based consolidation — called by tool_flush_deferred_consolidations */
+/* LLM-based consolidation -- called by tool_flush_deferred_consolidations.
+ * target: the memory_t instance the new entry was stored in (workspace or global). */
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
-                                   const char *new_value);
+                                   const char *new_value, memory_t *target);
 
 /* tool_file.c */
 tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params);

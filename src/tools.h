@@ -93,6 +93,7 @@ typedef struct {
     struct {
         char *key;
         char *value;
+        memory_t *target;  /* which memory_t to consolidate against */
     }             *deferred_consol;
     int            n_deferred_consol;
     int            cap_deferred_consol;

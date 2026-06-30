@@ -663,7 +663,6 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
      * Previously each memory_try_consolidate() called memory_delete() inline,
      * causing O(N) gc_refs scan per delete.  Now we collect all delete keys
      * and do a single memory_delete_batch() at the end — O(K+N) total. */
-    char **del_keys = NULL;
     int n_del = 0, del_cap = 0;
 
     /* FIX #6: Deduplicate deferred queue by key — keep only the LATEST value
@@ -684,36 +683,65 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
         }
     }
 
-    /* FIX CRIT#1: Use atomic CAS to prevent TOCTOU race — two threads
-     * could both see consolidating==0 and both proceed without CAS. */
+    /* Set consolidating flag on all involved memory_t instances.
+     * Use CAS on global; also set on workspace if active. */
     int expected = 0;
-    if (!atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
-        /* Another thread is already consolidating — skip */
+    if (ctx->memory &&
+        !atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
         tool_free_deferred_consolidations(ctx);
         return;
     }
+    memory_t *ws_mem = (ctx->ws && ctx->ws->workspace) ? ctx->ws->workspace : NULL;
+    if (ws_mem) atomic_store(&ws_mem->consolidating, 1);
+
+    /* Track deletions with their target memory_t */
+    typedef struct { char *key; memory_t *target; } del_entry_t;
+    del_entry_t *del_entries = NULL;
+
     for (int i = 0; i < ctx->n_deferred_consol; i++) {
         if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
+            memory_t *tgt = ctx->deferred_consol[i].target;
+            if (!tgt) tgt = ctx->memory;
             char *dk = tools_memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
-                                                    ctx->deferred_consol[i].value);
+                                                    ctx->deferred_consol[i].value, tgt);
             if (dk) {
                 if (n_del >= del_cap) {
                     del_cap = del_cap ? del_cap * 2 : 16;
-                    del_keys = realloc(del_keys, sizeof(char *) * (size_t)del_cap);
+                    del_entries = realloc(del_entries, sizeof(del_entry_t) * (size_t)del_cap);
                 }
-                if (del_keys) del_keys[n_del++] = dk;
-                else free(dk);
+                if (del_entries) {
+                    del_entries[n_del].key = dk;
+                    del_entries[n_del].target = tgt;
+                    n_del++;
+                } else {
+                    free(dk);
+                }
             }
         }
     }
-    atomic_store(&ctx->memory->consolidating, 0);
+    if (ctx->memory) atomic_store(&ctx->memory->consolidating, 0);
+    if (ws_mem) atomic_store(&ws_mem->consolidating, 0);
 
-    /* Batch delete all keys collected during consolidation */
-    if (n_del > 0 && del_keys) {
-        memory_delete_batch(ctx->memory, (const char **)del_keys, n_del);
-        for (int i = 0; i < n_del; i++) free(del_keys[i]);
+    /* Batch delete, grouped by target memory_t */
+    if (n_del > 0 && del_entries) {
+        /* Delete from global memory */
+        const char *gl_keys[64];
+        int n_gl = 0;
+        const char *ws_keys[64];
+        int n_ws = 0;
+        for (int i = 0; i < n_del && i < 64; i++) {
+            if (del_entries[i].target == ws_mem && ws_mem)
+                ws_keys[n_ws++] = del_entries[i].key;
+            else
+                gl_keys[n_gl++] = del_entries[i].key;
+        }
+        if (n_gl > 0 && ctx->memory)
+            memory_delete_batch(ctx->memory, gl_keys, n_gl);
+        if (n_ws > 0 && ws_mem)
+            memory_delete_batch(ws_mem, ws_keys, n_ws);
+        for (int i = 0; i < n_del; i++) free(del_entries[i].key);
     }
-    free(del_keys);
+    free(del_entries);
 
     /* Free the queue */
     tool_free_deferred_consolidations(ctx);

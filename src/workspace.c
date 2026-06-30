@@ -34,19 +34,12 @@ static void mkdirp(const char *path) {
     mkdir(tmp, 0755);
 }
 
-/* Check if a key exists in a memory_t's index. */
+/* Check if a key exists in a memory_t's index.
+ * Uses memory_has_key() for O(1) hash lookup under the mutex,
+ * replacing the old stat()-based approach that had filesystem I/O
+ * and a race condition (no mutex protection). */
 static int mem_has_key(memory_t *m, const char *key) {
-    if (!m || !key) return 0;
-    /* Use memory_query with max_results=1 as a quick existence check?
-     * No — we need exact key match.  Check the index directly via
-     * a zero-length query that just checks the hash map.
-     * Actually, the simplest approach: try to load the entry JSON. */
-    char fname[512];
-    key_to_path(key, ".json", fname, sizeof(fname));
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
-    struct stat st;
-    return (stat(path, &st) == 0);
+    return memory_has_key(m, key);
 }
 
 /* ── lifecycle ───────────────────────────────────────── */
@@ -199,6 +192,57 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
     qsort(merged.entries, merged.count, sizeof(memory_entry_t),
           cmp_relevance_desc);
 
+    /* Deduplicate by key -- if the same key exists in both workspace and
+     * global, both entries appear in the merged list. Keep the higher-scored
+     * one (first after sort) and remove duplicates. */
+    for (int i = 0; i < merged.count; i++) {
+        if (!merged.entries[i].key) continue;
+        for (int j = i + 1; j < merged.count; j++) {
+            if (!merged.entries[j].key) continue;
+            if (strcmp(merged.entries[i].key, merged.entries[j].key) == 0) {
+                /* Free the duplicate (lower-scored) entry */
+                free(merged.entries[j].key);
+                free(merged.entries[j].value);
+                free(merged.entries[j].description);
+                free(merged.entries[j].journal_ref);
+                free(merged.entries[j].supersedes);
+                for (int r = 0; r < merged.entries[j].n_refs; r++)
+                    free(merged.entries[j].refs[r]);
+                free(merged.entries[j].refs);
+                /* Shift remaining entries down */
+                memmove(&merged.entries[j], &merged.entries[j + 1],
+                        (size_t)(merged.count - j - 1) * sizeof(memory_entry_t));
+                merged.count--;
+                j--;  /* re-check this index */
+            }
+        }
+    }
+
+    /* Cross-layer ref-boost: if a recalled entry has refs pointing to
+     * another entry in the results, boost the referenced entry's score.
+     * This was previously impossible because workspace and global were
+     * scored in separate memory_query() calls. */
+    for (int i = 0; i < merged.count; i++) {
+        if (merged.entries[i].n_refs <= 0) continue;
+        for (int ri = 0; ri < merged.entries[i].n_refs; ri++) {
+            const char *ref_key = merged.entries[i].refs[ri];
+            if (!ref_key) continue;
+            for (int j = 0; j < merged.count; j++) {
+                if (j == i || !merged.entries[j].key) continue;
+                if (strcmp(merged.entries[j].key, ref_key) == 0) {
+                    double boost = 0.3 * merged.entries[i].relevance;
+                    merged.entries[j].relevance += boost;
+                    if (merged.entries[j].relevance > 1.0)
+                        merged.entries[j].relevance = 1.0;
+                    break;
+                }
+            }
+        }
+    }
+    /* Re-sort after ref-boost */
+    qsort(merged.entries, merged.count, sizeof(memory_entry_t),
+          cmp_relevance_desc);
+
     /* Truncate to max_results */
     if (merged.count > max_results) {
         /* Free excess entries */
@@ -231,8 +275,16 @@ int workspace_store(workspace_t *ws, const char *key, const char *value,
                     int pinned, const char *journal_ref,
                     const char **refs, int n_refs, int force_global) {
     if (!ws) return -1;
-    memory_t *target = (force_global || !ws->workspace)
-                       ? ws->global : ws->workspace;
+    memory_t *target;
+    if (force_global || !ws->workspace) {
+        target = ws->global;
+    } else {
+        /* Route to existing layer if key already exists there, to prevent
+         * cross-layer duplicates (e.g., updating a global lesson from a
+         * workspace session would previously create a stale duplicate). */
+        memory_t *existing = workspace_find_memory(ws, key);
+        target = existing ? existing : ws->workspace;
+    }
     return memory_store(target, key, value, pinned, journal_ref, refs, n_refs);
 }
 

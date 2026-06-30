@@ -69,9 +69,9 @@ static void consolidation_carry_scores(memory_t *m,
  * inline, causing O(N) gc_refs scan per delete.  Now the caller
  * batches all deletions into a single memory_delete_batch() call. */
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
-                                   const char *new_value) {
-    if (!ctx->provider || !ctx->memory) return NULL;
-    if (!memory_has_embeddings(ctx->memory)) return NULL;
+                                   const char *new_value, memory_t *target) {
+    if (!ctx->provider || !target) return NULL;
+    if (!memory_has_embeddings(target)) return NULL;
 
     /* Load the multi-vec embedding for the new entry (just stored by
      * memory_embed_entry, which already produced chunked embeddings). */
@@ -81,7 +81,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     key_to_path(new_key, ".emb", new_emb_fname, sizeof(new_emb_fname));
     char new_emb_path[NASH_PATH_MAX];
     snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s",
-             memory_dir(ctx->memory), new_emb_fname);
+             memory_dir(target), new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return NULL;
 
@@ -111,7 +111,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * then iterate the snapshot without holding the lock.  Previously
      * iterated m->idx.entries[] directly without the mutex — a concurrent
      * memory_delete (swap-remove) could cause use-after-free or OOB. */
-    memory_t *m = ctx->memory;
+    memory_t *m = target;
     typedef struct { char *key; char *path; int has_emb; embed_multi_vec_t emb; } consol_snap_t;
     int snap_count = 0;
     consol_snap_t *snap = NULL;
@@ -327,7 +327,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;
         /* Carry forward old entry's validation evidence to the new entry.
          * The new insight earned the old one's credibility by replacing it. */
-        consolidation_carry_scores(ctx->memory, new_key,
+        consolidation_carry_scores(target, new_key,
                                    old_hits, old_misses);
         free(response);
         cJSON_Delete(old_entry);
@@ -361,7 +361,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         key_to_path(new_key, ".json", new_fname, sizeof(new_fname));
         char new_json_path[NASH_PATH_MAX];
         snprintf(new_json_path, sizeof(new_json_path), "%s/%s",
-                 memory_dir(ctx->memory), new_fname);
+                 memory_dir(target), new_fname);
 
         const char *new_jref = NULL;
         cJSON *new_entry_json = slurp_json(new_json_path);
@@ -371,7 +371,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         }
 
         /* Store merged version under the new key */
-        memory_store(ctx->memory, new_key, merged,
+        memory_store(target, new_key, merged,
                      0, new_jref, NULL, 0);
 
         cJSON_Delete(new_entry_json);
@@ -383,7 +383,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
          * memory_store() above preserved the new entry's counters (same key
          * overwrite), but the old entry's counters were lost via delete.
          * Sum both entries' evidence into the survivor. */
-        consolidation_carry_scores(ctx->memory, new_key,
+        consolidation_carry_scores(target, new_key,
                                    old_hits, old_misses);
 
         free(merged);
@@ -508,9 +508,15 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
      * adding 5-30s latency on the hot path. Now we queue the key+value pair
      * and process them all in tool_flush_deferred_consolidations() after
      * the react loop completes. */
-    if (!pinned && !atomic_load(&ctx->memory->consolidating)) {
+    /* Determine which memory_t the entry was stored in, for consolidation. */
+    memory_t *store_target = ctx->ws
+        ? workspace_find_memory(ctx->ws, key) : ctx->memory;
+    if (!store_target) store_target = ctx->memory;
+
+    if (!pinned && store_target &&
+        !atomic_load(&store_target->consolidating)) {
         /* FIX BUG#13: Cap deferred queue at 64 entries to bound memory usage.
-         * Oldest entries are dropped if the queue is full — they'll be
+         * Oldest entries are dropped if the queue is full -- they'll be
          * consolidated on the next session anyway via memory_embed_all. */
         #define DEFERRED_CONSOL_MAX 64
         if (ctx->n_deferred_consol < DEFERRED_CONSOL_MAX) {
@@ -528,6 +534,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
             if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
                 ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
                 ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
+                ctx->deferred_consol[ctx->n_deferred_consol].target = store_target;
                 ctx->n_deferred_consol++;
             }
         }
@@ -604,17 +611,21 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
     /* ── Exact key lookup (bypasses scoring) ──────── */
     memory_results_t mem_results = {0};
     if (key && !query && !pattern) {
-        /* Direct key recall — return just this entry */
+        /* Direct key recall -- use memory_find() to bypass scoring entirely.
+         * Previously used memory_query() which applied min_score filtering,
+         * so entries with bad vscore could fail exact key lookup. */
         if (ctx->memory || ctx->ws) {
-            mem_results = ctx->ws
-                ? workspace_recall(ctx->ws, key, 1)
-                : memory_query(ctx->memory, key, 1);
-            for (int i = 0; i < mem_results.count; i++) {
-                memory_entry_t *e = &mem_results.entries[i];
-                str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
-                tool_track_recalled_key(ctx, e->key);
+            memory_t *target_mem = ctx->ws
+                ? workspace_find_memory(ctx->ws, key)
+                : ctx->memory;
+            mem_index_entry_t *ie = target_mem
+                ? memory_find(target_mem, key) : NULL;
+            if (ie && ie->value) {
+                str_appendf(&out, "[MEMORY -- %s]\n%s\n\n", ie->key, ie->value);
+                tool_track_recalled_key(ctx, ie->key);
+                mem_count = 1;
             }
-            mem_count = mem_results.count;
+            memory_find_free(ie);
         }
         if (mem_count == 0)
             str_appendf(&out, "(no memory found for key \"%s\")\n", key);

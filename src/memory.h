@@ -43,6 +43,8 @@ typedef struct {
     embed_multi_vec_t emb; /* cached embedding (loaded once) */
     int    has_emb;        /* 1 if emb is valid */
     char  *path;           /* full path to .json file (owned) */
+    char  *supersedes;     /* key this entry supersedes (owned, NULL = none) */
+    int    version;        /* lineage version (0 = original, 2+ = superseding) */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -325,5 +327,9 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data);
  * modifies the index concurrently. */
 mem_index_entry_t *memory_find(memory_t *m, const char *key);
 void memory_find_free(mem_index_entry_t *entry);
+
+/* Check if a key exists in the in-memory index (thread-safe, O(1) hash lookup).
+ * Returns 1 if found, 0 otherwise. No heap allocation. */
+int memory_has_key(memory_t *m, const char *key);
 
 #endif
