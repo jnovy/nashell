@@ -516,7 +516,13 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     char *argv[] = { "sh", "-c", (char *)command, NULL };
     int timeout = ctx->cfg ? ctx->cfg->shell_timeout : 300;
     int max_out = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
+
+    struct timespec t_start, t_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_start);
     int exit_code = run_command_argv_limited(argv, &out, timeout, max_out);
+    clock_gettime(CLOCK_MONOTONIC, &t_end);
+    long elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000L +
+                      (t_end.tv_nsec - t_start.tv_nsec) / 1000000L;
 
     /* Store to shared store */
     char *hash = store_save(ctx->store, out.data);
@@ -529,6 +535,15 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "chars", (double)out.len);
     cJSON_AddNumberToObject(meta, "lines", out.data ? count_lines(out.data) : 0);
     cJSON_AddStringToObject(meta, "ref", alias);
+    cJSON_AddNumberToObject(meta, "elapsed_ms", (double)elapsed_ms);
+    if (elapsed_ms > 10000) {
+        char hint[256];
+        snprintf(hint, sizeof(hint),
+            "This command took %lds. Use file_read/grep_search on \"%s\" "
+            "to re-analyze the output instead of re-running it.",
+            elapsed_ms / 1000, alias);
+        cJSON_AddStringToObject(meta, "slow_hint", hint);
+    }
 
     /* Fix 3: Conditional preview — saves file_read steps for small outputs */
     if (out.len > 0 && out.len < 500) {

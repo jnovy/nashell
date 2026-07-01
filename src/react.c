@@ -880,8 +880,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "file_edit to append subsequent sections.\n"
                 "- For done: summarize key findings concisely rather than "
                 "including full file contents.\n"
-                "- For shell_exec: pipe output through head/tail/grep to "
-                "limit output size.\n"
+                "- For shell_exec: run without pipes, then use file_read/grep_search "
+                "on the stored ref to analyze specific sections.\n"
                 "Retry your last action with a smaller scope.");
             /* L4 FIX: Recovery instructions are important guidance — NORMAL */
             if (chat->n_msgs >= 2) {
@@ -1681,6 +1681,36 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     ctx->tools->aliases, tr.store_ref);
                 if (existing)
                     chat->msgs[chat->n_msgs - 1].store_alias = strdup(existing);
+            }
+        }
+
+        /* Slow-command nudge: when shell_exec takes >5s, inject a hint
+         * teaching the capture-then-analyze pattern (file_read/grep_search
+         * on the stored ref instead of re-running the command). */
+        if (action_name && strcmp(action_name, "shell_exec") == 0 && tr.meta) {
+            cJSON *ems = cJSON_GetObjectItem(tr.meta, "elapsed_ms");
+            if (ems && ems->valuedouble > 5000.0) {
+                cJSON *ref_j = cJSON_GetObjectItem(tr.meta, "ref");
+                cJSON *chars_j = cJSON_GetObjectItem(tr.meta, "chars");
+                cJSON *lines_j = cJSON_GetObjectItem(tr.meta, "lines");
+                char nudge[512];
+                snprintf(nudge, sizeof(nudge),
+                    "[SLOW COMMAND] shell_exec took %ds. "
+                    "Output stored at %s (%d chars, %d lines).\n"
+                    "Do NOT re-run this command. To analyze the output:\n"
+                    "- file_read(\"%s\") or file_read(\"%s\", start_line=-50) "
+                    "for specific sections\n"
+                    "- grep_search(pattern=\"...\", path=\"%s\") "
+                    "to search within the output",
+                    (int)(ems->valuedouble / 1000.0),
+                    ref_j ? ref_j->valuestring : "?",
+                    chars_j ? (int)chars_j->valuedouble : 0,
+                    lines_j ? (int)lines_j->valuedouble : 0,
+                    ref_j ? ref_j->valuestring : "?",
+                    ref_j ? ref_j->valuestring : "?",
+                    ref_j ? ref_j->valuestring : "?");
+                llm_chat_add_typed(chat, "user", nudge,
+                                   LLM_MSG_EVICTION_SUMMARY);
             }
         }
 
