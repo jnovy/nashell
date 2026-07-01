@@ -9,9 +9,9 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Execute a shell command (git, make, docker, gh, npm, etc.). "
      "For file reading use file_read, for content search use grep_search, "
      "for file search use glob_search, for URL fetching use web_fetch. "
-     "Limit output: pipe through head -50, tail, jq, grep. "
-     "Output is stored at a ref alias. To re-analyze stored output, use "
-     "file_read/grep_search on the ref instead of re-running the command.",
+     "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
+     "Re-analyze stored output (grep/head/tail on the ref) instead of "
+     "re-running the command. Do not file_write to ref paths.",
      "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"}},\"required\":[\"command\"]}"},
 
     {"file_read",

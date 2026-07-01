@@ -14,6 +14,7 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <time.h>
+#include <ctype.h>
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -504,6 +505,62 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
 
 /* ── shell_exec ──────────────────────────────────────── */
 
+/* Resolve ref aliases (R0S1, R2S14, ...) in a shell command string to their
+ * full store paths so that e.g. `head -n10 R0S3` works in the shell.
+ * Returns a malloc'd string with substitutions, or NULL if nothing to resolve. */
+static char *shell_resolve_aliases(tool_ctx_t *ctx, const char *cmd) {
+    if (!ctx || !cmd) return NULL;
+
+    str_t resolved = str_new(strlen(cmd) + 256);
+    const char *p = cmd;
+    int any = 0;
+
+    while (*p) {
+        /* Look for R followed by digit */
+        if (*p == 'R' && p[1] >= '0' && p[1] <= '9') {
+            /* Extract potential alias: R<digits>S<digits> */
+            const char *start = p;
+            p++; /* skip R */
+            while (*p >= '0' && *p <= '9') p++;
+            if (*p == 'S' && p[1] >= '0' && p[1] <= '9') {
+                p++; /* skip S */
+                while (*p >= '0' && *p <= '9') p++;
+                /* Check word boundary: next char must not be alnum/underscore */
+                if (!*p || !isalnum((unsigned char)*p)) {
+                    /* Extract alias token */
+                    size_t alen = (size_t)(p - start);
+                    char alias[32];
+                    if (alen < sizeof(alias)) {
+                        memcpy(alias, start, alen);
+                        alias[alen] = '\0';
+                        char *path = tool_resolve_alias(ctx, alias);
+                        if (path) {
+                            str_append_cstr(&resolved, path);
+                            free(path);
+                            any = 1;
+                            continue;
+                        }
+                    }
+                }
+                /* Not a valid alias — copy the token literally */
+                str_append(&resolved, start, (size_t)(p - start));
+            } else {
+                /* No 'S' — copy literally */
+                str_append(&resolved, start, (size_t)(p - start));
+            }
+        } else {
+            str_append(&resolved, p, 1);
+            p++;
+        }
+    }
+
+    if (!any) { str_free(&resolved); return NULL; }
+    /* Take ownership of the buffer */
+    char *result = resolved.data;
+    resolved.data = NULL;
+    return result;
+}
+
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     cJSON *cmd_j = cJSON_GetObjectItem(params, "command");
     if (!cmd_j || !cmd_j->valuestring || !cmd_j->valuestring[0])
@@ -511,6 +568,8 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
                           "Provide the shell command to execute.");
 
     const char *command = cmd_j->valuestring;
+    char *resolved_cmd = shell_resolve_aliases(ctx, command);
+    if (resolved_cmd) command = resolved_cmd;
 
     str_t out = str_new(4096);
     char *argv[] = { "sh", "-c", (char *)command, NULL };
@@ -539,8 +598,8 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     if (elapsed_ms > 10000) {
         char hint[256];
         snprintf(hint, sizeof(hint),
-            "This command took %lds. Use file_read/grep_search on \"%s\" "
-            "to re-analyze the output instead of re-running it.",
+            "This command took %lds. Output is saved at \"%s\". "
+            "Re-analyze that instead of re-running the command.",
             elapsed_ms / 1000, alias);
         cJSON_AddStringToObject(meta, "slow_hint", hint);
     }
@@ -582,6 +641,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     free(alias);
     str_free(&out);
     free(hash);
+    free(resolved_cmd);
     return tools_make_result(exit_code == 0, meta, ref_copy);
 }
 
@@ -1040,18 +1100,19 @@ char *tools_system_prompt(const char *session_dir, const char *workspace) {
         "Store-and-reference pattern:\n"
         "- Most tool outputs are stored to disk. You see only metadata with a ref "
         "alias (R0S1, R0S2, etc.).\n"
-        "- To read the actual content, call file_read(path=\"R0S1\").\n"
-        "- You MUST file_read the ref if you need to see what a command produced "
+        "- Ref aliases resolve to file paths. Use file_read for small outputs, or "
+        "shell_exec (grep/head/tail on the ref) for large ones.\n"
+        "- You MUST read the ref if you need to see what a command produced "
         "or what a file contains.\n"
         "\n"
         "Rules:\n"
         "- Never invoke tools speculatively. Every tool call must have a clear reason "
-        "and you MUST read the result (file_read the ref) before proceeding.\n"
+        "and you MUST read the result before proceeding.\n"
         "- Never guess tool results. Wait for actual output.\n"
         "- file_edit: old_text must match exactly. Always file_read first.\n"
-        "- Use dedicated tools (file_read, grep_search, glob_search) instead of "
-        "shell_exec equivalents (cat, grep, find, sed, head, tail). "
-        "file_read supports start_line/end_line for reading specific line ranges.\n"
+        "- Use dedicated tools (file_read, grep_search, glob_search) for source files "
+        "instead of shell_exec equivalents. "
+        "For stored refs, shell_exec (grep/head/tail) avoids loading large outputs into context.\n"
         "- Record key findings in notes — they survive context eviction. "
         "Save incrementally (every 3-5 file reads), not in one batch at the end.\n"
         "- Call done with the final answer when finished.\n"

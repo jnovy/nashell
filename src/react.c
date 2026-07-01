@@ -880,8 +880,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "file_edit to append subsequent sections.\n"
                 "- For done: summarize key findings concisely rather than "
                 "including full file contents.\n"
-                "- For shell_exec: run without pipes, then use file_read/grep_search "
-                "on the stored ref to analyze specific sections.\n"
+                "- For shell_exec: run the command once; output is stored at a "
+                "ref you can re-analyze with grep/head/tail.\n"
                 "Retry your last action with a smaller scope.");
             /* L4 FIX: Recovery instructions are important guidance — NORMAL */
             if (chat->n_msgs >= 2) {
@@ -1693,22 +1693,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON *ref_j = cJSON_GetObjectItem(tr.meta, "ref");
                 cJSON *chars_j = cJSON_GetObjectItem(tr.meta, "chars");
                 cJSON *lines_j = cJSON_GetObjectItem(tr.meta, "lines");
-                char nudge[512];
+                char nudge[256];
                 snprintf(nudge, sizeof(nudge),
                     "[SLOW COMMAND] shell_exec took %ds. "
-                    "Output stored at %s (%d chars, %d lines).\n"
-                    "Do NOT re-run this command. To analyze the output:\n"
-                    "- file_read(\"%s\") or file_read(\"%s\", start_line=-50) "
-                    "for specific sections\n"
-                    "- grep_search(pattern=\"...\", path=\"%s\") "
-                    "to search within the output",
+                    "Output stored at %s (%d chars, %d lines). "
+                    "Do NOT re-run this command -- "
+                    "analyze the stored output instead.",
                     (int)(ems->valuedouble / 1000.0),
                     ref_j ? ref_j->valuestring : "?",
                     chars_j ? (int)chars_j->valuedouble : 0,
-                    lines_j ? (int)lines_j->valuedouble : 0,
-                    ref_j ? ref_j->valuestring : "?",
-                    ref_j ? ref_j->valuestring : "?",
-                    ref_j ? ref_j->valuestring : "?");
+                    lines_j ? (int)lines_j->valuedouble : 0);
                 llm_chat_add_typed(chat, "user", nudge,
                                    LLM_MSG_EVICTION_SUMMARY);
             }
