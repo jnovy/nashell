@@ -49,6 +49,13 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
         fflush(stderr);
         break;
 
+    case REACT_EVENT_TOOL_START:
+        fprintf(stderr, "\r\033[K[step %d] %s: %s...",
+                ev->step, ev->action ? ev->action : "?",
+                ev->description ? ev->description : "");
+        fflush(stderr);
+        break;
+
     case REACT_EVENT_LLM_TOKEN:
         /* Streaming: print tokens as they arrive.
          * Suppress raw JSON action objects (e.g. {"thought":"","action":...})

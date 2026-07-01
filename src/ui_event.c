@@ -212,6 +212,29 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         }
         break;
 
+    case REACT_EVENT_TOOL_START: {
+        /* Update status bar to show which tool is about to execute */
+        char buf[256];
+        const char *desc = ev->description ? ev->description : "";
+        int dlen = (int)strlen(desc);
+        /* Truncate long descriptions (e.g. file content) for the status bar */
+        if (dlen > 80) {
+            snprintf(buf, sizeof(buf), "[step %d] %s: %.77s...",
+                     ev->step, ev->action ? ev->action : "?", desc);
+        } else {
+            snprintf(buf, sizeof(buf), "[step %d] %s: %s",
+                     ev->step, ev->action ? ev->action : "?", desc);
+        }
+        free(ui->status_text);
+        ui->status_text = strdup(buf);
+        /* Clear streaming tokens -- LLM response is done, tool is running */
+        if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
+        ui->stream_len = 0;
+        ui->needs_react_regen = 1;
+        ui->needs_file_reload = 1;
+        break;
+    }
+
     case REACT_EVENT_STEP_COMPLETE:
     case REACT_EVENT_TOOL_OUTPUT:
         /* NOTE: Do NOT call nash_log() here — this handler runs with

@@ -8,6 +8,7 @@
 typedef enum {
     REACT_EVENT_STEP_START,      /* about to call LLM for step N */
     REACT_EVENT_LLM_TOKEN,       /* streaming: one token received from LLM */
+    REACT_EVENT_TOOL_START,      /* about to execute tool (action + description set) */
     REACT_EVENT_STEP_COMPLETE,   /* step N finished: tool executed, result available */
     REACT_EVENT_TOOL_OUTPUT,     /* tool result metadata + store ref available */
     REACT_EVENT_ERROR,           /* recoverable error (parse failure, missing action) */

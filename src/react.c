@@ -1398,6 +1398,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 }
             }
         } else {
+            /* Emit tool-start event so frontends can show what's about to run */
+            {
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_TOOL_START;
+                ev.step = step + 1;
+                ev.max_steps = ctx->max_steps;
+                ev.action = action_name;
+                ev.description = desc ? desc : "";
+                react_emit(on_event, userdata, &ev);
+            }
+
             /* Normal execution — inject thought into tool_ctx for journal recording */
             ctx->tools->thought = thought;
             tr = tool_execute(ctx->tools, action_name, action);
