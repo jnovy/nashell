@@ -227,9 +227,17 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         }
         free(ui->status_text);
         ui->status_text = strdup(buf);
-        /* Clear streaming tokens -- LLM response is done, tool is running */
-        if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
-        ui->stream_len = 0;
+        /* Show tool command in streaming area (replaces thinking text)
+         * so the user sees what tool is about to run in the main content,
+         * not just in the small status bar. */
+        int blen = (int)strlen(buf);
+        if (blen >= ui->stream_cap - 1) {
+            ui->stream_cap = blen + 2;
+            ui->stream_tokens = realloc(ui->stream_tokens,
+                                         (size_t)ui->stream_cap);
+        }
+        memcpy(ui->stream_tokens, buf, (size_t)blen + 1);
+        ui->stream_len = blen;
         ui->needs_react_regen = 1;
         ui->needs_file_reload = 1;
         break;
