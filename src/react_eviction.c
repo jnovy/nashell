@@ -1484,7 +1484,7 @@ journal:
             cJSON_AddNumberToObject(params, "before_pct", before_pct);
             cJSON_AddNumberToObject(params, "after_pct", after_pct);
             journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step, "compaction", params, NULL, 0, 0, NULL, NULL);
+                           step, "compaction", params, NULL, 0, 0, NULL, NULL, 0);
             cJSON_Delete(params);
         }
     }

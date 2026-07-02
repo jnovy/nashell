@@ -35,7 +35,7 @@ const char *journal_session_dir(journal_t *j);
 int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error,
-                   const char *tool_call_id);
+                   const char *tool_call_id, double start_ts);
 
 /* Recursively unwrap nested JSON in a thought string.
  * Returns a heap-allocated clean thought, or NULL if no unwrapping was needed.

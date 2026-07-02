@@ -95,7 +95,7 @@ void nash_log(const char *fmt, ...) {
         journal_append(lj, lrl, lst,
                        "log", params, ref,
                        (size_t)len, 1, buf,  /* error = message text */
-                       NULL);
+                       NULL, 0);
         cJSON_Delete(params);
     }
 

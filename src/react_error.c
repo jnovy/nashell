@@ -265,7 +265,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         journal_append(ctx->tools->journal,
             ctx->tools->react_loop, step + 1, "server_error",
             err_params, se_alias, se_alias ? strlen(se_alias) : 0, 0,
-            "LLM server error", NULL);
+            "LLM server error", NULL, 0);
         free(se_alias);
         cJSON_Delete(err_params);
     }

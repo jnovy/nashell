@@ -19,7 +19,7 @@ static void log_dedup_decision(react_ctx_t *ctx, const char *key,
     char *dup_ref = dup_hash ? tool_register_alias(ctx->tools, dup_hash) : NULL;
     journal_append(ctx->tools->journal,
         ctx->tools->react_loop, ctx->tools->step,
-        "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL);
+        "reflection_dedup", dup_p, dup_ref, 0, 0, NULL, NULL, 0);
     free(dup_str);
     free(dup_hash);
     free(dup_ref);
@@ -160,7 +160,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         char *mq_ref = mq_hash ? tool_register_alias(ctx->tools, mq_hash) : NULL;
         journal_append(ctx->tools->journal, ctx->tools->react_loop,
                        ctx->tools->step, "memory_quality", mq,
-                       mq_ref, 0, 0, NULL, NULL);
+                       mq_ref, 0, 0, NULL, NULL, 0);
         free(mq_str);
         free(mq_hash);
         free(mq_ref);

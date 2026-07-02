@@ -121,6 +121,7 @@ typedef struct {
      * If a handler returns without setting this, tool_execute() adds a
      * fallback journal entry — so no tool call is ever invisible. */
     int            journal_done;
+    double         start_ts;       /* tool start time (epoch), set by react.c before tool_execute */
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

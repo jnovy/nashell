@@ -122,7 +122,7 @@ static int journal_create_lazy_session(journal_t *j) {
 int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error,
-                   const char *tool_call_id) {
+                   const char *tool_call_id, double start_ts) {
     /* FIX CRIT2: mutex protects all journal state (lazy_created, path, file I/O)
      * against concurrent calls from inference thread and nash_log(). */
     pthread_mutex_lock(&j->mtx);
@@ -138,11 +138,19 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     /* Exclusive lock for writes — prevents torn reads from TUI thread */
     flock(fileno(f), LOCK_EX);
 
-    /* Unix epoch timestamp with microsecond precision */
-    struct timespec tp;
-    clock_gettime(CLOCK_REALTIME, &tp);
+    /* Unix epoch timestamp with microsecond precision.
+     * When start_ts > 0, use the pre-captured tool start time instead of
+     * current time so the journal reflects when the tool began executing. */
     char ts[32];
-    snprintf(ts, sizeof(ts), "%ld.%05ld", (long)tp.tv_sec, tp.tv_nsec / 10000);
+    if (start_ts > 0) {
+        long sec = (long)start_ts;
+        long frac = (long)((start_ts - (double)sec) * 100000);
+        snprintf(ts, sizeof(ts), "%ld.%05ld", sec, frac);
+    } else {
+        struct timespec tp;
+        clock_gettime(CLOCK_REALTIME, &tp);
+        snprintf(ts, sizeof(ts), "%ld.%05ld", (long)tp.tv_sec, tp.tv_nsec / 10000);
+    }
 
     cJSON *entry = cJSON_CreateObject();
     cJSON_AddNumberToObject(entry, "react_loop", react_loop);

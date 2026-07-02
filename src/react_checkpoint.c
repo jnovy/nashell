@@ -304,7 +304,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         char *cp_alias = cp_hash ? tool_register_alias(ctx->tools, cp_hash) : NULL;
         journal_append(ctx->tools->journal, saved_loop, saved_step,
                        "checkpoint_restore", cp_params, cp_alias,
-                       cp_json ? strlen(cp_json) : 0, 0, NULL, NULL);
+                       cp_json ? strlen(cp_json) : 0, 0, NULL, NULL, 0);
         free(cp_json);
         free(cp_hash);
         free(cp_alias);

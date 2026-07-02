@@ -624,7 +624,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         if (ctx->tools->cfg && ctx->tools->cfg->matched_profile_file)
             cJSON_AddStringToObject(sys_p, "profile", ctx->tools->cfg->matched_profile_file);
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "system", sys_p, sys_alias,
-                       strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL);
+                       strlen(sys_prompt), count_lines(sys_prompt), NULL, NULL, 0);
         cJSON_Delete(sys_p);
         free(sys_alias);
         free(sys_hash);
@@ -641,7 +641,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         char *q_hash = store_save(ctx->tools->store, user_query);
         char *q_alias = q_hash ? tool_register_alias(ctx->tools, q_hash) : NULL;
         journal_append(ctx->tools->journal, ctx->tools->react_loop, 0, "query", q_p, q_alias,
-                       strlen(user_query), 0, NULL, NULL);
+                       strlen(user_query), 0, NULL, NULL, 0);
         cJSON_Delete(q_p);
         free(q_alias);
         free(q_hash);
@@ -678,7 +678,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             cJSON_AddNumberToObject(p, "size", (double)m->content_len);
             journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
                            tn, p, alias,
-                           m->content_len, count_lines(m->content), NULL, NULL);
+                           m->content_len, count_lines(m->content), NULL, NULL, 0);
             cJSON_Delete(p);
             free(alias);
             free(hash);

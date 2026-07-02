@@ -26,7 +26,8 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
                                 const char *error, const char *tool_call_id) {
     ctx->journal_done = 1;
     journal_append(ctx->journal, ctx->react_loop, ctx->step,
-                   tool, params, ref, size, lines, error, tool_call_id);
+                   tool, params, ref, size, lines, error, tool_call_id,
+                   ctx->start_ts);
 }
 
 /* Construct a tool_result_t from components. */

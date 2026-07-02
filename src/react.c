@@ -23,7 +23,7 @@ static void log_parse_error(react_ctx_t *ctx, int step, const char *type,
         strlen(response) > 200 ? "(truncated)" : response);
     journal_append(ctx->tools->journal, ctx->tools->react_loop,
                    step, "parse_error", err_p, err_alias,
-                   strlen(response), 0, desc, NULL);
+                   strlen(response), 0, desc, NULL, 0);
     cJSON_Delete(err_p);
     free(err_alias);
     free(err_hash);
@@ -472,7 +472,7 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
         free(content);
     }
     journal_append(tools->journal, react_loop, step, "memory_context",
-                   params, mc_alias, mc_alias ? strlen(mc_alias) : 0, 0, NULL, NULL);
+                   params, mc_alias, mc_alias ? strlen(mc_alias) : 0, 0, NULL, NULL, 0);
     free(mc_alias);
     cJSON_Delete(params);
 }
@@ -741,7 +741,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddStringToObject(sp, "spec_hash", spec_hash);
                 journal_append(ctx->tools->journal, ctx->tools->react_loop, 0,
                                "spec", sp, spec_alias,
-                               strlen(spec_str), count_lines(spec_str), NULL, NULL);
+                               strlen(spec_str), count_lines(spec_str), NULL, NULL, 0);
                 cJSON_Delete(sp);
                 free(spec_alias);
             }
@@ -973,7 +973,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cJSON_AddStringToObject(think_p, "thought", thought);
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "thinking", think_p, think_alias,
-                               strlen(thought), 0, NULL, NULL);
+                               strlen(thought), 0, NULL, NULL, 0);
                 cJSON_Delete(think_p);
                 free(think_alias);
                 free(think_hash);
@@ -1102,7 +1102,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             char *ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
             journal_append(ctx->tools->journal, ctx->tools->react_loop,
                            step + 1, "user_ask", ua_params, ua_alias,
-                           strlen(answer), 0, NULL, NULL);
+                           strlen(answer), 0, NULL, NULL, 0);
             free(ua_hash);
 
             /* Build result message for the model (JSON-escape the answer) */
@@ -1336,7 +1336,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "cycling_cached", cached, last_ref,
                                strlen(last_result_json), 0,
-                               NULL, NULL);
+                               NULL, NULL, 0);
             } else {
                 /* Stage 2+: refuse — the result is already in context */
                 ev.message = "Cycling — refusing repeated action, result already in context";
@@ -1351,7 +1351,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                step + 1, "cycling_refused", refused, last_ref,
-                               0, 0, "refused repeated action", NULL);
+                               0, 0, "refused repeated action", NULL, 0);
 
                 /* ── Change 6: Cycling-triggered retrieval ─────────────
                  * The agent is stuck repeating the same action. Query
@@ -1412,7 +1412,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             /* Normal execution — inject thought into tool_ctx for journal recording */
             ctx->tools->thought = thought;
+            /* Capture tool start time so journal timestamp reflects when
+             * the tool began executing, not when it completed. */
+            {
+                struct timespec _start_tp;
+                clock_gettime(CLOCK_REALTIME, &_start_tp);
+                ctx->tools->start_ts = (double)_start_tp.tv_sec
+                                     + (double)_start_tp.tv_nsec / 1e9;
+            }
             tr = tool_execute(ctx->tools, action_name, action);
+            ctx->tools->start_ts = 0;
             ctx->tools->thought = NULL;
 
             /* Hallucination guard: count real tool executions.
@@ -1459,7 +1468,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                    step + 1, "unknown_tool", tr.meta, ut_alias,
                                    ut_json ? strlen(ut_json) : 0, 0,
-                                   err_j->valuestring, NULL);
+                                   err_j->valuestring, NULL, 0);
 
                     /* Inject corrective message into chat (with store ref for debugging) */
                     char *tool_names = tool_registry_names_csv();
