@@ -113,9 +113,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->max_steps = ev->max_steps;
         if (ev->context_size > 0)
             ui->context_size = ev->context_size;
-        /* Clear streaming tokens for new step */
+        /* Clear streaming tokens and tool execution state for new step */
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
+        ui->tool_executing = 0;
 
         /* Initialize streaming progress timing for this step */
         clock_gettime(CLOCK_MONOTONIC, &ui->stream_step_start);
@@ -238,6 +239,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         }
         memcpy(ui->stream_tokens, buf, (size_t)blen + 1);
         ui->stream_len = blen;
+        /* Track tool execution state for live elapsed-time display.
+         * The main loop forces periodic regen while tool_executing=1,
+         * so the elapsed time counter updates even though no events
+         * fire during tool_execute(). */
+        ui->tool_executing = 1;
+        clock_gettime(CLOCK_MONOTONIC, &ui->tool_start_time);
+        free(ui->tool_display);
+        ui->tool_display = strdup(buf);
         ui->needs_react_regen = 1;
         ui->needs_file_reload = 1;
         break;
@@ -266,9 +275,10 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         }
         if (ev->total_elapsed > 0)
             ui->react_total_elapsed = ev->total_elapsed;
-        /* Clear streaming tokens */
+        /* Clear streaming tokens and tool execution state */
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
         ui->stream_len = 0;
+        ui->tool_executing = 0;
 
         /* Defer expensive file I/O to main loop */
         ui->needs_react_regen = 1;

@@ -128,6 +128,11 @@ typedef struct {
     int            stream_first_token_seen; /* 1 = first token received, timing valid */
     int            stream_token_count;    /* tokens received in current step */
 
+    /* ── Tool execution state (for live elapsed-time display) ── */
+    int            tool_executing;        /* 1 = tool is currently running */
+    struct timespec tool_start_time;      /* CLOCK_MONOTONIC when tool started */
+    char          *tool_display;          /* "tool_name: command..." for display */
+
     /* ── Server-reported prompt processing progress ── */
     int            prompt_progress_processed; /* tokens processed so far (from server) */
     int            prompt_progress_total;     /* total tokens to process (from server) */

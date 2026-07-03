@@ -1201,7 +1201,21 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
 
-        if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
+        if (ui->tool_executing) {
+            /* Tool is running — show elapsed time so the user knows
+             * something is happening (e.g. a 5-minute git clone). */
+            double tool_elapsed = (now.tv_sec - ui->tool_start_time.tv_sec) +
+                                  (now.tv_nsec - ui->tool_start_time.tv_nsec) / 1e9;
+            if (tool_elapsed >= 60.0) {
+                int mins = (int)(tool_elapsed / 60.0);
+                int secs = (int)(tool_elapsed) % 60;
+                snprintf(progress, sizeof(progress),
+                         "executing... %dm%02ds", mins, secs);
+            } else {
+                snprintf(progress, sizeof(progress),
+                         "executing... %.0fs", tool_elapsed);
+            }
+        } else if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
             /* Tokens are flowing — show generation progress */
             double gen_elapsed = (now.tv_sec - ui->stream_first_token.tv_sec) +
                                  (now.tv_nsec - ui->stream_first_token.tv_nsec) / 1e9;

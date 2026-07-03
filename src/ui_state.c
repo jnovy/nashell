@@ -67,6 +67,7 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->status_text);
     free(ui->input_buffer);
     free(ui->stream_tokens);
+    free(ui->tool_display);
     free(ui->model_name);
     free(ui->current_filepath);
     free(ui->user_ask_question);
