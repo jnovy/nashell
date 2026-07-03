@@ -592,7 +592,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 size_t clen = strlen(content);
                 int truncated = 0;
                 if (clen > max_view_chars) {
-                    content[max_view_chars] = '\0';
+                    content[utf8_clamp(content, max_view_chars)] = '\0';
                     truncated = 1;
                 }
                 llm_chat_add_formatted(chat, "user", LLM_MSG_TUI_VIEW,

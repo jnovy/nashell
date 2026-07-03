@@ -1244,7 +1244,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             /* Truncate to embedding model's max input */
             int max_chars = embed_max_input_chars(emb);
             if ((int)task_text.len > max_chars)
-                task_text.data[max_chars] = '\0';
+                task_text.data[utf8_clamp(task_text.data, (size_t)max_chars)] = '\0';
 
             embed_vec_t task_vec = embed_text(emb, task_text.data);
             if (task_vec.data) {
@@ -1264,8 +1264,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                         if (cl > REACT_EMBED_TRUNC_CHARS) {
                             trunc_bufs[i] = malloc(REACT_EMBED_TRUNC_CHARS + 1);
                             if (trunc_bufs[i]) {
-                                memcpy(trunc_bufs[i], c, REACT_EMBED_TRUNC_CHARS);
-                                trunc_bufs[i][REACT_EMBED_TRUNC_CHARS] = '\0';
+                                size_t safe = utf8_clamp(c, REACT_EMBED_TRUNC_CHARS);
+                                memcpy(trunc_bufs[i], c, safe);
+                                trunc_bufs[i][safe] = '\0';
                                 texts[i] = trunc_bufs[i];
                             } else {
                                 texts[i] = "";
