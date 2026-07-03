@@ -1197,23 +1197,30 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         ui->spinner_phase++;
 
         /* Build progress string based on streaming state */
-        char progress[128];
+        char progress[256];
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
 
         if (ui->tool_executing) {
-            /* Tool is running — show elapsed time so the user knows
-             * something is happening (e.g. a 5-minute git clone). */
+            /* Tool is running -- show tool name and elapsed time so the
+             * user sees what is executing (e.g. "shell_exec: make -j8"). */
             double tool_elapsed = (now.tv_sec - ui->tool_start_time.tv_sec) +
                                   (now.tv_nsec - ui->tool_start_time.tv_nsec) / 1e9;
+            /* Extract "action: desc" from tool_display which has the
+             * format "[step N] action: description..." */
+            const char *tdisp = "";
+            if (ui->tool_display) {
+                const char *br = strchr(ui->tool_display, ']');
+                tdisp = (br && br[1] == ' ') ? br + 2 : ui->tool_display;
+            }
             if (tool_elapsed >= 60.0) {
                 int mins = (int)(tool_elapsed / 60.0);
                 int secs = (int)(tool_elapsed) % 60;
                 snprintf(progress, sizeof(progress),
-                         "executing... %dm%02ds", mins, secs);
+                         "%s  (%dm%02ds)", tdisp, mins, secs);
             } else {
                 snprintf(progress, sizeof(progress),
-                         "executing... %.0fs", tool_elapsed);
+                         "%s  (%.0fs)", tdisp, tool_elapsed);
             }
         } else if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
             /* Tokens are flowing — show generation progress */
@@ -1253,11 +1260,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         }
 
         if (ui->max_steps > 0)
-            str_appendf(&md, "  %c %3d %s %-13s %s\n",
-                        sc, ui->current_step, "", "", progress);
+            str_appendf(&md, "  %c %3d/%-3d %s\n",
+                        sc, ui->current_step, ui->max_steps, progress);
         else
-            str_appendf(&md, "  %c %3d        %-13s %s\n",
-                        sc, ui->current_step, "", progress);
+            str_appendf(&md, "  %c %3d     %s\n",
+                        sc, ui->current_step, progress);
         if (ui->stream_tokens && ui->stream_len > 0) {
             /* Suppress display of raw JSON action objects (e.g.
              * {"thought":"","action":"file_read","path":"R1S31"}).

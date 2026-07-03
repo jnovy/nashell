@@ -2048,11 +2048,13 @@ int main(int argc, char **argv) {
                     int do_session = ui->needs_session_regen;
                     int do_reload  = ui->needs_file_reload;
                     int cur_loop   = ui->current_react_loop;
-                    /* Force periodic regen while a tool is executing so
-                     * the elapsed-time counter and spinner stay live.
-                     * Without this, the display freezes because no events
-                     * fire during tool_execute(). */
-                    if (ui->tool_executing)
+                    /* Force periodic regen while inference is active so
+                     * the spinner, elapsed-time counter, and progress
+                     * indicators stay live.  Previously this only fired
+                     * during tool_executing, leaving the spinner frozen
+                     * during prompt processing, between token arrivals,
+                     * and between last token and TOOL_START. */
+                    if (ui->status == STATUS_RUNNING)
                         do_react = 1;
                     ui->needs_react_regen  = 0;
                     ui->needs_session_regen = 0;
