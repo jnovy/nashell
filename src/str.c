@@ -13,6 +13,7 @@
 #include <curl/curl.h>
 #include <dirent.h>
 #include <stdint.h>
+#include <utf8proc.h>
 #include <sys/file.h>
 #include <fcntl.h>
 
@@ -128,60 +129,14 @@ static uint32_t utf8_decode(const char *p, int *out_len) {
     return cp;
 }
 
-/* Is a codepoint fullwidth or wide (2 display columns)?
- * Covers CJK Unified Ideographs, Katakana, Hangul, fullwidth forms, etc. */
-static int is_wide_codepoint(uint32_t cp) {
-    return (cp >= 0x1100 &&
-            (cp <= 0x115F ||                    /* Hangul Jamo */
-             cp == 0x2329 || cp == 0x232A ||    /* angle brackets */
-             /* Emoji_Presentation=Yes codepoints (2 cols in terminals) */
-             cp == 0x231A || cp == 0x231B ||    /* watch, hourglass */
-             (cp >= 0x23E9 && cp <= 0x23EC) ||  /* fast-forward/rewind */
-             cp == 0x23F0 || cp == 0x23F3 ||    /* alarm clock, hourglass */
-             cp == 0x25FD || cp == 0x25FE ||    /* medium small squares */
-             cp == 0x2614 || cp == 0x2615 ||    /* umbrella, hot beverage */
-             (cp >= 0x2648 && cp <= 0x2653) ||  /* zodiac signs */
-             cp == 0x267F || cp == 0x2693 ||    /* wheelchair, anchor */
-             cp == 0x26A1 ||                    /* high voltage */
-             cp == 0x26AA || cp == 0x26AB ||    /* circles */
-             cp == 0x26BD || cp == 0x26BE ||    /* soccer, baseball */
-             cp == 0x26C4 || cp == 0x26C5 ||    /* snowman, sun+cloud */
-             cp == 0x26CE || cp == 0x26D4 ||    /* Ophiuchus, no entry */
-             cp == 0x26EA || cp == 0x26F2 ||    /* church, fountain */
-             cp == 0x26F3 || cp == 0x26F5 ||    /* golf, sailboat */
-             cp == 0x26FA || cp == 0x26FD ||    /* tent, fuel pump */
-             cp == 0x2702 || cp == 0x2705 ||    /* scissors, check mark */
-             cp == 0x270A || cp == 0x270B ||    /* raised fists */
-             cp == 0x2728 ||                    /* sparkles */
-             cp == 0x274C || cp == 0x274E ||    /* cross marks */
-             (cp >= 0x2753 && cp <= 0x2755) ||  /* question/exclamation */
-             cp == 0x2757 ||                    /* heavy exclamation */
-             (cp >= 0x2795 && cp <= 0x2797) ||  /* heavy plus/minus/division */
-             cp == 0x27B0 || cp == 0x27BF ||    /* curly loops */
-             cp == 0x2B1B || cp == 0x2B1C ||    /* large squares */
-             cp == 0x2B50 || cp == 0x2B55 ||    /* star, hollow circle */
-             (cp >= 0x2E80 && cp <= 0x303E) ||  /* CJK radicals, symbols */
-             (cp >= 0x3040 && cp <= 0x33BF) ||  /* Hiragana, Katakana, CJK compat */
-             (cp >= 0x3400 && cp <= 0x4DBF) ||  /* CJK Unified Ext A */
-             (cp >= 0x4E00 && cp <= 0xA4CF) ||  /* CJK Unified + Yi */
-             (cp >= 0xA960 && cp <= 0xA97C) ||  /* Hangul Jamo Extended-A */
-             (cp >= 0xAC00 && cp <= 0xD7A3) ||  /* Hangul Syllables */
-             (cp >= 0xF900 && cp <= 0xFAFF) ||  /* CJK Compat Ideographs */
-             (cp >= 0xFE10 && cp <= 0xFE6F) ||  /* CJK compat forms, small forms */
-             (cp >= 0xFF01 && cp <= 0xFF60) ||  /* Fullwidth ASCII */
-             (cp >= 0xFFE0 && cp <= 0xFFE6) ||  /* Fullwidth signs */
-             (cp >= 0x1F000 && cp <= 0x1FBFF) || /* Emoji & symbols (Mahjong..symbols) */
-             (cp >= 0x20000 && cp <= 0x2FFFF) || /* CJK Unified Ext B-F */
-             (cp >= 0x30000 && cp <= 0x3FFFF))); /* CJK Unified Ext G+ */
-}
-
 int utf8_char_width(const char *p) {
     int len;
     uint32_t cp = utf8_decode(p, &len);
     if (cp == (uint32_t)-1) return 1;  /* invalid byte: treat as 1 column */
-    if (cp < 32 || cp == 127) return 0; /* control chars: 0 width */
-    if (is_wide_codepoint(cp)) return 2;
-    return 1;
+    /* Delegate to utf8proc which has complete Unicode character width tables
+     * (East_Asian_Width, Emoji_Presentation, combining marks, etc.). */
+    int w = utf8proc_charwidth((utf8proc_int32_t)cp);
+    return w > 0 ? w : (cp >= 0x20 && cp != 0x7F) ? 1 : 0;
 }
 
 int utf8_display_width(const char *s, int nbytes) {

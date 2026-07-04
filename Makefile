@@ -11,7 +11,7 @@ endif
 # VNC backend uses direct RFB protocol (no external VNC library).
 # Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
 #           OpenSSL/libcrypto (VNC DES authentication — already linked).
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz $(ORT_LDFLAGS)
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \

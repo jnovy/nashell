@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <utf8proc.h>
 
 /* ── Color pairs (must match tui.c init_pair calls) ── */
 #define C_NORMAL    0
@@ -71,70 +72,15 @@ static int utf8_decode(const char *s, int max_bytes, wchar_t *cp) {
 /* Return the display width (columns) of a Unicode codepoint.
  * Handles CJK, emoji, and other wide characters without wcwidth(). */
 static int codepoint_width(wchar_t cp) {
-    /* Zero-width characters */
-    if (cp == 0) return 0;
-    /* Control characters */
-    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return 0;
-    /* Combining marks (most common ranges) */
-    if ((cp >= 0x0300 && cp <= 0x036F) ||   /* combining diacriticals */
-        (cp >= 0x1AB0 && cp <= 0x1AFF) ||   /* combining diacriticals ext */
-        (cp >= 0x1DC0 && cp <= 0x1DFF) ||   /* combining diacriticals supplement */
-        (cp >= 0x20D0 && cp <= 0x20FF) ||   /* combining for symbols */
-        (cp >= 0xFE00 && cp <= 0xFE0F) ||   /* variation selectors */
-        (cp >= 0xFE20 && cp <= 0xFE2F) ||   /* combining half marks */
-        (cp >= 0xE0100 && cp <= 0xE01EF) || /* variation selectors supplement */
-        cp == 0x200B || cp == 0x200C ||     /* zero-width space/non-joiner */
-        cp == 0x200D || cp == 0xFEFF)       /* zero-width joiner / BOM */
-        return 0;
-    /* Wide characters: CJK, emoji, fullwidth forms */
-    if ((cp >= 0x1100 && cp <= 0x115F) ||   /* Hangul Jamo */
-        cp == 0x2329 || cp == 0x232A ||     /* angle brackets */
-        (cp >= 0x2E80 && cp <= 0x303E) ||   /* CJK radicals..symbols */
-        (cp >= 0x3040 && cp <= 0x33BF) ||   /* Hiragana..CJK compat */
-        (cp >= 0x3400 && cp <= 0x4DBF) ||   /* CJK ext A */
-        (cp >= 0x4E00 && cp <= 0xA4CF) ||   /* CJK unified..Yi */
-        (cp >= 0xA960 && cp <= 0xA97C) ||   /* Hangul Jamo ext A */
-        (cp >= 0xAC00 && cp <= 0xD7A3) ||   /* Hangul syllables */
-        (cp >= 0xF900 && cp <= 0xFAFF) ||   /* CJK compat ideographs */
-        (cp >= 0xFE10 && cp <= 0xFE19) ||   /* vertical forms */
-        (cp >= 0xFE30 && cp <= 0xFE6B) ||   /* CJK compat forms */
-        (cp >= 0xFF01 && cp <= 0xFF60) ||   /* fullwidth forms */
-        (cp >= 0xFFE0 && cp <= 0xFFE6) ||   /* fullwidth signs */
-        (cp >= 0x1F000 && cp <= 0x1FBFF) || /* emoji & symbols (Mahjong..symbols) */
-        (cp >= 0x20000 && cp <= 0x2FFFF) || /* CJK ext B..compatibility */
-        (cp >= 0x30000 && cp <= 0x3FFFF))   /* CJK ext G+ */
-        return 2;
-    /* Emoji_Presentation=Yes codepoints: rendered as 2 columns by default
-     * in modern terminals (without needing a VS16/U+FE0F qualifier).
-     * Covers commonly-used emoji in Misc Technical, Misc Symbols, Dingbats,
-     * and Misc Symbols and Arrows blocks. */
-    if (cp == 0x231A || cp == 0x231B ||         /* watch, hourglass */
-        (cp >= 0x23E9 && cp <= 0x23EC) ||       /* fast-forward/rewind */
-        cp == 0x23F0 || cp == 0x23F3 ||         /* alarm clock, hourglass */
-        cp == 0x25FD || cp == 0x25FE ||         /* medium small squares */
-        cp == 0x2614 || cp == 0x2615 ||         /* umbrella, hot beverage */
-        (cp >= 0x2648 && cp <= 0x2653) ||       /* zodiac signs */
-        cp == 0x267F || cp == 0x2693 ||         /* wheelchair, anchor */
-        cp == 0x26A1 ||                         /* high voltage */
-        cp == 0x26AA || cp == 0x26AB ||         /* circles */
-        cp == 0x26BD || cp == 0x26BE ||         /* soccer, baseball */
-        cp == 0x26C4 || cp == 0x26C5 ||         /* snowman, sun+cloud */
-        cp == 0x26CE || cp == 0x26D4 ||         /* Ophiuchus, no entry */
-        cp == 0x26EA || cp == 0x26F2 ||         /* church, fountain */
-        cp == 0x26F3 || cp == 0x26F5 ||         /* golf, sailboat */
-        cp == 0x26FA || cp == 0x26FD ||         /* tent, fuel pump */
-        cp == 0x2702 || cp == 0x2705 ||         /* scissors, check mark */
-        cp == 0x270A || cp == 0x270B ||         /* raised fists */
-        cp == 0x2728 ||                         /* sparkles */
-        cp == 0x274C || cp == 0x274E ||         /* cross marks */
-        (cp >= 0x2753 && cp <= 0x2755) ||       /* question/exclamation */
-        cp == 0x2757 ||                         /* heavy exclamation */
-        (cp >= 0x2795 && cp <= 0x2797) ||       /* heavy plus/minus/division */
-        cp == 0x27B0 || cp == 0x27BF ||         /* curly loops */
-        cp == 0x2B1B || cp == 0x2B1C ||         /* large squares */
-        cp == 0x2B50 || cp == 0x2B55)           /* star, hollow circle */
-        return 2;
-    return 1;
+    /* Delegate to utf8proc which has complete Unicode character width tables
+     * (East_Asian_Width, Emoji_Presentation, combining marks, etc.).
+     * Returns 0 for zero-width/control, 1 for normal, 2 for wide/emoji. */
+    int w = utf8proc_charwidth((utf8proc_int32_t)cp);
+    /* utf8proc returns 0 for control chars and unassigned codepoints;
+     * treat truly unassigned/unrecognized printable as width 1 */
+    if (w <= 0 && cp >= 0x20 && cp != 0x7F)
+        return (utf8proc_category((utf8proc_int32_t)cp) == UTF8PROC_CATEGORY_CN) ? 1 : w;
+    return w > 0 ? w : 0;
 }
 
 /* Return the display width (columns) of one UTF-8 character. */
