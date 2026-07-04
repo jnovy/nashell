@@ -220,8 +220,9 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         int dlen = (int)strlen(desc);
         /* Truncate long descriptions (e.g. file content) for the status bar */
         if (dlen > 80) {
-            snprintf(buf, sizeof(buf), "[step %d] %s: %.77s...",
-                     ev->step, ev->action ? ev->action : "?", desc);
+            snprintf(buf, sizeof(buf), "[step %d] %s: %.*s...",
+                     ev->step, ev->action ? ev->action : "?",
+                     (int)utf8_clamp(desc, 77), desc);
         } else {
             snprintf(buf, sizeof(buf), "[step %d] %s: %s",
                      ev->step, ev->action ? ev->action : "?", desc);

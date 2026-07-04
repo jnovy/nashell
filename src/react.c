@@ -1013,8 +1013,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (trunc) {
                     snprintf(trunc, PARSE_ERR_PREVIEW_LEN + 64,
                              "%.*s\n[...truncated %zu chars...]",
-                             PARSE_ERR_PREVIEW_LEN, response,
-                             resp_len - PARSE_ERR_PREVIEW_LEN);
+                             (int)utf8_clamp(response, PARSE_ERR_PREVIEW_LEN),
+                             response, resp_len - PARSE_ERR_PREVIEW_LEN);
                     llm_chat_add(chat, "assistant", trunc);
                     free(trunc);
                 } else {
@@ -1466,8 +1466,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         ? ctx->tools->cfg->cycling_recall_min_relevance : 0.30;
                     char cycle_query[512];
                     snprintf(cycle_query, sizeof(cycle_query),
-                        "stuck cycling: %.200s %.200s",
-                        action_name, path_s);
+                        "stuck cycling: %.*s %.*s",
+                        (int)utf8_clamp(action_name, 200), action_name,
+                        (int)utf8_clamp(path_s, 200), path_s);
                     memory_results_t cy_mem = ctx->tools->ws
                         ? workspace_recall(ctx->tools->ws, cycle_query, cy_candidates)
                         : memory_query(ctx->tools->memory, cycle_query, cy_candidates);
@@ -1960,8 +1961,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         if (promo_json) {
                             char snippet[320];
                             snprintf(snippet, sizeof(snippet),
-                                     "[step %d] %s: %.280s",
-                                     step + 1, action_name, promo_json);
+                                     "[step %d] %s: %.*s",
+                                     step + 1, action_name,
+                                     (int)utf8_clamp(promo_json, 280),
+                                     promo_json);
                             scratchpad_append(&ctx->tools->scratch,
                                               "auto_findings", snippet, 4);
                             free(promo_json);

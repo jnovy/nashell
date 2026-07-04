@@ -292,7 +292,8 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
 
             /* Truncate breadcrumb for recall query (max 400 chars) */
             char ev_query[512];
-            snprintf(ev_query, sizeof(ev_query), "%.400s", breadcrumb_str);
+            snprintf(ev_query, sizeof(ev_query), "%.*s",
+                     (int)utf8_clamp(breadcrumb_str, 400), breadcrumb_str);
 
             memory_results_t ev_mem = ctx->tools->ws
                 ? workspace_recall(ctx->tools->ws, ev_query, ev_candidates)

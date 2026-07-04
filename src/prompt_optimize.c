@@ -354,7 +354,7 @@ char *optimize_format_evidence(const sh_evidence_t *bundle,
             /* SkillOpt: feed rejected text excerpt + audit as negative feedback */
             if (rejected[i].prompt_text && rejected[i].prompt_text[0]) {
                 int plen = (int)strlen(rejected[i].prompt_text);
-                int show = plen > 200 ? 200 : plen;
+                int show = plen > 200 ? (int)utf8_clamp(rejected[i].prompt_text, 200) : plen;
                 str_appendf(&fb, "    Rejected text: %.*s%s\n",
                             show, rejected[i].prompt_text,
                             plen > 200 ? "..." : "");
@@ -407,9 +407,9 @@ char *optimize_format_feedback(const regression_report_t *report) {
             }
             if (qr->result_text) {
                 int rlen = (int)strlen(qr->result_text);
-                int show = rlen > 300 ? 300 : rlen;
+                int show = rlen > 300 ? (int)utf8_clamp(qr->result_text, 300) : rlen;
                 str_appendf(&fb, "  Result (%d chars): %.*s%s\n",
-                            show, show, qr->result_text, rlen > 300 ? "..." : "");
+                            rlen, show, qr->result_text, rlen > 300 ? "..." : "");
             }
         }
     }

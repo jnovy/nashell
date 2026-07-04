@@ -771,7 +771,11 @@ static long long tg_send_long(telegram_ctx_t *ctx, const char *text,
                 if (best > chunk_len / 4) {
                     chunk_len = best;
                 }
-                /* else: hard split at TG_MSG_MAX */
+                /* else: hard split at TG_MSG_MAX -- clamp to UTF-8 boundary */
+                else {
+                    while (chunk_len > 0 && ((unsigned char)pos[chunk_len] & 0xC0) == 0x80)
+                        chunk_len--;
+                }
             }
         }
 
@@ -907,7 +911,11 @@ static int tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text,
                 if (best > chunk_len / 4) {
                     chunk_len = best;
                 }
-                /* else: hard split at TG_MSG_MAX */
+                /* else: hard split at TG_MSG_MAX -- clamp to UTF-8 boundary */
+                else {
+                    while (chunk_len > 0 && ((unsigned char)pos[chunk_len] & 0xC0) == 0x80)
+                        chunk_len--;
+                }
             }
         }
 
@@ -1317,7 +1325,8 @@ char *md_to_html(const char *md) {
                             if (md[q] == '*' && q+1 < te && md[q+1] == '*') {
                                 q += 2;
                             } else {
-                                dw++; q++;
+                                dw += utf8_char_width(&md[q]);
+                                q += utf8_char_len(&md[q]);
                             }
                         }
                         if (dw > col_width[col]) col_width[col] = dw;
@@ -1359,9 +1368,10 @@ char *md_to_html(const char *md) {
                                 if (md[q] == '*' && q+1 < ce && md[q+1] == '*') {
                                     q += 2;
                                 } else {
-                                    /* html_escape single char for <, >, & */
-                                    html_escape_append(&out, &md[q], 1);
-                                    dw++; q++;
+                                    int clen = utf8_char_len(&md[q]);
+                                    html_escape_append(&out, &md[q], clen);
+                                    dw += utf8_char_width(&md[q]);
+                                    q += clen;
                                 }
                             }
                         }

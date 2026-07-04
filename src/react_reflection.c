@@ -308,7 +308,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
          * This degrades reflection quality significantly. */
         if (final_result) {
             size_t fr_len = strlen(final_result);
-            size_t show_len = fr_len > 2000 ? 2000 : fr_len;
+            size_t show_len = fr_len > 2000 ? utf8_clamp(final_result, 2000) : fr_len;
             char *fr_msg = malloc(show_len + 64);
             if (fr_msg) {
                 snprintf(fr_msg, show_len + 64, "[TASK RESULT]\n%.*s%s",

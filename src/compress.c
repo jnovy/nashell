@@ -8,6 +8,7 @@
  *         to prevent injecting the same content into context twice.
  */
 #include "compress.h"
+#include "str.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -424,7 +425,8 @@ char *compress_to_relevant(const char *text, const char *query,
         char *out = malloc((size_t)(max_chars + COMPRESS_TAG_LEN + 1));
         if (!out) return NULL;
         snprintf(out, (size_t)(max_chars + COMPRESS_TAG_LEN + 1),
-                 "%.*s" COMPRESS_TAG, max_chars - COMPRESS_TAG_LEN, text);
+                 "%.*s" COMPRESS_TAG,
+                 (int)utf8_clamp(text, max_chars - COMPRESS_TAG_LEN), text);
         return out;
     }
 

@@ -1721,7 +1721,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
     if (result_content) {
         str_appendf(&display, "## Latest Result\n\n");
         if (rlen > 500) {
-            result_content[500] = '\0';
+            result_content[utf8_clamp(result_content, 500)] = '\0';
             str_appendf(&display, "%s\n\n*...truncated. Use `/agent result %s` for full output.*\n",
                         result_content, found->id);
         } else {
