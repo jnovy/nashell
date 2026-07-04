@@ -94,7 +94,7 @@ static char *generate_description(const char *value) {
         end = nl;
     } else {
         /* No sentence/line break within 250 chars — truncate */
-        end = start + (slen < 150 ? slen : 150);
+        end = start + (slen < 250 ? slen : 250);
     }
 
     int dlen = (int)(end - start);
@@ -139,6 +139,7 @@ static void mem_index_map_rebuild(mem_index_t *idx) {
     while (new_cap < idx->count * 2) new_cap *= 2;  /* ≤50% load factor */
     idx->map.cap = new_cap;
     idx->map.slots = malloc((size_t)new_cap * sizeof(int));
+    if (!idx->map.slots) { idx->map.cap = 0; return; }
     /* FIX #12: Explicit loop instead of memset(-1), which relies on
      * implementation-defined behavior (two's complement byte pattern). */
     for (int j = 0; j < new_cap; j++)
@@ -560,14 +561,28 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * Skip during batch operations (consolidating flag) — embeddings
      * will be regenerated in bulk via memory_embed_all() after the
      * batch completes.  This avoids generating throwaway embeddings
-     * for entries that are about to be merged/deleted in the same pass. */
-    if (m->embed && m->embed->available && !atomic_load(&m->consolidating)) {
+     * for entries that are about to be merged/deleted in the same pass.
+     *
+     * Release mutex during embedding generation — this involves a
+     * network round-trip to Ollama/OpenAI (10-200ms) and would block
+     * all concurrent queries/deletes.  The query path already does
+     * embedding before acquiring the lock (see memory_query). */
+    int need_embed = m->embed && m->embed->available &&
+                     !atomic_load(&m->consolidating);
+
+    /* Git commit first (while we still hold the lock) */
+    char commit_msg[256];
+    snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
+    memory_git_commit(m, commit_msg);
+
+    pthread_mutex_unlock(&m->mtx);
+
+    if (need_embed) {
         memory_embed_entry(m, key, value);
 
-        /* FIX #4: Reload embedding into cached index entry so
-         * memory_query() sees it immediately (not after restart).
-         * Previously the embedding was written to disk but the index
-         * entry retained has_emb=0 until process restart. */
+        /* Reload embedding into cached index entry so memory_query()
+         * sees it immediately.  Re-acquire lock for index mutation. */
+        pthread_mutex_lock(&m->mtx);
         mem_index_entry_t *ie = mem_index_find(&m->idx, key);
         if (ie) {
             char emb_path[NASH_PATH_MAX];
@@ -576,14 +591,9 @@ int memory_store(memory_t *m, const char *key, const char *value,
             ie->emb = embed_multi_vec_load(emb_path);
             ie->has_emb = (ie->emb.data && ie->emb.dim > 0) ? 1 : 0;
         }
+        pthread_mutex_unlock(&m->mtx);
     }
 
-    /* Git commit: track memory creation/update */
-    char commit_msg[256];
-    snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
-    memory_git_commit(m, commit_msg);
-
-    pthread_mutex_unlock(&m->mtx);
     return 0;
 }
 
@@ -645,15 +655,45 @@ int memory_unpin(memory_t *m, const char *key) {
 
 /* ── recall (search) ─────────────────────────────────── */
 
-/* Substring-based relevance scoring (fallback when embeddings unavailable) */
+/* Substring-based relevance scoring (fallback when embeddings unavailable).
+ * Supports both full-query and per-token matching so that multi-word queries
+ * like "memory pruning" can match keys like "lesson:memory-pruning-strategy"
+ * where the literal full query (with space) would fail. */
 static double score_entry_substring(const char *key, const char *value,
                                      const char *query) {
     /* Guard: empty/NULL query matches everything via strcasestr on most
      * platforms, which would give max score to every entry. */
     if (!query || !*query) return 0;
+
+    /* Fast path: full query appears as-is — best possible substring match */
+    if (strcasestr(key, query)) return 3.0 + (strcasestr(value, query) ? 1.0 : 0);
+    if (strcasestr(value, query)) return 1.0;
+
+    /* Slow path: tokenize query on whitespace/hyphens/underscores,
+     * score each token independently.  This handles queries like
+     * "memory pruning" matching key "lesson:memory-pruning-strategy". */
+    char *qcopy = strdup(query);
+    if (!qcopy) return 0;
+
+    int n_tokens = 0, key_hits = 0, val_hits = 0;
+    char *saveptr = NULL;
+    for (char *tok = strtok_r(qcopy, " \t-_:/", &saveptr);
+         tok; tok = strtok_r(NULL, " \t-_:/", &saveptr)) {
+        if (!*tok) continue;
+        n_tokens++;
+        if (strcasestr(key, tok)) key_hits++;
+        if (strcasestr(value, tok)) val_hits++;
+    }
+    free(qcopy);
+    if (n_tokens == 0) return 0;
+
+    /* Scale: all tokens matching key = 2.5 (slightly below full-match 3.0),
+     * partial key match proportional.  Value match adds up to 1.0. */
     double relevance = 0;
-    if (strcasestr(key, query)) relevance += 3.0;
-    if (strcasestr(value, query)) relevance += 1.0;
+    if (key_hits > 0)
+        relevance += 2.5 * ((double)key_hits / n_tokens);
+    if (val_hits > 0)
+        relevance += 1.0 * ((double)val_hits / n_tokens);
     return relevance;
 }
 
@@ -1511,8 +1551,9 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         if (vscore < min_score && evidence >= min_evidence) {
             if (count >= cap) {
                 cap = cap ? cap * 2 : 16;
-                keys = realloc(keys, sizeof(char *) * (size_t)cap);
-                if (!keys) break;
+                char **tmp = realloc(keys, sizeof(char *) * (size_t)cap);
+                if (!tmp) break;
+                keys = tmp;
             }
             keys[count++] = strdup(e->key);
         }
@@ -2164,15 +2205,19 @@ int memory_reindex_entry(memory_t *m, const char *key) {
 
 void memory_git_defer(memory_t *m) {
     if (!m) return;
+    pthread_mutex_lock(&m->mtx);
     m->git_deferred = 1;
     m->git_deferred_count = 0;
+    pthread_mutex_unlock(&m->mtx);
 }
 
 void memory_git_flush(memory_t *m, const char *msg) {
     if (!m) return;
+    pthread_mutex_lock(&m->mtx);
     m->git_deferred = 0;
-    if (m->git_deferred_count == 0) return;
+    int pending = m->git_deferred_count;
     m->git_deferred_count = 0;
-    /* Single batch commit for all deferred changes */
-    memory_git_commit(m, msg ? msg : "memory: batch update");
+    if (pending > 0)
+        memory_git_commit(m, msg ? msg : "memory: batch update");
+    pthread_mutex_unlock(&m->mtx);
 }

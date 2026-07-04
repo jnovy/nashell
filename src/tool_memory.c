@@ -30,37 +30,11 @@ static void consolidation_carry_scores(memory_t *m,
                                        int old_hits, int old_misses) {
     if (!m || !survivor_key || (old_hits == 0 && old_misses == 0)) return;
 
-    /* Build JSON path from key using shared key_to_path() */
-    char fname[512];
-    key_to_path(survivor_key, ".json", fname, sizeof(fname));
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", memory_dir(m), fname);
-
-    cJSON *entry = slurp_json(path);
-    if (!entry) return;
-
-    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-    int cur_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-    int cur_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-
-    if (rh) cJSON_SetNumberValue(rh, cur_hits + old_hits);
-    else    cJSON_AddNumberToObject(entry, "recall_hits", old_hits);
-    if (rm) cJSON_SetNumberValue(rm, cur_misses + old_misses);
-    else    cJSON_AddNumberToObject(entry, "recall_misses", old_misses);
-
-    /* Write back */
-    char *json = cJSON_Print(entry);
-    if (json) {
-        write_file(path, json, strlen(json));
-        free(json);
-    }
-    cJSON_Delete(entry);
-
-    /* FIX BUG3: Also update the in-memory index so recall scoring
-     * sees the carried-forward evidence immediately (without restart).
-     * Without this, the merged entry has stale scores (typically 0/0)
-     * in the index and may be ranked lower than it should be. */
+    /* memory_update_scores() handles both disk persistence (load JSON,
+     * add counters, write back) and in-memory index update in one call.
+     * Previously this function did its own load/modify/write cycle first,
+     * then called memory_update_scores which did the same — resulting in
+     * double-counting (old_hits added twice to disk). */
     memory_update_scores(m, survivor_key, old_hits, old_misses);
 }
 
