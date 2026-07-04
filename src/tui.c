@@ -1050,10 +1050,12 @@ int tui_input(ui_state_t *ui, char **out_query) {
             int crow, ccol;
             cursor_to_rowcol_buf(ui->input_buffer, ui->input_len,
                                  ui->cursor_pos, cols_now, &crow, &ccol);
-            if (crow > 0) {
+            if (crow > 0 && ui->history_idx == ui->history_count) {
                 /* Find the buffer position one display row up.
                  * Walk backward from cursor to find the start of the current
-                 * display row, then go one more row back. */
+                 * display row, then go one more row back.
+                 * Skip multi-line cursor movement when browsing history --
+                 * arrow-up should always load the previous history entry. */
                 int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
                 int cw = cols_now > 0 ? cols_now : 1;
 
@@ -1135,8 +1137,10 @@ int tui_input(ui_state_t *ui, char **out_query) {
                                  ui->cursor_pos, cols_now, &crow, &ccol);
             int total_rows = calc_input_lines_buf(ui->input_buffer,
                                                    ui->input_len, cols_now);
-            if (crow < total_rows - 1) {
-                /* Move down one display row */
+            if (crow < total_rows - 1 && ui->history_idx == ui->history_count) {
+                /* Move down one display row.
+                 * Skip multi-line cursor movement when browsing history --
+                 * arrow-down should always load the next history entry. */
                 int fw = cols_now - INPUT_PROMPT_W; if (fw < 1) fw = 1;
                 int cw = cols_now > 0 ? cols_now : 1;
                 int cur_w = (crow == 0) ? fw : cw;
