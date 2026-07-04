@@ -312,23 +312,56 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     /* Max-token exhaustion — deterministic, not transient */
     if (stats->completion_tokens > 0 && ctx->provider &&
         stats->completion_tokens >= ctx->provider->cfg.max_tokens) {
-        char mtmsg[256];
-        snprintf(mtmsg, sizeof(mtmsg),
-            "Max-token exhaustion (%d/%d tokens) — "
-            "evicting context to recover",
-            stats->completion_tokens, ctx->provider->cfg.max_tokens);
-        ev.message = mtmsg;
-        react_emit(on_event, userdata, &ev);
+        long cb = react_context_budget(ctx);
+        int usage = react_chat_usage_pct(chat, cb);
 
-        int n_evict = react_emergency_evict_and_reinject(ctx, chat);
-        if (n_evict > 0) {
-            (*consecutive_null)++;
-            return 0;
-        } else {
-            ev.message = "Max-token exhaustion — no evictable messages "
-                         "remain, giving up";
+        if (usage < 50) {
+            /* Thinking-only exhaustion: the model spent all output tokens
+             * on extended thinking without producing any text or tool call.
+             * Context eviction won't help — the context isn't too large
+             * (e.g. 5% of 1M).  Inject a hint and let the 5-tier retry
+             * handle backoff.  Thinking length is non-deterministic, so
+             * a plain retry usually succeeds. */
+            char mtmsg[256];
+            snprintf(mtmsg, sizeof(mtmsg),
+                "Thinking-only max-token exhaustion (%d/%d tokens, "
+                "context %d%%) — injecting hint and retrying",
+                stats->completion_tokens, ctx->provider->cfg.max_tokens,
+                usage);
+            ev.message = mtmsg;
             react_emit(on_event, userdata, &ev);
-            return 1;
+
+            llm_chat_add(chat, "user",
+                "Your previous attempt used all output tokens on internal "
+                "reasoning without producing any visible response (no tool "
+                "call or text). You MUST produce a tool call or text "
+                "response. Think more concisely — focus on the immediate "
+                "next action rather than planning the entire solution.");
+            if (chat->n_msgs > 0)
+                chat->msgs[chat->n_msgs - 1].importance =
+                    LLM_MSG_IMPORTANCE_NORMAL;
+            /* Fall through to 5-tier retry for backoff/escalation */
+        } else {
+            /* Context-overflow exhaustion — evict to make room */
+            char mtmsg[256];
+            snprintf(mtmsg, sizeof(mtmsg),
+                "Max-token exhaustion (%d/%d tokens, context %d%%) — "
+                "evicting context to recover",
+                stats->completion_tokens, ctx->provider->cfg.max_tokens,
+                usage);
+            ev.message = mtmsg;
+            react_emit(on_event, userdata, &ev);
+
+            int n_evict = react_emergency_evict_and_reinject(ctx, chat);
+            if (n_evict > 0) {
+                (*consecutive_null)++;
+                return 0;
+            } else {
+                ev.message = "Max-token exhaustion — no evictable messages "
+                             "remain, giving up";
+                react_emit(on_event, userdata, &ev);
+                return 1;
+            }
         }
     }
 
