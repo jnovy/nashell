@@ -908,6 +908,90 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         cJSON *action = llm_parse_action(response, &multi_tool_count);
 
         if (!action) {
+            /* Implicit done: llm_parse_action() already tried 4 strategies
+             * (strict JSON, repair_json, hybrid XML, pure XML).  If all
+             * failed and the model has already executed real tools, the
+             * response IS the answer — just not wrapped in done().
+             * Accept it immediately instead of looping.
+             *
+             * Why no retry threshold?  The parser exhausts every recovery
+             * path.  A plain-text response that survives all 4 parsers is
+             * definitively prose, not broken JSON.  Retrying with "please
+             * use JSON" just wastes tokens — the system prompt already
+             * tells the model that.
+             *
+             * Guard: tools_executed > 0 prevents accepting hallucinated
+             * plans before any work is done.  resp_len > 20 filters out
+             * trivial/empty responses. */
+            size_t resp_len = strlen(response);
+            if (tools_executed > 0 && resp_len > 20) {
+
+                nash_log("[react] implicit done: accepting plain-text "
+                         "response as done (tools_executed=%d, len=%zu)",
+                         tools_executed, resp_len);
+
+                log_parse_error(ctx, step + 1, "implicit_done", response,
+                                "Accepted plain text as implicit done");
+
+                final_result = strdup(response);
+                react_checkpoint_remove(ctx);
+
+                /* Save to scratchpad + result.md (same as explicit done) */
+                {
+                    char sec_name[32];
+                    snprintf(sec_name, sizeof(sec_name), "R%d_result",
+                             ctx->tools->react_loop);
+                    scratchpad_write(&ctx->tools->scratch, sec_name,
+                                     final_result, 1);
+                    scratchpad_save(&ctx->tools->scratch,
+                                    ctx->tools->session_dir);
+                }
+                if (ctx->tools->session_dir) {
+                    char rpath[NASH_PATH_MAX];
+                    snprintf(rpath, sizeof(rpath), "%s/result.md",
+                             ctx->tools->session_dir);
+                    write_file(rpath, final_result, strlen(final_result));
+                }
+
+                /* Journal entry for the implicit done */
+                {
+                    char *rh = store_save(ctx->tools->store, response);
+                    char *ra = tool_register_alias(ctx->tools,
+                                                   rh ? rh : "");
+                    cJSON *jp = cJSON_CreateObject();
+                    cJSON_AddStringToObject(jp, "type", "implicit_done");
+                    journal_append(ctx->tools->journal,
+                                   ctx->tools->react_loop, step + 1,
+                                   "done", jp, ra, resp_len, 0,
+                                   "implicit done (plain text accepted)",
+                                   NULL, 0);
+                    cJSON_Delete(jp);
+                    free(ra);
+                    free(rh);
+                }
+
+                struct timespec now;
+                clock_gettime(CLOCK_MONOTONIC, &now);
+                double total = (now.tv_sec - task_start.tv_sec) +
+                               (now.tv_nsec - task_start.tv_nsec) / 1e9;
+
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_DONE;
+                ev.step = step + 1;
+                ev.step_elapsed = step_elapsed;
+                ev.total_elapsed = total;
+                ev.action = "done";
+                ev.description = "implicit done (plain text accepted)";
+                ev.result = final_result;
+                ev.stats = stats;
+                ev.context_size = ctx->provider->cfg.context_size;
+                react_emit(on_event, userdata, &ev);
+
+                free(response);
+                break;
+            }
+
             react_event_t ev = {0};
             ev.react_loop = ctx->tools->react_loop;
             ev.type = REACT_EVENT_ERROR;
@@ -924,7 +1008,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              * wrong — injecting 10K+ tokens of non-JSON prose is pure waste
              * (observed: 55s / 10518 tokens burned in session 1782390827). */
             #define PARSE_ERR_PREVIEW_LEN 500
-            size_t resp_len = strlen(response);
             if (resp_len > PARSE_ERR_PREVIEW_LEN + 40) {
                 char *trunc = malloc(PARSE_ERR_PREVIEW_LEN + 64);
                 if (trunc) {

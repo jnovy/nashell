@@ -104,6 +104,36 @@ static int codepoint_width(wchar_t cp) {
         (cp >= 0x20000 && cp <= 0x2FFFF) || /* CJK ext B..compatibility */
         (cp >= 0x30000 && cp <= 0x3FFFF))   /* CJK ext G+ */
         return 2;
+    /* Emoji_Presentation=Yes codepoints: rendered as 2 columns by default
+     * in modern terminals (without needing a VS16/U+FE0F qualifier).
+     * Covers commonly-used emoji in Misc Technical, Misc Symbols, Dingbats,
+     * and Misc Symbols and Arrows blocks. */
+    if (cp == 0x231A || cp == 0x231B ||         /* watch, hourglass */
+        (cp >= 0x23E9 && cp <= 0x23EC) ||       /* fast-forward/rewind */
+        cp == 0x23F0 || cp == 0x23F3 ||         /* alarm clock, hourglass */
+        cp == 0x25FD || cp == 0x25FE ||         /* medium small squares */
+        cp == 0x2614 || cp == 0x2615 ||         /* umbrella, hot beverage */
+        (cp >= 0x2648 && cp <= 0x2653) ||       /* zodiac signs */
+        cp == 0x267F || cp == 0x2693 ||         /* wheelchair, anchor */
+        cp == 0x26A1 ||                         /* high voltage */
+        cp == 0x26AA || cp == 0x26AB ||         /* circles */
+        cp == 0x26BD || cp == 0x26BE ||         /* soccer, baseball */
+        cp == 0x26C4 || cp == 0x26C5 ||         /* snowman, sun+cloud */
+        cp == 0x26CE || cp == 0x26D4 ||         /* Ophiuchus, no entry */
+        cp == 0x26EA || cp == 0x26F2 ||         /* church, fountain */
+        cp == 0x26F3 || cp == 0x26F5 ||         /* golf, sailboat */
+        cp == 0x26FA || cp == 0x26FD ||         /* tent, fuel pump */
+        cp == 0x2702 || cp == 0x2705 ||         /* scissors, check mark */
+        cp == 0x270A || cp == 0x270B ||         /* raised fists */
+        cp == 0x2728 ||                         /* sparkles */
+        cp == 0x274C || cp == 0x274E ||         /* cross marks */
+        (cp >= 0x2753 && cp <= 0x2755) ||       /* question/exclamation */
+        cp == 0x2757 ||                         /* heavy exclamation */
+        (cp >= 0x2795 && cp <= 0x2797) ||       /* heavy plus/minus/division */
+        cp == 0x27B0 || cp == 0x27BF ||         /* curly loops */
+        cp == 0x2B1B || cp == 0x2B1C ||         /* large squares */
+        cp == 0x2B50 || cp == 0x2B55)           /* star, hollow circle */
+        return 2;
     return 1;
 }
 

@@ -80,11 +80,11 @@ static int   paste_len = 0;
 #define NC_CT_SEARCH_CUR  39  /* #FAB387 (250,179,135) — orange bg for current */
 
 /* Color pair numbers for status/input rows */
-#define CP_STATUS_READY  8   /* status bar: bg=#232637, fg=#B4B9C8 */
-#define CP_STATUS_RUNNING 9  /* status bar: bg=#232637, fg=#DCC85A */
-#define CP_STATUS_AWAIT  10  /* status bar: bg=#232637, fg=#64C8DC */
-#define CP_STATUS_DONE   11  /* status bar: bg=#232637, fg=#64DC96 */
-#define CP_STATUS_ERROR  12  /* status bar: bg=#232637, fg=#DC5050 */
+#define CP_STATUS_READY  8   /* status bar: fg=#232637, bg=#B4B9C8 */
+#define CP_STATUS_RUNNING 9  /* status bar: fg=#232637, bg=#DCC85A */
+#define CP_STATUS_AWAIT  10  /* status bar: fg=#232637, bg=#64C8DC */
+#define CP_STATUS_DONE   11  /* status bar: fg=#232637, bg=#64DC96 */
+#define CP_STATUS_ERROR  12  /* status bar: fg=#232637, bg=#DC5050 */
 #define CP_INPUT_ACTIVE  13  /* input bar: bg=#191E2D, fg=#DCE5F0 */
 #define CP_INPUT_DIM     14  /* input bar: bg=#191E2D, fg=#646982 */
 /* Diff color pairs: colored background for +/- diff lines */
@@ -140,11 +140,11 @@ static void init_true_colors(void) {
     init_color(NC_CT_SEARCH_CUR, 250*1000/255, 179*1000/255, 135*1000/255);
 
     /* Create color pairs combining bg + fg */
-    init_pair(CP_STATUS_READY,  NC_STATUS_READY, NC_STATUS_BG);
-    init_pair(CP_STATUS_RUNNING, NC_STATUS_RUN, NC_STATUS_BG);
-    init_pair(CP_STATUS_AWAIT,  NC_STATUS_AWAIT, NC_STATUS_BG);
-    init_pair(CP_STATUS_DONE,   NC_STATUS_DONE,  NC_STATUS_BG);
-    init_pair(CP_STATUS_ERROR,  NC_STATUS_ERR,   NC_STATUS_BG);
+    init_pair(CP_STATUS_READY,  NC_STATUS_BG, NC_STATUS_READY);
+    init_pair(CP_STATUS_RUNNING, NC_STATUS_BG, NC_STATUS_RUN);
+    init_pair(CP_STATUS_AWAIT,  NC_STATUS_BG, NC_STATUS_AWAIT);
+    init_pair(CP_STATUS_DONE,   NC_STATUS_BG, NC_STATUS_DONE);
+    init_pair(CP_STATUS_ERROR,  NC_STATUS_BG, NC_STATUS_ERR);
     init_pair(CP_INPUT_ACTIVE,  NC_INPUT_FG,  NC_INPUT_BG);
     init_pair(CP_INPUT_DIM,     NC_INPUT_DIM, NC_INPUT_BG);
     /* Content pairs: fg on transparent/default bg */
@@ -718,7 +718,7 @@ static void render_bottom(ui_state_t *ui) {
 
     /* ── Row 0: Status bar (nashell-style) ──
      * Layout: [icon][status_text] [model_name │ ctx XX% │ 📡 bg:N]
-     * Colors: dark blue bg (#232637), light text (#DCE5F0) */
+     * Colors: dark blue text (#232637), status-colored bg */
 
     /* Build status line content */
     char status_line[1024];
@@ -804,7 +804,7 @@ static void render_bottom(ui_state_t *ui) {
                          " │ bg:%d", ui->bg_jobs);
     }
 
-    /* Status bar: dark blue bg (#232637), light text (#DCE5F0) */
+    /* Status bar: dark blue text (#232637), status-colored bg */
     render_ncurses_row(win_bottom, 0, cols, status_pair, status_line);
 
     /* ── Row 1+: Input prompt (nashell-style) ──
