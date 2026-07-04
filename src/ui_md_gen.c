@@ -1236,6 +1236,52 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                          "generating... %d tokens",
                          ui->stream_token_count);
             }
+            /* Append tail preview of streamed content to status line */
+            if (ui->stream_tokens && ui->stream_len > 0) {
+                const char *sp = ui->stream_tokens;
+                while (*sp == ' ' || *sp == '\n' || *sp == '\r' || *sp == '\t') sp++;
+                if (*sp != '{') {
+                    int plen = (int)strlen(progress);
+                    int tail_max = 50;
+                    const char *src = ui->stream_tokens;
+                    int slen = ui->stream_len;
+                    int start = 0;
+                    int truncated = 0;
+                    if (slen > tail_max) {
+                        start = slen - tail_max;
+                        /* advance past any UTF-8 continuation bytes */
+                        while (start < slen &&
+                               ((unsigned char)src[start] & 0xC0) == 0x80)
+                            start++;
+                        truncated = 1;
+                    }
+                    char tail[128];
+                    int ti = 0;
+                    if (truncated) {
+                        tail[ti++] = '.';
+                        tail[ti++] = '.';
+                        tail[ti++] = '.';
+                    }
+                    for (int i = start; i < slen &&
+                         ti < (int)sizeof(tail) - 2; i++) {
+                        unsigned char c = (unsigned char)src[i];
+                        if (c == '\n' || c == '\r' || c == '\t')
+                            tail[ti++] = ' ';
+                        else if (c >= 0x20 || (c & 0x80))
+                            tail[ti++] = (char)c;
+                    }
+                    /* trim trailing spaces */
+                    while (ti > 0 && tail[ti - 1] == ' ')
+                        ti--;
+                    tail[ti] = '\0';
+                    if (ti > 0) {
+                        int avail = (int)sizeof(progress) - plen - 1;
+                        if (avail > 10)
+                            snprintf(progress + plen, (size_t)avail,
+                                     ": '%s'", tail);
+                    }
+                }
+            }
         } else {
             /* No tokens yet — prompt is being processed */
             double pp_elapsed = (now.tv_sec - ui->stream_step_start.tv_sec) +
