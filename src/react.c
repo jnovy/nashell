@@ -1343,14 +1343,31 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 react_emit(on_event, userdata, &ev);
 
                 cJSON *refused = cJSON_CreateObject();
-                cJSON_AddStringToObject(refused, "error",
-                    "Refused: you already executed this identical action and received "
-                    "the result above. Do NOT repeat it. Read the previous output "
-                    "and continue.");
+                if (repeat_count >= 4) {
+                    /* Escalation: 3+ consecutive refusals -- forceful message */
+                    char esc_msg[512];
+                    snprintf(esc_msg, sizeof(esc_msg),
+                        "STOP. This action has been refused %d times. "
+                        "You are stuck in an infinite loop. "
+                        "You MUST take a DIFFERENT action immediately. Options: "
+                        "(1) Use a different tool or different parameters, "
+                        "(2) Analyze the results you already have, "
+                        "(3) Call done() with your current findings. "
+                        "DO NOT repeat this action again.",
+                        repeat_count - 1);
+                    cJSON_AddStringToObject(refused, "error", esc_msg);
+                } else {
+                    cJSON_AddStringToObject(refused, "error",
+                        "Refused: you already executed this identical action and received "
+                        "the result above. Do NOT repeat it. Read the previous output "
+                        "and continue.");
+                }
                 tr = (tool_result_t){ .meta = refused, .store_ref = NULL, .success = 0 };
 
+                const char *cycling_event = repeat_count >= 4
+                    ? "cycling_escalated" : "cycling_refused";
                 journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                               step + 1, "cycling_refused", refused, last_ref,
+                               step + 1, cycling_event, refused, last_ref,
                                0, 0, "refused repeated action", NULL, 0);
 
                 /* ── Change 6: Cycling-triggered retrieval ─────────────
@@ -1703,6 +1720,22 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (existing)
                     chat->msgs[chat->n_msgs - 1].store_alias = strdup(existing);
             }
+        }
+
+        /* Cycling escalation: after 3+ consecutive refusals, inject a forceful
+         * message AFTER the tool result and importance tagging so the model sees
+         * it as the last thing before generating its next response. */
+        if (is_repeat && repeat_count >= 4) {
+            const char *escalation =
+                "[CYCLING BREAKER] You have been caught in an infinite loop "
+                "repeating the same action. The harness has refused this action "
+                "multiple times. You MUST change your approach NOW. "
+                "Do NOT call the same tool with the same parameters. "
+                "If you have enough information, call done(). "
+                "If you need more information, try a DIFFERENT tool or DIFFERENT parameters.";
+            llm_chat_add_typed(chat, "user", escalation, LLM_MSG_MEMORY_HINT);
+            if (chat->n_msgs >= 1)
+                chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_HIGH;
         }
 
         /* Slow-command nudge: when shell_exec takes >5s, inject a hint
