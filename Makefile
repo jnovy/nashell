@@ -20,10 +20,22 @@ else
 endif
 CFLAGS += $(X265_CFLAGS)
 
+# Tesseract OCR: native perception pipeline (replaces perception.py).
+# Set HAVE_TESSERACT=0 to force-disable even if libraries are present.
+HAVE_TESSERACT ?= $(shell pkg-config --exists tesseract lept 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAVE_TESSERACT),1)
+  TESS_CFLAGS  = -DHAVE_TESSERACT $(shell pkg-config --cflags tesseract lept 2>/dev/null)
+  TESS_LDFLAGS = $(shell pkg-config --libs tesseract lept 2>/dev/null)
+else
+  TESS_CFLAGS  =
+  TESS_LDFLAGS =
+endif
+CFLAGS += $(TESS_CFLAGS)
+
 # VNC backend uses direct RFB protocol (no external VNC library).
 # Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
 #           OpenSSL/libcrypto (VNC DES authentication — already linked).
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS) $(X265_LDFLAGS)
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS) $(X265_LDFLAGS) $(TESS_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -73,7 +85,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/input_vnc.c \
           src/device.c \
           src/stream.c \
-          src/tool_device.c
+          src/tool_device.c \
+          src/perception.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -142,7 +155,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/input_vnc.c \
           src/device.c \
           src/stream.c \
-          src/tool_device.c
+          src/tool_device.c \
+          src/perception.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

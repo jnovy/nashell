@@ -9,6 +9,7 @@
 #include "tools_internal.h"
 #include "device.h"
 #include "config.h"
+#include "perception.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,34 +87,6 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
 
 /* ── Action handlers ────────────────────────────────────────── */
 
-/* ── Resolve perception.py path relative to executable ──────── */
-
-static const char *get_perception_script(void) {
-    static char script_path[1024] = {0};
-    if (script_path[0]) return script_path;
-
-    /* Try relative to executable: <exe_dir>/../scripts/perception.py */
-    char exe[512];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
-        exe[n] = '\0';
-        /* strip binary name */
-        char *slash = strrchr(exe, '/');
-        if (slash) *slash = '\0';
-        snprintf(script_path, sizeof(script_path),
-                 "%s/../scripts/perception.py", exe);
-        if (access(script_path, R_OK) == 0) return script_path;
-
-        /* Try <exe_dir>/scripts/perception.py (in-tree build) */
-        snprintf(script_path, sizeof(script_path),
-                 "%s/scripts/perception.py", exe);
-        if (access(script_path, R_OK) == 0) return script_path;
-    }
-    /* Fallback: look in source tree CWD */
-    snprintf(script_path, sizeof(script_path), "scripts/perception.py");
-    return script_path;
-}
-
 static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
     /* Optional delay before capture (for UI animations / page loads) */
     cJSON *delay = cJSON_GetObjectItem(params, "delay_ms");
@@ -155,50 +128,11 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
 
     s->screenshot_count++;
 
-    /* Run perception pipeline: Tesseract OCR */
-    const char *script = get_perception_script();
-    char cmd[2048];
-    snprintf(cmd, sizeof(cmd), "python3 '%s' '%s' 2>/dev/null", script, path);
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        free(path);
-        return tools_make_error("failed to run perception pipeline");
-    }
-
-    /* Read JSON output from perception.py */
-    char *json_buf = NULL;
-    size_t json_len = 0;
-    size_t json_cap = 0;
-    char chunk[4096];
-    size_t nr;
-    while ((nr = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
-        if (json_len + nr + 1 > json_cap) {
-            json_cap = (json_len + nr + 1) * 2;
-            char *tmp = realloc(json_buf, json_cap);
-            if (!tmp) { free(json_buf); pclose(fp); free(path);
-                return tools_make_error("out of memory reading perception output"); }
-            json_buf = tmp;
-        }
-        memcpy(json_buf + json_len, chunk, nr);
-        json_len += nr;
-    }
-    int status = pclose(fp);
-
-    if (!json_buf || json_len == 0 || status != 0) {
-        free(json_buf);
-        free(path);
-        return tools_make_error("perception pipeline returned no output");
-    }
-    json_buf[json_len] = '\0';
-
-    /* Parse the JSON from perception.py */
-    cJSON *perception = cJSON_Parse(json_buf);
-    free(json_buf);
-
+    /* Run perception pipeline: native Tesseract OCR */
+    cJSON *perception = perception_analyze(path);
     if (!perception) {
         free(path);
-        return tools_make_error("failed to parse perception pipeline JSON output");
+        return tools_make_error("perception analysis failed");
     }
 
     /* Check for error field */
@@ -582,6 +516,7 @@ void tool_device_cleanup(const char *session_dir) {
         g_device_session->stream = NULL;  /* prevent double-free in close */
     }
 
+    perception_cleanup();
     device_session_close(g_device_session);
     g_device_session = NULL;
 }
