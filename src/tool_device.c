@@ -155,7 +155,7 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
 
     s->screenshot_count++;
 
-    /* Run perception pipeline: OmniParser YOLO + Tesseract OCR */
+    /* Run perception pipeline: Tesseract OCR */
     const char *script = get_perception_script();
     char cmd[2048];
     snprintf(cmd, sizeof(cmd), "python3 '%s' '%s' 2>/dev/null", script, path);
@@ -211,28 +211,16 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
         return tools_make_error(emsg);
     }
 
-    /* Build result: include the summary as the main content,
-     * plus structured data for programmatic use */
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "action", "screenshot");
-    cJSON_AddStringToObject(meta, "screenshot_path", path);
-    cJSON_AddNumberToObject(meta, "width", w);
-    cJSON_AddNumberToObject(meta, "height", h);
-    cJSON_AddNumberToObject(meta, "screenshot_number", s->screenshot_count);
+    /* Pass the full perception JSON to the LLM — add meta fields into it */
+    cJSON_AddStringToObject(perception, "action", "screenshot");
+    cJSON_ReplaceItemInObject(perception, "screenshot_path",
+                              cJSON_CreateString(path));
+    cJSON_AddNumberToObject(perception, "width", w);
+    cJSON_AddNumberToObject(perception, "height", h);
+    cJSON_AddNumberToObject(perception, "screenshot_number", s->screenshot_count);
 
-    /* Move fields from perception result into meta */
-    cJSON *summary = cJSON_DetachItemFromObject(perception, "summary");
-    if (summary) cJSON_AddItemToObject(meta, "summary", summary);
-
-    cJSON *widget_count = cJSON_GetObjectItem(perception, "widget_count");
-    if (widget_count) cJSON_AddNumberToObject(meta, "widget_count", widget_count->valuedouble);
-
-    cJSON *text_count = cJSON_GetObjectItem(perception, "text_count");
-    if (text_count) cJSON_AddNumberToObject(meta, "text_count", text_count->valuedouble);
-
-    cJSON_Delete(perception);
     free(path);
-    return tools_make_result(1, meta, NULL);
+    return tools_make_result(1, perception, NULL);
 }
 
 static tool_result_t do_click(device_session_t *s, cJSON *params,
@@ -558,15 +546,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
 
     /* Journal the result so it appears in reactRX.md */
     {
-        char *store_content = NULL;
-        /* For screenshot results, store the compact summary as plain text
-         * instead of the full JSON meta — much more LLM-friendly */
-        cJSON *sumj = tr.meta ? cJSON_GetObjectItem(tr.meta, "summary") : NULL;
-        if (sumj && cJSON_IsString(sumj) && sumj->valuestring) {
-            store_content = strdup(sumj->valuestring);
-        } else {
-            store_content = tr.meta ? cJSON_Print(tr.meta) : strdup("{}");
-        }
+        char *store_content = tr.meta ? cJSON_Print(tr.meta) : strdup("{}");
         char *hash = store_save(ctx->store, store_content ? store_content : "{}");
         char *alias = tool_register_alias(ctx, hash ? hash : "");
         const char *err = NULL;
