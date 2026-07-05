@@ -215,6 +215,72 @@ static const char *extract_desc(const char *tool, cJSON *params) {
                  len, s, (nl || (int)strlen(s) > 80) ? "..." : "");
         return trunc_desc;
     }
+    /* device_control: show "subcommand param=val ..." instead of
+     * "command=subcommand param=val ..." — the "command" param acts as
+     * a subcommand and reads better without the key= prefix. */
+    if (strcmp(tool, "device_control") == 0) {
+        static char dc_desc[512];
+        int pos = 0;
+        cJSON *cmd = cJSON_GetObjectItem(params, "command");
+        if (cmd && cmd->valuestring) {
+            int clen = (int)strlen(cmd->valuestring);
+            if (clen > (int)sizeof(dc_desc) - 2) clen = (int)sizeof(dc_desc) - 2;
+            memcpy(dc_desc, cmd->valuestring, (size_t)clen);
+            pos = clen;
+        }
+        cJSON *child = params->child;
+        while (child && pos < (int)sizeof(dc_desc) - 2) {
+            if (!child->string ||
+                strcmp(child->string, "thought") == 0 ||
+                strcmp(child->string, "action") == 0 ||
+                strcmp(child->string, "command") == 0) {
+                child = child->next;
+                continue;
+            }
+            if (cJSON_IsBool(child) && !cJSON_IsTrue(child)) {
+                child = child->next;
+                continue;
+            }
+            if (pos > 0) dc_desc[pos++] = ' ';
+            /* Always show key= for remaining params */
+            int klen = (int)strlen(child->string);
+            int room = (int)sizeof(dc_desc) - 1 - pos;
+            if (room < klen + 2) break;
+            memcpy(dc_desc + pos, child->string, (size_t)klen);
+            pos += klen;
+            dc_desc[pos++] = '=';
+            if (child->valuestring) {
+                int vlen = (int)strlen(child->valuestring);
+                int trunc = (vlen > 60);
+                if (trunc) vlen = 60;
+                room = (int)sizeof(dc_desc) - 4 - pos;
+                if (vlen > room) { vlen = room; trunc = 1; }
+                if (vlen > 0) {
+                    memcpy(dc_desc + pos, child->valuestring, (size_t)vlen);
+                    pos += vlen;
+                }
+                if (trunc && pos < (int)sizeof(dc_desc) - 4) {
+                    memcpy(dc_desc + pos, "...", 3);
+                    pos += 3;
+                }
+            } else if (cJSON_IsNumber(child)) {
+                room = (int)sizeof(dc_desc) - 1 - pos;
+                int n = snprintf(dc_desc + pos, (size_t)room, "%g",
+                                 cJSON_GetNumberValue(child));
+                if (n > 0 && n < room) pos += n;
+            } else if (cJSON_IsBool(child)) {
+                room = (int)sizeof(dc_desc) - 1 - pos;
+                if (room >= 4) {
+                    memcpy(dc_desc + pos, "true", 4);
+                    pos += 4;
+                }
+            }
+            child = child->next;
+        }
+        dc_desc[pos] = '\0';
+        if (pos > 0) return dc_desc;
+        return "";
+    }
     /* Generic fallback: show params compactly (skip "thought").
      * - Single visible param: show just value, no key= prefix
      * - Multiple visible params: show key=value pairs
