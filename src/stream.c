@@ -488,8 +488,16 @@ char *stream_extract_frame(stream_t *s, const struct timespec *timestamp,
         /* FAST PATH: "now" -- snapshot the current framebuffer.
          * No HEVC decode needed. */
         if (!s->fb_valid) {
+            /* Wait for capture thread to deliver the first frame.
+             * Poll with 50ms sleeps, up to 5s total. */
             pthread_mutex_unlock(&s->mutex);
-            return NULL;
+            for (int i = 0; i < 100 && s->running && !s->fb_valid; i++)
+                usleep(50000);  /* 50ms */
+            pthread_mutex_lock(&s->mutex);
+            if (!s->fb_valid) {
+                pthread_mutex_unlock(&s->mutex);
+                return NULL;
+            }
         }
         int w = s->native_w, h = s->native_h;
         uint8_t *copy = malloc((size_t)w * h * 4);
@@ -647,8 +655,15 @@ uint8_t *stream_get_current_frame(stream_t *s, int *out_w, int *out_h) {
 
     pthread_mutex_lock(&s->mutex);
     if (!s->fb_valid) {
+        /* Wait for capture thread to deliver the first frame. */
         pthread_mutex_unlock(&s->mutex);
-        return NULL;
+        for (int i = 0; i < 100 && s->running && !s->fb_valid; i++)
+            usleep(50000);  /* 50ms, up to 5s total */
+        pthread_mutex_lock(&s->mutex);
+        if (!s->fb_valid) {
+            pthread_mutex_unlock(&s->mutex);
+            return NULL;
+        }
     }
     int w = s->native_w, h = s->native_h;
     uint8_t *copy = malloc((size_t)w * h * 4);
