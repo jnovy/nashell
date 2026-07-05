@@ -52,7 +52,7 @@
 
 /* ── Comparison functions for qsort ───────────────────── */
 
-/* DEDUP3: Safe three-way comparison macro — avoids overflow from subtraction. */
+/* Safe three-way comparison macro — avoids overflow from subtraction. */
 #define SAFE_CMP(a, b) (((a) > (b)) - ((a) < (b)))
 
 typedef struct { int idx; int len; } compress_cand_t;
@@ -93,7 +93,7 @@ evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
     /* Delegate to react_find_tool_partner() to eliminate duplicated
      * ID extraction + JSON fallback + forward scanning logic (~30 lines).
      * Note: react_find_tool_partner() checks importance >= HIGH and returns -1
-     * for protected partners, which is the correct behavior (BUG 2 fix). */
+     * for protected partners, which is the correct behavior. */
     for (int i = range_start; i < range_end && i < chat->n_msgs; i++) {
         if (!chat->msgs[i].tool_calls_json) continue;
         if (map.partner[i] >= 0) continue;  /* already matched */
@@ -178,8 +178,7 @@ long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* Inject breadcrumb summary + MEMORY_HINT + scratchpad after emergency eviction.
  * Shared between evict_finalize strategy-2 and react_emergency_evict_and_reinject.
- * scratchpad re-injection is budget-guarded (only if room permits),
- * fixing inconsistency where react_emergency_evict_and_reinject always re-injected. */
+ * Scratchpad re-injection is budget-guarded (only if room permits). */
 void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
                                          int n_evicted, long context_budget,
                                          int target_pct, int skip_sp) {

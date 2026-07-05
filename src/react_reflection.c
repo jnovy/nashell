@@ -362,9 +362,9 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 /* Deduplication guard — check if a very similar memory
                  * already exists before storing. This prevents reflection from
                  * creating near-duplicate entries on every task.
-                 * B4 fix: Load existing entry's cached .emb file directly instead
-                 * of calling memory_query() (which generates a query embedding)
-                 * and then re-embedding the existing entry. Saves 2 API calls. */
+                 * Loads existing entry's cached .emb file directly instead
+                 * of calling memory_query() (which would generate a query
+                 * embedding and re-embed the existing entry). */
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&

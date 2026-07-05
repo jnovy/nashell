@@ -24,7 +24,7 @@
 
 /* ── Eviction Scoring Constants ────────────────────── */
 /* Shared between progressive (react_eviction.c) and emergency (react_error.c)
- * scorers.  Change here to keep both in sync — see Review Issue #1. */
+ * scorers.  Change here to keep both in sync. */
 #define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
 #define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
 #define REACT_SCORE_POS_RANGE       19   /* position normalization range */
@@ -117,10 +117,10 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 }
 
 /* Maximum total recovery attempts across all error types before giving up.
- * Prevents unbounded retries from alternating error types (D3 fix). */
+ * Prevents unbounded retries from alternating error types. */
 #define REACT_MAX_TOTAL_RECOVERY    12
 
-/* L1 FIX: Maximum keep_tail to prevent unbounded tail growth from
+/* Maximum keep_tail — prevents unbounded tail growth from
  * interleaved user_ask responses shrinking the evictable range. */
 #define REACT_KEEP_TAIL_MAX          8
 
@@ -152,8 +152,8 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
     "later. Use notes(op=\"append\", section=\"findings\", " \
     "content=\"...\").]"
 
-/* FIX #11: Scratchpad message prefix — eliminates duplicate string literals
- * in react_inject_scratchpad_msg and react_format_scratchpad_msg. */
+/* Scratchpad message prefix — shared by react_inject_scratchpad_msg
+ * and react_format_scratchpad_msg. */
 #define REACT_SP_PREFIX     "[SCRATCHPAD]\n"
 #define REACT_SP_PREFIX_LEN 13  /* strlen("[SCRATCHPAD]\n") */
 
@@ -180,7 +180,7 @@ typedef struct {
     int                  n_msgs;       /* length of similarities array */
 } evict_score_ctx_t;
 
-/* ── Generic Mark-Sweep (Review B4) ────────────────── */
+/* ── Generic Mark-Sweep ────────────────────────────── */
 
 /* Scoring callback for evict_mark_candidates().
  * Called once per evictable message (importance < HIGH).
@@ -219,15 +219,13 @@ static inline int react_usage_pct(long total_chars, long context_budget) {
 }
 
 /* Calculate total chars across all messages in a chat.
- * Review B1/C4: Now O(1) — returns cached total_chars maintained incrementally
- * by llm_chat_add, remove, insert, and replace_content. Previously O(n) with
- * 17 call sites causing thousands of redundant strlen() calls. */
+ * O(1) — returns cached total_chars maintained incrementally
+ * by llm_chat_add, remove, insert, and replace_content. */
 static inline long react_calc_total_chars(const llm_chat_t *chat) {
     return chat->total_chars;
 }
 
-/* FIX #12: Convenience wrapper — combines calc_total_chars + usage_pct.
- * This 2-function composition appeared 8+ times across eviction files. */
+/* Convenience wrapper — combines calc_total_chars + usage_pct. */
 static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
     return react_usage_pct(react_calc_total_chars(chat), budget);
 }
@@ -241,8 +239,7 @@ static inline int react_eviction_target_pct(const config_t *cfg) {
     return pol.target_pct;
 }
 
-/* FIX #11: Compute total chars in head (messages before evict_start).
- * Eliminates 3 copies of the same loop. */
+/* Compute total chars in head (messages before evict_start). */
 static inline long react_head_chars(const llm_chat_t *chat, int evict_start) {
     long hc = 0;
     for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
@@ -250,7 +247,7 @@ static inline long react_head_chars(const llm_chat_t *chat, int evict_start) {
     return hc;
 }
 
-/* FIX #11b: Compute total chars in tail (messages at or after evict_end). */
+/* Compute total chars in tail (messages at or after evict_end). */
 static inline long react_tail_chars(const llm_chat_t *chat, int evict_end) {
     long tc = 0;
     for (int i = evict_end; i < chat->n_msgs; i++)
@@ -258,14 +255,13 @@ static inline long react_tail_chars(const llm_chat_t *chat, int evict_end) {
     return tc;
 }
 
-/* FIX FLAW 4: Shared floor calculation used by both progressive eviction (pass3)
- * and emergency eviction. Eliminates duplication and ensures consistency.
+/* Shared floor calculation for progressive and emergency eviction.
  * Returns minimum chars that must be retained in the evictable region.
  * If known_head_chars >= 0, uses that value directly to avoid recomputing.
- * FIX #5: Subtracts tail_chars from base — the floor should be based on the
- * evictable region capacity, not the entire non-head budget. Pass -1 for
+ * Subtracts tail_chars from base — the floor is based on the evictable
+ * region capacity, not the entire non-head budget.  Pass -1 for
  * known_tail_chars to auto-compute (requires evict_end).
- * Now reads floor_pct and floor_min_chars from eviction_policy_t. */
+ * Reads floor_pct and floor_min_chars from eviction_policy_t. */
 static inline long react_calc_floor_chars_pol(const llm_chat_t *chat,
                                               int evict_start, int evict_end,
                                               long context_budget,
@@ -284,10 +280,6 @@ static inline long react_calc_floor_chars_pol(const llm_chat_t *chat,
     long floor = base * pol->floor_pct / 100;
     return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
 }
-/* BUG 5 FIX: Removed dead react_calc_floor_chars() convenience wrapper that
- * called react_eviction_policy(NULL), using hardcoded defaults instead of
- * user config. All callers use react_calc_floor_chars_pol() directly. */
-
 /* Compute context_budget in chars from provider config. */
 static inline long react_context_budget(const react_ctx_t *ctx) {
     double cpt = (double)react_get_chars_per_token(ctx);
@@ -295,11 +287,11 @@ static inline long react_context_budget(const react_ctx_t *ctx) {
         ? (long)(ctx->provider->cfg.context_size * cpt) : 0;
 }
 
-/* D1+S5 FIX: Compute scratchpad budget using the dual-cap policy.
+/* Compute scratchpad budget using the dual-cap policy.
  * Returns min(abs_cap, rel_cap) with a floor of min_budget.
- * Shared between react_reinject_scratchpad(), react_build_context(),
- * and evict_finalize() to eliminate 3 copies of the same logic.
- * Now reads sp_budget_pct / sp_max_remaining_pct / sp_fallback from policy. */
+ * Shared by react_reinject_scratchpad(), react_build_context(),
+ * and evict_finalize().
+ * Reads sp_budget_pct / sp_max_remaining_pct / sp_fallback from policy. */
 static inline size_t react_scratchpad_budget_pol(long context_budget,
                                                  long current_chars,
                                                  size_t min_budget,
@@ -324,17 +316,14 @@ static inline size_t react_scratchpad_budget(long context_budget,
                                        min_budget, &pol);
 }
 
-/* SIMP1 FIX: Compute a budget cap = max(budget * pct / 100, min_val).
+/* Compute a budget cap = max(budget * pct / 100, min_val).
  * Shared between breadcrumb index and summary cap computations. */
 static inline long react_budget_cap(long budget, int pct, long min_val) {
     long cap = budget * pct / 100;
     return cap < min_val ? min_val : cap;
 }
 
-/* D1 FIX: Format and inject a "[SCRATCHPAD]\n..." message at position pos.
- * Eliminates 4 copies of the alloc + snprintf("[SCRATCHPAD]\n%s") + insert
- * pattern across react_eviction.c, react_context.c, and react_error.c.
- * FIX #11: Uses REACT_SP_PREFIX constant instead of duplicate string literal.
+/* Format and inject a "[SCRATCHPAD]\n..." message at position pos.
  * Returns the injected message length (0 if nothing injected). */
 static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
                                                 const char *sp_content) {
@@ -350,11 +339,9 @@ static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
     return injected;
 }
 
-/* B5 FIX: Format a "[SCRATCHPAD]\n..." string without inserting.
- * Returns malloc'd formatted string, or NULL. Caller must free().
- * Used by react_error.c tier-2 recovery (replace in-place, can't use
- * react_inject_scratchpad_msg which does insert).
- * FIX #11: Uses REACT_SP_PREFIX constant. */
+/* Format a "[SCRATCHPAD]\n..." string without inserting into chat.
+ * Returns malloc'd formatted string, or NULL.  Caller must free().
+ * Used by react_error.c tier-2 recovery (replace in-place). */
 static inline char *react_format_scratchpad_msg(const char *content) {
     if (!content || !content[0]) return NULL;
     size_t clen = strlen(content);
@@ -365,10 +352,9 @@ static inline char *react_format_scratchpad_msg(const char *content) {
     return msg;
 }
 
-/* F2/DD1 FIX: Pair-safe boundary adjustment for eviction ranges.
+/* Pair-safe boundary adjustment for eviction ranges.
  * Adjusts evict_start/evict_end so that no tool_call/tool_result pair is
- * split across the boundary. Shared between progressive and emergency eviction.
- * Modifies *evict_start and *evict_end in place. */
+ * split across the boundary.  Modifies *evict_start and *evict_end in place. */
 static inline void evict_adjust_boundaries(const llm_chat_t *chat,
                                             int *evict_start, int *evict_end) {
     /* Adjust evict_end: pull back if a tool_result sits just outside
@@ -396,13 +382,12 @@ static inline void evict_adjust_boundaries(const llm_chat_t *chat,
         (*evict_start)++;
 }
 
-/* D3 FIX: Shared mark-sweep helper — removes marked messages in reverse order
- * and recovers tool threading. Used by both progressive and emergency eviction.
- * Returns the number of messages actually removed. */
+/* Mark-sweep helper — removes marked messages in reverse order
+ * and recovers tool threading.  Returns the number of messages removed. */
 int evict_sweep_marked(llm_chat_t *chat, int evict_start,
                        const int *evict_mark, int n_evictable);
 
-/* Review B4: Generic mark-candidates — scores all evictable messages using
+/* Generic mark-candidates — scores all evictable messages using
  * a caller-supplied scoring function, sorts by score ascending (lowest =
  * evicted first), and marks candidates for removal while respecting:
  *   - Compaction floor (minimum retained content)
@@ -438,21 +423,21 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
  * For tool_calls_json messages: scans forward for matching tool_call_id.
  * For tool_call_id messages: scans backward for matching tool_calls_json.
  * Returns partner index within [range_start, range_end), or -1 if none.
- * FIX: Matches by scanning (not adjacency) to handle interleaved messages,
+ * Matches by scanning (not adjacency) to handle interleaved messages,
  * and validates importance < HIGH before returning. */
 int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                             int range_start, int range_end);
 
 /* Recover tool_call threading state (last_tool_call_id / last_tool_calls_json)
  * from surviving messages after eviction. Shared between progressive eviction
- * (pass3) and emergency eviction for consistency (FIX B4). */
+ * (pass3) and emergency eviction. */
 void react_recover_tool_threading(llm_chat_t *chat);
 
 /* Safe JSON string accessor */
 const char *react_json_get_str(cJSON *obj, const char *key);
 
 /* Build the full system prompt string. Returns malloc'd string — caller frees.
- * Used for both chat injection and journal logging (Fix #12). */
+ * Used for both chat injection and journal logging. */
 char *react_build_system_prompt(const config_t *cfg, const char *session_dir);
 
 /* Add system prompt to chat, appending model-specific rules if configured. */
@@ -515,7 +500,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          const char *user_query,
                          react_event_fn on_event, void *userdata);
 
-/* FIX #9: Inject memory index + pinned knowledge into chat.
+/* Inject memory index + pinned knowledge into chat.
  * Used by react_build_context() and react_checkpoint_restore().
  * Returns mem_summary and pinned via output params for logging (caller frees).
  * Pass NULL for output params if not needed. */
@@ -528,10 +513,9 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
  * to reach target_pct of context budget. context_budget is in chars (0 = unknown,
  * falls back to target_pct of current usage). Returns count evicted.
  * target_pct: 0 = use pol.emergency_target_pct default (80%).
- * Flaw 2 FIX: Accepts target so callers can pass a value consistent with
- * the configured eviction_pct, preventing immediate re-trigger.
- * FIX #3: Takes budget param so it targets budget, not current usage.
- * FIX #7: Pair-safe — removes tool_call/tool_result pairs together. */
+ * Accepts target_pct so callers can match the configured eviction_pct
+ * (preventing immediate re-trigger).  Targets budget, not current usage.
+ * Pair-safe — removes tool_call/tool_result pairs together. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
                           const config_t *cfg);
 
@@ -544,7 +528,7 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
                                          int n_evicted, long context_budget,
                                          int target_pct, int skip_sp);
 
-/* D3 FIX: Emergency evict + scratchpad re-injection helper.
+/* Emergency evict + scratchpad re-injection helper.
  * Combines react_emergency_evict + react_reinject_scratchpad into one call.
  * Returns number of messages evicted (0 if none). */
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat);
@@ -568,7 +552,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
 /* Re-inject scratchpad at insert_pos in chat.
  * Returns the serialized scratchpad size in chars (0 if nothing injected).
- * Shared between progressive and emergency eviction (BUG A/C FIX). */
+ * Shared between progressive and emergency eviction. */
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos);
 
@@ -579,15 +563,13 @@ evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
                                              int range_start, int range_end);
 void evict_free_partner_map(evict_partner_map_t *map);
 
-/* Unified post-eviction finalization. Re-injects scratchpad,
- * breadcrumbs, and compaction hint in a single pass. Verifies budget.
- * FIX #5: breadcrumb_str ownership is CONSUMED (freed) by this function.
+/* Unified post-eviction finalization.  Re-injects scratchpad,
+ * breadcrumbs, and compaction hint in a single pass.  Verifies budget.
+ * breadcrumb_str ownership is CONSUMED (freed) by this function.
  * Caller must not use breadcrumb_str after calling evict_finalize().
- * FIX #1: n_evicted tracks actual eviction count — eviction status is no
- * longer inferred from breadcrumb_str being non-NULL (which fails when all
- * evicted messages are system-role or empty-content).
- * BUG2+3 FIX: Returns the number of messages emergency-evicted by Strategy 2
- * (0 if Strategy 2 didn't fire). Callers use this for journal + event tracking. */
+ * n_evicted tracks actual eviction count (not inferred from breadcrumb_str).
+ * Returns the number of messages emergency-evicted by Strategy 2
+ * (0 if Strategy 2 didn't fire). */
 int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
                    char *breadcrumb_str /* consumed */, int n_evicted,

@@ -1,5 +1,5 @@
 /* react_context.c — Initial context construction for the react loop.
- * Extracted from react_run() to reduce its ~900-line monolith (Fix #2).
+ * Extracted from react_run().
  *
  * Builds the initial chat context: system prompt, memory injection,
  * scratchpad, previous result, user query, and journal logging.
@@ -418,8 +418,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
-        /* Replaced INJECT_TYPE macro with debuggable static function calls.
-         * Progressive disclosure: skills use summary mode by default (description only)
+        /* Progressive disclosure: skills use summary mode by default (description only)
          * unless skill_full_disclosure is set. Other types always inject full text. */
         int skill_summary = ctx->tools->cfg
             ? !ctx->tools->cfg->skill_full_disclosure : 0;
@@ -607,8 +606,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     /* User query */
     llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
 
-    /* Record system prompt and user query in journal (step 0).
-     * Fix #12: reuse react_build_system_prompt(). */
+    /* Record system prompt and user query in journal (step 0). */
     {
         char *sys_prompt = react_build_system_prompt(ctx->tools->cfg, ctx->tools->session_dir);
         char *sys_hash = store_save(ctx->tools->store, sys_prompt);

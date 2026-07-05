@@ -33,7 +33,7 @@ typedef struct {
  *     from ctx->rt just before each provider_complete_stream() call.
  *     The authoritative values live in ctx->rt (INFER-ONLY); cfg is only
  *     written as a transfer mechanism immediately before the provider call.
- *     FIX #4: chars_per_token is now in ctx->rt (not provider->cfg).
+ *     chars_per_token lives in ctx->rt (not provider->cfg).
  *
  *   MAIN→INFER (set by main thread, read by inference thread):
  *     pause_requested  — atomic_int, safe for cross-thread signaling
@@ -48,7 +48,7 @@ typedef struct {
  *   BETWEEN-RUNS (set by main thread between react_run calls, after join):
  *     last_query, last_result — safe by happens-before (pthread_join → next setup)
  */
-/* FIX #4: Mutable per-loop runtime state.
+/* Mutable per-loop runtime state.
  * These values change during react_run() and must NOT live in provider->cfg
  * (which is documented as INIT-ONLY). */
 typedef struct {
