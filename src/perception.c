@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* ── Constants ─────────────────────────────────────────────── */
 
@@ -540,14 +542,38 @@ static int text_cmp(const void *a, const void *b) {
 int perception_init(void) {
     if (g_initialized) return 0;
 
+    /* Suppress all Leptonica messages (info, warnings, etc.) */
+    setMsgSeverity(L_SEVERITY_NONE);
+
     g_tess = TessBaseAPICreate();
     if (!g_tess) return -1;
 
-    if (TessBaseAPIInit3(g_tess, NULL, "eng") != 0) {
+    /* Redirect stderr during Init3 — Tesseract prints debug messages
+     * to stderr during initialization before we can set debug_file. */
+    int saved_stderr = dup(STDERR_FILENO);
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+        dup2(devnull, STDERR_FILENO);
+        close(devnull);
+    }
+
+    int rc = TessBaseAPIInit3(g_tess, NULL, "eng");
+
+    /* Restore stderr */
+    if (saved_stderr >= 0) {
+        dup2(saved_stderr, STDERR_FILENO);
+        close(saved_stderr);
+    }
+
+    if (rc != 0) {
         TessBaseAPIDelete(g_tess);
         g_tess = NULL;
         return -1;
     }
+
+    /* Suppress Tesseract debug output during recognition */
+    TessBaseAPISetVariable(g_tess, "debug_file", "/dev/null");
+    TessBaseAPISetVariable(g_tess, "classify_debug_level", "0");
 
     g_initialized = 1;
     return 0;
