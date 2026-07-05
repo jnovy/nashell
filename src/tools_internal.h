@@ -89,4 +89,9 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params);
 /* tool_device.c */
 tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params);
 
+/* Stop the device stream and save the capture to the session directory.
+ * Called from the react loop when `done` is produced.  Safe to call
+ * when no device session exists (no-op). */
+void tool_device_cleanup(const char *session_dir);
+
 #endif /* TOOLS_INTERNAL_H */

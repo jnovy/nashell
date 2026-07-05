@@ -10,7 +10,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <pthread.h>
 #include <zlib.h>
+#include <jpeglib.h>
 
 /* Internal display structure — must match layout in display_vnc.c exactly */
 struct display_t {
@@ -28,8 +30,12 @@ struct display_t {
     z_stream          zstreams[4];
     int               zstream_inited[4];
 
+    /* Socket mutex -- serializes VNC protocol I/O between threads */
+    pthread_mutex_t   sock_mutex;
+
     /* Backend function pointers */
     char *(*capture_fn)(display_t *d);
+    int   (*update_framebuffer_fn)(display_t *d);
     void  (*close_fn)(display_t *d);
 };
 
@@ -72,7 +78,10 @@ display_t *display_open(const display_config_t *cfg) {
 
 char *display_capture(display_t *d) {
     if (!d || !d->capture_fn) return NULL;
-    return d->capture_fn(d);
+    pthread_mutex_lock(&d->sock_mutex);
+    char *path = d->capture_fn(d);
+    pthread_mutex_unlock(&d->sock_mutex);
+    return path;
 }
 
 int display_get_dimensions(display_t *d, int *w, int *h) {
@@ -96,6 +105,67 @@ int display_get_vnc_sock_fd(display_t *d) {
     if (d && d->type == DISPLAY_VNC)
         return d->sock_fd;
     return -1;
+}
+
+/* ── Framebuffer access (for stream.c) ────────────────────── */
+
+int display_update_framebuffer(display_t *d) {
+    if (!d || !d->update_framebuffer_fn) return -1;
+    pthread_mutex_lock(&d->sock_mutex);
+    int rc = d->update_framebuffer_fn(d);
+    pthread_mutex_unlock(&d->sock_mutex);
+    return rc;
+}
+
+void display_copy_framebuffer(display_t *d, uint8_t *buf) {
+    if (!d || !d->framebuffer || !buf) return;
+    memcpy(buf, d->framebuffer, (size_t)d->native_w * d->native_h * 4);
+}
+
+/* ── JPEG writer (shared by display backends and stream.c) ─── */
+
+int display_write_jpeg(const char *path, const uint8_t *bgra,
+                       int width, int height, int quality) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+
+    struct jpeg_compress_struct cinfo;
+    struct jpeg_error_mgr jerr;
+    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_create_compress(&cinfo);
+    jpeg_stdio_dest(&cinfo, fp);
+
+    cinfo.image_width = (JDIMENSION)width;
+    cinfo.image_height = (JDIMENSION)height;
+    cinfo.input_components = 3;
+    cinfo.in_color_space = JCS_RGB;
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, quality, TRUE);
+    jpeg_start_compress(&cinfo, TRUE);
+
+    uint8_t *row = malloc((size_t)width * 3);
+    if (!row) {
+        jpeg_destroy_compress(&cinfo);
+        fclose(fp);
+        return -1;
+    }
+
+    for (int y = 0; y < height; y++) {
+        const uint8_t *src = bgra + (size_t)y * width * 4;
+        for (int x = 0; x < width; x++) {
+            row[x * 3 + 0] = src[x * 4 + 2]; /* R from BGRA offset 2 */
+            row[x * 3 + 1] = src[x * 4 + 1]; /* G from BGRA offset 1 */
+            row[x * 3 + 2] = src[x * 4 + 0]; /* B from BGRA offset 0 */
+        }
+        JSAMPROW rowp = row;
+        jpeg_write_scanlines(&cinfo, &rowp, 1);
+    }
+
+    free(row);
+    jpeg_finish_compress(&cinfo);
+    jpeg_destroy_compress(&cinfo);
+    fclose(fp);
+    return 0;
 }
 
 /* ── Helpers exported to backends ──────────────────────────── */

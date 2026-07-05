@@ -8,10 +8,22 @@ else
   ORT_LDFLAGS = -lonnxruntime
 endif
 
+# HEVC streaming: detect libx265 + libde265 for continuous capture.
+# Set HAVE_X265=0 to force-disable even if libraries are present.
+HAVE_X265 ?= $(shell pkg-config --exists x265 libde265 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAVE_X265),1)
+  X265_CFLAGS  = -DHAVE_X265 $(shell pkg-config --cflags x265 libde265 2>/dev/null)
+  X265_LDFLAGS = $(shell pkg-config --libs x265 libde265 2>/dev/null)
+else
+  X265_CFLAGS  =
+  X265_LDFLAGS =
+endif
+CFLAGS += $(X265_CFLAGS)
+
 # VNC backend uses direct RFB protocol (no external VNC library).
 # Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
 #           OpenSSL/libcrypto (VNC DES authentication — already linked).
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS)
+LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS) $(X265_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -60,6 +72,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/input.c \
           src/input_vnc.c \
           src/device.c \
+          src/stream.c \
           src/tool_device.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
@@ -128,6 +141,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/input.c \
           src/input_vnc.c \
           src/device.c \
+          src/stream.c \
           src/tool_device.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 

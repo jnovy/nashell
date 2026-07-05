@@ -70,8 +70,14 @@ struct display_t {
     z_stream          zstreams[4];
     int               zstream_inited[4];
 
+    /* Socket mutex -- serializes VNC protocol I/O between the stream
+     * capture thread (display_update_framebuffer) and the inference
+     * thread (input_vnc send calls). */
+    pthread_mutex_t   sock_mutex;
+
     /* Backend function pointers (for display.c dispatch) */
     char *(*capture_fn)(struct display_t *d);
+    int   (*update_framebuffer_fn)(struct display_t *d);
     void  (*close_fn)(struct display_t *d);
 };
 
@@ -688,10 +694,10 @@ static int write_jpeg(const char *path, const uint8_t *bgra,
     return 0;
 }
 
-/* ── Capture ────────────────────────────────────────────────── */
+/* ── Framebuffer update (VNC protocol only, no disk I/O) ────── */
 
-static char *display_capture_vnc(display_t *d) {
-    if (d->sock_fd < 0) return NULL;
+static int display_update_framebuffer_vnc(display_t *d) {
+    if (d->sock_fd < 0) return -1;
 
     /* Send FramebufferUpdateRequest (non-incremental for full refresh)
      * msg(1) + incremental(1) + x(2) + y(2) + w(2) + h(2) = 10 bytes */
@@ -702,23 +708,23 @@ static char *display_capture_vnc(display_t *d) {
     wr16(req + 4, 0);
     wr16(req + 6, (uint16_t)d->native_w);
     wr16(req + 8, (uint16_t)d->native_h);
-    if (send_exact(d->sock_fd, req, 10) < 0) return NULL;
+    if (send_exact(d->sock_fd, req, 10) < 0) return -1;
 
-    /* Read server response — loop until we get a FramebufferUpdate */
+    /* Read server response -- loop until we get a FramebufferUpdate */
     for (;;) {
         uint8_t msg_type;
-        if (recv_exact(d->sock_fd, &msg_type, 1) < 0) return NULL;
+        if (recv_exact(d->sock_fd, &msg_type, 1) < 0) return -1;
 
         if (msg_type == RFB_FB_UPDATE) {
             /* Padding(1) + num_rects(2) */
             uint8_t hdr[3];
-            if (recv_exact(d->sock_fd, hdr, 3) < 0) return NULL;
+            if (recv_exact(d->sock_fd, hdr, 3) < 0) return -1;
             uint16_t num_rects = rd16(hdr + 1);
 
             for (int i = 0; i < num_rects; i++) {
                 /* x(2) + y(2) + w(2) + h(2) + encoding(4) = 12 bytes */
                 uint8_t rect_hdr[12];
-                if (recv_exact(d->sock_fd, rect_hdr, 12) < 0) return NULL;
+                if (recv_exact(d->sock_fd, rect_hdr, 12) < 0) return -1;
 
                 int rx = rd16(rect_hdr);
                 int ry = rd16(rect_hdr + 2);
@@ -727,22 +733,22 @@ static char *display_capture_vnc(display_t *d) {
                 int32_t enc = rd32s(rect_hdr + 8);
 
                 if (enc == RFB_ENC_DESKTOP_SIZE) {
-                    /* Resize — update dimensions and reallocate framebuffer */
+                    /* Resize -- update dimensions and reallocate framebuffer */
                     d->native_w = rw;
                     d->native_h = rh;
                     free(d->framebuffer);
                     d->framebuffer = calloc((size_t)rw * rh * 4, 1);
-                    if (!d->framebuffer) return NULL;
+                    if (!d->framebuffer) return -1;
 
                 } else if (enc == RFB_ENC_TIGHT) {
-                    if (parse_tight_rect(d, rx, ry, rw, rh) < 0) return NULL;
+                    if (parse_tight_rect(d, rx, ry, rw, rh) < 0) return -1;
 
                 } else if (enc == RFB_ENC_RAW) {
                     /* Raw: read w*h*4 bytes (BGRA), copy into framebuffer */
                     size_t raw_size = (size_t)rw * rh * 4;
                     uint8_t *raw = malloc(raw_size);
-                    if (!raw) return NULL;
-                    if (recv_exact(d->sock_fd, raw, raw_size) < 0) { free(raw); return NULL; }
+                    if (!raw) return -1;
+                    if (recv_exact(d->sock_fd, raw, raw_size) < 0) { free(raw); return -1; }
 
                     for (int y = 0; y < rh; y++) {
                         int dy = ry + y;
@@ -759,7 +765,7 @@ static char *display_capture_vnc(display_t *d) {
                 } else if (enc == RFB_ENC_COPYRECT) {
                     /* CopyRect: read source x(2) + y(2) */
                     uint8_t cr[4];
-                    if (recv_exact(d->sock_fd, cr, 4) < 0) return NULL;
+                    if (recv_exact(d->sock_fd, cr, 4) < 0) return -1;
                     int sx = rd16(cr);
                     int sy = rd16(cr + 2);
 
@@ -782,8 +788,8 @@ static char *display_capture_vnc(display_t *d) {
 
                 } else {
                     nash_log("[display_vnc] unsupported encoding %d, skipping rect", enc);
-                    /* Cannot skip unknown encoding — we don't know its size */
-                    return NULL;
+                    /* Cannot skip unknown encoding -- we don't know its size */
+                    return -1;
                 }
             }
             break;  /* Done processing FramebufferUpdate */
@@ -791,7 +797,7 @@ static char *display_capture_vnc(display_t *d) {
         } else if (msg_type == RFB_SERVER_CUT_TEXT) {
             /* ServerCutText: pad(3) + len(4) + text(len) */
             uint8_t sct[7];
-            if (recv_exact(d->sock_fd, sct, 7) < 0) return NULL;
+            if (recv_exact(d->sock_fd, sct, 7) < 0) return -1;
             uint32_t tlen = rd32(sct + 3);
             if (tlen > 0 && tlen < 10 * 1024 * 1024) {
                 uint8_t *discard = malloc(tlen);
@@ -807,7 +813,7 @@ static char *display_capture_vnc(display_t *d) {
         } else if (msg_type == RFB_SET_COLOUR_MAP) {
             /* SetColourMapEntries: pad(1) + firstColour(2) + numColours(2) + colours(6*n) */
             uint8_t cm[5];
-            if (recv_exact(d->sock_fd, cm, 5) < 0) return NULL;
+            if (recv_exact(d->sock_fd, cm, 5) < 0) return -1;
             uint16_t ncols = rd16(cm + 3);
             uint8_t *discard = malloc((size_t)ncols * 6);
             if (discard) {
@@ -817,9 +823,18 @@ static char *display_capture_vnc(display_t *d) {
 
         } else {
             nash_log("[display_vnc] unknown server message type %d", msg_type);
-            return NULL;
+            return -1;
         }
     }
+
+    return 0;
+}
+
+/* ── Capture (update framebuffer + write JPEG) ─────────────── */
+
+static char *display_capture_vnc(display_t *d) {
+    if (display_update_framebuffer_vnc(d) < 0)
+        return NULL;
 
     /* Write framebuffer to JPEG */
     const char *dir = d->cfg.screenshot_dir;
@@ -850,6 +865,7 @@ static void display_close_vnc(display_t *d) {
         }
     }
     free(d->framebuffer);
+    pthread_mutex_destroy(&d->sock_mutex);
     free(d);
 }
 
@@ -863,10 +879,13 @@ display_t *display_open_vnc(const display_config_t *cfg) {
     d->cfg = *cfg;
     d->sock_fd = -1;
     d->capture_fn = display_capture_vnc;
+    d->update_framebuffer_fn = display_update_framebuffer_vnc;
     d->close_fn = display_close_vnc;
     memset(d->zstream_inited, 0, sizeof(d->zstream_inited));
+    pthread_mutex_init(&d->sock_mutex, NULL);
 
     if (rfb_connect(d) < 0) {
+        pthread_mutex_destroy(&d->sock_mutex);
         free(d);
         return NULL;
     }

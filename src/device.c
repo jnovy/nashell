@@ -12,6 +12,7 @@
 
 device_session_t *device_session_open(const display_config_t *dcfg,
                                        const input_config_t *icfg,
+                                       const stream_config_t *scfg,
                                        int action_delay_ms,
                                        int screenshot_delay_ms) {
     device_session_t *s = calloc(1, sizeof(*s));
@@ -42,6 +43,14 @@ device_session_t *device_session_open(const display_config_t *dcfg,
         }
     }
 
+    /* Start continuous HEVC capture stream if configured */
+    if (scfg) {
+        s->stream = stream_start(s->display, scfg);
+        if (!s->stream) {
+            nash_log("[device] stream not started (continuing with on-demand capture)");
+        }
+    }
+
     /* Safety defaults */
     s->action_delay_ms    = action_delay_ms >= 0 ? action_delay_ms : 500;
     s->screenshot_delay_ms = screenshot_delay_ms >= 0 ? screenshot_delay_ms : 300;
@@ -55,7 +64,8 @@ device_session_t *device_session_open(const display_config_t *dcfg,
 
 void device_session_close(device_session_t *s) {
     if (!s) return;
-    if (s->input)  input_close(s->input);
+    if (s->stream)  stream_stop(s->stream);
+    if (s->input)   input_close(s->input);
     if (s->display) display_close(s->display);
     free(s);
 }

@@ -395,6 +395,14 @@ typedef struct {
         /* Safety */
         int    action_delay_ms;   /* pause after each action (default 500) */
         int    screenshot_delay_ms; /* wait before screenshot (default 300) */
+
+        /* Continuous HEVC capture stream */
+        int    stream_enabled;    /* 1 = start background capture (default 0) */
+        int    stream_fps;        /* frames per second (1-30, default 10) */
+        int    stream_quality;    /* HEVC CRF value (0-51, default 28) */
+        int    stream_retention;  /* seconds of history (default 300) */
+        char  *stream_preset;     /* x265 preset (default: "ultrafast") */
+        int    stream_keyframe_interval; /* 0 = auto (= fps) */
     } device_control;
 } config_t;
 

@@ -9,11 +9,13 @@
 
 #include "display.h"
 #include "input.h"
+#include "stream.h"
 
-/* A device session: display capture + input injection */
+/* A device session: display capture + input injection + stream */
 typedef struct {
     display_t      *display;
     input_t        *input;
+    stream_t       *stream;             /* continuous HEVC capture (NULL if disabled) */
 
     /* Session tracking */
     int             screenshot_count;   /* total screenshots taken */
@@ -26,13 +28,15 @@ typedef struct {
 } device_session_t;
 
 /* Open a device session with the given configs.
+ * If scfg is non-NULL and stream_enabled, starts continuous HEVC capture.
  * Returns NULL on error (display or input open failure). */
 device_session_t *device_session_open(const display_config_t *dcfg,
                                        const input_config_t *icfg,
+                                       const stream_config_t *scfg,
                                        int action_delay_ms,
                                        int screenshot_delay_ms);
 
-/* Close a device session (closes display and input). */
+/* Close a device session (stops stream, closes display and input). */
 void device_session_close(device_session_t *s);
 
 #endif /* DEVICE_H */

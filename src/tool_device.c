@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
+#include <inttypes.h>
 
 /* ── Lazy-initialized device session (one per process) ──────── */
 
@@ -45,8 +47,21 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
     /* Dimensions auto-detected from display backend after open.
      * input_set_dimensions() called below with VNC framebuffer size. */
 
+    /* Build stream config (continuous HEVC capture) */
+    stream_config_t scfg = {0};
+    stream_config_t *scfg_ptr = NULL;
+    if (cfg->device_control.stream_enabled) {
+        scfg.fps = cfg->device_control.stream_fps;
+        scfg.quality = cfg->device_control.stream_quality;
+        scfg.retention_secs = cfg->device_control.stream_retention;
+        scfg.preset = cfg->device_control.stream_preset;
+        scfg.keyframe_interval = cfg->device_control.stream_keyframe_interval;
+        scfg.stream_dir = cfg->device_control.screenshot_dir;
+        scfg_ptr = &scfg;
+    }
+
     g_device_session = device_session_open(
-        &dcfg, &icfg,
+        &dcfg, &icfg, scfg_ptr,
         cfg->device_control.action_delay_ms,
         cfg->device_control.screenshot_delay_ms);
 
@@ -110,13 +125,35 @@ static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
             usleep((unsigned)ms * 1000);
     }
 
-    char *path = display_capture(s->display);
+    char *path = NULL;
+    int w = 0, h = 0;
+
+    if (s->stream) {
+        /* Stream mode: extract frame instantly from background capture.
+         * Optional seconds_ago parameter for historical frame access. */
+        struct timespec *ts_ptr = NULL;
+        struct timespec ts;
+        cJSON *jtime = cJSON_GetObjectItem(params, "seconds_ago");
+        if (jtime && cJSON_IsNumber(jtime)) {
+            double ago = jtime->valuedouble;
+            if (ago < 0) ago = 0;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec -= (time_t)ago;
+            long frac_ns = (long)((ago - (double)(time_t)ago) * 1e9);
+            ts.tv_nsec -= frac_ns;
+            if (ts.tv_nsec < 0) { ts.tv_sec--; ts.tv_nsec += 1000000000L; }
+            ts_ptr = &ts;
+        }
+        path = stream_extract_frame(s->stream, ts_ptr, &w, &h);
+    } else {
+        /* On-demand mode: direct VNC capture (legacy path) */
+        path = display_capture(s->display);
+        if (path) display_get_dimensions(s->display, &w, &h);
+    }
+
     if (!path) return tools_make_error("screenshot capture failed");
 
     s->screenshot_count++;
-
-    int w = 0, h = 0;
-    display_get_dimensions(s->display, &w, &h);
 
     /* Run perception pipeline: OmniParser YOLO + Tesseract OCR */
     const char *script = get_perception_script();
@@ -486,6 +523,22 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
         tr = do_move(s, params);
     else if (strcmp(action, "long_press") == 0)
         tr = do_long_press(s, params);
+    else if (strcmp(action, "stream_status") == 0) {
+        if (!s->stream) {
+            tr = tools_make_error("stream not enabled. Set stream_enabled = true in [device_control] config.");
+        } else {
+            struct timespec oldest = {0}, newest = {0};
+            uint64_t total = 0;
+            stream_get_range(s->stream, &oldest, &newest, &total);
+            cJSON *meta = cJSON_CreateObject();
+            cJSON_AddStringToObject(meta, "action", "stream_status");
+            cJSON_AddNumberToObject(meta, "total_frames", (double)total);
+            cJSON_AddNumberToObject(meta, "history_available_secs",
+                (double)(newest.tv_sec - oldest.tv_sec));
+            cJSON_AddStringToObject(meta, "status", "ok");
+            tr = tools_make_result(1, meta, NULL);
+        }
+    }
     else if (strcmp(action, "screenshot_diff") == 0 ||
              strcmp(action, "screenshot_region") == 0 ||
              strcmp(action, "find") == 0) {
@@ -529,4 +582,26 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params) {
     }
 
     return tr;
+}
+
+/* ── Stream lifecycle cleanup ──────────────────────────────────
+ *
+ * Called from the react loop when the `done` tool fires.
+ * Saves the HEVC capture stream into the session directory as
+ *   stream-<unix_timestamp>-<duration_secs>.hevc
+ * then tears down the device session so the VNC connection and
+ * background thread are released cleanly. */
+
+void tool_device_cleanup(const char *session_dir) {
+    if (!g_device_session) return;
+
+    /* Save the stream capture to the session directory */
+    if (g_device_session->stream) {
+        char *path = stream_save(g_device_session->stream, session_dir);
+        free(path);
+        g_device_session->stream = NULL;  /* prevent double-free in close */
+    }
+
+    device_session_close(g_device_session);
+    g_device_session = NULL;
 }

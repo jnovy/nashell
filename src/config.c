@@ -471,6 +471,14 @@ config_t *config_load(const char *path) {
         /* Safety */
         cfg->device_control.action_delay_ms = toml_int(dc, "action_delay_ms", 500);
         cfg->device_control.screenshot_delay_ms = toml_int(dc, "screenshot_delay_ms", 300);
+
+        /* Continuous HEVC capture stream */
+        cfg->device_control.stream_enabled = toml_bl(dc, "stream_enabled", 0);
+        cfg->device_control.stream_fps = toml_int(dc, "stream_fps", 10);
+        cfg->device_control.stream_quality = toml_int(dc, "stream_quality", 28);
+        cfg->device_control.stream_retention = toml_int(dc, "stream_retention", 300);
+        cfg->device_control.stream_preset = toml_str(dc, "stream_preset");
+        cfg->device_control.stream_keyframe_interval = toml_int(dc, "stream_keyframe_interval", 0);
     }
 
     /* [thinking] — overrides old [client].thinking if both present */
@@ -556,6 +564,7 @@ void config_free(config_t *cfg) {
     free(cfg->device_control.key_cmd);
     free(cfg->device_control.type_cmd);
     free(cfg->device_control.click_cmd);
+    free(cfg->device_control.stream_preset);
     /* Free auto-generated max_tools allow list (owned by cfg, not profile) */
     if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
         for (int i = 0; i < cfg->n_profile_tools_allow; i++)

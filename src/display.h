@@ -55,6 +55,26 @@ display_t *display_open(const display_config_t *cfg);
  * Caller must free() the path. */
 char *display_capture(display_t *d);
 
+/* Update the in-memory framebuffer from the display source without
+ * writing to disk.  For VNC: sends FramebufferUpdateRequest + processes
+ * the server response.  Returns 0 on success, -1 on error.
+ * Used by the continuous capture stream (stream.c). */
+int display_update_framebuffer(display_t *d);
+
+/* Copy the current BGRA framebuffer into a caller-provided buffer.
+ * buf must be at least native_w * native_h * 4 bytes.
+ * Not thread-safe -- caller must provide external synchronization. */
+void display_copy_framebuffer(display_t *d, uint8_t *buf);
+
+/* Write a BGRA framebuffer to a JPEG file on disk.
+ * Returns 0 on success, -1 on error. */
+int display_write_jpeg(const char *path, const uint8_t *bgra,
+                       int width, int height, int quality);
+
+/* Generate a timestamped screenshot path in the display's screenshot_dir.
+ * Returns malloc'd string, caller must free(). */
+char *display_make_screenshot_path(display_t *d);
+
 /* Get the native display dimensions (from VNC framebuffer or webcam).
  * Returns 0 on success, -1 if unknown. */
 int display_get_dimensions(display_t *d, int *w, int *h);
