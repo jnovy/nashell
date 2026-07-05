@@ -32,12 +32,12 @@ typedef struct {
 } frame_entry_t;
 
 typedef struct {
-    int         fps;                    /* target capture rate (default 10) */
+    int         fps;                    /* target capture rate (default 4) */
     int         keyframe_interval;      /* IDR every N frames (0 = auto = fps) */
     int         quality;                /* CRF value for x265 (default 28, 0-51) */
     int         retention_secs;         /* seconds of history to keep (default 300) */
     const char *stream_dir;             /* output dir (default: screenshot_dir) */
-    const char *preset;                 /* x265 preset (default: "ultrafast") */
+    const char *preset;                 /* x265 preset (default: "medium") */
 } stream_config_t;
 
 typedef struct stream_t stream_t;

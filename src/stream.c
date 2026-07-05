@@ -346,12 +346,12 @@ stream_t *stream_start(display_t *display, const stream_config_t *cfg) {
     s->cfg = *cfg;
 
     /* Apply defaults */
-    if (s->cfg.fps <= 0) s->cfg.fps = 10;
+    if (s->cfg.fps <= 0) s->cfg.fps = 4;
     if (s->cfg.fps > 30) s->cfg.fps = 30;
     if (s->cfg.quality <= 0) s->cfg.quality = 28;
     if (s->cfg.quality > 51) s->cfg.quality = 51;
     if (s->cfg.retention_secs <= 0) s->cfg.retention_secs = 300;
-    if (!s->cfg.preset) s->cfg.preset = "ultrafast";
+    if (!s->cfg.preset) s->cfg.preset = "medium";
     if (!s->cfg.stream_dir) s->cfg.stream_dir = "/tmp/device_screenshots";
 
     /* Own a copy of stream_dir */

@@ -474,7 +474,7 @@ config_t *config_load(const char *path) {
 
         /* Continuous HEVC capture stream */
         cfg->device_control.stream_enabled = toml_bl(dc, "stream_enabled", 0);
-        cfg->device_control.stream_fps = toml_int(dc, "stream_fps", 10);
+        cfg->device_control.stream_fps = toml_int(dc, "stream_fps", 4);
         cfg->device_control.stream_quality = toml_int(dc, "stream_quality", 28);
         cfg->device_control.stream_retention = toml_int(dc, "stream_retention", 300);
         cfg->device_control.stream_preset = toml_str(dc, "stream_preset");
