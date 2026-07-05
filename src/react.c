@@ -1393,11 +1393,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         int is_repeat = (last_sig && strcmp(last_sig, sig) == 0);
 
-        /* Exempt device_control screenshots from cycling detection.
-         * The normal GUI workflow is: screenshot -> act -> screenshot to
-         * verify.  Consecutive screenshots are expected, not a loop. */
-        if (is_repeat && strcmp(action_name, "device_control") == 0
-            && cmd && strcmp(cmd, "screenshot") == 0)
+        /* Exempt device_control from cycling detection entirely.
+         * The signature doesn't capture GUI-specific params (x, y,
+         * key_name, direction, text, amount, etc.), so different
+         * actions look identical — left_click(100,200) vs
+         * left_click(500,600), key("tab") vs key("enter"),
+         * type("hello") vs type("world") all produce the same sig.
+         * Even truly identical calls (repeated scroll, screenshot
+         * to verify) are standard GUI workflow, not cycling. */
+        if (is_repeat && strcmp(action_name, "device_control") == 0)
             is_repeat = 0;
 
         /* Cycling: two-stage response to repeated identical actions.
