@@ -157,7 +157,7 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 #define REACT_SP_PREFIX     "[SCRATCHPAD]\n"
 #define REACT_SP_PREFIX_LEN 13  /* strlen("[SCRATCHPAD]\n") */
 
-/* ── Proposal E: Partner Index ──────────────────────── */
+/* ── Partner Index ──────────────────────── */
 
 /* Pre-computed partner map for pair-safe eviction.
  * Built once before eviction passes, eliminates repeated O(n) scanning
@@ -560,8 +560,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 /* ── Context Eviction ────────────────────────────────── */
 
 /* Check context usage and evict old messages if over threshold.
- * Implements mark-then-sweep eviction (Proposal B) with unified finalization
- * (Proposal A), partner index (Proposal E), and per-pass targets (Proposal D). */
+ * Implements mark-then-sweep eviction  with unified finalization
+ * , partner index , and per-pass targets . */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
                        react_event_fn on_event, void *userdata);
@@ -572,14 +572,14 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
                                int insert_pos);
 
-/* Proposal E: Build a partner index mapping each tool_call message to its
+/* Build a partner index mapping each tool_call message to its
  * result and vice versa. Built once before eviction, used by all phases.
  * Returns a heap-allocated map. Caller must call evict_free_partner_map(). */
 evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
                                              int range_start, int range_end);
 void evict_free_partner_map(evict_partner_map_t *map);
 
-/* Proposal A: Unified post-eviction finalization. Re-injects scratchpad,
+/* Unified post-eviction finalization. Re-injects scratchpad,
  * breadcrumbs, and compaction hint in a single pass. Verifies budget.
  * FIX #5: breadcrumb_str ownership is CONSUMED (freed) by this function.
  * Caller must not use breadcrumb_str after calling evict_finalize().

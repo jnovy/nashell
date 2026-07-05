@@ -167,7 +167,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         cJSON_Delete(mq);
     }
 
-    /* FIX CRIT1: Flush deferred memory consolidations AFTER scoring
+    /* Flush deferred memory consolidations AFTER scoring
      * but BEFORE reflection. This runs the LLM-based consolidation calls
      * that were queued during the react loop, outside the hot path.
      * Reflection may create new memories that also get consolidated. */
@@ -175,7 +175,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         tool_flush_deferred_consolidations(ctx->tools);
     }
 
-    /* FIX D2: Skip reflection when max_reflection_steps == 0 */
+    /* Skip reflection when max_reflection_steps == 0 */
     int max_refl = ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4;
     int refl_gate = ctx->tools->cfg ? ctx->tools->cfg->reflection_gate : 0;
     /* reflection_gate: 0=user_ask (only after user_ask), 1=always, 2=never.
@@ -285,7 +285,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             free(manifest);
         }
 
-        /* FIX #10: Include scratchpad in reflection context — it often
+        /* Include scratchpad in reflection context — it often
          * contains the most important findings from the task */
         {
             char *sp_text = NULL;
@@ -302,7 +302,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             free(sp_text);
         }
 
-        /* FIX B3: Inject final_result into reflection context.
+        /* Inject final_result into reflection context.
          * Without this, the reflection LLM doesn't know what the task
          * actually produced - it can only infer from tool call sequences.
          * This degrades reflection quality significantly. */
@@ -329,7 +329,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                   "class of failure? Store 1-3 causal lessons via memory_store, or "
                   "call done if none.");
 
-        /* FIX #9: Disable thinking mode for reflection — it's a lightweight
+        /* Disable thinking mode for reflection — it's a lightweight
          * extraction task that doesn't need chain-of-thought. Without this,
          * thinking mode leaks from the main task into reflection. */
         int saved_thinking = ctx->provider->cfg.enable_thinking;
@@ -359,7 +359,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
             int should_store = 1;  /* declared outside if-block for use in feedback message */
             if (strcmp(ract, "memory_store") == 0) {
-                /* FIX #4+B4: Deduplication guard — check if a very similar memory
+                /* Deduplication guard — check if a very similar memory
                  * already exists before storing. This prevents reflection from
                  * creating near-duplicate entries on every task.
                  * B4 fix: Load existing entry's cached .emb file directly instead
@@ -370,7 +370,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
                     memory_has_embeddings(ctx->tools->memory)) {
                     embed_ctx_t *emb = memory_embed_ctx(ctx->tools->memory);
-                    /* FIX BUG2: Generate a multi-vec embedding (1 chunk) so the
+                    /* Generate a multi-vec embedding (1 chunk) so the
                      * dedup guard uses embed_cosine_sim_multi_multi — the same
                      * similarity function as consolidation_cb in tools.c.
                      * Previously used embed_text (single vec) which produces a
@@ -396,7 +396,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                 ctx, rkey_j, &new_emb,
                                 &should_store, task_succeeded);
                             embed_vec_free(&single);
-                            /* FIX B5: Nullify aliased pointer to prevent
+                            /* Nullify aliased pointer to prevent
                              * use-after-free if new_emb is accessed later. */
                             new_emb.data = NULL;
                         }
@@ -429,16 +429,14 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         }
         llm_chat_free(reflect);
 
-        /* FIX #9: Restore thinking mode after reflection */
+        /* Restore thinking mode after reflection */
         ctx->provider->cfg.enable_thinking = saved_thinking;
     }
 
-    /* P4 scratchpad-to-memory promotion REMOVED (v4 unified memory).
-     * Automatic promotion was identified as a source of memory pollution —
-     * it created low-quality fact: entries from session-specific scratchpad
-     * content. In v4, memory grows only through explicit agent/user action
-     * or LLM reflection. Session history provides the "long tail" — anything
-     * not worth a permanent memory entry is still findable via session search. */
+    /* No automatic scratchpad-to-memory promotion — it caused memory pollution
+     * (low-quality fact: entries from session-specific scratchpad content).
+     * Memory grows only through explicit agent/user action or LLM reflection.
+     * Session history provides the "long tail" via session search. */
 
     /* Post-reflection scratchpad pruning — remove solved/stale data so the
      * next react loop starts with a clean, focused scratchpad. Uses an LLM call
@@ -510,7 +508,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
             free(raw_cleaned);
 
             if (cleaned) {
-                /* BUG FIX: Parse the LLM output back into individual sections
+                /* Parse the LLM output back into individual sections
                  * instead of merging everything into a single "pruned" blob.
                  * scratchpad_parse() splits on "## " headers (the format
                  * scratchpad_serialize() produces), preserving the section-based
@@ -518,7 +516,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                  * a single "pruned" section. */
                 scratchpad_parse(&ctx->tools->scratch, cleaned, "pruned", 5);
 
-                /* FIX DESIGN2: Validate LLM output preserved section structure.
+                /* Validate LLM output preserved section structure.
                  * If the LLM dropped all ## headers, scratchpad_parse collapses
                  * everything into a single "pruned" section — destroying the
                  * original section boundaries. When this happens (original had
@@ -543,7 +541,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                     }
                 }
 
-                /* FIX D7: Restore high-priority sections the LLM silently dropped.
+                /* Restore high-priority sections the LLM silently dropped.
                  * The LLM can subtly corrupt the scratchpad by omitting sections
                  * it shouldn't remove.  Re-add any original section with priority ≤ 2
                  * that is missing from the pruned output — these are important enough
@@ -724,7 +722,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         free(manifest);
     }
 
-    /* FIX D2: recalled_keys cleanup is handled exclusively by react_run()
+    /* recalled_keys cleanup is handled exclusively by react_run()
      * after react_post_loop() returns.  Removing the partial cleanup here
      * (which freed keys but not the array) eliminates the split ownership
      * ambiguity and latent double-free risk. */

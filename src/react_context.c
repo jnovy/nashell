@@ -27,7 +27,7 @@ static const char *format_recency(double created_at, char *buf, size_t bufsz) {
     return buf;
 }
 
-/* Review B5: Converted from INJECT_TYPE macro to debuggable static function.
+/* Converted from INJECT_TYPE macro to debuggable static function.
  * Injects relevant memories of a given type prefix into the chat context.
  * Change 3 (arXiv 2605.15184 Finding #6): Enriched rendering — includes
  * temporal recency and confidence metadata alongside memory content.
@@ -79,14 +79,14 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
         }
         if (remaining <= 0) break;
     }
-    /* FIX #18: Use boolean flag instead of magic strlen+5 check */
+    /* Use boolean flag instead of magic strlen+5 check */
     if (added > 0) {
         llm_chat_add_typed(chat, "user", str_cstr(&msg), mtype);
     }
     str_free(&msg);
 }
 
-/* FIX #9: Shared helper — injects memory index and pinned knowledge into chat.
+/* Shared helper — injects memory index and pinned knowledge into chat.
  * Used by both react_build_context() and react_checkpoint_restore().
  * Returns mem_summary and pinned via output params for logging (caller frees). */
 void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
@@ -115,7 +115,7 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
     if (out_pinned) *out_pinned = pinned; else free(pinned);
 }
 
-/* FIX #15: Extracted from react_build_context — was 65 lines nested 4 deep.
+/* Extracted from react_build_context — was 65 lines nested 4 deep.
  * Filters scratchpad sections for branching: only R*_result sections from
  * ancestor loops are included. Returns malloc'd serialized string (caller frees).
  * Walks parent chain in journal to build ancestor set, then filters sections. */
@@ -124,7 +124,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
                                           int parent_loop,
                                           size_t max_budget) {
     /* Build ancestor set by walking parent chain in journal */
-    /* FIX #7: Dynamic allocation replaces fixed ancestors[256] array */
+    /* Dynamic allocation replaces fixed ancestors[256] array */
     int anc_cap = 64;
     int *ancestors = malloc(sizeof(int) * (size_t)anc_cap);
     if (!ancestors) return scratchpad_serialize_budget(scratch, max_budget);
@@ -219,22 +219,20 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          react_event_fn on_event, void *userdata) {
     (void)on_event; (void)userdata;
 
-    /* Reset per-loop counters FIRST — before any journal logging that uses step.
-     * Previously this was done after memory injection, causing memory_context
-     * journal entries to inherit the step value from the previous react loop. */
+    /* Reset per-loop counters FIRST — before any journal logging that uses step. */
     ctx->tools->step = 0;
 
     /* System message */
     react_add_system_prompt(chat, ctx->tools->cfg, ctx->tools->session_dir);
 
-    /* v5: No manifest injection — scratchpad is the sole persistence mechanism.
+    /* No manifest injection — scratchpad is the sole persistence mechanism.
      * Cross-loop state is carried via scratchpad (auto-saved done results +
      * LLM-pruned summaries). Within-loop recovery uses LLM summarization
      * instead of manifest re-injection. */
 
     /* Inject memory summary (counts only — no alphabetical listing) */
     if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
-        /* FIX #9: Use shared helper for memory index + pinned injection */
+        /* Use shared helper for memory index + pinned injection */
         char *mem_summary = NULL, *pinned = NULL;
         react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
@@ -262,7 +260,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 tcal_entry_t *older = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
                 int n_recent = 0, n_older = 0;
 
-                /* DESIGN 1 FIX: Use global memory when workspace is active,
+                /* Use global memory when workspace is active,
                  * instead of NULL which silently disabled temporal calendar. */
                 memory_t *mem = ctx->tools->ws
                     ? ctx->tools->ws->global : ctx->tools->memory;
@@ -279,7 +277,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                     }
                     pthread_mutex_unlock(&mem->mtx);
                 }
-                /* DESIGN 1 FIX: Also scan workspace-layer memory if present,
+                /* Also scan workspace-layer memory if present,
                  * so project-specific entries appear in the temporal calendar. */
                 if (ctx->tools->ws && ctx->tools->ws->workspace && recent && older) {
                     memory_t *ws_mem = ctx->tools->ws->workspace;
@@ -359,7 +357,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             int do_episodic = ctx->tools->cfg
                 ? ctx->tools->cfg->episodic_recall : 1;
             if (do_episodic && ctx->tools->session_idx) {
-                /* DESIGN 1 FIX: Use global memory when workspace is active,
+                /* Use global memory when workspace is active,
                  * instead of NULL which silently disabled episodic recall. */
                 memory_t *ep_mem = ctx->tools->ws
                     ? ctx->tools->ws->global : ctx->tools->memory;
@@ -420,7 +418,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
         str_free(&recall_query);
 
-        /* Review B5: Replaced INJECT_TYPE macro with debuggable static function calls.
+        /* Replaced INJECT_TYPE macro with debuggable static function calls.
          * Progressive disclosure: skills use summary mode by default (description only)
          * unless skill_full_disclosure is set. Other types always inject full text. */
         int skill_summary = ctx->tools->cfg
@@ -520,7 +518,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         }
     }
 
-    /* X4+S5 FIX: Scratchpad budget uses the shared dual-cap policy.
+    /* Scratchpad budget uses the shared dual-cap policy.
      * min(absolute_cap, remaining_cap) prevents initial injection from
      * being larger than after the first eviction cycle. */
     eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
@@ -540,7 +538,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
         if (ctx->tools->scratch.count > 0) {
             if (is_branch) {
-                /* FIX #15: Use extracted helper instead of 65-line inline block */
+                /* Use extracted helper instead of 65-line inline block */
                 serialized = scratchpad_filter_for_branch(
                     &ctx->tools->scratch, ctx->tools->session_dir,
                     ctx->parent_loop, max_scratchpad);
@@ -549,7 +547,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
             }
         }
-        /* D1 FIX: Use shared scratchpad injection helper */
+        /* Use shared scratchpad injection helper */
         react_inject_scratchpad_msg(chat, chat->n_msgs, serialized);
         free(serialized);
     }
@@ -565,7 +563,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             prev_result = slurp_file(rpath, NULL);
         }
         if (prev_result && strlen(prev_result) > 0) {
-            /* FIX #12: Use llm_chat_add_formatted to eliminate alloc pattern */
+            /* Use llm_chat_add_formatted to eliminate alloc pattern */
             llm_chat_add_formatted(chat, "user", LLM_MSG_PREV_RESULT,
                 "[PREVIOUS RESULT]\n%s\n"
                 "The above is the result of the previous task. "

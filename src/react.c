@@ -2,9 +2,9 @@
 #include "compress.h"
 #include "tui.h"  /* g_tui_active — for condvar timeout escape hatch */
 
-/* FIX #7: Constant moved from react_internal.h (used only here). */
+/* Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
-/* FLAW 2 FIX: Cap total augmentation chars (thoughts + scratchpad) to prevent
+/* Cap total augmentation chars (thoughts + scratchpad) to prevent
  * query dilution.  With 100+ tokenized words, each term match contributes only
  * ~0.01 to the score, reducing discriminative power.  Cap at ~400 chars
  * produces ~30 augmented words — enough for context but not overwhelming. */
@@ -85,7 +85,7 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* ── helpers ─────────────────────────────────────────── */
 
-/* FIX #4: Get chars-per-token from runtime state (mutable) instead of
+/* Get chars-per-token from runtime state (mutable) instead of
  * provider config (INIT-ONLY). Falls back to provider config, then 3.5. */
 float react_get_chars_per_token(const react_ctx_t *ctx) {
     if (ctx->rt.chars_per_token > 0)
@@ -98,10 +98,9 @@ float react_get_chars_per_token(const react_ctx_t *ctx) {
 /* Compute dynamic keep_head: count consecutive CRITICAL-importance messages
  * from the start of the chat. Adapts to actual injection config rather than
  * assuming a fixed [system, memory_index, pinned] header structure.
- * FIX FLAW 3: Changed from >= HIGH to == CRITICAL. Previously HIGH messages
- * (e.g., EVICTION_SUMMARY, MEMORY_INDEX) at head were double-protected:
- * excluded from evictable range AND skipped by Pass 3 scoring. Now only
- * system prompt, user query, and scratchpad (CRITICAL) extend the head. */
+ * Only CRITICAL messages (system prompt, user query, scratchpad) extend
+ * the head — HIGH messages (EVICTION_SUMMARY, MEMORY_INDEX) remain evictable
+ * to avoid double-protection. */
 int react_compute_keep_head(const llm_chat_t *chat) {
     int head = 0;
     for (int i = 0; i < chat->n_msgs; i++) {
@@ -131,7 +130,7 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
         } else if (chat->msgs[i].role &&
                    strcmp(chat->msgs[i].role, "user") == 0 &&
                    !chat->msgs[i].tool_call_id &&
-                   /* BUG 4 FIX: Exclude injected hints/summaries with role="user".
+                   /* Exclude injected hints/summaries with role="user".
                     * Without this, MEMORY_HINT nudges (injected with role="user")
                     * inflate keep_tail, shrinking the evictable range. */
                    chat->msgs[i].msg_type != LLM_MSG_MEMORY_HINT &&
@@ -140,7 +139,7 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
             /* user message (e.g., user_ask response, hint) — include */
             tail_start = i;
         } else {
-            /* F5 FIX: Skip injected hint/summary messages — don't let them
+            /* Skip injected hint/summary messages — don't let them
              * silently expand the protected tail zone. Only genuine conversation
              * messages should anchor tail boundaries. */
             llm_msg_type_t mt = chat->msgs[i].msg_type;
@@ -154,7 +153,7 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
         }
     }
     int keep = chat->n_msgs - tail_start;
-    /* L1 FIX: Cap keep_tail to prevent unbounded growth from interleaved
+    /* Cap keep_tail to prevent unbounded growth from interleaved
      * user_ask responses. Without this, the tail can grow to 6-8+ messages,
      * shrinking the evictable range and forcing emergency eviction. */
     if (keep > REACT_KEEP_TAIL_MAX) keep = REACT_KEEP_TAIL_MAX;
@@ -176,7 +175,7 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
     if (user_query && user_query[0])
         str_append_cstr(&buf, user_query);
     /* Fallback: extract query from chat if user_query is short/empty.
-     * FIX #12: Scan backward — after eviction the query may only survive
+     * Scan backward — after eviction the query may only survive
      * near the head, but backward scan is O(1) amortized — there is
      * typically just one USER_QUERY message, found quickly. */
     if (buf.len < 10) {
@@ -188,7 +187,7 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
             }
         }
     }
-    /* FLAW 2 FIX: Track augmentation budget to prevent query dilution.
+    /* Track augmentation budget to prevent query dilution.
      * User query terms are primary; augmented content is secondary context. */
     size_t augment_remaining = REACT_BM25_MAX_AUGMENT_CHARS;
 
@@ -224,9 +223,9 @@ char *react_build_bm25_query(const llm_chat_t *chat, const char *user_query,
 }
 
 /* Find the partner of a tool_call or tool_result message by scanning.
- * FIX #3: Matches by scanning (not adjacency) and validates importance.
- * FIX #8: Scans past interleaved non-tool messages (hints, error recovery).
- * Proposal C: Uses cached tool_call_id_outbound for O(1) ID lookup instead
+ * Matches by scanning (not adjacency) and validates importance.
+ * Scans past interleaved non-tool messages (hints, error recovery).
+ * Uses cached tool_call_id_outbound for O(1) ID lookup instead
  * of parsing tool_calls_json on every call. Falls back to JSON parse if
  * the cached field is not populated (e.g., checkpoint-restored messages). */
 int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
@@ -235,7 +234,7 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
     const llm_msg_t *msg = &chat->msgs[msg_idx];
 
     if (msg->tool_calls_json) {
-        /* Proposal C: Use cached outbound ID if available, else parse JSON */
+        /* Use cached outbound ID if available, else parse JSON */
         const char *expected_id = msg->tool_call_id_outbound;
         cJSON *tc_arr = NULL;
         if (!expected_id) {
@@ -251,7 +250,7 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                 }
             }
         }
-        /* BUG FIX: without an ID we can't safely match — bail out rather
+        /* without an ID we can't safely match — bail out rather
          * than accepting the first arbitrary tool_result message. */
         if (!expected_id) {
             cJSON_Delete(tc_arr);
@@ -273,11 +272,11 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
         return result;
     }
     if (msg->tool_call_id) {
-        /* tool_result: scan backward for tool_call. Proposal C: use cached
+        /* tool_result: scan backward for tool_call. use cached
          * tool_call_id_outbound for O(1) match instead of strstr on JSON. */
         for (int pi = msg_idx - 1; pi >= range_start; pi--) {
             if (!chat->msgs[pi].tool_calls_json) continue;
-            /* Proposal C: Use cached ID if available */
+            /* Use cached ID if available */
             if (chat->msgs[pi].tool_call_id_outbound) {
                 if (strcmp(chat->msgs[pi].tool_call_id_outbound, msg->tool_call_id) == 0) {
                     if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
@@ -287,7 +286,7 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
                 continue;
             }
             /* Fallback: strstr check on raw JSON.
-             * BUG 4 FIX: Match the quoted form "<tool_call_id>" to prevent
+             * Match the quoted form "<tool_call_id>" to prevent
              * substring false positives (e.g. "call_12" matching "call_123"). */
             {
                 size_t id_len = strlen(msg->tool_call_id);
@@ -311,7 +310,7 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
     return -1;
 }
 
-/* FIX B4: Recover tool_call threading from surviving messages after eviction.
+/* Recover tool_call threading from surviving messages after eviction.
  * Scans backward for the last tool_calls_json, then uses react_find_tool_partner
  * to locate the matching result (not adjacency — handles interleaved messages).
  * Used by both progressive eviction (pass3) and emergency eviction. */
@@ -676,7 +675,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* Reset per-loop state */
     ctx->user_ask_used = 0;
 
-    /* FIX #4: Initialize mutable runtime state from provider config.
+    /* Initialize mutable runtime state from provider config.
      * These values may be modified during the loop without violating
      * the provider's INIT-ONLY contract. */
     ctx->rt.chars_per_token = (ctx->provider && ctx->provider->cfg.chars_per_token > 0)
@@ -684,7 +683,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->rt.enable_thinking = ctx->provider ? ctx->provider->cfg.enable_thinking : 0;
     ctx->rt.thinking_budget = ctx->provider ? ctx->provider->cfg.thinking_budget : -1;
 
-    /* FIX 2c: Defer git commits during the react loop to batch them.
+    /* Defer git commits during the react loop to batch them.
      * Every memory_store/pin/unpin/delete during the loop skips individual
      * git commits; a single batch commit happens after react_post_loop. */
     if (ctx->tools->ws)
@@ -826,7 +825,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Propagate tool filter so provider builds schema with only allowed tools */
         ctx->provider->tool_filter = &ctx->tools->tool_filter;
-        /* FIX: Copy runtime thinking state to provider->cfg just before the
+        /* Copy runtime thinking state to provider->cfg just before the
          * provider call.  This is the ONLY place cfg.enable_thinking and
          * cfg.thinking_budget are written during the loop — safe because
          * no other thread reads them between here and provider_complete_stream(). */
@@ -883,7 +882,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "- For shell_exec: run the command once; output is stored at a "
                 "ref you can re-analyze with grep/head/tail.\n"
                 "Retry your last action with a smaller scope.");
-            /* L4 FIX: Recovery instructions are important guidance — NORMAL */
+            /* Recovery instructions are important guidance — NORMAL */
             if (chat->n_msgs >= 2) {
                 chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
                 chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
@@ -1027,7 +1026,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 "Your response was plain text, not a JSON tool call. "
                 "If you are finished, call the `done` tool with your result. "
                 "If you have more work to do, call the appropriate tool.");
-            /* L4 FIX: Parse error corrections are ephemeral — explicitly LOW */
+            /* Parse error corrections are ephemeral — explicitly LOW */
             if (chat->n_msgs >= 2) {
                 chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_LOW;
                 chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
@@ -1208,7 +1207,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 llm_chat_add(chat, "assistant", response);
                 llm_chat_add(chat, "user", result_msg);
             }
-            /* L4 FIX: user_ask answers carry user content — NORMAL importance */
+            /* user_ask answers carry user content — NORMAL importance */
             if (chat->n_msgs >= 2) {
                 chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
                 chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
@@ -1332,7 +1331,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *query = react_json_get_str(action, "query");
         const char *question = react_json_get_str(action, "question");
         const char *url = react_json_get_str(action, "url");
-        /* FIX BUG#11: Include key and value in signature so memory_store
+        /* Include key and value in signature so memory_store
          * calls with different keys aren't falsely detected as cycling. */
         const char *key = react_json_get_str(action, "key");
         const char *value = react_json_get_str(action, "value");
@@ -1678,7 +1677,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Harness-1 §3.3: Context-level deduplication — detect and skip
          * near-duplicate tool results to avoid wasting context budget.
-         * FIX MED#7: Check both CRC32 hash AND content length to reduce
+         * Check both CRC32 hash AND content length to reduce
          * false positives from hash collisions on structured JSON data. */
         int is_dedup = 0;
         if (result_msg && result_msg[0] && tr.success) {
@@ -1711,11 +1710,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 tool_imp = LLM_MSG_IMPORTANCE_LOW;  /* deduped results are low priority */
             } else {
                 /* Record hash + length for future dedup checks.
-                 * FIX HIGH#4: Separate fill vs. full cases to avoid off-by-one.
-                 * Previously, when dedup_count was 63 the post-increment set it
-                 * to 64 AND triggered the memmove, which read uninitialized
-                 * slot 63 into slot 62. Now: fill phase (count<64) just appends,
-                 * full phase (count==64) shifts then writes to slot 63. */
+                 * Separate fill vs. full cases: fill (count<64) appends,
+                 * full (count==64) shifts then writes to slot 63. */
                 int idx;
                 if (ctx->tools->dedup_count < 64) {
                     idx = ctx->tools->dedup_count++;
@@ -1793,11 +1789,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     chat->msgs[chat->n_msgs - 1].tool_path = strdup(tp);
             }
 
-            /* FIX #2: Look up existing alias instead of registering a new one.
-             * Previously called tool_register_alias() which created a SECOND alias
-             * for the same store ref, inflating alias numbering 2× and creating
-             * phantom symlinks. Now uses reverse lookup to find the alias that
-             * tool_execute() already registered. */
+            /* Look up existing alias — tool_execute() already registered it.
+             * Using reverse lookup avoids creating a duplicate alias. */
             if (tr.store_ref && ctx->tools->aliases) {
                 const char *existing = alias_map_reverse_lookup(
                     ctx->tools->aliases, tr.store_ref);
@@ -2046,7 +2039,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     "and call done() with whatever partial results you have.",
                     total_errors, step + 1, error_threshold);
                 llm_chat_add(chat, "user", budget_msg);
-                /* L4 FIX: Error budget warnings are critical guardrails — NORMAL */
+                /* Error budget warnings are critical guardrails — NORMAL */
                 if (chat->n_msgs > 0)
                     chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
 
@@ -2062,23 +2055,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
         }
 
-        /* FIX #7: Self-calibrate chars_per_token from actual API response.
+        /* Self-calibrate chars_per_token from actual API response.
          * When the API reports prompt_tokens, compute the actual ratio from
          * total_chars / prompt_tokens and use exponential moving average to
          * smooth out noise. This corrects for content-type-dependent variation
          * (JSON-heavy prompts tokenize differently than prose).
-         * FLAW 7 FIX: Use alpha=0.8 on the first calibration (when still
+         * Use alpha=0.8 on the first calibration (when still
          * using the default/config value) for fast convergence, then switch
          * to alpha=0.3 for subsequent updates. The first measurement from
          * the actual API is far more informative than any default. */
         if (stats.prompt_tokens > 100) {  /* need enough tokens for reliable ratio */
-            /* D4 FIX: Use shared inline helper */
+            /* Use shared inline helper */
             long actual_chars = react_calc_total_chars(chat);
             float actual_cpt = (float)actual_chars / (float)stats.prompt_tokens;
             /* Clamp to reasonable range [1.5, 8.0] to avoid outliers */
             if (actual_cpt > 1.5f && actual_cpt < 8.0f) {
                 float old_cpt = react_get_chars_per_token(ctx);
-                /* FLAW 7 FIX: First calibration uses high alpha for fast convergence.
+                /* First calibration uses high alpha for fast convergence.
                  * Detect "uncalibrated" state by checking if rt.chars_per_token
                  * hasn't been set from actual measurement yet (still 0 or matches
                  * the config default exactly). */
@@ -2123,7 +2116,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int pre_evict_msgs = chat->n_msgs;
         react_maybe_evict(ctx, chat, step, user_query, on_event, userdata);
 
-        /* FIX: Reset cycling detection state after compaction evicts messages.
+        /* Reset cycling detection state after compaction evicts messages.
          * Without this, the model cannot legitimately re-read content that was
          * evicted from context — the stale last_sig matches the new action and
          * cycling_cached fires as a false positive.  The cached result IS
@@ -2167,7 +2160,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     "references before context compaction evicts the file contents. "
                     "Use notes(op=\"append\", section=\"findings\", content=\"...\").",
                     LLM_MSG_MEMORY_HINT);
-                /* DESIGN 2 FIX: Don't reset the counter here — it creates a
+                /* Don't reset the counter here — it creates a
                  * gap where the model can accumulate 5 more file_reads without
                  * re-nudging even if it ignored this nudge. The counter is
                  * properly reset at line 1703 when notes() is actually called. */
@@ -2197,7 +2190,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     llm_chat_free(chat);
 
-    /* FIX: Emit REACT_EVENT_DONE on fatal error so the TUI regenerates
+    /* Emit REACT_EVENT_DONE on fatal error so the TUI regenerates
      * reactRX.md showing the error instead of leaving "prompt processing..."
      * frozen on screen.  Without this, the md is never regenerated because
      * the error event fires while STATUS_RUNNING, then the loop moves on. */
@@ -2227,7 +2220,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         on_event, userdata);
     }
 
-    /* FIX 2c: Flush all deferred git commits as a single batch. */
+    /* Flush all deferred git commits as a single batch. */
     if (ctx->tools->ws)
         workspace_git_flush(ctx->tools->ws, "memory: batch update (react loop)");
     else if (ctx->tools->memory)

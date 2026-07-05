@@ -45,12 +45,10 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     /* Step 1: Add system prompt (fresh — may have changed) */
     react_add_system_prompt(chat, ctx->tools->cfg, ctx->tools->session_dir);
 
-    /* v5: No manifest injection — scratchpad carries all cross-loop state. */
+    /* No manifest injection — scratchpad carries all cross-loop state. */
 
-    /* Step 2: Add memory context (fresh)
-     * BUG #2 FIX: Check inject_memory flag — previously always injected. */
+    /* Step 2: Add memory context (only when inject_memory flag is set) */
     if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
-        /* FIX #9: Use shared helper for memory index + pinned injection */
         char *mem_summary = NULL, *pinned = NULL;
         react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
@@ -63,9 +61,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         free(pinned);
     }
 
-    /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup).
-     * BUG #3 FIX: Use scratchpad_serialize_budget() instead of unbounded
-     * scratchpad_serialize() — prevents oversized scratchpad after restore. */
+    /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup). */
     {
         eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
         long cb = react_context_budget(ctx);
@@ -76,7 +72,6 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         if (ctx->tools->scratch.count > 0) {
             sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
         }
-        /* FIX #10: Use shared scratchpad injection helper */
         react_inject_scratchpad_msg(chat, chat->n_msgs, sp_text);
         free(sp_text);
     }

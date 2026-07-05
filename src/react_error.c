@@ -1,33 +1,20 @@
 /* react_error.c — Error recovery for NULL LLM responses.
- * Extracted from react.c to reduce file size.
- * Includes emergency eviction and the 5-tier retry strategy.
- *
- * Bug/Design fixes applied:
- *   BUG 4:    Floor calculation now uses eviction_policy_t.floor_pct (not hardcoded /5)
- *   BUG 8:    Considers recoverability — evicts RECOVER_STORE/FILE/MEMORY
- *             messages before RECOVER_NONE to preserve irreplaceable content
- *   DESIGN 4: Compaction floor prevents over-eviction
- *   DESIGN 9: Protection levels aligned with progressive eviction (>= HIGH)
- *   UNIFY:    Uses shared react_find_tool_partner() for pair-safety */
+ * Includes emergency eviction and the 5-tier retry strategy. */
 
 #include "react_internal.h"
 
 /* ── Emergency Eviction ────────────────────────────────── */
 
 /* Emergency scoring callback — aligned with progressive scoring.
- * L3 FIX: Now includes size awareness and normalized position, matching
- * the progressive scorer's preference order. Previously used raw position
- * index + no size factor, causing inconsistent eviction decisions when
- * Strategy 2 fires after progressive eviction.
- * userdata is unused (NULL). */
+ * Includes size awareness and normalized position, matching the progressive
+ * scorer's preference order so eviction decisions are consistent when
+ * Strategy 2 fires after progressive eviction. userdata is unused (NULL). */
 static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
                                  int n_evictable, void *userdata) {
     (void)userdata;
     int imp = (int)chat->msgs[mi].importance;
     int rec = (int)chat->msgs[mi].recoverability;
     int msg_len = (int)chat->msgs[mi].content_len;
-    /* Review Issue #1 FIX: Use shared constants from react_internal.h
-     * instead of hardcoded values — prevents drift vs progressive scorer. */
     int pos_norm = (n_evictable > 1)
         ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1)) : 0;
     int size_bonus = 0;
@@ -45,16 +32,12 @@ static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
  * context budget, prioritizing recoverable content over irreplaceable.
  * Uses the same floor calculation as progressive eviction (pol.floor_pct).
  * Returns the number of messages evicted (0 if not enough to evict).
- * target_pct: target usage percentage. 0 = use pol.emergency_target_pct.
- * Flaw 2 FIX: Accepts explicit target_pct so callers can pass a value
- * consistent with the configured eviction_pct, preventing the emergency
- * eviction from leaving usage above the trigger threshold. */
+ * target_pct: target usage percentage (0 = use pol.emergency_target_pct).
+ * Explicit target_pct prevents emergency eviction from leaving usage above
+ * the trigger threshold. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
                           const config_t *cfg) {
-    /* D2 FIX: Use caller-supplied config instead of NULL defaults.
-     * Previously emergency eviction ignored user-configured floor_pct,
-     * compress_min_length, etc., potentially over-evicting content the
-     * user explicitly configured to be protected. */
+    /* Use caller-supplied config to respect user-configured floor_pct. */
     eviction_policy_t pol = react_eviction_policy(cfg);
     int eff_target = (target_pct > 0) ? target_pct : pol.emergency_target_pct;
     int keep_head = react_compute_keep_head(chat);
@@ -62,9 +45,7 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
     int evict_start = keep_head;
     int evict_end = chat->n_msgs - keep_tail;
 
-    /* F2/DD1 FIX: Use shared pair-safe boundary adjustment.
-     * Previously emergency eviction used raw boundaries, which could
-     * orphan a tool_result whose tool_call partner was protected. */
+    /* Pair-safe boundary adjustment — never split tool_call/tool_result pairs. */
     evict_adjust_boundaries(chat, &evict_start, &evict_end);
 
     int n_evictable = evict_end - evict_start;
@@ -77,15 +58,12 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
         target_chars = context_budget * eff_target / 100;
     else
         target_chars = total_chars * eff_target / 100;
-    /* FIX #3: Inlined need_to_remove — it was only used for this check */
     if (total_chars <= target_chars) return 0;
 
-    /* FIX #11: Use shared helper instead of inline loop */
     long head_chars = react_head_chars(chat, evict_start);
     long tail_chars = react_tail_chars(chat, evict_end);
 
-    /* FIX #5: Pass tail_chars so floor is based on evictable capacity only.
-     * D2 FIX: Use policy-based variant so user config is respected. */
+    /* Floor based on evictable capacity only (excluding head+tail). */
     long floor_chars = react_calc_floor_chars_pol(chat, evict_start, evict_end,
                                                   context_budget,
                                                   head_chars, tail_chars, &pol);
@@ -96,8 +74,7 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
     int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
     if (!evict_mark) { evict_free_partner_map(&pmap); return 0; }
 
-    /* Review B4: Use generic mark-candidates with emergency scoring callback.
-     * target_remaining = target_chars - head_chars = how much non-head content
+    /* target_remaining = target_chars - head_chars = how much non-head content
      * we want to retain after eviction. */
     long remaining_nonhead = total_chars - head_chars;
     long target_remaining = target_chars - head_chars;
@@ -111,13 +88,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
                                           evict_mark);
 
     /* Fallback — mark at least one message if nothing was marked.
-     * BUG4 FIX: Check that evicting the message (+ partner) won't violate
-     * the compaction floor. Previously this fallback bypassed the floor
-     * check that evict_mark_candidates carefully enforces.
-     * FIX #16: Score all eligible candidates and pick the one with the
-     * lowest eviction score (most evictable) instead of blindly picking
-     * the oldest message. Uses the same evict_score_emergency() scorer
-     * as the main path for consistency. */
+     * Respects compaction floor and scores all eligible candidates to pick
+     * the most evictable one (same scorer as main path). */
     if (n_marked == 0 && remaining_nonhead > floor_chars) {
         int best_i = -1, best_pair_ri = -1;
         int best_score = INT_MAX;
@@ -163,20 +135,13 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
     return removed;
 }
 
-/* D3 FIX: Combined emergency evict + scratchpad re-injection.
- * FIX #3: Now injects a breadcrumb + MEMORY_HINT after eviction, matching
- * the normal eviction path. Previously the LLM silently lost context.
- * FIX #4: Computes target_pct from config instead of using hardcoded 80%.
- * Previously, if eviction triggers at 70%, emergency targeting 80% would
- * leave usage above the trigger, causing an immediate re-trigger loop. */
+/* Combined emergency evict + breadcrumb/hint/scratchpad re-injection.
+ * target_pct comes from config to avoid re-trigger loops. */
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
     long cb = react_context_budget(ctx);
-    /* FIX #4: Compute target_pct consistent with progressive eviction */
     int target_pct = react_eviction_target_pct(ctx->tools->cfg);
     int n_evict = react_emergency_evict(chat, cb, target_pct, ctx->tools->cfg);
-    /* D1 FIX: Use shared helper for breadcrumb + hint + SP injection.
-     * BUG #4 FIX: SP re-injection is now budget-guarded (matching
-     * evict_finalize) — previously always re-injected regardless of usage. */
+    /* Budget-guarded breadcrumb + hint + scratchpad injection. */
     react_inject_emergency_breadcrumbs(ctx, chat, n_evict, cb, target_pct,
                                        /*skip_sp=*/0);
     return n_evict;
@@ -191,8 +156,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                                int *consecutive_null, int *total_400,
                                llm_stats_t *stats, int step,
                                react_event_fn on_event, void *userdata) {
-    /* D2 FIX: Extract provider error strings once at function entry.
-     * Previously extracted 3 separate times in different block scopes. */
+    /* Extract provider error strings once at function entry. */
     const char *srv_err = ctx->provider ? ctx->provider->last_error : NULL;
     const char *srv_err_req = ctx->provider ? ctx->provider->last_error_request : NULL;
     const char *srv_err_resp = ctx->provider ? ctx->provider->last_error_response : NULL;
@@ -386,10 +350,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
             usleep(100000);
     } else if (*consecutive_null == 3) {
         /* Tier 1: Remove the last assistant+tool_result pair.
-         * BUG 3 FIX: Walk backward to find the actual last tool_result,
-         * skipping injected hint/summary messages (MEMORY_HINT, EVICTION_SUMMARY,
-         * etc.). Then find its partner tool_call. This prevents orphaning a
-         * tool_call when a MEMORY_HINT nudge is the last message. */
+         * Walk backward to find the actual last tool_result, skipping
+         * injected hint/summary messages. Then find its partner tool_call. */
         ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
         react_emit(on_event, userdata, &ev);
         int kh = react_compute_keep_head(chat);
@@ -449,7 +411,6 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                     cleaned[di++] = src[si++];
                 }
                 cleaned[di] = '\0';
-                /* B5 FIX: Use shared scratchpad formatting helper */
                 char *new_sp = react_format_scratchpad_msg(cleaned);
                 if (new_sp)
                     llm_chat_replace_content(chat, sp_idx, new_sp);
@@ -464,9 +425,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
         react_emit(on_event, userdata, &ev);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-        /* BUG 4 FIX: Do NOT re-inject — this is the nuclear option.
-         * Previous code immediately re-injected at full budget, making
-         * Tier 3 identical to "refresh scratchpad" rather than a true strip. */
+        /* Do NOT re-inject — this is a true strip, not a refresh. */
     }
     return 0;
 }
