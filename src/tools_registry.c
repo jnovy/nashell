@@ -119,7 +119,11 @@ const tool_def_t TOOL_REGISTRY[] = {
      "- drag: start_x, start_y, end_x, end_y (all required), optional button\\n"
      "- move: x, y (required). Move cursor without clicking\\n"
      "- long_press: x, y (required), hold_ms (default 500). For mobile/tablet context menus\\n"
-     "Only for visual/GUI tasks. For CLI delays, use shell_exec with sleep.",
+     "Only for visual/GUI tasks. For CLI delays, use shell_exec with sleep.\\n"
+     "IMPORTANT: device_control is the EXCLUSIVE interface for GUI interaction. "
+     "Do NOT use shell_exec with xdotool, xclip, xsel, wmctrl, xprop, xwininfo, "
+     "import, scrot, gnome-screenshot, or any other CLI tool to manipulate or capture the GUI. "
+     "All clicking, typing, scrolling, dragging, and screenshots must go through device_control commands.",
      "{\"type\":\"object\",\"properties\":{"
        "\"command\":{\"type\":\"string\",\"description\":"
          "\"Command to execute\","
