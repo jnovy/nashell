@@ -12,6 +12,7 @@
 #include "stream.h"
 #include "display.h"
 #include "nash_log.h"
+#include "compress.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +57,9 @@ struct stream_t {
     int              index_head;        /* next write position */
     int              index_count;       /* current count (<= cap) */
     uint64_t         frame_counter;     /* monotonic */
+    uint32_t         prev_fb_crc;       /* CRC32 of previous framebuffer */
+    int              have_prev_crc;     /* true after first frame captured */
+    uint64_t         frames_skipped;    /* duplicate frames not encoded */
 
     /* Output file */
     FILE            *hevc_file;         /* append-only .hevc stream */
@@ -248,11 +252,25 @@ static void *capture_thread(void *arg) {
                         pthread_mutex_unlock(&s->mutex);
                         continue;
                     }
+                    s->have_prev_crc = 0;  /* force encode after resize */
                 }
 
                 /* 2. Copy framebuffer */
                 display_copy_framebuffer(s->display, s->framebuffer);
                 s->fb_valid = 1;
+
+                /* 2b. Duplicate frame detection -- skip if unchanged */
+                size_t fb_size = (size_t)w * h * 4;
+                uint32_t fb_crc = compress_crc32((const char *)s->framebuffer,
+                                                  fb_size);
+                if (s->have_prev_crc && fb_crc == s->prev_fb_crc) {
+                    s->frames_skipped++;
+                    s->frame_counter++;
+                    pthread_mutex_unlock(&s->mutex);
+                    goto next_frame;
+                }
+                s->prev_fb_crc = fb_crc;
+                s->have_prev_crc = 1;
 
                 /* 3. Convert BGRA -> I420 */
                 size_t y_size = (size_t)w * h;
@@ -313,6 +331,7 @@ static void *capture_thread(void *arg) {
             }
         }
 
+next_frame:
         /* Sleep for remainder of interval */
         struct timespec t1;
         clock_gettime(CLOCK_MONOTONIC, &t1);
@@ -326,8 +345,9 @@ static void *capture_thread(void *arg) {
         }
     }
 
-    nash_log("[stream] capture thread exiting (%" PRIu64 " frames captured)",
-             s->frame_counter);
+    nash_log("[stream] capture thread exiting (%" PRIu64 " frames captured, "
+             "%" PRIu64 " duplicates skipped)",
+             s->frame_counter, s->frames_skipped);
     return NULL;
 }
 
