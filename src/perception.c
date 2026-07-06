@@ -1,12 +1,13 @@
 /* perception.c — OCR-based screenshot analysis using Tesseract C API.
  *
- * Uses strip decomposition: the image is sliced into overlapping
- * horizontal strips (30px, 25% overlap) and OCR'd independently
- * with PSM_SPARSE_TEXT at 2x upscale (OCR_SCALE=2).
- * This isolates text regions from complex backgrounds (wallpapers,
- * photos) that confuse Tesseract's page segmentation on full-image
- * passes.  Results from overlapping strips are deduplicated via
- * IoU-based merge.
+ * Multi-pass strip decomposition: the image is sliced into overlapping
+ * horizontal strips (80px primary, 40px secondary, 50% overlap) and
+ * OCR'd with PSM_SPARSE_TEXT at 2x upscale (OCR_SCALE=2).  Each strip
+ * height is processed twice: once on raw RGB and once on contrast-
+ * normalized grayscale (pixContrastNorm).  The raw pass preserves
+ * color information for highlighted/selected items; the contrast-norm
+ * pass reveals low-contrast text that the raw pass misses.  Results
+ * from all passes are deduplicated via IoU-based merge.
  *
  * The Tesseract engine handle is initialized once and reused across
  * screenshots, avoiding the ~200ms Python startup + model load overhead
@@ -29,7 +30,7 @@
 /* ── Constants ─────────────────────────────────────────────── */
 
 #define OCR_SCALE       2       /* 2x upscale for small panel text */
-#define STRIP_HEIGHT    30      /* px height of horizontal strips */
+#define STRIP_HEIGHT    80      /* px height of horizontal strips */
 #define IOU_THRESHOLD   0.4f    /* overlap threshold for merge */
 #define MAX_TEXTS       2048    /* max text entries per screenshot */
 
@@ -427,42 +428,19 @@ static void offset_texts(ocr_texts_t *texts, int dy) {
     }
 }
 
-/* ── Main OCR pipeline ─────────────────────────────────────── */
+/* ── Strip-pass helper ─────────────────────────────────────── */
 /*
- * Strip decomposition: slice the image into horizontal strips and OCR
- * each one independently.  This prevents complex backgrounds (wallpapers,
- * nebula images, etc.) from confusing Tesseract's page segmentation --
- * a full-image pass misses small panel/taskbar text entirely because the
- * surrounding visual noise dominates.
- *
- * Each strip is optionally upscaled and run through Tesseract
- * PSM_SPARSE_TEXT.  Overlapping strips (25% overlap) ensure text at
- * strip boundaries is captured; IoU-based merge deduplicates.
+ * Process a single set of horizontal strips at the given height
+ * and merge results into `out`.  Used by run_ocr() to combine
+ * multiple strip heights for better coverage.
  */
 
-static void run_ocr(const char *image_path, ocr_texts_t *out) {
-    PIX *orig = pixRead(image_path);
-    if (!orig) return;
-
-    /* Ensure 32-bit RGB */
-    PIX *rgb = NULL;
-    if (pixGetDepth(orig) != 32) {
-        rgb = pixConvertTo32(orig);
-        pixDestroy(&orig);
-        if (!rgb) return;
-    } else {
-        rgb = orig;
-    }
-
+static void run_strips(PIX *rgb, int strip_h, int contrast_norm,
+                       ocr_texts_t *out) {
     int img_w = pixGetWidth(rgb);
     int img_h = pixGetHeight(rgb);
-    float scale = (float)OCR_SCALE;
-    int strip_h = STRIP_HEIGHT;
-    int overlap = strip_h / 4;   /* 25% overlap */
+    int overlap = strip_h / 2;   /* 50% overlap */
 
-    texts_init(out);
-
-    /* Process horizontal strips */
     for (int y = 0; y < img_h; y += strip_h - overlap) {
         int y2 = y + strip_h;
         if (y2 > img_h) y2 = img_h;
@@ -475,19 +453,39 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
         boxDestroy(&box);
         if (!strip) continue;
 
-        /* Optionally upscale.
-         * Note: unsharp masking was benchmarked and found to hurt OCR
-         * quality at all parameter combinations tested (halfwidth 1-3,
-         * fract 0.3-3.0).  Removing it yields +1 text on desktop,
-         * +1 text on terminal, higher avg confidence, and ~50ms speedup.
-         * See bench_usm.sh results from 2026-07-06. */
+        PIX *to_scale = strip;
+
+        /* Optional contrast normalization: convert to 8bpp grayscale
+         * and apply local contrast normalization.  This makes low-contrast
+         * menu text (dark text on slightly-lighter dark background)
+         * readable.  pixContrastNorm equalizes local intensity,
+         * dramatically improving OCR on JPEG-compressed UI screenshots.
+         *
+         * Not used for the raw pass, which preserves color information
+         * needed for highlighted/selected items (e.g., light text on
+         * a subtly different gray background). */
+        PIX *enhanced = NULL;
+        if (contrast_norm) {
+            PIX *gray = pixConvertRGBToGray(strip, 0.0f, 0.0f, 0.0f);
+            pixDestroy(&strip);
+            if (!gray) continue;
+            enhanced = pixContrastNorm(NULL, gray, 100, 100, 55, 1, 1);
+            pixDestroy(&gray);
+            if (!enhanced) continue;
+            to_scale = enhanced;
+        }
+
+        /* Upscale using nearest-neighbor (pixExpandReplicate) to preserve
+         * sharp text edges.  pixScale (linear interpolation) blurs small
+         * menu/panel text enough to make it unrecognizable by Tesseract. */
         PIX *scaled;
         if (OCR_SCALE > 1) {
-            scaled = pixScale(strip, scale, scale);
-            pixDestroy(&strip);
+            scaled = pixExpandReplicate(to_scale, OCR_SCALE);
+            if (enhanced) pixDestroy(&enhanced);
+            else pixDestroy(&strip);
             if (!scaled) continue;
         } else {
-            scaled = strip;   /* use strip directly */
+            scaled = to_scale;
         }
 
         /* OCR this strip */
@@ -504,6 +502,57 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
         merge_texts(out, &strip_texts);
         texts_free(&strip_texts);
     }
+}
+
+/* ── Main OCR pipeline ─────────────────────────────────────── */
+/*
+ * Multi-pass strip decomposition: the image is sliced into overlapping
+ * horizontal strips at two different heights (STRIP_HEIGHT and half)
+ * and OCR'd independently.  This ensures that text sitting at a strip
+ * boundary in one pass is fully contained in the other.
+ *
+ * An additional inverted-color pass catches light text on colored
+ * backgrounds (e.g., highlighted/selected menu items like white-on-blue
+ * "Internet") that the normal pass misses.
+ *
+ * Results from all passes are deduplicated via IoU-based merge.
+ */
+
+static void run_ocr(const char *image_path, ocr_texts_t *out) {
+    PIX *orig = pixRead(image_path);
+    if (!orig) return;
+
+    /* Ensure 32-bit RGB */
+    PIX *rgb = NULL;
+    if (pixGetDepth(orig) != 32) {
+        rgb = pixConvertTo32(orig);
+        pixDestroy(&orig);
+        if (!rgb) return;
+    } else {
+        rgb = orig;
+    }
+
+    texts_init(out);
+
+    /* Pass 1: raw RGB strips at primary height (80px).
+     * Preserves color information needed for highlighted/selected
+     * items and text with subtle color differences. */
+    run_strips(rgb, STRIP_HEIGHT, 0, out);
+
+    /* Pass 2: raw RGB at half-height (40px) to catch text at
+     * pass-1 strip boundaries. */
+    if (STRIP_HEIGHT > 40)
+        run_strips(rgb, STRIP_HEIGHT / 2, 0, out);
+
+    /* Pass 3: contrast-normalized strips at primary height.
+     * pixContrastNorm equalizes local intensity, dramatically
+     * improving OCR on low-contrast text (dark-on-gray menus,
+     * JPEG-compressed UI elements). */
+    run_strips(rgb, STRIP_HEIGHT, 1, out);
+
+    /* Pass 4: contrast-normalized at half-height. */
+    if (STRIP_HEIGHT > 40)
+        run_strips(rgb, STRIP_HEIGHT / 2, 1, out);
 
     pixDestroy(&rgb);
 
