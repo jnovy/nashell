@@ -487,9 +487,9 @@ static void offset_texts(ocr_texts_t *texts, int dy) {
  * a full-image pass misses small panel/taskbar text entirely because the
  * surrounding visual noise dominates.
  *
- * Each strip is upscaled, sharpened with unsharp mask, and run through
- * Tesseract PSM_SINGLE_BLOCK.  Overlapping strips (25% overlap) ensure
- * text at strip boundaries is captured; IoU-based merge deduplicates.
+ * Each strip is optionally upscaled and run through Tesseract
+ * PSM_SPARSE_TEXT.  Overlapping strips (25% overlap) ensure text at
+ * strip boundaries is captured; IoU-based merge deduplicates.
  */
 
 static void run_ocr(const char *image_path, ocr_texts_t *out) {
@@ -527,9 +527,12 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
         boxDestroy(&box);
         if (!strip) continue;
 
-        /* Optionally upscale, then always sharpen.
-         * USM improves OCR even at native resolution by enhancing
-         * text edges in JPEG-compressed screenshots. */
+        /* Optionally upscale.
+         * Note: unsharp masking was benchmarked and found to hurt OCR
+         * quality at all parameter combinations tested (halfwidth 1-3,
+         * fract 0.3-3.0).  Removing it yields +1 text on desktop,
+         * +1 text on terminal, higher avg confidence, and ~50ms speedup.
+         * See bench_usm.sh results from 2026-07-06. */
         PIX *scaled;
         if (OCR_SCALE > 1) {
             scaled = pixScale(strip, scale, scale);
@@ -537,11 +540,6 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
             if (!scaled) continue;
         } else {
             scaled = strip;   /* use strip directly */
-        }
-        PIX *sharp = pixUnsharpMasking(scaled, 1, 1.5f);
-        if (sharp) {
-            pixDestroy(&scaled);
-            scaled = sharp;
         }
 
         /* OCR this strip */
