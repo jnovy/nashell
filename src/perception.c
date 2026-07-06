@@ -2,7 +2,7 @@
  *
  * Uses strip decomposition: the image is sliced into overlapping
  * horizontal strips (30px, 25% overlap) and OCR'd independently
- * with PSM_SPARSE_TEXT at native resolution (OCR_SCALE=1).
+ * with PSM_SPARSE_TEXT at 2x upscale (OCR_SCALE=2).
  * This isolates text regions from complex backgrounds (wallpapers,
  * photos) that confuse Tesseract's page segmentation on full-image
  * passes.  Results from overlapping strips are deduplicated via
@@ -28,7 +28,7 @@
 
 /* ── Constants ─────────────────────────────────────────────── */
 
-#define OCR_SCALE       1       /* 1 = native resolution (fastest) */
+#define OCR_SCALE       2       /* 2x upscale for small panel text */
 #define STRIP_HEIGHT    30      /* px height of horizontal strips */
 #define IOU_THRESHOLD   0.4f    /* overlap threshold for merge */
 #define MAX_TEXTS       2048    /* max text entries per screenshot */
@@ -48,17 +48,6 @@ typedef struct {
     int         cap;
 } ocr_texts_t;
 
-/* ── Line aggregation entry ────────────────────────────────── */
-
-typedef struct line_entry {
-    int     key[4];     /* page, block, par, line */
-    char    words[4096];
-    int     word_count;
-    int     x1, y1, x2, y2;
-    float   conf_sum;
-    int     conf_count;
-    struct line_entry *next;
-} line_entry_t;
 
 /* ── Static Tesseract handle ──────────────────────────────── */
 
@@ -333,7 +322,16 @@ static void scale_texts(ocr_texts_t *texts, int factor) {
     }
 }
 
-/* ── Run Tesseract on a Pix with given PSM, aggregate words into lines ── */
+/* ── Run Tesseract on a Pix with given PSM, emit individual words ────── */
+/*
+ * Each recognized word is emitted as a separate text entry rather than
+ * aggregating into lines.  This prevents menu bar items ("Applications",
+ * "Places", "System") from being merged with noise characters that
+ * Tesseract places on the same TEXTLINE because they share a horizontal
+ * band.  The downstream noise filter (is_noise) handles short/low-conf
+ * fragments, and the summary builder groups entries by Y coordinate for
+ * readable output.
+ */
 
 static void run_tess_pass(PIX *pix, TessPageSegMode psm, ocr_texts_t *out) {
     TessBaseAPISetPageSegMode(g_tess, psm);
@@ -350,22 +348,13 @@ static void run_tess_pass(PIX *pix, TessPageSegMode psm, ocr_texts_t *out) {
         return;
     }
 
-    /* Aggregate words into lines using a linked list of line entries.
-     * We group by (block, par, line) using TessPageIteratorIsAtBeginningOf. */
-    line_entry_t *lines = NULL;
-    line_entry_t *cur_line = NULL;
-
     TessPageIterator *pi = TessResultIteratorGetPageIterator(ri);
 
     do {
-        /* Check if this word starts a new text line */
-        int new_line = (!cur_line) ||
-                       TessPageIteratorIsAtBeginningOf(pi, RIL_TEXTLINE);
-
         char *word = TessResultIteratorGetUTF8Text(ri, RIL_WORD);
         if (!word) continue;
 
-        /* Strip whitespace */
+        /* Strip leading whitespace */
         char *ws = word;
         while (*ws && isspace((unsigned char)*ws)) ws++;
         if (!*ws) { TessDeleteText(word); continue; }
@@ -373,7 +362,7 @@ static void run_tess_pass(PIX *pix, TessPageSegMode psm, ocr_texts_t *out) {
         float conf = TessResultIteratorConfidence(ri, RIL_WORD);
         if (conf < 40.0f) { TessDeleteText(word); continue; }
 
-        /* Skip single-char noise words early (before line aggregation) */
+        /* Skip single-char noise words early */
         int wlen_raw = (int)strlen(ws);
         if (wlen_raw == 1 && !isalnum((unsigned char)ws[0])) {
             TessDeleteText(word); continue;
@@ -386,53 +375,12 @@ static void run_tess_pass(PIX *pix, TessPageSegMode psm, ocr_texts_t *out) {
             continue;
         }
 
-        if (new_line) {
-            /* Start a new line entry */
-            line_entry_t *le = calloc(1, sizeof(line_entry_t));
-            if (!le) { TessDeleteText(word); break; }
-            le->next = lines;
-            lines = le;
-            cur_line = le;
-            strncpy(cur_line->words, ws, sizeof(cur_line->words) - 1);
-            cur_line->word_count = 1;
-            cur_line->x1 = left;  cur_line->y1 = top;
-            cur_line->x2 = right; cur_line->y2 = bottom;
-            cur_line->conf_sum = conf;
-            cur_line->conf_count = 1;
-        } else {
-            /* Append word to current line */
-            size_t wlen = strlen(cur_line->words);
-            if (wlen + 1 + strlen(ws) < sizeof(cur_line->words) - 1) {
-                cur_line->words[wlen] = ' ';
-                strcpy(cur_line->words + wlen + 1, ws);
-            }
-            cur_line->word_count++;
-            if (left < cur_line->x1) cur_line->x1 = left;
-            if (top < cur_line->y1) cur_line->y1 = top;
-            if (right > cur_line->x2) cur_line->x2 = right;
-            if (bottom > cur_line->y2) cur_line->y2 = bottom;
-            cur_line->conf_sum += conf;
-            cur_line->conf_count++;
-        }
-
+        texts_add(out, ws, left, top, right, bottom, conf / 100.0f);
         TessDeleteText(word);
     } while (TessPageIteratorNext(pi, RIL_WORD));
 
     TessResultIteratorDelete(ri);
     TessBaseAPIClear(g_tess);
-
-    /* Convert line entries to texts array */
-    for (line_entry_t *le = lines; le; le = le->next) {
-        float avg_conf = le->conf_sum / (float)le->conf_count / 100.0f;
-        texts_add(out, le->words, le->x1, le->y1, le->x2, le->y2, avg_conf);
-    }
-
-    /* Free line entries */
-    while (lines) {
-        line_entry_t *next = lines->next;
-        free(lines);
-        lines = next;
-    }
 }
 
 /* ── Merge two text arrays (keep highest confidence for overlapping bboxes) ── */
