@@ -1,8 +1,12 @@
 /* perception.c — OCR-based screenshot analysis using Tesseract C API.
  *
- * Port of scripts/perception.py to native C.  Uses Tesseract + Leptonica
- * for 2x upscale dual-pass OCR (normal + RGB-inverted) with IoU-based
- * merge and noise filtering.
+ * Uses strip decomposition: the image is sliced into overlapping
+ * horizontal strips (30px, 25% overlap) and OCR'd independently
+ * with PSM_SPARSE_TEXT at native resolution (OCR_SCALE=1).
+ * This isolates text regions from complex backgrounds (wallpapers,
+ * photos) that confuse Tesseract's page segmentation on full-image
+ * passes.  Results from overlapping strips are deduplicated via
+ * IoU-based merge.
  *
  * The Tesseract engine handle is initialized once and reused across
  * screenshots, avoiding the ~200ms Python startup + model load overhead
@@ -24,7 +28,8 @@
 
 /* ── Constants ─────────────────────────────────────────────── */
 
-#define OCR_SCALE       2       /* 2x upscale for small desktop text */
+#define OCR_SCALE       1       /* 1 = native resolution (fastest) */
+#define STRIP_HEIGHT    30      /* px height of horizontal strips */
 #define IOU_THRESHOLD   0.4f    /* overlap threshold for merge */
 #define MAX_TEXTS       2048    /* max text entries per screenshot */
 
@@ -289,22 +294,27 @@ static int is_noise(const char *text, float conf) {
     int len = (int)strlen(text);
     if (len == 0) return 1;
 
-    /* Single non-alphanumeric character */
-    if (len == 1 && !isalnum((unsigned char)text[0])) return 1;
+    /* Single character -- almost never real UI text */
+    if (len == 1) return 1;
 
-    /* Check if any char is alpha */
-    int has_alpha = 0;
+    /* Count alpha characters */
+    int alpha_count = 0;
     for (int i = 0; i < len; i++) {
-        if (isalpha((unsigned char)text[i])) { has_alpha = 1; break; }
+        if (isalpha((unsigned char)text[i])) alpha_count++;
     }
 
-    /* Very short purely non-alpha text with low confidence */
-    if (len <= 2 && !has_alpha && conf < 0.80f) return 1;
+    /* 2-char fragments: only keep if very high confidence and has alpha
+     * (e.g. "en" keyboard layout indicator, "SC" app icon) */
+    if (len <= 2 && conf < 0.85f) return 1;
+    if (len <= 2 && alpha_count == 0) return 1;
 
-    /* Short garbage */
-    if (len <= 2 && conf < 0.70f) return 1;
+    /* 3-4 char: moderate confidence threshold */
     if (len <= 3 && conf < 0.75f) return 1;
-    if (len <= 4 && conf < 0.60f) return 1;
+    if (len <= 4 && conf < 0.65f) return 1;
+
+    /* Longer text with very low alpha ratio is likely noise from
+     * wallpaper speckles being misread as punctuation/symbols */
+    if (len >= 5 && alpha_count * 3 < len) return 1;
 
     return 0;
 }
@@ -361,7 +371,13 @@ static void run_tess_pass(PIX *pix, TessPageSegMode psm, ocr_texts_t *out) {
         if (!*ws) { TessDeleteText(word); continue; }
 
         float conf = TessResultIteratorConfidence(ri, RIL_WORD);
-        if (conf < 30.0f) { TessDeleteText(word); continue; }
+        if (conf < 40.0f) { TessDeleteText(word); continue; }
+
+        /* Skip single-char noise words early (before line aggregation) */
+        int wlen_raw = (int)strlen(ws);
+        if (wlen_raw == 1 && !isalnum((unsigned char)ws[0])) {
+            TessDeleteText(word); continue;
+        }
 
         int left, top, right, bottom;
         if (!TessPageIteratorBoundingBox(pi, RIL_WORD,
@@ -451,13 +467,36 @@ static void merge_texts(ocr_texts_t *merged, const ocr_texts_t *b) {
     }
 }
 
+/* ── Offset text coordinates (for strip-based OCR) ─────────── */
+
+static void offset_texts(ocr_texts_t *texts, int dy) {
+    if (dy == 0) return;
+    for (int i = 0; i < texts->count; i++) {
+        ocr_text_t *t = &texts->items[i];
+        t->bbox[1] += dy;
+        t->bbox[3] += dy;
+        t->center[1] += dy;
+    }
+}
+
 /* ── Main OCR pipeline ─────────────────────────────────────── */
+/*
+ * Strip decomposition: slice the image into horizontal strips and OCR
+ * each one independently.  This prevents complex backgrounds (wallpapers,
+ * nebula images, etc.) from confusing Tesseract's page segmentation --
+ * a full-image pass misses small panel/taskbar text entirely because the
+ * surrounding visual noise dominates.
+ *
+ * Each strip is upscaled, sharpened with unsharp mask, and run through
+ * Tesseract PSM_SINGLE_BLOCK.  Overlapping strips (25% overlap) ensure
+ * text at strip boundaries is captured; IoU-based merge deduplicates.
+ */
 
 static void run_ocr(const char *image_path, ocr_texts_t *out) {
     PIX *orig = pixRead(image_path);
     if (!orig) return;
 
-    /* Ensure 32-bit RGB for color operations */
+    /* Ensure 32-bit RGB */
     PIX *rgb = NULL;
     if (pixGetDepth(orig) != 32) {
         rgb = pixConvertTo32(orig);
@@ -467,34 +506,60 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
         rgb = orig;
     }
 
-    /* 2x upscale with linear interpolation (Leptonica's pixScale uses
-     * area mapping for downscale, linear for upscale -- good quality) */
-    PIX *scaled = pixScale(rgb, (float)OCR_SCALE, (float)OCR_SCALE);
-    if (!scaled) { pixDestroy(&rgb); return; }
+    int img_w = pixGetWidth(rgb);
+    int img_h = pixGetHeight(rgb);
+    float scale = (float)OCR_SCALE;
+    int strip_h = STRIP_HEIGHT;
+    int overlap = strip_h / 4;   /* 25% overlap */
 
-    /* Create inverted copy */
-    PIX *inverted = pixInvert(NULL, scaled);
-    if (!inverted) { pixDestroy(&scaled); pixDestroy(&rgb); return; }
+    texts_init(out);
 
-    /* Run normal pass (PSM_SPARSE_TEXT = 11) */
-    ocr_texts_t texts_normal;
-    texts_init(&texts_normal);
-    run_tess_pass(scaled, PSM_SPARSE_TEXT, &texts_normal);
+    /* Process horizontal strips */
+    for (int y = 0; y < img_h; y += strip_h - overlap) {
+        int y2 = y + strip_h;
+        if (y2 > img_h) y2 = img_h;
+        if (y2 - y < 10) break;  /* skip tiny remainder */
 
-    /* Run inverted pass */
-    ocr_texts_t texts_inv;
-    texts_init(&texts_inv);
-    run_tess_pass(inverted, PSM_SPARSE_TEXT, &texts_inv);
+        /* Crop strip */
+        BOX *box = boxCreate(0, y, img_w, y2 - y);
+        if (!box) continue;
+        PIX *strip = pixClipRectangle(rgb, box, NULL);
+        boxDestroy(&box);
+        if (!strip) continue;
 
-    pixDestroy(&inverted);
+        /* Optionally upscale, then always sharpen.
+         * USM improves OCR even at native resolution by enhancing
+         * text edges in JPEG-compressed screenshots. */
+        PIX *scaled;
+        if (OCR_SCALE > 1) {
+            scaled = pixScale(strip, scale, scale);
+            pixDestroy(&strip);
+            if (!scaled) continue;
+        } else {
+            scaled = strip;   /* use strip directly */
+        }
+        PIX *sharp = pixUnsharpMasking(scaled, 1, 1.5f);
+        if (sharp) {
+            pixDestroy(&scaled);
+            scaled = sharp;
+        }
 
-    /* Merge: start with normal, merge inverted keeping best confidence */
-    *out = texts_normal;  /* transfer ownership */
-    merge_texts(out, &texts_inv);
-    texts_free(&texts_inv);
+        /* OCR this strip */
+        ocr_texts_t strip_texts;
+        texts_init(&strip_texts);
+        run_tess_pass(scaled, PSM_SPARSE_TEXT, &strip_texts);
+        pixDestroy(&scaled);
 
-    /* Scale coordinates back to original image space */
-    scale_texts(out, OCR_SCALE);
+        /* Map coordinates back to original image space */
+        scale_texts(&strip_texts, OCR_SCALE);
+        offset_texts(&strip_texts, y);
+
+        /* Merge into global results (IoU dedup for overlapping strips) */
+        merge_texts(out, &strip_texts);
+        texts_free(&strip_texts);
+    }
+
+    pixDestroy(&rgb);
 
     /* Filter noise */
     int write_idx = 0;
@@ -508,23 +573,6 @@ static void run_ocr(const char *image_path, ocr_texts_t *out) {
         }
     }
     out->count = write_idx;
-
-    /* Fallback: if sparse mode found very little, try PSM_SINGLE_BLOCK (6) */
-    if (out->count < 5) {
-        ocr_texts_t texts6;
-        texts_init(&texts6);
-        run_tess_pass(scaled, PSM_SINGLE_BLOCK, &texts6);
-        scale_texts(&texts6, OCR_SCALE);
-        if (texts6.count > out->count) {
-            texts_free(out);
-            *out = texts6;
-        } else {
-            texts_free(&texts6);
-        }
-    }
-
-    pixDestroy(&scaled);
-    pixDestroy(&rgb);
 }
 
 /* ── Sort comparator: top-to-bottom, left-to-right ─────────── */
@@ -735,3 +783,47 @@ cJSON *perception_analyze(const char *screenshot_path) {
 void perception_cleanup(void) {}
 
 #endif /* HAVE_TESSERACT */
+
+/* ── Standalone test binary ────────────────────────────────── */
+
+#ifdef __PERCEPTION_TEST
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <image-file>\n", argv[0]);
+        return 1;
+    }
+
+    if (perception_init() != 0) {
+        fprintf(stderr, "error: failed to initialize perception engine\n");
+        return 1;
+    }
+
+    cJSON *result = perception_analyze(argv[1]);
+    if (!result) {
+        fprintf(stderr, "error: perception_analyze failed for '%s'\n", argv[1]);
+        perception_cleanup();
+        return 1;
+    }
+
+    char *json_str = cJSON_Print(result);
+    if (json_str) {
+        puts(json_str);
+        free(json_str);
+    }
+
+    /* Also print the summary to stderr for quick inspection */
+    cJSON *summary = cJSON_GetObjectItemCaseSensitive(result, "summary");
+    if (cJSON_IsString(summary) && summary->valuestring) {
+        fprintf(stderr, "\n%s\n", summary->valuestring);
+    }
+
+    cJSON_Delete(result);
+    perception_cleanup();
+    return 0;
+}
+
+#endif /* __PERCEPTION_TEST */

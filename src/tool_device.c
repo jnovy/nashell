@@ -88,16 +88,6 @@ static device_session_t *get_or_create_session(tool_ctx_t *ctx) {
 /* ── Action handlers ────────────────────────────────────────── */
 
 static tool_result_t do_screenshot(device_session_t *s, cJSON *params) {
-    /* Optional delay before capture (for UI animations / page loads) */
-    cJSON *delay = cJSON_GetObjectItem(params, "delay_ms");
-    if (delay && cJSON_IsNumber(delay)) {
-        int ms = (int)delay->valuedouble;
-        if (ms < 0)    ms = 0;
-        if (ms > 10000) ms = 10000;
-        if (ms > 0)
-            usleep((unsigned)ms * 1000);
-    }
-
     char *path = NULL;
     int w = 0, h = 0;
 

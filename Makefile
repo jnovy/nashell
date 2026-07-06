@@ -179,7 +179,11 @@ test: $(TEST_BIN)
 	done; \
 	echo "=== $$failures failures ==="
 
-clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN) src/dream_yaml.inc
+# Standalone perception test binary (OCR analysis on a single image)
+perception: src/perception.c src/cJSON.c
+	$(CC) $(CFLAGS) -D__PERCEPTION_TEST -o $@ $^ $(TESS_LDFLAGS) -lm
 
-.PHONY: all clean test
+clean:
+	rm -f $(OBJ) $(BIN) $(TEST_BIN) perception src/dream_yaml.inc
+
+.PHONY: all clean test perception

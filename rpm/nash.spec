@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        2%{?dist}
+Release:        3%{?dist}
 Summary:        Autonomous coding agent in C — New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -11,11 +11,21 @@ Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  gcc
 BuildRequires:  make
+BuildRequires:  pkgconfig
 BuildRequires:  libcurl-devel
 BuildRequires:  openssl-devel
 BuildRequires:  readline-devel
 BuildRequires:  ncurses-devel
+BuildRequires:  libjpeg-turbo-devel
+BuildRequires:  zlib-ng-compat-devel
+BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
+# HEVC streaming (continuous capture)
+BuildRequires:  x265-devel
+BuildRequires:  libde265-devel
+# Tesseract OCR (native perception pipeline)
+BuildRequires:  tesseract-devel
+BuildRequires:  leptonica-devel
 BuildRequires:  vim-common
 # vim-common provides xxd, needed to embed playbook YAML files at build time
 
@@ -23,7 +33,14 @@ Requires:       libcurl
 Requires:       openssl-libs
 Requires:       readline
 Requires:       ncurses-libs
+Requires:       libjpeg-turbo
+Requires:       zlib-ng-compat
+Requires:       utf8proc
 Requires:       onnxruntime
+Requires:       x265-libs
+Requires:       libde265
+Requires:       tesseract-libs
+Requires:       leptonica
 
 # Bundled libraries (included in source, not linked from system)
 Provides:       bundled(cJSON) = 1.7.19
@@ -62,7 +79,7 @@ make src/dream_yaml.inc
 
 %make_build CC=gcc \
     CFLAGS="%{optflags} -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
-    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lonnxruntime"
+    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
 
 %install
 install -D -p -m 0755 nash %{buildroot}%{_bindir}/nash
@@ -89,7 +106,7 @@ install -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
 # Build and run the test suite
 make test CC=gcc \
     CFLAGS="%{optflags} -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
-    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lonnxruntime"
+    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
 
 %files
 %doc README.md
@@ -97,6 +114,10 @@ make test CC=gcc \
 %{_datadir}/%{name}/
 
 %changelog
+* Mon Jul 06 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-3
+- Add missing dependencies: libjpeg-turbo, zlib-ng-compat, utf8proc, x265,
+  libde265, tesseract, leptonica, pkgconfig
+
 * Sun Jun 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-2
 - feat: /todo command and persistent todo tool
 - feat: Aider-style repo map for structural codebase context
