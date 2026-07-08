@@ -214,32 +214,40 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         break;
 
     case REACT_EVENT_TOOL_START: {
-        /* Update status bar to show which tool is about to execute */
-        char buf[256];
+        const char *action = ev->action ? ev->action : "?";
         const char *desc = ev->description ? ev->description : "";
         int dlen = (int)strlen(desc);
-        /* Truncate long descriptions (e.g. file content) for the status bar */
+
+        /* Status bar: truncate long descriptions to fit the small bar */
+        char sbuf[256];
         if (dlen > 80) {
-            snprintf(buf, sizeof(buf), "[step %d] %s: %.*s...",
-                     ev->step, ev->action ? ev->action : "?",
+            snprintf(sbuf, sizeof(sbuf), "[step %d] %s: %.*s...",
+                     ev->step, action,
                      (int)utf8_clamp(desc, 77), desc);
         } else {
-            snprintf(buf, sizeof(buf), "[step %d] %s: %s",
-                     ev->step, ev->action ? ev->action : "?", desc);
+            snprintf(sbuf, sizeof(sbuf), "[step %d] %s: %s",
+                     ev->step, action, desc);
         }
         free(ui->status_text);
-        ui->status_text = strdup(buf);
+        ui->status_text = strdup(sbuf);
+
+        /* Full (untruncated) version for stream_tokens and tool_display
+         * so the main content area and live progress show the complete
+         * tool arguments without truncation (like done output). */
+        char *full = NULL;
+        int flen = asprintf(&full, "[step %d] %s: %s", ev->step, action, desc);
+        if (flen < 0) { full = strdup(sbuf); flen = (int)strlen(full); }
+
         /* Show tool command in streaming area (replaces thinking text)
          * so the user sees what tool is about to run in the main content,
          * not just in the small status bar. */
-        int blen = (int)strlen(buf);
-        if (blen >= ui->stream_cap - 1) {
-            ui->stream_cap = blen + 2;
+        if (flen >= ui->stream_cap - 1) {
+            ui->stream_cap = flen + 2;
             ui->stream_tokens = realloc(ui->stream_tokens,
                                          (size_t)ui->stream_cap);
         }
-        memcpy(ui->stream_tokens, buf, (size_t)blen + 1);
-        ui->stream_len = blen;
+        memcpy(ui->stream_tokens, full, (size_t)flen + 1);
+        ui->stream_len = flen;
         /* Track tool execution state for live elapsed-time display.
          * The main loop forces periodic regen while tool_executing=1,
          * so the elapsed time counter updates even though no events
@@ -247,7 +255,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->tool_executing = 1;
         clock_gettime(CLOCK_MONOTONIC, &ui->tool_start_time);
         free(ui->tool_display);
-        ui->tool_display = strdup(buf);
+        ui->tool_display = full;  /* transfer ownership */
         ui->needs_react_regen = 1;
         ui->needs_file_reload = 1;
         break;

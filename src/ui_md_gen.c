@@ -1264,6 +1264,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         /* Build progress string based on streaming state */
         char progress[256];
+        char *progress_dyn = NULL;  /* heap-allocated for long tool descriptions */
+        const char *progress_ptr = progress;  /* points to whichever buffer is active */
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -1273,7 +1275,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             double tool_elapsed = (now.tv_sec - ui->tool_start_time.tv_sec) +
                                   (now.tv_nsec - ui->tool_start_time.tv_nsec) / 1e9;
             /* Extract "action: desc" from tool_display which has the
-             * format "[step N] action: description..." */
+             * format "[step N] action: description" (full, untruncated) */
             const char *tdisp = "";
             if (ui->tool_display) {
                 const char *br = strchr(ui->tool_display, ']');
@@ -1282,11 +1284,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             if (tool_elapsed >= 60.0) {
                 int mins = (int)(tool_elapsed / 60.0);
                 int secs = (int)(tool_elapsed) % 60;
-                snprintf(progress, sizeof(progress),
-                         "%s  (%dm%02ds)", tdisp, mins, secs);
+                if (asprintf(&progress_dyn, "%s  (%dm%02ds)", tdisp, mins, secs) >= 0)
+                    progress_ptr = progress_dyn;
+                else
+                    snprintf(progress, sizeof(progress),
+                             "%s  (%dm%02ds)", tdisp, mins, secs);
             } else {
-                snprintf(progress, sizeof(progress),
-                         "%s  (%.0fs)", tdisp, tool_elapsed);
+                if (asprintf(&progress_dyn, "%s  (%.0fs)", tdisp, tool_elapsed) >= 0)
+                    progress_ptr = progress_dyn;
+                else
+                    snprintf(progress, sizeof(progress),
+                             "%s  (%.0fs)", tdisp, tool_elapsed);
             }
         } else if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
             /* Tokens are flowing — show generation progress */
@@ -1373,10 +1381,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         if (ui->max_steps > 0)
             str_appendf(&md, "  %c %3d/%-3d %s\n",
-                        sc, ui->current_step, ui->max_steps, progress);
+                        sc, ui->current_step, ui->max_steps, progress_ptr);
         else
             str_appendf(&md, "  %c %3d     %s\n",
-                        sc, ui->current_step, progress);
+                        sc, ui->current_step, progress_ptr);
+        free(progress_dyn);
         if (ui->stream_tokens && ui->stream_len > 0) {
             /* Suppress display of raw JSON action objects (e.g.
              * {"thought":"","action":"file_read","path":"R1S31"}).
