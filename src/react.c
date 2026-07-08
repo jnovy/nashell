@@ -1289,7 +1289,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             /* Store result for full audit trail (journal + store/) */
             ctx->tools->thought = thought;
+            ctx->tools->on_event = on_event;
+            ctx->tools->on_event_data = userdata;
             tool_result_t tr = tool_execute(ctx->tools, action_name, action);
+            ctx->tools->on_event = NULL;
+            ctx->tools->on_event_data = NULL;
             ctx->tools->thought = NULL;
             tool_result_free(&tr);
 
@@ -1524,6 +1528,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
             /* Normal execution — inject thought into tool_ctx for journal recording */
             ctx->tools->thought = thought;
+            ctx->tools->on_event = on_event;
+            ctx->tools->on_event_data = userdata;
             /* Capture tool start time so journal timestamp reflects when
              * the tool began executing, not when it completed. */
             {
@@ -1534,6 +1540,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
             tr = tool_execute(ctx->tools, action_name, action);
             ctx->tools->start_ts = 0;
+            ctx->tools->on_event = NULL;
+            ctx->tools->on_event_data = NULL;
             ctx->tools->thought = NULL;
 
             /* Hallucination guard: count real tool executions.

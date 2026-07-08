@@ -26,6 +26,24 @@ static atomic_int subtask_counter = 0;
 /* Maximum nesting depth (prevents unbounded recursion) */
 #define SUBTASK_MAX_DEPTH 3
 
+/* ── Subtask event forwarding (mirrors playbook.c pb_event_cb pattern) ── */
+typedef struct {
+    react_event_fn parent_cb;    /* parent's event callback */
+    void          *parent_data;  /* parent's event userdata */
+    const char    *child_dir;    /* subtask session directory */
+    const char    *parent_dir;   /* parent's session directory */
+    int            parent_loop;  /* parent's react_loop number */
+} subtask_event_ctx_t;
+
+static void subtask_event_cb(const react_event_t *ev, void *userdata) {
+    subtask_event_ctx_t *sctx = (subtask_event_ctx_t *)userdata;
+    react_event_t enriched = *ev;          /* shallow copy */
+    enriched.session_dir = sctx->child_dir; /* redirect TUI to subtask dir */
+    enriched.pass_label  = "subtask";       /* status bar label */
+    enriched.pass_index  = -1;              /* not a playbook pass */
+    sctx->parent_cb(&enriched, sctx->parent_data);
+}
+
 tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     cJSON *query_j = cJSON_GetObjectItem(params, "query");
     if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
@@ -137,7 +155,32 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     tools_inject_thought(ctx, params);
 
     /* ── Run the child react loop ─────────────────────────── */
-    char *result = react_run(&child_react, query, NULL, NULL);
+    /* Forward parent's event callback so subtask steps are visible in TUI.
+     * Pattern mirrors playbook.c pb_event_cb: enrich events with child
+     * session_dir so TUI reads the correct journal for reactRX.md. */
+    subtask_event_ctx_t ev_ctx = {
+        .parent_cb   = ctx->on_event,
+        .parent_data = ctx->on_event_data,
+        .child_dir   = child_dir,
+        .parent_dir  = ctx->session_dir,
+        .parent_loop = ctx->react_loop,
+    };
+    react_event_fn cb = ctx->on_event ? subtask_event_cb : NULL;
+    void *cb_data = ctx->on_event ? &ev_ctx : NULL;
+    char *result = react_run(&child_react, query, cb, cb_data);
+
+    /* ── Restore parent TUI context ──────────────────────── */
+    /* Emit a synthetic STEP_START so ui_event.c switches playbook_session_dir
+     * back to the parent's session dir for subsequent parent events. */
+    if (ctx->on_event) {
+        react_event_t restore = {0};
+        restore.type = REACT_EVENT_STEP_START;
+        restore.session_dir = ctx->session_dir;
+        restore.react_loop = ctx->react_loop;
+        restore.step = ctx->step;
+        restore.max_steps = 0; /* won't trigger auto-nav (step > 1) */
+        ctx->on_event(&restore, ctx->on_event_data);
+    }
 
     /* ── Cleanup child resources ──────────────────────────── */
     pthread_mutex_destroy(&child_react.user_ask_mutex);

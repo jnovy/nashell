@@ -10,6 +10,7 @@
 #include "config.h"
 #include "llm.h"
 #include "provider.h"
+#include "react_event.h"
 
 /* Forward declaration for session index (v4 unified memory L3 tier) */
 typedef struct session_index_t session_index_t;
@@ -122,6 +123,10 @@ typedef struct {
      * fallback journal entry — so no tool call is ever invisible. */
     int            journal_done;
     double         start_ts;       /* tool start time (epoch), set by react.c before tool_execute */
+    /* Event callback from parent react loop — threaded through so that
+     * child react loops (subtask) can forward events to the TUI. */
+    react_event_fn on_event;       /* parent's event callback (NULL = headless) */
+    void          *on_event_data;  /* parent's event userdata */
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */
