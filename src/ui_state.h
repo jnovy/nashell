@@ -200,6 +200,7 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
 
 void ui_state_input_char(ui_state_t *ui, int ch);
 void ui_state_input_backspace(ui_state_t *ui);
+void ui_state_input_delete_word(ui_state_t *ui);
 void ui_state_input_delete(ui_state_t *ui);
 void ui_state_input_left(ui_state_t *ui);
 void ui_state_input_right(ui_state_t *ui);

@@ -218,6 +218,27 @@ void ui_state_input_backspace(ui_state_t *ui) {
     ui->dirty = 1;
 }
 
+void ui_state_input_delete_word(ui_state_t *ui) {
+    if (!ui || ui->cursor_pos <= 0) return;
+    int old_pos = ui->cursor_pos;
+    /* Skip whitespace backwards */
+    while (ui->cursor_pos > 0 &&
+           (unsigned char)ui->input_buffer[ui->cursor_pos - 1] == ' ')
+        ui->cursor_pos--;
+    /* Skip non-whitespace backwards (handles UTF-8 continuation bytes) */
+    while (ui->cursor_pos > 0 &&
+           (unsigned char)ui->input_buffer[ui->cursor_pos - 1] != ' ') {
+        int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+        ui->cursor_pos -= nb;
+    }
+    int removed = old_pos - ui->cursor_pos;
+    memmove(ui->input_buffer + ui->cursor_pos,
+            ui->input_buffer + old_pos,
+            (size_t)(ui->input_len - old_pos + 1));
+    ui->input_len -= removed;
+    ui->dirty = 1;
+}
+
 void ui_state_input_delete(ui_state_t *ui) {
     if (!ui || ui->cursor_pos >= ui->input_len) return;
     int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);

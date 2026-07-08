@@ -1440,6 +1440,10 @@ int tui_input(ui_state_t *ui, char **out_query) {
         }
         break;
 
+    case 23:  /* Ctrl-W: delete word backwards */
+        if (ui->focus == FOCUS_QUERY) ui_state_input_delete_word(ui);
+        break;
+
     case KEY_BACKSPACE:
     case 127:
     case 8:
