@@ -148,6 +148,13 @@ const tool_def_t TOOL_REGISTRY[] = {
        "\"hold_ms\":{\"type\":\"integer\",\"description\":"
          "\"Hold duration in ms for long_press (default: 500, min: 100, max: 10000)\"}"
      "},\"required\":[\"command\"]}"},
+    {"subtask",
+     "Spawn an isolated sub-task with its own context. The child runs a full "
+     "react loop in isolation and returns only the final result -- the parent's "
+     "context grows by exactly 2 messages regardless of how many steps the child took. "
+     "Use for self-contained sub-problems (searching, analyzing, building) that would "
+     "otherwise bloat the parent's context with intermediate steps.",
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description for the sub-task to solve\"},\"max_steps\":{\"type\":\"integer\",\"description\":\"Maximum steps the sub-task may run (default: 30, max: 30)\"}},\"required\":[\"query\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };
 

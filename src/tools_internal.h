@@ -94,4 +94,7 @@ tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params);
  * when no device session exists (no-op). */
 void tool_device_cleanup(const char *session_dir);
 
+/* tool_subtask.c — Sub-task spawning (DAG-based context isolation) */
+tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params);
+
 #endif /* TOOLS_INTERNAL_H */
