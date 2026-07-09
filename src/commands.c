@@ -1809,7 +1809,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     *ctx->inferring = INFER_PLAYBOOK;
 
     pthread_mutex_lock(&ui->mtx);
-    ui->agent_view = 1;     /* Don't overwrite main session.md during agent run */
+    ui->agent_view = 1;     /* Mark agent run active for UI state tracking */
     ui->agent_running = 1;   /* Prevent Escape from clearing agent_view mid-run */
     char msg[256];
     snprintf(msg, sizeof(msg), "Running agent: %s", found->id);
@@ -2107,6 +2107,15 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
         return rc;
     }
     if (strncmp(sq, "/?", 2) == 0) {
+        /* /? with text -> memory/session search; bare /? -> clear UI search */
+        const char *after = sq + 2;
+        while (*after == ' ') after++;
+        if (*after) {
+            int rc = cmd_memory_query(ctx, after);
+            free(sq);
+            *submitted_query = NULL;
+            return rc;
+        }
         int rc = cmd_search(ctx);
         free(sq);
         *submitted_query = NULL;
