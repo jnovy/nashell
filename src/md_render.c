@@ -1792,6 +1792,17 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 link_idx++;
             }
 
+            /* Track additional links on this same source line so they
+             * are navigable via cursor (multi-link lines like
+             * "... ([#25047](...)), ... ([#25420](...))"). */
+            int first_extra_link = link_idx;
+            while (link_idx < doc->link_count &&
+                   doc->links[link_idx].doc_line == src_line) {
+                doc->links[link_idx].render_line = render_line;
+                link_idx++;
+            }
+            int n_extra = link_idx - first_extra_link;
+
             /* Parse link boundaries outside visible check — needed for
              * off-screen line counting too */
             const char *bracket = strchr(line_buf, '[');
@@ -1858,6 +1869,17 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         inline_seg_t segs[MAX_INLINE_SEGS];
                         int n = parse_inline(suffix, suffix_len, segs, MAX_INLINE_SEGS);
                         apply_attr_to_segs(segs, n, COLOR_PAIR(pair));
+                        /* Apply cursor highlighting to extra links in suffix */
+                        if (n_extra > 0 && focus) {
+                            int eli = first_extra_link;
+                            for (int si = 0; si < n && eli < first_extra_link + n_extra; si++) {
+                                if (segs[si].url && segs[si].url_len > 0) {
+                                    if (eli == cursor_link)
+                                        segs[si].attr = A_REVERSE | A_BOLD;
+                                    eli++;
+                                }
+                            }
+                        }
                         int total_dcols = 0;
                         for (int k = 0; k < n; k++)
                             total_dcols += seg_display_cols(segs[k].text, segs[k].len);
