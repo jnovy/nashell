@@ -48,14 +48,8 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
     const char *query = query_j->valuestring;
 
-    /* Optional max_steps override (no upper cap) */
-    int max_steps = ctx->cfg->subtask_default_steps;
-    cJSON *ms_j = cJSON_GetObjectItem(params, "max_steps");
-    if (ms_j && cJSON_IsNumber(ms_j)) {
-        int requested = (int)ms_j->valuedouble;
-        if (requested > 0)
-            max_steps = requested;
-    }
+    /* Subtask runs with unlimited steps (same as parent) */
+    int max_steps = -1;
 
     /* ── Depth guard ──────────────────────────────────────── */
     /* ctx->react_loop encodes the current loop ID.  To track depth,

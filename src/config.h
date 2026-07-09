@@ -189,7 +189,6 @@ typedef struct {
     int    cycling_detection;    /* 0 = disabled (default), 1 = enabled */
     int    scratchpad_max;       /* chars, 0 = auto */
     int    max_react_steps;      /* steps per react loop, -1 = unlimited */
-    int    subtask_default_steps; /* default max steps for subtask tool, -1 = unlimited */
     int    memory_index_max;     /* max entries in memory index injection */
     int    max_skills_per_query;     /* max skills loaded per query */
     int    max_lessons_per_query;    /* max lessons loaded per query */

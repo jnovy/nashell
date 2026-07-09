@@ -154,9 +154,7 @@ void config_set_defaults(config_t *cfg) {
      * Backward compat: old configs had 0 = unlimited. Migrate 0 → -1
      * so the loop condition (max_steps < 0 || step < max_steps) works. */
     if (cfg->max_react_steps == 0)        cfg->max_react_steps = -1;
-    /* subtask_default_steps: -1 = unlimited (default, inherits parent's
-     * remaining budget).  Positive = hard cap on child steps. */
-    if (cfg->subtask_default_steps == 0)  cfg->subtask_default_steps = -1;
+
 
 
     /* [memory_belief_entropy] defaults — sentinel-guarded like other sections.
@@ -340,7 +338,6 @@ config_t *config_load(const char *path) {
         cfg->cycling_detection  = toml_bl(limits, "cycling_detection", 1);
         cfg->scratchpad_max     = toml_int(limits, "scratchpad_max", -1);
         cfg->max_react_steps    = toml_int(limits, "max_react_steps", -1);
-        cfg->subtask_default_steps = toml_int(limits, "subtask_default_steps", -1);
         cfg->memory_index_max   = toml_int(limits, "memory_index_max", -1);
         cfg->max_skills_per_query = toml_int(limits, "max_skills_per_query", -1);
         cfg->max_lessons_per_query = toml_int(limits, "max_lessons_per_query", -1);
@@ -1022,7 +1019,6 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
 
     fprintf(out, "[react]\n");
     fprintf(out, "max_react_steps = %d\n", cfg->max_react_steps);
-    fprintf(out, "subtask_default_steps = %d\n", cfg->subtask_default_steps);
     fprintf(out, "max_reflection_steps = %d\n", cfg->max_reflection_steps);
     fprintf(out, "reflection_gate = \"%s\"\n",
             cfg->reflection_gate == 2 ? "never" :
@@ -1305,8 +1301,6 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         int v;
         v = toml_int(react, "max_react_steps", 0);
         if (v > 0) cfg->max_react_steps = v;
-        v = toml_int(react, "subtask_default_steps", 0);
-        if (v != 0) cfg->subtask_default_steps = v;
         v = toml_int(react, "max_reflection_steps", 0);
         if (v > 0) cfg->max_reflection_steps = v;
         { char *rg = toml_str(react, "reflection_gate");
