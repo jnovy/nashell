@@ -213,6 +213,11 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "depth", depth + 1);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
+    /* Store child_dir basename in params so TUI can build reactR0.md link */
+    char child_basename[64];
+    snprintf(child_basename, sizeof(child_basename), "subtask_%d", seq);
+    cJSON_AddStringToObject(params, "child_dir", child_basename);
+
     tool_journal(ctx, "subtask", params, alias,
                  strlen(result), 0, NULL, NULL);
 

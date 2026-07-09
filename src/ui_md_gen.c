@@ -786,6 +786,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         int   size;
         int   failed;
         double ts;
+        char *child_dir;  /* subtask only: basename of child session dir */
     } step_info_t;
 
     step_info_t *steps = NULL;
@@ -899,6 +900,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         char *thought = extract_thought(params);
         si->thought = thought;
         si->desc = strdup(extract_desc(tool, params));
+
+        /* For subtask: extract child_dir from params for reactR0.md link */
+        if (strcmp(tool, "subtask") == 0 && params) {
+            const char *cd = cJSON_GetStringValue(cJSON_GetObjectItem(params, "child_dir"));
+            si->child_dir = cd ? strdup(cd) : NULL;
+        }
 
         cJSON_Delete(entry);
     }
@@ -1015,9 +1022,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 tlen--;
         }
 
-        /* Build link URI with tool name in fragment: ref#toolname */
+        /* Build link URI: subtask -> child reactR0.md, others -> ref#toolname */
         char link_uri[256];
-        if (si->ref)
+        if (si->child_dir)
+            snprintf(link_uri, sizeof(link_uri), "%s/reactR0.md", si->child_dir);
+        else if (si->ref)
             snprintf(link_uri, sizeof(link_uri), "%s#%s", si->ref, si->tool);
 
         /* Build the step line */
@@ -1466,6 +1475,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         free(steps[i].thought);
         free(steps[i].ref);
         free(steps[i].compact_desc);
+        free(steps[i].child_dir);
     }
     free(steps);
     free(query_text);
