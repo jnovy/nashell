@@ -10,14 +10,25 @@
 
 /* ── Local helpers ───────────────────────────────────────── */
 
-/* Check if user is currently viewing the given react loop's file */
-static int viewing_react_file(ui_state_t *ui, int react_loop) {
+/* Check if user is currently viewing the given react loop's file.
+ * When session_dir is non-NULL, also verify the file is in the
+ * correct directory (critical for per-pass playbooks where multiple
+ * passes use reactR0.md in different session directories). */
+static int viewing_react_file(ui_state_t *ui, int react_loop,
+                               const char *session_dir) {
     if (!ui->current_filepath) return 0;
     char expected[64];
     snprintf(expected, sizeof(expected), "reactR%d.md", react_loop);
     const char *base = strrchr(ui->current_filepath, '/');
     base = base ? base + 1 : ui->current_filepath;
-    return strcmp(base, expected) == 0;
+    if (strcmp(base, expected) != 0) return 0;
+    /* Basename matches — if session_dir given, verify full path */
+    if (session_dir) {
+        char full[NASH_PATH_MAX];
+        snprintf(full, sizeof(full), "%s/%s", session_dir, expected);
+        return strcmp(ui->current_filepath, full) == 0;
+    }
+    return 1;
 }
 
 /* ── React event handler ─────────────────────────────────── */
@@ -28,14 +39,18 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     /* Track playbook session provenance so we read journal/react files
      * from the correct directory instead of ui->session_dir. */
+    int pass_dir_changed = 0;
     if (ev->session_dir) {
         if (!ui->playbook_session_dir ||
             strcmp(ui->playbook_session_dir, ev->session_dir) != 0) {
             free(ui->playbook_session_dir);
             ui->playbook_session_dir = strdup(ev->session_dir);
+            pass_dir_changed = 1;
         }
         ui->playbook_react_loop = ev->react_loop;
-        ui->current_react_loop = ev->react_loop;
+        /* NOTE: Do NOT set current_react_loop here — let the
+         * loop_changed check below handle it so we can detect
+         * transitions and trigger auto-navigation properly. */
 
         /* Accumulate pass info for session.md rendering.
          * Each playbook pass gets a unique (session_dir, react_loop) pair.
@@ -144,15 +159,18 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             ui->react_done = 0;
         }
 
-        /* Auto-navigate into reactRX.md on first step (or after checkpoint
-         * restore changed the loop) so user sees streaming tokens in
-         * real-time instead of just the preview in session.md.
+        /* Auto-navigate into reactRX.md on first step, after checkpoint
+         * restore changed the loop, or when a new playbook pass starts
+         * in a different session directory (per-pass mode).
          *
          * Use ev->step <= 1 because react.c emits step+1 (1-based), so
          * the first step of any react loop has ev->step == 1, not 0.
-         * The old ev->step == 0 condition was dead code. */
-        if ((ev->step <= 1 || loop_changed) &&
-            !viewing_react_file(ui, ui->current_react_loop)) {
+         * The old ev->step == 0 condition was dead code.
+         *
+         * pass_dir_changed catches per-pass playbook transitions where
+         * both passes use reactR0.md but in different directories. */
+        if ((ev->step <= 1 || loop_changed || pass_dir_changed) &&
+            !viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
                 ui->nav_stack = realloc(ui->nav_stack,
@@ -354,7 +372,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * The question is rendered only in reactRX.md (ui_md_gen.c), not
          * in session.md.  Without this, users viewing session.md get the
          * status bar hint "see main pane" but no visible question. */
-        if (!viewing_react_file(ui, ui->current_react_loop)) {
+        if (!viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
                 ui->nav_stack = realloc(ui->nav_stack,

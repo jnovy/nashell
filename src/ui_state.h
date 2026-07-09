@@ -159,7 +159,7 @@ typedef struct {
     int            page_search_lines_cap; /* allocated capacity */
 
     /* ── Agent view flag ── */
-    int            agent_view;       /* 1 = viewing agent output (skip session.md regen) */
+    int            agent_view;       /* 1 = viewing agent output */
     int            agent_running;    /* 1 = playbook worker is active (don't clear agent_view on Esc) */
     char          *current_label;    /* breadcrumb label for current view (NULL = use filepath) */
 

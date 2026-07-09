@@ -790,7 +790,7 @@ void *playbook_worker(void *arg) {
 
     /* Clear playbook session dir on UI when done.
      * session.md regeneration is handled by main.c after pthread_join,
-     * where agent_view is also cleared to ungate the regen. */
+     * where agent_view is also cleared. */
     if (pa->ui) {
         pthread_mutex_lock(&pa->ui->mtx);
         free(pa->ui->playbook_session_dir);

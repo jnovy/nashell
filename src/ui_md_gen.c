@@ -394,12 +394,12 @@ static char *extract_thought(cJSON *params) {
 void ui_state_generate_session_md(ui_state_t *ui) {
     if (!ui) return;
 
-    /* Determine the session directory to generate session.md for.
-     * During /agent run, generate session.md for the agent's session dir. */
+    /* Always generate session.md in the main session directory so the
+     * user can see all playbook passes listed with navigation links.
+     * Previously, agent_view redirected to playbook_session_dir which
+     * placed session.md in whatever pass dir was active, making it
+     * invisible from the main session view. */
     const char *session_dir = ui->session_dir;
-    if (ui->agent_view && ui->playbook_session_dir) {
-        session_dir = ui->playbook_session_dir;
-    }
     if (!session_dir) return;
 
     str_t md = str_new(8192);
@@ -415,9 +415,13 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
     FILE *f = fopen(jpath, "r");
     if (!f) {
-        if (md.len == 0)
-            str_append_cstr(&md, "# Nash\n\n*No session loaded*\n");
-        goto write_out;
+        /* No main journal — if playbook passes exist, skip to reading
+         * their journals below.  Otherwise show empty state. */
+        if (ui->pb_pass_count == 0) {
+            if (md.len == 0)
+                str_append_cstr(&md, "# Nash\n\n*No session loaded*\n");
+            goto write_out;
+        }
     }
 
     /* Collect query info (with tree structure support) */
@@ -437,6 +441,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
     int qcount = 0, qcap = 0;
 
     char line[NASH_LINE_MAX];
+    if (f) {
     while (fgets(line, sizeof(line), f)) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
@@ -512,6 +517,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         cJSON_Delete(entry);
     }
     fclose(f);
+    }  /* if (f) */
 
     /* ── Read playbook pass journals ──────────────────────── */
     for (int pi = 0; pi < ui->pb_pass_count; pi++) {

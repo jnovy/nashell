@@ -2076,8 +2076,19 @@ int main(int argc, char **argv) {
                                 snprintf(expect, sizeof(expect), "reactR%d.md", cur_loop);
                                 const char *base = strrchr(fp, '/');
                                 base = base ? base + 1 : fp;
-                                if (strcmp(base, expect) == 0)
-                                    ui->needs_auto_scroll = 1;
+                                if (strcmp(base, expect) == 0) {
+                                    /* For playbook per-pass mode, also verify
+                                     * we're in the correct session directory */
+                                    int path_ok = 1;
+                                    if (ui->playbook_session_dir) {
+                                        char full[4096];
+                                        snprintf(full, sizeof(full), "%s/%s",
+                                                 ui->playbook_session_dir, expect);
+                                        path_ok = (strcmp(fp, full) == 0);
+                                    }
+                                    if (path_ok)
+                                        ui->needs_auto_scroll = 1;
+                                }
                             }
                         }
                         ui->dirty = 1;
