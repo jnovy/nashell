@@ -1211,28 +1211,22 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                         int cell_n = parse_inline(ts, tlen, cell_segs, MAX_INLINE_SEGS);
                         if (is_header)
                             apply_attr_to_segs(cell_segs, cell_n, A_BOLD);
-                        /* Check if any segment is a link — if so, track it
-                         * in doc->links[] for cursor navigation */
-                        int cell_has_link = 0;
-                        for (int si = 0; si < cell_n; si++) {
-                            if (cell_segs[si].url && cell_segs[si].url_len > 0) {
-                                cell_has_link = 1;
-                                break;
-                            }
-                        }
-                        int is_cursor = 0;
-                        if (cell_has_link && doc && link_idx &&
-                            *link_idx < doc->link_count) {
-                            doc->links[*link_idx].render_line = *render_line;
-                            is_cursor = (focus && *link_idx == cursor_link);
-                            if (is_cursor) {
-                                /* Highlight the entire link text with reverse */
-                                for (int si = 0; si < cell_n; si++) {
-                                    if (cell_segs[si].url && cell_segs[si].url_len > 0)
-                                        cell_segs[si].attr = A_REVERSE | A_BOLD;
+                        /* Track ALL links in this cell for cursor navigation.
+                         * A cell may contain multiple links (e.g., "[site](...) / [HN](...)"),
+                         * so we must set render_line and advance link_idx for each one. */
+                        if (doc && link_idx) {
+                            for (int si = 0; si < cell_n; si++) {
+                                if (cell_segs[si].url && cell_segs[si].url_len > 0) {
+                                    if (*link_idx < doc->link_count) {
+                                        doc->links[*link_idx].render_line = *render_line;
+                                        if (focus && *link_idx == cursor_link) {
+                                            /* Highlight only this specific link segment */
+                                            cell_segs[si].attr = A_REVERSE | A_BOLD;
+                                        }
+                                        (*link_idx)++;
+                                    }
                                 }
                             }
-                            (*link_idx)++;
                         }
                         for (int si = 0; si < cell_n; si++)
                             dcols += seg_display_cols(cell_segs[si].text, cell_segs[si].len);
