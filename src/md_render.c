@@ -1066,6 +1066,70 @@ static int render_segment(WINDOW *win, int row, int col, const char *text,
     return display_cols;
 }
 
+/* Render segments on a line with left-clipping.
+ * Skips the first `clip_left` display columns, then renders the remainder
+ * starting at screen column `col`, limited to `max_width` display columns.
+ * Returns display columns actually rendered. */
+static int render_segs_on_line_clipped(WINDOW *win, int row, int col,
+                                       inline_seg_t *segs, int n_segs,
+                                       int max_width, int clip_left) {
+    if (clip_left <= 0)
+        return render_segs_on_line(win, row, col, segs, n_segs, max_width);
+    int skipped = 0;
+    int si = 0;
+    /* Skip whole segments that fit entirely within the clipped region */
+    for (; si < n_segs; si++) {
+        int sw = seg_display_cols(segs[si].text, segs[si].len);
+        if (skipped + sw > clip_left) break;
+        skipped += sw;
+    }
+    if (si >= n_segs) return 0; /* everything clipped */
+    /* Partial segment: advance past (clip_left - skipped) display cols */
+    int x = col;
+    int partial_skip = clip_left - skipped;
+    if (partial_skip > 0) {
+        const char *t = segs[si].text;
+        int tlen = segs[si].len;
+        int cols_skipped = 0;
+        int byte_off = 0;
+        while (byte_off < tlen && cols_skipped < partial_skip) {
+            wchar_t cp;
+            int clen = utf8_decode(t + byte_off, tlen - byte_off, &cp);
+            int w = codepoint_width(cp);
+            if (w <= 0) w = 1;
+            cols_skipped += w;
+            byte_off += clen;
+        }
+        /* Render the remaining part of this segment */
+        int rem_len = tlen - byte_off;
+        if (rem_len > 0 && x < col + max_width) {
+            int has_osc8 = 0;
+            if (segs[si].url && segs[si].url_len > 0) {
+                char url_buf[4096];
+                int ulen = segs[si].url_len;
+                if (ulen >= (int)sizeof(url_buf)) ulen = (int)sizeof(url_buf) - 1;
+                memcpy(url_buf, segs[si].url, ulen);
+                url_buf[ulen] = '\0';
+                if (is_linkable_uri(url_buf)) {
+                    defer_osc8_link(row, x, url_buf);
+                    has_osc8 = 1;
+                }
+            }
+            if (segs[si].attr) wattron(win, segs[si].attr);
+            x += render_segment(win, row, x, t + byte_off, rem_len,
+                                col + max_width - x);
+            if (segs[si].attr) wattroff(win, segs[si].attr);
+            if (has_osc8) defer_osc8_end(x);
+        }
+        si++;
+    }
+    /* Render remaining whole segments normally */
+    if (si < n_segs && x < col + max_width)
+        x += render_segs_on_line(win, row, x, segs + si, n_segs - si,
+                                 col + max_width - x);
+    return x - col;
+}
+
 /* ── Table rendering (Item 2) ── */
 
 /* Render a block of consecutive table rows with consistent column widths.
@@ -1232,6 +1296,9 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
                             dcols += seg_display_cols(cell_segs[si].text, cell_segs[si].len);
                         if (x >= 0 && x < cols)
                             render_segs_on_line(win, vis_line, x, cell_segs, cell_n, cols - x);
+                        else if (x < 0 && x + dcols > 0)
+                            render_segs_on_line_clipped(win, vis_line, 0,
+                                                        cell_segs, cell_n, cols, -x);
                         x += dcols;
                     }
                     int tx = x + (pw - dcols) + 1;
