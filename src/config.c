@@ -154,7 +154,9 @@ void config_set_defaults(config_t *cfg) {
      * Backward compat: old configs had 0 = unlimited. Migrate 0 → -1
      * so the loop condition (max_steps < 0 || step < max_steps) works. */
     if (cfg->max_react_steps == 0)        cfg->max_react_steps = -1;
-    if (cfg->subtask_default_steps <= 0)  cfg->subtask_default_steps = 30;
+    /* subtask_default_steps: -1 = unlimited (default, inherits parent's
+     * remaining budget).  Positive = hard cap on child steps. */
+    if (cfg->subtask_default_steps == 0)  cfg->subtask_default_steps = -1;
 
 
     /* [memory_belief_entropy] defaults — sentinel-guarded like other sections.
@@ -1304,7 +1306,7 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         v = toml_int(react, "max_react_steps", 0);
         if (v > 0) cfg->max_react_steps = v;
         v = toml_int(react, "subtask_default_steps", 0);
-        if (v > 0) cfg->subtask_default_steps = v;
+        if (v != 0) cfg->subtask_default_steps = v;
         v = toml_int(react, "max_reflection_steps", 0);
         if (v > 0) cfg->max_reflection_steps = v;
         { char *rg = toml_str(react, "reflection_gate");

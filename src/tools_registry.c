@@ -154,7 +154,7 @@ const tool_def_t TOOL_REGISTRY[] = {
      "context grows by exactly 2 messages regardless of how many steps the child took. "
      "Use for self-contained sub-problems (searching, analyzing, building) that would "
      "otherwise bloat the parent's context with intermediate steps.",
-     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description for the sub-task to solve\"},\"max_steps\":{\"type\":\"integer\",\"description\":\"Maximum steps the sub-task may run (default: 30)\"}},\"required\":[\"query\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Task description for the sub-task to solve\"},\"max_steps\":{\"type\":\"integer\",\"description\":\"Maximum steps the sub-task may run (default: unlimited)\"}},\"required\":[\"query\"]}"},
     {NULL, NULL, NULL}  /* sentinel */
 };
 
