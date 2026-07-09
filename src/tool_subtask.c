@@ -20,9 +20,6 @@
 /* Global counter for unique subtask directory names */
 static atomic_int subtask_counter = 0;
 
-/* Default steps a subtask may run (caller can override) */
-#define SUBTASK_DEFAULT_STEPS 30
-
 /* Maximum nesting depth (prevents unbounded recursion) */
 #define SUBTASK_MAX_DEPTH 3
 
@@ -52,7 +49,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     const char *query = query_j->valuestring;
 
     /* Optional max_steps override (no upper cap) */
-    int max_steps = SUBTASK_DEFAULT_STEPS;
+    int max_steps = ctx->cfg->subtask_default_steps;
     cJSON *ms_j = cJSON_GetObjectItem(params, "max_steps");
     if (ms_j && cJSON_IsNumber(ms_j)) {
         int requested = (int)ms_j->valuedouble;
