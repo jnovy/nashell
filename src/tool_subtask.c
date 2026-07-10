@@ -145,6 +145,41 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     /* ── Journal the subtask start ────────────────────────── */
     tools_inject_thought(ctx, params);
 
+    /* ── Enrich query with subtask context ────────────────── */
+    /* The child doesn't know it's a subtask — it gets the same system prompt
+     * as a top-level session.  Prepend instructions so it knows to report
+     * comprehensively: the parent only sees the done() result text, so any
+     * findings, dead ends, or unexpected discoveries not included there are
+     * permanently lost.  This is the highest-ROI fix for subtask information
+     * loss (prompt change, zero architectural risk). */
+    char *enriched_query = NULL;
+    {
+        static const char preamble[] =
+            "[SUBTASK CONTEXT]\n"
+            "You are running as an isolated sub-task. The parent agent "
+            "that spawned you sees ONLY your done() result text -- your "
+            "intermediate steps, tool outputs, and reasoning are discarded.\n"
+            "\n"
+            "To maximize the value of your result:\n"
+            "- Include all key findings, not just the final answer\n"
+            "- Report dead ends explored and why they were ruled out\n"
+            "- Flag anything unexpected or surprising, even if tangential\n"
+            "- When multiple observations are independently valuable, list them all\n"
+            "- Include exact file:line references, command outputs, and concrete data\n"
+            "- Do NOT editorialize about what the parent \"probably\" wants -- "
+            "report everything you found and let the parent decide what matters\n"
+            "\n"
+            "[TASK]\n";
+        size_t plen = sizeof(preamble) - 1;
+        size_t qlen = strlen(query);
+        enriched_query = malloc(plen + qlen + 1);
+        if (enriched_query) {
+            memcpy(enriched_query, preamble, plen);
+            memcpy(enriched_query + plen, query, qlen + 1);
+        }
+    }
+    const char *effective_query = enriched_query ? enriched_query : query;
+
     /* ── Run the child react loop ─────────────────────────── */
     /* Forward parent's event callback so subtask steps are visible in TUI.
      * Pattern mirrors playbook.c pb_event_cb: enrich events with child
@@ -158,7 +193,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     };
     react_event_fn cb = ctx->on_event ? subtask_event_cb : NULL;
     void *cb_data = ctx->on_event ? &ev_ctx : NULL;
-    char *result = react_run(&child_react, query, cb, cb_data);
+    char *result = react_run(&child_react, effective_query, cb, cb_data);
 
     /* ── Restore parent TUI context ──────────────────────── */
     /* Emit a synthetic STEP_START so ui_event.c switches playbook_session_dir
@@ -186,6 +221,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     alias_map_free(child_tools.aliases);
     tool_free_deferred_consolidations(&child_tools);
     journal_free(child_journal);
+    free(enriched_query);  /* subtask preamble (NULL-safe) */
     /* child_dir is stack-allocated, no free needed */
     /* session_lock_fd is -1, no release needed */
 
