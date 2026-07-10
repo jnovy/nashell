@@ -235,6 +235,7 @@ static int cmd_dream(command_ctx_t *ctx) {
         .nash_dir = (char *)ctx->nash_dir,
         .store = ctx->store,
         .memory = ctx->memory,
+        .ws_memory = ctx->ws ? ctx->ws->workspace : NULL,
         .cfg = ctx->cfg,
         .provider = ctx->provider,
         .server_model = (char *)ctx->server_model,

@@ -78,6 +78,7 @@ typedef struct {
     char            *nash_dir;
     store_t         *store;
     memory_t        *memory;
+    memory_t        *ws_memory;     /* workspace memory — NULL if no workspace */
     config_t        *cfg;
     provider_t      *provider;
     char            *server_model;
