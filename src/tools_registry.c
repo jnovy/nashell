@@ -65,7 +65,10 @@ const tool_def_t TOOL_REGISTRY[] = {
     {"done",
      "Signal task completion. Include all concrete data (paths, numbers, URLs) in result. "
      "The user CANNOT see notes/scratchpad — never say \"see above\" or reference data only in notes. "
-     "Copy all relevant content (tables, lists, data) directly into the result text.",
+     "Copy all relevant content (tables, lists, data) directly into the result text. "
+     "Before calling done, verify every claim in your result is supported by evidence "
+     "you actually observed (tool output, file content, command result) -- never state "
+     "facts you did not verify or assume tool calls succeeded without reading the output.",
      "{\"type\":\"object\",\"properties\":{\"result\":{\"type\":\"string\",\"description\":\"Complete answer with details\"}},\"required\":[\"result\"]}"},
 
     {"plan",
