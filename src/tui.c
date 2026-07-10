@@ -1392,8 +1392,14 @@ int tui_input(ui_state_t *ui, char **out_query) {
     case KEY_RIGHT:
         if (ui->focus == FOCUS_QUERY) ui_state_input_right(ui);
         else if (ui->focus == FOCUS_JOURNAL) {
-            ui->scroll_x += 4;
-            ui->dirty = 1;
+            /* Only allow horizontal scroll when table is wider than pane */
+            int max_tw = ui->doc ? ui->doc->max_table_width : 0;
+            if (max_tw > ui->visible_cols) {
+                ui->scroll_x += 4;
+                int max_sx = max_tw - ui->visible_cols;
+                if (ui->scroll_x > max_sx) ui->scroll_x = max_sx;
+                ui->dirty = 1;
+            }
         }
         break;
 

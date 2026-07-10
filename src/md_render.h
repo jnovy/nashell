@@ -19,6 +19,7 @@ typedef struct {
     int         link_cap;
     /* Rendered lines cache (computed by md_render) */
     int         total_lines; /* total rendered lines (set after md_render) */
+    int         max_table_width; /* widest table in display columns (set by md_render) */
 } md_doc_t;
 
 /* Parse MD source into a document, extracting [text](uri) links.

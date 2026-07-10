@@ -1200,6 +1200,15 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
         }
     }
 
+    /* Compute total display width of this table and track the widest */
+    {
+        int tw = num_cols + 1;  /* pipe separators: one before each col + one at end */
+        for (int ci = 0; ci < num_cols; ci++)
+            tw += col_widths[ci] + 2;  /* cell content + 1 space padding each side */
+        if (doc && tw > doc->max_table_width)
+            doc->max_table_width = tw;
+    }
+
     /* Pass 2: render ALL table rows with consistent col_widths.
      * Tables use horizontal scroll (scroll_x) instead of wrapping. */
     int tbl_sx = scroll_x;
@@ -1369,6 +1378,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 
     /* Reset deferred OSC 8 link list for this render cycle */
     md_osc8_count = 0;
+
+    /* Reset max table width -- recomputed by render_table() below */
+    doc->max_table_width = 0;
 
     int rows = getmaxy(win);
     int cols = getmaxx(win);
