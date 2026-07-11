@@ -295,22 +295,21 @@ void ui_state_enter(ui_state_t *ui) {
     char *raw_content = slurp_file(raw_path, NULL);
     if (!raw_content) raw_content = strdup("*Empty*\n");
 
-    /* Determine rendering mode based on tool hint:
-     * - Markdown tools (done, plan, notes, memory_*, user_ask): render as markdown
-     * - file_edit: wrap in ```diff code fence
-     * - All other tools: wrap in ``` code fence */
-    int render_as_md = 0;
+    /* Determine rendering mode based on tool hint.
+     * Default is markdown -- most tool outputs are natural language.
+     * Only a few tools produce raw/code output that needs a code fence. */
     int render_as_diff = 0;
+    int render_as_code = 0;
     if (tool_hint) {
-        if (strcmp(tool_hint, "done") == 0 ||
-            strcmp(tool_hint, "plan") == 0 ||
-            strcmp(tool_hint, "notes") == 0 ||
-            strcmp(tool_hint, "context") == 0 ||
-            strcmp(tool_hint, "user_ask") == 0 ||
-            strncmp(tool_hint, "memory_", 7) == 0) {
-            render_as_md = 1;
-        } else if (strcmp(tool_hint, "file_edit") == 0) {
+        if (strcmp(tool_hint, "file_edit") == 0) {
             render_as_diff = 1;
+        } else if (strcmp(tool_hint, "shell_exec") == 0 ||
+                   strcmp(tool_hint, "file_read") == 0 ||
+                   strcmp(tool_hint, "file_write") == 0 ||
+                   strcmp(tool_hint, "grep_search") == 0 ||
+                   strcmp(tool_hint, "glob_search") == 0 ||
+                   strcmp(tool_hint, "web_fetch") == 0) {
+            render_as_code = 1;
         }
     }
 
@@ -320,23 +319,23 @@ void ui_state_enter(ui_state_t *ui) {
     fname = fname ? fname + 1 : uri_path;
     str_appendf(&wrapped, "# %s\n\n", fname);
 
-    if (render_as_md) {
-        /* Markdown tools: render content with formatting */
-        str_append_cstr(&wrapped, raw_content);
-    } else if (render_as_diff) {
+    if (render_as_diff) {
         /* file_edit: render as diff */
         str_append_cstr(&wrapped, "```diff\n");
         str_append_cstr(&wrapped, raw_content);
         if (raw_content[0] && raw_content[strlen(raw_content)-1] != '\n')
             str_append_cstr(&wrapped, "\n");
         str_append_cstr(&wrapped, "```\n");
-    } else {
-        /* All other tools: render as code */
+    } else if (render_as_code) {
+        /* Tools with raw/code output: render as code */
         str_append_cstr(&wrapped, "```\n");
         str_append_cstr(&wrapped, raw_content);
         if (raw_content[0] && raw_content[strlen(raw_content)-1] != '\n')
             str_append_cstr(&wrapped, "\n");
         str_append_cstr(&wrapped, "```\n");
+    } else {
+        /* Default: render as markdown */
+        str_append_cstr(&wrapped, raw_content);
     }
     str_append_cstr(&wrapped, "\n");
     free(raw_content);
