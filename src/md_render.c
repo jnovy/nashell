@@ -1852,6 +1852,79 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             /* Item 9: explicit line advancement */
             advance_render_line(&render_line, lines_consumed);
 
+        } else if ((line_buf[0] == '-' || line_buf[0] == '*') &&
+                   line_buf[1] == ' ') {
+            /* Bullet list item — render with inline formatting and wrapping.
+             * Must come BEFORE has_link branch because bullet lines like
+             * "- **[text](url)** -- desc" have bold markers spanning the
+             * link boundary.  The has_link branch splits at '[', breaking
+             * the bold.  parse_inline handles **[text](url)** correctly
+             * via recursive try_parse_marker. */
+            const char *bullet_text = line_buf + 2;
+            int bullet_len = (int)strlen(bullet_text);
+            int lines_consumed = 1;
+            int indent = 2;
+            int usable = cols - indent;
+            if (usable < 10) usable = 10;
+
+            /* Track ALL links on this bullet line for cursor navigation */
+            while (link_idx < doc->link_count &&
+                   doc->links[link_idx].doc_line == src_line) {
+                doc->links[link_idx].render_line = render_line;
+                link_idx++;
+            }
+
+            if (bullet_len > 0) {
+                if (visible) {
+                    /* Draw bullet marker */
+                    wattron(win, COLOR_PAIR(C_DIM));
+                    mvwaddstr(win, vis_line, 0, "\xe2\x80\xa2"); /* • */
+                    wattroff(win, COLOR_PAIR(C_DIM));
+
+                    /* Parse and render with full inline formatting */
+                    inline_seg_t segs[MAX_INLINE_SEGS];
+                    int n = parse_inline(bullet_text, bullet_len,
+                                         segs, MAX_INLINE_SEGS);
+                    /* Apply cursor highlighting to link segments */
+                    if (focus) {
+                        for (int si = 0; si < n; si++) {
+                            if (segs[si].url && segs[si].url_len > 0) {
+                                /* Find matching link_idx for cursor */
+                                for (int li = link_idx - 1; li >= 0; li--) {
+                                    if (doc->links[li].doc_line != src_line)
+                                        break;
+                                    if (li == cursor_link &&
+                                        segs[si].url_len ==
+                                            (int)strlen(doc->links[li].uri) &&
+                                        memcmp(segs[si].url,
+                                               doc->links[li].uri,
+                                               segs[si].url_len) == 0) {
+                                        segs[si].attr = A_REVERSE | A_BOLD;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    int total_dcols = 0;
+                    for (int k = 0; k < n; k++)
+                        total_dcols += seg_display_cols(segs[k].text,
+                                                        segs[k].len);
+                    if (total_dcols <= usable) {
+                        render_segs_on_line(win, vis_line, indent,
+                                            segs, n, usable);
+                    } else {
+                        lines_consumed = render_segs_wrapped(
+                            win, vis_line, indent, segs, n, usable);
+                    }
+                } else {
+                    lines_consumed = count_wrapped_lines(bullet_text,
+                                                         bullet_len, usable);
+                }
+            }
+
+            advance_render_line(&render_line, lines_consumed);
+
         } else if (has_link && !is_link_line) {
             /* React step line: line with an embedded [tool](uri) link
              * but not starting with '[' (those are standalone link lines).
