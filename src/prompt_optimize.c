@@ -420,6 +420,37 @@ char *optimize_format_feedback(const regression_report_t *report) {
  * Stage 2: Harness Proposal [§3.3]
  * ════════════════════════════════════════════════════════ */
 
+/* Implementation-blind critic prompt [arXiv:2601.04620, AgentDevel §4.1]:
+ *
+ * The critic sees ONLY execution traces, rubric, and scores — never the
+ * agent's system prompt or internal configuration.  AgentDevel's ablation
+ * (Table 3) shows that letting the critic see the blueprint doubles the
+ * regression rate (6.7% vs 3.1%) because it over-fits to implementation
+ * details rather than diagnosing surface-level symptoms. */
+static const char *BLIND_CRITIC_SYSTEM_PROMPT =
+    "You are an implementation-blind failure analyst for an LLM coding agent.\n\n"
+    "IMPORTANT: You do NOT have access to the agent's system prompt, internal "
+    "rules, or configuration.  You can ONLY see execution traces and results.\n\n"
+    "YOUR TASK: Analyze the failure evidence and produce a symptom-level "
+    "diagnosis.  For each failure pattern:\n"
+    "1. Describe the OBSERVABLE symptom (what went wrong in the trace)\n"
+    "2. Identify the triggering conditions (what kind of task/input)\n"
+    "3. Classify severity (how many queries affected)\n"
+    "4. Suggest what BEHAVIOR change would fix it (not prompt changes)\n\n"
+    "OUTPUT FORMAT:\n"
+    "=== DIAGNOSIS ===\n"
+    "PATTERN 1: <symptom description>\n"
+    "  Trigger: <what causes it>\n"
+    "  Affected: <N queries>\n"
+    "  Fix: <behavioral change needed>\n\n"
+    "PATTERN 2: ...\n\n"
+    "CONSTRAINTS:\n"
+    "- Focus on WHAT the agent did wrong, not WHY its prompt caused it\n"
+    "- Be specific about observable behaviors (e.g. 'called file_read 3 times "
+    "on the same file' not 'inefficient')\n"
+    "- Rank patterns by severity (most affected queries first)\n"
+    "- Do NOT propose prompt text or rule changes — only diagnose\n";
+
 static const char *REFLECTION_SYSTEM_PROMPT =
     "You are the Self-Harness proposer for Nash, an autonomous coding agent.\n\n"
     "CONTEXT: Nash uses a ReAct loop with tools (file_read, file_write, file_edit, "
@@ -427,17 +458,14 @@ static const char *REFLECTION_SYSTEM_PROMPT =
     "memory_search, notes, done, plan, user_ask). You are improving the agent's "
     "harness configuration.\n\n"
     "SELF-HARNESS PROTOCOL [arXiv:2606.09498]:\n"
-    "You will receive structured evidence of the agent's failures, including:\n"
-    "- Failure patterns clustered by signature (cause/status/mechanism)\n"
-    "- Execution traces showing the agent's actual behavior\n"
-    "- Records of passing behaviors that must be preserved\n"
-    "- Previously rejected proposals to avoid re-proposing\n"
-    "- Prediction accuracy from previous manifests (if available)\n\n"
+    "You will receive a symptom-level diagnosis from a blind critic (who has NOT "
+    "seen the current prompt) along with the current prompt rules.  Your job is "
+    "to translate the diagnosis into minimal prompt edits.\n\n"
     "EDITABLE SURFACES:\n"
     "1. System prompt rules (model-specific behavioral rules)\n"
     "2. Tool descriptions (how tools are described in the function-calling schema)\n\n"
     "YOUR TASK — propose a BOUNDED, MINIMAL edit:\n"
-    "1. Select ONE primary failure pattern to address\n"
+    "1. Select ONE primary failure pattern from the diagnosis to address\n"
     "2. Propose ONE new rule OR tool description change targeting that mechanism\n"
     "3. You may also mark ONE existing rule for removal if it causes harm\n"
     "4. Include PREDICTIONS about which queries will be fixed/at-risk\n\n"
@@ -458,6 +486,55 @@ static const char *REFLECTION_SYSTEM_PROMPT =
     "- Tool descriptions should be 1-3 sentences each\n"
     "- EXPECT_FIX/AT_RISK predictions are REQUIRED — they are verified next round\n";
 
+/* Phase 1: Implementation-blind diagnosis [arXiv:2601.04620, AgentDevel §4.1].
+ *
+ * The blind critic sees ONLY execution traces and scores — never the agent's
+ * system prompt.  This prevents the critic from over-fitting to implementation
+ * details and forces symptom-level diagnosis.  The paper's ablation shows
+ * non-blind critics double the regression rate (6.7% vs 3.1%). */
+static char *blind_diagnose(provider_t *reflection_lm,
+                            const char *evidence_text,
+                            int proposal_idx, int proposal_width) {
+    if (!reflection_lm || !evidence_text) return NULL;
+
+    llm_chat_t *chat = llm_chat_new();
+    llm_chat_add(chat, "system", BLIND_CRITIC_SYSTEM_PROMPT);
+
+    str_t user_msg = str_new(4096);
+    str_append_cstr(&user_msg, "FAILURE EVIDENCE:\n");
+    str_appendf(&user_msg, "%s\n", evidence_text);
+
+    if (proposal_width > 1) {
+        str_appendf(&user_msg,
+            "\nFocus on Pattern %d from the failure list above.\n",
+            (proposal_idx < 6 ? proposal_idx + 1 : 1));
+    }
+
+    str_append_cstr(&user_msg,
+        "\nProduce your symptom-level diagnosis now.\n");
+
+    llm_chat_add(chat, "user", str_cstr(&user_msg));
+    str_free(&user_msg);
+
+    llm_stats_t stats = {0};
+    char *response = provider_complete(reflection_lm, chat, &stats);
+    llm_chat_free(chat);
+
+    if (!response) {
+        fprintf(stderr, "[blind-critic] diagnosis %d/%d failed — no response\n",
+                proposal_idx + 1, proposal_width);
+        return NULL;
+    }
+
+    fprintf(stderr, "[blind-critic] diagnosis %d/%d: %zu chars\n",
+            proposal_idx + 1, proposal_width, strlen(response));
+    return response;
+}
+
+/* Phase 2: Repair proposer — sees the blind critic's diagnosis AND the current
+ * prompt, then proposes minimal edits.  This two-phase split ensures the
+ * diagnosis is not contaminated by knowledge of the prompt.
+ * [arXiv:2601.04620, AgentDevel §4.1] */
 char *optimize_reflect(provider_t *reflection_lm,
                        const char *current_prompt,
                        const char *evidence_text,
@@ -467,6 +544,11 @@ char *optimize_reflect(provider_t *reflection_lm,
                        const char *slow_guidance) {
     if (!reflection_lm || !evidence_text) return NULL;
 
+    /* Phase 1: blind diagnosis [arXiv:2601.04620] */
+    char *diagnosis = blind_diagnose(reflection_lm, evidence_text,
+                                      proposal_idx, proposal_width);
+
+    /* Phase 2: repair proposal (sees prompt + diagnosis) */
     llm_chat_t *chat = llm_chat_new();
     llm_chat_add(chat, "system", REFLECTION_SYSTEM_PROMPT);
 
@@ -488,18 +570,27 @@ char *optimize_reflect(provider_t *reflection_lm,
             "DO NOT delete this, use it to inform your edits):\n%s\n\n",
             slow_guidance);
 
+    /* Blind critic diagnosis (Phase 1 output) */
+    if (diagnosis && diagnosis[0]) {
+        str_append_cstr(&user_msg, "BLIND CRITIC DIAGNOSIS "
+            "(from an analyst who has NOT seen the current prompt):\n");
+        str_appendf(&user_msg, "---\n%s\n---\n\n", diagnosis);
+    } else {
+        /* Fallback: if blind critic failed, pass raw evidence */
+        str_appendf(&user_msg, "FAILURE EVIDENCE:\n%s\n\n", evidence_text);
+    }
+    free(diagnosis);
+
     str_append_cstr(&user_msg, "CURRENT SYSTEM PROMPT RULES:\n");
     if (current_prompt && current_prompt[0])
         str_appendf(&user_msg, "---\n%s\n---\n\n", current_prompt);
     else
         str_append_cstr(&user_msg, "---\n(empty — no model-specific rules yet)\n---\n\n");
 
-    str_appendf(&user_msg, "%s\n", evidence_text);
-
     if (proposal_width > 1) {
         str_appendf(&user_msg,
             "\nDIVERSITY REQUIREMENT: This is proposal %d of %d. "
-            "Target Pattern %d from the failure list above.\n",
+            "Target Pattern %d from the diagnosis above.\n",
             proposal_idx + 1, proposal_width,
             (proposal_idx < 6 ? proposal_idx + 1 : 1));
     }
@@ -600,11 +691,26 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
     return cand;
 }
 
-/* Self-Harness acceptance rule [§3.4]:
- * Δ_in ≥ 0 AND Δ_ho ≥ 0 AND max(Δ_in, Δ_ho) > 0 */
+/* Self-Harness acceptance rule [§3.4] with flip-centered gating
+ * [arXiv:2601.04620, AgentDevel §4.3]:
+ *
+ * Original rule: Δ_in >= 0 AND Δ_ho >= 0 AND max(Δ_in, Δ_ho) > 0
+ *
+ * AgentDevel addition: also reject if the pass-to-fail (P2F) regression
+ * rate exceeds a threshold.  Their ablation (Table 3) shows that removing
+ * the flip gate causes 5x more regressions (14.8% vs 3.1%) and 4 bad
+ * releases vs 0, even though aggregate scores are slightly higher.
+ *
+ * We use a 5% P2F threshold (slightly more lenient than the paper's ~1%
+ * because Nash's query banks are smaller, so a single regression can
+ * represent a large percentage). */
+#define P2F_RATE_THRESHOLD 0.05  /* 5% -- reject if >5% of queries regress */
+
 static int passes_acceptance_rule(const prompt_candidate_t *candidate,
                                   const prompt_candidate_t *baseline,
-                                  double *out_d_in, double *out_d_ho) {
+                                  int n_regressions, int total_queries,
+                                  double *out_d_in, double *out_d_ho,
+                                  const char **out_reject_reason) {
     double d_in = 0, d_ho = 0;
     if (candidate->held_in_score >= 0 && baseline->held_in_score >= 0)
         d_in = candidate->held_in_score - baseline->held_in_score;
@@ -613,6 +719,20 @@ static int passes_acceptance_rule(const prompt_candidate_t *candidate,
 
     if (out_d_in) *out_d_in = d_in;
     if (out_d_ho) *out_d_ho = d_ho;
+    if (out_reject_reason) *out_reject_reason = NULL;
+
+    /* Flip-centered gate [arXiv:2601.04620, AgentDevel §4.3]:
+     * Reject proposals with excessive pass-to-fail regressions regardless
+     * of aggregate score improvement.  P2F regressions indicate the
+     * proposal breaks previously-working queries. */
+    if (total_queries > 0 && n_regressions > 0) {
+        double p2f_rate = (double)n_regressions / (double)total_queries;
+        if (p2f_rate > P2F_RATE_THRESHOLD) {
+            if (out_reject_reason)
+                *out_reject_reason = "P2F regression rate exceeded threshold";
+            return 0;
+        }
+    }
 
     if (candidate->held_in_score >= 0 && baseline->held_in_score >= 0 &&
         candidate->held_out_score >= 0 && baseline->held_out_score >= 0) {
@@ -1008,6 +1128,12 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     char *slow_guidance = NULL;
     int stop_early = 0;
 
+    /* Signal-based early stopping [arXiv:2601.04620, AgentDevel §4.2]:
+     * Stop when repeated RC rejections indicate the optimizer has converged
+     * or the proposal distribution has exhausted useful edits.  The paper
+     * recommends stopping on 3+ consecutive rejections. */
+    int consecutive_rejects = 0;
+
     /* ══ Epoch loop [arXiv:2605.23904v2, §3.2] ══ */
     for (int epoch = 0; epoch < n_epochs && !stop_early; epoch++) {
         char *epoch_start_skill = strdup(current);
@@ -1146,12 +1272,18 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 }
 
                 double d_in = 0, d_ho = 0;
+                const char *reject_reason = NULL;
                 int accept = passes_acceptance_rule(&cand, &round_baseline,
-                                                    &d_in, &d_ho);
+                                                    n_regr, cand.total_queries,
+                                                    &d_in, &d_ho,
+                                                    &reject_reason);
 
                 if (accept) {
-                    fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                    fprintf(stderr, " ACCEPTED (d_in=%+.1f%%, d_ho=%+.1f%%",
                             d_in * 100, d_ho * 100);
+                    if (n_fixes > 0 || n_regr > 0)
+                        fprintf(stderr, ", F2P=%d, P2F=%d", n_fixes, n_regr);
+                    fprintf(stderr, ")\n");
                     log_query_flips(flips, n_flips, n_fixes, n_regr);
                     accepted_list[n_accepted] = cand;
                     accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
@@ -1162,8 +1294,13 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                         rpt = NULL;
                     }
                 } else {
-                    fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%)\n",
+                    fprintf(stderr, " REJECTED (d_in=%+.1f%%, d_ho=%+.1f%%",
                             d_in * 100, d_ho * 100);
+                    if (n_fixes > 0 || n_regr > 0)
+                        fprintf(stderr, ", F2P=%d, P2F=%d", n_fixes, n_regr);
+                    if (reject_reason)
+                        fprintf(stderr, " [%s]", reject_reason);
+                    fprintf(stderr, ")\n");
                     log_query_flips(flips, n_flips, n_fixes, n_regr);
                     if (n_rejected >= rejected_cap) {
                         rejected_cap *= 2;
@@ -1174,7 +1311,14 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     /* SkillOpt: generate brief rejection audit with per-query detail */
                     {
                         str_t audit = str_new(256);
-                        if (d_in < -0.001 && d_ho < -0.001)
+                        if (reject_reason)
+                            str_appendf(&audit, "%s (P2F=%d/%d=%.1f%%)",
+                                        reject_reason, n_regr,
+                                        cand.total_queries,
+                                        cand.total_queries > 0
+                                            ? 100.0 * n_regr / cand.total_queries
+                                            : 0.0);
+                        else if (d_in < -0.001 && d_ho < -0.001)
                             str_appendf(&audit, "Regressed on both held-in (%.1f%%) "
                                         "and held-out (%.1f%%)", d_in * 100, d_ho * 100);
                         else if (d_in < -0.001)
@@ -1253,6 +1397,13 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 fprintf(stderr, "\n  No proposals accepted — h_{t+1} = h_t\n");
             }
 
+            /* Signal-based stopping: track consecutive rejected rounds
+             * [arXiv:2601.04620, AgentDevel §4.2] */
+            if (n_accepted > 0)
+                consecutive_rejects = 0;
+            else
+                consecutive_rejects++;
+
             /* Rebuild evidence for next round */
             optimize_free_evidence_bundle(evidence);
             evidence = round_baseline_report
@@ -1267,6 +1418,17 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
 
             if (best.score >= 0.999) {
                 fprintf(stderr, "  Perfect score — stopping early!\n");
+                stop_early = 1;
+                break;
+            }
+
+            /* Signal-based early stopping [arXiv:2601.04620, AgentDevel §4.2]:
+             * 3 consecutive rounds with all proposals rejected indicates
+             * the optimizer has converged or exhausted useful edits. */
+            if (consecutive_rejects >= 3) {
+                fprintf(stderr, "  %d consecutive rejected rounds "
+                        "-- stopping (optimizer converged)\n",
+                        consecutive_rejects);
                 stop_early = 1;
                 break;
             }
