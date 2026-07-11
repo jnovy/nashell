@@ -1758,28 +1758,43 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         return CMD_CONTINUE;
     }
 
+    /* Split "agent_id arg1 arg2 ..." into agent_id + arguments.
+     * Numeric IDs are a single token; named IDs may contain slashes
+     * but not spaces, so the first space after the ID starts arguments. */
+    char *id_buf = strdup(id);
+    const char *agent_arguments = NULL;
+    char *sp = strchr(id_buf, ' ');
+    if (sp) {
+        *sp = '\0';
+        agent_arguments = sp + 1;
+        while (*agent_arguments == ' ') agent_arguments++;
+        if (*agent_arguments == '\0') agent_arguments = NULL;
+    }
+
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR, "/agent run: scan failed");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
+        free(id_buf);
         return CMD_CONTINUE;
     }
     agent_queue_load(q, ctx->nash_dir);
     agent_queue_schedule(q, time(NULL));
 
-    const agent_entry_t *found = agent_find(q, id);
+    const agent_entry_t *found = agent_find(q, id_buf);
     if (!found) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR, "/agent run: agent not found");
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         agent_queue_free(q);
+        free(id_buf);
         return CMD_CONTINUE;
     }
 
-    playbook_t *pb = agent_prepare_playbook(found);
+    playbook_t *pb = agent_prepare_playbook(found, agent_arguments);
     if (!pb) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
@@ -1787,6 +1802,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         pthread_mutex_unlock(&ui->mtx);
         tui_render(ui);
         agent_queue_free(q);
+        free(id_buf);
         return CMD_CONTINUE;
     }
 
@@ -1819,6 +1835,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     tui_render(ui);
 
     agent_queue_free(q);
+    free(id_buf);
     return CMD_CONTINUE;
 }
 

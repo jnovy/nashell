@@ -624,22 +624,66 @@ const agent_entry_t *agent_find(const agent_queue_t *q, const char *id) {
     return (n_matches == 1) ? match : NULL;
 }
 
-playbook_t *agent_prepare_playbook(const agent_entry_t *a) {
+playbook_t *agent_prepare_playbook(const agent_entry_t *a,
+                                   const char *arguments) {
     if (!a) return NULL;
     playbook_t *pb = playbook_load(a->agent_file);
     if (!pb) return NULL;
 
-    /* Inject agent-specific template variables */
-    int new_nvars = pb->n_vars + 3;
+    /* Count how many argument tokens we have (for {{arg1}}, {{arg2}}, ...) */
+    int n_arg_tokens = 0;
+    char **arg_tokens = NULL;
+    if (arguments && *arguments) {
+        /* First pass: count tokens */
+        char *tmp = strdup(arguments);
+        char *saveptr;
+        for (char *tok = strtok_r(tmp, " \t", &saveptr); tok;
+             tok = strtok_r(NULL, " \t", &saveptr))
+            n_arg_tokens++;
+        free(tmp);
+        /* Second pass: extract tokens */
+        if (n_arg_tokens > 0) {
+            arg_tokens = calloc((size_t)n_arg_tokens, sizeof(char *));
+            int ti = 0;
+            tmp = strdup(arguments);
+            for (char *tok = strtok_r(tmp, " \t", &saveptr); tok;
+                 tok = strtok_r(NULL, " \t", &saveptr))
+                arg_tokens[ti++] = strdup(tok);
+            free(tmp);
+        }
+    }
+
+    /* Inject agent-specific template variables:
+     *   3 base vars + 1 {{arguments}} + n {{argN}} tokens */
+    int n_extra = 3 + (arguments && *arguments ? 1 + n_arg_tokens : 0);
+    int new_nvars = pb->n_vars + n_extra;
     pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
     pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
-    pb->var_keys[pb->n_vars]       = strdup("workspace_name");
-    pb->var_values[pb->n_vars]     = strdup(a->workspace_name);
-    pb->var_keys[pb->n_vars + 1]   = strdup("workspace_dir");
-    pb->var_values[pb->n_vars + 1] = strdup(a->workspace_dir);
-    pb->var_keys[pb->n_vars + 2]   = strdup("agent_id");
-    pb->var_values[pb->n_vars + 2] = strdup(a->id);
-    pb->n_vars = new_nvars;
+    int vi = pb->n_vars;
+    pb->var_keys[vi]       = strdup("workspace_name");
+    pb->var_values[vi]     = strdup(a->workspace_name);
+    pb->var_keys[vi + 1]   = strdup("workspace_dir");
+    pb->var_values[vi + 1] = strdup(a->workspace_dir);
+    pb->var_keys[vi + 2]   = strdup("agent_id");
+    pb->var_values[vi + 2] = strdup(a->id);
+    vi += 3;
+
+    /* Inject {{arguments}} (full string) and {{arg1}}, {{arg2}}, ... */
+    if (arguments && *arguments) {
+        pb->var_keys[vi]   = strdup("arguments");
+        pb->var_values[vi] = strdup(arguments);
+        vi++;
+        for (int i = 0; i < n_arg_tokens; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "arg%d", i + 1);
+            pb->var_keys[vi]   = strdup(key);
+            pb->var_values[vi] = arg_tokens[i]; /* transfer ownership */
+            vi++;
+        }
+    }
+    pb->n_vars = vi;
+
+    free(arg_tokens);
     return pb;
 }
 
@@ -674,7 +718,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                                                0, cfg->workspace_global_weight);
         memory_t *agent_mem = agent_ws ? agent_ws->global : NULL;
 
-        playbook_t *pb = agent_prepare_playbook(a);
+        playbook_t *pb = agent_prepare_playbook(a, NULL);
         if (!pb) {
             fprintf(stderr, "[agent] ✗ failed to load agent '%s'\n", a->id);
             n_fail++;

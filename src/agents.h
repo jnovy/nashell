@@ -92,8 +92,10 @@ void agent_queue_print(const agent_queue_t *q, FILE *out);
 const agent_entry_t *agent_find(const agent_queue_t *q, const char *id);
 
 /* Load playbook from agent YAML and inject template variables
- * (workspace_name, workspace_dir, agent_id). Caller frees with playbook_free(). */
-playbook_t *agent_prepare_playbook(const agent_entry_t *a);
+ * (workspace_name, workspace_dir, agent_id).  If `arguments` is non-NULL,
+ * it is injected as {{arguments}} (full string) plus {{arg1}}, {{arg2}}, ...
+ * for individual space-delimited tokens.  Caller frees with playbook_free(). */
+playbook_t *agent_prepare_playbook(const agent_entry_t *a, const char *arguments);
 
 /* Point {nash_dir}/agent/results/{agent_id}/latest.md at the session's
  * result.md via symlink.  Readers (slurp_file) follow it transparently,
