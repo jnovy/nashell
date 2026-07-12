@@ -347,6 +347,44 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
         result = next;
     }
 
+    /* Detect unreplaced {{argN}} references -- the playbook needs more
+     * CLI arguments than were provided.  Fail early with a clear message
+     * instead of sending literal "{{arg3}}" to the LLM. */
+    {
+        const char *p = result;
+        int n_missing = 0;
+        char missing_list[256] = {0};
+        int mpos = 0;
+        while ((p = strstr(p, "{{arg")) != NULL) {
+            p += 5;                          /* skip "{{arg" */
+            if (*p >= '1' && *p <= '9') {    /* argN with N >= 1 */
+                const char *d = p;
+                while (*d >= '0' && *d <= '9') d++;
+                if (d[0] == '}' && d[1] == '}') {
+                    int nlen = (int)(d - (p - 1));  /* "N" digits */
+                    if (n_missing < 8 && mpos + nlen + 10 < (int)sizeof(missing_list)) {
+                        if (n_missing > 0) missing_list[mpos++] = ',';
+                        mpos += snprintf(missing_list + mpos,
+                                         sizeof(missing_list) - (size_t)mpos,
+                                         " {{arg%.*s}}", (int)(d - p), p);
+                    }
+                    n_missing++;
+                    p = d + 2;
+                    continue;
+                }
+            }
+        }
+        if (n_missing > 0) {
+            fprintf(stderr,
+                "[play] ERROR: prompt references %d unresolved argument(s):%s\n"
+                "[play] Provide arguments: /agent run <id> arg1 arg2 ...\n",
+                n_missing, missing_list);
+            free(result);
+            free(prev_scratch_text);
+            return NULL;
+        }
+    }
+
     free(prev_scratch_text);
     return result;
 }
@@ -568,6 +606,21 @@ void *playbook_worker(void *arg) {
                                        pass, prev_result,
                                        mdir, model,
                                        NULL, pa->nash_dir);
+
+        /* playbook_expand returns NULL when required {{argN}} variables
+         * are missing — abort the playbook with a clear error. */
+        if (!prompt) {
+            if (run_log) {
+                struct timespec done_tp;
+                clock_gettime(CLOCK_REALTIME, &done_tp);
+                fprintf(run_log,
+                    "{\"e\":\"done\",\"i\":%d,\"st\":\"missing_args\",\"ts\":%ld.%05ld}\n",
+                    pass, (long)done_tp.tv_sec, done_tp.tv_nsec / 10000);
+                fflush(run_log);
+            }
+            playbook_ok = 0;
+            break;
+        }
 
         /* Create session */
         char *pass_dir;

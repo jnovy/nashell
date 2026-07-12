@@ -654,8 +654,8 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
     }
 
     /* Inject agent-specific template variables:
-     *   3 base vars + 1 {{arguments}} + n {{argN}} tokens */
-    int n_extra = 3 + (arguments && *arguments ? 1 + n_arg_tokens : 0);
+     *   3 base vars + 1 {{arguments}} (always) + n {{argN}} tokens */
+    int n_extra = 3 + 1 + n_arg_tokens;
     int new_nvars = pb->n_vars + n_extra;
     pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
     pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
@@ -668,18 +668,17 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
     pb->var_values[vi + 2] = strdup(a->id);
     vi += 3;
 
-    /* Inject {{arguments}} (full string) and {{arg1}}, {{arg2}}, ... */
-    if (arguments && *arguments) {
-        pb->var_keys[vi]   = strdup("arguments");
-        pb->var_values[vi] = strdup(arguments);
+    /* Always inject {{arguments}} (empty string if none provided) */
+    pb->var_keys[vi]   = strdup("arguments");
+    pb->var_values[vi] = strdup((arguments && *arguments) ? arguments : "");
+    vi++;
+    /* Inject {{arg1}}, {{arg2}}, ... for each provided token */
+    for (int i = 0; i < n_arg_tokens; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "arg%d", i + 1);
+        pb->var_keys[vi]   = strdup(key);
+        pb->var_values[vi] = arg_tokens[i]; /* transfer ownership */
         vi++;
-        for (int i = 0; i < n_arg_tokens; i++) {
-            char key[32];
-            snprintf(key, sizeof(key), "arg%d", i + 1);
-            pb->var_keys[vi]   = strdup(key);
-            pb->var_values[vi] = arg_tokens[i]; /* transfer ownership */
-            vi++;
-        }
     }
     pb->n_vars = vi;
 
