@@ -44,8 +44,13 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
 
     case REACT_EVENT_STEP_START:
         suppress_json_stream = 0;  /* reset for new step */
-        fprintf(stderr, "\r\033[K[step %d/%d] thinking...",
-                ev->step, ev->max_steps);
+        if (ev->pass_label && ev->pass_total > 0)
+            fprintf(stderr, "\r\033[K[%d/%d %s] step %d/%d thinking...",
+                    ev->pass_index + 1, ev->pass_total, ev->pass_label,
+                    ev->step, ev->max_steps);
+        else
+            fprintf(stderr, "\r\033[K[step %d/%d] thinking...",
+                    ev->step, ev->max_steps);
         fflush(stderr);
         break;
 

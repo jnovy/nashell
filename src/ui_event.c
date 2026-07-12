@@ -107,7 +107,16 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     switch (ev->type) {
     case REACT_EVENT_STEP_START: {
         char buf[128];
-        if (ev->pass_label) {
+        if (ev->pass_label && ev->pass_total > 0) {
+            if (ev->max_steps > 0)
+                snprintf(buf, sizeof(buf), "[%d/%d %s] step %d/%d...",
+                         ev->pass_index + 1, ev->pass_total,
+                         ev->pass_label, ev->step, ev->max_steps);
+            else
+                snprintf(buf, sizeof(buf), "[%d/%d %s] step %d...",
+                         ev->pass_index + 1, ev->pass_total,
+                         ev->pass_label, ev->step);
+        } else if (ev->pass_label) {
             if (ev->max_steps > 0)
                 snprintf(buf, sizeof(buf), "[%s] step %d/%d...",
                          ev->pass_label, ev->step, ev->max_steps);

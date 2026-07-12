@@ -409,6 +409,7 @@ typedef struct {
     const char  *pass_dir;    /* session directory for this pass */
     int          react_loop;  /* react loop number within the pass session */
     int          pass_index;  /* 0-based pass index */
+    int          pass_total;  /* total passes in playbook */
     const char  *pass_label;  /* pass label string */
 } pb_event_ctx_t;
 
@@ -424,6 +425,7 @@ static void pb_event_cb(const react_event_t *ev, void *userdata) {
     enriched.session_dir = ctx->pass_dir;
     enriched.react_loop  = ctx->react_loop;
     enriched.pass_index  = ctx->pass_index;
+    enriched.pass_total  = ctx->pass_total;
     enriched.pass_label  = ctx->pass_label;
     pthread_mutex_lock(&ctx->ui->mtx);
     ui_state_on_event(&enriched, (void *)ctx->ui);
@@ -438,6 +440,7 @@ void *playbook_worker(void *arg) {
         .pass_dir = NULL,
         .react_loop = 0,
         .pass_index = 0,
+        .pass_total = pb->n_passes,
         .pass_label = NULL,
     };
 

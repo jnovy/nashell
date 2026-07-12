@@ -48,6 +48,7 @@ typedef struct {
     const char  *session_dir; /* session directory where journal lives */
     int          react_loop;  /* react loop number within the session */
     int          pass_index;  /* playbook pass index (0-based), -1 for normal */
+    int          pass_total;  /* total passes in playbook, 0 for normal */
     const char  *pass_label;  /* playbook pass label (e.g. "reflect"), NULL for normal */
 } react_event_t;
 
