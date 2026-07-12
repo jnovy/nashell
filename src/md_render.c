@@ -331,6 +331,10 @@ static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int 
  * Returns number of display columns consumed. */
 static int render_segs_on_line(WINDOW *win, int row, int col,
                                inline_seg_t *segs, int n_segs, int max_width) {
+    /* Skip rendering for rows outside the window (negative rows from
+     * partially-scrolled wrapped blocks, or rows past window bottom).
+     * Return 0 columns rendered so callers still advance correctly. */
+    if (row < 0 || row >= getmaxy(win)) return 0;
     int x = col;
     for (int i = 0; i < n_segs && x < col + max_width; i++) {
         if (segs[i].len <= 0) continue;
@@ -892,6 +896,7 @@ int            md_osc8_count = 0;
 
 /* Record a deferred OSC 8 link to be emitted after doupdate(). */
 static void defer_osc8_link(int vis_line, int col, const char *uri) {
+    if (vis_line < 0) return;  /* off-screen row from partially-scrolled block */
     if (md_osc8_count >= MD_OSC8_MAX) return;
     md_osc8_link_t *lk = &md_osc8_links[md_osc8_count++];
     lk->row = vis_line;
@@ -1045,6 +1050,7 @@ static int utf8_display_len(const char *s, int max_bytes) {
 static int render_segment(WINDOW *win, int row, int col, const char *text,
                           int len, int max_cols) {
     if (len <= 0 || col >= getmaxx(win)) return 0;
+    if (row < 0 || row >= getmaxy(win)) return 0;
     /* Truncate to max_cols display columns */
     int display_cols = utf8_display_len(text, len);
     if (display_cols > max_cols) {
@@ -1699,7 +1705,10 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 link_idx++;
             }
 
-            if (visible) {
+            if (vis_line < rows) {
+                /* Render if any part of this wrapped block may be on screen.
+                 * vis_line may be negative (block starts above viewport)
+                 * — render functions clip off-screen rows safely. */
                 if (head_lk) {
                     /* Heading with embedded link: render prefix + link + suffix */
                     const char *bracket = strchr(htext, '[');
@@ -1798,7 +1807,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int gp_len = (int)strlen(gp_text);
             int lines_consumed = 1;
             if (gp_len > 0) {
-                if (visible) {
+                if (vis_line < rows) {
+                    /* Render if any part of this wrapped block may be on screen.
+                     * vis_line may be negative — render functions clip safely. */
                     inline_seg_t segs[MAX_INLINE_SEGS];
                     int n = parse_inline(gp_text, gp_len, segs, MAX_INLINE_SEGS);
                     apply_attr_to_segs(segs, n, COLOR_PAIR(C_NORMAL));
@@ -1812,6 +1823,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                             win, vis_line, 0, segs, n, cols);
                     }
                 } else {
+                    /* Fully below viewport: count only */
                     lines_consumed = count_wrapped_lines(gp_text, gp_len, cols);
                 }
             }
@@ -1826,15 +1838,19 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 
             int lines_consumed = 1;
             if (bq_len > 0) {
-                if (visible) {
-                    /* Draw the first │ */
-                    wattron(win, COLOR_PAIR(C_DIM));
-                    mvwaddstr(win, vis_line, 0, "\xe2\x94\x82"); /* │ */
-                    wattroff(win, COLOR_PAIR(C_DIM));
+                if (vis_line < rows) {
+                    /* Render if any part of this wrapped block may be on screen.
+                     * vis_line may be negative — render functions clip safely. */
+                    /* Draw the first │ (only if first line is on screen) */
+                    if (vis_line >= 0) {
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        mvwaddstr(win, vis_line, 0, "\xe2\x94\x82"); /* │ */
+                        wattroff(win, COLOR_PAIR(C_DIM));
+                    }
 
                     lines_consumed = render_inline_wrapped(win, vis_line, 2, bq_text, bq_len, usable);
                 } else {
-                    /* Item 4: use count_wrapped_lines for off-screen counting */
+                    /* Fully below viewport: count only */
                     lines_consumed = count_wrapped_lines(bq_text, bq_len, usable);
                 }
             }
@@ -1875,11 +1891,15 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             }
 
             if (bullet_len > 0) {
-                if (visible) {
-                    /* Draw bullet marker */
-                    wattron(win, COLOR_PAIR(C_DIM));
-                    mvwaddstr(win, vis_line, 0, "\xe2\x80\xa2"); /* • */
-                    wattroff(win, COLOR_PAIR(C_DIM));
+                if (vis_line < rows) {
+                    /* Render if any part of this wrapped block may be on screen.
+                     * vis_line may be negative — render functions clip safely. */
+                    /* Draw bullet marker (only if first line is on screen) */
+                    if (vis_line >= 0) {
+                        wattron(win, COLOR_PAIR(C_DIM));
+                        mvwaddstr(win, vis_line, 0, "\xe2\x80\xa2"); /* • */
+                        wattroff(win, COLOR_PAIR(C_DIM));
+                    }
 
                     /* Parse and render with full inline formatting */
                     inline_seg_t segs[MAX_INLINE_SEGS];
@@ -1963,7 +1983,9 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             if (bracket_end && bracket_end[1] == '(')
                 paren_end = strchr(bracket_end + 2, ')');
 
-            if (visible) {
+            if (vis_line < rows) {
+                /* Render if any part of this wrapped block may be on screen.
+                 * vis_line may be negative — render functions clip safely. */
                 if (step_has_link && bracket && bracket_end && paren_end) {
                     int x = 0;
                     /* 1. Render prefix (before [) with step color + inline formatting */
@@ -2135,7 +2157,7 @@ step_line_done:
                 if (bracket_end && bracket_end[1] == '(')
                     paren_end = strchr(bracket_end + 2, ')');
 
-                if (bracket && bracket_end && paren_end && visible) {
+                if (bracket && bracket_end && paren_end && vis_line < rows) {
                     /* Render as embedded link: prefix + link + suffix.
                      * The suffix (typically a `command` code span) may be long,
                      * so use word-wrapping for it — continuation lines indent
@@ -2197,10 +2219,13 @@ step_line_done:
                         lines_consumed = count_wrapped_lines(suffix, suffix_len, remaining);
                     }
                     }
-                } else if (visible) {
+                } else if (vis_line < rows) {
+                    /* Render if any part of this wrapped block is on screen.
+                     * vis_line may be negative (block starts above viewport)
+                     * — render_segs_on_line clips off-screen rows safely. */
                     lines_consumed = render_inline_wrapped(win, vis_line, 0, line_buf, (int)strlen(line_buf), cols);
                 } else {
-                    /* Item 4: use count_wrapped_lines for off-screen counting */
+                    /* Fully below viewport: count only */
                     lines_consumed = count_wrapped_lines(line_buf, (int)strlen(line_buf), cols);
                 }
             }
