@@ -551,11 +551,13 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
         free(serialized);
     }
 
-    /* Inject previous result — loaded from session_dir/result.md. */
+    /* Inject previous result — loaded from session_dir/result.md.
+     * Keep prev_result alive until after TUI view check for dedup. */
+    char *prev_result = NULL;
     if (ctx->flags.inject_prev_result && ctx->tools->session_dir) {
         char rpath[NASH_PATH_MAX];
         snprintf(rpath, sizeof(rpath), "%s/result.md", ctx->tools->session_dir);
-        char *prev_result = slurp_file(rpath, NULL);
+        prev_result = slurp_file(rpath, NULL);
         if (!prev_result) {
             /* Backward compat: older sessions used result.txt */
             snprintf(rpath, sizeof(rpath), "%s/result.txt", ctx->tools->session_dir);
@@ -569,7 +571,6 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 "You can reference it for follow-up queries.",
                 prev_result);
         }
-        free(prev_result);
     }
 
     /* ── TUI View Context ──────────────────────────────────────────
@@ -577,31 +578,39 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
      * TUI (e.g., a reactRX.md from a previous loop, or a linked file),
      * inject a truncated snapshot of that file so the LLM has context
      * about what the user is looking at. Skip for session.md (generic
-     * overview) and NULL (no file / headless mode). */
+     * overview) and NULL (no file / headless mode).
+     * Also skip when the viewed file has the same content as prev_result
+     * — this happens when the user is viewing the [done] result, which
+     * is already fully present in ctx:prev_result. */
     if (ctx->tui_viewing_file && ctx->tui_viewing_file[0]) {
         const char *base = strrchr(ctx->tui_viewing_file, '/');
         base = base ? base + 1 : ctx->tui_viewing_file;
-        /* Skip session.md — it's just the overview, not specific context */
         if (strcmp(base, "session.md") != 0) {
             char *content = slurp_file(ctx->tui_viewing_file, NULL);
             if (content && content[0]) {
-                size_t max_view_chars = 4000;
-                size_t clen = strlen(content);
-                int truncated = 0;
-                if (clen > max_view_chars) {
-                    content[utf8_clamp(content, max_view_chars)] = '\0';
-                    truncated = 1;
+                /* Dedup: skip if content matches prev_result exactly */
+                int skip = (prev_result && prev_result[0] &&
+                            strcmp(content, prev_result) == 0);
+                if (!skip) {
+                    size_t max_view_chars = 4000;
+                    size_t clen = strlen(content);
+                    int truncated = 0;
+                    if (clen > max_view_chars) {
+                        content[utf8_clamp(content, max_view_chars)] = '\0';
+                        truncated = 1;
+                    }
+                    llm_chat_add_formatted(chat, "user", LLM_MSG_TUI_VIEW,
+                        "[TUI VIEW CONTEXT]\n"
+                        "The user submitted this query while viewing: %s\n"
+                        "---\n%s%s",
+                        base, content,
+                        truncated ? "\n... (truncated)" : "");
                 }
-                llm_chat_add_formatted(chat, "user", LLM_MSG_TUI_VIEW,
-                    "[TUI VIEW CONTEXT]\n"
-                    "The user submitted this query while viewing: %s\n"
-                    "---\n%s%s",
-                    base, content,
-                    truncated ? "\n... (truncated)" : "");
             }
             free(content);
         }
     }
+    free(prev_result);
 
     /* User query */
     llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
