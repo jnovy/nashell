@@ -48,6 +48,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/frontend_tui.c \
           src/ui_state.c src/ui_md_gen.c src/ui_nav.c src/ui_event.c \
           src/tui.c src/md_render.c \
+          src/md_diff.c src/md_osc8.c \
           src/memory.c src/mem_git.c \
           src/workspace.c \
           src/embedding.c \
@@ -71,12 +72,15 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/session_search.c \
           src/mailbox.c \
           src/telegram.c \
+          src/md_html.c \
           src/matrix.c \
           src/compress.c \
           src/html_extract.c \
           src/searxng.c \
           src/banner.c \
           src/commands.c \
+          src/cmd_todo.c \
+          src/cmd_agents.c \
           src/agents.c \
           src/repomap.c \
           src/display.c \
@@ -123,6 +127,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/provider_openai.c src/provider_anthropic.c \
           src/frontend_tui.c src/ui_state.c src/ui_md_gen.c src/ui_nav.c src/ui_event.c \
           src/tui.c src/md_render.c src/memory.c src/mem_git.c \
+          src/md_diff.c src/md_osc8.c \
           src/workspace.c \
           src/embedding.c src/embedding_onnx.c \
           src/nash_log.c \
@@ -142,12 +147,15 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/session_search.c \
           src/mailbox.c \
           src/telegram.c \
+          src/md_html.c \
           src/matrix.c \
           src/compress.c \
           src/html_extract.c \
           src/searxng.c \
           src/banner.c \
           src/commands.c \
+          src/cmd_todo.c \
+          src/cmd_agents.c \
           src/agents.c \
           src/repomap.c \
           src/display.c \

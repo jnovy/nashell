@@ -93,12 +93,8 @@ static int  mx_is_room_joined(matrix_ctx_t *ctx, const char *room_id);
 static const char *mx_ensure_room(matrix_ctx_t *ctx, const char *room_id,
                                    const char *workspace);
 
-/* Defined in telegram.c — shared markdown→HTML converter */
-extern char *md_to_html(const char *md);
-/* Defined in telegram.c — check if markdown contains tables */
-extern int md_has_table(const char *md);
-/* Defined in telegram.c — convert markdown tables to bullet-point lists */
-extern char *md_tables_to_bullets(const char *md);
+/* Markdown-to-HTML conversion (shared with telegram.c) */
+#include "md_html.h"
 
 
 /* ── URL encoding helper ─────────────────────────────────── */
