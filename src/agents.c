@@ -715,7 +715,21 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         /* Create workspace for this agent */
         workspace_t *agent_ws = workspace_new(nash_dir, a->workspace_name,
                                                0, cfg->workspace_global_weight);
-        memory_t *agent_mem = agent_ws ? agent_ws->global : NULL;
+        /* Initialize recall config + embeddings on agent workspace */
+        if (agent_ws) {
+            workspace_set_recall_config(agent_ws, cfg->recall_min_score,
+                                        cfg->recall_blend_semantic,
+                                        cfg->recall_blend_substring,
+                                        cfg->vscore_exponent);
+            if (cfg->embedding.type &&
+                strcmp(cfg->embedding.type, "none") != 0)
+                workspace_init_embeddings(agent_ws, cfg->embedding.type,
+                                          cfg->embedding.model,
+                                          cfg->embedding.api_base,
+                                          cfg->embedding.model_path,
+                                          cfg->embedding.dimension,
+                                          cfg->embedding.max_input_chars);
+        }
 
         playbook_t *pb = agent_prepare_playbook(a, NULL);
         if (!pb) {
@@ -736,16 +750,19 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             .playbook = pb,
             .nash_dir = (char *)nash_dir,
             .store = shared_store,
-            .memory = agent_mem,
+            .memory = agent_ws ? agent_ws->global : NULL,
             .cfg = cfg,
             .provider = provider,
             .server_model = (char *)server_model,
             .ui = NULL,  /* headless */
             .playbook_ok = 0,
             .done = 0,
+            .workspace_override = a->workspace_name ? strdup(a->workspace_name) : NULL,
+            .agent_ws = agent_ws,
         };
 
         playbook_worker(&pargs);
+        free(pargs.workspace_override);
 
         if (a->timeout > 0)
             alarm(0); /* cancel alarm */

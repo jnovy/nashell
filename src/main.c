@@ -1665,6 +1665,10 @@ int main(int argc, char **argv) {
                                           pargs_tui.last_session_dir);
                     free(pargs_tui.agent_id);
                     pargs_tui.agent_id = NULL;
+                    free(pargs_tui.workspace_override);
+                    pargs_tui.workspace_override = NULL;
+                    workspace_free(pargs_tui.agent_ws);
+                    pargs_tui.agent_ws = NULL;
                 }
 
                 /* Route result to outbox if a daemon (--matrix/--telegram) is running */

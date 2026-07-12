@@ -1806,11 +1806,32 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         return CMD_CONTINUE;
     }
 
+    /* Create workspace for agent -- two-layer memory (workspace first, global fallback) */
+    workspace_t *agent_ws = NULL;
+    if (found->workspace_name && found->workspace_name[0]) {
+        agent_ws = workspace_new(ctx->nash_dir, found->workspace_name,
+                                 0, ctx->cfg->workspace_global_weight);
+        if (agent_ws) {
+            workspace_set_recall_config(agent_ws, ctx->cfg->recall_min_score,
+                                        ctx->cfg->recall_blend_semantic,
+                                        ctx->cfg->recall_blend_substring,
+                                        ctx->cfg->vscore_exponent);
+            if (ctx->cfg->embedding.type &&
+                strcmp(ctx->cfg->embedding.type, "none") != 0)
+                workspace_init_embeddings(agent_ws, ctx->cfg->embedding.type,
+                                          ctx->cfg->embedding.model,
+                                          ctx->cfg->embedding.api_base,
+                                          ctx->cfg->embedding.model_path,
+                                          ctx->cfg->embedding.dimension,
+                                          ctx->cfg->embedding.max_input_chars);
+        }
+    }
+
     *ctx->pargs = (playbook_args_t){
         .playbook     = pb,
         .nash_dir     = (char *)ctx->nash_dir,
         .store        = ctx->store,
-        .memory       = ctx->memory,
+        .memory       = agent_ws ? agent_ws->global : ctx->memory,
         .cfg          = ctx->cfg,
         .provider     = ctx->provider,
         .server_model = (char *)ctx->server_model,
@@ -1819,6 +1840,8 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         .done             = 0,
         .agent_id         = strdup(found->id),
         .agent_start_time = time(NULL),
+        .workspace_override = found->workspace_name ? strdup(found->workspace_name) : NULL,
+        .agent_ws         = agent_ws,
     };
 
     ctx->provider->abort_retry = 0;

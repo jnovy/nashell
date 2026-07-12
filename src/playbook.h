@@ -80,6 +80,8 @@ typedef struct {
     memory_t        *memory;
     memory_t        *ws_memory;     /* workspace memory — NULL if no workspace */
     config_t        *cfg;
+    char            *workspace_override; /* agent workspace -- overrides cfg->workspace for session routing */
+    workspace_t     *agent_ws;          /* agent workspace -- two-layer memory for agent runs */
     provider_t      *provider;
     char            *server_model;
     ui_state_t      *ui;

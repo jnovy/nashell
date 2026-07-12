@@ -506,7 +506,7 @@ void *playbook_worker(void *arg) {
     char *shared_session_dir = NULL;
 
     if (pb->session_mode == PB_SESSION_SHARED) {
-        shared_session_dir = create_session_dir(pa->nash_dir, pa->cfg->workspace);
+        shared_session_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
     }
 
     int playbook_ok = 1;
@@ -625,7 +625,7 @@ void *playbook_worker(void *arg) {
         /* Create session */
         char *pass_dir;
         if (pb->session_mode == PB_SESSION_PER_PASS) {
-            pass_dir = create_session_dir(pa->nash_dir, pa->cfg->workspace);
+            pass_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
         } else {
             pass_dir = strdup(shared_session_dir);
         }
@@ -657,6 +657,7 @@ void *playbook_worker(void *arg) {
             .store = pa->store,
             .journal = pass_journal,
             .memory = cur_mem,
+            .ws = pa->agent_ws,
             .session_dir = pass_dir,
             .session_lock_fd = session_lock_acquire(pass_dir),
             .cfg = pa->cfg,
