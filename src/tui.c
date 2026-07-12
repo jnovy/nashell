@@ -676,36 +676,22 @@ static void render_main(ui_state_t *ui) {
 static void render_ncurses_row(WINDOW *win, int row, int cols,
                                 int pair_num,
                                 const char *content) {
-    /* Write content then pad to end of row with mvwaddch using the correct
-     * color pair. wclrtoeol() fills with win->_nc_bkgd (window background
-     * from wbkgdset), NOT the current attribute from wattron — so the
-     * status bar color would be lost after the text.
+    /* Fill entire row with colored spaces FIRST, then overlay content.
+     * This guarantees no stale characters remain when content shrinks
+     * or the terminal is resized — every column from 0 to cols-1 is
+     * explicitly painted with the correct color pair.
      *
-     * Using explicit mvwaddch padding also handles UTF-8 correctly:
-     * mvwaddnstr advances the cursor by display columns (not bytes), so
-     * getyx() returns the correct column after multi-byte chars.
-     * E.g. "⟳" is 3 bytes but 1 column — byte-based padding would
-     * start 2 columns too late. */
+     * Previous approach tried to pad only after the content using cursor
+     * position, but that relied on getcury()/getcurx() heuristics that
+     * could skip padding when the cursor wrapped (content >= cols wide)
+     * or when UTF-8/wide-char width mismatches left gaps. */
     attr_t attr = COLOR_PAIR(pair_num);
     wattron(win, attr);
+    /* Clear the entire row with spaces in the correct background color */
+    mvwhline(win, row, 0, ' ' | attr, cols);
+    /* Write content on top (ncurses truncates at window edge) */
     if (content && content[0]) {
         mvwaddnstr(win, row, 0, content, -1);
-    }
-    /* Pad from current cursor position to end of row.
-     * If the content exactly filled the row, mvwaddnstr wraps the cursor
-     * to the next row (getcury != row, getcurx == 0).  In that case the
-     * row is already fully covered — padding would overwrite it with
-     * spaces because the loop uses the original `row` parameter. */
-    {
-        int cur_y = getcury(win);
-        int cur_x = getcurx(win);
-
-        if (cur_y == row) {
-            for (int c = cur_x; c < cols; c++) {
-                mvwaddch(win, row, c, ' ' | attr);
-            }
-        }
-        /* else: cursor wrapped → row is fully filled, no padding needed */
     }
     wattroff(win, attr);
 }
