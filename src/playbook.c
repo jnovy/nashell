@@ -507,10 +507,11 @@ int playbook_validate(const playbook_t *pb, char *errbuf, size_t errlen) {
         errors++;
     }
 
-    /* Known built-in template variables */
+    /* Known built-in template variables (playbook + agent-injected) */
     static const char *builtins[] = {
         "memory_dir", "model", "session_dir", "nash_dir", "cwd", "date",
         "pass_number", "total_passes", "prev_result", "prev_scratchpad",
+        "workspace_name", "workspace_dir", "agent_id", "arguments",
         NULL
     };
 
