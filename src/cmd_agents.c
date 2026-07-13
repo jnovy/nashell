@@ -56,7 +56,7 @@ static int cmd_agents_list(command_ctx_t *ctx) {
                 snprintf(last_run_str, sizeof(last_run_str), "never");
             else {
                 char durbuf[32];
-                fmt_duration((double)(now - a->last_run), durbuf, sizeof(durbuf));
+                fmt_duration_short((double)(now - a->last_run), durbuf, sizeof(durbuf));
                 snprintf(last_run_str, sizeof(last_run_str), "%s ago", durbuf);
             }
 
@@ -433,7 +433,7 @@ static int cmd_agents_due(command_ctx_t *ctx) {
         char since[64] = "never run";
         if (a->last_run > 0) {
             char durbuf[32];
-            fmt_duration((double)(time(NULL) - a->last_run), durbuf, sizeof(durbuf));
+            fmt_duration_short((double)(time(NULL) - a->last_run), durbuf, sizeof(durbuf));
             snprintf(since, sizeof(since), "%s ago", durbuf);
         }
         str_appendf(&display, "%d. **%s** — schedule: `%s`, last: %s, timeout: %ds\n",

@@ -26,6 +26,10 @@ const char *str_cstr(const str_t *s);
  * Writes into buf and returns buf for convenience. */
 const char *fmt_duration(double seconds, char *buf, size_t sz);
 
+/* Like fmt_duration but only the two most significant units.
+ * Good for columnar display: "1d17h", "8h10m", "37m44s", "42s". */
+const char *fmt_duration_short(double seconds, char *buf, size_t sz);
+
 /* Read entire file into NUL-terminated buffer.
  * Returns NULL on failure. Caller must free.
  * If out_len is non-NULL, stores the number of bytes read. */

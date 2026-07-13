@@ -522,6 +522,29 @@ const char *fmt_duration(double seconds, char *buf, size_t sz) {
     return buf;
 }
 
+/* Like fmt_duration but shows only the two most significant units.
+ * Examples: "1d17h", "8h10m", "37m44s", "42s".  Good for columns. */
+const char *fmt_duration_short(double seconds, char *buf, size_t sz) {
+    int s = (int)seconds;
+    if (s < 60) {
+        snprintf(buf, sz, "%ds", s);
+    } else {
+        int m = s / 60; s %= 60;
+        if (m < 60) {
+            snprintf(buf, sz, "%dm%ds", m, s);
+        } else {
+            int h = m / 60; m %= 60;
+            if (h < 24) {
+                snprintf(buf, sz, "%dh%dm", h, m);
+            } else {
+                int d = h / 24; h %= 24;
+                snprintf(buf, sz, "%dd%dh", d, h);
+            }
+        }
+    }
+    return buf;
+}
+
 /* ── Workspace name sanitization ──────────────────────────────────── */
 
 char *sanitize_workspace_name(const char *display_name) {
