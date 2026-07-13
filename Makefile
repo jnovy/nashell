@@ -91,7 +91,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/stream.c \
           src/tool_device.c \
           src/tool_subtask.c \
-          src/perception.c
+          src/perception.c \
+          src/completion.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -166,7 +167,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/stream.c \
           src/tool_device.c \
           src/tool_subtask.c \
-          src/perception.c
+          src/perception.c \
+          src/completion.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

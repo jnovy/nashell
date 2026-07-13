@@ -10,6 +10,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <unistd.h>
+#include "completion.h"
 
 /* ── Windows ─────────────────────────────────────────── */
 
@@ -1025,8 +1026,17 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     switch (ch) {
     case '\t':
+        if (ui->focus == FOCUS_QUERY && ui->input_len > 0 &&
+            ui->input_buffer[0] == '/' &&
+            !(ui->input_len >= 2 && ui->input_buffer[1] == '?')) {
+            ui_state_complete_tab(ui, +1);
+        } else if (ui->focus == FOCUS_JOURNAL ||
+                   (ui->focus == FOCUS_QUERY && ui->input_len == 0)) {
+            ui_state_tab(ui);  /* Tab: toggle focus when no slash-command */
+        }
+        break;
     case KEY_BTAB:
-        ui_state_tab(ui);
+        ui_state_tab(ui);  /* Shift-Tab: always toggle focus */
         break;
 
     case KEY_UP:
@@ -1545,7 +1555,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
             ui->input_buffer[ui->input_len] = '\0';
             ui_state_search(ui, ui->input_buffer + 2);
             /* Focus stays on query pane so user can refine search.
-             * Tab switches to main pane to navigate results. */
+             * Shift-Tab switches to main pane to navigate results. */
         } else if (ui->search_active) {
             /* Query too short — clear search results */
             ui_state_search(ui, NULL);

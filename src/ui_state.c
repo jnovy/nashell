@@ -11,6 +11,7 @@
  */
 
 #include "ui_state_internal.h"
+#include "completion.h"
 
 /* ── Shared helper implementation ────────────────────────── */
 
@@ -95,6 +96,7 @@ void ui_state_free(ui_state_t *ui) {
     free(ui->expanded_uris);
     free(ui->page_search_term);
     free(ui->page_search_lines);
+    ui_state_completion_reset(ui);
     pthread_mutex_destroy(&ui->mtx);
     free(ui);
 }
@@ -177,6 +179,7 @@ void ui_state_input_char(ui_state_t *ui, int ch) {
     memcpy(ui->input_buffer + ui->cursor_pos, utf8, (size_t)nbytes);
     ui->cursor_pos += nbytes;
     ui->input_len += nbytes;
+    ui_state_completion_reset(ui);
     ui->dirty = 1;
 }
 
@@ -215,6 +218,7 @@ void ui_state_input_backspace(ui_state_t *ui) {
             (size_t)(ui->input_len - ui->cursor_pos + 1));
     ui->cursor_pos -= nb;
     ui->input_len -= nb;
+    ui_state_completion_reset(ui);
     ui->dirty = 1;
 }
 
@@ -236,6 +240,7 @@ void ui_state_input_delete_word(ui_state_t *ui) {
             ui->input_buffer + old_pos,
             (size_t)(ui->input_len - old_pos + 1));
     ui->input_len -= removed;
+    ui_state_completion_reset(ui);
     ui->dirty = 1;
 }
 
@@ -246,6 +251,7 @@ void ui_state_input_delete(ui_state_t *ui) {
             ui->input_buffer + ui->cursor_pos + nb,
             (size_t)(ui->input_len - ui->cursor_pos - nb + 1));
     ui->input_len -= nb;
+    ui_state_completion_reset(ui);
     ui->dirty = 1;
 }
 

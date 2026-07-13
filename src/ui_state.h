@@ -163,6 +163,14 @@ typedef struct {
     int            agent_running;    /* 1 = playbook worker is active (don't clear agent_view on Esc) */
     char          *current_label;    /* breadcrumb label for current view (NULL = use filepath) */
 
+    /* ── Tab-completion state ── */
+    char         **completion_candidates;     /* current candidate list (NULL when inactive) */
+    int            completion_count;          /* number of candidates */
+    int            completion_index;          /* cycling index for repeated Tab (-1 = none) */
+    int            completion_replace_start;  /* byte offset where replacement begins */
+    int            completion_replace_len;    /* length of text being replaced */
+    int            completion_shown;          /* 1 = candidates displayed in status bar */
+
     /* ── Deferred regeneration flags ── */
     /* Set by the inference thread's event handler (under mtx) to request
      * expensive file I/O without holding the mutex during the actual I/O.
