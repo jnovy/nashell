@@ -554,6 +554,72 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 p = nl ? nl + 1 : p + llen;
             }
 
+            /* Extend partial first/last lines to full file lines.
+             * When old_text starts or ends mid-line, the diff would show
+             * only the matched fragment, making it look like the entire
+             * file line is just that fragment.  Extending to full file
+             * lines gives proper context. */
+
+            /* Extend old_lines[0] backward to line_start (start of file line) */
+            if (old_cnt > 0 && pos > line_start) {
+                old_lines[0].len += (int)(old_lines[0].s - line_start);
+                old_lines[0].s = line_start;
+            }
+
+            /* Extend old_lines[last] forward to end of file line */
+            if (old_cnt > 0) {
+                dline_t *last_ol = &old_lines[old_cnt - 1];
+                const char *end_of_old = last_ol->s + last_ol->len;
+                /* Check if old_text ends mid-line (not at \n or EOF) */
+                if (end_of_old < content + flen && *end_of_old != '\n') {
+                    const char *eol = memchr(end_of_old, '\n',
+                                             (size_t)((content + flen) - end_of_old));
+                    if (eol)
+                        last_ol->len = (int)(eol - last_ol->s);
+                    else
+                        last_ol->len = (int)((content + flen) - last_ol->s);
+                }
+            }
+
+            /* Extend new_lines to full file lines using the result buffer.
+             * new_text in result starts at result + prefix_len.
+             * The file line containing it starts at result + (line_start - content).
+             * new_lines[] pointers currently point into the new_text param;
+             * we remap them into result so they include surrounding content. */
+            if (new_cnt > 0) {
+                const char *new_in_result = result + prefix_len;
+                const char *new_file_line_start = result + (size_t)(line_start - content);
+
+                /* Extend first new line backward */
+                if (new_in_result > new_file_line_start) {
+                    int extra = (int)(new_in_result - new_file_line_start);
+                    /* We need to point into result, not new_text */
+                    new_lines[0].s = new_file_line_start;
+                    new_lines[0].len += extra;
+                }
+
+                /* Extend last new line forward to end of file line in result */
+                dline_t *last_nl = &new_lines[new_cnt - 1];
+                /* Map last_nl->s into result if it's still pointing at new_text */
+                const char *last_nl_in_result;
+                if (last_nl->s >= new_text && last_nl->s < new_text + new_len)
+                    last_nl_in_result = new_in_result + (last_nl->s - new_text);
+                else
+                    last_nl_in_result = last_nl->s;
+                const char *end_of_last = last_nl_in_result + last_nl->len;
+                if (end_of_last < result + result_len && *end_of_last != '\n') {
+                    const char *eol = memchr(end_of_last, '\n',
+                                             (size_t)((result + result_len) - end_of_last));
+                    int new_total;
+                    if (eol)
+                        new_total = (int)(eol - last_nl_in_result);
+                    else
+                        new_total = (int)((result + result_len) - last_nl_in_result);
+                    last_nl->s = last_nl_in_result;
+                    last_nl->len = new_total;
+                }
+            }
+
             /* Find common prefix lines */
             int prefix = 0;
             while (prefix < old_cnt && prefix < new_cnt &&
@@ -638,8 +704,21 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             free(new_lines);
         }
 
-        /* Context after — use new_lnum (post-edit line numbers) */
+        /* Context after — use new_lnum (post-edit line numbers).
+         * If old_text ended mid-line, after_edit points mid-line too.
+         * Since we extended old/new lines to cover full file lines,
+         * skip to the next line to avoid duplicating the tail. */
         cl = after_edit;
+        if (cl < result + result_len && cl > result) {
+            /* If we're not at start of a line, skip to next line */
+            if (cl[-1] != '\n' && cl[0] != '\n') {
+                char *nl = memchr(cl, '\n', (size_t)((result + result_len) - cl));
+                if (nl) cl = nl + 1;
+                else    cl = result + result_len;  /* no more lines */
+            } else if (cl[0] == '\n') {
+                cl++;  /* skip the newline itself */
+            }
+        }
         while (cl < ctx_end) {
             char *nl = strchr(cl, '\n');
             int llen = nl ? (int)(nl - cl) : (int)(ctx_end - cl);
