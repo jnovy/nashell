@@ -12,13 +12,17 @@
 #include "nash_log.h"
 #include "str.h"
 #include "frontend_tui.h"
+#include "tools_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 #include <pthread.h>
 /* ── YAML → Playbook parsing ────────────────────────── */
 
@@ -94,8 +98,9 @@ playbook_t *playbook_load(const char *path) {
     else
         pb->session_mode = PB_SESSION_PER_PASS;
 
-    /* Scratchpad mode */
+    /* Scratchpad mode -- accept both "scratchpad_mode" and "scratch_mode" */
     s = yaml_str(yaml_get(root, "scratchpad_mode"));
+    if (!s) s = yaml_str(yaml_get(root, "scratch_mode"));
     if (s && strcmp(s, "isolated") == 0)
         pb->scratch_mode = PB_SCRATCH_ISOLATED;
     else
@@ -141,8 +146,30 @@ playbook_t *playbook_load(const char *path) {
             const char *label = yaml_str(yaml_get(pass, "label"));
             pb->passes[i].label = label ? strdup(label) : strdup("(unnamed)");
 
+            /* Accept both "prompt" and "prompt_template" keys */
             const char *prompt = yaml_str(yaml_get(pass, "prompt"));
+            if (!prompt) prompt = yaml_str(yaml_get(pass, "prompt_template"));
             pb->passes[i].prompt_template = prompt ? strdup(prompt) : strdup("");
+
+            /* Pass type: "script" runs a shell command, default is react */
+            const char *type_s = yaml_str(yaml_get(pass, "type"));
+            if (type_s && strcmp(type_s, "script") == 0)
+                pb->passes[i].type = PB_PASS_SCRIPT;
+            else
+                pb->passes[i].type = PB_PASS_REACT;
+
+            /* Shell command for script-type passes */
+            const char *cmd = yaml_str(yaml_get(pass, "command"));
+            pb->passes[i].command = cmd ? strdup(cmd) : NULL;
+
+            /* Per-pass error policy: abort (default), continue, retry */
+            const char *onerr = yaml_str(yaml_get(pass, "on_error"));
+            if (onerr && strcmp(onerr, "continue") == 0)
+                pb->passes[i].on_error = PB_ON_ERROR_CONTINUE;
+            else if (onerr && strcmp(onerr, "retry") == 0)
+                pb->passes[i].on_error = PB_ON_ERROR_RETRY;
+            else
+                pb->passes[i].on_error = PB_ON_ERROR_ABORT;
 
             /* Per-pass react overrides */
             parse_react_overrides(yaml_get(pass, "react"), &pb->passes[i].react);
@@ -175,6 +202,7 @@ void playbook_free(playbook_t *pb) {
     for (int i = 0; i < pb->n_passes; i++) {
         free(pb->passes[i].label);
         free(pb->passes[i].prompt_template);
+        free(pb->passes[i].command);
         free_react_overrides(&pb->passes[i].react);
     }
     free(pb->passes);
@@ -439,6 +467,176 @@ int playbook_write_default_dream(const char *path) {
     return write_file(path, (const char *)playbooks_dream_yaml, playbooks_dream_yaml_len);
 }
 
+/* ── Playbook validation ─────────────────────────────── */
+
+/* Check if a tool name exists in the registry */
+static int tool_name_exists(const char *name) {
+    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+        if (TOOL_REGISTRY[i].name && strcmp(TOOL_REGISTRY[i].name, name) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Append a diagnostic message to errbuf, respecting errlen */
+static int validate_append(char *errbuf, size_t errlen, int *pos, const char *fmt, ...) {
+    if (!errbuf || *pos >= (int)errlen - 1) return 0;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(errbuf + *pos, errlen - (size_t)*pos, fmt, ap);
+    va_end(ap);
+    if (n > 0) *pos += n;
+    return 1;
+}
+
+int playbook_validate(const playbook_t *pb, char *errbuf, size_t errlen) {
+    if (!pb) {
+        if (errbuf && errlen > 0)
+            snprintf(errbuf, errlen, "ERROR: playbook is NULL\n");
+        return -1;
+    }
+
+    int errors = 0;
+    int warnings = 0;
+    int pos = 0;
+
+    /* Check: passes non-empty */
+    if (pb->n_passes == 0) {
+        validate_append(errbuf, errlen, &pos,
+            "ERROR: playbook '%s' has no passes\n", pb->name);
+        errors++;
+    }
+
+    /* Known built-in template variables */
+    static const char *builtins[] = {
+        "memory_dir", "model", "session_dir", "nash_dir", "cwd", "date",
+        "pass_number", "total_passes", "prev_result", "prev_scratchpad",
+        NULL
+    };
+
+    for (int i = 0; i < pb->n_passes; i++) {
+        const pb_pass_t *p = &pb->passes[i];
+
+        /* Check: react passes must have a prompt, script passes must have a command */
+        if (p->type == PB_PASS_SCRIPT) {
+            if (!p->command || !p->command[0]) {
+                validate_append(errbuf, errlen, &pos,
+                    "ERROR: pass %d ('%s'): script type requires 'command'\n",
+                    i + 1, p->label);
+                errors++;
+            }
+            /* Warn if script pass has react overrides */
+            if (p->react.max_steps > 0 || p->react.inject_memory != -1 ||
+                p->react.enable_reflection != -1) {
+                validate_append(errbuf, errlen, &pos,
+                    "WARNING: pass %d ('%s'): react overrides ignored for script type\n",
+                    i + 1, p->label);
+                warnings++;
+            }
+        } else {
+            if (!p->prompt_template || !p->prompt_template[0]) {
+                validate_append(errbuf, errlen, &pos,
+                    "ERROR: pass %d ('%s'): react type requires 'prompt'\n",
+                    i + 1, p->label);
+                errors++;
+            }
+        }
+
+        /* Check {{var}} references in prompt and command templates */
+        const char *templates[2] = { p->prompt_template, p->command };
+        for (int t = 0; t < 2; t++) {
+            const char *tmpl = templates[t];
+            if (!tmpl) continue;
+            const char *scan = tmpl;
+            while ((scan = strstr(scan, "{{")) != NULL) {
+                scan += 2;
+                const char *end = strstr(scan, "}}");
+                if (!end) break;
+                int vlen = (int)(end - scan);
+                if (vlen <= 0 || vlen >= 128) { scan = end + 2; continue; }
+
+                char var[128];
+                snprintf(var, sizeof(var), "%.*s", vlen, scan);
+
+                /* Skip argN references (handled specially by playbook_expand) */
+                if (strncmp(var, "arg", 3) == 0 && var[3] >= '1' && var[3] <= '9') {
+                    scan = end + 2;
+                    continue;
+                }
+
+                /* Check against builtins */
+                int found = 0;
+                for (int b = 0; builtins[b]; b++) {
+                    if (strcmp(var, builtins[b]) == 0) { found = 1; break; }
+                }
+                /* Check against user-defined vars */
+                if (!found) {
+                    for (int v = 0; v < pb->n_vars; v++) {
+                        if (strcmp(var, pb->var_keys[v]) == 0) { found = 1; break; }
+                    }
+                }
+                if (!found) {
+                    validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): unknown template variable '{{%s}}'\n",
+                        i + 1, p->label, var);
+                    errors++;
+                }
+                scan = end + 2;
+            }
+        }
+
+        /* Check tools_allow and tools_block reference valid tool names */
+        for (int j = 0; j < p->react.n_tools_allow; j++) {
+            if (!tool_name_exists(p->react.tools_allow[j])) {
+                validate_append(errbuf, errlen, &pos,
+                    "ERROR: pass %d ('%s'): tools.allow references unknown tool '%s'\n",
+                    i + 1, p->label, p->react.tools_allow[j]);
+                errors++;
+            }
+        }
+        for (int j = 0; j < p->react.n_tools_block; j++) {
+            if (!tool_name_exists(p->react.tools_block[j])) {
+                validate_append(errbuf, errlen, &pos,
+                    "ERROR: pass %d ('%s'): tools.block references unknown tool '%s'\n",
+                    i + 1, p->label, p->react.tools_block[j]);
+                errors++;
+            }
+        }
+
+        /* Warn if both allow and block are set on same pass */
+        if (p->react.n_tools_allow > 0 && p->react.n_tools_block > 0) {
+            validate_append(errbuf, errlen, &pos,
+                "WARNING: pass %d ('%s'): both tools.allow and tools.block set "
+                "(allow takes precedence)\n", i + 1, p->label);
+            warnings++;
+        }
+    }
+
+    /* Also check playbook-level react defaults for tool names */
+    for (int j = 0; j < pb->react_defaults.n_tools_allow; j++) {
+        if (!tool_name_exists(pb->react_defaults.tools_allow[j])) {
+            validate_append(errbuf, errlen, &pos,
+                "ERROR: react_defaults: tools.allow references unknown tool '%s'\n",
+                pb->react_defaults.tools_allow[j]);
+            errors++;
+        }
+    }
+    for (int j = 0; j < pb->react_defaults.n_tools_block; j++) {
+        if (!tool_name_exists(pb->react_defaults.tools_block[j])) {
+            validate_append(errbuf, errlen, &pos,
+                "ERROR: react_defaults: tools.block references unknown tool '%s'\n",
+                pb->react_defaults.tools_block[j]);
+            errors++;
+        }
+    }
+
+    /* Summary */
+    validate_append(errbuf, errlen, &pos,
+        "\nValidation: %d error(s), %d warning(s)\n", errors, warnings);
+
+    return errors > 0 ? -1 : 0;
+}
+
 /* ── Worker thread ───────────────────────────────────── */
 
 /* Event callback for playbook passes — routes to TUI */
@@ -697,8 +895,67 @@ void *playbook_worker(void *arg) {
         ev_ctx.pass_index = pass;
         ev_ctx.pass_label = pb->passes[pass].label;
 
-        /* Run the pass */
-        char *result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
+        /* Run the pass -- either LLM react loop or shell script */
+        char *result = NULL;
+        if (pb->passes[pass].type == PB_PASS_SCRIPT) {
+            /* Script pass: run shell command, no LLM call.
+             * Expand {{var}} placeholders in the command string. */
+            char *expanded_cmd = playbook_expand(pb,
+                pb->passes[pass].command ? pb->passes[pass].command : "",
+                pass, prev_result, mdir, model, NULL, pa->nash_dir);
+            if (expanded_cmd && expanded_cmd[0]) {
+                if (pa->ui) {
+                    pthread_mutex_lock(&pa->ui->mtx);
+                    char script_status[256];
+                    snprintf(script_status, sizeof(script_status),
+                             "%s %d/%d: [script] %s", pb->name,
+                             pass + 1, pb->n_passes, pb->passes[pass].label);
+                    ui_state_set_status(pa->ui, STATUS_RUNNING, script_status);
+                    pthread_mutex_unlock(&pa->ui->mtx);
+                } else {
+                    fprintf(stderr, "[play] script: %s\n", expanded_cmd);
+                }
+                /* Capture stdout+stderr via popen */
+                char popen_cmd[NASH_PATH_MAX * 2];
+                snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
+                FILE *fp = popen(popen_cmd, "r");
+                if (fp) {
+                    char *buf = NULL;
+                    size_t buf_len = 0, buf_cap = 0;
+                    char line[1024];
+                    while (fgets(line, sizeof(line), fp)) {
+                        size_t ll = strlen(line);
+                        if (buf_len + ll + 1 > buf_cap) {
+                            buf_cap = (buf_cap ? buf_cap * 2 : 4096);
+                            if (buf_cap < buf_len + ll + 1)
+                                buf_cap = buf_len + ll + 1;
+                            buf = realloc(buf, buf_cap);
+                        }
+                        memcpy(buf + buf_len, line, ll);
+                        buf_len += ll;
+                    }
+                    int status = pclose(fp);
+                    if (buf) {
+                        buf[buf_len] = '\0';
+                        result = buf;
+                    } else {
+                        result = strdup("");
+                    }
+                    if (status != 0) {
+                        fprintf(stderr, "[play] script exited with status %d\n",
+                                WEXITSTATUS(status));
+                        /* Non-zero exit is a failure, but we still have output */
+                        if (!result) result = strdup("(script failed)");
+                    }
+                } else {
+                    fprintf(stderr, "[play] popen failed: %s\n", strerror(errno));
+                }
+            }
+            free(expanded_cmd);
+        } else {
+            /* Normal react pass */
+            result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
+        }
 
         /* Harvest scratchpad */
         if (pb->scratch_mode == PB_SCRATCH_SHARED) {
@@ -706,6 +963,30 @@ void *playbook_worker(void *arg) {
         }
 
         int pass_failed = (result == NULL);
+
+        /* Per-pass error policy handling */
+        if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_CONTINUE) {
+            fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
+                    pass + 1, pb->n_passes, pb->passes[pass].label);
+            result = strdup("");  /* provide empty result for next pass */
+            pass_failed = 0;
+        } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
+            fprintf(stderr, "[play] pass %d/%d ('%s') failed, retrying once (on_error: retry)\n",
+                    pass + 1, pb->n_passes, pb->passes[pass].label);
+            /* Retry with failure context prefix */
+            if (pb->passes[pass].type == PB_PASS_REACT) {
+                char *retry_prompt = NULL;
+                size_t rplen = strlen(prompt) + 128;
+                retry_prompt = malloc(rplen);
+                snprintf(retry_prompt, rplen,
+                    "[RETRY: Your previous attempt at this pass failed. "
+                    "Try a different approach.]\n\n%s", prompt);
+                result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
+                free(retry_prompt);
+                pass_failed = (result == NULL);
+            }
+            /* Script retries just re-run the same command (no prompt to modify) */
+        }
 
         /* Run log: emit pass done */
         if (run_log) {

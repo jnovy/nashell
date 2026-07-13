@@ -4,8 +4,8 @@ description: >
   propose minimal harness edits, and validate via regression testing.
   Based on Self-Harness [arXiv:2606.09498, Jun 2026].
 
-session_mode: per_pass
-scratch_mode: shared
+session_mode: per-pass
+scratchpad_mode: shared
 
 vars:
   max_proposals: "3"
@@ -20,7 +20,7 @@ react_defaults:
 
 passes:
   - label: "1. Weakness Mining"
-    prompt_template: |
+    prompt: |
       You are analyzing Nash's recent failure patterns to identify recurring weaknesses.
 
       Run `nash --postmortem` or read the postmortem evidence bundle at {{nash_dir}}/postmortem.md
@@ -39,7 +39,7 @@ passes:
       Call done with a summary of the top 3 failure patterns.
 
   - label: "2. Harness Proposal"
-    prompt_template: |
+    prompt: |
       Based on the failure analysis in your scratchpad, propose up to {{max_proposals}}
       concrete, minimal harness edits to address the identified weaknesses.
 
@@ -61,7 +61,7 @@ passes:
       Call done with a summary of your proposals.
 
   - label: "3. Implementation"
-    prompt_template: |
+    prompt: |
       Review the proposals in your scratchpad section "proposals".
 
       Implement the FIRST proposal only (the most impactful one).
@@ -76,7 +76,7 @@ passes:
       inject_memory: true
 
   - label: "4. Retrieval Quality Diagnosis (EvolveMem)"
-    prompt_template: |
+    prompt: |
       You are analyzing Nash's memory retrieval quality to identify tuning opportunities.
       Based on: EvolveMem [arXiv:2605.13941] — self-evolving memory architecture.
 

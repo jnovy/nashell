@@ -377,6 +377,7 @@ int main(int argc, char **argv) {
     const char *query = NULL;
     const char *session_dir_arg = NULL;
     const char *play_arg = NULL;
+    const char *validate_playbook_arg = NULL;  /* --validate-playbook NAME: validate and exit */
     int regression_mode = 0;
     const char *validate_harness = NULL;  /* "baseline" or "compare" */
     int regression_split = -1;           /* -1 = all, 0 = held-in, 1 = held-out */
@@ -411,6 +412,8 @@ int main(int argc, char **argv) {
             query = argv[++i];
         } else if (strcmp(argv[i], "--play") == 0 && i + 1 < argc) {
             play_arg = argv[++i];
+        } else if (strcmp(argv[i], "--validate-playbook") == 0 && i + 1 < argc) {
+            validate_playbook_arg = argv[++i];
         } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
             free(cfg->data_dir);
             cfg->data_dir = strdup(argv[++i]);
@@ -1004,6 +1007,31 @@ int main(int argc, char **argv) {
         return 0;
     }
 
+    /* Validate playbook mode: --validate-playbook NAME */
+    if (validate_playbook_arg) {
+        char pb_path[NASH_PATH_MAX];
+        if (strchr(validate_playbook_arg, '/') || strchr(validate_playbook_arg, '.')) {
+            snprintf(pb_path, sizeof(pb_path), "%s", validate_playbook_arg);
+        } else {
+            snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml",
+                     nash_dir, validate_playbook_arg);
+        }
+        playbook_t *pb = playbook_load(pb_path);
+        if (!pb) {
+            fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 1;
+        }
+        fprintf(stderr, "Validating playbook '%s' (%d passes) from %s\n",
+                pb->name, pb->n_passes, pb_path);
+        char errbuf[4096];
+        int rc = playbook_validate(pb, errbuf, sizeof(errbuf));
+        fprintf(stderr, "%s", errbuf);
+        playbook_free(pb);
+        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+        return rc == 0 ? 0 : 1;
+    }
+
     /* Headless playbook mode: --play NAME */
     if (play_arg) {
         /* Resolve playbook path */
@@ -1025,6 +1053,17 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
+        }
+
+        /* Validate before running */
+        {
+            char vbuf[4096];
+            if (playbook_validate(pb, vbuf, sizeof(vbuf)) != 0) {
+                fprintf(stderr, "[play] Playbook validation failed:\n%s", vbuf);
+                playbook_free(pb);
+                cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+                return 1;
+            }
         }
 
         fprintf(stderr, "[play] Running playbook '%s' (%d passes)\n",

@@ -39,9 +39,25 @@ typedef struct {
 
 #define PB_REACT_INHERIT { 0, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0 }
 
+/* Pass type: LLM react loop (default) or shell script (no LLM). */
+typedef enum {
+    PB_PASS_REACT,    /* run LLM react loop (default) */
+    PB_PASS_SCRIPT,   /* run shell command, no LLM call */
+} pb_pass_type_t;
+
+/* Per-pass error policy. */
+typedef enum {
+    PB_ON_ERROR_ABORT,     /* stop playbook on failure (default) */
+    PB_ON_ERROR_CONTINUE,  /* log warning, proceed to next pass */
+    PB_ON_ERROR_RETRY,     /* retry once with failure context prefix */
+} pb_error_policy_t;
+
 typedef struct {
     char *label;
     char *prompt_template;    /* raw template with {{var}} placeholders */
+    pb_pass_type_t type;      /* react (default) or script */
+    pb_error_policy_t on_error; /* error policy (default: abort) */
+    char *command;            /* shell command for PB_PASS_SCRIPT type */
     pb_react_overrides_t react;  /* per-pass overrides */
 } pb_pass_t;
 
@@ -130,6 +146,11 @@ playbook_t **playbook_list(const char *nash_dir, int *count);
 
 /* Write default dream.yaml */
 int playbook_write_default_dream(const char *path);
+
+/* Validate a loaded playbook: check template vars, tool names, pass config.
+ * Returns 0 on success, -1 on error.  Writes human-readable diagnostics
+ * to errbuf (up to errlen bytes). */
+int playbook_validate(const playbook_t *pb, char *errbuf, size_t errlen);
 
 /* Worker thread entry point */
 void *playbook_worker(void *arg);
