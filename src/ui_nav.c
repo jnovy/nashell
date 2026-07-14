@@ -222,6 +222,40 @@ void ui_state_enter(ui_state_t *ui) {
          * navigating to a real file on disk). */
         ui->search_active = 0;
 
+        /* Subtask on-demand reactRX.md generation.
+         *
+         * When a subtask finishes, the REACT_EVENT_DONE event sets
+         * needs_react_regen=1, but the immediately following RESTORE
+         * event switches playbook_session_dir back to the parent before
+         * the main loop can process the flag.  Result: the final
+         * reactR0.md (with the done result) is never written to the
+         * subtask directory.  Fix: detect when navigating into a
+         * subtask's reactRX.md and regenerate it on-demand from the
+         * child journal which IS on disk. */
+        {
+            const char *base = strrchr(new_path, '/');
+            const char *rname = base ? base + 1 : new_path;
+            int rloop = -1;
+            if (sscanf(rname, "reactR%d.md", &rloop) == 1 && rloop >= 0) {
+                /* Extract directory containing the reactRX.md */
+                char react_dir[NASH_PATH_MAX];
+                if (base) {
+                    size_t dlen = (size_t)(base - new_path);
+                    if (dlen >= sizeof(react_dir)) dlen = sizeof(react_dir) - 1;
+                    memcpy(react_dir, new_path, dlen);
+                    react_dir[dlen] = '\0';
+                } else {
+                    snprintf(react_dir, sizeof(react_dir), "%s", ui->session_dir);
+                }
+                /* Temporarily override playbook_session_dir so
+                 * generate_react_md reads the correct journal */
+                char *saved_psd = ui->playbook_session_dir;
+                ui->playbook_session_dir = react_dir;
+                ui_state_generate_react_md(ui, rloop);
+                ui->playbook_session_dir = saved_psd;
+            }
+        }
+
         ui_state_reload_file(ui);
         return;  /* done — don't fall through to raw file handler */
     }
