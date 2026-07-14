@@ -284,6 +284,15 @@ config_t *config_load(const char *path) {
                 np->config.type           = toml_str(ptab, "type");
                 np->config.model_id       = toml_str(ptab, "model_id");
                 np->config.api_base       = toml_str(ptab, "api_base");
+                /* Auto-prepend http:// if api_base has no scheme */
+                if (np->config.api_base &&
+                    strncmp(np->config.api_base, "http://", 7) != 0 &&
+                    strncmp(np->config.api_base, "https://", 8) != 0) {
+                    char *fixed = malloc(7 + strlen(np->config.api_base) + 1);
+                    sprintf(fixed, "http://%s", np->config.api_base);
+                    free(np->config.api_base);
+                    np->config.api_base = fixed;
+                }
                 np->config.api_key_env    = toml_str(ptab, "api_key_env");
                 np->config.project_id     = toml_str(ptab, "project_id");
                 np->config.region         = toml_str(ptab, "region");
