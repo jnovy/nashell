@@ -140,12 +140,14 @@ const char *diff_content_after_marker(const char *text, int text_len,
  * diff_type: 1 = add (green bg), -1 = remove (red bg), 2 = context.
  * text: the full line text.
  * text_len: byte length of text.
+ * scroll_x: horizontal scroll offset (0 = no scroll).
  * hl_start, hl_end: byte offsets within the code content (after +/- marker)
  *   for character-level highlighting.  -1 = no char highlight.
  * Returns number of display lines consumed. */
 int render_diff_line(WINDOW *win, int row, int col,
                              int diff_type, const char *text, int text_len,
-                             int cols, int hl_start, int hl_end) {
+                             int cols, int scroll_x,
+                             int hl_start, int hl_end) {
     if (text_len <= 0) return 1;
 
     /* Parse line number and content parts */
@@ -154,31 +156,36 @@ int render_diff_line(WINDOW *win, int row, int col,
     parse_diff_parts(text, text_len, &lnum_start, &lnum_len,
                      &marker_pos, &content_start, &content_len);
 
-    int x = col;
+    int x = col - scroll_x;
 
     /* Render leading spaces + line number in dim */
     if (lnum_start) {
         /* Leading spaces before line number */
         int leading = (int)(lnum_start - text);
         if (leading > 0) {
-            wattron(win, COLOR_PAIR(C_DIM));
-            mvwaddnstr(win, row, x, text, leading);
-            wattroff(win, COLOR_PAIR(C_DIM));
+            if (x >= 0 && x < cols) {
+                wattron(win, COLOR_PAIR(C_DIM));
+                mvwaddnstr(win, row, x, text, leading);
+                wattroff(win, COLOR_PAIR(C_DIM));
+            }
             x += leading;
         }
         /* Line number in dim */
-        wattron(win, COLOR_PAIR(C_DIM));
-        mvwaddnstr(win, row, x, lnum_start, lnum_len);
-        wattroff(win, COLOR_PAIR(C_DIM));
+        if (x >= 0 && x < cols) {
+            wattron(win, COLOR_PAIR(C_DIM));
+            mvwaddnstr(win, row, x, lnum_start, lnum_len);
+            wattroff(win, COLOR_PAIR(C_DIM));
+        }
         x += lnum_len;
         /* Space after line number */
-        mvwaddch(win, row, x, ' ');
+        if (x >= 0 && x < cols)
+            mvwaddch(win, row, x, ' ');
         x++;
     }
 
     /* For context lines (diff_type == 2), render content without background */
     if (diff_type == 2) {
-        if (content_len > 0) {
+        if (content_len > 0 && x >= 0 && x < cols) {
             wattron(win, COLOR_PAIR(C_STREAM));
             mvwaddnstr(win, row, x, content_start, content_len);
             wattroff(win, COLOR_PAIR(C_STREAM));
@@ -203,9 +210,11 @@ int render_diff_line(WINDOW *win, int row, int col,
 
         /* Render the +/- marker with normal diff bg */
         if (marker_bytes > 0) {
-            wattron(win, COLOR_PAIR(pair));
-            mvwaddnstr(win, row, x, content_start, marker_bytes);
-            wattroff(win, COLOR_PAIR(pair));
+            if (x >= 0 && x < cols) {
+                wattron(win, COLOR_PAIR(pair));
+                mvwaddnstr(win, row, x, content_start, marker_bytes);
+                wattroff(win, COLOR_PAIR(pair));
+            }
             x += marker_bytes;
         }
 
@@ -217,39 +226,52 @@ int render_diff_line(WINDOW *win, int row, int col,
 
             /* Pre-highlight portion */
             if (hl_start > 0) {
-                wattron(win, COLOR_PAIR(pair));
-                mvwaddnstr(win, row, x, code, hl_start);
-                wattroff(win, COLOR_PAIR(pair));
-                x += utf8_display_len(code, hl_start);
+                int dw = utf8_display_len(code, hl_start);
+                if (x >= 0 && x < cols) {
+                    wattron(win, COLOR_PAIR(pair));
+                    mvwaddnstr(win, row, x, code, hl_start);
+                    wattroff(win, COLOR_PAIR(pair));
+                }
+                x += dw;
             }
             /* Highlighted portion (brighter bg) */
             int hl_len = hl_end - hl_start;
-            wattron(win, COLOR_PAIR(pair_hl) | A_BOLD);
-            mvwaddnstr(win, row, x, code + hl_start, hl_len);
-            wattroff(win, COLOR_PAIR(pair_hl) | A_BOLD);
-            x += utf8_display_len(code + hl_start, hl_len);
+            int hl_dw = utf8_display_len(code + hl_start, hl_len);
+            if (x >= 0 && x < cols) {
+                wattron(win, COLOR_PAIR(pair_hl) | A_BOLD);
+                mvwaddnstr(win, row, x, code + hl_start, hl_len);
+                wattroff(win, COLOR_PAIR(pair_hl) | A_BOLD);
+            }
+            x += hl_dw;
             /* Post-highlight portion */
             int post_len = code_len - hl_end;
             if (post_len > 0) {
-                wattron(win, COLOR_PAIR(pair));
-                mvwaddnstr(win, row, x, code + hl_end, post_len);
-                wattroff(win, COLOR_PAIR(pair));
-                x += utf8_display_len(code + hl_end, post_len);
+                int post_dw = utf8_display_len(code + hl_end, post_len);
+                if (x >= 0 && x < cols) {
+                    wattron(win, COLOR_PAIR(pair));
+                    mvwaddnstr(win, row, x, code + hl_end, post_len);
+                    wattroff(win, COLOR_PAIR(pair));
+                }
+                x += post_dw;
             }
         } else {
             /* No char highlight — render entire code content */
             if (code_len > 0) {
-                wattron(win, COLOR_PAIR(pair));
-                mvwaddnstr(win, row, x, code, code_len);
-                wattroff(win, COLOR_PAIR(pair));
-                x += utf8_display_len(code, code_len);
+                int dw = utf8_display_len(code, code_len);
+                if (x >= 0 && x < cols) {
+                    wattron(win, COLOR_PAIR(pair));
+                    mvwaddnstr(win, row, x, code, code_len);
+                    wattroff(win, COLOR_PAIR(pair));
+                }
+                x += dw;
             }
         }
     }
 
     /* Pad remaining columns with diff background */
+    int pad_start = (x > 0) ? x : 0;
     wattron(win, COLOR_PAIR(pair));
-    for (int px = x; px < cols; px++)
+    for (int px = pad_start; px < cols; px++)
         mvwaddch(win, row, px, ' ');
     wattroff(win, COLOR_PAIR(pair));
 

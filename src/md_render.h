@@ -19,7 +19,7 @@ typedef struct {
     int         link_cap;
     /* Rendered lines cache (computed by md_render) */
     int         total_lines; /* total rendered lines (set after md_render) */
-    int         max_table_width; /* widest table in display columns (set by md_render) */
+    int         max_content_width; /* widest scrollable content in display columns (set by md_render) */
 } md_doc_t;
 
 /* Parse MD source into a document, extracting [text](uri) links.
@@ -31,6 +31,7 @@ void md_doc_free(md_doc_t *doc);
 
 /* Render document to an ncurses window.
  * scroll_y: vertical scroll offset (in rendered lines)
+ * scroll_x: horizontal scroll offset (used for tables and code blocks)
  * cursor_link: index into doc->links[] for the selected hyperlink (-1 = none)
  * focus: 1 = this pane has focus (cursor visible), 0 = no focus
  * Returns: total number of rendered lines */

@@ -44,7 +44,7 @@ typedef struct {
 int  is_diff_line(const char *line, int line_len);
 int  render_diff_line(WINDOW *win, int row, int col,
                       int diff_type, const char *text, int text_len,
-                      int cols, int hl_start, int hl_end);
+                      int cols, int scroll_x, int hl_start, int hl_end);
 void compute_char_diff(const char *a, int a_len,
                        const char *b, int b_len,
                        int *hl_start_a, int *hl_end_a,

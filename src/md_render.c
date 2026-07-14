@@ -709,7 +709,7 @@ static int render_segs_on_line_clipped(WINDOW *win, int row, int col,
  *   src: pointer to first '|' line of the table
  *   num_rows: number of table rows (pre-scanned)
  *   scroll_y: vertical scroll offset
- *   scroll_x: horizontal scroll offset (only used for tables)
+ *   scroll_x: horizontal scroll offset
  *   rows: window height
  *   cols: window width
  *   render_line: in/out — starts at current render line, ends after last table row
@@ -774,8 +774,8 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
         int tw = num_cols + 1;  /* pipe separators: one before each col + one at end */
         for (int ci = 0; ci < num_cols; ci++)
             tw += col_widths[ci] + 2;  /* cell content + 1 space padding each side */
-        if (doc && tw > doc->max_table_width)
-            doc->max_table_width = tw;
+        if (doc && tw > doc->max_content_width)
+            doc->max_content_width = tw;
     }
 
     /* Pass 2: render ALL table rows with consistent col_widths.
@@ -935,8 +935,7 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
 /*
  * Render document to an ncurses window.
  * scroll_y: vertical scroll offset (in rendered lines)
- * scroll_x: horizontal scroll offset (only used for table rendering;
- *           all other line types ignore horizontal scroll)
+ * scroll_x: horizontal scroll offset (used for tables and code blocks)
  * cursor_link: index into doc->links[] for the selected hyperlink (-1 = none)
  * focus: 1 = this pane has focus (cursor visible), 0 = no focus
  * Returns: total number of rendered lines
@@ -948,8 +947,8 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
     /* Reset deferred OSC 8 link list for this render cycle */
     md_osc8_count = 0;
 
-    /* Reset max table width -- recomputed by render_table() below */
-    doc->max_table_width = 0;
+    /* Reset max content width -- recomputed by render_table() and code blocks */
+    doc->max_content_width = 0;
 
     int rows = getmaxy(win);
     int cols = getmaxx(win);
@@ -1026,6 +1025,13 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int diff_type = 0;
             if (code_lang && strcmp(code_lang, "diff") == 0) {
                 diff_type = is_diff_line(line_buf, line_len);
+            }
+
+            /* Track diff line width for horizontal scroll limits */
+            if (diff_type != 0) {
+                int dw = utf8_display_len(line_buf, line_len);
+                if (doc && dw > doc->max_content_width)
+                    doc->max_content_width = dw;
             }
 
             if (diff_type != 0 && visible) {
@@ -1169,43 +1175,34 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                 /* Diff line: render with line number + colored background */
                 int lines_consumed = render_diff_line(
                     win, vis_line, 0, diff_type, line_buf, line_len,
-                    cols, hl_start, hl_end);
+                    cols, scroll_x, hl_start, hl_end);
                 if (lines_consumed > 1)
                     advance_render_line(&render_line, lines_consumed);
             } else if (diff_type != 0) {
                 /* Diff line but not visible — still counts as 1 line */
             } else {
-                /* Code block content: wrap at cols-2, render in cyan */
-                int usable = cols - 2;
-                if (usable < 10) usable = 10;
-                int remaining = (int)strlen(line_buf);
-                const char *wp = line_buf;
-                int first = 1;
-                int lines_consumed = 0;
-                while (remaining > 0) {
-                    int chunk = remaining > usable ? usable : remaining;
-                    /* Item 7: use shared word-boundary helper */
-                    if (chunk < remaining) {
-                        int min_pos = usable / 4;
-                        int last_space = find_word_boundary(wp, chunk, min_pos);
-                        if (last_space > 0) chunk = last_space + 1;
-                    }
-                    int vl = render_line - scroll_y;
-                    if (vl >= 0 && vl < rows) {
+                /* Code block content: render with horizontal scroll, cyan */
+                int code_len = (int)strlen(line_buf);
+                int code_dw = utf8_display_len(line_buf, code_len) + 2; /* +2 for left margin */
+                if (doc && code_dw > doc->max_content_width)
+                    doc->max_content_width = code_dw;
+                if (visible) {
+                    int sx = 2 - scroll_x;
+                    if (sx >= 0 && sx < cols) {
                         wattron(win, COLOR_PAIR(C_STREAM));
-                        mvwaddnstr(win, vl, first ? 2 : 4, wp, chunk);
+                        mvwaddnstr(win, vis_line, sx, line_buf, code_len);
                         wattroff(win, COLOR_PAIR(C_STREAM));
+                    } else if (sx < 0 && sx + code_dw - 2 > 0) {
+                        /* Partially scrolled off left edge — clip left side */
+                        int skip_cols = -sx;
+                        int byte_off = seg_col_to_byte(line_buf, code_len, skip_cols);
+                        int rem = code_len - byte_off;
+                        if (rem > 0) {
+                            wattron(win, COLOR_PAIR(C_STREAM));
+                            mvwaddnstr(win, vis_line, 0, line_buf + byte_off, rem);
+                            wattroff(win, COLOR_PAIR(C_STREAM));
+                        }
                     }
-                    wp += chunk;
-                    remaining -= chunk;
-                    lines_consumed++;
-                    first = 0;
-                    /* Advance render_line for continuation chunks so
-                     * each wrapped segment renders on its own row.
-                     * Without this, all chunks render at the same row
-                     * and overwrite each other — only the last chunk
-                     * was visible, making wrapping appear broken. */
-                    if (remaining > 0) render_line++;
                 }
             }
 
