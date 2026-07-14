@@ -59,7 +59,9 @@ typedef struct {
 } react_runtime_t;
 
 typedef struct {
-    provider_t   *provider;  /* [INIT-ONLY] provider abstraction */
+    provider_t   *provider;  /* [INIT-ONLY] default/worker provider */
+    provider_t   *planner_provider;    /* [INIT-ONLY] planning steps (step 0). NULL = use provider */
+    provider_t   *reflection_provider; /* [INIT-ONLY] post-task reflection. NULL = use provider */
     tool_ctx_t   *tools;     /* [INIT-ONLY] tool context */
     int           max_steps; /* [INIT-ONLY] max react loop iterations */
     int           verbose;   /* [INIT-ONLY] verbosity level */

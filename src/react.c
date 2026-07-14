@@ -824,15 +824,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
         int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
 
+        /* Role-based provider routing: use planner_provider for step 0,
+         * otherwise use the default (worker) provider.
+         * The active_provider is a local — ctx->provider remains the primary
+         * for all sizing/config reads (context_size, model_id, etc.). */
+        provider_t *active_provider = ctx->provider;
+        if (step == 0 && ctx->planner_provider)
+            active_provider = ctx->planner_provider;
+
         /* Propagate tool filter so provider builds schema with only allowed tools */
-        ctx->provider->tool_filter = &ctx->tools->tool_filter;
+        active_provider->tool_filter = &ctx->tools->tool_filter;
         /* Copy runtime thinking state to provider->cfg just before the
          * provider call.  This is the ONLY place cfg.enable_thinking and
          * cfg.thinking_budget are written during the loop — safe because
          * no other thread reads them between here and provider_complete_stream(). */
-        ctx->provider->cfg.enable_thinking = ctx->rt.enable_thinking;
-        ctx->provider->cfg.thinking_budget = ctx->rt.thinking_budget;
-        char *response = provider_complete_stream(ctx->provider, chat, &stats,
+        active_provider->cfg.enable_thinking = ctx->rt.enable_thinking;
+        active_provider->cfg.thinking_budget = ctx->rt.thinking_budget;
+        char *response = provider_complete_stream(active_provider, chat, &stats,
                 on_event ? react_stream_token_cb : NULL, &sctx,
                 max_resp, rep_thresh,
                 on_event ? react_progress_cb : NULL, &sctx);

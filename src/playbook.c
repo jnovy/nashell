@@ -882,8 +882,13 @@ void *playbook_worker(void *arg) {
                            ? pb->react_defaults.max_steps
                            : pa->cfg->max_react_steps);
 
+        /* Use consolidation provider for dream playbooks if configured */
+        provider_t *pass_provider = pa->provider;
+        if (pa->consolidation_provider && pb->name && strcmp(pb->name, "dream") == 0)
+            pass_provider = pa->consolidation_provider;
+
         react_ctx_t pass_react = {
-            .provider = pa->provider,
+            .provider = pass_provider,
             .tools = &pass_tools,
             .max_steps = max_steps,
             .verbose = 1,

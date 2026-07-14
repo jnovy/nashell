@@ -99,6 +99,7 @@ typedef struct {
     char            *workspace_override; /* agent workspace -- overrides cfg->workspace for session routing */
     workspace_t     *agent_ws;          /* agent workspace -- two-layer memory for agent runs */
     provider_t      *provider;
+    provider_t      *consolidation_provider; /* [routing].consolidation — NULL = use provider */
     char            *server_model;
     ui_state_t      *ui;
     /* State */

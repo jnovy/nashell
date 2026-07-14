@@ -33,6 +33,7 @@ typedef struct {
     ui_state_t   *ui;
     journal_t   **journal;         /* /fork replaces journal */
     provider_t   *provider;
+    provider_t   *consolidation_provider; /* [routing].consolidation — NULL = use provider */
     config_t     *cfg;
     store_t      *store;           /* shared_store */
     memory_t     *memory;

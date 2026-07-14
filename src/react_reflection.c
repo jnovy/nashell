@@ -329,18 +329,23 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                   "class of failure? Store 1-3 causal lessons via memory_store, or "
                   "call done if none.");
 
+        /* Role-based provider routing: use reflection_provider if configured,
+         * otherwise fall back to the default (worker) provider. */
+        provider_t *refl_provider = ctx->reflection_provider
+                                    ? ctx->reflection_provider : ctx->provider;
+
         /* Disable thinking mode for reflection — it's a lightweight
          * extraction task that doesn't need chain-of-thought. Without this,
          * thinking mode leaks from the main task into reflection. */
-        int saved_thinking = ctx->provider->cfg.enable_thinking;
-        ctx->provider->cfg.enable_thinking = 0;
+        int saved_thinking = refl_provider->cfg.enable_thinking;
+        refl_provider->cfg.enable_thinking = 0;
 
         /* Mini react loop for reflection (max 4 steps) */
         for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
             llm_stats_t rstats = {0};
             int max_resp = ctx->tools->cfg ? ctx->tools->cfg->llm_max_response : 10*1024*1024;
             int rep_thresh = ctx->tools->cfg ? ctx->tools->cfg->llm_repeat_threshold : 100;
-            char *rresp = provider_complete_stream(ctx->provider, reflect, &rstats,
+            char *rresp = provider_complete_stream(refl_provider, reflect, &rstats,
                     NULL, NULL, max_resp, rep_thresh, NULL, NULL);
             if (!rresp) break;
 
@@ -430,7 +435,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         llm_chat_free(reflect);
 
         /* Restore thinking mode after reflection */
-        ctx->provider->cfg.enable_thinking = saved_thinking;
+        refl_provider->cfg.enable_thinking = saved_thinking;
     }
 
     /* No automatic scratchpad-to-memory promotion — it caused memory pollution

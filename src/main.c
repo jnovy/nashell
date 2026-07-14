@@ -278,6 +278,60 @@ static void *infer_worker(void *arg) {
 /* session_idx is set after session_init_tools by the caller or globally */
 static session_index_t *g_session_idx = NULL;
 
+/* Role-based provider routing — file-scope statics so cleanup_globals can free them.
+ * NULL = not configured (use default provider for that role). */
+static provider_t *g_planner_provider = NULL;
+static provider_t *g_reflection_provider = NULL;
+static provider_t *g_consolidation_provider = NULL;
+
+/* Create a provider_t from a named [routing] role.
+ * Looks up the role_name in cfg->named_providers, builds a provider_config_t
+ * from its TOML config + global sampling settings, and returns provider_create().
+ * Returns NULL if role_name is NULL or creation fails. */
+static provider_t *create_role_provider(const config_t *cfg,
+                                        const char *role_name,
+                                        const char *role_label) {
+    if (!role_name) return NULL;
+
+    const named_provider_t *np = config_find_provider(cfg, role_name);
+    if (!np) {
+        fprintf(stderr, "[routing] %s provider '%s' not found in [providers.*]\n",
+                role_label, role_name);
+        return NULL;
+    }
+
+    provider_config_t pcfg = {
+        .type           = provider_type_from_str(np->config.type),
+        .model_id       = np->config.model_id,
+        .api_base       = np->config.api_base,
+        .api_key_env    = np->config.api_key_env,
+        .project_id     = np->config.project_id,
+        .region         = np->config.region,
+        .context_size   = np->config.context_size,
+        .chars_per_token = np->config.chars_per_token,
+        .caching        = np->config.caching,
+        .max_tokens     = cfg->max_tokens,
+        .temperature    = cfg->temperature,
+        .top_p          = cfg->top_p,
+        .top_k          = cfg->top_k,
+        .enable_thinking = 0,
+        .thinking_budget = -1,
+        .llm_timeout     = cfg->llm_timeout,
+        .max_retries     = cfg->provider_max_retries,
+        .retry_base_sec  = cfg->provider_retry_base,
+    };
+    provider_t *p = provider_create(&pcfg);
+    if (!p) {
+        fprintf(stderr, "[routing] failed to create %s provider '%s'\n",
+                role_label, role_name);
+        return NULL;
+    }
+    nash_log("[routing] %s = %s (%s, %s)",
+             role_label, role_name, np->config.type,
+             np->config.model_id ? np->config.model_id : "auto");
+    return p;
+}
+
 static void session_init_tools(tool_ctx_t *tools, store_t *store,
                                journal_t *journal, memory_t *memory,
                                workspace_t *ws,
@@ -304,9 +358,13 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
 }
 
 static void session_init_react(react_ctx_t *react, provider_t *provider,
+                               provider_t *planner_provider,
+                               provider_t *reflection_provider,
                                tool_ctx_t *tools, config_t *cfg) {
     memset(react, 0, sizeof(*react));
     react->provider = provider;
+    react->planner_provider = planner_provider;
+    react->reflection_provider = reflection_provider;
     react->tools = tools;
     react->max_steps = cfg->max_react_steps;
     react->verbose = 1;
@@ -350,6 +408,16 @@ static void cleanup_globals(store_t *shared_store, workspace_t *ws,
     g_session_idx = NULL;
     store_free(shared_store);
     workspace_free(ws);
+    /* Free role providers (if different from main provider) */
+    if (g_planner_provider && g_planner_provider != provider)
+        provider_free(g_planner_provider);
+    if (g_reflection_provider && g_reflection_provider != provider)
+        provider_free(g_reflection_provider);
+    if (g_consolidation_provider && g_consolidation_provider != provider)
+        provider_free(g_consolidation_provider);
+    g_planner_provider = NULL;
+    g_reflection_provider = NULL;
+    g_consolidation_provider = NULL;
     provider_free(provider);
     free(nash_dir);
     free(props_json);
@@ -735,9 +803,46 @@ int main(int argc, char **argv) {
 
     /* llm_config_t removed — provider_t is the single source of truth. */
 
+    /* ── Role-based provider routing ──
+     * Create separate providers for planner/reflection/consolidation roles
+     * if configured in [routing]. Skip if the role points to the same
+     * named provider as [routing].default (avoid duplicate provider_t). */
+    {
+        const char *def = cfg->routing.default_provider;
+        if (cfg->routing.planner && (!def || strcmp(cfg->routing.planner, def) != 0))
+            g_planner_provider = create_role_provider(cfg, cfg->routing.planner, "planner");
+        if (cfg->routing.worker && def && strcmp(cfg->routing.worker, def) != 0)
+            fprintf(stderr, "[routing] worker = %s (overrides default for execution steps)\n",
+                    cfg->routing.worker);
+        if (cfg->routing.reflection && (!def || strcmp(cfg->routing.reflection, def) != 0))
+            g_reflection_provider = create_role_provider(cfg, cfg->routing.reflection, "reflection");
+        if (cfg->routing.consolidation && (!def || strcmp(cfg->routing.consolidation, def) != 0))
+            g_consolidation_provider = create_role_provider(cfg, cfg->routing.consolidation, "consolidation");
+    }
+
+    /* If [routing].worker differs from default, it IS the main provider.
+     * Swap: create worker provider, move original to planner if no explicit planner. */
+    if (cfg->routing.worker && cfg->routing.default_provider &&
+        strcmp(cfg->routing.worker, cfg->routing.default_provider) != 0) {
+        provider_t *worker_provider = create_role_provider(cfg, cfg->routing.worker, "worker");
+        if (worker_provider) {
+            if (!g_planner_provider)
+                g_planner_provider = provider;  /* old default becomes planner */
+            else
+                provider_free(provider);      /* explicit planner exists, free old default */
+            provider = worker_provider;       /* worker becomes the main provider */
+        }
+    }
+
     /* ── Spec mode: dump resolved config and exit ── */
     if (spec_mode) {
         config_dump_spec(cfg, stdout, matched_profile_file);
+        if (g_planner_provider && g_planner_provider != provider)
+            provider_free(g_planner_provider);
+        if (g_reflection_provider && g_reflection_provider != provider)
+            provider_free(g_reflection_provider);
+        if (g_consolidation_provider && g_consolidation_provider != provider)
+            provider_free(g_consolidation_provider);
         provider_free(provider);
         free(nash_dir);
         free(props_json);
@@ -1104,6 +1209,7 @@ int main(int argc, char **argv) {
             .memory = memory,
             .cfg = cfg,
             .provider = provider,
+            .consolidation_provider = g_consolidation_provider,
             .server_model = server_model,
             .ui = NULL,  /* headless — no TUI */
             .playbook_ok = 0,
@@ -1301,7 +1407,7 @@ int main(int argc, char **argv) {
             s->journal = journal_new(s->session_dir);
             session_init_tools(&s->tools, shared_store, s->journal, s->mem,
                                s->ws, s->session_dir, cfg, provider);
-            session_init_react(&s->react, provider, &s->tools, cfg);
+            session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
             s->active = 1;
             ws_pool_count = 1;
             fprintf(stderr, "[daemon] default session: %s (workspace: %s)\n",
@@ -1334,7 +1440,7 @@ int main(int argc, char **argv) {
                         session_init_tools(&s->tools, shared_store, s->journal,
                                            s->mem, s->ws, s->session_dir,
                                            cfg, provider);
-                        session_init_react(&s->react, provider, &s->tools, cfg);
+                        session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
                         fprintf(stderr, "[daemon] reset slot '%s': %s\n",
                                 s->name ? s->name : "global", s->session_dir);
                     }
@@ -1381,7 +1487,7 @@ int main(int argc, char **argv) {
                         session_init_tools(&s->tools, shared_store, s->journal,
                                            s->mem, s->ws, s->session_dir,
                                            cfg, provider);
-                        session_init_react(&s->react, provider, &s->tools, cfg);
+                        session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
                     }
                 }
             }
@@ -1423,7 +1529,7 @@ int main(int argc, char **argv) {
                 session_init_tools(&s->tools, shared_store, s->journal,
                                    s->mem, s->ws, s->session_dir,
                                    cfg, provider);
-                session_init_react(&s->react, provider, &s->tools, cfg);
+                session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
                 s->active = 1;
                 ws_pool_count++;
                 slot = s;
@@ -1551,7 +1657,7 @@ int main(int argc, char **argv) {
         session_init_tools(&tools, shared_store, journal, memory,
                            ws, session_dir, cfg, provider);
         react_ctx_t react;
-        session_init_react(&react, provider, &tools, cfg);
+        session_init_react(&react, provider, g_planner_provider, g_reflection_provider, &tools, cfg);
 
         /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
         char *result;
@@ -1645,7 +1751,7 @@ int main(int argc, char **argv) {
         session_init_tools(&tools, shared_store, journal, memory,
                            ws, session_dir, cfg, provider);
         react_ctx_t react;
-        session_init_react(&react, provider, &tools, cfg);
+        session_init_react(&react, provider, g_planner_provider, g_reflection_provider, &tools, cfg);
 
         /* Initialize logging subsystem for TUI error routing */
         nash_log_init(journal, shared_store);
@@ -1937,6 +2043,7 @@ int main(int argc, char **argv) {
                         .ui           = ui,
                         .journal      = &journal,
                         .provider     = provider,
+                        .consolidation_provider = g_consolidation_provider,
                         .cfg          = cfg,
                         .store        = shared_store,
                         .memory       = memory,
