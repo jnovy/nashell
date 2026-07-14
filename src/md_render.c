@@ -93,6 +93,51 @@ static void copy_to_buf(char *buf, size_t buf_size, const char *src, int len) {
     buf[copy_len] = '\0';
 }
 
+/* Expand tab characters to spaces in-place (8-column tab stops).
+ * buf must have at least buf_size bytes.  Returns new string length.
+ * Tab expansion is critical for code blocks / diff lines: ncurses expands
+ * tabs to 8-column stops but our utf8_char_width counts a tab as 1 column,
+ * causing the column tracker to undercount.  The padding loop then overwrites
+ * the rightmost characters with spaces. */
+static int expand_tabs(char *buf, int len, int buf_size) {
+    /* First pass: count expanded size to see if we need to expand */
+    int col = 0, has_tab = 0;
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == '\t') {
+            has_tab = 1;
+            col = (col + 8) & ~7;  /* next 8-col tab stop */
+        } else {
+            col++;
+        }
+    }
+    if (!has_tab) return len;
+
+    /* Expand into a temp buffer, then copy back */
+    int expanded_len = col;
+    if (expanded_len >= buf_size)
+        expanded_len = buf_size - 1;
+
+    char tmp[LINE_BUF_SIZE];
+    int out = 0;
+    col = 0;
+    for (int i = 0; i < len && out < (int)sizeof(tmp) - 1; i++) {
+        if (buf[i] == '\t') {
+            int next_stop = (col + 8) & ~7;
+            while (col < next_stop && out < (int)sizeof(tmp) - 1) {
+                tmp[out++] = ' ';
+                col++;
+            }
+        } else {
+            tmp[out++] = buf[i];
+            col++;
+        }
+    }
+    if (out >= buf_size) out = buf_size - 1;
+    memcpy(buf, tmp, out);
+    buf[out] = '\0';
+    return out;
+}
+
 /* Find the last space in [start, limit) that is at least min_pos.
  * Returns the byte index of the space, or -1 if none found.
  * Item 7: shared word-boundary helper for code block wrapping and render_segs_wrapped. */
@@ -1021,6 +1066,12 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         int is_link_line = (line_buf[0] == '[' && has_link);
 
         if (in_code_block) {
+            /* Expand tabs to spaces so column tracking matches ncurses.
+             * Without this, utf8_char_width counts tab as 1 column but
+             * ncurses renders it as 8, causing the background-padding loop
+             * to overwrite the rightmost characters on the line. */
+            line_len = expand_tabs(line_buf, line_len, sizeof(line_buf));
+
             /* Diff rendering only when ```diff fence was used */
             int diff_type = 0;
             if (code_lang && strcmp(code_lang, "diff") == 0) {
@@ -1088,6 +1139,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                         if (nl > 0) {
                             char pair_buf[LINE_BUF_SIZE];
                             copy_to_buf(pair_buf, sizeof(pair_buf), scan, nl);
+                            nl = expand_tabs(pair_buf, nl, sizeof(pair_buf));
                             if (is_diff_line(pair_buf, nl) == 1) {
                                 int a_len, b_len;
                                 const char *a = diff_content_after_marker(
@@ -1155,6 +1207,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
                             if (nl > 0) {
                                 char pair_buf[LINE_BUF_SIZE];
                                 copy_to_buf(pair_buf, sizeof(pair_buf), tp, nl);
+                                nl = expand_tabs(pair_buf, nl, sizeof(pair_buf));
                                 if (is_diff_line(pair_buf, nl) == -1) {
                                     int a_len, b_len;
                                     const char *a = diff_content_after_marker(
