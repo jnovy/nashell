@@ -34,7 +34,6 @@ static int toml_bl(toml_table_t *tbl, const char *key, int def) {
 }
 
 void config_set_defaults(config_t *cfg) {
-    if (!cfg->api_base)      cfg->api_base = strdup("http://localhost:8080");
     if (cfg->temperature < 0) cfg->temperature = 0.7f;
     if (cfg->top_p < 0)       cfg->top_p = 1.0f;       /* 1.0 = disabled (no nucleus filtering) */
     if (cfg->top_k < 0)       cfg->top_k = 0;           /* 0 = disabled (no top-k filtering) */
@@ -198,13 +197,16 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->workspace_global_recall == 0)
         cfg->workspace_global_recall = 1;
 
-    /* [provider] env var fallbacks for Vertex AI / Anthropic.
-     * When provider type is "vertex" or "anthropic" and a config field is
-     * unset, fall back to well-known environment variables (same ones used
-     * by Claude Code / Anthropic SDK). Config always takes priority. */
-    if (cfg->provider.type &&
-        (strcmp(cfg->provider.type, "vertex") == 0 ||
-         strcmp(cfg->provider.type, "anthropic") == 0)) {
+}
+
+/* Apply provider-type-specific env var defaults to cfg->provider.
+ * Call AFTER populating cfg->provider from config_resolve_provider(). */
+void config_apply_provider_env_defaults(config_t *cfg) {
+    if (!cfg || !cfg->provider.type) return;
+
+    /* Vertex AI / Anthropic: fall back to well-known env vars */
+    if (strcmp(cfg->provider.type, "vertex") == 0 ||
+        strcmp(cfg->provider.type, "anthropic") == 0) {
         const char *env;
         if (!cfg->provider.region) {
             env = getenv("CLOUD_ML_REGION");
@@ -220,10 +222,8 @@ void config_set_defaults(config_t *cfg) {
         }
     }
 
-    /* [provider] env var fallbacks for OpenAI.
-     * OPENAI_API_KEY → api_key_env default, OPENAI_MODEL → model_id. */
-    if (cfg->provider.type &&
-        strcmp(cfg->provider.type, "openai") == 0) {
+    /* OpenAI: OPENAI_API_KEY -> api_key_env default, OPENAI_MODEL -> model_id */
+    if (strcmp(cfg->provider.type, "openai") == 0) {
         if (!cfg->provider.api_key_env) {
             cfg->provider.api_key_env = strdup("OPENAI_API_KEY");
         }
@@ -267,25 +267,43 @@ config_t *config_load(const char *path) {
         return cfg;
     }
 
-    /* [server] */
-    toml_table_t *server = toml_table_in(root, "server");
-    if (server) {
-        cfg->api_base = toml_str(server, "api_base");
-        if (cfg->api_base)
-            cfg->api_base_explicit = 1;  /* user explicitly set [server].api_base */
+    /* [providers.*] — named provider blocks (define once, reference by name) */
+    toml_table_t *providers_tbl = toml_table_in(root, "providers");
+    if (providers_tbl) {
+        int ntab = toml_table_ntab(providers_tbl);
+        if (ntab > 0) {
+            cfg->named_providers = calloc(ntab, sizeof(named_provider_t));
+            int idx = 0;
+            for (int i = 0; ; i++) {
+                const char *key = toml_key_in(providers_tbl, i);
+                if (!key) break;
+                toml_table_t *ptab = toml_table_in(providers_tbl, key);
+                if (!ptab) continue;  /* skip non-table entries */
+                named_provider_t *np = &cfg->named_providers[idx];
+                np->name                  = strdup(key);
+                np->config.type           = toml_str(ptab, "type");
+                np->config.model_id       = toml_str(ptab, "model_id");
+                np->config.api_base       = toml_str(ptab, "api_base");
+                np->config.api_key_env    = toml_str(ptab, "api_key_env");
+                np->config.project_id     = toml_str(ptab, "project_id");
+                np->config.region         = toml_str(ptab, "region");
+                np->config.context_size   = toml_int(ptab, "context_size", 0);
+                np->config.chars_per_token = (float)toml_dbl(ptab, "chars_per_token", 0);
+                np->config.caching        = toml_bl(ptab, "caching", 0);
+                idx++;
+            }
+            cfg->n_named_providers = idx;
+        }
     }
 
-    /* [provider] — multi-provider configuration (mirrors nashell config.yaml) */
-    toml_table_t *provider = toml_table_in(root, "provider");
-    if (provider) {
-        cfg->provider.type           = toml_str(provider, "type");
-        cfg->provider.model_id       = toml_str(provider, "model_id");
-        cfg->provider.api_key_env    = toml_str(provider, "api_key_env");
-        cfg->provider.project_id     = toml_str(provider, "project_id");
-        cfg->provider.region         = toml_str(provider, "region");
-        cfg->provider.context_size   = toml_int(provider, "context_size", 0);
-        cfg->provider.chars_per_token = (float)toml_dbl(provider, "chars_per_token", 0);
-        cfg->provider.caching        = toml_bl(provider, "caching", 0);
+    /* [routing] — which named provider to use for each role */
+    toml_table_t *routing_tbl = toml_table_in(root, "routing");
+    if (routing_tbl) {
+        cfg->routing.default_provider = toml_str(routing_tbl, "default");
+        cfg->routing.planner          = toml_str(routing_tbl, "planner");
+        cfg->routing.worker           = toml_str(routing_tbl, "worker");
+        cfg->routing.reflection       = toml_str(routing_tbl, "reflection");
+        cfg->routing.consolidation    = toml_str(routing_tbl, "consolidation");
     }
 
     /* [embedding] — semantic memory matching via vector embeddings */
@@ -538,12 +556,30 @@ config_t *config_load(const char *path) {
 
 void config_free(config_t *cfg) {
     if (!cfg) return;
-    free(cfg->api_base);
     free(cfg->provider.type);
     free(cfg->provider.model_id);
+    free(cfg->provider.api_base);
     free(cfg->provider.api_key_env);
     free(cfg->provider.project_id);
     free(cfg->provider.region);
+    /* [providers.*] named providers */
+    for (int i = 0; i < cfg->n_named_providers; i++) {
+        named_provider_t *np = &cfg->named_providers[i];
+        free(np->name);
+        free(np->config.type);
+        free(np->config.model_id);
+        free(np->config.api_base);
+        free(np->config.api_key_env);
+        free(np->config.project_id);
+        free(np->config.region);
+    }
+    free(cfg->named_providers);
+    /* [routing] */
+    free(cfg->routing.default_provider);
+    free(cfg->routing.planner);
+    free(cfg->routing.worker);
+    free(cfg->routing.reflection);
+    free(cfg->routing.consolidation);
     free(cfg->embedding.type);
     free(cfg->embedding.model);
     free(cfg->embedding.api_base);
@@ -575,6 +611,54 @@ void config_free(config_t *cfg) {
     }
     config_free_model_profiles(cfg);
     free(cfg);
+}
+
+/* ── Named provider lookup & resolution ── */
+
+const named_provider_t *config_find_provider(const config_t *cfg, const char *name) {
+    if (!cfg || !name) return NULL;
+    for (int i = 0; i < cfg->n_named_providers; i++) {
+        if (cfg->named_providers[i].name &&
+            strcmp(cfg->named_providers[i].name, name) == 0)
+            return &cfg->named_providers[i];
+    }
+    return NULL;
+}
+
+int config_resolve_provider(const config_t *cfg, const char *override_name,
+                            provider_config_toml_t *out) {
+    if (!cfg || !out) return -1;
+
+    const char *target_name = override_name;
+    if (!target_name)
+        target_name = cfg->routing.default_provider;
+
+    if (!target_name) {
+        fprintf(stderr, "[config] no provider configured. Define [providers.*] "
+                "blocks and set [routing].default in config.toml\n");
+        return -1;
+    }
+
+    if (cfg->n_named_providers == 0) {
+        fprintf(stderr, "[config] provider '%s' requested but no [providers.*] "
+                "blocks defined in config.toml\n", target_name);
+        return -1;
+    }
+
+    const named_provider_t *np = config_find_provider(cfg, target_name);
+    if (!np) {
+        fprintf(stderr, "[config] provider '%s' not found in [providers.*]\n",
+                target_name);
+        fprintf(stderr, "[config] available providers:");
+        for (int i = 0; i < cfg->n_named_providers; i++)
+            fprintf(stderr, " %s", cfg->named_providers[i].name);
+        fprintf(stderr, "\n");
+        return -1;
+    }
+
+    /* Copy the provider config (shallow -- caller must NOT free fields) */
+    *out = np->config;
+    return 0;
 }
 
 /* ── Model profiles ── */
@@ -1585,27 +1669,26 @@ int config_write_default(const char *path) {
         "# Nash configuration file\n"
         "# Copy to ~/.nash/config.toml and edit as needed\n"
         "\n"
-        "[server]\n"
-        "api_base = \"http://localhost:8080\"\n"
-        "\n"
-        "# Provider configuration — choose one:\n"
-        "#   local    = llama.cpp or any OpenAI-compatible server (default)\n"
+        "# Named providers — define all backends, switch with [routing].default\n"
+        "#   local    = llama.cpp or any OpenAI-compatible server\n"
         "#   openai   = OpenAI API (GPT-4o, GPT-5, etc.)\n"
         "#   anthropic = Anthropic API (Claude)\n"
         "#   vertex   = Anthropic via Google Vertex AI\n"
-        "# If [provider] is absent, defaults to local using [server].api_base\n"
-        "# NOTE: When [server].api_base is set, it takes priority over [provider]\n"
-        "# and forces local inference. Remove/comment [server].api_base to use\n"
-        "# a cloud provider.\n"
-        "[provider]\n"
+        "\n"
+        "[providers.local]\n"
         "type = \"local\"\n"
-        "# model_id = \"claude-opus-4-6\"       # model identifier for API\n"
-        "# api_key_env = \"OPENAI_API_KEY\"     # env var with API key\n"
-        "# project_id = \"my-gcp-project\"      # Vertex AI project\n"
-        "# region = \"global\"                # Vertex AI region\n"
-        "# context_size = 200000              # context window (0 = auto-detect)\n"
-        "# chars_per_token = 3.5              # chars per token ratio\n"
-        "# caching = false                    # prompt caching (Anthropic)\n"
+        "api_base = \"http://localhost:8080\"\n"
+        "\n"
+        "# [providers.vertex-opus]\n"
+        "# type = \"vertex\"\n"
+        "# model_id = \"claude-opus-4-6\"\n"
+        "# project_id = \"my-gcp-project\"\n"
+        "# region = \"global\"\n"
+        "# caching = true\n"
+        "\n"
+        "# Routing — which provider to use (change one line to switch)\n"
+        "[routing]\n"
+        "default = \"local\"\n"
         "\n"
         "[client]\n"
         "temperature = 0.7\n"

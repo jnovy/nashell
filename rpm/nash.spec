@@ -44,6 +44,7 @@ Requires:       leptonica
 
 # Bundled libraries (included in source, not linked from system)
 Provides:       bundled(cJSON) = 1.7.19
+Provides:       bundled(tomlc99)
 
 %description
 Nash is a fully autonomous coding agent implemented in C. It connects to any

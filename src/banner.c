@@ -74,12 +74,12 @@ char *build_banner_impl(const config_t *cfg, const char *props_json,
         str_append_cstr(&s, "\n");
     } else if (!props_json) {
         str_appendf(&s, "server: %s (props unavailable)\n\n",
-                    cfg->api_base ? cfg->api_base : "(none)");
+                    cfg->provider.api_base ? cfg->provider.api_base : "(none)");
     } else {
         cJSON *props = cJSON_Parse(props_json);
         if (!props) {
             str_appendf(&s, "server: %s (props parse error)\n\n",
-                        cfg->api_base ? cfg->api_base : "(none)");
+                        cfg->provider.api_base ? cfg->provider.api_base : "(none)");
         } else {
             cJSON *gs = cJSON_GetObjectItem(props, "default_generation_settings");
             cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
@@ -87,7 +87,7 @@ char *build_banner_impl(const config_t *cfg, const char *props_json,
             cJSON *mods = cJSON_GetObjectItem(props, "modalities");
             int n_ctx = (int)jnum(gs, "n_ctx", 0);
 
-            str_appendf(&s, "server: %s\n", cfg->api_base ? cfg->api_base : "(none)");
+            str_appendf(&s, "server: %s\n", cfg->provider.api_base ? cfg->provider.api_base : "(none)");
             str_appendf(&s, "  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
             str_appendf(&s, "  build:    %s\n", jstr(props, "build_info", "?"));
             str_appendf(&s, "  ctx:      %d tok (%dk) | slots: %d\n",

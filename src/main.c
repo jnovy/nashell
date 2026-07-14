@@ -398,16 +398,23 @@ int main(int argc, char **argv) {
     int agents_list = 0;                  /* --agent --list: show agent table */
     int agents_dry_run = 0;               /* --agent --dry-run: show what would run */
     const char *agents_force_id = NULL;    /* --agent --force ID: run specific agent */
+    const char *provider_name_arg = NULL;  /* --provider NAME: use named provider from [providers.*] */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
-            free(cfg->api_base);
-            cfg->api_base = strdup(argv[++i]);
-            cfg->api_base_explicit = 1;
-            /* --api forces local provider mode — override any [provider]
-             * section in config.toml. The user is pointing to a specific
-             * llama.cpp/OpenAI-compatible server, not a cloud API. */
-            free(cfg->provider.type);
-            cfg->provider.type = strdup("local");
+            /* --api URL: create an ad-hoc local provider and select it */
+            const char *url = argv[++i];
+            int n = cfg->n_named_providers;
+            cfg->named_providers = realloc(cfg->named_providers,
+                                           (n + 1) * sizeof(named_provider_t));
+            memset(&cfg->named_providers[n], 0, sizeof(named_provider_t));
+            cfg->named_providers[n].name = strdup("__cli_api");
+            cfg->named_providers[n].config.type = strdup("local");
+            cfg->named_providers[n].config.api_base = strdup(url);
+            cfg->n_named_providers = n + 1;
+            free(cfg->routing.default_provider);
+            cfg->routing.default_provider = strdup("__cli_api");
+        } else if (strcmp(argv[i], "--provider") == 0 && i + 1 < argc) {
+            provider_name_arg = argv[++i];
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc) {
             query = argv[++i];
         } else if (strcmp(argv[i], "--play") == 0 && i + 1 < argc) {
@@ -478,7 +485,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
-            printf("  --api URL       LLM server URL (default: %s)\n", cfg->api_base);
+            printf("  --api URL       LLM server URL (creates ad-hoc local provider)\n");
+            printf("  --provider NAME Use named provider from [providers.*] in config\n");
             printf("  -p QUERY        Run single query and exit (headless mode)\n");
             printf("  --play NAME     Run a playbook and exit (e.g. --play dream)\n");
             printf("  --data-dir PATH Data directory (default: ~/.nash/)\n");
@@ -605,22 +613,44 @@ int main(int argc, char **argv) {
     }
 
     /* ── Create provider from config ── */
-    /* When [server].api_base is explicitly set, prefer local inference
-     * over any [provider] configuration. The user is pointing to a
-     * specific local server — honor that over cloud provider settings. */
-    if (cfg->api_base_explicit && cfg->provider.type &&
-        strcmp(cfg->provider.type, "local") != 0) {
-        nash_log("[config] [server].api_base is set (%s) — "
-                 "overriding [provider].type '%s' → 'local'",
-                 cfg->api_base, cfg->provider.type);
-        free(cfg->provider.type);
-        cfg->provider.type = strdup("local");
+    /* Resolve which provider to use:
+     * 1. --provider NAME (CLI override) -> named provider
+     * 2. [routing].default -> named provider */
+    provider_config_toml_t resolved_prov = {0};
+    if (config_resolve_provider(cfg, provider_name_arg, &resolved_prov) != 0) {
+        fprintf(stderr, "nash: failed to resolve provider configuration\n");
+        free(nash_dir);
+        config_free(cfg);
+        return 1;
+    }
+
+    /* Deep-copy resolved provider into cfg->provider (owned strings).
+     * This populates the "resolved provider snapshot" that banner.c,
+     * react.c, config_dump_spec, etc. all read from. */
+    cfg->provider.type           = resolved_prov.type ? strdup(resolved_prov.type) : NULL;
+    cfg->provider.model_id       = resolved_prov.model_id ? strdup(resolved_prov.model_id) : NULL;
+    cfg->provider.api_base       = resolved_prov.api_base ? strdup(resolved_prov.api_base) : NULL;
+    cfg->provider.api_key_env    = resolved_prov.api_key_env ? strdup(resolved_prov.api_key_env) : NULL;
+    cfg->provider.project_id     = resolved_prov.project_id ? strdup(resolved_prov.project_id) : NULL;
+    cfg->provider.region         = resolved_prov.region ? strdup(resolved_prov.region) : NULL;
+    cfg->provider.context_size   = resolved_prov.context_size;
+    cfg->provider.chars_per_token = resolved_prov.chars_per_token;
+    cfg->provider.caching        = resolved_prov.caching;
+
+    /* Apply provider-type-specific env var defaults (Vertex, OpenAI, etc.) */
+    config_apply_provider_env_defaults(cfg);
+
+    /* Log which provider we resolved */
+    if (provider_name_arg) {
+        nash_log("[config] --provider %s", provider_name_arg);
+    } else if (cfg->routing.default_provider) {
+        nash_log("[config] [routing].default = %s", cfg->routing.default_provider);
     }
 
     provider_config_t pcfg = {
         .type           = provider_type_from_str(cfg->provider.type),
         .model_id       = cfg->provider.model_id,
-        .api_base       = cfg->api_base,
+        .api_base       = cfg->provider.api_base,
         .api_key_env    = cfg->provider.api_key_env,
         .project_id     = cfg->provider.project_id,
         .region         = cfg->provider.region,
@@ -648,18 +678,16 @@ int main(int argc, char **argv) {
         provider->fetch_model_info(provider, &context_size, &server_model, &props_json);
     } else if (pcfg.type == PROVIDER_LOCAL) {
         /* Fallback for local without provider vtable */
-        context_size = llm_fetch_context_size(cfg->api_base);
-        server_model = llm_fetch_model_name(cfg->api_base);
-        props_json = llm_fetch_props_json(cfg->api_base);
+        context_size = llm_fetch_context_size(cfg->provider.api_base);
+        server_model = llm_fetch_model_name(cfg->provider.api_base);
+        props_json = llm_fetch_props_json(cfg->provider.api_base);
     } else {
         /* API providers: use config values, with sensible defaults */
         context_size = cfg->provider.context_size;
         server_model = cfg->provider.model_id ? strdup(cfg->provider.model_id) : NULL;
 
-        /* BUG FIX: Cloud providers (Vertex, Anthropic, OpenAI) have no /props
-         * endpoint to auto-detect context_size. Without a default, context_size
-         * stays 0 and context eviction never triggers — causing unbounded
-         * context growth until the API rejects with HTTP 400. */
+        /* Cloud providers have no /props endpoint to auto-detect context_size.
+         * Without a default, context eviction never triggers. */
         if (context_size == 0) {
             if (pcfg.type == PROVIDER_VERTEX || pcfg.type == PROVIDER_ANTHROPIC)
                 context_size = 200000;  /* Claude models: 200K tokens */
@@ -941,7 +969,7 @@ int main(int argc, char **argv) {
                 provider_config_t rpcfg = {
                     .type           = provider_type_from_str(ptype),
                     .model_id       = rmodel,
-                    .api_base       = cfg->api_base,
+                    .api_base       = cfg->provider.api_base,
                     .api_key_env    = cfg->provider.api_key_env,
                     .project_id     = cfg->provider.project_id,
                     .region         = cfg->provider.region,

@@ -222,7 +222,9 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 agent_schedule_t parsed_sched;
                 memset(&parsed_sched, 0, sizeof(parsed_sched));
                 int has_schedule = 0;
-                if (sched_str && sched_str[0]) {
+                if (sched_str && sched_str[0] &&
+                    strcmp(sched_str, "manual") != 0 &&
+                    strcmp(sched_str, "none") != 0) {
                     if (agent_parse_schedule(sched_str, &parsed_sched) != 0) {
                         fprintf(stderr, "[agent] warning: bad schedule '%s' in %s\n",
                                 sched_str, yaml_path);

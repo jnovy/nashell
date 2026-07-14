@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     char  *type;             /* "local", "openai", "anthropic", "vertex" */
     char  *model_id;         /* model identifier for API calls */
+    char  *api_base;         /* base URL (local server or API endpoint) */
     char  *api_key_env;      /* env var name for API key */
     char  *project_id;       /* Vertex AI project ID */
     char  *region;           /* Vertex AI region (e.g. "us-east5") */
@@ -30,6 +31,23 @@ typedef struct {
     float  chars_per_token;  /* chars per token ratio (default 3.5) */
     int    caching;          /* enable prompt caching (Anthropic) */
 } provider_config_toml_t;
+
+/* Named provider — define once in [providers.*], reference by name */
+typedef struct {
+    char                  *name;    /* provider name (e.g. "local-linux", "vertex-opus") */
+    provider_config_toml_t config;  /* provider configuration */
+} named_provider_t;
+
+/* Routing configuration — which named provider to use for each role.
+ * Values are provider names referencing [providers.<name>] blocks.
+ * NULL = use default provider. */
+typedef struct {
+    char *default_provider;  /* name of default provider (required if [providers.*] exist) */
+    char *planner;           /* planning steps (step 0, replan) — NULL = use default */
+    char *worker;            /* execution steps — NULL = use default */
+    char *reflection;        /* post-task reflection — NULL = use default */
+    char *consolidation;     /* memory consolidation — NULL = use default */
+} routing_config_t;
 
 /* Belief Entropy configuration — forward-looking memory quality signal.
  * Based on MMPO [arXiv:2605.30159]: ℋ_BE(m_t) = H(y | m_t, q) measures
@@ -148,14 +166,17 @@ typedef struct {
 } model_profile_t;
 
 typedef struct {
-    /* [server] — kept for backward compatibility.
-     * When api_base is explicitly set in config.toml, it takes priority
-     * over [provider] and forces local inference. */
-    char  *api_base;
-    int    api_base_explicit;  /* 1 = user set [server].api_base in config */
-
-    /* [provider] — new multi-provider config */
+    /* Resolved provider snapshot — populated from [providers.*] + [routing]
+     * after config_resolve_provider() in main.c.  Deep-copied (owned strings)
+     * so config_free(), config_load_spec_overlay(), etc. can manage them. */
     provider_config_toml_t provider;
+
+    /* [providers.*] — named provider blocks (define once, reference by name) */
+    named_provider_t *named_providers;
+    int               n_named_providers;
+
+    /* [routing] — which named provider to use for each role */
+    routing_config_t  routing;
 
     /* [embedding] — semantic memory matching */
     embedding_config_t embedding;
@@ -435,6 +456,10 @@ void config_free_model_profiles(config_t *cfg);
  * Call after config_match_model() finds the best profile. */
 void config_apply_profile(config_t *cfg, const model_profile_t *profile);
 
+/* Apply provider-type-specific env var defaults to cfg->provider.
+ * Call AFTER populating cfg->provider from config_resolve_provider(). */
+void config_apply_provider_env_defaults(config_t *cfg);
+
 /* Dump the fully-resolved spec as TOML to the given file descriptor.
  * Serializes config_t after all layers (defaults + config.toml + profile)
  * have been applied. If profile_file is non-NULL, includes it in header. */
@@ -450,5 +475,18 @@ int config_load_spec_overlay(config_t *cfg, const char *path);
 /* Dump the fully-resolved spec as a heap-allocated TOML string.
  * Caller must free() the returned string.  Returns NULL on failure. */
 char *config_dump_spec_to_string(const config_t *cfg, const char *profile_file);
+
+/* Look up a named provider by name in cfg->named_providers.
+ * Returns pointer into the array, or NULL if not found. */
+const named_provider_t *config_find_provider(const config_t *cfg, const char *name);
+
+/* Resolve the active provider config from named providers + routing.
+ * If override_name is non-NULL, looks up that named provider.
+ * Else if [routing].default is set, uses that.
+ * Else returns error -- [providers.*] and [routing] are required.
+ * Populates 'out' with a shallow copy of the resolved provider_config_toml_t.
+ * Returns 0 on success, -1 on error (e.g. named provider not found). */
+int config_resolve_provider(const config_t *cfg, const char *override_name,
+                            provider_config_toml_t *out);
 
 #endif
