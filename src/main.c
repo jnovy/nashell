@@ -831,6 +831,13 @@ int main(int argc, char **argv) {
             else
                 provider_free(provider);      /* explicit planner exists, free old default */
             provider = worker_provider;       /* worker becomes the main provider */
+
+            /* Update server_model to reflect the actual running model.
+             * Without this, status bar / memory / workspace all show the
+             * original default model instead of the worker model. */
+            free(server_model);
+            server_model = worker_provider->cfg.model_id
+                         ? strdup(worker_provider->cfg.model_id) : NULL;
         }
     }
 
