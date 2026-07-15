@@ -102,7 +102,7 @@ static const char *get_vertex_token(provider_t *p) {
         long remaining = 15000 - elapsed_ms;
         if (remaining <= 0) {
             nash_log("[provider/vertex] gcloud auth timed out after 15s");
-            kill(pid, SIGKILL);
+            kill(-pid, SIGKILL);   /* negative pid = entire process group */
             break;
         }
         int pr = poll(&pfd, 1, remaining > 200 ? 200 : (int)remaining);

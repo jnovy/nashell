@@ -111,7 +111,7 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     }
     close(pipefd[0]);
 
-    if (timed_out) kill(pid, SIGKILL);
+    if (timed_out) kill(-pid, SIGKILL);   /* negative pid = entire process group */
     int status;
     waitpid(pid, &status, 0);
 
@@ -334,7 +334,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     close(pipefd[0]);
 
     /* Kill find if we hit the line limit */
-    if (line_count >= 200) kill(pid, SIGKILL);
+    if (line_count >= 200) kill(-pid, SIGKILL);   /* negative pid = entire process group */
     int status;
     waitpid(pid, &status, 0);
 

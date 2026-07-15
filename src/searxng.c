@@ -51,7 +51,7 @@ static int run_container_cmd(const char *runtime, const char *action, const char
         double elapsed = (now.tv_sec - start.tv_sec) +
                          (now.tv_nsec - start.tv_nsec) / 1e9;
         if (elapsed > 30.0) {
-            kill(pid, SIGKILL);
+            kill(-pid, SIGKILL);   /* negative pid = entire process group */
             waitpid(pid, &status, 0);
             return -1;
         }

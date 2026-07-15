@@ -46,7 +46,7 @@ int memory_git_run(memory_t *m, const char *const argv[]) {
         double elapsed = (now.tv_sec - start.tv_sec) +
                          (now.tv_nsec - start.tv_nsec) / 1e9;
         if (elapsed > 30.0) {
-            kill(pid, SIGKILL);
+            kill(-pid, SIGKILL);   /* negative pid = entire process group */
             waitpid(pid, &status, 0);
             return -1;
         }
