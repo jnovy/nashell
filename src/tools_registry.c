@@ -12,7 +12,7 @@ const tool_def_t TOOL_REGISTRY[] = {
      "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
      "Re-analyze stored output (grep/head/tail on the ref) instead of "
      "re-running the command. Do not file_write to ref paths.",
-     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"}},\"required\":[\"command\"]}"},
+     "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"Shell command\"},\"timeout\":{\"type\":\"integer\",\"description\":\"Timeout in seconds (default: 30)\"}},\"required\":[\"command\"]}"},
 
     {"file_read",
      "Read contents of a file. Supports line ranges to avoid reading entire large files. "

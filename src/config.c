@@ -45,7 +45,7 @@ void config_set_defaults(config_t *cfg) {
      * so we use -1 as sentinel in TOML parsing and check <= 0 here
      * only for fields where 0 is NOT a valid user value.
      * For timeout/size fields where 0 = "no limit", we check == -1 only. */
-    if (cfg->shell_timeout == -1)       cfg->shell_timeout = 300;
+    if (cfg->shell_timeout == -1)       cfg->shell_timeout = 30;
     if (cfg->shell_max_output <= 0)     cfg->shell_max_output = 512000;
     if (cfg->file_max_size <= 0)        cfg->file_max_size = 52428800;
     if (cfg->grep_timeout == -1)        cfg->grep_timeout = 60;
@@ -1724,7 +1724,7 @@ int config_write_default(const char *path) {
         "\n"
         "[limits]\n"
         "# Shell command execution\n"
-        "shell_timeout = 300          # max seconds for shell_exec (0 = no limit)\n"
+        "shell_timeout = 30           # max seconds for shell_exec (0 = no limit)\n"
         "shell_max_output = 512000    # max bytes of shell output (500KB)\n"
         "\n"
         "# File operations\n"
