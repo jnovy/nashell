@@ -14,6 +14,7 @@
  */
 
 #include "provider.h"
+#include "subprocess.h"
 #include "nash_limits.h"
 #include "str.h"
 #include "cJSON.h"
@@ -25,9 +26,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/wait.h>
-#include <fcntl.h>
-#include <poll.h>
 
 /* Default fallback model when none configured */
 #define ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
@@ -57,84 +55,31 @@ static const char *get_vertex_token(provider_t *p) {
         return p->_cached_auth_token;
     }
 
-    /* Get fresh token via fork/exec with timeout */
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
-        nash_log("[provider/vertex] pipe failed for gcloud auth");
+    /* Get fresh token via subprocess with 15s timeout */
+    char *const argv[] = {"gcloud", "auth", "print-access-token", NULL};
+    str_t out = str_new(256);
+    subprocess_result_t r = subprocess_run(argv, NULL, 15, 4096, 0, 0, &out);
+
+    if (r.timed_out) {
+        nash_log("[provider/vertex] gcloud auth timed out after 15s");
+        str_free(&out);
         return NULL;
     }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(pipefd[0]); close(pipefd[1]);
-        nash_log("[provider/vertex] fork failed for gcloud auth");
-        return NULL;
-    }
-    if (pid == 0) {
-        /* Child: redirect stdout to pipe, stderr to /dev/null, stdin from /dev/null */
-        setsid();
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-        execlp("gcloud", "gcloud", "auth", "print-access-token", (char *)NULL);
-        _exit(127);
-    }
-    close(pipefd[1]);
-
-    /* Read token with 15 second timeout */
-    char token[NASH_PATH_MAX];
-    int token_len = 0;
-    struct timespec ts_start;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
-    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
-
-    while (token_len < (int)sizeof(token) - 1) {
-        struct timespec ts_now;
-        clock_gettime(CLOCK_MONOTONIC, &ts_now);
-        long elapsed_ms = (ts_now.tv_sec - ts_start.tv_sec) * 1000
-                        + (ts_now.tv_nsec - ts_start.tv_nsec) / 1000000;
-        long remaining = 15000 - elapsed_ms;
-        if (remaining <= 0) {
-            nash_log("[provider/vertex] gcloud auth timed out after 15s");
-            kill(-pid, SIGKILL);   /* negative pid = entire process group */
-            break;
-        }
-        int pr = poll(&pfd, 1, remaining > 200 ? 200 : (int)remaining);
-        if (pr > 0) {
-            ssize_t n = read(pipefd[0], token + token_len,
-                             sizeof(token) - 1 - (size_t)token_len);
-            if (n <= 0) break;
-            token_len += (int)n;
-        } else if (pr == 0) {
-            continue;  /* poll timeout — check elapsed */
-        } else {
-            break;
-        }
-    }
-    close(pipefd[0]);
-    int status;
-    waitpid(pid, &status, 0);
-    token[token_len] = '\0';
 
     /* Strip trailing newline */
-    size_t len = strlen(token);
-    while (len > 0 && (token[len-1] == '\n' || token[len-1] == '\r'))
-        token[--len] = '\0';
+    while (out.len > 0 && (out.data[out.len-1] == '\n' || out.data[out.len-1] == '\r'))
+        out.data[--out.len] = '\0';
 
-    if (len == 0) {
+    if (out.len == 0) {
         nash_log("[provider/vertex] gcloud auth returned empty token");
+        str_free(&out);
         return NULL;
     }
 
     free(p->_cached_auth_token);
-    p->_cached_auth_token = strdup(token);
+    p->_cached_auth_token = strdup(out.data);
     p->_auth_token_expiry = now + 600;   /* refresh every 10 min to avoid stale tokens */
+    str_free(&out);
 
     return p->_cached_auth_token;
 }

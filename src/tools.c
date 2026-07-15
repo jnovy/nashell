@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "subprocess.h"
 #include "memory.h"
 #include "tui.h"
 #include "scratchpad.h"
@@ -6,13 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
-#include <signal.h>
-#include <poll.h>
-#include <fcntl.h>
 #include <time.h>
 #include <ctype.h>
 
@@ -360,149 +357,6 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
     ctx->recalled_keys[ctx->n_recalled_keys++] = dup;
 }
 
-/* Run a command with timeout and output cap.
- * timeout_sec: max wall-clock seconds (0 = no limit)
- * max_output:  max bytes to capture (0 = no limit)
- * Returns exit code, or -1 on error, -2 on timeout. */
-static int run_command_argv_limited(char *const argv[], str_t *out,
-                                    int timeout_sec, int max_output) {
-    int pipefd[2];
-    if (pipe(pipefd) < 0) return -1;
-
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
-
-    if (pid == 0) {
-        /* FIX: Isolate child from parent's terminal session.
-         * Without setsid(), long-running grandchildren (e.g. dnf spawned by
-         * a shell pipeline) inherit our process group and controlling terminal.
-         * If the parent (nash) exits or the grandchild becomes orphaned, it
-         * remains in the foreground PGRP with access to our stdin, which can
-         * steal keystrokes or block the terminal.
-         * Also redirect stdin from /dev/null — child commands don't need it
-         * and leaving it connected to the terminal lets orphaned grandchildren
-         * interfere with the parent's TUI input. */
-        setsid();
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-        execvp(argv[0], argv);
-        _exit(127);
-    }
-
-    close(pipefd[1]);
-
-    /* Set pipe to non-blocking for poll-based reading */
-    int flags = fcntl(pipefd[0], F_GETFL, 0);
-    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
-
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    int timed_out = 0;
-    int output_capped = 0;
-
-    while (1) {
-        /* Check timeout */
-        if (timeout_sec > 0) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            double elapsed = (now.tv_sec - start.tv_sec) +
-                             (now.tv_nsec - start.tv_nsec) / 1e9;
-            if (elapsed > timeout_sec) {
-                timed_out = 1;
-                break;
-            }
-        }
-
-        /* Check output cap */
-        if (max_output > 0 && (int)out->len >= max_output) {
-            output_capped = 1;
-            break;
-        }
-
-        /* Poll for data with 100ms timeout */
-        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
-        int pr = poll(&pfd, 1, 100);
-        if (pr > 0 && (pfd.revents & POLLIN)) {
-            char buf[NASH_PATH_MAX];
-            ssize_t n = read(pipefd[0], buf, sizeof(buf));
-            if (n <= 0) break;  /* EOF or error */
-            /* Respect output cap */
-            if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
-                size_t remaining = (size_t)max_output - out->len;
-                if (remaining > 0) str_append(out, buf, remaining);
-                output_capped = 1;
-                break;
-            }
-            str_append(out, buf, (size_t)n);
-        } else if (pr > 0 && (pfd.revents & (POLLHUP | POLLERR))) {
-            /* Pipe closed (child exited) or error — drain any remaining data */
-            char buf[NASH_PATH_MAX];
-            ssize_t n;
-            while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
-                    size_t remaining = (size_t)max_output - out->len;
-                    if (remaining > 0) str_append(out, buf, remaining);
-                    break;
-                }
-                str_append(out, buf, (size_t)n);
-            }
-            break;
-        } else if (pr == 0) {
-            /* Timeout on poll — check if child exited */
-            int status;
-            pid_t w = waitpid(pid, &status, WNOHANG);
-            if (w > 0) {
-                /* Child exited — drain remaining output */
-                char buf[NASH_PATH_MAX];
-                ssize_t n;
-                while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    if (max_output > 0 && (int)(out->len + (size_t)n) > max_output) {
-                        size_t remaining = (size_t)max_output - out->len;
-                        if (remaining > 0) str_append(out, buf, remaining);
-                        break;
-                    }
-                    str_append(out, buf, (size_t)n);
-                }
-                close(pipefd[0]);
-                return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-            }
-        } else if (pr < 0 && errno != EINTR) {
-            break;  /* poll error */
-        }
-    }
-
-    close(pipefd[0]);
-
-    /* Kill the child if we broke out early */
-    if (timed_out || output_capped) {
-        kill(-pid, SIGKILL);   /* negative pid = entire process group */
-        int status;
-        waitpid(pid, &status, 0);
-        if (timed_out) {
-            str_appendf(out, "\n[TIMEOUT: killed after %ds]\n", timeout_sec);
-            return -2;
-        }
-        if (output_capped) {
-            str_appendf(out, "\n[OUTPUT CAPPED at %d bytes]\n", max_output);
-        }
-        /* FIX B1: When output was capped, the child was killed by SIGKILL,
-         * so WIFEXITED is false and WEXITSTATUS is undefined (-1).
-         * But the command was running successfully — only its output was
-         * truncated.  Return 0 (success) instead of the misleading -1. */
-        if (output_capped)
-            return 0;
-        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    }
-
-    int status;
-    waitpid(pid, &status, 0);
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-}
-
 /* ── shell_exec ──────────────────────────────────────── */
 
 /* Resolve ref aliases (R0S1, R2S14, ...) in a shell command string to their
@@ -583,10 +437,16 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     struct timespec t_start, t_end;
     clock_gettime(CLOCK_MONOTONIC, &t_start);
-    int exit_code = run_command_argv_limited(argv, &out, timeout, max_out);
+    subprocess_result_t r = subprocess_run(argv, NULL, timeout, max_out, 0,
+                                           SUBPROCESS_PIPE_STDERR, &out);
     clock_gettime(CLOCK_MONOTONIC, &t_end);
     long elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000L +
                       (t_end.tv_nsec - t_start.tv_nsec) / 1000000L;
+    if (r.timed_out)
+        str_appendf(&out, "\n[TIMEOUT: killed after %ds]\n", timeout);
+    else if (r.output_capped)
+        str_appendf(&out, "\n[OUTPUT CAPPED at %d bytes]\n", max_out);
+    int exit_code = r.exit_code;
 
     /* Store to shared store */
     char *hash = store_save(ctx->store, out.data);

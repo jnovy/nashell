@@ -1,14 +1,10 @@
 #include "tools_internal.h"
+#include "subprocess.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
-#include <signal.h>
-#include <poll.h>
-#include <fcntl.h>
-#include <errno.h>
 
 /* ── grep_search ─────────────────────────────────────── */
 
@@ -28,92 +24,31 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     char resolved_path[NASH_PATH_MAX];
     path = tools_resolve_path(ctx, path, resolved_path, &resolved);
 
-    /* use fork/execvp to avoid shell injection */
-    int pipefd[2];
-    if (pipe(pipefd) < 0) return tools_make_error("pipe failed");
-
     int max_matches = ctx->cfg ? ctx->cfg->grep_max_matches : 50;
     if (max_matches <= 0) max_matches = 50;
     char max_matches_str[16];
     snprintf(max_matches_str, sizeof(max_matches_str), "%d", max_matches);
 
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return tools_make_error("fork failed"); }
+    char *const argv[] = {
+        "grep", "-rn", "--binary-files=without-match",
+        "--exclude-dir=.git", "--exclude-dir=node_modules",
+        "--exclude-dir=__pycache__", "--exclude-dir=.tox",
+        "--exclude-dir=vendor", "--exclude-dir=target",
+        "--exclude-dir=build", "--exclude-dir=dist",
+        "--exclude=*.o", "--exclude=*.a", "--exclude=*.so",
+        "--exclude=*.dylib", "--exclude=*.pyc",
+        "-m", max_matches_str,
+        (char *)pattern, (char *)path, NULL
+    };
 
-    if (pid == 0) {
-        setsid();
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
-        execlp("grep", "grep", "-rn",
-               "--binary-files=without-match",
-               "--exclude-dir=.git", "--exclude-dir=node_modules",
-               "--exclude-dir=__pycache__", "--exclude-dir=.tox",
-               "--exclude-dir=vendor", "--exclude-dir=target",
-               "--exclude-dir=build", "--exclude-dir=dist",
-               "--exclude=*.o", "--exclude=*.a", "--exclude=*.so",
-               "--exclude=*.dylib", "--exclude=*.pyc",
-               "-m", max_matches_str,
-               pattern, path, (char *)NULL);
-        _exit(127);
-    }
-
-    close(pipefd[1]);
-    str_t out = str_new(4096);
-    char buf[NASH_PATH_MAX];
-    ssize_t n;
-
-    /* Read with timeout + output cap.
-     * FIX B4: grep_max_matches controls line count (grep -m), while this
-     * byte cap prevents unbounded output from long-line matches.
-     * Uses shell_max_output as default; a dedicated grep_max_output config
-     * could be added if finer control is needed. */
     int grep_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
     int grep_max = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
-    /* FIX #9: Use clock_gettime(CLOCK_MONOTONIC) + poll() instead of
-     * time() + nanosleep(). Provides sub-second timeout accuracy and
-     * avoids CPU-wasteful 10ms busy-loop polling. */
-    struct timespec ts_start;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
-    int timed_out = 0;
-    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
-
-    while (1) {
-        /* Calculate remaining timeout in ms */
-        struct timespec ts_now;
-        clock_gettime(CLOCK_MONOTONIC, &ts_now);
-        long elapsed_ms = (ts_now.tv_sec - ts_start.tv_sec) * 1000
-                        + (ts_now.tv_nsec - ts_start.tv_nsec) / 1000000;
-        long remaining_ms = (long)grep_timeout * 1000 - elapsed_ms;
-        if (remaining_ms <= 0) { timed_out = 1; break; }
-        int poll_ms = remaining_ms > 100 ? 100 : (int)remaining_ms;
-
-        int pr = poll(&pfd, 1, poll_ms);
-        if (pr > 0) {
-            n = read(pipefd[0], buf, sizeof(buf));
-            if (n > 0) {
-                str_append(&out, buf, (size_t)n);
-                if ((int)out.len >= grep_max) {
-                    str_append_cstr(&out, "\n... [output truncated at limit]\n");
-                    break;
-                }
-            } else if (n == 0) {
-                break;  /* EOF */
-            }
-        } else if (pr == 0) {
-            continue;  /* poll timeout — check elapsed */
-        } else {
-            break;  /* poll error */
-        }
-    }
-    close(pipefd[0]);
-
-    if (timed_out) kill(-pid, SIGKILL);   /* negative pid = entire process group */
-    int status;
-    waitpid(pid, &status, 0);
+    str_t out = str_new(4096);
+    subprocess_result_t r = subprocess_run(argv, NULL, grep_timeout,
+                                           grep_max, 0,
+                                           SUBPROCESS_PIPE_STDERR, &out);
+    if (r.output_capped)
+        str_append_cstr(&out, "\n... [output truncated at limit]\n");
 
     int matches = count_lines(out.data);
     char *hash = store_save(ctx->store, out.data);
@@ -279,95 +214,33 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
         snprintf(full_path, sizeof(full_path), "%s/%s", search_path, root);
     }
 
-    /* Use fork/execvp for find — avoids shell injection via pattern/path */
-    int pipefd[2];
-    if (pipe(pipefd) < 0) return tools_make_error("pipe failed");
-
-    pid_t pid = fork();
-    if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return tools_make_error("fork failed"); }
-
-    if (pid == 0) {
-        setsid();
-        { int dn = open("/dev/null", O_RDONLY);
-          if (dn >= 0) { dup2(dn, STDIN_FILENO); close(dn); } }
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        /* Redirect stderr to /dev/null (like 2>/dev/null in original) */
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
-
-        if (recursive) {
-            execlp("find", "find", full_path,
-                   "-type", "f", "-name", name,
-                   "!", "-path", "*/.git/*",
-                   "!", "-path", "*/node_modules/*",
-                   "!", "-path", "*/__pycache__/*",
-                   "!", "-name", "*.o",
-                   (char *)NULL);
-        } else {
-            execlp("find", "find", full_path,
-                   "-maxdepth", "1",
-                   "-type", "f", "-name", name,
-                   "!", "-path", "*/.git/*",
-                   "!", "-path", "*/node_modules/*",
-                   "!", "-path", "*/__pycache__/*",
-                   "!", "-name", "*.o",
-                   (char *)NULL);
-        }
-        _exit(127);
-    }
-
-    close(pipefd[1]);
-    str_t out = str_new(4096);
-    char buf[NASH_PATH_MAX];
-    ssize_t n;
-    int line_count = 0;
-
-    /* Read with timeout + line cap (200 lines).
-     * Uses poll() to avoid blocking indefinitely on slow filesystems
-     * (NFS, huge directory trees).  Reuses grep_timeout (default 60s). */
     int glob_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
-    struct timespec ts_start;
-    clock_gettime(CLOCK_MONOTONIC, &ts_start);
-    int timed_out = 0;
-    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+    str_t out = str_new(4096);
+    subprocess_result_t r;
 
-    while (1) {
-        struct timespec ts_now;
-        clock_gettime(CLOCK_MONOTONIC, &ts_now);
-        long elapsed_ms = (ts_now.tv_sec - ts_start.tv_sec) * 1000
-                        + (ts_now.tv_nsec - ts_start.tv_nsec) / 1000000;
-        long remaining_ms = (long)glob_timeout * 1000 - elapsed_ms;
-        if (remaining_ms <= 0) { timed_out = 1; break; }
-        int poll_ms = remaining_ms > 100 ? 100 : (int)remaining_ms;
-
-        int pr = poll(&pfd, 1, poll_ms);
-        if (pr > 0) {
-            n = read(pipefd[0], buf, sizeof(buf));
-            if (n > 0) {
-                str_append(&out, buf, (size_t)n);
-                for (ssize_t i = 0; i < n; i++)
-                    if (buf[i] == '\n') line_count++;
-                if (line_count >= 200) break;
-            } else if (n == 0) {
-                break;  /* EOF */
-            }
-        } else if (pr == 0) {
-            continue;  /* poll timeout -- check elapsed */
-        } else {
-            break;  /* poll error */
-        }
+    if (recursive) {
+        char *const argv[] = {
+            "find", full_path, "-type", "f", "-name", (char *)name,
+            "!", "-path", "*/.git/*",
+            "!", "-path", "*/node_modules/*",
+            "!", "-path", "*/__pycache__/*",
+            "!", "-name", "*.o", NULL
+        };
+        r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out);
+    } else {
+        char *const argv[] = {
+            "find", full_path, "-maxdepth", "1",
+            "-type", "f", "-name", (char *)name,
+            "!", "-path", "*/.git/*",
+            "!", "-path", "*/node_modules/*",
+            "!", "-path", "*/__pycache__/*",
+            "!", "-name", "*.o", NULL
+        };
+        r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out);
     }
-    close(pipefd[0]);
-
-    /* Kill find if we hit the line limit or timed out */
-    if (line_count >= 200 || timed_out) kill(-pid, SIGKILL);
-    int status;
-    waitpid(pid, &status, 0);
 
     /* Truncate to 200 lines if we overshot */
-    if (line_count > 200 && out.data) {
+    if (r.line_count > 200 && out.data) {
         int seen = 0;
         for (size_t i = 0; i < out.len; i++) {
             if (out.data[i] == '\n') {

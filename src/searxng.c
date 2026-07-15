@@ -1,4 +1,5 @@
 #include "searxng.h"
+#include "subprocess.h"
 #include "str.h"
 #include "cJSON.h"
 #include "nash_log.h"
@@ -19,45 +20,11 @@
  * FIX #15: Track which runtime was used so cleanup uses the correct one. */
 static int searxng_auto_started = 0;
 
-/* Run a container command (stop, rm, etc.) via fork/exec.
- * FIX BUG#12: Use fork/exec instead of system() which is not signal-safe.
- * FIX: Added 30s timeout to prevent hang when container runtime blocks. */
+/* Run a container command (stop, rm, etc.) with 30s timeout.
+ * workdir=/tmp avoids SELinux AVC denials from podman's pasta helper. */
 static int run_container_cmd(const char *runtime, const char *action, const char *name) {
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        setsid();
-        /* FIX: chdir to /tmp so podman's pasta networking helper doesn't
-         * try to write .lock files in nash's session directory, which
-         * triggers SELinux AVC denials (pasta_t can't write user_home_t). */
-        if (chdir("/tmp") != 0) chdir("/");
-        /* Child: redirect all stdio to /dev/null */
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
-        execlp(runtime, runtime, action, name, (char *)NULL);
-        _exit(127);
-    }
-    /* Wait with 30s timeout */
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-    int status = 0;
-    while (1) {
-        pid_t w = waitpid(pid, &status, WNOHANG);
-        if (w > 0) {
-            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        }
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed = (now.tv_sec - start.tv_sec) +
-                         (now.tv_nsec - start.tv_nsec) / 1e9;
-        if (elapsed > 30.0) {
-            kill(-pid, SIGKILL);   /* negative pid = entire process group */
-            waitpid(pid, &status, 0);
-            return -1;
-        }
-        struct timespec sl = {0, 100000000};  /* 100ms */
-        nanosleep(&sl, NULL);
-    }
+    char *const argv[] = {(char *)runtime, (char *)action, (char *)name, NULL};
+    return subprocess_run_silent(argv, "/tmp", 30);
 }
 
 /* Check if a URL is reachable (HTTP GET, expect 2xx). Returns 1 if up. */
@@ -166,27 +133,13 @@ static int searxng_start_with_runtime(const char *runtime, int port, const char 
 
     run_container_cmd(runtime, "rm", "nash-searxng");
 
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    if (pid == 0) {
-        setsid();
-        /* FIX: chdir to /tmp so podman's pasta networking helper doesn't
-         * try to write .lock files in nash's session directory, which
-         * triggers SELinux AVC denials (pasta_t can't write user_home_t). */
-        if (chdir("/tmp") != 0) chdir("/");
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); close(devnull); }
-        execlp(runtime, runtime, "run", "-d", "--name", "nash-searxng",
-               "-p", port_map,
-               "-e", base_url_env,
-               "-v", vol_mount,
-               "docker.io/searxng/searxng:latest",
-               (char *)NULL);
-        _exit(127);
-    }
-    int status = 0;
-    waitpid(pid, &status, 0);
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : -1;
+    char *const argv[] = {
+        (char *)runtime, "run", "-d", "--name", "nash-searxng",
+        "-p", port_map, "-e", base_url_env, "-v", vol_mount,
+        "docker.io/searxng/searxng:latest", NULL
+    };
+    int rc = subprocess_run_silent(argv, "/tmp", 60);
+    return (rc == 0) ? 0 : -1;
 }
 
 static int searxng_start_container(int port) {
