@@ -324,17 +324,45 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     ssize_t n;
     int line_count = 0;
 
-    while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-        str_append(&out, buf, (size_t)n);
-        /* Count lines for limit (head -200 equivalent) */
-        for (ssize_t i = 0; i < n; i++)
-            if (buf[i] == '\n') line_count++;
-        if (line_count >= 200) break;
+    /* Read with timeout + line cap (200 lines).
+     * Uses poll() to avoid blocking indefinitely on slow filesystems
+     * (NFS, huge directory trees).  Reuses grep_timeout (default 60s). */
+    int glob_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
+    struct timespec ts_start;
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    int timed_out = 0;
+    struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+
+    while (1) {
+        struct timespec ts_now;
+        clock_gettime(CLOCK_MONOTONIC, &ts_now);
+        long elapsed_ms = (ts_now.tv_sec - ts_start.tv_sec) * 1000
+                        + (ts_now.tv_nsec - ts_start.tv_nsec) / 1000000;
+        long remaining_ms = (long)glob_timeout * 1000 - elapsed_ms;
+        if (remaining_ms <= 0) { timed_out = 1; break; }
+        int poll_ms = remaining_ms > 100 ? 100 : (int)remaining_ms;
+
+        int pr = poll(&pfd, 1, poll_ms);
+        if (pr > 0) {
+            n = read(pipefd[0], buf, sizeof(buf));
+            if (n > 0) {
+                str_append(&out, buf, (size_t)n);
+                for (ssize_t i = 0; i < n; i++)
+                    if (buf[i] == '\n') line_count++;
+                if (line_count >= 200) break;
+            } else if (n == 0) {
+                break;  /* EOF */
+            }
+        } else if (pr == 0) {
+            continue;  /* poll timeout -- check elapsed */
+        } else {
+            break;  /* poll error */
+        }
     }
     close(pipefd[0]);
 
-    /* Kill find if we hit the line limit */
-    if (line_count >= 200) kill(-pid, SIGKILL);   /* negative pid = entire process group */
+    /* Kill find if we hit the line limit or timed out */
+    if (line_count >= 200 || timed_out) kill(-pid, SIGKILL);
     int status;
     waitpid(pid, &status, 0);
 
