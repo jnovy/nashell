@@ -479,7 +479,7 @@ static int run_command_argv_limited(char *const argv[], str_t *out,
 
     /* Kill the child if we broke out early */
     if (timed_out || output_capped) {
-        kill(pid, SIGKILL);
+        kill(-pid, SIGKILL);   /* negative pid = entire process group */
         int status;
         waitpid(pid, &status, 0);
         if (timed_out) {
