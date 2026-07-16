@@ -132,6 +132,7 @@ typedef struct {
     int            tool_executing;        /* 1 = tool is currently running */
     struct timespec tool_start_time;      /* CLOCK_MONOTONIC when tool started */
     char          *tool_display;          /* "tool_name: command..." for display */
+    int            tool_timeout_secs;     /* execution timeout in seconds (0=unknown) */
 
     /* ── Server-reported prompt processing progress ── */
     int            prompt_progress_processed; /* tokens processed so far (from server) */

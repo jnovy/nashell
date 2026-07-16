@@ -39,6 +39,7 @@ typedef struct {
     cJSON       *tool_meta;   /* tool result metadata JSON (borrowed, do not free) */
     llm_stats_t  stats;       /* LLM timing/token stats */
     int          context_size; /* server's n_ctx (for computing context utilization %) */
+    int          tool_timeout; /* REACT_EVENT_TOOL_START: execution timeout in seconds (0=unknown) */
 
     /* Prompt processing progress (REACT_EVENT_PROMPT_PROGRESS) */
     int          prompt_progress_processed; /* tokens processed so far */

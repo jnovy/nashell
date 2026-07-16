@@ -280,6 +280,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * so the elapsed time counter updates even though no events
          * fire during tool_execute(). */
         ui->tool_executing = 1;
+        ui->tool_timeout_secs = ev->tool_timeout;
         clock_gettime(CLOCK_MONOTONIC, &ui->tool_start_time);
         free(ui->tool_display);
         ui->tool_display = full;  /* transfer ownership */

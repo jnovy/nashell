@@ -1286,7 +1286,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         if (ui->tool_executing) {
             /* Tool is running -- show tool name and elapsed time so the
-             * user sees what is executing (e.g. "shell_exec: make -j8"). */
+             * user sees what is executing (e.g. "shell_exec: make -j8").
+             * When timeout is known, show "elapsed/limit" (e.g. "1m07s/5m00s"). */
             double tool_elapsed = (now.tv_sec - ui->tool_start_time.tv_sec) +
                                   (now.tv_nsec - ui->tool_start_time.tv_nsec) / 1e9;
             /* Extract "action: desc" from tool_display which has the
@@ -1296,20 +1297,24 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                 const char *br = strchr(ui->tool_display, ']');
                 tdisp = (br && br[1] == ' ') ? br + 2 : ui->tool_display;
             }
-            if (tool_elapsed >= 60.0) {
-                int mins = (int)(tool_elapsed / 60.0);
-                int secs = (int)(tool_elapsed) % 60;
-                if (asprintf(&progress_dyn, "%s  (%dm%02ds)", tdisp, mins, secs) >= 0)
+            char elapsed_buf[32], timeout_buf[32];
+            fmt_duration(tool_elapsed, elapsed_buf, sizeof(elapsed_buf));
+            if (ui->tool_timeout_secs > 0) {
+                fmt_duration((double)ui->tool_timeout_secs,
+                             timeout_buf, sizeof(timeout_buf));
+                if (asprintf(&progress_dyn, "%s  (%s/%s)",
+                             tdisp, elapsed_buf, timeout_buf) >= 0)
                     progress_ptr = progress_dyn;
                 else
                     snprintf(progress, sizeof(progress),
-                             "%s  (%dm%02ds)", tdisp, mins, secs);
+                             "%s  (%s/%s)", tdisp, elapsed_buf, timeout_buf);
             } else {
-                if (asprintf(&progress_dyn, "%s  (%.0fs)", tdisp, tool_elapsed) >= 0)
+                if (asprintf(&progress_dyn, "%s  (%s)",
+                             tdisp, elapsed_buf) >= 0)
                     progress_ptr = progress_dyn;
                 else
                     snprintf(progress, sizeof(progress),
-                             "%s  (%.0fs)", tdisp, tool_elapsed);
+                             "%s  (%s)", tdisp, elapsed_buf);
             }
         } else if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
             /* Tokens are flowing — show generation progress */

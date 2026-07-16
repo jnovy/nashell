@@ -1466,6 +1466,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.max_steps = ctx->max_steps;
                 ev.action = action_name;
                 ev.description = desc ? desc : "";
+                /* Extract tool timeout so frontends can show elapsed/limit */
+                if (strcmp(action_name, "shell_exec") == 0) {
+                    cJSON *to = cJSON_GetObjectItem(action, "timeout");
+                    if (to && cJSON_IsNumber(to))
+                        ev.tool_timeout = (int)to->valuedouble;
+                    else
+                        ev.tool_timeout = ctx->tools->cfg
+                            ? ctx->tools->cfg->shell_timeout : 30;
+                }
                 react_emit(on_event, userdata, &ev);
             }
 
