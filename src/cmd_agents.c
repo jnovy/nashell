@@ -125,8 +125,8 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     str_t display = str_new(2048);
     str_appendf(&display, "# Agent: %s\n\n", found->id);
-    if (found->description && found->description[0])
-        str_appendf(&display, "%s\n\n", found->description);
+    if (found->summary && found->summary[0])
+        str_appendf(&display, "%s\n\n", found->summary);
     str_appendf(&display, "**Workspace**: %s  \n", found->workspace_name);
     str_appendf(&display, "**File**: `%s`  \n", found->agent_file);
     str_appendf(&display, "**Schedule**: `%s`  \n", found->schedule_str);
@@ -159,6 +159,9 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
         strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
         str_appendf(&display, "**Next due**: %s\n\n", timebuf);
     }
+
+    if (found->description && found->description[0])
+        str_appendf(&display, "## Usage\n%s\n\n", found->description);
 
     str_appendf(&display, "\n---\n`/agent run %s` to execute now  \n", found->id);
     str_appendf(&display, "`/agent result %s` to view latest output\n", found->id);
