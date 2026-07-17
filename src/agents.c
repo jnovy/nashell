@@ -256,6 +256,8 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 a->timeout = yaml_int(yaml_get(root, "timeout"), 0);
                 a->enabled = 1;
                 a->last_status = strdup("never");
+                const char *desc = yaml_str(yaml_get(root, "description"));
+                a->description = strdup(desc ? desc : "");
 
                 (*n_agents)++;
                 yaml_free(root);
@@ -868,6 +870,7 @@ void agent_queue_free(agent_queue_t *q) {
         free(a->workspace_name);
         free(a->agent_file);
         free(a->workspace_dir);
+        free(a->description);
         free(a->schedule_str);
         free(a->last_status);
     }

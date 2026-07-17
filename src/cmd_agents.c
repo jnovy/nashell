@@ -125,6 +125,8 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     str_t display = str_new(2048);
     str_appendf(&display, "# Agent: %s\n\n", found->id);
+    if (found->description && found->description[0])
+        str_appendf(&display, "%s\n\n", found->description);
     str_appendf(&display, "**Workspace**: %s  \n", found->workspace_name);
     str_appendf(&display, "**File**: `%s`  \n", found->agent_file);
     str_appendf(&display, "**Schedule**: `%s`  \n", found->schedule_str);
@@ -158,25 +160,8 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
         str_appendf(&display, "**Next due**: %s\n\n", timebuf);
     }
 
-    /* Latest result snippet */
-    char result_path[NASH_PATH_MAX];
-    snprintf(result_path, sizeof(result_path),
-             "%s/agent/results/%s/latest.md", ctx->nash_dir, found->id);
-    size_t rlen = 0;
-    char *result_content = slurp_file(result_path, &rlen);
-    if (result_content) {
-        str_appendf(&display, "## Latest Result\n\n");
-        if (rlen > 500) {
-            result_content[utf8_clamp(result_content, 500)] = '\0';
-            str_appendf(&display, "%s\n\n*...truncated. Use `/agent result %s` for full output.*\n",
-                        result_content, found->id);
-        } else {
-            str_appendf(&display, "%s\n", result_content);
-        }
-        free(result_content);
-    }
-
-    str_appendf(&display, "\n---\n`/agent run %s` to execute now\n", found->id);
+    str_appendf(&display, "\n---\n`/agent run %s` to execute now  \n", found->id);
+    str_appendf(&display, "`/agent result %s` to view latest output\n", found->id);
 
     char *banner = str_steal(&display);
     pthread_mutex_lock(&ui->mtx);

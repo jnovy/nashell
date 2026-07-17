@@ -24,6 +24,7 @@ typedef struct {
     char *workspace_name;   /* workspace path component (may be nested: rh/container-tools) */
     char *agent_file;       /* full path to YAML */
     char *workspace_dir;    /* full path to workspace dir */
+    char *description;      /* from YAML description field */
 
     /* Parsed from YAML */
     agent_schedule_t schedule;
