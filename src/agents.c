@@ -5,7 +5,16 @@
  * builds a time-sorted execution calendar, and runs due agents sequentially
  * via playbook_worker(). Invoked by `nash --agent`.
  *
- * Agent YAML files live in ~/.nash/workspaces/NAME/agent/ as .yaml files.
+ * Three-tier agent discovery (XDG-style layering, most specific wins):
+ *   Tier 1: /usr/share/nash/agents/   — vendor/RPM-shipped (read-only)
+ *   Tier 2: ~/.nash/agents/           — user global agents
+ *   Tier 3: ~/.nash/workspaces/NAME/agent/ — workspace-local (original)
+ *
+ * Tier 1 and 2 agents use an explicit "workspace:" YAML field to declare
+ * which workspace they bind to. Tier 3 agents infer it from the directory
+ * path (backward compatible). A higher-tier agent with the same ID as a
+ * lower-tier one overrides it (like systemd unit overrides).
+ *
  * They extend the standard playbook format with: schedule, timeout, enabled.
  */
 
@@ -298,25 +307,210 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
     closedir(dp);
 }
 
+/* ── Flat directory scanner (Tier 1 & 2) ─────────────── */
+
+/* Free all heap fields of a single agent_entry_t (but not the struct itself). */
+static void agent_entry_free_fields(agent_entry_t *a) {
+    if (!a) return;
+    free(a->id);
+    free(a->workspace_name);
+    free(a->agent_file);
+    free(a->workspace_dir);
+    free(a->summary);
+    free(a->description);
+    free(a->schedule_str);
+    free(a->last_status);
+    memset(a, 0, sizeof(*a));
+}
+
+/* Scan a flat directory of agent .yaml files (no workspace subdirectory
+ * structure).  Each YAML must declare a "workspace:" field to specify
+ * which workspace the agent binds to.  If omitted, defaults to "_system".
+ *
+ * This is used for Tier 1 (/usr/share/nash/agents/) and Tier 2
+ * (~/.nash/agents/) where agents live outside the workspace tree.
+ * Symlinks to /dev/null are treated as masking (agent is skipped). */
+static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
+                                 agent_entry_t **agents, int *n_agents,
+                                 int *cap_agents) {
+    struct stat dir_st;
+    if (stat(dir_path, &dir_st) != 0 || !S_ISDIR(dir_st.st_mode))
+        return;
+
+    DIR *dp = opendir(dir_path);
+    if (!dp) return;
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        if (de->d_name[0] == '.') continue;
+        size_t nlen = strlen(de->d_name);
+        if (nlen < 6 || strcmp(de->d_name + nlen - 5, ".yaml") != 0)
+            continue;
+
+        char yaml_path[NASH_PATH_MAX];
+        snprintf(yaml_path, sizeof(yaml_path), "%s/%s", dir_path, de->d_name);
+
+        /* Masking: symlink to /dev/null disables this agent */
+        struct stat yst;
+        if (lstat(yaml_path, &yst) == 0 && S_ISLNK(yst.st_mode)) {
+            char target[NASH_PATH_MAX];
+            ssize_t tlen = readlink(yaml_path, target, sizeof(target) - 1);
+            if (tlen > 0) {
+                target[tlen] = '\0';
+                if (strcmp(target, "/dev/null") == 0)
+                    continue;  /* masked agent */
+            }
+        }
+
+        yaml_node_t *root = yaml_parse_file(yaml_path);
+        if (!root) continue;
+
+        /* Check enabled flag (default: true) */
+        int enabled = yaml_bool(yaml_get(root, "enabled"), 1);
+        if (!enabled) {
+            yaml_free(root);
+            continue;
+        }
+
+        /* Get name (required for flat agents; fall back to filename) */
+        const char *name = yaml_str(yaml_get(root, "name"));
+        char namebuf[256];
+        if (!name) {
+            snprintf(namebuf, sizeof(namebuf), "%s", de->d_name);
+            namebuf[nlen - 5] = '\0';
+            name = namebuf;
+        }
+
+        /* Get workspace binding (required for flat agents, default: _system) */
+        const char *ws = yaml_str(yaml_get(root, "workspace"));
+        if (!ws || !ws[0])
+            ws = "_system";
+
+        /* Get schedule */
+        const char *sched_str = yaml_str(yaml_get(root, "schedule"));
+        agent_schedule_t parsed_sched;
+        memset(&parsed_sched, 0, sizeof(parsed_sched));
+        int has_schedule = 0;
+        if (sched_str && sched_str[0] &&
+            strcmp(sched_str, "manual") != 0 &&
+            strcmp(sched_str, "none") != 0) {
+            if (agent_parse_schedule(sched_str, &parsed_sched) != 0) {
+                fprintf(stderr, "[agent] warning: bad schedule '%s' in %s\n",
+                        sched_str, yaml_path);
+                yaml_free(root);
+                continue;
+            }
+            has_schedule = 1;
+        }
+
+        /* Build agent entry */
+        if (*n_agents >= *cap_agents) {
+            *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
+            *agents = realloc(*agents, (size_t)*cap_agents * sizeof(agent_entry_t));
+        }
+
+        agent_entry_t *a = &(*agents)[*n_agents];
+        memset(a, 0, sizeof(*a));
+
+        /* ID: workspace/agent_name (same format as workspace-local) */
+        char id[NASH_PATH_MAX];
+        snprintf(id, sizeof(id), "%s/%s", ws, name);
+        a->id = strdup(id);
+        a->workspace_name = strdup(ws);
+        a->agent_file = strdup(yaml_path);
+
+        /* Resolve workspace_dir from workspace name */
+        char ws_dir[NASH_PATH_MAX];
+        snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces/%s", nash_dir, ws);
+        a->workspace_dir = strdup(ws_dir);
+
+        if (has_schedule)
+            a->schedule = parsed_sched;
+        a->schedule_str = strdup(has_schedule ? sched_str : "manual");
+        a->timeout = yaml_int(yaml_get(root, "timeout"), 0);
+        a->enabled = 1;
+        a->last_status = strdup("never");
+        const char *summ = yaml_str(yaml_get(root, "summary"));
+        a->summary = strdup(summ ? summ : "");
+        const char *desc = yaml_str(yaml_get(root, "description"));
+        a->description = strdup(desc ? desc : "");
+
+        (*n_agents)++;
+        yaml_free(root);
+    }
+    closedir(dp);
+}
+
+/* ── Agent deduplication ─────────────────────────────── */
+
+/* Remove duplicate agents by ID, keeping the LAST occurrence (highest tier).
+ * Tier scan order: Tier 1 first, Tier 2, Tier 3 last — so later entries
+ * (higher tier) override earlier ones. */
+static void agent_dedup(agent_entry_t *agents, int *n_agents) {
+    int n = *n_agents;
+    for (int i = 0; i < n; i++) {
+        if (!agents[i].id) continue;  /* already removed */
+        for (int j = i + 1; j < n; j++) {
+            if (!agents[j].id) continue;
+            if (strcmp(agents[i].id, agents[j].id) == 0) {
+                /* Later entry (j) wins — remove earlier entry (i) */
+                agent_entry_free_fields(&agents[i]);
+                break;
+            }
+        }
+    }
+
+    /* Compact: shift non-NULL entries down */
+    int write = 0;
+    for (int read = 0; read < n; read++) {
+        if (agents[read].id) {
+            if (write != read)
+                agents[write] = agents[read];
+            write++;
+        }
+    }
+    *n_agents = write;
+}
+
+/* ── System agent directory path ─────────────────────── */
+
+#ifndef NASH_SYSTEM_AGENTS_DIR
+#define NASH_SYSTEM_AGENTS_DIR "/usr/share/nash/agents"
+#endif
+
 agent_queue_t *agent_scan(const char *nash_dir) {
     agent_queue_t *q = calloc(1, sizeof(*q));
     if (!q) return NULL;
 
+    int cap = 0;
+
+    /* Tier 1: vendor/RPM-shipped agents (lowest priority) */
+    scan_flat_agent_dir(nash_dir, NASH_SYSTEM_AGENTS_DIR,
+                        &q->agents, &q->n_agents, &cap);
+
+    /* Tier 2: user global agents (~/.nash/agents/) */
+    char user_agents[NASH_PATH_MAX];
+    snprintf(user_agents, sizeof(user_agents), "%s/agents", nash_dir);
+    scan_flat_agent_dir(nash_dir, user_agents,
+                        &q->agents, &q->n_agents, &cap);
+
+    /* Tier 3: workspace-local agents (highest priority, original behavior) */
     char ws_root[NASH_PATH_MAX];
     snprintf(ws_root, sizeof(ws_root), "%s/workspaces", nash_dir);
-
-    int cap = 0;
     scan_workspace_dir(nash_dir, ws_root, "",
                        &q->agents, &q->n_agents, &cap);
 
     /* Fix IDs: remove leading slash if ws_prefix was "" */
     for (int i = 0; i < q->n_agents; i++) {
-        if (q->agents[i].id[0] == '/') {
+        if (q->agents[i].id && q->agents[i].id[0] == '/') {
             char *fixed = strdup(q->agents[i].id + 1);
             free(q->agents[i].id);
             q->agents[i].id = fixed;
         }
     }
+
+    /* Deduplicate: higher-tier agents override lower-tier ones */
+    agent_dedup(q->agents, &q->n_agents);
 
     q->built_at = time(NULL);
     return q;
@@ -866,17 +1060,8 @@ int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
 
 void agent_queue_free(agent_queue_t *q) {
     if (!q) return;
-    for (int i = 0; i < q->n_agents; i++) {
-        agent_entry_t *a = &q->agents[i];
-        free(a->id);
-        free(a->workspace_name);
-        free(a->agent_file);
-        free(a->workspace_dir);
-        free(a->summary);
-        free(a->description);
-        free(a->schedule_str);
-        free(a->last_status);
-    }
+    for (int i = 0; i < q->n_agents; i++)
+        agent_entry_free_fields(&q->agents[i]);
     free(q->agents);
     free(q);
 }

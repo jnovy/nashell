@@ -18,10 +18,10 @@ typedef struct {
     int is_startup;           /* @startup: always due */
 } agent_schedule_t;
 
-/* ── Single agent entry (discovered from workspace) ──── */
+/* ── Single agent entry (discovered from 3-tier scan) ── */
 typedef struct {
     char *id;               /* "workspace_name/agent_name" */
-    char *workspace_name;   /* workspace path component (may be nested: rh/container-tools) */
+    char *workspace_name;   /* workspace binding (from dir path or YAML "workspace:" field) */
     char *agent_file;       /* full path to YAML */
     char *workspace_dir;    /* full path to workspace dir */
     char *summary;          /* one-line summary from YAML */
@@ -53,7 +53,11 @@ typedef struct {
 
 /* ── API ───────────────────────────────────────────── */
 
-/* Scan all workspaces for agent definitions.
+/* Scan all agent sources using three-tier discovery:
+ *   Tier 1: /usr/share/nash/agents/       (vendor/RPM, lowest priority)
+ *   Tier 2: ~/.nash/agents/               (user global)
+ *   Tier 3: ~/.nash/workspaces/X/agent/   (workspace-local, highest priority)
+ * Agents with the same ID are deduplicated (highest tier wins).
  * Returns heap-allocated queue (caller frees with agent_queue_free). */
 agent_queue_t *agent_scan(const char *nash_dir);
 
