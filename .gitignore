@@ -1,6 +1,12 @@
 # Compiled binaries
 nash
 *.o
+cscope.out
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
 src/dream_yaml.inc
 tests/test_memory
 tests/test_store
