@@ -76,10 +76,21 @@ static int cmp_candidate_score_asc(const void *a, const void *b) {
 
 /* ── Partner Index ────────────────────────── */
 
-/* Build a partner map for all messages in [range_start, range_end).
- * Uses cached tool_call_id_outbound  for O(1) ID lookup.
- * partner[i] = absolute index of partner message, or -1 if none.
- * The map covers ALL messages (0..n_msgs-1) for uniform indexing. */
+/* Build a partner map for tool_call <-> tool_result message pairing.
+ *
+ * Motivation: Evicting one half of a tool_call/tool_result pair orphans the
+ * other, producing incoherent context (a result without its question, or a
+ * question without its answer). The partner map lets evict_mark_candidates()
+ * evict pairs atomically or make informed orphaning decisions.
+ *
+ * Behavior: Builds partner[i] = absolute index of partner message, or -1.
+ * Covers ALL messages (0..n_msgs-1) for uniform indexing via malloc.
+ * O(n) scan delegating to react_find_tool_partner() for ID extraction.
+ * Protected partners (importance >= HIGH) return -1 to prevent eviction.
+ *
+ * Research:
+ *   CWL [arXiv:2606.11213] -- Context Window Lifecycle: partner-aware
+ *     eviction prevents structural corruption of tool call threading. */
 evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
                                              int range_start, int range_end) {
     evict_partner_map_t map = {0};
@@ -115,9 +126,19 @@ void evict_free_partner_map(evict_partner_map_t *map) {
 
 /* ── Shared Mark-Sweep Helper ─────────────────── */
 
-/* O(n) single-pass compaction — compacts marked messages in a single forward
- * pass instead of per-message memmove. Used by both progressive and emergency
- * eviction. */
+/* Remove messages marked for eviction via O(n) single-pass compaction.
+ *
+ * Motivation: Per-message memmove is O(n) per removal, giving O(n*k) total
+ * for k removals. Single forward-pass compaction achieves O(n) total.
+ * Shared between progressive and emergency eviction paths.
+ *
+ * Behavior: Two phases:
+ *   1. Free marked messages' fields, update chat->total_chars
+ *   2. Compact: slide surviving messages forward within evictable region,
+ *      then memmove tail (post-evict_end) into place
+ * Calls react_recover_tool_threading() after compaction to fix any
+ * tool_call_id references invalidated by index shifts.
+ * Returns number of messages removed. */
 int evict_sweep_marked(llm_chat_t *chat, int evict_start,
                        const int *evict_mark, int n_evictable) {
     int removed = 0;
@@ -214,12 +235,39 @@ void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* ── Unified Finalization ─────────────────────────────── */
 
-/* Flat if-chain for post-eviction finalization.
- * Skip compaction hint when no eviction occurred (breadcrumb_str==NULL).
- * Final verification after every re-injection to catch overshoot.
+/* Unified post-eviction finalization: re-inject preserved state and verify budget.
+ *
+ * Motivation: After sweep removes messages, three kinds of state must be
+ * re-injected at the eviction point (keep_head): scratchpad (working memory),
+ * breadcrumbs (eviction index), and a compaction hint (behavioral nudge).
+ * Each injection increases context size, potentially overshooting the target.
+ * A flat if-chain of escalating strategies handles overshoot without recursion.
+ *
+ * Behavior: Six sequential steps:
+ *   1. Re-inject scratchpad at right-sized budget (pre-computed available space)
+ *   2. Inject breadcrumbs + eviction-triggered memory re-retrieval
+ *   3. Inject EVICT_COMPACT_HINT when eviction occurred
+ *   Strategy 1: If still over target, strip scratchpad entirely
+ *               (preserves "evicted_context" section across the strip)
+ *   Strategy 2: If still over target, emergency eviction fallback
+ *               with aggressive retry (target_pct - 10, min 50%)
+ *   Event: Emit REACT_EVENT_WARNING for UI notification
+ *
  * breadcrumb_str is consumed (freed) by this function.
  * Returns the number of messages emergency-evicted by Strategy 2
- * (0 if Strategy 2 didn't fire). Callers use this for journal + event emission. */
+ * (0 if Strategy 2 didn't fire).
+ *
+ * Research:
+ *   LCM-Lite [arXiv:2605.04050] -- Lossless Context Management: breadcrumb
+ *     injection preserves awareness of evicted content without keeping it.
+ *   CWL [arXiv:2606.11213] -- Context Window Lifecycle: graduated
+ *     strategies (compress -> strip SP -> emergency evict) instead of
+ *     all-or-nothing eviction.
+ *   arXiv:2605.30621 -- Re-retrieval at eviction: the breadcrumb text
+ *     describes exactly what knowledge was lost, making it the optimal
+ *     query for memory re-retrieval (step 2, line ~280).
+ *   Harness-1 [arXiv:2606.02373, S3.1] -- Stateful cognitive offloading:
+ *     harness manages scratchpad lifecycle, not the LLM. */
 int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                    int keep_head, int target_pct, long context_budget,
                    char *breadcrumb_str, int n_evicted, int step,
@@ -417,14 +465,34 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
 
 /* ── Progressive Scoring Callback ─────────────────────── */
 
-/* Score formula for progressive (non-emergency) eviction.
- *   importance * IMP_WEIGHT - recoverability * REC_WEIGHT - size_bonus + pos_norm
- * -rec term means recoverable content gets LOWER score
- * (evicted first), which is the desired behavior.
- * userdata = evict_partner_map_t*. size_bonus now includes partner
- * message cost, so a small tool_call message whose partner is a 10KB
- * tool_result will score lower (more likely to be evicted), which is correct
- * since recoverable content with large payloads should be freed first. */
+/* Score a message for eviction candidacy. Lower score = evicted first.
+ *
+ * Motivation: Naive eviction (oldest-first or random) loses critical
+ * observations while keeping bloated recoverable content. Scoring by
+ * (importance, recoverability, size, position) ensures recoverable
+ * file_write results evict before irreplaceable grep_search observations.
+ *
+ * Formula: imp * IMP_WEIGHT - rec * REC_WEIGHT - size_bonus + pos_norm
+ *   - importance raises score (CRITICAL/HIGH survive longer)
+ *   - recoverability LOWERS score (RECOVER_FILE evicts before RECOVER_NONE)
+ *   - size_bonus lowers score (large messages are expensive to keep)
+ *     Applied at half rate for non-recoverable content (rec=0)
+ *   - pos_norm adds recency bias (newer messages score slightly higher)
+ *
+ * Partner-aware: for tool_call messages, msg_len includes the partner's
+ * (tool_result) content_len, so a small tool_call with a 10KB result
+ * scores lower. Only the primary (tool_call) side includes partner size
+ * to avoid double-counting.
+ *
+ * userdata = evict_partner_map_t*.
+ *
+ * Research:
+ *   CWL [arXiv:2606.11213] -- Context Window Lifecycle: recoverability
+ *     annotation for tool results (Table 1: RECOVER_FILE > RECOVER_NONE).
+ *   Harness-1 [arXiv:2606.02373, S3.1] -- Importance-tagged messages
+ *     with eviction priority ordering by tier.
+ *   Generative Agents [Park et al., 2023] -- Composite scoring as the
+ *     foundation pattern (recency x importance x relevance). */
 int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
                             int n_evictable, void *userdata) {
     int imp = (int)chat->msgs[mi].importance;
@@ -460,16 +528,29 @@ int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
 
 /* ── Semantic-Aware Progressive Scoring ──────────────── */
 
-/* Adds a semantic relevance bonus to the base progressive score.
- * The bonus (0..REACT_SCORE_SEMANTIC_WEIGHT) is derived from pre-computed
- * cosine similarities between each message and the current task+reasoning.
- * A LOW-importance message highly relevant to the current task (sim ~1.0)
- * gets +40, potentially surviving over irrelevant NORMAL messages.
- * The bonus can never override HIGH importance (those are skipped entirely
- * by evict_mark_candidates before scoring).
+/* Semantic-aware eviction scoring: base score + task-relevance bonus.
+ *
+ * Motivation: The base scorer (evict_score_progressive) treats all messages
+ * at the same importance tier equally. But a LOW-importance file_read that's
+ * directly relevant to the current task is more valuable than an irrelevant
+ * one. Semantic similarity provides a content-aware signal without requiring
+ * the model to manually tag importance.
+ *
+ * Behavior: Computes the base progressive score, then adds a semantic bonus
+ * (0..REACT_SCORE_SEMANTIC_WEIGHT=40) from pre-computed cosine similarities
+ * between each message embedding and the task text (user query + last
+ * assistant thought). A highly relevant LOW message (sim ~1.0) gets +40,
+ * potentially surviving over irrelevant NORMAL messages.
+ * Cannot override HIGH importance (those are skipped by evict_mark_candidates).
  *
  * userdata = evict_score_ctx_t* (partner map + pre-computed similarities).
- * When similarities is NULL, falls back to base formula (zero overhead). */
+ * When similarities is NULL, falls back to base formula (zero overhead).
+ *
+ * Research:
+ *   Generative Agents [Park et al., 2023] -- Composite scoring with
+ *     relevance as a dimension alongside recency and importance.
+ *   CWL [arXiv:2606.11213] -- Recoverability-aware scoring as the base
+ *     layer; semantic relevance adds a second dimension. */
 int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
                                      int n_evictable, void *userdata) {
     const evict_score_ctx_t *sctx = (const evict_score_ctx_t *)userdata;
@@ -519,10 +600,30 @@ int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
 
 /* ── Generic Mark-Candidates ───────────────── */
 
-/* Score, sort, and mark evictable messages using a caller-supplied scoring
- * function. Shared between progressive and emergency eviction.
- * See react_internal.h for full parameter documentation.
- * Returns the number of messages marked for eviction. */
+/* Mark phase: score, sort, and select messages for eviction.
+ *
+ * Motivation: Separating mark from sweep (read-only pass vs mutating pass)
+ * prevents mid-iteration index corruption when removing messages. The
+ * scoring function is injected as a callback, allowing the same mark logic
+ * to serve progressive (semantic-aware) and emergency (simple) eviction.
+ *
+ * Behavior: O(n log n) via qsort on scored candidates.
+ *   1. Build scored candidate array, skipping HIGH/CRITICAL messages
+ *   2. Sort by score ascending (lowest = evicted first)
+ *   3. Walk sorted candidates, marking for eviction while respecting:
+ *      - Floor constraint (minimum content to retain in evictable region,
+ *        subtracting tail_chars since tail is protected)
+ *      - Partner pairing: evict tool_call + tool_result together when
+ *        floor permits. Never orphan a tool_result (answer without question
+ *        is worse than question without answer)
+ *      - Target: stop when remaining <= target_remaining
+ * Returns the number of messages marked.
+ *
+ * Research:
+ *   CWL [arXiv:2606.11213] -- Mark-then-sweep architecture with
+ *     recoverability-aware scoring.
+ *   Harness-1 [arXiv:2606.02373, S3.1] -- Importance tiers determine
+ *     which messages are eligible (< HIGH) vs protected. */
 int evict_mark_candidates(const llm_chat_t *chat,
                           int evict_start, int evict_end,
                           const evict_partner_map_t *pmap,
@@ -622,13 +723,25 @@ int evict_mark_candidates(const llm_chat_t *chat,
 
 /* ── Compress Phase: BM25 compression ─────────────────── */
 
-/* Uses REACT_COMPRESS_THRESH_FIXED instead of average-based
- * threshold. Previously small messages (300 chars) were compressed
- * unnecessarily with negligible savings. Now only messages > 800 chars
- * are candidates.
+/* BM25 compression of surviving messages (largest first).
  *
- * Targets target_pct (not effective_target_pct) since compress
- * phase doesn't re-inject anything. Previously over-compressed content. */
+ * Motivation: After sweep removes the lowest-scored messages, the context
+ * may still exceed target_pct. Compression reduces surviving messages
+ * in-place using BM25 keyword extraction (compress_to_relevant), preserving
+ * task-relevant content while discarding boilerplate.
+ *
+ * Behavior: Collects messages > compress_min_len (default 800 chars) with
+ * importance <= NORMAL, sorts by length descending (largest savings first),
+ * and compresses each using BM25 with the current task query.
+ * Guards: requires > 10% size reduction to avoid trivial/destructive
+ * compression. Stops when usage_pct <= target_pct.
+ * Targets target_pct (not effective_target_pct) since compress phase
+ * doesn't re-inject anything (no scratchpad/breadcrumb overhead).
+ *
+ * Research:
+ *   CWL [arXiv:2606.11213] -- Graduated compression: compress is a
+ *     lighter intervention than eviction, applied to surviving messages
+ *     that are too large but not worth evicting entirely. */
 static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
                           const char *bm25_query, int target_pct,
                           long context_budget,
@@ -700,12 +813,34 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
 
 /* ── Sweep Phase: Remove marked messages + build breadcrumbs ── */
 
-/* Build breadcrumbs with separate budgets for index and summary.
- * breadcrumb_index_cap limits the store-alias reference list.
- * breadcrumb_summary_cap limits the eviction summary text.
- * Returns a malloc'd breadcrumb string (caller frees), or NULL.
- * SIDE EFFECT — also writes an "evicted_context" section to the
- * scratchpad with summary text for non-alias evicted messages. */
+/* Build a breadcrumb index + summary of evicted messages.
+ *
+ * Motivation: Eviction without breadcrumbs is lossy -- the LLM loses
+ * awareness of what it previously observed. Breadcrumbs create a compact
+ * "table of contents" that lets the LLM recover evicted content on demand
+ * (via file_read on store aliases) or at least know what was lost.
+ *
+ * Behavior: Two-track output with separate budgets:
+ *   Track 1 (index, breadcrumb_index_cap): Store-alias references with
+ *     structural previews. For file_read results, uses repomap_file_symbols()
+ *     to extract function/struct/macro names instead of raw bytes.
+ *     Linear alias dedup (O(n^2), fine for n < 20).
+ *   Track 2 (summary, breadcrumb_summary_cap): Non-alias messages get
+ *     truncated content excerpts, budget-divided across evicted messages.
+ *
+ * SIDE EFFECT: Writes an "evicted_context" scratchpad section (priority 2)
+ * with summary text for non-recoverable messages, ensuring the LLM
+ * retains awareness even if the breadcrumb message itself is later evicted.
+ *
+ * Returns a malloc'd breadcrumb string (caller frees), or NULL if only
+ * the header was generated (prevents phantom eviction events).
+ *
+ * Research:
+ *   LCM-Lite [arXiv:2605.04050] -- Lossless Context Management: evicted
+ *     content is indexed, not discarded. The breadcrumb index is the
+ *     key mechanism for lossless eviction.
+ *   CWL [arXiv:2606.11213] -- Store-alias references provide the
+ *     recoverability path (file_read on R0S15 recovers evicted content). */
 static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
                                      int evict_start, int n_evictable,
                                      const int *evict_mark, int n_to_evict,
@@ -1047,18 +1182,45 @@ int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
 
 /* ── Main Entry Point: Mark-then-Sweep ────────────────── */
 
-/* Mark-then-sweep eviction pipeline.
+/* Main entry point: multi-pass progressive context eviction.
  *
- * Architecture:
- *   1.   Cleanup: Remove stale injected messages
- *   2.   Partner map: Build once 
- *   2.5  Lifecycle: Replace stale/superseded file reads [Pichay 2603.09023]
- *   3.   Mark: Score all evictable messages, mark lowest for eviction
- *   4.   Sweep: Remove marked messages in reverse order
- *   4.5  Type-compress: Structure-aware pre-compression [CWL 2606.11213]
+ * Motivation: LLM context windows are finite. When usage exceeds the
+ * eviction threshold (default 70%), this pipeline frees context space
+ * while preserving the most valuable information. The graduated approach
+ * (lifecycle -> mark/sweep -> type-compress -> BM25 -> finalize) applies
+ * increasingly aggressive compression, stopping as soon as the target
+ * percentage is reached.
+ *
+ * Architecture (8 phases):
+ *   1.   Cleanup: Remove stale injected messages (SP, summary, hint)
+ *   2.   Partner map: Build tool_call <-> tool_result index [O(n)]
+ *   2.5  Lifecycle: Replace stale/superseded file reads with compact
+ *        markers [Pichay, arXiv:2603.09023]
+ *   3.   Mark: Score all evictable messages (semantic-aware composite
+ *        scoring), mark lowest for eviction
+ *   3.1  Semantic context: Batch-embed evictable messages, compute
+ *        cosine similarity to task text for relevance-aware scoring
+ *   4.   Sweep: Remove marked messages, build breadcrumb index
+ *   4.5  Type-compress: Structure-aware truncation for shell_exec,
+ *        grep_search, glob_search [CWL, arXiv:2606.11213;
+ *        Complexity Trap, arXiv:2508.21433]
  *   5.   Compress: BM25 compress surviving messages (target_pct)
- *   6.   Finalize: Re-inject scratchpad + breadcrumbs + hint 
- */
+ *   5.5  Reasoning: Compress long assistant messages (keep first +
+ *        last paragraph, remove middle)
+ *   6.   Finalize: Re-inject scratchpad + breadcrumbs + hint;
+ *        escalate to SP strip / emergency eviction if needed
+ *
+ * Research:
+ *   CWL [arXiv:2606.11213] -- Context Window Lifecycle: recoverability
+ *     annotation, graduated compression, mark-then-sweep architecture.
+ *   LCM-Lite [arXiv:2605.04050] -- Lossless Context Management:
+ *     breadcrumb index preserves awareness of evicted content.
+ *   Harness-1 [arXiv:2606.02373] -- Importance-tagged messages,
+ *     stateful cognitive offloading (harness manages context, not LLM).
+ *   Generative Agents [Park et al., 2023] -- Composite scoring
+ *     (recency x importance x relevance) as the foundation pattern.
+ *   Pichay [arXiv:2603.09023] -- Stale read detection with empirical
+ *     data (67% stale, 0.025% fault rate). */
 void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                        const char *user_query,
                        react_event_fn on_event, void *userdata) {
