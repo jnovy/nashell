@@ -788,13 +788,19 @@ void *playbook_worker(void *arg) {
             fprintf(stderr, "[play] %s\n", status);
         }
 
-        /* Inter-pass pause */
+        /* Inter-pass pause (skip in headless mode -- no one to press Enter) */
         if (pass > 0 && pb->pause_between) {
-            pa->waiting_for_user = 1;
-            pa->inter_pass_message = pb->passes[pass].label;
-            while (pa->waiting_for_user) {
-                struct timespec ts = {0, 50000000};
-                nanosleep(&ts, NULL);
+            if (pa->ui) {
+                pa->waiting_for_user = 1;
+                pa->inter_pass_message = pb->passes[pass].label;
+                while (pa->waiting_for_user) {
+                    struct timespec ts = {0, 50000000};
+                    nanosleep(&ts, NULL);
+                }
+            } else {
+                fprintf(stderr, "[play] auto-continuing pass %d/%d (%s)\n",
+                        pass + 1, pb->n_passes,
+                        pb->passes[pass].label ? pb->passes[pass].label : "");
             }
         }
 

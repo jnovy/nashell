@@ -462,10 +462,12 @@ int main(int argc, char **argv) {
     int telegram_mode = 0;                /* --telegram: Telegram Bot bridge (implies --daemon) */
     int matrix_mode = 0;                  /* --matrix: Matrix bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
-    int agents_mode = 0;                  /* --agent: scan workspaces, run due agents */
+    int agents_mode = 0;                  /* --agent: agent management mode */
     int agents_list = 0;                  /* --agent --list: show agent table */
     int agents_dry_run = 0;               /* --agent --dry-run: show what would run */
-    const char *agents_force_id = NULL;    /* --agent --force ID: run specific agent */
+    int agents_due = 0;                   /* --agent --due: run all due agents */
+    const char *agent_target_id = NULL;   /* --agent ID: run specific agent */
+    char *agent_arguments = NULL;         /* --agent ID arg1 arg2...: arguments for agent */
     const char *provider_name_arg = NULL;  /* --provider NAME: use named provider from [providers.*] */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
@@ -544,12 +546,30 @@ int main(int argc, char **argv) {
             cfg->workspace_isolated = 1;
         } else if (strcmp(argv[i], "--agent") == 0) {
             agents_mode = 1;
+            /* Collect positional args: --agent ID [arg1 arg2 ...] */
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                agent_target_id = argv[++i];
+                /* Remaining non-flag args become agent arguments */
+                if (i + 1 < argc && argv[i + 1][0] != '-') {
+                    /* Concatenate remaining positional args */
+                    size_t total = 0;
+                    for (int j = i + 1; j < argc && argv[j][0] != '-'; j++)
+                        total += strlen(argv[j]) + 1;
+                    agent_arguments = malloc(total + 1);
+                    agent_arguments[0] = '\0';
+                    for (int j = i + 1; j < argc && argv[j][0] != '-'; j++) {
+                        if (agent_arguments[0]) strcat(agent_arguments, " ");
+                        strcat(agent_arguments, argv[j]);
+                        i = j;
+                    }
+                }
+            }
         } else if (strcmp(argv[i], "--list") == 0) {
             agents_list = 1;
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             agents_dry_run = 1;
-        } else if (strcmp(argv[i], "--force") == 0 && i + 1 < argc) {
-            agents_force_id = argv[++i];
+        } else if (strcmp(argv[i], "--due") == 0) {
+            agents_due = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
             printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
             printf("  --session DIR   Open existing session directory\n");
@@ -582,10 +602,10 @@ int main(int argc, char **argv) {
             printf("  --matrix              Matrix bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nAgents (autonomous scheduled workflows):\n");
-            printf("  --agent              Scan workspaces, run due agents, exit\n");
+            printf("  --agent --due        Scan workspaces, run due agents, exit\n");
             printf("  --agent --list       Show all discovered agents and status\n");
             printf("  --agent --dry-run    Show what would run without executing\n");
-            printf("  --agent --force ID   Run specific agent regardless of schedule\n");
+            printf("  --agent ID [ARGS]    Run specific agent (like /agent run in TUI)\n");
             printf("\nTUI commands (inside interactive session):\n");
             printf("  /agent               List all agents with schedule and status\n");
             printf("  /agent show ID       Show agent detail (config, last result)\n");
@@ -1241,9 +1261,20 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    /* Agent mode: scan workspaces, build calendar, run due agents */
+    /* Agent mode: scan workspaces, build calendar, run agents */
     if (agents_mode) {
-        /* Acquire lock (separate from daemon lock — uses agent.lock) */
+        /* Require a sub-command: --due, --list, --dry-run, or an agent ID */
+        if (!agents_due && !agents_list && !agents_dry_run && !agent_target_id) {
+            fprintf(stderr, "Usage: nash --agent --due          Run all scheduled agents\n"
+                            "       nash --agent ID [ARGS]      Run a specific agent\n"
+                            "       nash --agent --list         List all agents\n"
+                            "       nash --agent --dry-run      Show what would run\n");
+            free(agent_arguments);
+            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+            return 1;
+        }
+
+        /* Acquire lock (separate from daemon lock -- uses agent.lock) */
         {
             char lock_path[NASH_PATH_MAX];
             snprintf(lock_path, sizeof(lock_path), "%s/agent", nash_dir);
@@ -1263,6 +1294,7 @@ int main(int argc, char **argv) {
         agent_queue_t *q = agent_scan(nash_dir);
         if (!q) {
             fprintf(stderr, "[agent] error: scan failed\n");
+            free(agent_arguments);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 1;
         }
@@ -1272,12 +1304,13 @@ int main(int argc, char **argv) {
         if (agents_list) {
             agent_queue_print(q, stdout);
             agent_queue_free(q);
+            free(agent_arguments);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 0;
         }
 
         if (agents_dry_run) {
-            fprintf(stderr, "[agent] DRY RUN — would execute:\n");
+            fprintf(stderr, "[agent] DRY RUN -- would execute:\n");
             int n = 0;
             for (int i = 0; i < q->n_agents; i++) {
                 if (!q->agents[i].is_due) continue;
@@ -1293,11 +1326,12 @@ int main(int argc, char **argv) {
             }
             if (n == 0) fprintf(stderr, "  (no agent definitions due)\n");
             agent_queue_free(q);
+            free(agent_arguments);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
             return 0;
         }
 
-        /* Execute due agents (re-scans internally to own the queue) */
+        /* Execute agents (re-scans internally to own the queue) */
         agent_queue_free(q);
         /* If a daemon (--matrix/--telegram) is running, route agent results
          * through its mailbox outbox so the bridge can deliver them. */
@@ -1306,8 +1340,10 @@ int main(int argc, char **argv) {
         if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) == 0)
             mbox = mbox_dir;
         int n_fail = agent_run_due(nash_dir, shared_store, cfg, provider,
-                                   server_model, agents_force_id,
+                                   server_model, agent_target_id,
+                                   agent_arguments,
                                    &shutdown_requested, mbox);
+        free(agent_arguments);
         cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
         return n_fail > 0 ? 1 : 0;
     }
@@ -1466,7 +1502,8 @@ int main(int argc, char **argv) {
                     /* No command pending -- check for due agents */
                     agent_run_due(nash_dir, shared_store, cfg,
                                   provider, server_model,
-                                  NULL, &shutdown_requested, mbox_dir);
+                                  NULL, NULL,
+                                  &shutdown_requested, mbox_dir);
                 }
                 continue;
             }

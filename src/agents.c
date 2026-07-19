@@ -38,6 +38,48 @@
 
 /* ── helpers ──────────────────────────────────────────── */
 
+static agent_sensitivity_t parse_sensitivity(const char *s) {
+    if (!s || !*s) return AGENT_SENSITIVITY_PUBLIC;
+    if (strcmp(s, "internal") == 0) return AGENT_SENSITIVITY_INTERNAL;
+    if (strcmp(s, "confidential") == 0) return AGENT_SENSITIVITY_CONFIDENTIAL;
+    return AGENT_SENSITIVITY_PUBLIC;
+}
+
+static const char *sensitivity_str(agent_sensitivity_t s) {
+    switch (s) {
+    case AGENT_SENSITIVITY_INTERNAL:     return "internal";
+    case AGENT_SENSITIVITY_CONFIDENTIAL: return "confidential";
+    default:                             return "public";
+    }
+}
+
+/* Parse a YAML sequence node into a string array. Returns count. */
+static int parse_tags(yaml_node_t *node, char ***out_tags) {
+    *out_tags = NULL;
+    if (!node) return 0;
+    int n = yaml_len(node);
+    if (n <= 0) return 0;
+    *out_tags = calloc((size_t)n, sizeof(char *));
+    for (int i = 0; i < n; i++) {
+        const char *s = yaml_str(yaml_item(node, i));
+        (*out_tags)[i] = strdup(s ? s : "");
+    }
+    return n;
+}
+
+/* Fill version, provider, sensitivity, tags from YAML root into agent entry */
+static void parse_agent_metadata(yaml_node_t *root, agent_entry_t *a) {
+    const char *ver = yaml_str(yaml_get(root, "version"));
+    a->version = strdup(ver ? ver : "");
+
+    const char *prov = yaml_str(yaml_get(root, "provider"));
+    a->provider_name = prov ? strdup(prov) : NULL;
+
+    a->sensitivity = parse_sensitivity(yaml_str(yaml_get(root, "sensitivity")));
+
+    a->n_tags = parse_tags(yaml_get(root, "tags"), &a->tags);
+}
+
 static void mkdirp(const char *path) {
     char tmp[NASH_PATH_MAX];
     snprintf(tmp, sizeof(tmp), "%s", path);
@@ -269,6 +311,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 a->summary = strdup(summ ? summ : "");
                 const char *desc = yaml_str(yaml_get(root, "description"));
                 a->description = strdup(desc ? desc : "");
+                parse_agent_metadata(root, a);
 
                 (*n_agents)++;
                 yaml_free(root);
@@ -320,6 +363,11 @@ static void agent_entry_free_fields(agent_entry_t *a) {
     free(a->description);
     free(a->schedule_str);
     free(a->last_status);
+    free(a->version);
+    free(a->provider_name);
+    for (int i = 0; i < a->n_tags; i++)
+        free(a->tags[i]);
+    free(a->tags);
     memset(a, 0, sizeof(*a));
 }
 
@@ -434,6 +482,7 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
         a->summary = strdup(summ ? summ : "");
         const char *desc = yaml_str(yaml_get(root, "description"));
         a->description = strdup(desc ? desc : "");
+        parse_agent_metadata(root, a);
 
         (*n_agents)++;
         yaml_free(root);
@@ -721,6 +770,8 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
             status ? status : "unknown");
     if (session_id)
         fprintf(f, ",\"session\":\"%s\"", session_id);
+    if (agent->version && agent->version[0])
+        fprintf(f, ",\"ver\":\"%s\"", agent->version);
     fprintf(f, "}\n");
     fclose(f);
     return 0;
@@ -752,10 +803,10 @@ void agent_save_result(const char *nash_dir, const char *agent_id,
 void agent_queue_print(const agent_queue_t *q, FILE *out) {
     if (!q || !out) return;
 
-    fprintf(out, "%-40s %-14s %-16s %s\n",
-            "AGENT", "SCHEDULE", "LAST RUN", "STATUS");
-    fprintf(out, "%-40s %-14s %-16s %s\n",
-            "─────", "────────", "────────", "──────");
+    fprintf(out, "%-40s %-8s %-14s %-16s %s\n",
+            "AGENT", "VERSION", "SCHEDULE", "LAST RUN", "STATUS");
+    fprintf(out, "%-40s %-8s %-14s %-16s %s\n",
+            "─────", "───────", "────────", "────────", "──────");
 
     time_t now = time(NULL);
     for (int i = 0; i < q->n_agents; i++) {
@@ -788,8 +839,17 @@ void agent_queue_print(const agent_queue_t *q, FILE *out) {
                      a->last_status ? a->last_status : "?", durbuf);
         }
 
-        fprintf(out, "%-40s %-14s %-16s %s\n",
-                a->id, a->schedule_str, last_run_str, status_str);
+        const char *ver = (a->version && a->version[0]) ? a->version : "-";
+        fprintf(out, "%-40s %-8s %-14s %-16s %s",
+                a->id, ver, a->schedule_str, last_run_str, status_str);
+        /* Append tags inline if present */
+        if (a->n_tags > 0) {
+            fprintf(out, "  [");
+            for (int t = 0; t < a->n_tags; t++)
+                fprintf(out, "%s%s", t ? "," : "", a->tags[t]);
+            fprintf(out, "]");
+        }
+        fprintf(out, "\n");
     }
 
     if (q->n_agents == 0)
@@ -891,7 +951,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
 int agent_execute(agent_queue_t *q, const char *nash_dir,
                   store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
-                  const char *force_id,
+                  const char *agent_id, const char *arguments,
                   volatile sig_atomic_t *shutdown_flag,
                   const char *mailbox_dir) {
     if (!q || !nash_dir) return -1;
@@ -903,14 +963,69 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
         agent_entry_t *a = &q->agents[i];
 
-        /* Skip agents that are not due (unless forced) */
-        if (force_id) {
-            if (strcmp(a->id, force_id) != 0) continue;
+        /* If a specific agent was requested, skip all others (bypass schedule).
+         * Otherwise only run agents that are due. */
+        if (agent_id) {
+            if (strcmp(a->id, agent_id) != 0) continue;
         } else if (!a->is_due) {
             continue;
         }
 
         fprintf(stderr, "[agent] ▶ %s\n", a->id);
+
+        /* Per-agent provider override */
+        provider_t *active_provider = provider;
+        int owns_provider = 0;
+
+        if (a->provider_name) {
+            provider_config_toml_t resolved = {0};
+            if (config_resolve_provider(cfg, a->provider_name, &resolved) != 0) {
+                fprintf(stderr, "[agent] ✗ provider '%s' not found for %s\n",
+                        a->provider_name, a->id);
+                n_fail++;
+                continue;
+            }
+            provider_config_t apcfg = {
+                .type           = provider_type_from_str(resolved.type),
+                .model_id       = resolved.model_id,
+                .api_base       = resolved.api_base,
+                .api_key_env    = resolved.api_key_env,
+                .project_id     = resolved.project_id,
+                .region         = resolved.region,
+                .context_size   = resolved.context_size,
+                .chars_per_token = resolved.chars_per_token,
+                .caching        = resolved.caching,
+                .max_tokens     = cfg->max_tokens,
+                .temperature    = cfg->temperature,
+                .top_p          = cfg->top_p,
+                .top_k          = cfg->top_k,
+                .enable_thinking = 0,
+                .thinking_budget = -1,
+                .llm_timeout     = cfg->llm_timeout,
+                .max_retries     = cfg->provider_max_retries,
+                .retry_base_sec  = cfg->provider_retry_base,
+            };
+            active_provider = provider_create(&apcfg);
+            if (!active_provider) {
+                fprintf(stderr, "[agent] ✗ failed to create provider '%s' for %s\n",
+                        a->provider_name, a->id);
+                n_fail++;
+                continue;
+            }
+            owns_provider = 1;
+            fprintf(stderr, "[agent]   provider: %s (%s)\n",
+                    a->provider_name, resolved.type ? resolved.type : "?");
+        }
+
+        /* Sensitivity gate: internal/confidential require local provider */
+        if (a->sensitivity >= AGENT_SENSITIVITY_INTERNAL &&
+            active_provider->cfg.type != PROVIDER_LOCAL) {
+            fprintf(stderr, "[agent] ✗ %s: sensitivity=%s requires local provider\n",
+                    a->id, sensitivity_str(a->sensitivity));
+            if (owns_provider) provider_free(active_provider);
+            n_fail++;
+            continue;
+        }
 
         /* Create workspace for this agent */
         workspace_t *agent_ws = workspace_new(nash_dir, a->workspace_name,
@@ -931,7 +1046,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                                           cfg->embedding.max_input_chars);
         }
 
-        playbook_t *pb = agent_prepare_playbook(a, NULL);
+        playbook_t *pb = agent_prepare_playbook(a, arguments);
         if (!pb) {
             fprintf(stderr, "[agent] ✗ failed to load agent '%s'\n", a->id);
             n_fail++;
@@ -952,17 +1067,27 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             .store = shared_store,
             .memory = agent_ws ? agent_ws->global : NULL,
             .cfg = cfg,
-            .provider = provider,
+            .provider = active_provider,
             .server_model = (char *)server_model,
             .ui = NULL,  /* headless */
             .playbook_ok = 0,
             .done = 0,
             .workspace_override = a->workspace_name ? strdup(a->workspace_name) : NULL,
             .agent_ws = agent_ws,
+            .agent_id = strdup(a->id),
+            .agent_start_time = time(NULL),
         };
 
         playbook_worker(&pargs);
         free(pargs.workspace_override);
+        free(pargs.agent_id);
+        pargs.agent_id = NULL;
+
+        /* Free per-agent provider if we created one */
+        if (owns_provider) {
+            provider_free(active_provider);
+            active_provider = NULL;
+        }
 
         if (a->timeout > 0)
             alarm(0); /* cancel alarm */
@@ -985,8 +1110,10 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         if (pargs.last_session_dir)
             agent_save_result(nash_dir, a->id, pargs.last_session_dir);
 
-        /* Route result through mailbox so bridge threads deliver it */
-        if (mailbox_dir && pargs.result_text) {
+        /* Route result through mailbox so bridge threads deliver it.
+         * Confidential agents suppress bridge delivery entirely. */
+        if (mailbox_dir && pargs.result_text &&
+            a->sensitivity < AGENT_SENSITIVITY_CONFIDENTIAL) {
             char task_id[256];
             snprintf(task_id, sizeof(task_id), "agent_%s", a->id);
             /* Replace / with _ in task_id for filename safety */
@@ -1037,7 +1164,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
 int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
-                  const char *force_id,
+                  const char *agent_id, const char *arguments,
                   volatile sig_atomic_t *shutdown_flag,
                   const char *mailbox_dir) {
     agent_queue_t *q = agent_scan(nash_dir);
@@ -1050,7 +1177,8 @@ int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
 
     int n_fail = agent_execute(q, nash_dir, shared_store, cfg,
                                provider, server_model,
-                               force_id, shutdown_flag, mailbox_dir);
+                               agent_id, arguments,
+                               shutdown_flag, mailbox_dir);
     agent_queue_save(q, nash_dir);
     agent_queue_free(q);
     return n_fail;

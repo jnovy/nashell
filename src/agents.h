@@ -18,6 +18,13 @@ typedef struct {
     int is_startup;           /* @startup: always due */
 } agent_schedule_t;
 
+/* ── Agent sensitivity levels ─────────────────────────── */
+typedef enum {
+    AGENT_SENSITIVITY_PUBLIC = 0,       /* no restrictions (default) */
+    AGENT_SENSITIVITY_INTERNAL,         /* local/self-hosted providers only */
+    AGENT_SENSITIVITY_CONFIDENTIAL,     /* internal + redact journal + suppress bridges */
+} agent_sensitivity_t;
+
 /* ── Single agent entry (discovered from 3-tier scan) ── */
 typedef struct {
     char *id;               /* "workspace_name/agent_name" */
@@ -32,6 +39,13 @@ typedef struct {
     char *schedule_str;     /* original cron string */
     int   timeout;          /* seconds, 0 = no limit */
     int   enabled;
+
+    /* New metadata fields (all optional) */
+    char *version;          /* agent version string (e.g. "1.2") */
+    char *provider_name;    /* per-agent provider override (references [providers.*]) */
+    agent_sensitivity_t sensitivity;  /* data classification gating */
+    char **tags;            /* organizational tags */
+    int   n_tags;
 
     /* From queue.json (persisted state) */
     time_t last_run;
@@ -109,13 +123,16 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a, const char *arguments
 void agent_save_result(const char *nash_dir, const char *agent_id,
                        const char *session_dir);
 
-/* Execute all due agents. Returns number of failures.
+/* Execute agents. If agent_id is non-NULL, run only that agent (bypassing
+ * schedule); otherwise run all due agents.  arguments is passed through to
+ * agent_prepare_playbook() for template variable injection.
+ * Returns number of failures.
  * If mailbox_dir is non-NULL, results are written to the mailbox outbox
  * so that bridge threads (Telegram, Matrix) can deliver them. */
 int agent_execute(agent_queue_t *q, const char *nash_dir,
                   store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
-                  const char *force_id,
+                  const char *agent_id, const char *arguments,
                   volatile sig_atomic_t *shutdown_flag,
                   const char *mailbox_dir);
 
@@ -123,7 +140,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
  * Convenience wrapper for CLI and daemon agent execution paths. */
 int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
                   provider_t *provider, const char *server_model,
-                  const char *force_id,
+                  const char *agent_id, const char *arguments,
                   volatile sig_atomic_t *shutdown_flag,
                   const char *mailbox_dir);
 
