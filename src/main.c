@@ -1252,8 +1252,12 @@ int main(int argc, char **argv) {
         return ok ? 0 : 1;
     }
 
-    /* Agent mode: scan workspaces, build calendar, run agents */
-    if (agents_mode) {
+    /* Agent mode: scan workspaces, build calendar, run agents.
+     * When --agent ID is used interactively (TTY), route through the TUI
+     * for streaming output + tool call visualization instead of headless. */
+    int agent_tui_mode = (agents_mode && agent_target_id &&
+                          !agents_due && !agents_dry_run && isatty(STDOUT_FILENO));
+    if (agents_mode && !agent_tui_mode) {
         /* Default to listing agents when no sub-command given */
         if (!agents_due && !agents_list && !agents_dry_run && !agent_target_id) {
             agents_list = 1;
@@ -1845,6 +1849,39 @@ int main(int argc, char **argv) {
         static infer_args_t iargs;
         static playbook_args_t pargs_tui;
         char *pending_redirect = NULL;  /* stashed query when user types during inference */
+
+        /* Auto-dispatch agent when launched via --agent ID (interactive TUI mode) */
+        if (agent_tui_mode) {
+            char agent_cmd[1024];
+            snprintf(agent_cmd, sizeof(agent_cmd), "/agent run %s%s%s",
+                     agent_target_id,
+                     agent_arguments ? " " : "",
+                     agent_arguments ? agent_arguments : "");
+            char *auto_cmd = strdup(agent_cmd);
+            command_ctx_t cmd_ctx = {
+                .session_dir  = &session_dir,
+                .nash_dir     = nash_dir,
+                .tools        = &tools,
+                .react        = &react,
+                .ui           = ui,
+                .journal      = &journal,
+                .provider     = provider,
+                .consolidation_provider = g_consolidation_provider,
+                .cfg          = cfg,
+                .store        = shared_store,
+                .memory       = memory,
+                .ws           = ws,
+                .server_model = server_model,
+                .inferring    = &inferring,
+                .infer_tid    = &infer_tid,
+                .pargs        = &pargs_tui,
+            };
+            command_dispatch(&cmd_ctx, &auto_cmd);
+            free(auto_cmd);  /* in case dispatch didn't consume it */
+            free(agent_arguments);
+            agent_arguments = NULL;
+        }
+
         while (running) {
             /* Check if playbook thread completed */
             if (inferring == INFER_PLAYBOOK && pargs_tui.done) {
