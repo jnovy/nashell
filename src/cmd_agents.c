@@ -44,8 +44,8 @@ static int cmd_agents_list(command_ctx_t *ctx) {
             "`~/.nash/workspaces/<name>/agent/<agent>.yaml`\n");
     } else {
         str_appendf(&display,
-            "| # | Agent | Schedule | Last Run | Status | Due |\n"
-            "|---|-------|----------|----------|--------|-----|\n");
+            "| # | Agent | Ver | Schedule | Last Run | Status | Due | Tags |\n"
+            "|---|-------|-----|----------|----------|--------|-----|------|\n");
 
         time_t now = time(NULL);
         for (int i = 0; i < q->n_agents; i++) {
@@ -73,10 +73,20 @@ static int cmd_agents_list(command_ctx_t *ctx) {
                              a->last_status ? a->last_status : "?", durbuf);
             }
 
-            str_appendf(&display, "| %d | %s | `%s` | %s | %s | %s |\n",
-                        i + 1, a->id, a->schedule_str,
+            /* Build tags string */
+            char tags_str[256] = "";
+            for (int t = 0; t < a->n_tags && t < 10; t++) {
+                if (t > 0) strncat(tags_str, ",", sizeof(tags_str) - strlen(tags_str) - 1);
+                strncat(tags_str, a->tags[t], sizeof(tags_str) - strlen(tags_str) - 1);
+            }
+
+            str_appendf(&display, "| %d | %s | %s | `%s` | %s | %s | %s | %s |\n",
+                        i + 1, a->id,
+                        (a->version && a->version[0]) ? a->version : "-",
+                        a->schedule_str,
                         last_run_str, status_str,
-                        a->is_due ? "**yes**" : "no");
+                        a->is_due ? "**yes**" : "no",
+                        tags_str[0] ? tags_str : "-");
         }
 
         str_appendf(&display,
@@ -131,6 +141,20 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
     str_appendf(&display, "**File**: `%s`  \n", found->agent_file);
     str_appendf(&display, "**Schedule**: `%s`  \n", found->schedule_str);
     str_appendf(&display, "**Timeout**: %ds  \n", found->timeout);
+    if (found->version && found->version[0])
+        str_appendf(&display, "**Version**: %s  \n", found->version);
+    if (found->provider_name)
+        str_appendf(&display, "**Provider**: %s  \n", found->provider_name);
+    if (found->sensitivity > AGENT_SENSITIVITY_PUBLIC)
+        str_appendf(&display, "**Sensitivity**: %s  \n",
+                    found->sensitivity == AGENT_SENSITIVITY_CONFIDENTIAL
+                    ? "confidential" : "internal");
+    if (found->n_tags > 0) {
+        str_appendf(&display, "**Tags**: ");
+        for (int t = 0; t < found->n_tags; t++)
+            str_appendf(&display, "%s%s", t ? ", " : "", found->tags[t]);
+        str_appendf(&display, "  \n");
+    }
     str_appendf(&display, "**Enabled**: %s  \n", found->enabled ? "yes" : "no");
     str_appendf(&display, "**Due now**: %s  \n\n", found->is_due ? "**yes**" : "no");
 
