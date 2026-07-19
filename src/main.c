@@ -604,13 +604,6 @@ int main(int argc, char **argv) {
             printf("  --agent --due        Scan workspaces, run due agents, exit\n");
             printf("  --agent --dry-run    Show what would run without executing\n");
             printf("  --agent ID [ARGS]    Run specific agent (like /agent run in TUI)\n");
-            printf("\nTUI commands (inside interactive session):\n");
-            printf("  /agent               List all agents with schedule and status\n");
-            printf("  /agent show ID       Show agent detail (config, last result)\n");
-            printf("  /agent run ID        Run agent with live TUI output\n");
-            printf("  /agent due           Show agents currently due\n");
-            printf("  /agent history [ID]  Show execution history\n");
-            printf("  /agent result ID     Show latest result for an agent\n");
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
