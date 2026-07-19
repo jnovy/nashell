@@ -805,8 +805,6 @@ void agent_queue_print(const agent_queue_t *q, FILE *out) {
 
     fprintf(out, "%-40s %-8s %-14s %-16s %s\n",
             "AGENT", "VERSION", "SCHEDULE", "LAST RUN", "STATUS");
-    fprintf(out, "%-40s %-8s %-14s %-16s %s\n",
-            "─────", "───────", "────────", "────────", "──────");
 
     time_t now = time(NULL);
     for (int i = 0; i < q->n_agents; i++) {
