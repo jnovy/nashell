@@ -463,7 +463,7 @@ int main(int argc, char **argv) {
     int matrix_mode = 0;                  /* --matrix: Matrix bridge (implies --daemon) */
     int mailbox_timeout = 0;              /* --mailbox-timeout SECS: user_ask timeout */
     int agents_mode = 0;                  /* --agent: agent management mode */
-    int agents_list = 0;                  /* --agent --list: show agent table */
+    int agents_list = 0;                  /* --agent (default): show agent table */
     int agents_dry_run = 0;               /* --agent --dry-run: show what would run */
     int agents_due = 0;                   /* --agent --due: run all due agents */
     const char *agent_target_id = NULL;   /* --agent ID: run specific agent */
@@ -564,8 +564,6 @@ int main(int argc, char **argv) {
                     }
                 }
             }
-        } else if (strcmp(argv[i], "--list") == 0) {
-            agents_list = 1;
         } else if (strcmp(argv[i], "--dry-run") == 0) {
             agents_dry_run = 1;
         } else if (strcmp(argv[i], "--due") == 0) {
@@ -602,8 +600,8 @@ int main(int argc, char **argv) {
             printf("  --matrix              Matrix bridge (implies --daemon)\n");
             printf("  --mailbox-timeout N   Timeout in seconds for user_ask answers (0=forever)\n");
             printf("\nAgents (autonomous scheduled workflows):\n");
+            printf("  --agent              List all discovered agents and status\n");
             printf("  --agent --due        Scan workspaces, run due agents, exit\n");
-            printf("  --agent --list       Show all discovered agents and status\n");
             printf("  --agent --dry-run    Show what would run without executing\n");
             printf("  --agent ID [ARGS]    Run specific agent (like /agent run in TUI)\n");
             printf("\nTUI commands (inside interactive session):\n");
@@ -1263,15 +1261,9 @@ int main(int argc, char **argv) {
 
     /* Agent mode: scan workspaces, build calendar, run agents */
     if (agents_mode) {
-        /* Require a sub-command: --due, --list, --dry-run, or an agent ID */
+        /* Default to listing agents when no sub-command given */
         if (!agents_due && !agents_list && !agents_dry_run && !agent_target_id) {
-            fprintf(stderr, "Usage: nash --agent --due          Run all scheduled agents\n"
-                            "       nash --agent ID [ARGS]      Run a specific agent\n"
-                            "       nash --agent --list         List all agents\n"
-                            "       nash --agent --dry-run      Show what would run\n");
-            free(agent_arguments);
-            cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
-            return 1;
+            agents_list = 1;
         }
 
         /* Acquire lock (separate from daemon lock -- uses agent.lock) */
