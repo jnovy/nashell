@@ -922,6 +922,85 @@ The special sentinel `-2.0` for `vscore_exponent` exists because both `0.0` (dis
 
 Example profiles for Claude, Qwen, LLaMA, DeepSeek, Gemma, and Mistral are shown above. Create them at `~/.nash/models/` to customize behavior per model.
 
+### Prompt Optimization — `--optimize`
+
+After creating a model profile, run `--optimize` to automatically tune the `system_prompt_extra` field for your specific model. This implements the Self-Harness iterative loop ([arXiv:2606.09498](https://arxiv.org/abs/2606.09498)):
+
+1. **Weakness Mining** — cluster failures from regression runs by signature
+2. **Harness Proposal** — generate K diverse, minimal candidate edits to `system_prompt_extra`
+3. **Proposal Validation** — accept only non-regressive edits (held-in does not degrade, held-out improves)
+
+```bash
+nash --optimize light                          # 3 rounds (~4 regression runs)
+nash --optimize medium                         # 6 rounds (~7 regression runs)
+nash --optimize heavy                          # 10 rounds (~11 regression runs)
+nash --optimize 5                              # explicit round count (1-50)
+```
+
+Additional flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--reflect-model provider/model` | student model | Separate LM for reflection (e.g. `anthropic/claude-sonnet-4-20250514`) |
+| `--epochs N` | 1 | Multi-epoch training — repeat the full optimization N times |
+| `--edit-budget N` | 4 | Initial edit budget L_0 (cosine decay to floor across rounds) |
+
+The optimizer uses query banks from `~/.nash/regression/` (the same ones used by `--regression`). If no query banks exist, a seed set is auto-generated on first run.
+
+#### Standard Workflow for Onboarding a Local Model
+
+Running `--optimize` should be a **standard step** when onboarding any new local model — not an optional afterthought. Research on harness self-improvement ([RHI, arXiv:2607.15524](https://arxiv.org/abs/2607.15524)) found that a few optimization iterations substantially raise the performance ceiling of low-reasoning-effort agents, often **exceeding the maximum-reasoning-effort setting** while reducing inference cost by up to 60%. The gains come primarily from improved context management rather than longer reasoning traces — exactly what `system_prompt_extra` controls.
+
+This means `--optimize` yields disproportionate gains on local models (Qwen, LLaMA, DeepSeek) compared to cloud models (Claude, GPT) that already have strong instruction-following. For a 27B-35B model on consumer hardware, even `--optimize light` (3 rounds) can meaningfully close the gap with cloud-tier performance.
+
+**Recommended onboarding workflow:**
+
+```bash
+# 1. Create a model profile with conservative defaults
+cat > ~/.nash/models/qwen3-30b.toml << 'EOF'
+match = "qwen3-30b"
+chars_per_token = 4.0
+
+[thinking]
+mode = "on"
+budget = 8192
+
+[client]
+temperature = 0.5
+max_tokens = 12288
+
+[react]
+max_react_steps = 30
+cycling_detection = true
+
+system_prompt_extra = ""
+EOF
+
+# 2. Run baseline regression to see where you start
+nash --regression
+
+# 3. Run optimization (light is usually sufficient)
+nash --optimize light
+
+# 4. Verify the optimized prompt actually improved things
+nash --validate-harness baseline                # save current as baseline
+nash --regression                               # run with optimized prompt
+nash --validate-harness compare                 # compare against baseline
+
+# 5. Inspect the resulting spec
+nash --spec | grep -A 20 system_prompt_extra
+```
+
+The optimizer writes accepted prompt edits directly into the model profile's `system_prompt_extra` field. Each accepted edit is non-regressive by construction — held-in score never decreases, and at least one split improves.
+
+#### When to Re-optimize
+
+Re-run `--optimize` when:
+- **Upgrading a model** — a new Qwen or LLaMA release may have different failure modes
+- **Changing the task domain** — switching from coding to research tasks may need different prompting
+- **After adding new tools** — the model may need guidance on when/how to use them
+- **After significant config changes** — new memory thresholds, eviction policies, or tool restrictions
+
 ### Error Recovery
 
 #### HTTP 500 — 3-Tier Retry Strategy
@@ -1383,6 +1462,7 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [DCPM](https://arxiv.org/abs/2606.09483) | 2026 | Dual-process cognitive memory with async consolidation | Auto-dream: usage-based memory consolidation trigger |
 | [SWE-Shepherd](https://arxiv.org/abs/2604.10493) | 2026 | Process Reward Models (PRMs) for step-level supervision in code agents | Step-level trajectory scoring in postmortem: productive/wasteful/harmful/spinning classification per tool call, causal step attribution for failures |
 | [EvolveMem](https://arxiv.org/abs/2605.13941) | 2026 | Self-evolving memory architecture — expose retrieval config as structured action space optimized by LLM diagnosis | Memory quality telemetry (journal `memory_quality` entries), self-harness retrieval diagnosis pass, data-driven tuning of retrieval params |
+| [RHI](https://arxiv.org/abs/2607.15524) | 2026 | Recursive Harness Self-Improvement — harnesses are data-generating components; pairwise feedback over revision history; gains from context management outweigh longer reasoning | `--optimize` as standard local-model onboarding step; validates prompt-level harness optimization yields disproportionate gains on low-reasoning-effort models |
 
 ### Context Management
 | Paper | Year | Key Insight | Nash Implementation |
