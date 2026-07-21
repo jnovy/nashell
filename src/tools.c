@@ -923,7 +923,7 @@ void tool_result_free(tool_result_t *r) {
 
 /* ── system prompt ───────────────────────────────────── */
 
-char *tools_system_prompt(const char *session_dir, const char *workspace) {
+char *tools_system_prompt(const char *session_dir, const char *workspace, int headless) {
     /* Returns a newly heap-allocated string. Caller must free(). */
 
     /* UTC timestamp (gmtime_r is thread-safe unlike gmtime) */
@@ -950,28 +950,35 @@ char *tools_system_prompt(const char *session_dir, const char *workspace) {
     else
         snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
 
-    char *buf = malloc(NASH_PATH_MAX * 2);
-    if (!buf) return strdup("");
+    str_t s = str_new(4096);
 
-    snprintf(buf, NASH_PATH_MAX * 2,
-        "You are an autonomous coding agent. Solve the user's task step by step "
-        "using the available tools.\n"
-        "\n"
-        "Now is %s. CWD: %s\n"
-        "\n"
-        "Temporary directory: %s\n"
+    /* Identity — headless agents drop "coding" to avoid clashing with
+     * agent YAML identities like "CVE analyst" or "news agent". */
+    if (headless)
+        str_append_cstr(&s, "You are an autonomous agent. Solve the task step by step "
+                            "using the available tools.\n");
+    else
+        str_append_cstr(&s, "You are an autonomous coding agent. Solve the user's task step by step "
+                            "using the available tools.\n");
+
+    str_appendf(&s, "\nNow is %s. CWD: %s\n", timebuf, cwdbuf);
+
+    str_appendf(&s,
+        "\nTemporary directory: %s\n"
         "Use for scratch files, build artifacts, and intermediate outputs. "
-        "Pre-created; cleaned on reboot.\n"
-        "\n"
-        "Store-and-reference pattern:\n"
+        "Pre-created; cleaned on reboot.\n", tmpdir);
+
+    str_append_cstr(&s,
+        "\nStore-and-reference pattern:\n"
         "- Most tool outputs are stored to disk. You see only metadata with a ref "
         "alias (R0S1, R0S2, etc.).\n"
         "- Ref aliases resolve to file paths. Use file_read for small outputs, or "
         "shell_exec (grep/head/tail on the ref) for large ones.\n"
         "- You MUST read the ref if you need to see what a command produced "
-        "or what a file contains.\n"
-        "\n"
-        "Rules:\n"
+        "or what a file contains.\n");
+
+    str_append_cstr(&s,
+        "\nRules:\n"
         "- Never invoke tools speculatively. Every tool call must have a clear reason "
         "and you MUST read the result before proceeding.\n"
         "- Never guess tool results. Wait for actual output.\n"
@@ -979,34 +986,46 @@ char *tools_system_prompt(const char *session_dir, const char *workspace) {
         "- Use dedicated tools (file_read, grep_search, glob_search) for source files "
         "instead of shell_exec equivalents. "
         "For stored refs, shell_exec (grep/head/tail) avoids loading large outputs into context.\n"
-        "- Record key findings in notes — they survive context eviction. "
+        "- Record key findings in notes -- they survive context eviction. "
         "Save incrementally (every 3-5 file reads), not in one batch at the end.\n"
-        "- Call done with the final answer when finished.\n"
-        "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
-        "Never reference notes content — include all data directly in done result.\n"
-        "\n"
-        "Multi-part feature implementation:\n"
+        "- Call done with the final answer when finished.\n");
+
+    /* Result visibility — different for interactive vs headless */
+    if (headless)
+        str_append_cstr(&s,
+            "- The result from done is written to result.md and delivered via mailbox.\n");
+    else
+        str_append_cstr(&s,
+            "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
+            "Never reference notes content -- include all data directly in done result.\n");
+
+    str_append_cstr(&s,
+        "\nMulti-part feature implementation:\n"
         "- When implementing a feature that touches multiple files, place "
         "TODO(feature-name) markers at every integration point before writing code. "
         "Remove markers only when integration is verified (compiles + tested).\n"
         "- This ensures partially-completed features are discoverable via "
         "grep -rn TODO src/ and the next session knows exactly where to resume.\n"
         "- Use graduated markers: TODO = planned work, FIXME = known bug, "
-        "HACK = works but wrong approach.\n"
-        "\n"
-        "Predict before acting:\n"
+        "HACK = works but wrong approach.\n");
+
+    str_append_cstr(&s,
+        "\nPredict before acting:\n"
         "- Before each tool call, mentally predict what the tool will return.\n"
         "- If your prediction suggests the action won't achieve your goal, "
-        "refine the action before executing.\n"
-        "\n"
-        "Clarification seeking:\n"
-        "- Before selecting your first action, assess request_uncertainty on a 0-1 "
-        "scale: 0 = fully specified task, 0.5 = missing parameters the user likely "
-        "has a preference about, 1 = critically ambiguous.\n"
-        "- If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
-        "other tool. Asking early is far better than discovering ambiguity mid-task.\n"
-        "- Do NOT guess when the user's intent is unclear — ask.\n",
-        timebuf, cwdbuf, tmpdir);
+        "refine the action before executing.\n");
 
-    return buf;
+    /* Clarification seeking — only for interactive mode where user_ask works */
+    if (!headless) {
+        str_append_cstr(&s,
+            "\nClarification seeking:\n"
+            "- Before selecting your first action, assess request_uncertainty on a 0-1 "
+            "scale: 0 = fully specified task, 0.5 = missing parameters the user likely "
+            "has a preference about, 1 = critically ambiguous.\n"
+            "- If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
+            "other tool. Asking early is far better than discovering ambiguity mid-task.\n"
+            "- Do NOT guess when the user's intent is unclear -- ask.\n");
+    }
+
+    return str_steal(&s);
 }

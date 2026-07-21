@@ -162,6 +162,12 @@ playbook_t *playbook_load(const char *path) {
             const char *cmd = yaml_str(yaml_get(pass, "command"));
             pb->passes[i].command = cmd ? strdup(cmd) : NULL;
 
+            /* Custom system prompt (append or replace base prompt) */
+            const char *sysp = yaml_str(yaml_get(pass, "system_prompt"));
+            pb->passes[i].system_prompt = sysp ? strdup(sysp) : NULL;
+            const char *spm = yaml_str(yaml_get(pass, "system_prompt_mode"));
+            pb->passes[i].system_prompt_replace = (spm && strcmp(spm, "replace") == 0) ? 1 : 0;
+
             /* Per-pass error policy: abort (default), continue, retry */
             const char *onerr = yaml_str(yaml_get(pass, "on_error"));
             if (onerr && strcmp(onerr, "continue") == 0)
@@ -203,6 +209,7 @@ void playbook_free(playbook_t *pb) {
         free(pb->passes[i].label);
         free(pb->passes[i].prompt_template);
         free(pb->passes[i].command);
+        free(pb->passes[i].system_prompt);
         free_react_overrides(&pb->passes[i].react);
     }
     free(pb->passes);
@@ -899,6 +906,9 @@ void *playbook_worker(void *arg) {
             .max_steps = max_steps,
             .verbose = 1,
             .flags = flags,
+            .custom_system_prompt = pb->passes[pass].system_prompt,
+            .system_prompt_replace = pb->passes[pass].system_prompt_replace,
+            .headless = (pa->ui == NULL) ? 1 : 0,
         };
 
         /* Change 2: Update event context with pass provenance */

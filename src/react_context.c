@@ -223,7 +223,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     ctx->tools->step = 0;
 
     /* System message */
-    react_add_system_prompt(chat, ctx->tools->cfg, ctx->tools->session_dir);
+    react_add_system_prompt(chat, ctx);
 
     /* No manifest injection — scratchpad is the sole persistence mechanism.
      * Cross-loop state is carried via scratchpad (auto-saved done results +
@@ -617,7 +617,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* Record system prompt and user query in journal (step 0). */
     {
-        char *sys_prompt = react_build_system_prompt(ctx->tools->cfg, ctx->tools->session_dir);
+        char *sys_prompt = react_build_system_prompt(ctx);
         char *sys_hash = store_save(ctx->tools->store, sys_prompt);
         char *sys_alias = tool_register_alias(ctx->tools, sys_hash);
         cJSON *sys_p = cJSON_CreateObject();

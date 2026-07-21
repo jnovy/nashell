@@ -66,6 +66,9 @@ typedef struct {
     int           max_steps; /* [INIT-ONLY] max react loop iterations */
     int           verbose;   /* [INIT-ONLY] verbosity level */
     react_flags_t flags;     /* [INIT-ONLY] controls which subsystems fire */
+    const char   *custom_system_prompt; /* [INIT-ONLY] per-pass system prompt from YAML (NULL = default) */
+    int           system_prompt_replace; /* [INIT-ONLY] 0 = append to base, 1 = replace base entirely */
+    int           headless;  /* [INIT-ONLY] 1 = no UI (agent/headless mode) */
     react_runtime_t rt;      /* [INFER-ONLY] mutable per-loop runtime state */
     atomic_int    pause_requested;  /* [MAIN→INFER] set by TUI (Space) to pause */
     int           paused;           /* [INFER→MAIN] 1 when paused (read after join) */

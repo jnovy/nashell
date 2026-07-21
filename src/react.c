@@ -336,9 +336,32 @@ void react_recover_tool_threading(llm_chat_t *chat) {
 /* Build the full system prompt string (base + model-specific rules).
  * Returns malloc'd string — caller must free.
  * Used for both chat injection and journal logging. */
-char *react_build_system_prompt(const config_t *cfg, const char *session_dir) {
+char *react_build_system_prompt(const react_ctx_t *ctx) {
+    const config_t *cfg = ctx->tools ? ctx->tools->cfg : NULL;
+    const char *session_dir = ctx->tools ? ctx->tools->session_dir : NULL;
     const char *workspace = cfg ? cfg->workspace : NULL;
-    char *base = tools_system_prompt(session_dir, workspace);
+    char *base = tools_system_prompt(session_dir, workspace, ctx->headless);
+
+    /* Custom system_prompt from playbook/agent YAML: replace or append */
+    if (ctx->custom_system_prompt && ctx->custom_system_prompt[0]) {
+        if (ctx->system_prompt_replace) {
+            /* Replace mode: discard base prompt entirely */
+            free(base);
+            base = strdup(ctx->custom_system_prompt);
+            if (!base) base = strdup("");
+        } else {
+            /* Append mode (default): add custom prompt after base */
+            size_t len = strlen(base) + strlen(ctx->custom_system_prompt) + 64;
+            char *merged = malloc(len);
+            if (merged) {
+                snprintf(merged, len, "%s\n\n[AGENT IDENTITY]\n%s", base, ctx->custom_system_prompt);
+                free(base);
+                base = merged;
+            }
+        }
+    }
+
+    /* Model-specific rules from profile TOML */
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
         size_t len = strlen(base) + strlen(extra) + 64;
@@ -354,9 +377,8 @@ char *react_build_system_prompt(const config_t *cfg, const char *session_dir) {
 
 /* Add system prompt to chat, appending model-specific rules if configured.
  * Uses react_build_system_prompt() to avoid duplication. */
-void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg,
-                             const char *session_dir) {
-    char *prompt = react_build_system_prompt(cfg, session_dir);
+void react_add_system_prompt(llm_chat_t *chat, const react_ctx_t *ctx) {
+    char *prompt = react_build_system_prompt(ctx);
     llm_chat_add_typed(chat, "system", prompt, LLM_MSG_SYSTEM);
     free(prompt);
 }

@@ -437,12 +437,13 @@ void react_recover_tool_threading(llm_chat_t *chat);
 const char *react_json_get_str(cJSON *obj, const char *key);
 
 /* Build the full system prompt string. Returns malloc'd string — caller frees.
- * Used for both chat injection and journal logging. */
-char *react_build_system_prompt(const config_t *cfg, const char *session_dir);
+ * Used for both chat injection and journal logging.
+ * Respects ctx->headless (suppresses user_ask rules, adjusts identity) and
+ * ctx->custom_system_prompt (append or replace per system_prompt_replace). */
+char *react_build_system_prompt(const react_ctx_t *ctx);
 
-/* Add system prompt to chat, appending model-specific rules if configured. */
-void react_add_system_prompt(llm_chat_t *chat, const config_t *cfg,
-                             const char *session_dir);
+/* Add system prompt to chat. */
+void react_add_system_prompt(llm_chat_t *chat, const react_ctx_t *ctx);
 
 /* Emit a react event (NULL-safe). */
 void react_emit(react_event_fn fn, void *ud, react_event_t *ev);

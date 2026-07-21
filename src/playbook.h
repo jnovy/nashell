@@ -58,6 +58,8 @@ typedef struct {
     pb_pass_type_t type;      /* react (default) or script */
     pb_error_policy_t on_error; /* error policy (default: abort) */
     char *command;            /* shell command for PB_PASS_SCRIPT type */
+    char *system_prompt;      /* custom system prompt text (NULL = use default) */
+    int   system_prompt_replace; /* 0 = append to base (default), 1 = replace base entirely */
     pb_react_overrides_t react;  /* per-pass overrides */
 } pb_pass_t;
 
