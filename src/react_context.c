@@ -505,7 +505,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
      * Injected as read-only structural context so the LLM understands
      * the codebase architecture without seeing full implementations. */
     {
-        int do_repomap = ctx->tools->cfg ? ctx->tools->cfg->repo_map : 1;
+        int do_repomap = ctx->flags.inject_repomap;
         if (do_repomap) {
             int rm_budget = ctx->tools->cfg
                 ? ctx->tools->cfg->repo_map_max_chars : 8000;

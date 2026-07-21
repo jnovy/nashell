@@ -26,6 +26,7 @@ typedef struct {
     int  max_steps;           /* 0 = inherit */
     int  inject_memory;       /* -1 = inherit */
     int  inject_prev_result;  /* -1 = inherit */
+    int  inject_repomap;      /* -1 = inherit */
     int  enable_reflection;   /* -1 = inherit */
     int  enable_pruning;      /* -1 = inherit */
     int  enable_compaction;   /* -1 = inherit */
@@ -37,7 +38,7 @@ typedef struct {
     int    n_tools_block;
 } pb_react_overrides_t;
 
-#define PB_REACT_INHERIT { 0, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0 }
+#define PB_REACT_INHERIT { 0, -1, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0 }
 
 /* Pass type: LLM react loop (default) or shell script (no LLM). */
 typedef enum {

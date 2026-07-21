@@ -13,6 +13,7 @@
 typedef struct {
     unsigned int inject_memory       : 1;  /* inject memory index + pinned + recall */
     unsigned int inject_prev_result  : 1;  /* inject result.md as [PREVIOUS RESULT] */
+    unsigned int inject_repomap      : 1;  /* inject aider-style repo map */
     unsigned int enable_reflection   : 1;  /* post-task reflection (memory_store lessons) */
     unsigned int enable_pruning      : 1;  /* post-reflection scratchpad pruning */
     unsigned int enable_compaction   : 1;  /* LLM-based context eviction/summarization */
@@ -20,10 +21,10 @@ typedef struct {
 } react_flags_t;
 
 /* Default: all subsystems enabled */
-#define REACT_FLAGS_DEFAULT { 1, 1, 1, 1, 1, 1 }
+#define REACT_FLAGS_DEFAULT { 1, 1, 1, 1, 1, 1, 1 }
 
 /* Bare mode: all subsystems disabled (for dream/playbook passes) */
-#define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0 }
+#define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0, 0 }
 
 /* Thread ownership contract for react_ctx_t:
  *

@@ -36,6 +36,19 @@ static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t 
         ro->inject_memory = yaml_bool(n, -1);
     if ((n = yaml_get(react_node, "inject_prev_result")))
         ro->inject_prev_result = yaml_bool(n, -1);
+    if ((n = yaml_get(react_node, "inject_repomap")))
+        ro->inject_repomap = yaml_bool(n, -1);
+    /* standalone: convenience flag -- sets inject_memory/prev_result/repomap
+     * to 0 unless explicitly overridden.  Makes the YAML self-contained:
+     * no host-local memories, repo map, or prior results are injected. */
+    if ((n = yaml_get(react_node, "standalone"))) {
+        int val = yaml_bool(n, 0);
+        if (val) {
+            if (ro->inject_memory == -1)      ro->inject_memory = 0;
+            if (ro->inject_prev_result == -1) ro->inject_prev_result = 0;
+            if (ro->inject_repomap == -1)     ro->inject_repomap = 0;
+        }
+    }
     if ((n = yaml_get(react_node, "enable_reflection")))
         ro->enable_reflection = yaml_bool(n, -1);
     if ((n = yaml_get(react_node, "enable_pruning")))
@@ -236,6 +249,8 @@ react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
     react_flags_t f;
     f.inject_memory       = RESOLVE(inject_memory, PROFILE_OR_1(profile_inject_memory));
     f.inject_prev_result  = RESOLVE(inject_prev_result, PROFILE_OR_1(profile_inject_prev_result));
+    f.inject_repomap      = RESOLVE(inject_repomap,
+                                cfg && cfg->repo_map >= 0 ? cfg->repo_map : 1);
     f.enable_reflection   = RESOLVE(enable_reflection, PROFILE_OR_1(profile_enable_reflection));
     f.enable_pruning      = RESOLVE(enable_pruning, PROFILE_OR_1(profile_enable_pruning));
     f.enable_compaction   = RESOLVE(enable_compaction, PROFILE_OR_1(profile_enable_compaction));

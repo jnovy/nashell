@@ -224,6 +224,10 @@ static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
         flags->enable_compaction = cfg->profile_enable_compaction;
     if (cfg->profile_enable_scoring >= 0)
         flags->enable_scoring = cfg->profile_enable_scoring;
+    /* repo_map is a global config bool (not per-profile), but the gate
+     * moved from cfg->repo_map to flags->inject_repomap.  Mirror it. */
+    if (cfg->repo_map >= 0 && !cfg->repo_map)
+        flags->inject_repomap = 0;
 }
 
 /* Build a tool_filter_t from profile-level tool filter on config.
