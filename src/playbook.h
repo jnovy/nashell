@@ -85,6 +85,10 @@ typedef struct {
     /* React defaults for all passes */
     pb_react_overrides_t react_defaults;
 
+    /* Top-level system prompt (inherited by passes that don't set their own) */
+    char *system_prompt;
+    int   system_prompt_replace; /* 0 = append to base (default), 1 = replace */
+
     /* Passes */
     pb_pass_t *passes;
     int        n_passes;

@@ -145,6 +145,12 @@ playbook_t *playbook_load(const char *path) {
     /* React defaults */
     parse_react_overrides(yaml_get(root, "react"), &pb->react_defaults);
 
+    /* Top-level system prompt (inherited by all passes unless overridden) */
+    if ((s = yaml_str(yaml_get(root, "system_prompt"))))
+        pb->system_prompt = strdup(s);
+    s = yaml_str(yaml_get(root, "system_prompt_mode"));
+    pb->system_prompt_replace = (s && strcmp(s, "replace") == 0) ? 1 : 0;
+
     /* Passes */
     yaml_node_t *passes = yaml_get(root, "passes");
     if (passes && passes->type == YAML_SEQUENCE) {
@@ -218,6 +224,7 @@ void playbook_free(playbook_t *pb) {
     free(pb->var_keys);
     free(pb->var_values);
     free_react_overrides(&pb->react_defaults);
+    free(pb->system_prompt);
     for (int i = 0; i < pb->n_passes; i++) {
         free(pb->passes[i].label);
         free(pb->passes[i].prompt_template);
@@ -921,8 +928,12 @@ void *playbook_worker(void *arg) {
             .max_steps = max_steps,
             .verbose = 1,
             .flags = flags,
-            .custom_system_prompt = pb->passes[pass].system_prompt,
-            .system_prompt_replace = pb->passes[pass].system_prompt_replace,
+            .custom_system_prompt = pb->passes[pass].system_prompt
+                                    ? pb->passes[pass].system_prompt
+                                    : pb->system_prompt,
+            .system_prompt_replace = pb->passes[pass].system_prompt
+                                    ? pb->passes[pass].system_prompt_replace
+                                    : pb->system_prompt_replace,
             .headless = (pa->ui == NULL) ? 1 : 0,
         };
 
