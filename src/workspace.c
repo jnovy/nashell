@@ -80,8 +80,10 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
 
 void workspace_free(workspace_t *ws) {
     if (!ws) return;
-    memory_free(ws->global);
+    /* Free workspace first: its embed_ctx may share the ONNX session
+     * owned by global's embed_ctx, so the borrower must go first. */
     memory_free(ws->workspace);
+    memory_free(ws->global);
     free(ws->name);
     free(ws);
 }
@@ -97,9 +99,19 @@ int workspace_init_embeddings(workspace_t *ws, const char *type,
     if (ws->global)
         r = memory_init_embeddings(ws->global, type, model, api_base,
                                    model_path, dimension, max_input_chars);
-    if (ws->workspace)
-        memory_init_embeddings(ws->workspace, type, model, api_base,
-                               model_path, dimension, max_input_chars);
+    if (ws->workspace) {
+        /* Share the embedding backend from global memory instead of loading
+         * the ONNX model (or probing the HTTP service) a second time. */
+        embed_ctx_t *global_embed = r ? memory_embed_ctx(ws->global) : NULL;
+        if (global_embed) {
+            embed_ctx_t *shared = embed_share(global_embed);
+            if (shared)
+                memory_set_embed(ws->workspace, shared);
+        } else {
+            memory_init_embeddings(ws->workspace, type, model, api_base,
+                                   model_path, dimension, max_input_chars);
+        }
+    }
     return r;
 }
 

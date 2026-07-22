@@ -1856,6 +1856,18 @@ int memory_init_embeddings(memory_t *m, const char *type,
     return 1;
 }
 
+void memory_set_embed(memory_t *m, embed_ctx_t *ctx) {
+    if (!m || !ctx) return;
+    m->embed = ctx;
+
+    /* Embed memories with missing, stale, or wrong-dimension .emb files */
+    int embedded = memory_embed_all(m);
+    if (embedded > 0) {
+        nash_log("[memory] (re)generated embeddings for %d memories",
+                embedded);
+    }
+}
+
 int memory_embed_entry(memory_t *m, const char *key, const char *value) {
     if (!m || !m->embed || !m->embed->available || !key) return -1;
 

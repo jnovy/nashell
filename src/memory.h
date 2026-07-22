@@ -273,6 +273,11 @@ int memory_init_embeddings(memory_t *m, const char *type,
                            const char *model_path, int dimension,
                            int max_input_chars);
 
+/* Set a pre-created (possibly shared) embedding context on a memory store.
+ * Skips probe/init - the ctx must already be probed and available.
+ * Runs memory_embed_all() to embed any entries missing .emb files. */
+void memory_set_embed(memory_t *m, embed_ctx_t *ctx);
+
 /* Generate and save embedding for a memory entry.
  * Called automatically by memory_store when embeddings are enabled.
  * Saves to .memory/<key>.emb alongside the .json file.

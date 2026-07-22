@@ -30,17 +30,37 @@ embed_ctx_t *embed_new(const embed_config_t *cfg) {
     ctx->available = 0;
     ctx->detected_dim = 0;
     ctx->onnx = NULL;
+    ctx->owns_onnx = 1;  /* new contexts own their ONNX session */
 
     return ctx;
 }
 
 void embed_free(embed_ctx_t *ctx) {
     if (!ctx) return;
-    if (ctx->onnx) onnx_embed_free(ctx->onnx);
+    if (ctx->onnx && ctx->owns_onnx) onnx_embed_free(ctx->onnx);
     free(ctx->cfg.model);
     free(ctx->cfg.api_base);
     free(ctx->cfg.model_path);
     free(ctx);
+}
+
+embed_ctx_t *embed_share(embed_ctx_t *src) {
+    if (!src) return NULL;
+    embed_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) return NULL;
+
+    ctx->cfg.type = src->cfg.type;
+    ctx->cfg.model = src->cfg.model ? strdup(src->cfg.model) : NULL;
+    ctx->cfg.api_base = src->cfg.api_base ? strdup(src->cfg.api_base) : NULL;
+    ctx->cfg.model_path = src->cfg.model_path ? strdup(src->cfg.model_path) : NULL;
+    ctx->cfg.dimension = src->cfg.dimension;
+    ctx->cfg.max_input_chars = src->cfg.max_input_chars;
+    ctx->available = src->available;
+    ctx->detected_dim = src->detected_dim;
+    ctx->onnx = src->onnx;    /* share the ONNX session */
+    ctx->owns_onnx = 0;       /* do NOT free it on embed_free */
+
+    return ctx;
 }
 
 /* ── Model context window lookup ─────────────────────── */

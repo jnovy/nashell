@@ -47,6 +47,7 @@ typedef struct {
     int  available;     /* 1 if embedding backend is ready */
     int  detected_dim;  /* auto-detected dimension from first successful call */
     onnx_embed_ctx_t *onnx;  /* ONNX backend context (NULL if not using ONNX) */
+    int  owns_onnx;     /* 1 if this ctx owns (and should free) the onnx ctx */
 } embed_ctx_t;
 
 /* ── Embedding vector ────────────────────────────────── */
@@ -68,6 +69,11 @@ int embed_probe(embed_ctx_t *ctx);
 
 /* Free embedding context */
 void embed_free(embed_ctx_t *ctx);
+
+/* Create a shared embedding context that reuses the ONNX session from src.
+ * The shared context does NOT own the ONNX session (won't free it).
+ * This avoids loading the model twice for global + workspace memory. */
+embed_ctx_t *embed_share(embed_ctx_t *src);
 
 /* Return the effective max input chars for text preparation.
  * If cfg.max_input_chars is set (>0), uses that.
