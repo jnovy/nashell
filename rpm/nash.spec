@@ -1,7 +1,7 @@
 Name:           nash
 Version:        0.1.0
-Release:        3%{?dist}
-Summary:        Autonomous coding agent in C — New Agentic Shell
+Release:        4%{?dist}
+Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
 License:        MIT
@@ -58,7 +58,7 @@ dependencies. It runs locally with local models, maintains long-term memory
 across sessions, and learns from every task it completes.
 
 Key features:
-  - 19 built-in tools (file I/O, search, web fetch, memory, image analysis, todo)
+  - 21 built-in tools (file I/O, search, web fetch, memory, image analysis, device control, subtask)
   - ncurses TUI with markdown rendering, step expansion, in-page search
   - Multiple LLM providers: local (llama.cpp), OpenAI, Anthropic, Vertex AI
   - Semantic memory with Bayesian pruning, ONNX embeddings, and BM25 scoring
@@ -115,6 +115,24 @@ make test CC=gcc \
 %{_datadir}/%{name}/
 
 %changelog
+* Wed Jul 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-4
+- feat: subtask tool for isolated child react loops
+- feat: device_control tool for GUI automation (screenshot, click, type, scroll, drag)
+- feat: tab-completion for TUI slash commands
+- feat: agent system - three-tier discovery (vendor, user, workspace), standalone mode
+- feat: named providers and role-based routing config
+- feat: playbook validation, script passes, error policy
+- feat: unified subprocess fork/exec/timeout with process group cleanup
+- feat: perception - multi-pass strip OCR with contrast normalization
+- feat: optimizer - flip gating, blind critic, signal stopping
+- feat: repo map opt-in via positional PATH arg
+- feat: Ctrl-W (delete word backwards) in TUI query input
+- fix: glob_search poll-based timeout to prevent indefinite blocking
+- fix: shell_exec default timeout 300->30s with per-call timeout param
+- fix: status bar shows actual worker model instead of default
+- fix: tab rendering, horizontal scroll, viewport clipping in md_render
+- Update tool count from 19 to 21
+
 * Mon Jul 06 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-3
 - Add missing dependencies: libjpeg-turbo, zlib-ng-compat, utf8proc, x265,
   libde265, tesseract, leptonica, pkgconfig
@@ -136,9 +154,9 @@ make test CC=gcc \
 - feat: UDCS uncertainty decomposition prompt
 - feat: event-driven retrieval and auto-promotion
 - feat: arrow-down past last history entry restores in-progress text
-- fix: context compaction rewrite — mark-sweep eviction, death spiral
+- fix: context compaction rewrite - mark-sweep eviction, death spiral
   elimination, 30+ bug fixes across 15 review passes
-- fix: memory subsystem — 13 design/logic flaws (3 critical, 3 high)
+- fix: memory subsystem - 13 design/logic flaws (3 critical, 3 high)
 - fix: replace hardcoded buffer sizes with named constants
 - fix: UTF-8 safe truncation and LLM error display
 - fix: cycle-detection refinement and portability improvements
