@@ -20,6 +20,10 @@ tests/test_onnx_embed
 tests/test_compress
 tests/test_lifecycle
 tests/test_memory_query
+tests/test_semantic_scoring
+tests/test_breadcrumbs
+tests/test_optimizer
+tests/test_reflection
 tools/chunk_backfill
 
 # Test bench results
