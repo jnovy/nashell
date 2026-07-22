@@ -209,6 +209,10 @@ static int is_dir_empty(const char *path) {
     return empty;
 }
 
+/* Set to 1 when a PATH positional arg is given on the CLI or /cwd command.
+ * Controls whether repo map is injected (default off without PATH). */
+int g_path_given = 0;
+
 /* Apply model profile react_flags overrides to a react_flags_t.
  * Profile values of -1 mean "inherit" (no override). */
 static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
@@ -224,10 +228,12 @@ static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
         flags->enable_compaction = cfg->profile_enable_compaction;
     if (cfg->profile_enable_scoring >= 0)
         flags->enable_scoring = cfg->profile_enable_scoring;
-    /* repo_map is a global config bool (not per-profile), but the gate
-     * moved from cfg->repo_map to flags->inject_repomap.  Mirror it. */
+    /* Repo map: enabled only when a PATH arg was given on the CLI,
+     * unless explicitly disabled in config (repo_map = false). */
     if (cfg->repo_map >= 0 && !cfg->repo_map)
-        flags->inject_repomap = 0;
+        flags->inject_repomap = 0;   /* config explicitly disabled */
+    else if (g_path_given)
+        flags->inject_repomap = 1;   /* PATH given on CLI */
 }
 
 /* Build a tool_filter_t from profile-level tool filter on config.
@@ -473,6 +479,7 @@ int main(int argc, char **argv) {
     const char *agent_target_id = NULL;   /* --agent ID: run specific agent */
     char *agent_arguments = NULL;         /* --agent ID arg1 arg2...: arguments for agent */
     const char *provider_name_arg = NULL;  /* --provider NAME: use named provider from [providers.*] */
+    const char *path_arg = NULL;            /* positional PATH: working directory for repo map */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
             /* --api URL: create an ad-hoc local provider and select it */
@@ -573,7 +580,10 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--due") == 0) {
             agents_due = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
-            printf("Usage: nash [--api URL] [-p QUERY] [--data-dir PATH] [--session DIR] [--play NAME]\n");
+            printf("Usage: nash [OPTIONS] [PATH]\n");
+            printf("\nPATH: working directory for codebase context (enables repo map).\n");
+            printf("      Without PATH, no repo map is generated (saves context tokens).\n");
+            printf("\nOptions:\n");
             printf("  --session DIR   Open existing session directory\n");
             printf("  --api URL       LLM server URL (creates ad-hoc local provider)\n");
             printf("  --provider NAME Use named provider from [providers.*] in config\n");
@@ -611,7 +621,26 @@ int main(int argc, char **argv) {
             printf("\nConfig: %s\n", config_path);
             config_free(cfg);
             return 0;
+        } else if (argv[i][0] != '-') {
+            /* Positional arg: treat as PATH for repo map context */
+            path_arg = argv[i];
         }
+    }
+
+    /* Handle positional PATH arg: chdir and enable repo map */
+    if (path_arg) {
+        struct stat st;
+        if (stat(path_arg, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            fprintf(stderr, "[error] PATH is not a directory: %s\n", path_arg);
+            config_free(cfg);
+            return 1;
+        }
+        if (chdir(path_arg) != 0) {
+            fprintf(stderr, "[error] cannot chdir to: %s\n", path_arg);
+            config_free(cfg);
+            return 1;
+        }
+        g_path_given = 1;
     }
 
     /* Initialize data directory */

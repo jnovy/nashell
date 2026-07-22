@@ -20,8 +20,8 @@ typedef struct {
     unsigned int enable_scoring      : 1;  /* validation scoring (recall_hits/misses) */
 } react_flags_t;
 
-/* Default: all subsystems enabled */
-#define REACT_FLAGS_DEFAULT { 1, 1, 1, 1, 1, 1, 1 }
+/* Default: all subsystems enabled except repo map (needs explicit PATH arg) */
+#define REACT_FLAGS_DEFAULT { 1, 1, 0, 1, 1, 1, 1 }
 
 /* Bare mode: all subsystems disabled (for dream/playbook passes) */
 #define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0, 0 }

@@ -187,6 +187,9 @@ static int cmd_cwd(command_ctx_t *ctx, const char *dir) {
         tui_render(ui);
         return CMD_CONTINUE;
     }
+    /* Enable repo map for subsequent queries (same as CLI PATH arg) */
+    extern int g_path_given;
+    g_path_given = 1;
     /* Show success with resolved path */
     char resolved[NASH_PATH_MAX];
     if (!getcwd(resolved, sizeof(resolved)))
@@ -945,6 +948,13 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     if (strcmp(sq, "/todo") == 0 ||
         strncmp(sq, "/todo ", 6) == 0) {
         int rc = cmd_todo(ctx, strlen(sq) > 5 ? sq + 6 : "");
+        free(sq);
+        *submitted_query = NULL;
+        return rc;
+    }
+    if (strcmp(sq, "/tool") == 0 ||
+        strncmp(sq, "/tool ", 6) == 0) {
+        int rc = cmd_tool(ctx, strlen(sq) > 5 ? sq + 6 : "");
         free(sq);
         *submitted_query = NULL;
         return rc;
