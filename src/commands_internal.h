@@ -13,4 +13,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args);
 /* cmd_agents.c */
 int cmd_agents(command_ctx_t *ctx, const char *args);
 
+/* cmd_tool.c */
+int cmd_tool(command_ctx_t *ctx, const char *args);
+
 #endif /* COMMANDS_INTERNAL_H */

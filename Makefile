@@ -81,6 +81,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/commands.c \
           src/cmd_todo.c \
           src/cmd_agents.c \
+          src/cmd_tool.c \
           src/agents.c \
           src/repomap.c \
           src/display.c \
@@ -158,6 +159,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/commands.c \
           src/cmd_todo.c \
           src/cmd_agents.c \
+          src/cmd_tool.c \
           src/agents.c \
           src/repomap.c \
           src/display.c \

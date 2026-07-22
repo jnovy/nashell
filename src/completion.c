@@ -16,6 +16,7 @@
 #include "nash_limits.h"
 #include "agents.h"
 #include "playbook.h"
+#include "tools_registry.h"
 #include "str.h"
 
 #include <stdio.h>
@@ -134,6 +135,47 @@ static int provide_runs(const char *nash_dir, const char *prefix,
         if (*count > before) added++;
     }
     closedir(d);
+    return added;
+}
+
+static int provide_tool_names(const char *nash_dir, const char *prefix,
+                              int prefix_len, char ***arr, int *count, int *cap) {
+    (void)nash_dir;
+    int added = 0;
+    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+        int before = *count;
+        add_candidate(arr, count, cap, TOOL_REGISTRY[i].name, prefix, prefix_len);
+        if (*count > before) added++;
+    }
+    return added;
+}
+
+static int provide_tool_names_and_profiles(const char *nash_dir, const char *prefix,
+                                            int prefix_len, char ***arr,
+                                            int *count, int *cap) {
+    /* Provide tool names (for on/off) */
+    int added = 0;
+    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+        int before = *count;
+        add_candidate(arr, count, cap, TOOL_REGISTRY[i].name, prefix, prefix_len);
+        if (*count > before) added++;
+    }
+    /* Also provide saved profile names (for load) */
+    if (nash_dir) {
+        char dir[NASH_PATH_MAX];
+        snprintf(dir, sizeof(dir), "%s/tool_profiles", nash_dir);
+        DIR *d = opendir(dir);
+        if (d) {
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                if (ent->d_name[0] == '.') continue;
+                int before = *count;
+                add_candidate(arr, count, cap, ent->d_name, prefix, prefix_len);
+                if (*count > before) added++;
+            }
+            closedir(d);
+        }
+    }
     return added;
 }
 
@@ -272,6 +314,12 @@ static const char *runs_arg_subs[] = {
 static const char *ms_flags[] = {
     "-q", "-k", "-p", "-r", "-n", "-d", NULL
 };
+static const char *tool_subs[] = {
+    "list", "on", "off", "reset", "save", "load", NULL
+};
+static const char *tool_arg_subs[] = {
+    "on", "off", "save", "load", NULL
+};
 
 /* ── Command definitions table ───────────────────────────── */
 
@@ -286,6 +334,7 @@ static const cmd_def_t command_defs[] = {
     { "ms",            ms_flags,  NULL, NULL, NULL },
     { "?",             NULL,      NULL, NULL, NULL },
     { "todo",          todo_subs, NULL, NULL, NULL },
+    { "tool",          tool_subs, provide_tool_names, provide_tool_names_and_profiles, tool_arg_subs },
     { "agent",         agent_subs, NULL, provide_agents, agent_arg_subs },
     { "continue",      NULL,      NULL, NULL, NULL },
 };
