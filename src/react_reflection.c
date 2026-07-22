@@ -26,16 +26,13 @@ static void log_dedup_decision(react_ctx_t *ctx, const char *key,
     cJSON_Delete(dup_p);
 }
 
-/* Scans the in-memory embedding index instead of loading every .emb
- * file from disk.  O(N) cosine comparisons with zero I/O.
+/* Scan a single memory_t's in-memory embedding index for near-duplicates.
+ * O(N) cosine comparisons with zero I/O.
  * Returns 1 if a near-duplicate was found and should_store was updated. */
-static int reflection_dedup_index_scan(
-        react_ctx_t *ctx, cJSON *rkey_j,
-        const embed_multi_vec_t *new_emb,
+static int dedup_scan_one_memory(
+        react_ctx_t *ctx, memory_t *mem, cJSON *rkey_j,
+        const embed_multi_vec_t *new_emb, float dedup_thresh,
         int *should_store, int task_succeeded) {
-    memory_t *mem = ctx->tools->memory;
-    float dedup_thresh = (ctx->tools->cfg && ctx->tools->cfg->dedup_threshold > 0)
-                          ? ctx->tools->cfg->dedup_threshold : 0.90f;
     int found = 0;
 
     pthread_mutex_lock(&mem->mtx);
@@ -51,7 +48,7 @@ static int reflection_dedup_index_scan(
         /* When a task FAILED, the reflection may produce a corrective insight
          * that contradicts an existing entry. Since contradictions have high
          * embedding similarity (same topic, opposite conclusion), we must
-         * allow the store — memory_try_consolidate will classify it as
+         * allow the store -- memory_try_consolidate will classify it as
          * SUPERSEDES and delete the old entry. Only block for successes. */
         if (!task_succeeded) {
             log_dedup_decision(ctx, rkey_j->valuestring, sim,
@@ -66,12 +63,41 @@ static int reflection_dedup_index_scan(
     return found;
 }
 
+/* Scans the in-memory embedding index instead of loading every .emb
+ * file from disk.  Checks both global and workspace-local memory.
+ * Returns 1 if a near-duplicate was found and should_store was updated. */
+static int reflection_dedup_index_scan(
+        react_ctx_t *ctx, cJSON *rkey_j,
+        const embed_multi_vec_t *new_emb,
+        int *should_store, int task_succeeded) {
+    float dedup_thresh = (ctx->tools->cfg && ctx->tools->cfg->dedup_threshold > 0)
+                          ? ctx->tools->cfg->dedup_threshold : 0.90f;
+
+    /* Scan global memory */
+    if (ctx->tools->memory) {
+        if (dedup_scan_one_memory(ctx, ctx->tools->memory, rkey_j,
+                                  new_emb, dedup_thresh,
+                                  should_store, task_succeeded))
+            return 1;
+    }
+
+    /* Scan workspace-local memory if available */
+    if (ctx->tools->ws && ctx->tools->ws->workspace &&
+        memory_has_embeddings(ctx->tools->ws->workspace)) {
+        if (dedup_scan_one_memory(ctx, ctx->tools->ws->workspace, rkey_j,
+                                  new_emb, dedup_thresh,
+                                  should_store, task_succeeded))
+            return 1;
+    }
+
+    return 0;
+}
+
 /* ── Post-loop: scoring, reflection, promotion, pruning ── */
 
 void react_post_loop(react_ctx_t *ctx, const char *user_query,
                      const char *final_result, int task_succeeded,
                      react_event_fn on_event, void *userdata) {
-    (void)user_query;  /* reserved for future use */
     /* Validation scoring: update recall_hits / recall_misses for recalled memories.
      * Counter bumps are written to JSON files but NOT git-committed —
      * these are high-frequency, low-value changes that pollute the git log
@@ -202,6 +228,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 "- key: lesson:short-name, strategy:short-name, or skill:short-name\n"
                 "- value: the causal insight — state the assumption/variable/invariant "
                 "explicitly (for skills: include approach, pitfalls, verification)\n"
+                "- supersedes: key of existing memory this replaces (optional, for updates/corrections)\n"
 ""
                 "Skills are reusable multi-step procedures (e.g. skill:compile-and-test-c).\n"
                 "\n"
@@ -263,7 +290,8 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                 "  (b) An ANTI-PATTERN (negative warning: \"NEVER do X because Y\").\n\n"
                 "For lessons, call memory_store with:\n"
                 "- key: lesson:short-name\n"
-                "- value: the causal chain — root assumption, what broke it, the fix\n"
+                "- value: the causal chain -- root assumption, what broke it, the fix\n"
+                "- supersedes: key of existing memory this corrects (optional, for updates)\n"
 "\n"
                 "For anti-patterns, call memory_store with:\n"
                 "- key: anti-pattern:short-name (e.g. anti-pattern:never-grep-binary-files)\n"
@@ -316,6 +344,23 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                          fr_len > 2000 ? "\n[truncated]" : "");
                 llm_chat_add(reflect, "user", fr_msg);
                 free(fr_msg);
+            }
+        }
+
+        /* Inject the original user query so reflection has full context
+         * about what was asked. Without this, the reflection LLM must
+         * infer the task from journal_manifest (queries truncated to
+         * 100 chars) and final_result (truncated to 2000 chars). */
+        if (user_query && user_query[0]) {
+            size_t uq_len = strlen(user_query);
+            size_t uq_show = uq_len > 2000 ? utf8_clamp(user_query, 2000) : uq_len;
+            char *uq_msg = malloc(uq_show + 64);
+            if (uq_msg) {
+                snprintf(uq_msg, uq_show + 64, "[USER QUERY]\n%.*s%s",
+                         (int)uq_show, user_query,
+                         uq_len > 2000 ? "\n[truncated]" : "");
+                llm_chat_add(reflect, "user", uq_msg);
+                free(uq_msg);
             }
         }
 
@@ -372,9 +417,16 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                  * embedding and re-embed the existing entry). */
                 cJSON *rkey_j = cJSON_GetObjectItem(raction, "key");
                 cJSON *rval_j = cJSON_GetObjectItem(raction, "value");
+                /* Check either global or workspace-local memory for embeddings */
+                memory_t *emb_mem = NULL;
+                if (ctx->tools->memory && memory_has_embeddings(ctx->tools->memory))
+                    emb_mem = ctx->tools->memory;
+                else if (ctx->tools->ws && ctx->tools->ws->workspace &&
+                         memory_has_embeddings(ctx->tools->ws->workspace))
+                    emb_mem = ctx->tools->ws->workspace;
                 if (rkey_j && rkey_j->valuestring && rval_j && rval_j->valuestring &&
-                    memory_has_embeddings(ctx->tools->memory)) {
-                    embed_ctx_t *emb = memory_embed_ctx(ctx->tools->memory);
+                    emb_mem) {
+                    embed_ctx_t *emb = memory_embed_ctx(emb_mem);
                     /* Generate a multi-vec embedding (1 chunk) so the
                      * dedup guard uses embed_cosine_sim_multi_multi — the same
                      * similarity function as consolidation_cb in tools.c.
@@ -419,6 +471,10 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                     react_emit(on_event, userdata, &ev);
                     tool_result_free(&tr);
                 }
+            } else {
+                /* Unknown action -- not memory_store or done.
+                 * Clear should_store so feedback doesn't say "Stored". */
+                should_store = 0;
             }
 
             llm_chat_add(reflect, "assistant", rresp);
@@ -436,6 +492,14 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
         /* Restore thinking mode after reflection */
         refl_provider->cfg.enable_thinking = saved_thinking;
+
+        /* Flush consolidations queued by reflection-created memories.
+         * Without this second flush, reflection memories never get
+         * consolidated -- the deferred queue is freed (not flushed)
+         * at exit via tool_free_deferred_consolidations(). */
+        if (ctx->tools->n_deferred_consol > 0) {
+            tool_flush_deferred_consolidations(ctx->tools);
+        }
     }
 
     /* No automatic scratchpad-to-memory promotion — it caused memory pollution
@@ -503,7 +567,14 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
             llm_chat_t *prune_chat = llm_chat_new();
             llm_chat_add(prune_chat, "user", str_cstr(&prune_prompt));
+
+            /* Disable thinking mode for pruning -- it's a simple text
+             * editing task that doesn't need chain-of-thought. */
+            int saved_thinking_prune = ctx->provider->cfg.enable_thinking;
+            ctx->provider->cfg.enable_thinking = 0;
             char *raw_cleaned = provider_complete(ctx->provider, prune_chat, NULL);
+            ctx->provider->cfg.enable_thinking = saved_thinking_prune;
+
             llm_chat_free(prune_chat);
             str_free(&prune_prompt);
 

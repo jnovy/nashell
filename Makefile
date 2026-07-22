@@ -181,7 +181,8 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_spec tests/test_compaction \
            tests/test_lifecycle tests/test_memory_query \
            tests/test_compress tests/test_semantic_scoring \
-           tests/test_breadcrumbs tests/test_optimizer
+           tests/test_breadcrumbs tests/test_optimizer \
+           tests/test_reflection
 
 tests/test_%: tests/test_%.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
