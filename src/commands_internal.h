@@ -15,5 +15,6 @@ int cmd_agents(command_ctx_t *ctx, const char *args);
 
 /* cmd_tool.c */
 int cmd_tool(command_ctx_t *ctx, const char *args);
+void tool_apply_default_blocks(tool_filter_t *tf);
 
 #endif /* COMMANDS_INTERNAL_H */

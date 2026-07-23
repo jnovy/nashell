@@ -22,6 +22,7 @@
 #include "llm.h"
 #include "provider.h"
 #include "tools.h"
+#include "tool_plugin.h"
 #include "searxng.h"
 #include "react.h"
 #include "store.h"
@@ -44,6 +45,7 @@
 #include "matrix.h"
 #include "banner.h"
 #include "commands.h"
+#include "commands_internal.h"
 #include "agents.h"
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
@@ -364,6 +366,7 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
         scratchpad_load(&tools->scratch, session_dir);
     }
     tools->tool_filter = build_profile_tool_filter(cfg);
+    tool_apply_default_blocks(&tools->tool_filter);
     tools->last_notes_step = -1;  /* -1 = never used */
 }
 
@@ -443,6 +446,10 @@ int main(int argc, char **argv) {
      * our popen calls (gcloud auth) and direct pipe I/O are unprotected. */
     signal(SIGPIPE, SIG_IGN);
 
+    /* Sort plugin-registered tools by name for deterministic ordering.
+     * Constructors run before main() in undefined order across TUs. */
+    tool_plugin_sort();
+
     /* Load config from ~/.nash/config.toml (or default) */
     char config_path[NASH_PATH_MAX];
     const char *home = getenv("HOME");
@@ -450,6 +457,13 @@ int main(int argc, char **argv) {
     snprintf(config_path, sizeof(config_path), "%s/.nash/config.toml", home);
 
     config_t *cfg = config_load(config_path);
+
+    /* Load external plugins from configured directory */
+    if (cfg->plugin_dir && cfg->plugin_dir[0]) {
+        int n = tool_plugin_load_dir(cfg->plugin_dir);
+        if (n > 0)
+            tool_plugin_sort();  /* re-sort after adding external plugins */
+    }
 
     /* CLI flags override config */
     const char *query = NULL;
@@ -2421,6 +2435,7 @@ int main(int argc, char **argv) {
     }
     printf("Bye.\n");
     web_search_cleanup();  /* tear down auto-started SearXNG container */
+    tool_plugin_cleanup();  /* dlclose any loaded external plugins */
     cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
     return 0;
 }

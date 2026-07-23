@@ -7,6 +7,7 @@
  * See docs/design-device-control.md §4 */
 
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include "device.h"
 #include "config.h"
 #include "perception.h"
@@ -510,3 +511,62 @@ void tool_device_cleanup(const char *session_dir) {
     device_session_close(g_device_session);
     g_device_session = NULL;
 }
+
+/* ── plugin registration ──────────────────────────────── */
+
+static const char *dc_commands[] = {
+    "screenshot", "left_click", "right_click", "middle_click",
+    "double_click", "triple_click", "type", "key", "scroll",
+    "drag", "move", "long_press", NULL
+};
+
+static const tool_param_t device_control_params[] = {
+    {"command",   "string",  "Command to execute",                                          1, dc_commands, NULL},
+    {"x",         "integer", "X coordinate (pixels)",                                       0, NULL, NULL},
+    {"y",         "integer", "Y coordinate (pixels)",                                       0, NULL, NULL},
+    {"text",      "string",  "Text to type (for type command)",                             0, NULL, NULL},
+    {"key_name",  "string",  "Key name (for key command): enter, tab, escape, ctrl+c, etc.",0, NULL, NULL},
+    {"button",    "string",  "Mouse button for drag: left, right, middle (default: left)",  0, NULL, NULL},
+    {"direction", "string",  "Scroll direction: up, down, left, right",                     0, NULL, NULL},
+    {"amount",    "integer", "Scroll amount (default: 3)",                                  0, NULL, NULL},
+    {"start_x",   "integer", "Drag start X",                                                0, NULL, NULL},
+    {"start_y",   "integer", "Drag start Y",                                                0, NULL, NULL},
+    {"end_x",     "integer", "Drag end X",                                                  0, NULL, NULL},
+    {"end_y",     "integer", "Drag end Y",                                                  0, NULL, NULL},
+    {"hold_ms",   "integer", "Hold duration in ms for long_press (default: 500, min: 100, max: 10000)", 0, NULL, NULL},
+    {0}
+};
+
+static const tool_plugin_t device_control_plugin = {
+    .abi_version = TOOL_PLUGIN_ABI_VERSION,
+    .name        = "device_control",
+    .version     = "1.0.0",
+    .description =
+        "Control a device's GUI (computer, phone, tablet, kiosk). "
+        "Workflow: screenshot to see+parse the screen (OmniParser + OCR), then act, then screenshot to verify.\\n"
+        "Commands and parameters:\\n"
+        "- screenshot: capture + run OmniParser widget detection + Tesseract OCR. Returns detected widgets with coordinates and all screen text\\n"
+        "- left_click: x, y (required). Standard click\\n"
+        "- right_click: x, y (required). Context menu\\n"
+        "- middle_click: x, y (required)\\n"
+        "- double_click: x, y (required). Open file / select word\\n"
+        "- triple_click: x, y (required). Select entire line or paragraph\\n"
+        "- type: text (required). Types into the focused element\\n"
+        "- key: key_name (required). Examples: enter, tab, escape, backspace, space, delete, ctrl+c, alt+tab, super\\n"
+        "- scroll: direction (required: up/down/left/right), optional x, y, amount (default 3)\\n"
+        "- drag: start_x, start_y, end_x, end_y (all required), optional button\\n"
+        "- move: x, y (required). Move cursor without clicking\\n"
+        "- long_press: x, y (required), hold_ms (default 500). For mobile/tablet context menus\\n"
+        "Only for visual/GUI tasks. For CLI delays, use shell_exec with sleep.\\n"
+        "IMPORTANT: Prefer keyboard shortcuts (key command with ctrl+s, alt+f4, ctrl+t, etc.) over clicking UI elements when the shortcut is known -- they are faster and more reliable than locating and clicking buttons.\\n"
+        "IMPORTANT: device_control is the EXCLUSIVE interface for GUI interaction. "
+        "Do NOT use shell_exec with xdotool, xclip, xsel, wmctrl, xprop, xwininfo, "
+        "import, scrot, gnome-screenshot, or any other CLI tool to manipulate or capture the GUI. "
+        "All clicking, typing, scrolling, dragging, and screenshots must go through device_control commands.",
+    .params      = device_control_params,
+    .execute     = (void *)tool_device_control,
+    .caps        = 0,
+    .flags       = TOOL_FLAG_DEFAULT_OFF,
+    .group       = NULL,
+};
+TOOL_PLUGIN_REGISTER(device_control_plugin)

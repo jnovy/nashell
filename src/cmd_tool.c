@@ -13,6 +13,7 @@
 #include "commands.h"
 #include "commands_internal.h"
 #include "tools_registry.h"
+#include "tool_plugin.h"
 #include "str.h"
 #include "nash_limits.h"
 #include "tui.h"
@@ -108,15 +109,24 @@ static void runtime_block_clear(tool_filter_t *tf) {
     tf->n_blocked = 0;
 }
 
+/* ── Apply default-off blocks ─────────────────────────────── */
+
+/* Block all tools with TOOL_FLAG_DEFAULT_OFF that are not already blocked.
+ * Called at startup and on /tool reset. */
+void tool_apply_default_blocks(tool_filter_t *tf) {
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *tp = tool_plugin_get(i);
+        if (!tp) continue;
+        if ((tp->flags & TOOL_FLAG_DEFAULT_OFF) && !is_runtime_blocked(tf, tp->name))
+            runtime_block_add(tf, tp->name);
+    }
+}
+
 /* ── Find tool by name ────────────────────────────────────── */
 
-/* Returns registry index or -1 if not found. */
+/* Returns 0 if found, -1 if not found. */
 static int find_tool_index(const char *name) {
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-        if (strcmp(TOOL_REGISTRY[i].name, name) == 0)
-            return i;
-    }
-    return -1;
+    return tool_plugin_find(name) ? 0 : -1;
 }
 
 /* ── Profile directory helpers ────────────────────────────── */
@@ -144,13 +154,17 @@ static int cmd_tool_list(command_ctx_t *ctx) {
         "|---|------|--------|\n");
 
     int n_on = 0, n_off = 0;
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-        const char *name = TOOL_REGISTRY[i].name;
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *tp = tool_plugin_get(i);
+        if (!tp) continue;
+        const char *name = tp->name;
         int blocked = is_runtime_blocked(tf, name);
         int prot = is_protected_tool(name);
 
         const char *status;
-        if (blocked)
+        if (blocked && (tp->flags & TOOL_FLAG_DEFAULT_OFF))
+            status = "OFF (default)";
+        else if (blocked)
             status = "OFF";
         else if (prot)
             status = "ON (protected)";
@@ -217,7 +231,7 @@ static int cmd_tool_on(command_ctx_t *ctx, const char *name) {
     runtime_block_remove(tf, name);
     char msg[256];
     snprintf(msg, sizeof(msg), "%s enabled (%d/%d tools active)",
-             name, TOOL_REGISTRY_COUNT - tf->n_blocked, TOOL_REGISTRY_COUNT);
+             name, tool_plugin_count() - tf->n_blocked, tool_plugin_count());
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_READY, msg);
     pthread_mutex_unlock(&ui->mtx);
@@ -272,7 +286,7 @@ static int cmd_tool_off(command_ctx_t *ctx, const char *name) {
     runtime_block_add(tf, name);
     char msg[256];
     snprintf(msg, sizeof(msg), "%s disabled (%d/%d tools active)",
-             name, TOOL_REGISTRY_COUNT - tf->n_blocked, TOOL_REGISTRY_COUNT);
+             name, tool_plugin_count() - tf->n_blocked, tool_plugin_count());
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_READY, msg);
     pthread_mutex_unlock(&ui->mtx);
@@ -287,9 +301,11 @@ static int cmd_tool_reset(command_ctx_t *ctx) {
     tool_filter_t *tf = &ctx->tools->tool_filter;
 
     runtime_block_clear(tf);
+    tool_apply_default_blocks(tf);
 
     char msg[128];
-    snprintf(msg, sizeof(msg), "All %d tools enabled", TOOL_REGISTRY_COUNT);
+    snprintf(msg, sizeof(msg), "Tools reset to defaults (%d/%d active)",
+             tool_plugin_count() - tf->n_blocked, tool_plugin_count());
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_READY, msg);
     pthread_mutex_unlock(&ui->mtx);
@@ -451,7 +467,7 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
     char msg[256];
     snprintf(msg, sizeof(msg), "Profile '%s' loaded (%d tool%s disabled, %d active)",
              profile, loaded, loaded == 1 ? "" : "s",
-             TOOL_REGISTRY_COUNT - tf->n_blocked);
+             tool_plugin_count() - tf->n_blocked);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_READY, msg);
     pthread_mutex_unlock(&ui->mtx);

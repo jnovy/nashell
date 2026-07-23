@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include "subprocess.h"
 #include "memory.h"
 #include "tui.h"
@@ -703,52 +704,118 @@ void tool_free_deferred_consolidations(tool_ctx_t *ctx) {
 /* SearXNG cleanup moved to searxng.c */
 
 
-/* Tool dispatch table — maps tool names to handler functions.
- * Fix #11: Handlers are listed in the SAME ORDER as TOOL_REGISTRY
- * entries in tools_registry.c.  A compile-time assertion ensures the
- * counts stay in sync, so adding a new tool to TOOL_REGISTRY without
- * adding a handler here (or vice versa) is a build error.
- *
- * Adding a new tool:
- *   1. Add handler function above (static tool_result_t tool_xxx(...))
- *   2. Add entry to TOOL_HANDLERS[] below  (same position as in TOOL_REGISTRY)
- *   3. Add entry to TOOL_REGISTRY[] in tools_registry.c (same position)
- *   4. Increment TOOL_REGISTRY_COUNT in tools_registry.c */
+/* Handler function pointer type — used by dispatch_handler() below. */
 typedef tool_result_t (*tool_handler_fn)(tool_ctx_t *, cJSON *);
 
-/* Handlers only — names come from TOOL_REGISTRY[i].name at dispatch time.
- * Order must match TOOL_REGISTRY exactly. */
-static const tool_handler_fn TOOL_HANDLERS[] = {
-    tool_shell_exec,       /* shell_exec    */
-    tool_file_read,        /* file_read     */
-    tool_file_write,       /* file_write    */
-    tool_file_edit,        /* file_edit     */
-    tool_grep_search,      /* grep_search   */
-    tool_web_fetch,        /* web_fetch     */
-    tool_web_search,       /* web_search    */
-    tool_glob_search,      /* glob_search   */
-    tool_memory_store,     /* memory_store  */
-    tool_memory_search,    /* memory_search */
-    tool_memory_pin,       /* memory_pin    */
-    tool_memory_unpin,     /* memory_unpin  */
-    tool_done,             /* done          */
-    tool_plan,             /* plan          */
-    tool_notes,            /* notes         */
-    tool_user_ask_stub,    /* user_ask      */
-    tool_memory_delete,    /* memory_delete */
-    tool_image_analyze,    /* image_analyze */
-    tool_todo,             /* todo          */
-    tool_device_control,   /* device_control */
-    tool_subtask,          /* subtask        */
+/* ── Parameter definitions for core tools ─────────────────────────── */
+
+static const tool_param_t shell_exec_params[] = {
+    {"command", "string",  "Shell command",                    1, NULL, NULL},
+    {"timeout", "integer", "Timeout in seconds (default: 30)", 0, NULL, NULL},
+    {0}
 };
 
-/* Compile-time assertion: handler count must match registry count.
- * If this fails, you added a tool to one table but not the other. */
-/* FIX #14: Use TOOL_REGISTRY_COUNT macro instead of magic number 18.
- * Adding a tool to one table but not the other now produces a clear
- * compile-time error referencing the macro name. */
-_Static_assert(sizeof(TOOL_HANDLERS) / sizeof(TOOL_HANDLERS[0]) == TOOL_REGISTRY_COUNT,
-               "TOOL_HANDLERS count must match TOOL_REGISTRY_COUNT");
+static const tool_param_t done_params[] = {
+    {"result", "string", "Complete answer with details", 1, NULL, NULL},
+    {0}
+};
+
+static const tool_param_t plan_params[] = {
+    {"result", "string", "Numbered plan: 1. step (tool)\n2. ...", 1, NULL, NULL},
+    {0}
+};
+
+static const tool_param_t user_ask_params[] = {
+    {"question", "string", "Question to ask the user", 1, NULL, NULL},
+    {0}
+};
+
+/* ── Plugin descriptors for tools defined in this file ────────────── */
+
+static const tool_plugin_t core_plugins[] = {
+    {TOOL_PLUGIN_ABI_VERSION, "shell_exec", "1.0.0",
+     "Execute a shell command (git, make, docker, gh, npm, etc.). "
+     "For file reading use file_read, for content search use grep_search, "
+     "for file search use glob_search, for URL fetching use web_fetch. "
+     "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
+     "Re-analyze stored output (grep/head/tail on the ref) instead of "
+     "re-running the command. Do not file_write to ref paths.",
+     shell_exec_params,
+     (void *)tool_shell_exec, TOOL_CAP_STORE | TOOL_CAP_CONFIG, 0, "core"},
+
+    {TOOL_PLUGIN_ABI_VERSION, "done", "1.0.0",
+     "Signal task completion. Include all concrete data (paths, numbers, URLs) in result. "
+     "The user CANNOT see notes/scratchpad -- never say \"see above\" or reference data only in notes. "
+     "Copy all relevant content (tables, lists, data) directly into the result text. "
+     "Before calling done, verify every claim in your result is supported by evidence "
+     "you actually observed (tool output, file content, command result) -- never state "
+     "facts you did not verify or assume tool calls succeeded without reading the output.",
+     done_params,
+     (void *)tool_done, TOOL_CAP_CORE, 0, "core"},
+
+    {TOOL_PLUGIN_ABI_VERSION, "plan", "1.0.0",
+     "Outline a numbered execution plan (3-8 steps) before starting work.",
+     plan_params,
+     (void *)tool_plan, TOOL_CAP_SCRATCHPAD, 0, "core"},
+
+    {TOOL_PLUGIN_ABI_VERSION, "user_ask", "1.0.0",
+     "Ask the user a clarifying question. Use when you need information "
+     "that cannot be determined from the codebase or context. The react loop "
+     "pauses until the user responds. "
+     "Prefer calling this EARLY (step 0-2) when the task is ambiguous, rather "
+     "than guessing and discovering the wrong assumption later.",
+     user_ask_params,
+     (void *)tool_user_ask_stub, TOOL_CAP_CORE, 0, "core"},
+};
+TOOL_PLUGIN_REGISTER_ARRAY(core_plugins, 4)
+
+/* Validate required params from the plugin's tool_param_t array, then call
+ * the handler.  Returns 1 always (result written to *out). */
+static int dispatch_handler(tool_ctx_t *ctx, const char *action, cJSON *params,
+                            const tool_param_t *params_def,
+                            tool_handler_fn handler,
+                            tool_result_t *out) {
+    /* Validate required params directly from the struct array */
+    char missing[64];
+    if (params_def &&
+        !tool_params_check_required(params_def, params, missing,
+                                    sizeof(missing))) {
+        char err[256];
+        snprintf(err, sizeof(err),
+            "Reminder: %s requires \"%s\" in params. "
+            "Re-call with the required parameter.",
+            action, missing);
+        *out = tools_make_error(err);
+        char *ehash = store_save(ctx->store, err);
+        char *ealias = ehash ? tool_register_alias(ctx, ehash) : NULL;
+        tool_journal(ctx, action, params, ealias, 0, 0, err, NULL);
+        free(ehash);
+        free(ealias);
+        return 1;  /* dispatched (with error) */
+    }
+    /* Call the handler */
+    *out = handler(ctx, params);
+    /* Fallback journal if handler didn't call tool_journal() */
+    if (!ctx->journal_done) {
+        const char *err = NULL;
+        if (!out->success && out->meta) {
+            cJSON *ej = cJSON_GetObjectItem(out->meta, "error");
+            if (ej && ej->valuestring) err = ej->valuestring;
+        }
+        const char *ref = out->store_ref;
+        char *fb_hash = NULL, *fb_alias = NULL;
+        if (!ref && err) {
+            fb_hash = store_save(ctx->store, err);
+            fb_alias = fb_hash ? tool_register_alias(ctx, fb_hash)
+                               : NULL;
+            if (fb_alias) ref = fb_alias;
+        }
+        tool_journal(ctx, action, params, ref, 0, 0, err, NULL);
+        free(fb_hash);
+        free(fb_alias);
+    }
+    return 1;  /* dispatched */
+}
 
 tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
     ctx->journal_done = 0;  /* reset — tool_journal() sets to 1 */
@@ -769,71 +836,13 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
         return r;
     }
 
-    /* Dispatch via unified registry lookup (Fix #11).
-     * TOOL_REGISTRY[i].name provides the name, TOOL_HANDLERS[i] the handler.
-     * Required-param validation is derived from each tool's params_json schema
-     * ("required":[...] array) — no hardcoded table needed. */
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-        if (strcmp(action, TOOL_REGISTRY[i].name) == 0) {
-            /* Validate required params from the registry's JSON schema */
-            if (TOOL_REGISTRY[i].params_json) {
-                cJSON *schema = cJSON_Parse(TOOL_REGISTRY[i].params_json);
-                if (schema) {
-                    cJSON *req = cJSON_GetObjectItem(schema, "required");
-                    if (req && cJSON_IsArray(req)) {
-                        cJSON *item;
-                        cJSON_ArrayForEach(item, req) {
-                            if (!cJSON_IsString(item)) continue;
-                            cJSON *val = cJSON_GetObjectItem(params,
-                                                             item->valuestring);
-                            if (!val || (cJSON_IsString(val) &&
-                                    (!val->valuestring ||
-                                     !val->valuestring[0]))) {
-                                char err[256];
-                                snprintf(err, sizeof(err),
-                                    "Reminder: %s requires \"%s\" in params. "
-                                    "Re-call with the required parameter.",
-                                    action, item->valuestring);
-                                cJSON_Delete(schema);
-                                tool_result_t r = tools_make_error(err);
-                                /* Store error so failed steps get clickable links in reactRX.md */
-                                char *ehash = store_save(ctx->store, err);
-                                char *ealias = ehash ? tool_register_alias(ctx, ehash) : NULL;
-                                tool_journal(ctx, action, params, ealias,
-                                             0, 0, err, NULL);
-                                free(ehash);
-                                free(ealias);
-                                return r;
-                            }
-                        }
-                    }
-                    cJSON_Delete(schema);
-                }
-            }
-            tool_result_t result = TOOL_HANDLERS[i](ctx, params);
-            /* Fallback: if the handler didn't call tool_journal(), journal
-             * the result here.  This catches error paths that return via
-             * tools_make_error() without explicit journaling. */
-            if (!ctx->journal_done) {
-                const char *err = NULL;
-                if (!result.success && result.meta) {
-                    cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
-                    if (ej && ej->valuestring) err = ej->valuestring;
-                }
-                /* Store error text so failed steps get clickable links
-                 * in reactRX.md (matches tool_web.c precedent). */
-                const char *ref = result.store_ref;
-                char *fb_hash = NULL, *fb_alias = NULL;
-                if (!ref && err) {
-                    fb_hash = store_save(ctx->store, err);
-                    fb_alias = fb_hash ? tool_register_alias(ctx, fb_hash)
-                                       : NULL;
-                    if (fb_alias) ref = fb_alias;
-                }
-                tool_journal(ctx, action, params, ref, 0, 0, err, NULL);
-                free(fb_hash);
-                free(fb_alias);
-            }
+    /* Plugin registry dispatch — all tools self-register via constructors. */
+    {
+        const tool_plugin_t *plugin = tool_plugin_find(action);
+        if (plugin && plugin->execute) {
+            tool_result_t result;
+            dispatch_handler(ctx, action, params, plugin->params,
+                             (tool_handler_fn)plugin->execute, &result);
             return result;
         }
     }
@@ -844,21 +853,25 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
      * avoid false positives (e.g. "done" matching "donefile_read"). */
     {
         const char *best_name = NULL;
-        int best_idx = -1;
+        const tool_param_t *best_params = NULL;
+        tool_handler_fn best_handler = NULL;
         size_t best_len = 0;
         size_t action_len = strlen(action);
 
-        for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-            size_t nlen = strlen(TOOL_REGISTRY[i].name);
+        for (int i = 0; i < tool_plugin_count(); i++) {
+            const tool_plugin_t *p = tool_plugin_get(i);
+            if (!p) continue;
+            size_t nlen = strlen(p->name);
             if (nlen < action_len && nlen > best_len &&
-                strncmp(action, TOOL_REGISTRY[i].name, nlen) == 0) {
-                best_name = TOOL_REGISTRY[i].name;
-                best_idx = i;
+                strncmp(action, p->name, nlen) == 0) {
+                best_name = p->name;
+                best_params = p->params;
+                best_handler = (tool_handler_fn)p->execute;
                 best_len = nlen;
             }
         }
 
-        if (best_idx >= 0) {
+        if (best_handler) {
             /* Re-check tool filter for the recovered name */
             if (!tool_filter_allows(&ctx->tool_filter, best_name)) {
                 char fmsg[256];
@@ -874,36 +887,25 @@ tool_result_t tool_execute(tool_ctx_t *ctx, const char *action, cJSON *params) {
                 return r;
             }
             nash_log("[tool] recovered concatenated tool name: "
-                    "'%s' → '%s' (dropped suffix: '%s')",
+                    "'%s' -> '%s' (dropped suffix: '%s')",
                     action, best_name, action + best_len);
-            tool_result_t result = TOOL_HANDLERS[best_idx](ctx, params);
-            if (!ctx->journal_done) {
-                const char *err = NULL;
-                if (!result.success && result.meta) {
-                    cJSON *ej = cJSON_GetObjectItem(result.meta, "error");
-                    if (ej && ej->valuestring) err = ej->valuestring;
-                }
-                const char *ref = result.store_ref;
-                char *fb_h2 = NULL, *fb_a2 = NULL;
-                if (!ref && err) {
-                    fb_h2 = store_save(ctx->store, err);
-                    fb_a2 = fb_h2 ? tool_register_alias(ctx, fb_h2) : NULL;
-                    if (fb_a2) ref = fb_a2;
-                }
-                tool_journal(ctx, best_name, params, ref, 0, 0, err, NULL);
-                free(fb_h2);
-                free(fb_a2);
-            }
+            tool_result_t result;
+            dispatch_handler(ctx, best_name, params, best_params,
+                             best_handler, &result);
             return result;
         }
     }
 
-    /* Truly unknown tool — build available tools list from the unified registry. */
+    /* Truly unknown tool - build available tools list. */
     char msg[1024];
     int pos = snprintf(msg, sizeof(msg), "unknown tool: '%.100s'. Available: ", action);
-    for (int i = 0; i < TOOL_REGISTRY_COUNT && pos < (int)sizeof(msg) - 32; i++) {
-        if (i > 0) pos += snprintf(msg + pos, sizeof(msg) - pos, ", ");
-        pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", TOOL_REGISTRY[i].name);
+    int first = 1;
+    for (int i = 0; i < tool_plugin_count() && pos < (int)sizeof(msg) - 32; i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (!p) continue;
+        if (!first) pos += snprintf(msg + pos, sizeof(msg) - pos, ", ");
+        pos += snprintf(msg + pos, sizeof(msg) - pos, "%s", p->name);
+        first = 0;
     }
     tool_result_t r = tools_make_error(msg);
     char *uh = store_save(ctx->store, msg);
