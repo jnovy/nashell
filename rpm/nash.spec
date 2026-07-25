@@ -47,18 +47,18 @@ Provides:       bundled(cJSON) = 1.7.19
 Provides:       bundled(tomlc99)
 
 %description
-Nash is a fully autonomous coding agent implemented in C. It connects to any
+Nash is a fully autonomous coding agent harness implemented in C. It connects to any
 OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and
 executes multi-step coding tasks through a ReAct (Reason + Act) loop with
 persistent memory, a TUI interface, and research-grounded cognitive
 architecture.
 
-Unlike wrapper-based agents, nash is a single compiled binary with zero Python
+Unlike wrapper-based agents, nash is a single compiled binary with minimal
 dependencies. It runs locally with local models, maintains long-term memory
 across sessions, and learns from every task it completes.
 
 Key features:
-  - 21 built-in tools (file I/O, search, web fetch, memory, image analysis, device control, subtask)
+  - built-in tools (file I/O, search, web fetch, memory, image analysis, device control, subtask)
   - ncurses TUI with markdown rendering, step expansion, in-page search
   - Multiple LLM providers: local (llama.cpp), OpenAI, Anthropic, Vertex AI
   - Semantic memory with Bayesian pruning, ONNX embeddings, and BM25 scoring
