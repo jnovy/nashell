@@ -184,7 +184,19 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_lifecycle tests/test_memory_query \
            tests/test_compress tests/test_semantic_scoring \
            tests/test_breadcrumbs tests/test_optimizer \
-           tests/test_reflection
+           tests/test_reflection tests/test_tool_plugin \
+           tests/test_tool_plugin_dlopen
+
+# Sample plugin shared objects for dlopen testing
+SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
+                 tests/sample_plugin_multi.so
+
+tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h src/cJSON.c
+	$(CC) -shared -fPIC $(CFLAGS) -I src -o $@ $< src/cJSON.c
+
+# dlopen test depends on sample .so files
+tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB_OBJ) $(SAMPLE_PLUGINS)
+	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 tests/test_%: tests/test_%.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
@@ -203,6 +215,7 @@ perception: src/perception.c src/cJSON.c
 	$(CC) $(CFLAGS) -D__PERCEPTION_TEST -o $@ $^ $(TESS_LDFLAGS) -lm
 
 clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN) perception src/dream_yaml.inc
+	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(SAMPLE_PLUGINS) perception src/dream_yaml.inc
+	rm -rf tests/plugin_dir
 
 .PHONY: all clean test perception
