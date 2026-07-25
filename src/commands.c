@@ -6,6 +6,9 @@
 #include <dirent.h>
 #include <errno.h>
 
+/* Weak definition so test binaries link without main.c */
+int g_path_given __attribute__((weak)) = 0;
+
 #include "commands.h"
 #include "commands_internal.h"
 #include "agents.h"

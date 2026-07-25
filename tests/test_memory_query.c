@@ -61,8 +61,8 @@ static void test_query_ordering_key_vs_value(void) {
     memory_t *m = make_test_memory(&dir);
 
     /* "redis" appears in key of first, value of second */
-    memory_store(m, "lesson:redis-migration", "How to upgrade redis", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:database-tips", "Use redis for caching", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:redis-migration", "How to upgrade redis", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:database-tips", "Use redis for caching", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t r = memory_query(m, "redis", 10);
     ASSERT(r.count >= 2);
@@ -82,13 +82,13 @@ static void test_query_ordering_multiple(void) {
     memory_t *m = make_test_memory(&dir);
 
     /* Both key+value match = highest */
-    memory_store(m, "lesson:python-debugging", "python debugging tips", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:python-debugging", "python debugging tips", 0, NULL, NULL, 0, NULL, 0);
     /* Key only match */
-    memory_store(m, "skill:python-profiling", "How to profile code", 0, NULL, NULL, 0);
+    memory_store(m, "skill:python-profiling", "How to profile code", 0, NULL, NULL, 0, NULL, 0);
     /* Value only match */
-    memory_store(m, "lesson:code-quality", "use python linters", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:code-quality", "use python linters", 0, NULL, NULL, 0, NULL, 0);
     /* No match */
-    memory_store(m, "lesson:rust-macros", "macro expansion rules", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:rust-macros", "macro expansion rules", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t r = memory_query(m, "python", 10);
     /* Should get 3 results (no match excluded), ordered by score */
@@ -108,9 +108,9 @@ static void test_query_type_prefix_filter(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:debugging", "how to debug code", 0, NULL, NULL, 0);
-    memory_store(m, "skill:debugging", "debugging skill desc", 0, NULL, NULL, 0);
-    memory_store(m, "fact:debugging", "debug is important", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:debugging", "how to debug code", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "skill:debugging", "debugging skill desc", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:debugging", "debug is important", 0, NULL, NULL, 0, NULL, 0);
 
     /* Query with "skill:" prefix should only return skill entries */
     memory_results_t r = memory_query(m, "skill:debugging", 10);
@@ -133,10 +133,10 @@ static void test_query_min_score_filtering(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:exact-match", "exact match content", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:exact-match", "exact match content", 0, NULL, NULL, 0, NULL, 0);
     memory_store(m, "lesson:barely-related",
                  "this has nothing to do with the query except a tiny overlap partial",
-                 0, NULL, NULL, 0);
+                 0, NULL, NULL, 0, NULL, 0);
 
     /* With very high min_score, only strong matches survive */
     memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0);
@@ -163,11 +163,11 @@ static void test_query_ref_boost(void) {
     /* Entry A: key matches "boost" → score = 0.75 (above 0.5 trigger).
      * Refs entry B. */
     const char *refs[] = {"lesson:ref-target"};
-    memory_store(m, "lesson:boost", "entry that boosts its reference", 0, NULL, refs, 1);
+    memory_store(m, "lesson:boost", "entry that boosts its reference", 0, NULL, refs, 1, NULL, 0);
     /* Entry B (ref target): value matches "boost" → baseline score = 0.25 */
-    memory_store(m, "lesson:ref-target", "should get a boost from referrer", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:ref-target", "should get a boost from referrer", 0, NULL, NULL, 0, NULL, 0);
     /* Entry C (unlinked): same value match as B → same baseline = 0.25 */
-    memory_store(m, "lesson:unlinked", "should get a boost from referrer", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:unlinked", "should get a boost from referrer", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t r = memory_query(m, "boost", 10);
     ASSERT(r.count >= 3);  /* all three should match */
@@ -199,8 +199,8 @@ static void test_query_vscore_influence(void) {
     memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0);
 
     /* Both entries match equally on substring */
-    memory_store(m, "lesson:proven-method", "how to fix bugs in code", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:risky-method", "how to fix bugs in code", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:proven-method", "how to fix bugs in code", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:risky-method", "how to fix bugs in code", 0, NULL, NULL, 0, NULL, 0);
 
     /* Give one entry good validation, the other bad */
     memory_increment_hits(m, "lesson:proven-method");
@@ -234,8 +234,8 @@ static void test_query_vscore_disabled(void) {
     /* vscore disabled (exponent = 0) */
     memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0);
 
-    memory_store(m, "lesson:method-a", "how to fix bugs quickly", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:method-b", "how to fix bugs quickly", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:method-a", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:method-b", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
 
     memory_increment_hits(m, "lesson:method-a");
     memory_increment_hits(m, "lesson:method-a");
@@ -265,7 +265,7 @@ static void test_query_max_results(void) {
         char key[64], val[64];
         snprintf(key, sizeof(key), "lesson:coding-%d", i);
         snprintf(val, sizeof(val), "coding tip number %d", i);
-        memory_store(m, key, val, 0, NULL, NULL, 0);
+        memory_store(m, key, val, 0, NULL, NULL, 0, NULL, 0);
     }
 
     memory_results_t r = memory_query(m, "coding", 3);
@@ -285,7 +285,7 @@ static void test_query_null_empty(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:test", "test value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:test", "test value", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t r = memory_query(m, NULL, 10);
     ASSERT_EQ(r.count, 0);
@@ -306,7 +306,7 @@ static void test_query_score_range(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:foobar", "foobar baz qux quux", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:foobar", "foobar baz qux quux", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t r = memory_query(m, "foobar", 10);
     ASSERT(r.count > 0);
@@ -330,7 +330,7 @@ static void test_delete_existing(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:to-delete", "delete me", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:to-delete", "delete me", 0, NULL, NULL, 0, NULL, 0);
     memory_results_t r = memory_query(m, "to-delete", 10);
     ASSERT_EQ(r.count, 1);
     memory_results_free(&r);
@@ -363,8 +363,8 @@ static void test_delete_cleans_refs(void) {
 
     /* A refs B */
     const char *refs[] = {"lesson:target"};
-    memory_store(m, "lesson:source", "source entry", 0, NULL, refs, 1);
-    memory_store(m, "lesson:target", "target entry", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:source", "source entry", 0, NULL, refs, 1, NULL, 0);
+    memory_store(m, "lesson:target", "target entry", 0, NULL, NULL, 0, NULL, 0);
 
     /* Verify source has ref */
     mem_index_entry_t *found = memory_find(m, "lesson:source");
@@ -389,9 +389,9 @@ static void test_delete_batch(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:a", "val a", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:b", "val b", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:c", "val c", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:a", "val a", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:b", "val b", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:c", "val c", 0, NULL, NULL, 0, NULL, 0);
     ASSERT_EQ(memory_count(m), 3);
 
     const char *keys[] = {"lesson:a", "lesson:c"};
@@ -416,7 +416,7 @@ static void test_delete_batch_partial(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:exists", "val", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:exists", "val", 0, NULL, NULL, 0, NULL, 0);
 
     const char *keys[] = {"lesson:exists", "lesson:ghost"};
     int n = memory_delete_batch(m, keys, 2);
@@ -433,7 +433,7 @@ static void test_increment_hits(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:validated", "test", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:validated", "test", 0, NULL, NULL, 0, NULL, 0);
 
     ASSERT_EQ(memory_increment_hits(m, "lesson:validated"), 0);
     ASSERT_EQ(memory_increment_hits(m, "lesson:validated"), 0);
@@ -451,7 +451,7 @@ static void test_increment_misses(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:bad", "test", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:bad", "test", 0, NULL, NULL, 0, NULL, 0);
 
     ASSERT_EQ(memory_increment_misses(m, "lesson:bad"), 0);
     ASSERT_EQ(memory_increment_misses(m, "lesson:bad"), 0);
@@ -482,8 +482,8 @@ static void test_vscore_calculation(void) {
     memory_t *m = make_test_memory(&dir);
     memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0);
 
-    memory_store(m, "lesson:good-vscore", "fix issues in code", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:bad-vscore", "fix issues in code", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:good-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:bad-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
 
     /* good: 5 hits, 0 misses → vscore = 6/7 ≈ 0.857 */
     for (int i = 0; i < 5; i++)
@@ -511,8 +511,8 @@ static void test_supersedes_basic(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:old-v1", "old approach", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:new-v2", "new better approach", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:old-v1", "old approach", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:new-v2", "new better approach", 0, NULL, NULL, 0, NULL, 0);
 
     int rc = memory_set_supersedes(m, "lesson:new-v2", "lesson:old-v1");
     ASSERT_EQ(rc, 0);
@@ -528,7 +528,7 @@ static void test_supersedes_nonexistent(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:old-v1", "old approach", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:old-v1", "old approach", 0, NULL, NULL, 0, NULL, 0);
 
     int rc = memory_set_supersedes(m, "lesson:ghost", "lesson:old-v1");
     ASSERT_EQ(rc, -1);
@@ -544,9 +544,9 @@ static void test_listing_all(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:bar", "bar value", 0, NULL, NULL, 0);
-    memory_store(m, "skill:baz", "baz value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:bar", "bar value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "skill:baz", "baz value", 0, NULL, NULL, 0, NULL, 0);
 
     char *listing = memory_build_listing(m, NULL);
     ASSERT_NOT_NULL(listing);
@@ -565,9 +565,9 @@ static void test_listing_type_filter(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:bar", "bar value", 0, NULL, NULL, 0);
-    memory_store(m, "skill:baz", "baz value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:bar", "bar value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "skill:baz", "baz value", 0, NULL, NULL, 0, NULL, 0);
 
     /* Filter to lessons only */
     char *listing = memory_build_listing(m, "lesson");
@@ -585,7 +585,7 @@ static void test_listing_type_filter_no_match(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:foo", "foo value", 0, NULL, NULL, 0, NULL, 0);
 
     char *listing = memory_build_listing(m, "strategy");
     /* No strategies exist — should return NULL */
@@ -598,7 +598,7 @@ static void test_listing_pinned_badge(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "fact:pinned-item", "pinned value", 1, NULL, NULL, 0);
+    memory_store(m, "fact:pinned-item", "pinned value", 1, NULL, NULL, 0, NULL, 0);
 
     char *listing = memory_build_listing(m, NULL);
     ASSERT_NOT_NULL(listing);
@@ -623,7 +623,7 @@ static void test_listing_other_type(void) {
     memory_t *m = make_test_memory(&dir);
 
     /* "custom-key" has no standard prefix → goes into "Other" */
-    memory_store(m, "custom-key", "custom value", 0, NULL, NULL, 0);
+    memory_store(m, "custom-key", "custom value", 0, NULL, NULL, 0, NULL, 0);
 
     char *listing = memory_build_listing(m, NULL);
     ASSERT_NOT_NULL(listing);
@@ -643,7 +643,7 @@ static void test_find_existing(void) {
     memory_t *m = make_test_memory(&dir);
 
     const char *refs[] = {"lesson:other"};
-    memory_store(m, "lesson:findme", "find this value", 1, NULL, refs, 1);
+    memory_store(m, "lesson:findme", "find this value", 1, NULL, refs, 1, NULL, 0);
 
     mem_index_entry_t *e = memory_find(m, "lesson:findme");
     ASSERT_NOT_NULL(e);
@@ -683,7 +683,7 @@ static void test_find_deep_copy(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:deep", "original value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:deep", "original value", 0, NULL, NULL, 0, NULL, 0);
 
     mem_index_entry_t *e1 = memory_find(m, "lesson:deep");
     ASSERT_NOT_NULL(e1);
@@ -710,7 +710,7 @@ static void test_update_scores(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:scored", "test", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:scored", "test", 0, NULL, NULL, 0, NULL, 0);
 
     int rc = memory_update_scores(m, "lesson:scored", 3, 2);
     ASSERT_EQ(rc, 0);
@@ -748,7 +748,7 @@ static void test_update_scores_zero(void) {
     char *dir;
     memory_t *m = make_test_memory(&dir);
 
-    memory_store(m, "lesson:zero", "test", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:zero", "test", 0, NULL, NULL, 0, NULL, 0);
 
     /* Both zero → guard returns -1 */
     int rc = memory_update_scores(m, "lesson:zero", 0, 0);

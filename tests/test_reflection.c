@@ -140,7 +140,7 @@ static void test_memory_workspace_embeddings(void) {
     ASSERT_EQ(memory_count(m), 0);
 
     /* Store an entry */
-    int rc = memory_store(m, "lesson:test-reflection", "test value", 0, NULL, NULL, 0);
+    int rc = memory_store(m, "lesson:test-reflection", "test value", 0, NULL, NULL, 0, NULL, 0);
     ASSERT_EQ(rc, 0);
     ASSERT_EQ(memory_count(m), 1);
 
@@ -163,8 +163,8 @@ static void test_dual_memory_instances(void) {
     ASSERT_NOT_NULL(ws);
 
     /* Store different entries in each */
-    memory_store(global, "lesson:global-fact", "global knowledge", 0, NULL, NULL, 0);
-    memory_store(ws, "lesson:ws-fact", "workspace knowledge", 0, NULL, NULL, 0);
+    memory_store(global, "lesson:global-fact", "global knowledge", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(ws, "lesson:ws-fact", "workspace knowledge", 0, NULL, NULL, 0, NULL, 0);
 
     ASSERT_EQ(memory_count(global), 1);
     ASSERT_EQ(memory_count(ws), 1);

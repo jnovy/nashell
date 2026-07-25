@@ -9,7 +9,7 @@ static void test_store_and_recall(void) {
     ASSERT_NOT_NULL(m);
 
     
-    int rc = memory_store(m, "lesson:addition", "2+2=4", 0, NULL, NULL, 0);
+    int rc = memory_store(m, "lesson:addition", "2+2=4", 0, NULL, NULL, 0, NULL, 0);
     ASSERT_EQ(rc, 0);
 
     memory_results_t results = memory_query(m, "addition", 5);
@@ -29,7 +29,7 @@ static void test_tags(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t results = memory_query(m, "redis", 5);
     ASSERT_GT(results.count, 0);
@@ -47,7 +47,7 @@ static void test_pinned(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "fact:api-key", "always use HTTPS", 1, NULL, NULL, 0);
+    memory_store(m, "fact:api-key", "always use HTTPS", 1, NULL, NULL, 0, NULL, 0);
 
     char *pinned = memory_load_pinned(m);
     ASSERT_NOT_NULL(pinned);
@@ -65,9 +65,9 @@ static void test_build_index(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "lesson:a", "value a", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:b", "value b", 0, NULL, NULL, 0);
-    memory_store(m, "fact:c", "value c", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:a", "value a", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:b", "value b", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:c", "value c", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -88,9 +88,9 @@ static void test_prune(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "fact:stale", "old data", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:keep", "important", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:keep2", "also important", 0, NULL, NULL, 0);
+    memory_store(m, "fact:stale", "old data", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:keep", "important", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:keep2", "also important", 0, NULL, NULL, 0, NULL, 0);
 
     memory_prune(m, 0, 999);
 
@@ -112,8 +112,8 @@ static void test_overwrite(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0);
-    memory_store(m, "fact:pi", "3.14159", 0, NULL, NULL, 0);
+    memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:pi", "3.14159", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t results = memory_query(m, "pi", 5);
     ASSERT_GT(results.count, 0);
@@ -130,7 +130,7 @@ static void test_no_match(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0);
+    memory_store(m, "fact:pi", "3.14", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t results = memory_query(m, "nonexistent_xyz", 5);
     ASSERT_EQ(results.count, 0);
@@ -152,11 +152,11 @@ static void test_index_type_grouping(void) {
     memory_t *m = memory_new(dir);
 
     /* Store one of each type */
-    memory_store(m, "lesson:l1", "lesson value", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:s1", "strategy value", 0, NULL, NULL, 0);
-    memory_store(m, "fact:f1", "fact value", 0, NULL, NULL, 0);
-    memory_store(m, "task:t1", "task value", 0, NULL, NULL, 0);
-    memory_store(m, "skill:sk1", "skill value", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:l1", "lesson value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:s1", "strategy value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:f1", "fact value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "task:t1", "task value", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "skill:sk1", "skill value", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -183,13 +183,13 @@ static void test_index_topic_counts(void) {
     memory_t *m = memory_new(dir);
 
     /* Store multiple of each type */
-    memory_store(m, "lesson:l1", "v1", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:l2", "v2", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:l3", "v3", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:s1", "v1", 0, NULL, NULL, 0);
-    memory_store(m, "strategy:s2", "v2", 0, NULL, NULL, 0);
-    memory_store(m, "fact:f1", "v1", 0, NULL, NULL, 0);
-    memory_store(m, "skill:sk1", "v1", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:l1", "v1", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:l2", "v2", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:l3", "v3", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:s1", "v1", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "strategy:s2", "v2", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:f1", "v1", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "skill:sk1", "v1", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -216,7 +216,7 @@ static void test_index_cap(void) {
     for (int i = 0; i < 10; i++) {
         char key[64];
         snprintf(key, sizeof(key), "fact:item-%d", i);
-        memory_store(m, key, "some value", 0, NULL, NULL, 0);
+        memory_store(m, key, "some value", 0, NULL, NULL, 0, NULL, 0);
     }
 
     char *index = memory_build_index(m);
@@ -237,8 +237,8 @@ static void test_index_no_cap_when_under_limit(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "fact:a", "v1", 0, NULL, NULL, 0);
-    memory_store(m, "fact:b", "v2", 0, NULL, NULL, 0);
+    memory_store(m, "fact:a", "v1", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:b", "v2", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -258,7 +258,7 @@ static void test_index_with_tags_display(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "lesson:redis-upgrade", "upgrade guide", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:redis-upgrade", "upgrade guide", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -285,7 +285,7 @@ static void test_skill_store_and_recall(void) {
     
     memory_store(m, "skill:compile-and-test-c",
                  "1. Write .c file\n2. gcc -Wall -Wextra\n3. Run and verify output",
-                 0, NULL, NULL, 0);
+                 0, NULL, NULL, 0, NULL, 0);
 
     /* Recall by skill name */
     memory_results_t results = memory_query(m, "compile", 5);
@@ -304,8 +304,8 @@ static void test_skill_in_index(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "skill:deploy-app", "deploy steps", 0, NULL, NULL, 0);
-    memory_store(m, "lesson:l1", "lesson", 0, NULL, NULL, 0);
+    memory_store(m, "skill:deploy-app", "deploy steps", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "lesson:l1", "lesson", 0, NULL, NULL, 0, NULL, 0);
 
     char *index = memory_build_index(m);
     ASSERT_NOT_NULL(index);
@@ -326,7 +326,7 @@ static void test_skill_recall_by_tag(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "skill:docker-deploy", "docker compose up -d", 0, NULL, NULL, 0);
+    memory_store(m, "skill:docker-deploy", "docker compose up -d", 0, NULL, NULL, 0, NULL, 0);
 
     /* Recall by keyword in key */
     memory_results_t results = memory_query(m, "docker", 5);
@@ -345,8 +345,8 @@ static void test_skill_not_pruned(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "skill:important-skill", "reusable procedure", 0, NULL, NULL, 0);
-    memory_store(m, "fact:expendable", "can be pruned", 0, NULL, NULL, 0);
+    memory_store(m, "skill:important-skill", "reusable procedure", 0, NULL, NULL, 0, NULL, 0);
+    memory_store(m, "fact:expendable", "can be pruned", 0, NULL, NULL, 0, NULL, 0);
 
     /* Prune aggressively */
     memory_prune(m, 0, 999);
@@ -375,7 +375,7 @@ static void test_skill_description_populated(void) {
                  "When debugging react loops, count total steps vs tool calls. "
                  "This is the second sentence with more detail about the procedure. "
                  "Step 3 involves checking token counts for anomalies.",
-                 0, NULL, NULL, 0);
+                 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t results = memory_query(m, "progressive", 5);
     ASSERT_GT(results.count, 0);
@@ -402,7 +402,7 @@ static void test_skill_created_at_populated(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "skill:recency-test", "test value", 0, NULL, NULL, 0);
+    memory_store(m, "skill:recency-test", "test value", 0, NULL, NULL, 0, NULL, 0);
 
     memory_results_t results = memory_query(m, "recency", 5);
     ASSERT_GT(results.count, 0);
@@ -444,7 +444,7 @@ static void test_index_unlimited_with_zero(void) {
     for (int i = 0; i < 5; i++) {
         char key[64];
         snprintf(key, sizeof(key), "fact:item-%d", i);
-        memory_store(m, key, "value", 0, NULL, NULL, 0);
+        memory_store(m, key, "value", 0, NULL, NULL, 0, NULL, 0);
     }
 
     /* Index returns counts only */
@@ -468,7 +468,7 @@ static void test_pin_unpinned_entry(void) {
     memory_t *m = memory_new(dir);
 
     /* Store unpinned */
-    memory_store(m, "fact:server-ip", "192.168.1.1", 0, NULL, NULL, 0);
+    memory_store(m, "fact:server-ip", "192.168.1.1", 0, NULL, NULL, 0, NULL, 0);
 
     /* Verify not pinned initially */
     char *pinned = memory_load_pinned(m);
@@ -497,7 +497,7 @@ static void test_unpin_pinned_entry(void) {
     memory_t *m = memory_new(dir);
 
     /* Store pinned */
-    memory_store(m, "fact:api-url", "https://api.example.com", 1, NULL, NULL, 0);
+    memory_store(m, "fact:api-url", "https://api.example.com", 1, NULL, NULL, 0, NULL, 0);
 
     /* Verify pinned initially */
     char *pinned = memory_load_pinned(m);
@@ -550,7 +550,7 @@ static void test_pin_already_pinned(void) {
     char *dir = make_test_dir();
     memory_t *m = memory_new(dir);
 
-    memory_store(m, "lesson:important", "critical knowledge", 1, NULL, NULL, 0);
+    memory_store(m, "lesson:important", "critical knowledge", 1, NULL, NULL, 0, NULL, 0);
 
     /* Pin again — should succeed (idempotent) */
     int rc = memory_pin(m, "lesson:important");
@@ -573,7 +573,7 @@ static void test_pin_preserves_value(void) {
     memory_t *m = memory_new(dir);
 
     
-    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", 0, NULL, NULL, 0);
+    memory_store(m, "lesson:redis-v7", "HMSET renamed to HSET", 0, NULL, NULL, 0, NULL, 0);
 
     /* Pin it */
     memory_pin(m, "lesson:redis-v7");
