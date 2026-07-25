@@ -352,6 +352,7 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                         str_cstr(&hint), LLM_MSG_MEMORY_HINT);
                     str_free(&hint);
                     tool_track_recalled_key(ctx->tools, ev_mem.entries[j].key);
+                    tool_fire_ledger_add(ctx->tools, ev_mem.entries[j].key);
                     pos++;
                     ev_injected++;
                 }

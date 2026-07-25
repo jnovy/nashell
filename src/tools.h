@@ -83,6 +83,12 @@ typedef struct {
     char         **recalled_keys;
     int            n_recalled_keys;
     int            recalled_keys_cap;
+    /* Fire ledger: tracks which memory keys have been injected in the
+     * current context window. Prevents redundant injection within a window
+     * but resets on compaction so facts re-arm. (arXiv 2607.20972) */
+    char         **fire_ledger;
+    int            n_fire_ledger;
+    int            fire_ledger_cap;
     /* Current step's thought (set by react.c before tool_execute, cleared after) */
     const char    *thought;
     /* Per-pass tool access control (playbooks/dream) */
@@ -131,6 +137,13 @@ typedef struct {
 
 /* Track a recalled memory key for post-task validation scoring */
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
+
+/* Fire ledger: dedup memory injection within a context window.
+ * Resets on compaction so that memories re-arm for the new window. */
+int  tool_fire_ledger_contains(tool_ctx_t *ctx, const char *key);
+void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key);
+void tool_fire_ledger_reset(tool_ctx_t *ctx);
+void tool_fire_ledger_free(tool_ctx_t *ctx);
 
 /* Scan session_dir for existing R<loop>S<N> symlinks and return the
  * highest sequence number found, or -1 if none exist. */

@@ -1472,6 +1472,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                                LLM_MSG_MEMORY_HINT);
                             tool_track_recalled_key(ctx->tools,
                                                      cy_mem.entries[cj].key);
+                            tool_fire_ledger_add(ctx->tools,
+                                                  cy_mem.entries[cj].key);
                             cy_injected++;
                         }
                     }
@@ -2013,6 +2015,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                         llm_chat_add_typed(chat, "user", hint, LLM_MSG_MEMORY_HINT);
                         tool_track_recalled_key(ctx->tools,
                                                  err_mem.entries[j].key);
+                        tool_fire_ledger_add(ctx->tools,
+                                              err_mem.entries[j].key);
                         injected++;
                     }
                 }
@@ -2127,6 +2131,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             /* Reset pre-compaction warning so it can fire again for the
              * next batch of file reads before the next compaction. */
             ctx->tools->pre_compact_warned = 0;
+            /* Reset fire ledger so memories re-arm for the new
+             * context window after compaction. (arXiv 2607.20972) */
+            tool_fire_ledger_reset(ctx->tools);
         }
 
         /* Incremental notes nudge: detect deferred synthesis anti-pattern.
@@ -2236,6 +2243,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     ctx->tools->recalled_keys = NULL;
     ctx->tools->n_recalled_keys = 0;
     ctx->tools->recalled_keys_cap = 0;
+
+    /* Free fire ledger (full cleanup, not just reset) */
+    tool_fire_ledger_free(ctx->tools);
 
     free(last_sig);
     free(last_result_json);

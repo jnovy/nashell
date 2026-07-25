@@ -358,6 +358,56 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
     ctx->recalled_keys[ctx->n_recalled_keys++] = dup;
 }
 
+/* ── Fire ledger ────────────────────────────────────── */
+
+#define FIRE_LEDGER_MAX 256
+
+int tool_fire_ledger_contains(tool_ctx_t *ctx, const char *key) {
+    if (!ctx || !key) return 0;
+    for (int i = 0; i < ctx->n_fire_ledger; i++)
+        if (strcmp(ctx->fire_ledger[i], key) == 0) return 1;
+    return 0;
+}
+
+void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key) {
+    if (!ctx || !key) return;
+    /* Deduplicate */
+    if (tool_fire_ledger_contains(ctx, key)) return;
+    /* Cap */
+    if (ctx->n_fire_ledger >= FIRE_LEDGER_MAX) return;
+    /* Grow if needed */
+    if (ctx->n_fire_ledger >= ctx->fire_ledger_cap) {
+        int new_cap = ctx->fire_ledger_cap ? ctx->fire_ledger_cap * 2 : 16;
+        if (new_cap > FIRE_LEDGER_MAX) new_cap = FIRE_LEDGER_MAX;
+        char **new_arr = realloc(ctx->fire_ledger,
+                                  (size_t)new_cap * sizeof(char *));
+        if (!new_arr) return;
+        ctx->fire_ledger = new_arr;
+        ctx->fire_ledger_cap = new_cap;
+    }
+    char *dup = strdup(key);
+    if (!dup) return;
+    ctx->fire_ledger[ctx->n_fire_ledger++] = dup;
+}
+
+void tool_fire_ledger_reset(tool_ctx_t *ctx) {
+    if (!ctx) return;
+    for (int i = 0; i < ctx->n_fire_ledger; i++)
+        free(ctx->fire_ledger[i]);
+    ctx->n_fire_ledger = 0;
+    /* Keep allocated buffer for reuse */
+}
+
+void tool_fire_ledger_free(tool_ctx_t *ctx) {
+    if (!ctx) return;
+    for (int i = 0; i < ctx->n_fire_ledger; i++)
+        free(ctx->fire_ledger[i]);
+    free(ctx->fire_ledger);
+    ctx->fire_ledger = NULL;
+    ctx->n_fire_ledger = 0;
+    ctx->fire_ledger_cap = 0;
+}
+
 /* ── shell_exec ──────────────────────────────────────── */
 
 /* Resolve ref aliases (R0S1, R2S14, ...) in a shell command string to their

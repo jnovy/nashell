@@ -74,6 +74,7 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
                 all->entries[j].key, recency_buf,
                 hits + misses, confidence, content);
             tool_track_recalled_key(tools, all->entries[j].key);
+            tool_fire_ledger_add(tools, all->entries[j].key);
             remaining--;
             added++;
         }
@@ -476,6 +477,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                                     ref_key, all_memories.entries[j].key,
                                     ref_entry->value);
                                 tool_track_recalled_key(ctx->tools, ref_key);
+                                tool_fire_ledger_add(ctx->tools, ref_key);
                                 assoc_added++;
                             }
                             memory_find_free(ref_entry);

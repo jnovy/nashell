@@ -598,6 +598,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
             if (ie && ie->value) {
                 str_appendf(&out, "[MEMORY -- %s]\n%s\n\n", ie->key, ie->value);
                 tool_track_recalled_key(ctx, ie->key);
+                tool_fire_ledger_add(ctx, ie->key);
                 mem_count = 1;
             }
             memory_find_free(ie);
@@ -667,6 +668,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                 memory_entry_t *e = &mem_results.entries[mi];
                 str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
                 tool_track_recalled_key(ctx, e->key);
+                tool_fire_ledger_add(ctx, e->key);
                 mi++;
             } else if (si < ses_count) {
                 /* Emit session result */
