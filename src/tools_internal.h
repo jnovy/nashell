@@ -51,50 +51,21 @@ tool_result_t tools_memory_key_op(tool_ctx_t *ctx, cJSON *params,
                                   const char *status_str, const char *harness_note,
                                   ws_key_fn ws_fn, mem_key_fn mem_fn);
 
-/* ── Tool handler declarations (defined in tool_*.c files) ───────── */
+/* ── Cross-file declarations (only functions called outside their own TU) ── */
 
-/* tool_web.c */
-tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_memory.c */
-tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_memory_pin(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_memory_unpin(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params);
-/* LLM-based consolidation -- called by tool_flush_deferred_consolidations.
- * target: the memory_t instance the new entry was stored in (workspace or global). */
+/* tool_memory.c: LLM-based consolidation -- called by
+ * tool_flush_deferred_consolidations() in tools.c.
+ * target: the memory_t instance the new entry was stored in. */
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                    const char *new_value, memory_t *target);
 
-/* tool_file.c */
-tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_search.c */
-tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params);
-tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_notes.c */
-tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_image.c */
-tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_todo.c */
-tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params);
-
-/* tool_device.c */
-tool_result_t tool_device_control(tool_ctx_t *ctx, cJSON *params);
-
-/* Stop the device stream and save the capture to the session directory.
- * Called from the react loop when `done` is produced.  Safe to call
+/* tool_device.c: Stop the device stream and save the capture to the session
+ * directory.  Called from react.c when `done` is produced.  Safe to call
  * when no device session exists (no-op). */
 void tool_device_cleanup(const char *session_dir);
 
-/* tool_subtask.c — Sub-task spawning (DAG-based context isolation) */
-tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params);
+/* Tool handler declarations are no longer needed here -- each tool_*.c file
+ * self-registers its handlers via TOOL_PLUGIN_REGISTER() constructors.
+ * Only cross-file helpers (above) remain. */
 
 #endif /* TOOLS_INTERNAL_H */

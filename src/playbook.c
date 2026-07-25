@@ -13,6 +13,7 @@
 #include "str.h"
 #include "frontend_tui.h"
 #include "tools_registry.h"
+#include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -498,13 +499,9 @@ int playbook_write_default_dream(const char *path) {
 
 /* ── Playbook validation ─────────────────────────────── */
 
-/* Check if a tool name exists in the registry */
+/* Check if a tool name exists in the plugin registry */
 static int tool_name_exists(const char *name) {
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-        if (TOOL_REGISTRY[i].name && strcmp(TOOL_REGISTRY[i].name, name) == 0)
-            return 1;
-    }
-    return 0;
+    return tool_plugin_find(name) != NULL;
 }
 
 /* Append a diagnostic message to errbuf, respecting errlen */

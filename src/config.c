@@ -1177,8 +1177,9 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     fprintf(out, "active = [");
     {
         int first = 1;
-        for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-            const char *tname = TOOL_REGISTRY[i].name;
+        for (int i = 0; i < tool_plugin_count(); i++) {
+            const tool_plugin_t *tp = tool_plugin_get(i);
+            const char *tname = tp ? tp->name : NULL;
             if (!tname) continue;
             /* Check if blocked */
             int blocked = 0;

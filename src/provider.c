@@ -2,6 +2,7 @@
 #include "llm.h"
 #include "tools.h"
 #include "tools_registry.h"
+#include "tool_plugin.h"
 #include "str.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -291,66 +292,80 @@ cJSON *build_tools_from_registry(provider_type_t type) {
     return build_tools_from_registry_filtered(type, NULL);
 }
 
+/* Add a single tool definition to the tools JSON array, formatted per provider.
+ * Shared by both plugin and static registry iteration paths. */
+static void add_tool_def_to_array(cJSON *tools, provider_type_t type,
+                                   const char *name, const char *desc,
+                                   const tool_param_t *params_def) {
+    cJSON *params = tool_params_to_cjson(params_def);
+
+    if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "name", name);
+        cJSON_AddStringToObject(t, "description", desc);
+        if (params) cJSON_AddItemToObject(t, "input_schema", params);
+        cJSON_AddItemToArray(tools, t);
+    } else {
+        cJSON *t = cJSON_CreateObject();
+        cJSON_AddStringToObject(t, "type", "function");
+        cJSON *fn = cJSON_CreateObject();
+        cJSON_AddStringToObject(fn, "name", name);
+        cJSON_AddStringToObject(fn, "description", desc);
+        if (params) {
+            if (type == PROVIDER_OPENAI) strict_object(params);
+            cJSON_AddItemToObject(fn, "parameters", params);
+        }
+        if (type == PROVIDER_OPENAI)
+            cJSON_AddBoolToObject(fn, "strict", 1);
+        cJSON_AddItemToObject(t, "function", fn);
+        cJSON_AddItemToArray(tools, t);
+    }
+}
+
+/* Check if a tool name passes the filter (allowed/blocked lists).
+ * Returns 1 if the tool should be included, 0 if filtered out. */
+static int tool_passes_filter(const struct tool_filter_t *filter,
+                               const char *name) {
+    if (!filter) return 1;
+    if (filter->allowed) {
+        int found = 0;
+        for (int j = 0; j < filter->n_allowed; j++)
+            if (strcmp(name, filter->allowed[j]) == 0) { found = 1; break; }
+        if (!found) return 0;
+    }
+    if (filter->blocked) {
+        for (int j = 0; j < filter->n_blocked; j++)
+            if (strcmp(name, filter->blocked[j]) == 0) return 0;
+    }
+    return 1;
+}
+
+/* Get description override from filter, or return the default. */
+static const char *tool_desc_override(const struct tool_filter_t *filter,
+                                       const char *name,
+                                       const char *default_desc) {
+    if (filter && filter->n_descs > 0) {
+        for (int j = 0; j < filter->n_descs; j++) {
+            if (strcmp(name, filter->desc_names[j]) == 0)
+                return filter->desc_values[j];
+        }
+    }
+    return default_desc;
+}
+
 cJSON *build_tools_from_registry_filtered(provider_type_t type,
                                            const struct tool_filter_t *filter) {
     cJSON *tools = cJSON_CreateArray();
 
-    for (int i = 0; TOOL_REGISTRY[i].name; i++) {
-        const tool_def_t *td = &TOOL_REGISTRY[i];
-
-        /* Apply tool filter if provided */
-        if (filter) {
-            if (filter->allowed) {
-                int found = 0;
-                for (int j = 0; j < filter->n_allowed; j++)
-                    if (strcmp(td->name, filter->allowed[j]) == 0) { found = 1; break; }
-                if (!found) continue;
-            }
-            if (filter->blocked) {
-                int skip = 0;
-                for (int j = 0; j < filter->n_blocked; j++)
-                    if (strcmp(td->name, filter->blocked[j]) == 0) { skip = 1; break; }
-                if (skip) continue;
-            }
-        }
-
-        /* Check for per-tool description override from model profile */
-        const char *desc = td->description;
-        if (filter && filter->n_descs > 0) {
-            for (int j = 0; j < filter->n_descs; j++) {
-                if (strcmp(td->name, filter->desc_names[j]) == 0) {
-                    desc = filter->desc_values[j];
-                    break;
-                }
-            }
-        }
-
-        cJSON *params = cJSON_Parse(td->params_json);
-
-        if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
-            /* Anthropic format: {"name":"X","description":"Y","input_schema":{...}} */
-            cJSON *t = cJSON_CreateObject();
-            cJSON_AddStringToObject(t, "name", td->name);
-            cJSON_AddStringToObject(t, "description", desc);
-            if (params) cJSON_AddItemToObject(t, "input_schema", params);
-            cJSON_AddItemToArray(tools, t);
-        } else {
-            /* OpenAI / Local format: {"type":"function","function":{"name":"X",...}} */
-            cJSON *t = cJSON_CreateObject();
-            cJSON_AddStringToObject(t, "type", "function");
-            cJSON *fn = cJSON_CreateObject();
-            cJSON_AddStringToObject(fn, "name", td->name);
-            cJSON_AddStringToObject(fn, "description", desc);
-            if (params) {
-                if (type == PROVIDER_OPENAI) strict_object(params);
-                cJSON_AddItemToObject(fn, "parameters", params);
-            }
-            if (type == PROVIDER_OPENAI)
-                cJSON_AddBoolToObject(fn, "strict", 1);
-            cJSON_AddItemToObject(t, "function", fn);
-            cJSON_AddItemToArray(tools, t);
-        }
+    /* Phase 1: Emit plugin-registered tools first */
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (!p) continue;
+        if (!tool_passes_filter(filter, p->name)) continue;
+        const char *desc = tool_desc_override(filter, p->name, p->description);
+        add_tool_def_to_array(tools, type, p->name, desc, p->params);
     }
+
     return tools;
 }
 

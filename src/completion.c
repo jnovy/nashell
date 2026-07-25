@@ -17,6 +17,7 @@
 #include "agents.h"
 #include "playbook.h"
 #include "tools_registry.h"
+#include "tool_plugin.h"
 #include "str.h"
 
 #include <stdio.h>
@@ -142,9 +143,11 @@ static int provide_tool_names(const char *nash_dir, const char *prefix,
                               int prefix_len, char ***arr, int *count, int *cap) {
     (void)nash_dir;
     int added = 0;
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (!p) continue;
         int before = *count;
-        add_candidate(arr, count, cap, TOOL_REGISTRY[i].name, prefix, prefix_len);
+        add_candidate(arr, count, cap, p->name, prefix, prefix_len);
         if (*count > before) added++;
     }
     return added;
@@ -155,9 +158,11 @@ static int provide_tool_names_and_profiles(const char *nash_dir, const char *pre
                                             int *count, int *cap) {
     /* Provide tool names (for on/off) */
     int added = 0;
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (!p) continue;
         int before = *count;
-        add_candidate(arr, count, cap, TOOL_REGISTRY[i].name, prefix, prefix_len);
+        add_candidate(arr, count, cap, p->name, prefix, prefix_len);
         if (*count > before) added++;
     }
     /* Also provide saved profile names (for load) */
