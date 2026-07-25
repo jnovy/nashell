@@ -19,6 +19,8 @@
 #define WP_SEP_ID       102   /* [SEP] token ID */
 #define WP_PAD_ID       0     /* [PAD] token ID */
 
+#define ONNX_MODEL_MAX_TOKENS 256  /* all-MiniLM-L6-v2 trained context */
+
 /* Hash table entry for vocab lookup */
 typedef struct wp_entry {
     char *token;
@@ -232,6 +234,20 @@ struct onnx_embed_ctx {
     int               dim;        /* embedding dimension (384 for MiniLM) */
 };
 
+/* Count tokens for text without running inference.
+ * Returns token count (including [CLS] and [SEP]), or 0 on error. */
+int onnx_count_tokens(onnx_embed_ctx_t *ctx, const char *text) {
+    if (!ctx || !text || !ctx->vocab) return 0;
+
+    int64_t input_ids[WP_MAX_TOKENS];
+    int64_t attention_mask[WP_MAX_TOKENS];
+    int64_t token_type_ids[WP_MAX_TOKENS];
+
+    return wp_tokenize(ctx->vocab, text,
+                       input_ids, attention_mask, token_type_ids,
+                       WP_MAX_TOKENS);
+}
+
 onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
     if (!model_dir) return NULL;
 
@@ -349,6 +365,10 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
                                input_ids, attention_mask, token_type_ids,
                                WP_MAX_TOKENS);
     if (n_tokens <= 0) return NULL;
+
+    if (n_tokens > ONNX_MODEL_MAX_TOKENS)
+        nash_log("[onnx-embed] warning: input produced %d tokens "
+                "(model trained on %d)", n_tokens, ONNX_MODEL_MAX_TOKENS);
 
     /* Create input tensors */
     int64_t shape[2] = {1, (int64_t)n_tokens};

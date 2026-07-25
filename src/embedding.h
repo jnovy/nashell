@@ -82,6 +82,11 @@ embed_ctx_t *embed_share(embed_ctx_t *src);
  * Fallback: 2000 chars (~500 tokens) for unknown models. */
 int embed_max_input_chars(const embed_ctx_t *ctx);
 
+/* Count tokens for text using the active backend's tokenizer.
+ * Returns token count, or -1 if backend has no tokenizer.
+ * For API backends, returns estimated count = strlen(text) / 4. */
+int embed_count_tokens(const embed_ctx_t *ctx, const char *text);
+
 /* ── Embedding generation ────────────────────────────── */
 
 /* Generate embedding for a text string.

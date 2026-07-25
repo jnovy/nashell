@@ -130,6 +130,26 @@ int embed_max_input_chars(const embed_ctx_t *ctx) {
     return EMBED_DEFAULT_MAX_CHARS;
 }
 
+int embed_count_tokens(const embed_ctx_t *ctx, const char *text) {
+    if (!ctx || !text) return -1;
+
+    switch (ctx->cfg.type) {
+    case EMBED_ONNX:
+        if (ctx->onnx)
+            return onnx_count_tokens(ctx->onnx, text);
+        return -1;
+    case EMBED_OLLAMA:
+    case EMBED_OPENAI: {
+        /* No real tokenizer for API backends - estimate */
+        int len = (int)strlen(text);
+        return len / EMBED_DEFAULT_CHARS_PER_TOKEN;
+    }
+    case EMBED_NONE:
+    default:
+        return -1;
+    }
+}
+
 /* ── API calls ───────────────────────────────────────── */
 
 /* Build URL for embedding API endpoint */
@@ -690,14 +710,183 @@ char *embed_prepare_text(const char *key, const char *value, int max_chars) {
 /* ── chunked (multi-vector) embeddings ───────────────── */
 
 /* Build the key prefix that starts every chunk.
- * Returns a malloc'd string. Caller must free. */
-static char *build_chunk_prefix(const char *key) {
+ * full=1: "key\n", full=0: abbreviated "[key] " for subsequent chunks. */
+static char *build_chunk_prefix(const char *key, int full) {
     str_t pfx = str_new(256);
     if (key) {
-        str_append_cstr(&pfx, key);
-        str_append_cstr(&pfx, "\n");
+        if (full) {
+            str_append_cstr(&pfx, key);
+            str_append_cstr(&pfx, "\n");
+        } else {
+            str_append_cstr(&pfx, "[");
+            str_append_cstr(&pfx, key);
+            str_append_cstr(&pfx, "] ");
+        }
     }
     return str_steal(&pfx);
+}
+
+/* ── Segment splitting for paragraph-aware chunking ──── */
+
+/* A text segment: offset + length into the original value string. */
+typedef struct {
+    size_t off;
+    size_t len;
+} chunk_seg_t;
+
+/* Split text into segments at paragraph boundaries (\n\n), then
+ * sub-split oversized segments at \n, then ". ", then word boundary.
+ * Returns segment count. Caller must free *out_segs. */
+static int split_into_segments(const char *text, size_t text_len,
+                               size_t max_seg_len, chunk_seg_t **out_segs) {
+    if (!text || text_len == 0 || !out_segs) return 0;
+
+    int cap = 32, count = 0;
+    chunk_seg_t *segs = malloc(sizeof(chunk_seg_t) * (size_t)cap);
+    if (!segs) return 0;
+
+    /* Helper macro to add a segment */
+    #define ADD_SEG(o, l) do { \
+        if (count >= cap) { \
+            cap *= 2; \
+            chunk_seg_t *tmp = realloc(segs, sizeof(chunk_seg_t) * (size_t)cap); \
+            if (!tmp) goto done; \
+            segs = tmp; \
+        } \
+        segs[count].off = (o); \
+        segs[count].len = (l); \
+        count++; \
+    } while (0)
+
+    /* First pass: split on \n\n (paragraph boundaries) */
+    size_t pos = 0;
+    while (pos < text_len) {
+        /* Find next \n\n */
+        const char *pp = NULL;
+        for (size_t i = pos; i + 1 < text_len; i++) {
+            if (text[i] == '\n' && text[i + 1] == '\n') {
+                pp = text + i;
+                break;
+            }
+        }
+
+        size_t seg_end;
+        if (pp) {
+            seg_end = (size_t)(pp - text);
+            /* Skip past the \n\n separator */
+        } else {
+            seg_end = text_len;
+        }
+
+        /* Trim leading whitespace from segment */
+        size_t seg_start = pos;
+        while (seg_start < seg_end &&
+               (text[seg_start] == '\n' || text[seg_start] == ' ' ||
+                text[seg_start] == '\t'))
+            seg_start++;
+
+        size_t seg_len = seg_end > seg_start ? seg_end - seg_start : 0;
+
+        if (seg_len > 0) {
+            if (seg_len <= max_seg_len) {
+                ADD_SEG(seg_start, seg_len);
+            } else {
+                /* Sub-split oversized paragraph at single \n */
+                size_t sub_pos = seg_start;
+                while (sub_pos < seg_start + seg_len) {
+                    /* Find next \n */
+                    size_t nl = sub_pos;
+                    while (nl < seg_start + seg_len && text[nl] != '\n')
+                        nl++;
+
+                    size_t sub_len = nl - sub_pos;
+                    if (sub_len == 0) { sub_pos = nl + 1; continue; }
+
+                    if (sub_len <= max_seg_len) {
+                        ADD_SEG(sub_pos, sub_len);
+                    } else {
+                        /* Sub-split at ". " (sentence boundary) */
+                        size_t sent_pos = sub_pos;
+                        while (sent_pos < sub_pos + sub_len) {
+                            /* Find next ". " */
+                            size_t dot = sent_pos;
+                            int found_dot = 0;
+                            while (dot + 1 < sub_pos + sub_len) {
+                                if (text[dot] == '.' && text[dot + 1] == ' ') {
+                                    found_dot = 1;
+                                    break;
+                                }
+                                dot++;
+                            }
+
+                            size_t sent_end;
+                            if (found_dot) {
+                                sent_end = dot + 1; /* include the period */
+                            } else {
+                                sent_end = sub_pos + sub_len;
+                            }
+
+                            size_t sent_len = sent_end - sent_pos;
+                            if (sent_len == 0) { sent_pos = sent_end + 1; continue; }
+
+                            if (sent_len <= max_seg_len) {
+                                ADD_SEG(sent_pos, sent_len);
+                            } else {
+                                /* Last resort: hard split at word boundary */
+                                size_t hard_pos = sent_pos;
+                                while (hard_pos < sent_pos + sent_len) {
+                                    size_t chunk_end = hard_pos + max_seg_len;
+                                    if (chunk_end >= sent_pos + sent_len) {
+                                        ADD_SEG(hard_pos, sent_pos + sent_len - hard_pos);
+                                        hard_pos = sent_pos + sent_len;
+                                    } else {
+                                        /* Look back for space */
+                                        size_t cut = chunk_end;
+                                        if (cut > hard_pos + 50) {
+                                            while (cut > chunk_end - 100 && cut > hard_pos &&
+                                                   text[cut] != ' ')
+                                                cut--;
+                                        }
+                                        if (cut <= hard_pos) cut = chunk_end;
+                                        /* UTF-8 boundary clamp */
+                                        while (cut > hard_pos &&
+                                               ((unsigned char)text[cut] & 0xC0) == 0x80)
+                                            cut--;
+                                        ADD_SEG(hard_pos, cut - hard_pos);
+                                        hard_pos = cut;
+                                        /* Skip whitespace after split */
+                                        while (hard_pos < sent_pos + sent_len &&
+                                               text[hard_pos] == ' ')
+                                            hard_pos++;
+                                    }
+                                }
+                            }
+
+                            sent_pos = sent_end;
+                            /* Skip space after ". " */
+                            while (sent_pos < sub_pos + sub_len &&
+                                   text[sent_pos] == ' ')
+                                sent_pos++;
+                        }
+                    }
+
+                    sub_pos = nl + 1;
+                }
+            }
+        }
+
+        if (pp) {
+            pos = (size_t)(pp - text) + 2; /* skip past \n\n */
+        } else {
+            break;
+        }
+    }
+
+    #undef ADD_SEG
+
+done:
+    *out_segs = segs;
+    return count;
 }
 
 char **embed_prepare_text_chunked(const char *key, const char *value,
@@ -707,102 +896,155 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
     *out_n_chunks = 0;
     if (!key && !value) return NULL;
     if (chunk_max_chars <= 0) chunk_max_chars = 2000;
-    if (overlap_chars <= 0) overlap_chars = 200;
+    (void)overlap_chars; /* no longer used - semantic overlap replaces fixed char overlap */
 
-    /* Build the prefix (key) that anchors every chunk */
-    char *prefix = build_chunk_prefix(key);
-    if (!prefix) return NULL;
-    size_t prefix_len = strlen(prefix);
+    /* Build the full prefix for chunk 0 */
+    char *prefix_full = build_chunk_prefix(key, 1);
+    if (!prefix_full) return NULL;
+    size_t prefix_full_len = strlen(prefix_full);
 
-    /* How much value fits per chunk after the prefix */
-    size_t value_budget = (size_t)chunk_max_chars > prefix_len + 20
-                        ? (size_t)chunk_max_chars - prefix_len - 4 /* "..." + NUL */
-                        : 100;  /* pathological: very long key, still embed something */
+    /* Abbreviated prefix for chunks 1+ */
+    char *prefix_short = build_chunk_prefix(key, 0);
+    if (!prefix_short) { free(prefix_full); return NULL; }
+    size_t prefix_short_len = strlen(prefix_short);
+
+    /* Value budget: how much content fits per chunk.
+     * Use the larger prefix (full) for conservative budgeting. */
+    size_t value_budget = (size_t)chunk_max_chars > prefix_full_len + 20
+                        ? (size_t)chunk_max_chars - prefix_full_len - 10
+                        : 100;
 
     size_t vlen = value ? strlen(value) : 0;
 
-    /* If everything fits in one chunk, use the original single-text path */
-    if (prefix_len + vlen <= (size_t)chunk_max_chars) {
+    /* If everything fits in one chunk, use the single-text path */
+    if (prefix_full_len + vlen <= (size_t)chunk_max_chars) {
         char **result = malloc(sizeof(char *));
-        if (!result) { free(prefix); return NULL; }
+        if (!result) { free(prefix_full); free(prefix_short); return NULL; }
         result[0] = embed_prepare_text(key, value, chunk_max_chars);
-        if (!result[0]) { free(result); free(prefix); return NULL; }
+        if (!result[0]) { free(result); free(prefix_full); free(prefix_short); return NULL; }
         *out_n_chunks = 1;
-        free(prefix);
+        free(prefix_full);
+        free(prefix_short);
         return result;
     }
 
-    /* Split value into overlapping windows */
-    size_t step = value_budget > (size_t)overlap_chars
-                ? value_budget - (size_t)overlap_chars
-                : value_budget / 2;  /* safety: at least half-step */
-    if (step == 0) step = 1;
-
-    /* Count chunks needed */
-    int n_chunks = 0;
-    for (size_t pos = 0; pos < vlen; pos += step) {
-        n_chunks++;
-    }
-    if (n_chunks == 0) n_chunks = 1;
-
-    /* Cap at a reasonable maximum to avoid embedding explosion */
-    const int MAX_CHUNKS = 8;
-    if (n_chunks > MAX_CHUNKS) {
-        /* Recalculate step to fit within MAX_CHUNKS */
-        step = (vlen + (size_t)MAX_CHUNKS - 1) / (size_t)MAX_CHUNKS;
-        n_chunks = MAX_CHUNKS;
+    /* Split value into semantic segments */
+    chunk_seg_t *segs = NULL;
+    int n_segs = split_into_segments(value, vlen, value_budget, &segs);
+    if (n_segs <= 0 || !segs) {
+        free(prefix_full);
+        free(prefix_short);
+        free(segs);
+        return NULL;
     }
 
-    char **result = malloc(sizeof(char *) * (size_t)n_chunks);
-    if (!result) { free(prefix); return NULL; }
+    /* Bin-pack segments into chunks.
+     * Semantic overlap: the last segment of chunk N is repeated as the
+     * first segment of chunk N+1, providing context continuity. */
+    const int MAX_CHUNKS = 16;
+    char **result = malloc(sizeof(char *) * (size_t)MAX_CHUNKS);
+    if (!result) { free(prefix_full); free(prefix_short); free(segs); return NULL; }
 
     int actual = 0;
-    for (size_t pos = 0; pos < vlen && actual < n_chunks; pos += step) {
-        /* FIX UTF8: Clamp pos to a valid UTF-8 character boundary.
-         * If pos lands inside a multi-byte sequence, advance to the
-         * start of the next complete character. */
-        while (pos < vlen && value[pos] &&
-               (unsigned char)value[pos] < 0xC0 &&
-               (unsigned char)value[pos] >= 0x80) {
-            /* pos is a continuation byte — skip to next leader */
-            pos++;
-        }
+    int seg_i = 0;
+    int prev_last_seg = -1;  /* index of last segment in previous chunk */
+
+    while (seg_i < n_segs && actual < MAX_CHUNKS) {
+        int is_first_chunk = (actual == 0);
+        const char *pfx = is_first_chunk ? prefix_full : prefix_short;
+        size_t pfx_len = is_first_chunk ? prefix_full_len : prefix_short_len;
 
         str_t chunk = str_new((size_t)chunk_max_chars + 64);
-        str_append_cstr(&chunk, prefix);
+        str_append_cstr(&chunk, pfx);
 
-        /* Add chunk position indicator for multi-chunk entries */
-        if (n_chunks > 1) {
-            str_appendf(&chunk, "[%d/%d] ", actual + 1, n_chunks);
-        }
+        /* Reserve space for position indicator "[N/M] " - estimate max 10 chars */
+        size_t budget = (size_t)chunk_max_chars > pfx_len + 10
+                      ? (size_t)chunk_max_chars - pfx_len - 10
+                      : 100;
+        size_t used = 0;
+        int last_seg_in_chunk = -1;
 
-        /* Slice value with word-boundary awareness */
-        size_t slice_end = pos + value_budget;
-        if (slice_end >= vlen) {
-            /* Last chunk: take everything remaining */
-            str_append(&chunk, value + pos, vlen - pos);
-        } else {
-            /* Try to break at a word boundary (look back up to 100 chars) */
-            size_t cut = slice_end;
-            if (cut > pos + 100) {
-                while (cut > slice_end - 100 && cut > pos && value[cut] != ' ')
-                    cut--;
+        /* Semantic overlap: repeat last segment from previous chunk */
+        if (prev_last_seg >= 0 && prev_last_seg < n_segs) {
+            size_t slen = segs[prev_last_seg].len;
+            if (slen <= budget) {
+                str_append(&chunk, value + segs[prev_last_seg].off, slen);
+                str_append_cstr(&chunk, "\n");
+                used += slen + 1;
             }
-            if (cut <= pos) cut = slice_end;  /* no space found, hard cut */
-            /* FIX UTF8: Clamp cut to a valid UTF-8 character boundary.
-             * Back up past any continuation bytes so we don't split
-             * a multi-byte character. */
-            while (cut > pos && ((unsigned char)value[cut] & 0xC0) == 0x80)
-                cut--;
-            str_append(&chunk, value + pos, cut - pos);
-            if (cut < vlen) str_append_cstr(&chunk, "...");
         }
 
-        result[actual] = str_steal(&chunk);
-        actual++;
+        /* Pack segments into this chunk */
+        int packed_any = 0;
+        while (seg_i < n_segs) {
+            size_t slen = segs[seg_i].len;
+            size_t need = used > 0 ? slen + 1 : slen; /* +1 for \n separator */
+
+            if (used + need > budget) {
+                if (!packed_any) {
+                    /* Single segment exceeds budget - take it truncated */
+                    size_t take = budget > used ? budget - used : 0;
+                    if (take > 0) {
+                        /* UTF-8 safe truncation */
+                        while (take > 0 &&
+                               ((unsigned char)value[segs[seg_i].off + take] & 0xC0) == 0x80)
+                            take--;
+                        if (used > 0) str_append_cstr(&chunk, "\n");
+                        str_append(&chunk, value + segs[seg_i].off, take);
+                        str_append_cstr(&chunk, "...");
+                    }
+                    last_seg_in_chunk = seg_i;
+                    seg_i++;
+                    packed_any = 1;
+                }
+                break;
+            }
+
+            if (used > 0) {
+                str_append_cstr(&chunk, "\n");
+                used += 1;
+            }
+            str_append(&chunk, value + segs[seg_i].off, slen);
+            used += slen;
+            last_seg_in_chunk = seg_i;
+            packed_any = 1;
+            seg_i++;
+        }
+
+        if (packed_any) {
+            result[actual] = str_steal(&chunk);
+            prev_last_seg = last_seg_in_chunk;
+            actual++;
+        } else {
+            str_free(&chunk);
+            break;
+        }
     }
 
-    free(prefix);
+    /* Now go back and insert position indicators into each chunk.
+     * We deferred this because we didn't know n_chunks during packing. */
+    if (actual > 1) {
+        for (int i = 0; i < actual; i++) {
+            size_t pfx_len_i = (i == 0) ? prefix_full_len : prefix_short_len;
+
+            /* Find where the prefix ends in the chunk string */
+            char *old = result[i];
+            size_t old_len = strlen(old);
+
+            str_t tagged = str_new(old_len + 12);
+            str_append(&tagged, old, pfx_len_i);
+            str_appendf(&tagged, "[%d/%d] ", i + 1, actual);
+            if (old_len > pfx_len_i)
+                str_append(&tagged, old + pfx_len_i, old_len - pfx_len_i);
+
+            free(old);
+            result[i] = str_steal(&tagged);
+        }
+    }
+
+    free(prefix_full);
+    free(prefix_short);
+    free(segs);
     *out_n_chunks = actual;
     return result;
 }

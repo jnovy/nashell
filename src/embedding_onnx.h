@@ -36,4 +36,8 @@ void onnx_embed_free(onnx_embed_ctx_t *ctx);
 /* Get embedding dimension (0 if not initialized) */
 int onnx_embed_dim(const onnx_embed_ctx_t *ctx);
 
+/* Count tokens for text without running inference.
+ * Returns token count (including [CLS] and [SEP]), or 0 on error. */
+int onnx_count_tokens(onnx_embed_ctx_t *ctx, const char *text);
+
 #endif
