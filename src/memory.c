@@ -118,6 +118,8 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
     free(e->path);
     for (int i = 0; i < e->n_refs; i++) free(e->refs[i]);
     free(e->refs);
+    for (int i = 0; i < e->n_triggers; i++) free(e->triggers[i]);
+    free(e->triggers);
     if (e->has_emb) embed_multi_vec_free(&e->emb);
     free(e->supersedes);
     memset(e, 0, sizeof(*e));
@@ -296,6 +298,19 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
         }
     }
 
+    /* Copy triggers (cue-anchored content-match patterns) */
+    cJSON *trigs_arr = cJSON_GetObjectItem(entry, "triggers");
+    if (trigs_arr && cJSON_IsArray(trigs_arr)) {
+        ie->n_triggers = cJSON_GetArraySize(trigs_arr);
+        if (ie->n_triggers > 0) {
+            ie->triggers = calloc((size_t)ie->n_triggers, sizeof(char *));
+            for (int i = 0; i < ie->n_triggers; i++) {
+                cJSON *t = cJSON_GetArrayItem(trigs_arr, i);
+                ie->triggers[i] = (t && t->valuestring) ? strdup(t->valuestring) : strdup("");
+            }
+        }
+    }
+
     /* Load embedding if .emb file exists */
     char emb_path[NASH_PATH_MAX];
     json_to_emb_path(filepath, emb_path, sizeof(emb_path));
@@ -415,7 +430,8 @@ static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
 
 int memory_store(memory_t *m, const char *key, const char *value,
                  int pinned, const char *journal_ref,
-                 const char **refs, int n_refs) {
+                 const char **refs, int n_refs,
+                 const char **triggers, int n_triggers) {
     if (!m || !key || !value) return -1;
     pthread_mutex_lock(&m->mtx);
 
@@ -448,6 +464,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     double belief_entropy = -1;
     char *old_supersedes = NULL;
     int old_version = 0;
+    char **old_triggers = NULL;
+    int n_old_triggers = 0;
     {
         cJSON *old = slurp_json(path);
         if (old) {
@@ -467,6 +485,21 @@ int memory_store(memory_t *m, const char *key, const char *value,
             if (ss && ss->valuestring) old_supersedes = strdup(ss->valuestring);
             cJSON *vn = cJSON_GetObjectItem(old, "version");
             if (vn) old_version = (int)cJSON_GetNumberValue(vn);
+            /* Preserve triggers if caller did not provide new ones */
+            if (!triggers) {
+                cJSON *ot = cJSON_GetObjectItem(old, "triggers");
+                if (ot && cJSON_IsArray(ot)) {
+                    n_old_triggers = cJSON_GetArraySize(ot);
+                    if (n_old_triggers > 0) {
+                        old_triggers = calloc((size_t)n_old_triggers, sizeof(char *));
+                        for (int i = 0; i < n_old_triggers; i++) {
+                            cJSON *ti = cJSON_GetArrayItem(ot, i);
+                            old_triggers[i] = (ti && ti->valuestring)
+                                ? strdup(ti->valuestring) : strdup("");
+                        }
+                    }
+                }
+            }
             cJSON_Delete(old);
         }
     }
@@ -517,6 +550,24 @@ int memory_store(memory_t *m, const char *key, const char *value,
         cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
         for (int i = 0; i < n_refs; i++)
             cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
+    }
+
+    /* Cue-anchored triggers: content-match patterns for automatic injection.
+     * Use caller-provided triggers if given, otherwise preserve from old entry. */
+    {
+        const char **t_arr = triggers;
+        int t_cnt = n_triggers;
+        if (!t_arr && old_triggers) {
+            t_arr = (const char **)old_triggers;
+            t_cnt = n_old_triggers;
+        }
+        if (t_arr && t_cnt > 0) {
+            cJSON *trigs = cJSON_AddArrayToObject(entry, "triggers");
+            for (int i = 0; i < t_cnt; i++)
+                cJSON_AddItemToArray(trigs, cJSON_CreateString(t_arr[i]));
+        }
+        for (int i = 0; i < n_old_triggers; i++) free(old_triggers[i]);
+        free(old_triggers);
     }
 
     /* P2: Lesson lineage — preserve supersedes and version from old entry.
@@ -1095,6 +1146,14 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                 e->refs[ri] = strdup(ie->refs[ri]);
         }
 
+        /* Copy triggers from index */
+        if (ie->n_triggers > 0) {
+            e->n_triggers = ie->n_triggers;
+            e->triggers = calloc((size_t)e->n_triggers, sizeof(char *));
+            for (int ti = 0; ti < e->n_triggers; ti++)
+                e->triggers[ti] = strdup(ie->triggers[ti]);
+        }
+
         e->relevance = scored[i].score;
         e->raw_relevance = scored[i].relevance;
         e->importance = scored[i].importance;
@@ -1489,6 +1548,10 @@ void memory_results_free(memory_results_t *r) {
         for (int ri = 0; ri < r->entries[i].n_refs; ri++)
             free(r->entries[i].refs[ri]);
         free(r->entries[i].refs);
+        /* Free triggers (cue-anchored content-match patterns) */
+        for (int ti = 0; ti < r->entries[i].n_triggers; ti++)
+            free(r->entries[i].triggers[ti]);
+        free(r->entries[i].triggers);
         /* P2: Free lineage fields */
         free(r->entries[i].supersedes);
     }

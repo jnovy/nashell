@@ -45,6 +45,8 @@ typedef struct {
     char  *path;           /* full path to .json file (owned) */
     char  *supersedes;     /* key this entry supersedes (owned, NULL = none) */
     int    version;        /* lineage version (0 = original, 2+ = superseding) */
+    char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
+    int    n_triggers;     /* 0 = no triggers, purely semantic recall */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -156,6 +158,8 @@ typedef struct {
      * the full evolution history for retrospective analysis. */
     char  *supersedes;    /* key of the memory this entry supersedes (NULL = none) */
     int    version;       /* lineage version number (1 = original, 2+ = superseding) */
+    char **triggers;      /* content-match patterns for cue-anchored injection (owned, NULL = none) */
+    int    n_triggers;    /* 0 = no triggers, purely semantic recall */
 } memory_entry_t;
 
 typedef struct {
@@ -184,7 +188,8 @@ void key_to_path(const char *key, const char *ext, char *out, size_t out_sz);
  * The dreaming LLM can read this journal to understand the original context. */
 int memory_store(memory_t *m, const char *key, const char *value,
                  int pinned, const char *journal_ref,
-                 const char **refs, int n_refs);
+                 const char **refs, int n_refs,
+                 const char **triggers, int n_triggers);
 
 /* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
 int memory_pin(memory_t *m, const char *key);

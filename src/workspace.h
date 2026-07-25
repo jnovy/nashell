@@ -54,7 +54,9 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
  * is set or no workspace is active. */
 int workspace_store(workspace_t *ws, const char *key, const char *value,
                     int pinned, const char *journal_ref,
-                    const char **refs, int n_refs, int force_global);
+                    const char **refs, int n_refs,
+                    const char **triggers, int n_triggers,
+                    int force_global);
 
 /* Pin/unpin: operates on the memory that contains the key.
  * Searches workspace first, then global. */

@@ -1,7 +1,9 @@
 #include "react_internal.h"
 #include "compress.h"
-#include "tui.h"  /* g_tui_active — for condvar timeout escape hatch */
-#include "tools_internal.h"  /* tool_device_cleanup — stream save on done */
+#include <strings.h>  /* strcasestr */
+#include "tui.h"  /* g_tui_active -- for condvar timeout escape hatch */
+#include "tools_internal.h"  /* tool_device_cleanup -- stream save on done */
+#include "tool_plugin.h"
 
 /* Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
@@ -549,8 +551,8 @@ void react_emit(react_event_fn fn, void *ud, react_event_t *ev) {
 }
 
 /* Extract the key display parameter for a tool action.
- * Derives the display param from TOOL_REGISTRY[].params_json "required"[0]
- * instead of hardcoding tool→param mappings. */
+ * Derives the display param from the plugin's first required parameter
+ * instead of hardcoding tool->param mappings. */
 const char *react_get_action_desc(cJSON *action, const char *action_name,
                                    const char *thought) {
     /* Special cases that don't map to a required param */
@@ -558,26 +560,14 @@ const char *react_get_action_desc(cJSON *action, const char *action_name,
         return "[saving notes]";
     if (strcmp(action_name, "done") == 0)
         return thought;
-    /* Generic: look up first required param from the registry schema */
-    for (int i = 0; i < TOOL_REGISTRY_COUNT; i++) {
-        if (strcmp(action_name, TOOL_REGISTRY[i].name) != 0)
-            continue;
-        if (!TOOL_REGISTRY[i].params_json)
-            break;
-        cJSON *schema = cJSON_Parse(TOOL_REGISTRY[i].params_json);
-        if (!schema) break;
-        cJSON *req = cJSON_GetObjectItem(schema, "required");
-        if (req && cJSON_IsArray(req) && cJSON_GetArraySize(req) > 0) {
-            cJSON *first = cJSON_GetArrayItem(req, 0);
-            if (first && cJSON_IsString(first)) {
-                const char *val = react_json_get_str(action,
-                                                      first->valuestring);
-                cJSON_Delete(schema);
-                return val ? val : thought;
-            }
+    /* Generic: look up first required param from the plugin descriptor */
+    const tool_plugin_t *p = tool_plugin_find(action_name);
+    if (p) {
+        const char *req_name = tool_params_first_required(p->params);
+        if (req_name) {
+            const char *val = react_json_get_str(action, req_name);
+            return val ? val : thought;
         }
-        cJSON_Delete(schema);
-        break;
     }
     return thought;
 }
@@ -678,13 +668,14 @@ static int react_tool_importance(const char *tool_name, int success) {
     return LLM_MSG_IMPORTANCE_NORMAL;
 }
 
-/* Find tool index in TOOL_REGISTRY by name (for diversity tracking).
- * Returns -1 if not found. */
+/* Find tool index in plugin registry by name (for diversity tracking).
+ * Returns -1 if not found or index >= 32 (bitmask limit). */
 static int react_tool_index(const char *name) {
     if (!name) return -1;
-    for (int i = 0; i < TOOL_REGISTRY_COUNT && i < 32; i++) {
-        if (TOOL_REGISTRY[i].name && strcmp(TOOL_REGISTRY[i].name, name) == 0)
-            return i;
+    for (int i = 0; i < tool_plugin_count(); i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (p && strcmp(p->name, name) == 0)
+            return (i < 32) ? i : -1;
     }
     return -1;
 }
@@ -1793,6 +1784,68 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (existing)
                     chat->msgs[chat->n_msgs - 1].store_alias = strdup(existing);
             }
+        }
+
+        /* Cue-anchored trigger evaluation: check all memories with triggers
+         * against the tool's input+output. Case-insensitive substring match.
+         * Fires on both success and failure (covers HTTP 200 login pages,
+         * SSL errors, JIRA auth issues, etc.). Uses fire ledger to prevent
+         * redundant injection within the same context window.
+         * Research basis: arXiv 2607.20972 "Delivery, Not Storage". */
+        if ((ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory
+                && action_name && meta_str) {
+            /* Build match surface: tool name + params + result */
+            char *params_str = cJSON_PrintUnformatted(action);
+            size_t surface_len = strlen(action_name) + 1
+                + (params_str ? strlen(params_str) : 0) + 1
+                + strlen(meta_str) + 1;
+            char *match_surface = malloc(surface_len);
+            snprintf(match_surface, surface_len, "%s %s %s",
+                     action_name, params_str ? params_str : "", meta_str);
+            free(params_str);
+
+            /* Iterate memories and check triggers */
+            typedef struct {
+                const char *surface;
+                tool_ctx_t *tools;
+                llm_chat_t *chat;
+                int injected;
+            } trig_ctx_t;
+            trig_ctx_t tctx = { match_surface, ctx->tools, chat, 0 };
+
+            int trig_cb(const mem_index_entry_t *entry, void *ud) {
+                trig_ctx_t *tc = (trig_ctx_t *)ud;
+                if (tc->injected >= 2) return 1;  /* cap */
+                if (entry->n_triggers <= 0) return 0;
+                if (tool_fire_ledger_contains(tc->tools, entry->key)) return 0;
+                for (int t = 0; t < entry->n_triggers; t++) {
+                    if (!entry->triggers[t] || !entry->triggers[t][0]) continue;
+                    if (strcasestr(tc->surface, entry->triggers[t])) {
+                        char hint[4096];
+                        snprintf(hint, sizeof(hint),
+                            "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
+                            "--- %s ---\n%s",
+                            entry->triggers[t], entry->key,
+                            entry->value ? entry->value : "");
+                        llm_chat_add_typed(tc->chat, "user", hint,
+                                           LLM_MSG_MEMORY_HINT);
+                        tool_fire_ledger_add(tc->tools, entry->key);
+                        tool_track_recalled_key(tc->tools, entry->key);
+                        tc->injected++;
+                        return 0;  /* continue scanning */
+                    }
+                }
+                return 0;
+            }
+
+            if (ctx->tools->ws) {
+                memory_iterate(ctx->tools->ws->global, trig_cb, &tctx);
+                if (tctx.injected < 2 && ctx->tools->ws->workspace)
+                    memory_iterate(ctx->tools->ws->workspace, trig_cb, &tctx);
+            } else {
+                memory_iterate(ctx->tools->memory, trig_cb, &tctx);
+            }
+            free(match_surface);
         }
 
         /* Cycling escalation: after 3+ consecutive refusals, inject a forceful

@@ -285,7 +285,9 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
 
 int workspace_store(workspace_t *ws, const char *key, const char *value,
                     int pinned, const char *journal_ref,
-                    const char **refs, int n_refs, int force_global) {
+                    const char **refs, int n_refs,
+                    const char **triggers, int n_triggers,
+                    int force_global) {
     if (!ws) return -1;
     memory_t *target;
     if (force_global || !ws->workspace) {
@@ -297,7 +299,8 @@ int workspace_store(workspace_t *ws, const char *key, const char *value,
         memory_t *existing = workspace_find_memory(ws, key);
         target = existing ? existing : ws->workspace;
     }
-    return memory_store(target, key, value, pinned, journal_ref, refs, n_refs);
+    return memory_store(target, key, value, pinned, journal_ref, refs, n_refs,
+                        triggers, n_triggers);
 }
 
 /* ── find which memory contains a key ────────────────── */

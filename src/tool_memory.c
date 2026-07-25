@@ -347,7 +347,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
         /* Store merged version under the new key */
         memory_store(target, new_key, merged,
-                     0, new_jref, NULL, 0);
+                     0, new_jref, NULL, 0, NULL, 0);
 
         cJSON_Delete(new_entry_json);
 
@@ -427,6 +427,20 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         }
     }
 
+    /* Parse triggers (array of content-match patterns for cue-anchored injection).
+     * When any pattern substring-matches tool I/O, the harness auto-injects
+     * this memory into context. */
+    const char *triggers_arr[32];
+    int n_triggers = 0;
+    cJSON *trigs_j = cJSON_GetObjectItem(params, "triggers");
+    if (trigs_j && cJSON_IsArray(trigs_j)) {
+        cJSON *item;
+        cJSON_ArrayForEach(item, trigs_j) {
+            if (item->valuestring && n_triggers < 32)
+                triggers_arr[n_triggers++] = item->valuestring;
+        }
+    }
+
     /* Workspace routing: 'global' parameter forces store to global memory */
     int force_global = 0;
     cJSON *glob_j = cJSON_GetObjectItem(params, "global");
@@ -437,11 +451,13 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         rc = workspace_store(ctx->ws, key, value, pinned,
                              jref[0] ? jref : NULL,
                              n_refs > 0 ? refs_arr : NULL, n_refs,
+                             n_triggers > 0 ? triggers_arr : NULL, n_triggers,
                              force_global);
     } else {
         rc = memory_store(ctx->memory, key, value, pinned,
                           jref[0] ? jref : NULL,
-                          n_refs > 0 ? refs_arr : NULL, n_refs);
+                          n_refs > 0 ? refs_arr : NULL, n_refs,
+                          n_triggers > 0 ? triggers_arr : NULL, n_triggers);
     }
     free(refs_copy);
 
@@ -794,6 +810,7 @@ static const tool_param_t memory_store_params[] = {
     {"value",      "string",  "Content to store",                                              1, NULL, NULL},
     {"refs",       "array",   "Related memory keys for cross-references",                      0, NULL, "string"},
     {"supersedes", "string",  "Key of the memory this entry replaces (lesson lineage tracking)", 0, NULL, NULL},
+    {"triggers",   "array",   "Content patterns that auto-inject this memory when matched in tool I/O", 0, NULL, "string"},
     {"global",     "boolean", "Store in global memory instead of workspace (default: false)",   0, NULL, NULL},
     {0}
 };

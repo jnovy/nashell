@@ -1696,7 +1696,7 @@ int optimize_generate_lessons(provider_t *reflection_lm,
         snprintf(key, sizeof(key), "lesson:opt-%s", slug);
 
         /* Store in memory (non-pinned, no journal ref) */
-        int rc = memory_store(memory, key, value, 0, NULL, NULL, 0);
+        int rc = memory_store(memory, key, value, 0, NULL, NULL, 0, NULL, 0);
         if (rc == 0) {
             fprintf(stderr, "[optimize] stored lesson: %s (%d chars)\n",
                     key, body_len);
