@@ -35,7 +35,7 @@ CFLAGS += $(TESS_CFLAGS)
 # VNC backend uses direct RFB protocol (no external VNC library).
 # Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
 #           OpenSSL/libcrypto (VNC DES authentication — already linked).
-LDFLAGS ?= -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc $(ORT_LDFLAGS) $(X265_LDFLAGS) $(TESS_LDFLAGS)
+LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -ldl $(ORT_LDFLAGS) $(X265_LDFLAGS) $(TESS_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -94,7 +94,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/tool_subtask.c \
           src/perception.c \
           src/completion.c \
-          src/subprocess.c
+          src/subprocess.c \
+          src/tool_plugin.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -172,7 +173,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/tool_subtask.c \
           src/perception.c \
           src/completion.c \
-          src/subprocess.c
+          src/subprocess.c \
+          src/tool_plugin.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Test binaries

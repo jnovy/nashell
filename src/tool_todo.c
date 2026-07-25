@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -355,3 +356,24 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error("unknown op (use: add, list, done, remove, purge)");
     }
 }
+
+/* ── plugin registration ──────────────────────────────── */
+
+static const tool_param_t todo_params[] = {
+    {"op",    "string",  "Operation: add, list, done, remove, purge", 1, NULL, NULL},
+    {"text",  "string",  "TODO text (for add)",                       0, NULL, NULL},
+    {"index", "integer", "Item number (for done/remove)",             0, NULL, NULL},
+    {0}
+};
+
+static const tool_plugin_t todo_plugin = {
+    .abi_version = TOOL_PLUGIN_ABI_VERSION,
+    .name        = "todo",
+    .version     = "1.0.0",
+    .description = "Persistent per-workspace TODO list that survives across sessions. Use to park findings, ideas, or action items for later. Stored in todo.md within the active workspace directory (human-editable).",
+    .params      = todo_params,
+    .execute     = (void *)tool_todo,
+    .caps        = 0,
+    .group       = NULL,
+};
+TOOL_PLUGIN_REGISTER(todo_plugin)

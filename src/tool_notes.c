@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include "scratchpad.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,3 +106,25 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
         return tools_make_error("unknown op (use: write, append, clear)");
     }
 }
+
+/* ── plugin registration ──────────────────────────────── */
+
+static const tool_param_t notes_params[] = {
+    {"op",       "string",  "Operation: write, append, clear",             1, NULL, NULL},
+    {"section",  "string",  "Section name",                                0, NULL, NULL},
+    {"content",  "string",  "Section content (for write/append)",          0, NULL, NULL},
+    {"priority", "integer", "Section priority 1-9 (1=highest, default 5)", 0, NULL, NULL},
+    {0}
+};
+
+static const tool_plugin_t notes_plugin = {
+    .abi_version = TOOL_PLUGIN_ABI_VERSION,
+    .name        = "notes",
+    .version     = "1.0.0",
+    .description = "Persistent scratchpad that survives context compaction. Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, notes(op=\"append\", section=\"name\", content=\"...\") to append, notes(op=\"clear\", section=\"name\") to delete a section. Priority 1=highest, 9=lowest (default 5).",
+    .params      = notes_params,
+    .execute     = (void *)tool_notes,
+    .caps        = 0,
+    .group       = NULL,
+};
+TOOL_PLUGIN_REGISTER(notes_plugin)

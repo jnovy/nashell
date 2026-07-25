@@ -1,6 +1,7 @@
 #include "config.h"
 #include "toml.h"
 #include "tools_registry.h"
+#include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -437,6 +438,7 @@ config_t *config_load(const char *path) {
     toml_table_t *paths = toml_table_in(root, "paths");
     if (paths) {
         cfg->data_dir = toml_str(paths, "data_dir");
+        cfg->plugin_dir = toml_str(paths, "plugin_dir");
     }
 
     /* [search] */
@@ -594,6 +596,7 @@ void config_free(config_t *cfg) {
     free(cfg->embedding.api_base);
     free(cfg->embedding.model_path);
     free(cfg->data_dir);
+    free(cfg->plugin_dir);
     free(cfg->workspace);
     free(cfg->search_engine);
     free(cfg->searxng_url);
@@ -1807,6 +1810,7 @@ int config_write_default(const char *path) {
         "\n"
         "[paths]\n"
         "data_dir = \"\"                # data directory (empty = ~/.nash/)\n"
+        "plugin_dir = \"\"              # external plugin .so directory (empty = none)\n"
         "\n"
         "[search]\n"
         "engine = \"searxng\"            # SearXNG (auto-started via podman/docker)\n"

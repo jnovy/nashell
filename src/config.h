@@ -343,6 +343,7 @@ typedef struct {
 
     /* [paths] */
     char  *data_dir;             /* empty = ~/.nash/ */
+    char  *plugin_dir;           /* external plugin .so directory (NULL = none) */
 
     /* [workspace] — memory segregation via layered workspaces.
      * Global memory (~/.nash/memory/) always exists.

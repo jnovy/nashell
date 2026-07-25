@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include "html_extract.h"
 #include "searxng.h"
 #include <stdio.h>
@@ -206,3 +207,39 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     free(results_text);
     return tools_make_result(1, meta, ref_copy);
 }
+
+/* ── Plugin registration ──────────────────────────────── */
+
+static const tool_param_t web_fetch_params[] = {
+    {"url", "string", "URL to fetch", 1, NULL, NULL},
+    {0}
+};
+
+static const tool_param_t web_search_params[] = {
+    {"query", "string", "Search query", 1, NULL, NULL},
+    {0}
+};
+
+static const tool_plugin_t web_plugins[] = {
+    {
+        .abi_version = TOOL_PLUGIN_ABI_VERSION,
+        .name        = "web_fetch",
+        .version     = "1.0.0",
+        .description = "Fetch content from a URL.",
+        .params      = web_fetch_params,
+        .execute     = (void *)tool_web_fetch,
+        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
+        .group       = "web"
+    },
+    {
+        .abi_version = TOOL_PLUGIN_ABI_VERSION,
+        .name        = "web_search",
+        .version     = "1.0.0",
+        .description = "Search the web for information.",
+        .params      = web_search_params,
+        .execute     = (void *)tool_web_search,
+        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
+        .group       = "web"
+    }
+};
+TOOL_PLUGIN_REGISTER_ARRAY(web_plugins, 2)

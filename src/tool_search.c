@@ -1,4 +1,5 @@
 #include "tools_internal.h"
+#include "tool_plugin.h"
 #include "subprocess.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -275,3 +276,41 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     free(hash);
     return tools_make_result(1, meta, ref_copy);
 }
+
+/* ── Plugin registration ──────────────────────────────── */
+
+static const tool_param_t grep_search_params[] = {
+    {"pattern", "string",  "Regex pattern",                    1, NULL, NULL},
+    {"path",    "string",  "Directory or file to search in",   0, NULL, NULL},
+    {0}
+};
+
+static const tool_param_t glob_search_params[] = {
+    {"pattern", "string",  "Glob pattern (e.g. **/*.py)",      1, NULL, NULL},
+    {"path",    "string",  "Directory or file to search in",   0, NULL, NULL},
+    {0}
+};
+
+static const tool_plugin_t search_plugins[] = {
+    {
+        .abi_version = TOOL_PLUGIN_ABI_VERSION,
+        .name        = "grep_search",
+        .version     = "1.0.0",
+        .description = "Search file contents with a regex pattern.",
+        .params      = grep_search_params,
+        .execute     = (void *)tool_grep_search,
+        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
+        .group       = "search"
+    },
+    {
+        .abi_version = TOOL_PLUGIN_ABI_VERSION,
+        .name        = "glob_search",
+        .version     = "1.0.0",
+        .description = "Search for files matching a glob pattern.",
+        .params      = glob_search_params,
+        .execute     = (void *)tool_glob_search,
+        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
+        .group       = "search"
+    }
+};
+TOOL_PLUGIN_REGISTER_ARRAY(search_plugins, 2)
