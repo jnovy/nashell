@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        6%{?dist}
+Release:        7%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -18,8 +18,8 @@ BuildRequires:  readline-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
-BuildRequires:  vim-common
-# vim-common provides xxd, needed to embed playbook YAML files at build time
+BuildRequires:  xxd
+# xxd is needed to embed playbook YAML files as C byte arrays at build time
 
 Requires:       libcurl
 Requires:       openssl-libs
@@ -77,7 +77,7 @@ Build plugins with:
 # Clean any pre-compiled objects (source tarball may contain stale .o files)
 make clean || true
 
-# Generate embedded playbook data (requires xxd from vim-common)
+# Generate embedded playbook data (requires xxd)
 make src/dream_yaml.inc
 
 %make_build CC=gcc \
@@ -132,6 +132,10 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-7
+- fix: BuildRequires vim-common -> xxd (xxd split into its own package since
+  Fedora 40)
+
 * Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-6
 - ABI v3: plugin lifecycle hooks (cleanup/init/user_data) in tool_plugin_t.
   Separated device_control into external nash-tool-device-control plugin.
