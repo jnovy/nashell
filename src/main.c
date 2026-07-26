@@ -1234,19 +1234,13 @@ int main(int argc, char **argv) {
     if (play_arg) {
         /* Resolve playbook path */
         char pb_path[NASH_PATH_MAX];
-        if (strcmp(play_arg, "dream") == 0) {
-            snprintf(pb_path, sizeof(pb_path), "%s/playbooks/dream.yaml", nash_dir);
-        } else if (strchr(play_arg, '/') || strchr(play_arg, '.')) {
+        if (strchr(play_arg, '/') || strchr(play_arg, '.')) {
             snprintf(pb_path, sizeof(pb_path), "%s", play_arg);
         } else {
-            snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml", nash_dir, play_arg);
+            playbook_resolve(play_arg, nash_dir, pb_path, sizeof(pb_path));
         }
 
         playbook_t *pb = playbook_load(pb_path);
-        if (!pb && strcmp(play_arg, "dream") == 0) {
-            playbook_write_default_dream(pb_path);
-            pb = playbook_load(pb_path);
-        }
         if (!pb) {
             fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
             cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);

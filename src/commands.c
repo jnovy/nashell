@@ -222,12 +222,8 @@ static int cmd_dream(command_ctx_t *ctx) {
     /* Load dream playbook from ~/.nash/playbooks/dream.yaml.
      * If not found, write the default and load it. */
     char pb_path[NASH_PATH_MAX];
-    snprintf(pb_path, sizeof(pb_path), "%s/playbooks/dream.yaml", ctx->nash_dir);
+    playbook_resolve("dream", ctx->nash_dir, pb_path, sizeof(pb_path));
     playbook_t *dream_pb = playbook_load(pb_path);
-    if (!dream_pb) {
-        playbook_write_default_dream(pb_path);
-        dream_pb = playbook_load(pb_path);
-    }
     if (!dream_pb) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,

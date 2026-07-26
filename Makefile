@@ -12,6 +12,10 @@ endif
 # plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
 LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl $(ORT_LDFLAGS)
 
+# Default data directory (playbooks, etc.) -- source tree for dev, /usr/share/nash for RPM
+NASH_DATADIR ?= $(CURDIR)
+CFLAGS  += -DNASH_DATADIR='"$(NASH_DATADIR)"'
+
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
           src/react_context.c \
@@ -69,18 +73,10 @@ LIB     = libnash.so
 
 all: $(LIB) $(BIN)
 
-# Embed bundled playbooks as C byte arrays at build time.
-# playbooks/dream.yaml → src/dream_yaml.inc (included by playbook.c)
-src/dream_yaml.inc: playbooks/dream.yaml
-	xxd -i $< > $@
-
-# Header dependencies — ALL .o files depend on ALL headers.
+# Header dependencies -- ALL .o files depend on ALL headers.
 # This is conservative but safe: changing any header recompiles everything.
 # For a 15-file project this adds <1s to rebuilds.
 HDRS    = $(wildcard src/*.h)
-
-# playbook.o additionally depends on the embedded YAML
-src/playbook.o: src/dream_yaml.inc
 
 src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -175,7 +171,7 @@ test: $(TEST_BIN)
 	echo "=== $$failures failures ==="
 
 clean:
-	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS) src/dream_yaml.inc
+	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS)
 	rm -rf tests/plugin_dir
 
 .PHONY: all clean test

@@ -152,8 +152,9 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
 /* List available playbooks from ~/.nash/playbooks/ */
 playbook_t **playbook_list(const char *nash_dir, int *count);
 
-/* Write default dream.yaml */
-int playbook_write_default_dream(const char *path);
+/* Resolve playbook path: user dir (~/.nash/playbooks/), then system NASH_DATADIR */
+const char *playbook_resolve(const char *name, const char *nash_dir,
+                             char *buf, size_t buflen);
 
 /* Validate a loaded playbook: check template vars, tool names, pass config.
  * Returns 0 on success, -1 on error.  Writes human-readable diagnostics

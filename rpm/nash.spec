@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        7%{?dist}
+Release:        8%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -18,8 +18,6 @@ BuildRequires:  readline-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
-BuildRequires:  xxd
-# xxd is needed to embed playbook YAML files as C byte arrays at build time
 
 Requires:       libcurl
 Requires:       openssl-libs
@@ -77,11 +75,8 @@ Build plugins with:
 # Clean any pre-compiled objects (source tarball may contain stale .o files)
 make clean || true
 
-# Generate embedded playbook data (requires xxd)
-make src/dream_yaml.inc
-
 %make_build CC=gcc \
-    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
+    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -DNASH_DATADIR='\"%{_datadir}/%{name}\"'" \
     LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -lonnxruntime"
 
 %install
@@ -117,7 +112,7 @@ install -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
 %check
 # Build and run the test suite
 make test CC=gcc \
-    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
+    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -DNASH_DATADIR='\"%{_datadir}/%{name}\"'" \
     LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -lonnxruntime"
 
 %ldconfig_scriptlets
@@ -132,6 +127,10 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-8
+- Remove embedded dream.yaml blob; ship playbook as regular file with
+  system-path fallback via NASH_DATADIR. Drop xxd build dependency.
+
 * Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-7
 - fix: BuildRequires vim-common -> xxd (xxd split into its own package since
   Fedora 40)

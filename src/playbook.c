@@ -479,21 +479,25 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
     return list;
 }
 
-/* ── Default dream.yaml (embedded from playbooks/dream.yaml at build time) ── */
+/* ── Playbook path resolution ──────────────────────────── */
 
-#include "dream_yaml.inc"
+#ifndef NASH_DATADIR
+#define NASH_DATADIR "/usr/share/nash"
+#endif
 
-int playbook_write_default_dream(const char *path) {
-    /* Create parent directory if needed */
-    char dir[NASH_PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s", path);
-    char *slash = strrchr(dir, '/');
-    if (slash) {
-        *slash = '\0';
-        mkdir(dir, 0755);
-    }
+const char *playbook_resolve(const char *name, const char *nash_dir,
+                             char *buf, size_t buflen) {
+    /* 1. User dir: ~/.nash/playbooks/name.yaml */
+    snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
+    if (access(buf, R_OK) == 0) return buf;
 
-    return write_file(path, (const char *)playbooks_dream_yaml, playbooks_dream_yaml_len);
+    /* 2. System dir: NASH_DATADIR/playbooks/name.yaml */
+    snprintf(buf, buflen, "%s/playbooks/%s.yaml", NASH_DATADIR, name);
+    if (access(buf, R_OK) == 0) return buf;
+
+    /* 3. Fall back to user path (for error reporting) */
+    snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
+    return buf;
 }
 
 /* ── Playbook validation ─────────────────────────────── */
