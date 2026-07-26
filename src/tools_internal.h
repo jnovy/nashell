@@ -4,7 +4,6 @@
 #define TOOLS_INTERNAL_H
 
 #include "tools.h"
-#include "tools_registry.h"
 #include "nash_limits.h"
 #include "str.h"
 #include "nash_log.h"

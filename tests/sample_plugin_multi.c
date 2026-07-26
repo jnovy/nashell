@@ -1,15 +1,7 @@
 /* sample_plugin_multi.c - Multi-tool external plugin for dlopen testing.
  * Registers two tools from one .so to test shared-dlhandle tracking. */
 
-#include "tool_plugin.h"
-#include "cJSON.h"
-
-typedef struct {
-    cJSON  *meta;
-    char   *store_ref;
-    int     success;
-    int     importance;
-} tool_result_t;
+#include "tool_plugin.h"  /* tool_result_t, tool_plugin_t, cJSON */
 
 static tool_result_t multi_alpha(void *ctx, cJSON *params) {
     (void)ctx; (void)params;

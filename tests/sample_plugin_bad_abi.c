@@ -1,14 +1,6 @@
 /* sample_plugin_bad_abi.c - Plugin with wrong ABI version for testing rejection. */
 
-#include "tool_plugin.h"
-#include "cJSON.h"
-
-typedef struct {
-    cJSON  *meta;
-    char   *store_ref;
-    int     success;
-    int     importance;
-} tool_result_t;
+#include "tool_plugin.h"  /* tool_result_t, tool_plugin_t, cJSON */
 
 static tool_result_t bad_handler(void *ctx, cJSON *params) {
     (void)ctx; (void)params;

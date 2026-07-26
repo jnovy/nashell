@@ -16,7 +16,6 @@
 #include "nash_limits.h"
 #include "agents.h"
 #include "playbook.h"
-#include "tools_registry.h"
 #include "tool_plugin.h"
 #include "str.h"
 

@@ -12,7 +12,6 @@
 
 #include "commands.h"
 #include "commands_internal.h"
-#include "tools_registry.h"
 #include "tool_plugin.h"
 #include "str.h"
 #include "nash_limits.h"

@@ -128,8 +128,8 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 
 - **Native OpenAI tool_calls API** — uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
 - **18 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete, image_analyze, user_ask
-- **Shared tool registry** (`tools_registry.h`) — tool definitions defined once, formatted per-provider (local/OpenAI/Anthropic)
-- **Dispatch table** — tool execution via function pointer table, not strcmp chains
+- **Plugin-based tool registry** (`tool_plugin.h`) - tools self-register via `__attribute__((constructor))`, formatted per-provider (local/OpenAI/Anthropic)
+- **Dispatch table** - tool execution via plugin registry lookup, not strcmp chains
 - **Tool filtering** — per-playbook-pass whitelist/blacklist restricts available tools
 - **Cycling detection** — detects repeated identical tool calls, injects corrective guidance, refuses after repeated failures
 - **Concatenated tool name recovery** — when the model emits garbled names (e.g., `shell_execshell_exec`), automatically extracts the longest matching prefix and dispatches correctly

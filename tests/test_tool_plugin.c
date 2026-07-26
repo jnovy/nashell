@@ -14,7 +14,6 @@
 #include "test_common.h"
 #include "tool_plugin.h"
 #include "tools.h"
-#include "tools_registry.h"
 #include "store.h"
 #include "journal.h"
 #include "cJSON.h"

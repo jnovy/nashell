@@ -1,22 +1,14 @@
 /* sample_plugin.c - Minimal external tool plugin for dlopen testing.
  *
- * Build: gcc -shared -fPIC -I src -o tests/sample_plugin.so tests/sample_plugin.c
+ * Build: gcc -shared -fPIC -I src -o tests/sample_plugin.so tests/sample_plugin.c -lnash
  *
  * This .so self-registers via TOOL_PLUGIN_REGISTER() constructor.
  * The handler is a no-op that returns a simple JSON result. */
 
-#include "tool_plugin.h"
-#include "cJSON.h"
+#include "tool_plugin.h"  /* tool_result_t, tool_plugin_t, cJSON */
 #include <string.h>
 
 /* Minimal handler that returns {"output": "hello from sample_plugin"} */
-typedef struct {
-    cJSON  *meta;
-    char   *store_ref;
-    int     success;
-    int     importance;
-} tool_result_t;
-
 static tool_result_t sample_hello(void *ctx, cJSON *params) {
     (void)ctx;
     (void)params;

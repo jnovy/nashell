@@ -11,7 +11,6 @@
 #include "journal.h"
 #include "store.h"
 #include "nash_log.h"
-#include "tools_registry.h"
 #include "cJSON.h"
 #include "str.h"
 #include <stdio.h>

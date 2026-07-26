@@ -1,5 +1,5 @@
 CC      ?= gcc
-CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 # ONNX Runtime: use pip-installed libonnxruntime if no system package
 ORT_LIB := $(shell python3 -c "import onnxruntime; import os; print(os.path.dirname(onnxruntime.__file__) + '/capi')" 2>/dev/null)
 ifneq ($(ORT_LIB),)
@@ -61,7 +61,6 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
           src/session_index.c \
-          src/tools_registry.c \
           src/tool_file.c \
           src/tool_search.c \
           src/tool_notes.c \
@@ -99,10 +98,9 @@ SRC     = src/main.c src/str.c src/cJSON.c \
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
-all: $(BIN)
+LIB     = libnash.so
 
-$(BIN): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+all: $(LIB) $(BIN)
 
 # Embed bundled playbooks as C byte arrays at build time.
 # playbooks/dream.yaml → src/dream_yaml.inc (included by playbook.c)
@@ -140,7 +138,6 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/prompt_optimize.c \
           src/scratchpad.c \
           src/session_index.c \
-          src/tools_registry.c \
           src/tool_file.c \
           src/tool_search.c \
           src/tool_notes.c \
@@ -177,6 +174,14 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/tool_plugin.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
+# Shared library: everything except main.c
+$(LIB): $(LIB_OBJ)
+	$(CC) -shared -o $@ $^ $(LDFLAGS)
+
+# Binary: main.o links against libnash.so
+$(BIN): src/main.o $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN' $(LDFLAGS)
+
 # Test binaries
 TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_str tests/test_journal tests/test_memory_context \
@@ -191,15 +196,15 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
                  tests/sample_plugin_multi.so
 
-tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h src/cJSON.c
-	$(CC) -shared -fPIC $(CFLAGS) -I src -o $@ $< src/cJSON.c
+tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h $(LIB)
+	$(CC) -shared -fPIC $(CFLAGS) -I src -o $@ $< -L. -lnash
 
 # dlopen test depends on sample .so files
-tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB_OBJ) $(SAMPLE_PLUGINS)
-	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB) $(SAMPLE_PLUGINS)
+	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
 
-tests/test_%: tests/test_%.c $(LIB_OBJ)
-	$(CC) $(CFLAGS) -I src -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+tests/test_%: tests/test_%.c $(LIB)
+	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
 
 test: $(TEST_BIN)
 	@echo "=== Running tests ==="
@@ -215,7 +220,7 @@ perception: src/perception.c src/cJSON.c
 	$(CC) $(CFLAGS) -D__PERCEPTION_TEST -o $@ $^ $(TESS_LDFLAGS) -lm
 
 clean:
-	rm -f $(OBJ) $(BIN) $(TEST_BIN) $(SAMPLE_PLUGINS) perception src/dream_yaml.inc
+	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS) perception src/dream_yaml.inc
 	rm -rf tests/plugin_dir
 
 .PHONY: all clean test perception

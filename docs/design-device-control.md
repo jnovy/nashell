@@ -462,7 +462,7 @@ void device_session_close(device_session_t *s);
 
 ## 4. The `device_control` Tool
 
-### 4.1 Tool Definition (for `tools_registry.c`)
+### 4.1 Tool Definition
 
 ```c
 {"device_control",

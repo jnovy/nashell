@@ -12,7 +12,6 @@
 #include "nash_log.h"
 #include "str.h"
 #include "frontend_tui.h"
-#include "tools_registry.h"
 #include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>

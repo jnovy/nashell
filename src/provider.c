@@ -1,7 +1,6 @@
 #include "provider.h"
 #include "llm.h"
 #include "tools.h"
-#include "tools_registry.h"
 #include "tool_plugin.h"
 #include "str.h"
 #include "tui.h"
@@ -266,9 +265,7 @@ void provider_free(provider_t *p) {
     free(p);
 }
 
-/* ── Shared tool registry → provider-specific JSON ──────────────── */
-
-#include "tools_registry.h"
+/* ── Shared tool registry -> provider-specific JSON ──────────────── */
 
 /* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */
 static void strict_object(cJSON *schema) {

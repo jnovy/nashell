@@ -1,6 +1,5 @@
 #include "config.h"
 #include "toml.h"
-#include "tools_registry.h"
 #include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>

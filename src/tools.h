@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "cJSON.h"
+#include "tool_plugin.h"   /* tool_result_t, tool_plugin_t, tool_param_t */
 #include "store.h"
 #include "journal.h"
 #include "memory.h"
@@ -14,14 +15,6 @@
 
 /* Forward declaration for session index (v4 unified memory L3 tier) */
 typedef struct session_index_t session_index_t;
-
-/* Tool result: metadata JSON + optional stored content hash */
-typedef struct {
-    cJSON  *meta;       /* metadata JSON returned to model context */
-    char   *store_ref;  /* hash in shared store (caller frees) */
-    int     success;    /* 1 = ok, 0 = error */
-    int     importance; /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 §3.2) */
-} tool_result_t;
 
 /* Dynamic hash map for step aliases (R1S0 → store hash).
  * Grows automatically — no artificial limit. */

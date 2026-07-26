@@ -38,6 +38,16 @@
 #define TOOL_CAP_EVENTS      (1u << 7)
 #define TOOL_CAP_CORE        (1u << 31)
 
+/* Tool result: metadata JSON + optional stored content hash.
+ * Defined here (not tools.h) so external plugins can use it
+ * without pulling in nash internals. */
+typedef struct {
+    cJSON  *meta;       /* metadata JSON returned to model context */
+    char   *store_ref;  /* hash in shared store (caller frees) */
+    int     success;    /* 1 = ok, 0 = error */
+    int     importance; /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 S3.2) */
+} tool_result_t;
+
 /* Parameter descriptor for a single tool parameter.
  * Replaces the unreadable escaped-JSON params_json strings with a
  * compile-time-validated C struct array.  The JSON Schema required by
@@ -152,6 +162,12 @@ int tool_params_check_required(const tool_param_t *params,
 /* Return the name of the first required parameter, or NULL if none.
  * Used by react_get_action_desc() for display. */
 const char *tool_params_first_required(const tool_param_t *params);
+
+/* ---- Registry helpers ---- */
+
+/* Build a comma-separated list of all tool names from the plugin registry.
+ * Caller must free() the returned string. */
+char *tool_registry_names_csv(void);
 
 /* ---- Convenience macros ---- */
 
