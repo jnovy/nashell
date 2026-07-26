@@ -1,3 +1,5 @@
+VERSION ?= 0.1.0
+
 CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
 # ONNX Runtime: use pip-installed libonnxruntime if no system package
@@ -174,4 +176,8 @@ clean:
 	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS)
 	rm -rf tests/plugin_dir
 
-.PHONY: all clean test
+# Source tarball for RPM builds (matches spec Source0: nash-VERSION.tar.gz)
+dist:
+	git archive --format=tar.gz --prefix=nash-$(VERSION)/ -o nash-$(VERSION).tar.gz HEAD
+
+.PHONY: all clean test dist

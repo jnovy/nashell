@@ -1,6 +1,7 @@
 # Compiled binaries
 nash
 *.o
+*.tar.gz
 cscope.out
 *.jpg
 *.jpeg
