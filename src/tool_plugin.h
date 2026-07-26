@@ -171,6 +171,32 @@ char *tool_registry_names_csv(void);
 
 /* ---- Convenience macros ---- */
 
+/* Parameter definition helpers.
+ * TOOL_PARAM:       standard parameter (no enum, no items_type)
+ * TOOL_PARAM_ENUM:  parameter with enum_values (NULL-terminated string array)
+ * TOOL_PARAM_ARRAY: array-typed parameter with items_type (e.g. "string")
+ * TOOL_PARAM_END:   sentinel terminator */
+#define TOOL_PARAM(n, t, d, r)             {(n), (t), (d), (r), NULL, NULL}
+#define TOOL_PARAM_ENUM(n, t, d, r, ev)    {(n), (t), (d), (r), (ev), NULL}
+#define TOOL_PARAM_ARRAY(n, d, r, it)      {(n), "array", (d), (r), NULL, (it)}
+#define TOOL_PARAM_END                     {0}
+
+/* Plugin definition helpers.
+ * TOOL_DEF:       standard tool (flags=0)
+ * TOOL_DEF_FLAGS: tool with explicit flags (e.g. TOOL_FLAG_DEFAULT_OFF)
+ * Both set abi_version and version automatically. */
+#define TOOL_DEF(tname, tdesc, tparams, thandler) \
+    { .abi_version = TOOL_PLUGIN_ABI_VERSION,     \
+      .name = (tname), .version = "1.0.0",        \
+      .description = (tdesc), .params = (tparams), \
+      .execute = (void *)(thandler) }
+
+#define TOOL_DEF_FLAGS(tname, tdesc, tparams, thandler, tflags) \
+    { .abi_version = TOOL_PLUGIN_ABI_VERSION,                   \
+      .name = (tname), .version = "1.0.0",                      \
+      .description = (tdesc), .params = (tparams),               \
+      .execute = (void *)(thandler), .flags = (tflags) }
+
 /* Register a single plugin variable via constructor */
 #define TOOL_PLUGIN_REGISTER(var_name)                  \
     __attribute__((constructor))                         \

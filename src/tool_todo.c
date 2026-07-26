@@ -360,20 +360,14 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 /* ── plugin registration ──────────────────────────────── */
 
 static const tool_param_t todo_params[] = {
-    {"op",    "string",  "Operation: add, list, done, remove, purge", 1, NULL, NULL},
-    {"text",  "string",  "TODO text (for add)",                       0, NULL, NULL},
-    {"index", "integer", "Item number (for done/remove)",             0, NULL, NULL},
-    {0}
+    TOOL_PARAM("op",    "string",  "Operation: add, list, done, remove, purge", 1),
+    TOOL_PARAM("text",  "string",  "TODO text (for add)",                       0),
+    TOOL_PARAM("index", "integer", "Item number (for done/remove)",             0),
+    TOOL_PARAM_END
 };
 
-static const tool_plugin_t todo_plugin = {
-    .abi_version = TOOL_PLUGIN_ABI_VERSION,
-    .name        = "todo",
-    .version     = "1.0.0",
-    .description = "Persistent per-workspace TODO list that survives across sessions. Use to park findings, ideas, or action items for later. Stored in todo.md within the active workspace directory (human-editable).",
-    .params      = todo_params,
-    .execute     = (void *)tool_todo,
-    .caps        = 0,
-    .group       = NULL,
-};
+static const tool_plugin_t todo_plugin =
+    TOOL_DEF("todo",
+             "Persistent per-workspace TODO list that survives across sessions. Use to park findings, ideas, or action items for later. Stored in todo.md within the active workspace directory (human-editable).",
+             todo_params, tool_todo);
 TOOL_PLUGIN_REGISTER(todo_plugin)

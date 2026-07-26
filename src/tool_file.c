@@ -778,55 +778,34 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 /* ── Plugin registration ──────────────────────────────── */
 
 static const tool_param_t file_read_params[] = {
-    {"path",       "string",  "File path",                                                              1, NULL, NULL},
-    {"start_line", "integer", "First line to read (1-based, default: 1). Negative = from end (-20 = last 20 lines)", 0, NULL, NULL},
-    {"end_line",   "integer", "Last line to read (1-based inclusive, default: EOF)",                     0, NULL, NULL},
-    {0}
+    TOOL_PARAM("path",       "string",  "File path",                                                              1),
+    TOOL_PARAM("start_line", "integer", "First line to read (1-based, default: 1). Negative = from end (-20 = last 20 lines)", 0),
+    TOOL_PARAM("end_line",   "integer", "Last line to read (1-based inclusive, default: EOF)",                     0),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t file_write_params[] = {
-    {"path",    "string",  "File path",     1, NULL, NULL},
-    {"content", "string",  "File content",  1, NULL, NULL},
-    {0}
+    TOOL_PARAM("path",    "string",  "File path",    1),
+    TOOL_PARAM("content", "string",  "File content", 1),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t file_edit_params[] = {
-    {"path",     "string",  "File path",                       1, NULL, NULL},
-    {"old_text", "string",  "Exact text to find (must match)", 1, NULL, NULL},
-    {"new_text", "string",  "Replacement text",                1, NULL, NULL},
-    {0}
+    TOOL_PARAM("path",     "string",  "File path",                       1),
+    TOOL_PARAM("old_text", "string",  "Exact text to find (must match)", 1),
+    TOOL_PARAM("new_text", "string",  "Replacement text",                1),
+    TOOL_PARAM_END
 };
 
 static const tool_plugin_t file_plugins[] = {
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "file_read",
-        .version     = "1.0.0",
-        .description = "Read contents of a file. Supports line ranges to avoid reading entire large files. Use start_line/end_line for specific sections (1-based). Negative start_line reads from end (e.g., -20 = last 20 lines).",
-        .params      = file_read_params,
-        .execute     = (void *)tool_file_read,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
-        .group       = "file"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "file_write",
-        .version     = "1.0.0",
-        .description = "Write content to a file (under workspace dir).",
-        .params      = file_write_params,
-        .execute     = (void *)tool_file_write,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG | TOOL_CAP_WORKSPACE,
-        .group       = "file"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "file_edit",
-        .version     = "1.0.0",
-        .description = "Edit a file by replacing exact text. Always file_read first to copy exact text.",
-        .params      = file_edit_params,
-        .execute     = (void *)tool_file_edit,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG | TOOL_CAP_WORKSPACE,
-        .group       = "file"
-    }
+    TOOL_DEF("file_read",
+             "Read contents of a file. Supports line ranges to avoid reading entire large files. Use start_line/end_line for specific sections (1-based). Negative start_line reads from end (e.g., -20 = last 20 lines).",
+             file_read_params, tool_file_read),
+    TOOL_DEF("file_write",
+             "Write content to a file (under workspace dir).",
+             file_write_params, tool_file_write),
+    TOOL_DEF("file_edit",
+             "Edit a file by replacing exact text. Always file_read first to copy exact text.",
+             file_edit_params, tool_file_edit),
 };
 TOOL_PLUGIN_REGISTER_ARRAY(file_plugins, 3)

@@ -445,19 +445,13 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
 /* ── plugin registration ──────────────────────────────── */
 
 static const tool_param_t image_analyze_params[] = {
-    {"path",     "string", "Path to the image file",                                          1, NULL, NULL},
-    {"question", "string", "What to analyze or ask about the image (default: describe in detail)", 0, NULL, NULL},
-    {0}
+    TOOL_PARAM("path",     "string", "Path to the image file",                                          1),
+    TOOL_PARAM("question", "string", "What to analyze or ask about the image (default: describe in detail)", 0),
+    TOOL_PARAM_END
 };
 
-static const tool_plugin_t image_analyze_plugin = {
-    .abi_version = TOOL_PLUGIN_ABI_VERSION,
-    .name        = "image_analyze",
-    .version     = "1.0.0",
-    .description = "Analyze an image file using the LLM's vision capabilities. Reads the image, base64-encodes it, and sends it to the provider for multimodal analysis. Returns a textual description/analysis. Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
-    .params      = image_analyze_params,
-    .execute     = (void *)tool_image_analyze,
-    .caps        = 0,
-    .group       = NULL,
-};
+static const tool_plugin_t image_analyze_plugin =
+    TOOL_DEF("image_analyze",
+             "Analyze an image file using the LLM's vision capabilities. Reads the image, base64-encodes it, and sends it to the provider for multimodal analysis. Returns a textual description/analysis. Supports: png, jpg/jpeg, gif, webp, bmp, svg, tiff. Max 20 MB.",
+             image_analyze_params, tool_image_analyze);
 TOOL_PLUGIN_REGISTER(image_analyze_plugin)

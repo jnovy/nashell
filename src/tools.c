@@ -760,62 +760,58 @@ typedef tool_result_t (*tool_handler_fn)(tool_ctx_t *, cJSON *);
 /* ── Parameter definitions for core tools ─────────────────────────── */
 
 static const tool_param_t shell_exec_params[] = {
-    {"command", "string",  "Shell command",                    1, NULL, NULL},
-    {"timeout", "integer", "Timeout in seconds (default: 30)", 0, NULL, NULL},
-    {0}
+    TOOL_PARAM("command", "string",  "Shell command",                    1),
+    TOOL_PARAM("timeout", "integer", "Timeout in seconds (default: 30)", 0),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t done_params[] = {
-    {"result", "string", "Complete answer with details", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("result", "string", "Complete answer with details", 1),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t plan_params[] = {
-    {"result", "string", "Numbered plan: 1. step (tool)\n2. ...", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("result", "string", "Numbered plan: 1. step (tool)\n2. ...", 1),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t user_ask_params[] = {
-    {"question", "string", "Question to ask the user", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("question", "string", "Question to ask the user", 1),
+    TOOL_PARAM_END
 };
 
 /* ── Plugin descriptors for tools defined in this file ────────────── */
 
 static const tool_plugin_t core_plugins[] = {
-    {TOOL_PLUGIN_ABI_VERSION, "shell_exec", "1.0.0",
-     "Execute a shell command (git, make, docker, gh, npm, etc.). "
-     "For file reading use file_read, for content search use grep_search, "
-     "for file search use glob_search, for URL fetching use web_fetch. "
-     "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
-     "Re-analyze stored output (grep/head/tail on the ref) instead of "
-     "re-running the command. Do not file_write to ref paths.",
-     shell_exec_params,
-     (void *)tool_shell_exec, TOOL_CAP_STORE | TOOL_CAP_CONFIG, 0, "core"},
+    TOOL_DEF("shell_exec",
+             "Execute a shell command (git, make, docker, gh, npm, etc.). "
+             "For file reading use file_read, for content search use grep_search, "
+             "for file search use glob_search, for URL fetching use web_fetch. "
+             "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
+             "Re-analyze stored output (grep/head/tail on the ref) instead of "
+             "re-running the command. Do not file_write to ref paths.",
+             shell_exec_params, tool_shell_exec),
 
-    {TOOL_PLUGIN_ABI_VERSION, "done", "1.0.0",
-     "Signal task completion. Include all concrete data (paths, numbers, URLs) in result. "
-     "The user CANNOT see notes/scratchpad -- never say \"see above\" or reference data only in notes. "
-     "Copy all relevant content (tables, lists, data) directly into the result text. "
-     "Before calling done, verify every claim in your result is supported by evidence "
-     "you actually observed (tool output, file content, command result) -- never state "
-     "facts you did not verify or assume tool calls succeeded without reading the output.",
-     done_params,
-     (void *)tool_done, TOOL_CAP_CORE, 0, "core"},
+    TOOL_DEF("done",
+             "Signal task completion. Include all concrete data (paths, numbers, URLs) in result. "
+             "The user CANNOT see notes/scratchpad -- never say \"see above\" or reference data only in notes. "
+             "Copy all relevant content (tables, lists, data) directly into the result text. "
+             "Before calling done, verify every claim in your result is supported by evidence "
+             "you actually observed (tool output, file content, command result) -- never state "
+             "facts you did not verify or assume tool calls succeeded without reading the output.",
+             done_params, tool_done),
 
-    {TOOL_PLUGIN_ABI_VERSION, "plan", "1.0.0",
-     "Outline a numbered execution plan (3-8 steps) before starting work.",
-     plan_params,
-     (void *)tool_plan, TOOL_CAP_SCRATCHPAD, 0, "core"},
+    TOOL_DEF("plan",
+             "Outline a numbered execution plan (3-8 steps) before starting work.",
+             plan_params, tool_plan),
 
-    {TOOL_PLUGIN_ABI_VERSION, "user_ask", "1.0.0",
-     "Ask the user a clarifying question. Use when you need information "
-     "that cannot be determined from the codebase or context. The react loop "
-     "pauses until the user responds. "
-     "Prefer calling this EARLY (step 0-2) when the task is ambiguous, rather "
-     "than guessing and discovering the wrong assumption later.",
-     user_ask_params,
-     (void *)tool_user_ask_stub, TOOL_CAP_CORE, 0, "core"},
+    TOOL_DEF("user_ask",
+             "Ask the user a clarifying question. Use when you need information "
+             "that cannot be determined from the codebase or context. The react loop "
+             "pauses until the user responds. "
+             "Prefer calling this EARLY (step 0-2) when the task is ambiguous, rather "
+             "than guessing and discovering the wrong assumption later.",
+             user_ask_params, tool_user_ask_stub),
 };
 TOOL_PLUGIN_REGISTER_ARRAY(core_plugins, 4)
 

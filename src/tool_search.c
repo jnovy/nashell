@@ -280,37 +280,21 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
 /* ── Plugin registration ──────────────────────────────── */
 
 static const tool_param_t grep_search_params[] = {
-    {"pattern", "string",  "Regex pattern",                    1, NULL, NULL},
-    {"path",    "string",  "Directory or file to search in",   0, NULL, NULL},
-    {0}
+    TOOL_PARAM("pattern", "string",  "Regex pattern",                  1),
+    TOOL_PARAM("path",    "string",  "Directory or file to search in", 0),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t glob_search_params[] = {
-    {"pattern", "string",  "Glob pattern (e.g. **/*.py)",      1, NULL, NULL},
-    {"path",    "string",  "Directory or file to search in",   0, NULL, NULL},
-    {0}
+    TOOL_PARAM("pattern", "string",  "Glob pattern (e.g. **/*.py)",    1),
+    TOOL_PARAM("path",    "string",  "Directory or file to search in", 0),
+    TOOL_PARAM_END
 };
 
 static const tool_plugin_t search_plugins[] = {
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "grep_search",
-        .version     = "1.0.0",
-        .description = "Search file contents with a regex pattern.",
-        .params      = grep_search_params,
-        .execute     = (void *)tool_grep_search,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
-        .group       = "search"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "glob_search",
-        .version     = "1.0.0",
-        .description = "Search for files matching a glob pattern.",
-        .params      = glob_search_params,
-        .execute     = (void *)tool_glob_search,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG,
-        .group       = "search"
-    }
+    TOOL_DEF("grep_search", "Search file contents with a regex pattern.",
+             grep_search_params, tool_grep_search),
+    TOOL_DEF("glob_search", "Search for files matching a glob pattern.",
+             glob_search_params, tool_glob_search),
 };
 TOOL_PLUGIN_REGISTER_ARRAY(search_plugins, 2)

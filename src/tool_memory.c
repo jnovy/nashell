@@ -806,94 +806,59 @@ tool_result_t tool_memory_delete(tool_ctx_t *ctx, cJSON *params) {
 /* ── Parameter descriptors ────────────────────────────── */
 
 static const tool_param_t memory_store_params[] = {
-    {"key",        "string",  "Memory key",                                                    1, NULL, NULL},
-    {"value",      "string",  "Content to store",                                              1, NULL, NULL},
-    {"refs",       "array",   "Related memory keys for cross-references",                      0, NULL, "string"},
-    {"supersedes", "string",  "Key of the memory this entry replaces (lesson lineage tracking)", 0, NULL, NULL},
-    {"triggers",   "array",   "Content patterns that auto-inject this memory when matched in tool I/O", 0, NULL, "string"},
-    {"global",     "boolean", "Store in global memory instead of workspace (default: false)",   0, NULL, NULL},
-    {0}
+    TOOL_PARAM("key",          "string",  "Memory key",                                                    1),
+    TOOL_PARAM("value",        "string",  "Content to store",                                              1),
+    TOOL_PARAM_ARRAY("refs",              "Related memory keys for cross-references",                      0, "string"),
+    TOOL_PARAM("supersedes",   "string",  "Key of the memory this entry replaces (lesson lineage tracking)", 0),
+    TOOL_PARAM_ARRAY("triggers",          "Content patterns that auto-inject this memory when matched in tool I/O", 0, "string"),
+    TOOL_PARAM("global",       "boolean", "Store in global memory instead of workspace (default: false)",   0),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t memory_search_params[] = {
-    {"query",       "string",  "Search query",                                                                                    0, NULL, NULL},
-    {"key",         "string",  "Exact key to recall",                                                                             0, NULL, NULL},
-    {"pattern",     "string",  "Substring pattern to search for (case-insensitive). When regex=true, this is a POSIX Extended Regular Expression.", 0, NULL, NULL},
-    {"regex",       "boolean", "Use POSIX Extended Regular Expression matching instead of substring (default: false).",            0, NULL, NULL},
-    {"max_results", "integer", "Maximum results to return (default: 20, max: 100)",                                               0, NULL, NULL},
-    {"days",        "integer", "Only search sessions up to N days old (default: all)",                                            0, NULL, NULL},
-    {0}
+    TOOL_PARAM("query",       "string",  "Search query",                                                                                    0),
+    TOOL_PARAM("key",         "string",  "Exact key to recall",                                                                             0),
+    TOOL_PARAM("pattern",     "string",  "Substring pattern to search for (case-insensitive). When regex=true, this is a POSIX Extended Regular Expression.", 0),
+    TOOL_PARAM("regex",       "boolean", "Use POSIX Extended Regular Expression matching instead of substring (default: false).",            0),
+    TOOL_PARAM("max_results", "integer", "Maximum results to return (default: 20, max: 100)",                                               0),
+    TOOL_PARAM("days",        "integer", "Only search sessions up to N days old (default: all)",                                            0),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t memory_key_params[] = {
-    {"key", "string", "Memory key to pin", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("key", "string", "Memory key to pin", 1),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t memory_unpin_params[] = {
-    {"key", "string", "Memory key to unpin", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("key", "string", "Memory key to unpin", 1),
+    TOOL_PARAM_END
 };
 
 static const tool_param_t memory_delete_params[] = {
-    {"key", "string", "Memory key to delete", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("key", "string", "Memory key to delete", 1),
+    TOOL_PARAM_END
 };
 
 /* ── Plugin registration ──────────────────────────────── */
 
 static const tool_plugin_t memory_plugins[] = {
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "memory_store",
-        .version     = "1.0.0",
-        .description = "Store reusable knowledge in long-term memory.",
-        .params      = memory_store_params,
-        .execute     = (void *)tool_memory_store,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG | TOOL_CAP_MEMORY | TOOL_CAP_WORKSPACE | TOOL_CAP_SESSION,
-        .group       = "memory"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "memory_search",
-        .version     = "1.0.0",
-        .description = "Search long-term memory and past session journals. Use when the task may depend on user preferences, prior decisions, or historical context. Supports semantic search (query), exact key lookup (key), lexical/regex search across session journals (pattern), or any combination. Returns interleaved results from curated memory and session history, ranked by relevance.",
-        .params      = memory_search_params,
-        .execute     = (void *)tool_memory_search,
-        .caps        = TOOL_CAP_STORE | TOOL_CAP_CONFIG | TOOL_CAP_PROVIDER | TOOL_CAP_MEMORY | TOOL_CAP_WORKSPACE | TOOL_CAP_SESSION,
-        .group       = "memory"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "memory_pin",
-        .version     = "1.0.0",
-        .description = "Pin an existing memory so it is always injected into the system prompt.",
-        .params      = memory_key_params,
-        .execute     = (void *)tool_memory_pin,
-        .caps        = TOOL_CAP_MEMORY | TOOL_CAP_WORKSPACE,
-        .group       = "memory"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "memory_unpin",
-        .version     = "1.0.0",
-        .description = "Unpin a memory so it is no longer always injected into the system prompt.",
-        .params      = memory_unpin_params,
-        .execute     = (void *)tool_memory_unpin,
-        .caps        = TOOL_CAP_MEMORY | TOOL_CAP_WORKSPACE,
-        .group       = "memory"
-    },
-    {
-        .abi_version = TOOL_PLUGIN_ABI_VERSION,
-        .name        = "memory_delete",
-        .version     = "1.0.0",
-        .description = "Delete a memory entry by key.",
-        .params      = memory_delete_params,
-        .execute     = (void *)tool_memory_delete,
-        .caps        = TOOL_CAP_MEMORY | TOOL_CAP_WORKSPACE,
-        .flags       = TOOL_FLAG_DEFAULT_OFF,
-        .group       = "memory"
-    }
+    TOOL_DEF("memory_store",
+             "Store reusable knowledge in long-term memory.",
+             memory_store_params, tool_memory_store),
+    TOOL_DEF("memory_search",
+             "Search long-term memory and past session journals. Use when the task may depend on user preferences, prior decisions, or historical context. Supports semantic search (query), exact key lookup (key), lexical/regex search across session journals (pattern), or any combination. Returns interleaved results from curated memory and session history, ranked by relevance.",
+             memory_search_params, tool_memory_search),
+    TOOL_DEF("memory_pin",
+             "Pin an existing memory so it is always injected into the system prompt.",
+             memory_key_params, tool_memory_pin),
+    TOOL_DEF("memory_unpin",
+             "Unpin a memory so it is no longer always injected into the system prompt.",
+             memory_unpin_params, tool_memory_unpin),
+    TOOL_DEF_FLAGS("memory_delete",
+                   "Delete a memory entry by key.",
+                   memory_delete_params, tool_memory_delete,
+                   TOOL_FLAG_DEFAULT_OFF),
 };
 TOOL_PLUGIN_REGISTER_ARRAY(memory_plugins, 5)
 

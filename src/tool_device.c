@@ -521,27 +521,24 @@ static const char *dc_commands[] = {
 };
 
 static const tool_param_t device_control_params[] = {
-    {"command",   "string",  "Command to execute",                                          1, dc_commands, NULL},
-    {"x",         "integer", "X coordinate (pixels)",                                       0, NULL, NULL},
-    {"y",         "integer", "Y coordinate (pixels)",                                       0, NULL, NULL},
-    {"text",      "string",  "Text to type (for type command)",                             0, NULL, NULL},
-    {"key_name",  "string",  "Key name (for key command): enter, tab, escape, ctrl+c, etc.",0, NULL, NULL},
-    {"button",    "string",  "Mouse button for drag: left, right, middle (default: left)",  0, NULL, NULL},
-    {"direction", "string",  "Scroll direction: up, down, left, right",                     0, NULL, NULL},
-    {"amount",    "integer", "Scroll amount (default: 3)",                                  0, NULL, NULL},
-    {"start_x",   "integer", "Drag start X",                                                0, NULL, NULL},
-    {"start_y",   "integer", "Drag start Y",                                                0, NULL, NULL},
-    {"end_x",     "integer", "Drag end X",                                                  0, NULL, NULL},
-    {"end_y",     "integer", "Drag end Y",                                                  0, NULL, NULL},
-    {"hold_ms",   "integer", "Hold duration in ms for long_press (default: 500, min: 100, max: 10000)", 0, NULL, NULL},
-    {0}
+    TOOL_PARAM_ENUM("command", "string", "Command to execute",                                          1, dc_commands),
+    TOOL_PARAM("x",         "integer", "X coordinate (pixels)",                                       0),
+    TOOL_PARAM("y",         "integer", "Y coordinate (pixels)",                                       0),
+    TOOL_PARAM("text",      "string",  "Text to type (for type command)",                             0),
+    TOOL_PARAM("key_name",  "string",  "Key name (for key command): enter, tab, escape, ctrl+c, etc.",0),
+    TOOL_PARAM("button",    "string",  "Mouse button for drag: left, right, middle (default: left)",  0),
+    TOOL_PARAM("direction", "string",  "Scroll direction: up, down, left, right",                     0),
+    TOOL_PARAM("amount",    "integer", "Scroll amount (default: 3)",                                  0),
+    TOOL_PARAM("start_x",   "integer", "Drag start X",                                                0),
+    TOOL_PARAM("start_y",   "integer", "Drag start Y",                                                0),
+    TOOL_PARAM("end_x",     "integer", "Drag end X",                                                  0),
+    TOOL_PARAM("end_y",     "integer", "Drag end Y",                                                  0),
+    TOOL_PARAM("hold_ms",   "integer", "Hold duration in ms for long_press (default: 500, min: 100, max: 10000)", 0),
+    TOOL_PARAM_END
 };
 
-static const tool_plugin_t device_control_plugin = {
-    .abi_version = TOOL_PLUGIN_ABI_VERSION,
-    .name        = "device_control",
-    .version     = "1.0.0",
-    .description =
+static const tool_plugin_t device_control_plugin =
+    TOOL_DEF_FLAGS("device_control",
         "Control a device's GUI (computer, phone, tablet, kiosk). "
         "Workflow: screenshot to see+parse the screen (OmniParser + OCR), then act, then screenshot to verify.\\n"
         "Commands and parameters:\\n"
@@ -563,10 +560,6 @@ static const tool_plugin_t device_control_plugin = {
         "Do NOT use shell_exec with xdotool, xclip, xsel, wmctrl, xprop, xwininfo, "
         "import, scrot, gnome-screenshot, or any other CLI tool to manipulate or capture the GUI. "
         "All clicking, typing, scrolling, dragging, and screenshots must go through device_control commands.",
-    .params      = device_control_params,
-    .execute     = (void *)tool_device_control,
-    .caps        = 0,
-    .flags       = TOOL_FLAG_DEFAULT_OFF,
-    .group       = NULL,
-};
+        device_control_params, tool_device_control,
+        TOOL_FLAG_DEFAULT_OFF);
 TOOL_PLUGIN_REGISTER(device_control_plugin)

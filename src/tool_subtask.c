@@ -259,18 +259,12 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 /* ── plugin registration ──────────────────────────────── */
 
 static const tool_param_t subtask_params[] = {
-    {"query", "string", "Task description for the sub-task to solve", 1, NULL, NULL},
-    {0}
+    TOOL_PARAM("query", "string", "Task description for the sub-task to solve", 1),
+    TOOL_PARAM_END
 };
 
-static const tool_plugin_t subtask_plugin = {
-    .abi_version = TOOL_PLUGIN_ABI_VERSION,
-    .name        = "subtask",
-    .version     = "1.0.0",
-    .description = "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps.",
-    .params      = subtask_params,
-    .execute     = (void *)tool_subtask,
-    .caps        = 0,
-    .group       = NULL,
-};
+static const tool_plugin_t subtask_plugin =
+    TOOL_DEF("subtask",
+             "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps.",
+             subtask_params, tool_subtask);
 TOOL_PLUGIN_REGISTER(subtask_plugin)
