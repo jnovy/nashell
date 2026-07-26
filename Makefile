@@ -176,8 +176,8 @@ clean:
 	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS)
 	rm -rf tests/plugin_dir
 
-# Source tarball for RPM builds (matches spec Source0: nash-VERSION.tar.gz)
+# Source tarball for RPM builds (matches spec Source0: nash-VERSION.tar.zst)
 dist:
-	git archive --format=tar.gz --prefix=nash-$(VERSION)/ -o nash-$(VERSION).tar.gz HEAD
+	git archive --format=tar --prefix=nash-$(VERSION)/ HEAD | zstd -o nash-$(VERSION).tar.zst
 
 .PHONY: all clean test dist

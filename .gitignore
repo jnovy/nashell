@@ -2,6 +2,11 @@
 nash
 *.o
 *.tar.gz
+*.tar.zst
+libnash.so
+tests/*.so
+tests/test_tool_plugin
+tests/test_tool_plugin_dlopen
 cscope.out
 *.jpg
 *.jpeg

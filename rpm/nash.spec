@@ -1,13 +1,13 @@
 Name:           nash
 Version:        0.1.0
-Release:        8%{?dist}
+Release:        9%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
 License:        MIT
 URL:            https://github.com/jnovy/nash
 # Source0:      https://github.com/jnovy/nash/archive/v%%{version}/nash-%%{version}.tar.gz
-Source0:        %{name}-%{version}.tar.gz
+Source0:        %{name}-%{version}.tar.zst
 
 BuildRequires:  gcc
 BuildRequires:  make
@@ -127,6 +127,10 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-9
+- Switch source tarball from tar.gz to tar.zst. Remove compiled binaries (.so,
+  test executables) from git tracking.
+
 * Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-8
 - Remove embedded dream.yaml blob; ship playbook as regular file with
   system-path fallback via NASH_DATADIR. Drop xxd build dependency.
