@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        4%{?dist}
+Release:        5%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -67,6 +67,19 @@ Key features:
   - Session journaling with checkpoint/resume and episodic search
   - Context compaction with configurable eviction policies
   - Content-addressed store with full audit trail
+  - Plugin system with libnash.so for independent tool development
+
+%package devel
+Summary:        Development files for nash plugin development
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+
+%description devel
+Headers and shared library for developing nash plugins.
+Plugins are shared objects (.so) that self-register via
+__attribute__((constructor)) and are loaded by nash at runtime.
+
+Build plugins with:
+  gcc -shared -fPIC -I%{_includedir}/nash -o plugin.so plugin.c -lnash
 
 %prep
 %autosetup -n %{name}-%{version}
@@ -79,11 +92,19 @@ make clean || true
 make src/dream_yaml.inc
 
 %make_build CC=gcc \
-    CFLAGS="%{optflags} -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
+    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
     LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
 
 %install
 install -D -p -m 0755 nash %{buildroot}%{_bindir}/nash
+
+# Install shared library
+install -D -p -m 0755 libnash.so %{buildroot}%{_libdir}/libnash.so
+
+# Install development headers
+install -d %{buildroot}%{_includedir}/nash
+install -p -m 0644 src/tool_plugin.h %{buildroot}%{_includedir}/nash/
+install -p -m 0644 src/cJSON.h %{buildroot}%{_includedir}/nash/
 
 # Install playbook YAML files
 install -d %{buildroot}%{_datadir}/%{name}/playbooks
@@ -106,15 +127,25 @@ install -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
 %check
 # Build and run the test suite
 make test CC=gcc \
-    CFLAGS="%{optflags} -std=c11 -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
+    CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
     LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
+
+%ldconfig_scriptlets
 
 %files
 %doc README.md
 %{_bindir}/nash
+%{_libdir}/libnash.so
 %{_datadir}/%{name}/
 
+%files devel
+%{_includedir}/nash/
+
 %changelog
+* Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-5
+- feat: libnash.so shared library and nash-devel subpackage for independent
+  plugin development
+
 * Wed Jul 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-4
 - feat: subtask tool for isolated child react loops
 - feat: device_control tool for GUI automation (screenshot, click, type, scroll, drag)
