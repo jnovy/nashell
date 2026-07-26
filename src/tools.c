@@ -789,7 +789,9 @@ static const tool_plugin_t core_plugins[] = {
              "for file search use glob_search, for URL fetching use web_fetch. "
              "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
              "Re-analyze stored output (grep/head/tail on the ref) instead of "
-             "re-running the command. Do not file_write to ref paths.",
+             "re-running the command. Do not file_write to ref paths. "
+             "For stored refs, shell_exec (grep/head/tail) avoids loading large "
+             "outputs into context.",
              shell_exec_params, tool_shell_exec),
 
     TOOL_DEF("done",
@@ -810,7 +812,12 @@ static const tool_plugin_t core_plugins[] = {
              "that cannot be determined from the codebase or context. The react loop "
              "pauses until the user responds. "
              "Prefer calling this EARLY (step 0-2) when the task is ambiguous, rather "
-             "than guessing and discovering the wrong assumption later.",
+             "than guessing and discovering the wrong assumption later. "
+             "Before selecting your first action, assess request_uncertainty on a 0-1 "
+             "scale: 0 = fully specified task, 0.5 = missing parameters the user likely "
+             "has a preference about, 1 = critically ambiguous. "
+             "If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
+             "other tool. Do NOT guess when the user's intent is unclear -- ask.",
              user_ask_params, tool_user_ask_stub),
 };
 TOOL_PLUGIN_REGISTER_ARRAY(core_plugins, 4)
@@ -1029,23 +1036,13 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
         "\nRules:\n"
         "- Never invoke tools speculatively. Every tool call must have a clear reason "
         "and you MUST read the result before proceeding.\n"
-        "- Never guess tool results. Wait for actual output.\n"
-        "- file_edit: old_text must match exactly. Always file_read first.\n"
-        "- Use dedicated tools (file_read, grep_search, glob_search) for source files "
-        "instead of shell_exec equivalents. "
-        "For stored refs, shell_exec (grep/head/tail) avoids loading large outputs into context.\n"
-        "- Record key findings in notes -- they survive context eviction. "
-        "Save incrementally (every 3-5 file reads), not in one batch at the end.\n"
-        "- Call done with the final answer when finished.\n");
+        "- Never guess tool results. Wait for actual output.\n");
 
-    /* Result visibility — different for interactive vs headless */
+    /* Result visibility — headless-specific context (interactive case
+     * is already covered by the done tool's own description). */
     if (headless)
         str_append_cstr(&s,
             "- The result from done is written to result.md and delivered via mailbox.\n");
-    else
-        str_append_cstr(&s,
-            "- The user only sees [done] text. Notes/scratchpad are invisible to them. "
-            "Never reference notes content -- include all data directly in done result.\n");
 
     str_append_cstr(&s,
         "\nMulti-part feature implementation:\n"
@@ -1062,18 +1059,6 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
         "- Before each tool call, mentally predict what the tool will return.\n"
         "- If your prediction suggests the action won't achieve your goal, "
         "refine the action before executing.\n");
-
-    /* Clarification seeking — only for interactive mode where user_ask works */
-    if (!headless) {
-        str_append_cstr(&s,
-            "\nClarification seeking:\n"
-            "- Before selecting your first action, assess request_uncertainty on a 0-1 "
-            "scale: 0 = fully specified task, 0.5 = missing parameters the user likely "
-            "has a preference about, 1 = critically ambiguous.\n"
-            "- If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
-            "other tool. Asking early is far better than discovering ambiguity mid-task.\n"
-            "- Do NOT guess when the user's intent is unclear -- ask.\n");
-    }
 
     return str_steal(&s);
 }
