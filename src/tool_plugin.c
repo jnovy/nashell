@@ -303,3 +303,13 @@ char *tool_registry_names_csv(void) {
     }
     return buf;
 }
+
+/* Run session-end cleanup hooks for all ABI v3+ plugins. */
+void tool_plugin_run_cleanups(const char *session_dir) {
+    int count = tool_plugin_count();
+    for (int i = 0; i < count; i++) {
+        const tool_plugin_t *p = tool_plugin_get(i);
+        if (p && p->abi_version >= 3 && p->cleanup)
+            p->cleanup(session_dir);
+    }
+}

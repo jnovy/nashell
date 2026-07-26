@@ -2,8 +2,8 @@
 #include "compress.h"
 #include <strings.h>  /* strcasestr */
 #include "tui.h"  /* g_tui_active -- for condvar timeout escape hatch */
-#include "tools_internal.h"  /* tool_device_cleanup -- stream save on done */
-#include "tool_plugin.h"
+#include "tools_internal.h"
+#include "tool_plugin.h"  /* tool_plugin_run_cleanups */
 
 /* Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET        500
@@ -2242,11 +2242,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(response);
     }
 
-    /* Stop device stream / VNC session and save capture to session dir.
+    /* Run session-end cleanup hooks for all plugins.
      * Placed after the for-loop so it fires on ALL exit paths: explicit done,
      * max-steps exhaustion, and error bail-outs.
-     * No-op if no device session was started in this react loop. */
-    tool_device_cleanup(ctx->tools->session_dir);
+     * Each plugin's cleanup is a no-op if it wasn't activated. */
+    tool_plugin_run_cleanups(ctx->tools->session_dir);
 
     llm_chat_free(chat);
 

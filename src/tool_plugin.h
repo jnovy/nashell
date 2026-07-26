@@ -25,7 +25,7 @@
 /* ABI version - bump when tool_plugin_t or tool_ctx_t layout changes.
  * Plugins embed this at compile time via TOOL_PLUGIN_REGISTER().
  * The registry rejects mismatched versions to prevent ABI crashes. */
-#define TOOL_PLUGIN_ABI_VERSION 2
+#define TOOL_PLUGIN_ABI_VERSION 3
 
 /* Capability flags (for future Phase 2 context narrowing) */
 #define TOOL_CAP_STORE       (1u << 0)
@@ -47,6 +47,19 @@ typedef struct {
     int     success;    /* 1 = ok, 0 = error */
     int     importance; /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 S3.2) */
 } tool_result_t;
+
+/* Convenience helpers for building tool results.
+ * Provided as static inline so external plugins can use them
+ * without linking against tools.c internals. */
+static inline tool_result_t tools_make_result(int success, cJSON *meta, char *ref) {
+    return (tool_result_t){ .meta = meta, .store_ref = ref, .success = success };
+}
+
+static inline tool_result_t tools_make_error(const char *msg) {
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "error", msg);
+    return tools_make_result(0, m, NULL);
+}
 
 /* Parameter descriptor for a single tool parameter.
  * Replaces the unreadable escaped-JSON params_json strings with a
@@ -89,6 +102,24 @@ typedef struct tool_plugin_t {
 
     /* Group name for multi-tool plugins (NULL = standalone) */
     const char   *group;
+
+    /* === ABI v3 additions (append-only for backward compat) === */
+
+    /* Session-end cleanup hook.  Called once per react loop exit.
+     * session_dir is the path to the current session directory.
+     * NULL = no cleanup needed.  Only called if abi_version >= 3. */
+    void (*cleanup)(const char *session_dir);
+
+    /* Post-registration init hook.  Called after dlopen + registration
+     * with the user_data pointer (e.g. parsed config).
+     * NULL = no init needed.  Only called if abi_version >= 3. */
+    void (*init)(void *user_data);
+
+    /* Opaque plugin-owned state.  Set by the host (nash) or the plugin
+     * itself.  Passed to init(), available to execute() via the plugin
+     * pointer.  For external plugins, typically points to a config struct
+     * populated by nash from config.toml. */
+    void *user_data;
 } tool_plugin_t;
 
 /* Plugin flags */
@@ -142,6 +173,12 @@ int tool_plugin_unload(const char *name);
  * Does NOT remove plugins from the registry (they become stale).
  * Typically called right before exit. */
 void tool_plugin_cleanup(void);
+
+/* Run session-end cleanup hooks for all registered ABI v3+ plugins.
+ * Iterates the registry and calls plugin->cleanup(session_dir) for
+ * every plugin that has a non-NULL cleanup function pointer.
+ * Called once per react loop exit (after tool execution completes). */
+void tool_plugin_run_cleanups(const char *session_dir);
 
 /* ---- Parameter schema helpers ---- */
 

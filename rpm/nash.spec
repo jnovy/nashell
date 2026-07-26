@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        5%{?dist}
+Release:        6%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -16,16 +16,8 @@ BuildRequires:  libcurl-devel
 BuildRequires:  openssl-devel
 BuildRequires:  readline-devel
 BuildRequires:  ncurses-devel
-BuildRequires:  libjpeg-turbo-devel
-BuildRequires:  zlib-ng-compat-devel
 BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
-# HEVC streaming (continuous capture)
-BuildRequires:  x265-devel
-BuildRequires:  libde265-devel
-# Tesseract OCR (native perception pipeline)
-BuildRequires:  tesseract-devel
-BuildRequires:  leptonica-devel
 BuildRequires:  vim-common
 # vim-common provides xxd, needed to embed playbook YAML files at build time
 
@@ -33,14 +25,11 @@ Requires:       libcurl
 Requires:       openssl-libs
 Requires:       readline
 Requires:       ncurses-libs
-Requires:       libjpeg-turbo
-Requires:       zlib-ng-compat
 Requires:       utf8proc
 Requires:       onnxruntime
-Requires:       x265-libs
-Requires:       libde265
-Requires:       tesseract-libs
-Requires:       leptonica
+
+# Device control plugin (VNC, OCR, HEVC streaming) is now a separate package
+Suggests:       nash-tool-device-control
 
 # Bundled libraries (included in source, not linked from system)
 Provides:       bundled(cJSON) = 1.7.19
@@ -93,7 +82,7 @@ make src/dream_yaml.inc
 
 %make_build CC=gcc \
     CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
-    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
+    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -lonnxruntime"
 
 %install
 install -D -p -m 0755 nash %{buildroot}%{_bindir}/nash
@@ -105,6 +94,7 @@ install -D -p -m 0755 libnash.so %{buildroot}%{_libdir}/libnash.so
 install -d %{buildroot}%{_includedir}/nash
 install -p -m 0644 src/tool_plugin.h %{buildroot}%{_includedir}/nash/
 install -p -m 0644 src/cJSON.h %{buildroot}%{_includedir}/nash/
+install -p -m 0644 src/device_control_config.h %{buildroot}%{_includedir}/nash/
 
 # Install playbook YAML files
 install -d %{buildroot}%{_datadir}/%{name}/playbooks
@@ -128,7 +118,7 @@ install -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
 # Build and run the test suite
 make test CC=gcc \
     CFLAGS="%{optflags} -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
-    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -lonnxruntime -lx265 -lde265 -ltesseract -lleptonica"
+    LDFLAGS="%{build_ldflags} -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -lonnxruntime"
 
 %ldconfig_scriptlets
 
@@ -142,6 +132,12 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-6
+- ABI v3: plugin lifecycle hooks (cleanup/init/user_data) in tool_plugin_t.
+  Separated device_control into external nash-tool-device-control plugin.
+  Removed device subsystem (VNC, HEVC, Tesseract) from core - now a separate .so
+  plugin loaded at runtime.
+
 * Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-5
 - feat: libnash.so shared library and nash-devel subpackage for independent
   plugin development

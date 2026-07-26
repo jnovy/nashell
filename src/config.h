@@ -2,8 +2,9 @@
 #define CONFIG_H
 
 #include <stdio.h>
+#include "device_control_config.h"
 
-/* Nash configuration — loaded from ~/.nash/config.toml */
+/* Nash configuration - loaded from ~/.nash/config.toml */
 
 /* Thinking mode: off=0, on=1 (default) */
 #define THINKING_UNSET -1  /* calloc zeros mode to 0; we detect unset via this sentinel */
@@ -393,39 +394,11 @@ typedef struct {
     int    profile_enable_compaction;  /* -1 = not set */
     int    profile_enable_scoring;     /* -1 = not set */
 
-    /* [device_control] — GUI control via VNC/webcam/HID bridge.
-     * See docs/design-device-control.md */
-    struct {
-        /* Display backend: 0=VNC, 1=webcam, 2=command */
-        int    display_type;
-        char  *vnc_host;
-        int    vnc_port;          /* default 5900 */
-        char  *vnc_password;
-        char  *webcam_device;
-        char  *calibration_file;
-        char  *capture_cmd;
-        char  *screenshot_dir;    /* default: /tmp/device_screenshots */
-
-        /* Input backend: 0=VNC, 1=HID bridge, 2=command */
-        int    input_type;
-        char  *serial_port;
-        int    serial_baud;       /* default 115200 */
-        char  *key_cmd;
-        char  *type_cmd;
-        char  *click_cmd;
-
-        /* Safety */
-        int    action_delay_ms;   /* pause after each action (default 500) */
-        int    screenshot_delay_ms; /* wait before screenshot (default 300) */
-
-        /* Continuous HEVC capture stream */
-        int    stream_enabled;    /* 1 = start background capture (default 0) */
-        int    stream_fps;        /* frames per second (1-30, default 4) */
-        int    stream_quality;    /* HEVC CRF value (0-51, default 28) */
-        int    stream_retention;  /* seconds of history (default 300) */
-        char  *stream_preset;     /* x265 preset (default: "medium") */
-        int    stream_keyframe_interval; /* 0 = auto (= fps) */
-    } device_control;
+    /* [device_control] - GUI control via VNC/webcam/HID bridge.
+     * See docs/design-device-control.md
+     * Struct definition lives in device_control_config.h (shared with
+     * the external device_control plugin). */
+    device_control_config_t device_control;
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.

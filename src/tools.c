@@ -28,15 +28,8 @@ void tools_inject_thought(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(params, "thought", ctx->thought);
 }
 
-tool_result_t tools_make_result(int success, cJSON *meta, char *ref) {
-    return (tool_result_t){ .meta = meta, .store_ref = ref, .success = success };
-}
-
-tool_result_t tools_make_error(const char *msg) {
-    cJSON *m = cJSON_CreateObject();
-    cJSON_AddStringToObject(m, "error", msg);
-    return tools_make_result(0, m, NULL);
-}
+/* tools_make_result() and tools_make_error() are static inline in
+ * tool_plugin.h -- available to all tool files and external plugins. */
 
 /* Check tool filter whitelist/blacklist. Returns 1 if allowed, 0 if blocked. */
 static int tool_filter_allows(const tool_filter_t *f, const char *name) {

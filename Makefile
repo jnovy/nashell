@@ -8,34 +8,9 @@ else
   ORT_LDFLAGS = -lonnxruntime
 endif
 
-# HEVC streaming: detect libx265 + libde265 for continuous capture.
-# Set HAVE_X265=0 to force-disable even if libraries are present.
-HAVE_X265 ?= $(shell pkg-config --exists x265 libde265 2>/dev/null && echo 1 || echo 0)
-ifeq ($(HAVE_X265),1)
-  X265_CFLAGS  = -DHAVE_X265 $(shell pkg-config --cflags x265 libde265 2>/dev/null)
-  X265_LDFLAGS = $(shell pkg-config --libs x265 libde265 2>/dev/null)
-else
-  X265_CFLAGS  =
-  X265_LDFLAGS =
-endif
-CFLAGS += $(X265_CFLAGS)
-
-# Tesseract OCR: native perception pipeline (replaces perception.py).
-# Set HAVE_TESSERACT=0 to force-disable even if libraries are present.
-HAVE_TESSERACT ?= $(shell pkg-config --exists tesseract lept 2>/dev/null && echo 1 || echo 0)
-ifeq ($(HAVE_TESSERACT),1)
-  TESS_CFLAGS  = -DHAVE_TESSERACT $(shell pkg-config --cflags tesseract lept 2>/dev/null)
-  TESS_LDFLAGS = $(shell pkg-config --libs tesseract lept 2>/dev/null)
-else
-  TESS_CFLAGS  =
-  TESS_LDFLAGS =
-endif
-CFLAGS += $(TESS_CFLAGS)
-
-# VNC backend uses direct RFB protocol (no external VNC library).
-# Requires: libjpeg (JPEG encoding), zlib (Tight encoding decompression),
-#           OpenSSL/libcrypto (VNC DES authentication — already linked).
-LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -ljpeg -lz -lutf8proc -ldl $(ORT_LDFLAGS) $(X265_LDFLAGS) $(TESS_LDFLAGS)
+# Device subsystem (VNC, HEVC streaming, Tesseract OCR) is now a separate
+# plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
+LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl $(ORT_LDFLAGS)
 
 SRC     = src/main.c src/str.c src/cJSON.c \
           src/journal.c src/store.c src/llm.c src/tools.c src/react.c \
@@ -83,15 +58,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/cmd_tool.c \
           src/agents.c \
           src/repomap.c \
-          src/display.c \
-          src/display_vnc.c \
-          src/input.c \
-          src/input_vnc.c \
-          src/device.c \
-          src/stream.c \
-          src/tool_device.c \
           src/tool_subtask.c \
-          src/perception.c \
           src/completion.c \
           src/subprocess.c \
           src/tool_plugin.c
@@ -160,15 +127,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/cmd_tool.c \
           src/agents.c \
           src/repomap.c \
-          src/display.c \
-          src/display_vnc.c \
-          src/input.c \
-          src/input_vnc.c \
-          src/device.c \
-          src/stream.c \
-          src/tool_device.c \
           src/tool_subtask.c \
-          src/perception.c \
           src/completion.c \
           src/subprocess.c \
           src/tool_plugin.c
@@ -215,12 +174,8 @@ test: $(TEST_BIN)
 	done; \
 	echo "=== $$failures failures ==="
 
-# Standalone perception test binary (OCR analysis on a single image)
-perception: src/perception.c src/cJSON.c
-	$(CC) $(CFLAGS) -D__PERCEPTION_TEST -o $@ $^ $(TESS_LDFLAGS) -lm
-
 clean:
-	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS) perception src/dream_yaml.inc
+	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS) src/dream_yaml.inc
 	rm -rf tests/plugin_dir
 
-.PHONY: all clean test perception
+.PHONY: all clean test

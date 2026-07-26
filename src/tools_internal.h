@@ -29,11 +29,8 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
                    ctx->start_ts);
 }
 
-/* Construct a tool_result_t from components. */
-tool_result_t tools_make_result(int success, cJSON *meta, char *ref);
-
-/* Construct an error tool_result_t with the given message. */
-tool_result_t tools_make_error(const char *msg);
+/* tools_make_result() and tools_make_error() are static inline in
+ * tool_plugin.h (included transitively via tools.h). */
 
 /* Resolve a tool path: step alias → store path, store/ prefix → session-relative.
  * Writes resolved path into resolved_buf (size NASH_PATH_MAX).
@@ -57,11 +54,6 @@ tool_result_t tools_memory_key_op(tool_ctx_t *ctx, cJSON *params,
  * target: the memory_t instance the new entry was stored in. */
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                    const char *new_value, memory_t *target);
-
-/* tool_device.c: Stop the device stream and save the capture to the session
- * directory.  Called from react.c when `done` is produced.  Safe to call
- * when no device session exists (no-op). */
-void tool_device_cleanup(const char *session_dir);
 
 /* Tool handler declarations are no longer needed here -- each tool_*.c file
  * self-registers its handlers via TOOL_PLUGIN_REGISTER() constructors.
