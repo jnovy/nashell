@@ -179,7 +179,7 @@ static int cmd_tool_list(command_ctx_t *ctx) {
 
     str_appendf(&display,
         "\n**%d enabled**, %d disabled\n\n"
-        "Commands: `/tool on NAME`, `/tool off NAME`, "
+        "Commands: `/tool show NAME`, `/tool on NAME`, `/tool off NAME`, "
         "`/tool reset`, `/tool save PROFILE`, `/tool load PROFILE`\n",
         n_on, n_off);
 
@@ -187,6 +187,107 @@ static int cmd_tool_list(command_ctx_t *ctx) {
     pthread_mutex_lock(&ui->mtx);
     ui_state_push_content(ui, "tools", banner);
     ui_state_set_status(ui, STATUS_READY, "Tool list");
+    pthread_mutex_unlock(&ui->mtx);
+    free(banner);
+    tui_render(ui);
+    return CMD_CONTINUE;
+}
+
+/* ── /tool show NAME ──────────────────────────────────────── */
+
+static int cmd_tool_show(command_ctx_t *ctx, const char *name) {
+    ui_state_t *ui = ctx->ui;
+    tool_filter_t *tf = &ctx->tools->tool_filter;
+
+    if (!name || !name[0]) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/tool show: specify a tool name");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    const tool_plugin_t *tp = tool_plugin_find(name);
+    if (!tp) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "/tool show: unknown tool '%s'", name);
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, msg);
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
+    int blocked = is_runtime_blocked(tf, tp->name);
+    int prot = is_protected_tool(tp->name);
+
+    const char *status;
+    if (blocked && (tp->flags & TOOL_FLAG_DEFAULT_OFF))
+        status = "OFF (default)";
+    else if (blocked)
+        status = "OFF";
+    else if (prot)
+        status = "ON (protected)";
+    else
+        status = "ON";
+
+    str_t display = str_new(2048);
+    str_appendf(&display, "# %s\n\n", tp->name);
+    str_appendf(&display, "**Status:** %s", status);
+    if (tp->version)
+        str_appendf(&display, "  |  **Version:** %s", tp->version);
+    if (tp->group)
+        str_appendf(&display, "  |  **Group:** %s", tp->group);
+    str_append_cstr(&display, "\n\n");
+
+    /* Description */
+    if (tp->description) {
+        str_append_cstr(&display, "## Description\n\n");
+        str_append_cstr(&display, tp->description);
+        str_append_cstr(&display, "\n\n");
+    }
+
+    /* Parameters */
+    if (tp->params && tp->params[0].name) {
+        str_append_cstr(&display, "## Parameters\n\n");
+        str_append_cstr(&display,
+            "| Name | Type | Required | Description |\n"
+            "|------|------|----------|-------------|\n");
+
+        for (const tool_param_t *p = tp->params; p->name; p++) {
+            const char *type = p->type ? p->type : "string";
+            if (p->items_type)
+                str_appendf(&display, "| `%s` | %s<%s> | %s | %s",
+                            p->name, type, p->items_type,
+                            p->required ? "yes" : "no",
+                            p->description ? p->description : "");
+            else
+                str_appendf(&display, "| `%s` | %s | %s | %s",
+                            p->name, type,
+                            p->required ? "yes" : "no",
+                            p->description ? p->description : "");
+
+            /* Enum values */
+            if (p->enum_values) {
+                str_append_cstr(&display, " Values: ");
+                for (const char **ev = p->enum_values; *ev; ev++) {
+                    if (ev != p->enum_values)
+                        str_append_cstr(&display, ", ");
+                    str_appendf(&display, "`%s`", *ev);
+                }
+                str_append_cstr(&display, ".");
+            }
+            str_append_cstr(&display, " |\n");
+        }
+        str_append_cstr(&display, "\n");
+    } else {
+        str_append_cstr(&display, "*No parameters.*\n\n");
+    }
+
+    char *banner = str_steal(&display);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_push_content(ui, "tool_show", banner);
+    ui_state_set_status(ui, STATUS_READY, tp->name);
     pthread_mutex_unlock(&ui->mtx);
     free(banner);
     tui_render(ui);
@@ -510,6 +611,12 @@ int cmd_tool(command_ctx_t *ctx, const char *args) {
         return cmd_tool_off(ctx, name);
     }
 
+    if (strncmp(args, "show ", 5) == 0) {
+        const char *name = args + 5;
+        while (*name == ' ') name++;
+        return cmd_tool_show(ctx, name);
+    }
+
     if (strncmp(args, "save ", 5) == 0) {
         const char *profile = args + 5;
         while (*profile == ' ') profile++;
@@ -533,7 +640,7 @@ int cmd_tool(command_ctx_t *ctx, const char *args) {
     ui_state_t *ui = ctx->ui;
     char msg[256];
     snprintf(msg, sizeof(msg),
-             "/tool: unknown subcommand '%s' -- try list, on, off, reset, save, load",
+             "/tool: unknown subcommand '%s' -- try list, show, on, off, reset, save, load",
              args);
     pthread_mutex_lock(&ui->mtx);
     ui_state_set_status(ui, STATUS_ERROR, msg);

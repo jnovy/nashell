@@ -319,10 +319,10 @@ static const char *ms_flags[] = {
     "-q", "-k", "-p", "-r", "-n", "-d", NULL
 };
 static const char *tool_subs[] = {
-    "list", "on", "off", "reset", "save", "load", NULL
+    "list", "show", "on", "off", "reset", "save", "load", NULL
 };
 static const char *tool_arg_subs[] = {
-    "on", "off", "save", "load", NULL
+    "show", "on", "off", "save", "load", NULL
 };
 
 /* ── Command definitions table ───────────────────────────── */

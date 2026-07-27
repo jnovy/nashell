@@ -114,7 +114,6 @@ static const char *ensure_searxng_config_dir(void) {
                 "outgoing:\n"
                 "  request_timeout: 5.0\n"
                 "  max_request_timeout: 15.0\n"
-                "  useragent_suffix: \"nash-agent (local)\"\n"
                 "  retries: 1\n"
                 "\n"
                 "server:\n"
