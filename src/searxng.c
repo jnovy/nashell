@@ -108,6 +108,14 @@ static const char *ensure_searxng_config_dir(void) {
                 "  formats:\n"
                 "    - html\n"
                 "    - json\n"
+                "  ban_time_on_fail: 30\n"
+                "  max_ban_time_on_fail: 300\n"
+                "\n"
+                "outgoing:\n"
+                "  request_timeout: 5.0\n"
+                "  max_request_timeout: 15.0\n"
+                "  useragent_suffix: \"nash-agent (local)\"\n"
+                "  retries: 1\n"
                 "\n"
                 "server:\n"
                 "  secret_key: \"nash-searxng-auto-generated-key\"\n"
@@ -368,6 +376,21 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
  * *out_count receives the number of results. */
 char *searxng_search(const char *searxng_url, const char *query,
                      int *out_count, long timeout) {
+    /* Throttle: enforce minimum gap between queries to avoid upstream
+     * rate limiting.  Only fires when queries are <3s apart (burst). */
+    static time_t last_search_time = 0;
+    time_t now = time(NULL);
+    if (last_search_time > 0) {
+        int elapsed = (int)(now - last_search_time);
+        if (elapsed < 3) {
+            int wait = 3 - elapsed;
+            nash_log("[nash] web_search: throttling %ds to avoid rate limits",
+                     wait);
+            sleep(wait);
+        }
+    }
+    last_search_time = time(NULL);
+
     int all_unresponsive = 0;
     char *result = searxng_search_once(searxng_url, query, out_count, timeout,
                                         &all_unresponsive);
