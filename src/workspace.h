@@ -108,4 +108,8 @@ int workspace_demote(workspace_t *ws, const char *key);
  * Searches workspace first, then global. Returns NULL if not found. */
 memory_t *workspace_find_memory(workspace_t *ws, const char *key);
 
+/* List all available workspaces to stdout.
+ * Scans <nash_dir>/workspaces/ for directories containing a memory/ subdir. */
+void workspace_list_all(const char *nash_dir);
+
 #endif

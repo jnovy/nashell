@@ -564,6 +564,12 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--mailbox-timeout") == 0 && i + 1 < argc) {
             mailbox_timeout = atoi(argv[++i]);
             mailbox_mode = 1;
+        } else if (strcmp(argv[i], "--workspace-list") == 0 || strcmp(argv[i], "-wl") == 0) {
+            char *nd = get_nash_dir(cfg);
+            workspace_list_all(nd);
+            free(nd);
+            config_free(cfg);
+            return 0;
         } else if ((strcmp(argv[i], "--workspace") == 0 || strcmp(argv[i], "-w") == 0) && i + 1 < argc) {
             free(cfg->workspace);
             cfg->workspace = strdup(argv[++i]);
@@ -620,6 +626,7 @@ int main(int argc, char **argv) {
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
             printf("\nWorkspace (memory segregation):\n");
             printf("  -w, --workspace NAME  Activate a named workspace\n");
+            printf("  -wl, --workspace-list List all available workspaces\n");
             printf("  --isolated            Fully isolate workspace (no global recall)\n");
             printf("\nMailbox (headless communication):\n");
             printf("  --mailbox             Enable file-based mailbox for user_ask in -p mode\n");

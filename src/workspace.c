@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <sys/stat.h>
 #include "workspace.h"
 #include "nash_limits.h"
@@ -544,4 +545,82 @@ int workspace_demote(workspace_t *ws, const char *key) {
     if (!ws || !ws->workspace || !key) return -1;
     if (!mem_has_key(ws->global, key)) return -1;
     return transfer_entry(ws->global, ws->workspace, key);
+}
+
+/* ── workspace listing ──────────────────────────────── */
+
+/* Recursively scan a directory for workspaces (dirs containing memory/).
+ * prefix is the relative path from the workspaces root (empty string at top). */
+static void list_workspaces_recurse(const char *base, const char *prefix,
+                                    int *count) {
+    char dirpath[NASH_PATH_MAX];
+    if (prefix[0])
+        snprintf(dirpath, sizeof(dirpath), "%s/%s", base, prefix);
+    else
+        snprintf(dirpath, sizeof(dirpath), "%s", base);
+
+    DIR *d = opendir(dirpath);
+    if (!d) return;
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+
+        char fullpath[NASH_PATH_MAX];
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, ent->d_name);
+
+        struct stat st;
+        if (stat(fullpath, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+
+        /* Skip internal subdirs - only descend into potential workspace trees */
+        if (strcmp(ent->d_name, "memory") == 0 ||
+            strcmp(ent->d_name, "sessions") == 0)
+            continue;
+
+        /* Build relative name */
+        char relname[NASH_PATH_MAX];
+        if (prefix[0])
+            snprintf(relname, sizeof(relname), "%s/%s", prefix, ent->d_name);
+        else
+            snprintf(relname, sizeof(relname), "%s", ent->d_name);
+
+        /* Check if this dir has a memory/ subdirectory - that makes it a workspace */
+        char mempath[NASH_PATH_MAX];
+        snprintf(mempath, sizeof(mempath), "%s/memory", fullpath);
+        struct stat mst;
+        if (stat(mempath, &mst) == 0 && S_ISDIR(mst.st_mode)) {
+            printf("  %s\n", relname);
+            (*count)++;
+        }
+
+        /* Recurse into subdirectories for nested workspaces (e.g. rh/container-tools) */
+        list_workspaces_recurse(base, relname, count);
+    }
+    closedir(d);
+}
+
+void workspace_list_all(const char *nash_dir) {
+    if (!nash_dir) {
+        fprintf(stderr, "error: nash data directory not set\n");
+        return;
+    }
+
+    char ws_root[NASH_PATH_MAX];
+    snprintf(ws_root, sizeof(ws_root), "%s/workspaces", nash_dir);
+
+    struct stat st;
+    if (stat(ws_root, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        printf("No workspaces found.\n");
+        return;
+    }
+
+    printf("Available workspaces:\n");
+    int count = 0;
+    list_workspaces_recurse(ws_root, "", &count);
+
+    if (count == 0)
+        printf("  (none)\n");
+    printf("\nTotal: %d workspace%s\n", count, count == 1 ? "" : "s");
+    printf("Use: nash -w NAME to activate a workspace\n");
 }
