@@ -789,6 +789,42 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* Validate API key availability for non-local providers */
+    {
+        provider_type_t ptype = provider_type_from_str(resolved_prov.type);
+        if (ptype != PROVIDER_LOCAL) {
+            const char *key_env = resolved_prov.api_key_env;
+            if (key_env && key_env[0] &&
+                (!getenv(key_env) || !getenv(key_env)[0])) {
+                const char *pname = provider_name_arg
+                                        ? provider_name_arg
+                                        : cfg->routing.default_provider;
+                fprintf(stderr,
+                        "\nnash: provider '%s' requires %s but it is not set.\n",
+                        pname ? pname : "default", key_env);
+                if (isatty(STDIN_FILENO) && isatty(STDERR_FILENO)) {
+                    fprintf(stderr, "Run interactive setup to fix? [Y/n]: ");
+                    fflush(stderr);
+                    char ans[16] = {0};
+                    if (fgets(ans, sizeof(ans), stdin) &&
+                        (ans[0] == '\n' || ans[0] == 'y' ||
+                         ans[0] == 'Y')) {
+                        int rc = setup_run(nash_dir, 0);
+                        free(nash_dir);
+                        config_free(cfg);
+                        return rc;
+                    }
+                }
+                fprintf(stderr,
+                        "Set the variable: export %s=your-key-here\n"
+                        "Or run: nash --setup\n", key_env);
+                free(nash_dir);
+                config_free(cfg);
+                return 1;
+            }
+        }
+    }
+
     /* Deep-copy resolved provider into cfg->provider (owned strings).
      * This populates the "resolved provider snapshot" that banner.c,
      * react.c, config_dump_spec, etc. all read from. */
