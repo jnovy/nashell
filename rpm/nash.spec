@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        9%{?dist}
+Release:        11%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -18,6 +18,7 @@ BuildRequires:  readline-devel
 BuildRequires:  ncurses-devel
 BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
+BuildRequires:  bash-completion
 
 Requires:       libcurl
 Requires:       openssl-libs
@@ -105,6 +106,10 @@ install -p -m 0644 config/searxng/* %{buildroot}%{_datadir}/%{name}/config/searx
 install -d %{buildroot}%{_datadir}/%{name}/scripts
 install -p -m 0755 scripts/nash-mailbox-bridge.sh %{buildroot}%{_datadir}/%{name}/scripts/
 
+# Install bash completion
+install -D -p -m 0644 scripts/nash-completion.bash \
+    %{buildroot}%(pkg-config --variable=completionsdir bash-completion)/nash
+
 # Install documentation
 install -d %{buildroot}%{_docdir}/%{name}
 install -p -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
@@ -122,11 +127,19 @@ make test CC=gcc \
 %{_bindir}/nash
 %{_libdir}/libnash.so
 %{_datadir}/%{name}/
+%(pkg-config --variable=completionsdir bash-completion)/nash
 
 %files devel
 %{_includedir}/nash/
 
 %changelog
+* Thu Jul 30 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-11
+- Add interactive setup wizard (--setup) and credentials.toml support. Validate
+  API key availability at startup before creating provider.
+
+* Wed Jul 29 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-10
+- Add bash completion script for CLI flags and arguments
+
 * Sun Jul 26 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-9
 - Switch source tarball from tar.gz to tar.zst. Remove compiled binaries (.so,
   test executables) from git tracking.
