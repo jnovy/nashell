@@ -8,7 +8,6 @@ static void test_defaults(void) {
     /* Load from non-existent file — should return defaults */
     config_t *cfg = config_load("/tmp/nash_test_nonexistent_config.toml");
     ASSERT_NOT_NULL(cfg);
-    ASSERT_NOT_NULL(cfg->api_base);
     ASSERT_GT(cfg->max_tokens, 0);
     ASSERT(cfg->max_react_steps == -1 || cfg->max_react_steps > 0);  /* -1 = unlimited (default), >0 = hard limit */
     ASSERT_GT(cfg->shell_timeout, -1);
@@ -29,8 +28,12 @@ static void test_parse_toml(void) {
     FILE *f = fopen(path, "w");
     ASSERT_NOT_NULL(f);
     fprintf(f,
-        "[server]\n"
+        "[providers.test]\n"
+        "type = \"local\"\n"
         "api_base = \"http://test:9999\"\n"
+        "\n"
+        "[routing]\n"
+        "default = \"test\"\n"
         "\n"
         "[client]\n"
         "temperature = 0.5\n"
@@ -48,7 +51,8 @@ static void test_parse_toml(void) {
 
     config_t *cfg = config_load(path);
     ASSERT_NOT_NULL(cfg);
-    ASSERT_STR_EQ(cfg->api_base, "http://test:9999");
+    ASSERT_EQ(cfg->n_named_providers, 1);
+    ASSERT_STR_EQ(cfg->named_providers[0].config.api_base, "http://test:9999");
     ASSERT(cfg->temperature > 0.49f && cfg->temperature < 0.51f);
     ASSERT_EQ(cfg->max_tokens, 2048);
     ASSERT_EQ(cfg->shell_timeout, 60);
@@ -78,7 +82,6 @@ static void test_write_default(void) {
     /* Verify it's parseable */
     config_t *cfg = config_load(path);
     ASSERT_NOT_NULL(cfg);
-    ASSERT_NOT_NULL(cfg->api_base);
     config_free(cfg);
 
     rm_rf(dir);
@@ -91,14 +94,15 @@ static void test_missing_sections(void) {
     char path[4096];
     snprintf(path, sizeof(path), "%s/partial.toml", dir);
 
-    /* Write TOML with only [server] section */
+    /* Write TOML with only [providers.partial] section */
     FILE *f = fopen(path, "w");
-    fprintf(f, "[server]\napi_base = \"http://partial:1234\"\n");
+    fprintf(f, "[providers.partial]\ntype = \"local\"\napi_base = \"http://partial:1234\"\n");
     fclose(f);
 
     config_t *cfg = config_load(path);
     ASSERT_NOT_NULL(cfg);
-    ASSERT_STR_EQ(cfg->api_base, "http://partial:1234");
+    ASSERT_EQ(cfg->n_named_providers, 1);
+    ASSERT_STR_EQ(cfg->named_providers[0].config.api_base, "http://partial:1234");
     /* Other fields should have defaults */
     ASSERT_GT(cfg->max_tokens, 0);
     ASSERT_GT(cfg->shell_timeout, -1);
