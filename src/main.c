@@ -47,6 +47,7 @@
 #include "commands.h"
 #include "commands_internal.h"
 #include "agents.h"
+#include "setup.h"
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
 
@@ -493,6 +494,7 @@ int main(int argc, char **argv) {
     const char *agent_target_id = NULL;   /* --agent ID: run specific agent */
     char *agent_arguments = NULL;         /* --agent ID arg1 arg2...: arguments for agent */
     const char *provider_name_arg = NULL;  /* --provider NAME: use named provider from [providers.*] */
+    int setup_mode = 0;                    /* --setup: interactive setup wizard */
     const char *path_arg = NULL;            /* positional PATH: working directory for repo map */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--api") == 0 && i + 1 < argc) {
@@ -535,6 +537,8 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--postmortem-sessions") == 0 && i + 1 < argc) {
             postmortem_sessions = atoi(argv[++i]);
             postmortem_mode = 1;
+        } else if (strcmp(argv[i], "--setup") == 0) {
+            setup_mode = 1;
         } else if (strcmp(argv[i], "--spec") == 0) {
             spec_mode = 1;
         } else if (strcmp(argv[i], "--load-spec") == 0 && i + 1 < argc) {
@@ -624,6 +628,8 @@ int main(int argc, char **argv) {
             printf("\nSpec:\n");
             printf("  --spec                Dump fully-resolved config spec and exit\n");
             printf("  --load-spec FILE      Load a spec TOML as config overlay\n");
+            printf("\nSetup:\n");
+            printf("  --setup               Interactive first-time setup wizard\n");
             printf("\nWorkspace (memory segregation):\n");
             printf("  -w, --workspace NAME  Activate a named workspace\n");
             printf("  -wl, --workspace-list List all available workspaces\n");
@@ -677,6 +683,17 @@ int main(int argc, char **argv) {
 
     /* Write default config if it doesn't exist */
     config_write_default(config_path);
+
+    /* Load credentials.toml (API keys) and merge into named providers */
+    config_load_credentials(cfg, nash_dir);
+
+    /* --setup: interactive setup wizard (exit early, before provider resolution) */
+    if (setup_mode) {
+        int rc = setup_run(nash_dir, 0);
+        free(nash_dir);
+        config_free(cfg);
+        return rc;
+    }
 
     /* Apply spec overlay if --load-spec was given.
      * This overrides config.toml settings before provider creation. */
@@ -751,7 +768,22 @@ int main(int argc, char **argv) {
      * 2. [routing].default -> named provider */
     provider_config_toml_t resolved_prov = {0};
     if (config_resolve_provider(cfg, provider_name_arg, &resolved_prov) != 0) {
-        fprintf(stderr, "nash: failed to resolve provider configuration\n");
+        /* First-run auto-detection: offer interactive setup if TTY available */
+        if (isatty(STDIN_FILENO) && isatty(STDERR_FILENO)) {
+            fprintf(stderr, "\nnash: no provider configured.\n"
+                            "Run interactive setup? [Y/n]: ");
+            fflush(stderr);
+            char ans[16] = {0};
+            if (fgets(ans, sizeof(ans), stdin) &&
+                (ans[0] == '\n' || ans[0] == 'y' || ans[0] == 'Y')) {
+                int rc = setup_run(nash_dir, 0);
+                free(nash_dir);
+                config_free(cfg);
+                return rc;
+            }
+        }
+        fprintf(stderr, "nash: failed to resolve provider configuration.\n"
+                        "Run 'nash --setup' to configure, or use --api URL\n");
         free(nash_dir);
         config_free(cfg);
         return 1;

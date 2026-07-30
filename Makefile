@@ -67,7 +67,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/tool_subtask.c \
           src/completion.c \
           src/subprocess.c \
-          src/tool_plugin.c
+          src/tool_plugin.c \
+          src/setup.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -128,7 +129,8 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/tool_subtask.c \
           src/completion.c \
           src/subprocess.c \
-          src/tool_plugin.c
+          src/tool_plugin.c \
+          src/setup.c
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Shared library: everything except main.c

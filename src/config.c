@@ -1,6 +1,7 @@
 #include "config.h"
 #include "toml.h"
 #include "tool_plugin.h"
+#include "nash_limits.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1666,6 +1667,74 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
 
     toml_free(root);
     fprintf(stderr, "[spec] loaded overlay from %s\n", path);
+    return 0;
+}
+
+int config_load_credentials(config_t *cfg, const char *nash_dir) {
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/credentials.toml", nash_dir);
+
+    /* Optional file - silently skip if not present */
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+
+    /* Warn if permissions are too open */
+    if ((st.st_mode & 077) != 0) {
+        fprintf(stderr, "[config] warning: %s is readable by others. "
+                "Run: chmod 600 %s\n", path, path);
+    }
+
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    char errbuf[256];
+    toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+    fclose(f);
+    if (!root) {
+        fprintf(stderr, "[config] credentials parse error: %s\n", errbuf);
+        return -1;
+    }
+
+    /* Merge [providers.*].api_key into matching named providers */
+    toml_table_t *providers_tbl = toml_table_in(root, "providers");
+    if (providers_tbl) {
+        for (int i = 0; ; i++) {
+            const char *key = toml_key_in(providers_tbl, i);
+            if (!key) break;
+            toml_table_t *ptab = toml_table_in(providers_tbl, key);
+            if (!ptab) continue;
+
+            /* Find matching named provider */
+            for (int j = 0; j < cfg->n_named_providers; j++) {
+                if (cfg->named_providers[j].name &&
+                    strcmp(cfg->named_providers[j].name, key) == 0) {
+                    /* Merge api_key: credentials.toml fills in if not already set */
+                    toml_datum_t api_key = toml_string_in(ptab, "api_key");
+                    if (api_key.ok && api_key.u.s) {
+                        if (!cfg->named_providers[j].config.api_key_env) {
+                            /* Store as a direct key - we'll set a synthetic env var */
+                            char env_name[128];
+                            snprintf(env_name, sizeof(env_name),
+                                     "NASH_CRED_%s_API_KEY", key);
+                            /* Uppercase the env var name */
+                            for (char *p = env_name; *p; p++)
+                                if (*p >= 'a' && *p <= 'z') *p -= 32;
+                            setenv(env_name, api_key.u.s, 0);  /* don't override existing */
+                            cfg->named_providers[j].config.api_key_env = strdup(env_name);
+                        } else {
+                            /* api_key_env is set - populate env var if not already set */
+                            setenv(cfg->named_providers[j].config.api_key_env,
+                                   api_key.u.s, 0);  /* don't override existing */
+                        }
+                        free(api_key.u.s);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    toml_free(root);
     return 0;
 }
 

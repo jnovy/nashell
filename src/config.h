@@ -463,4 +463,10 @@ const named_provider_t *config_find_provider(const config_t *cfg, const char *na
 int config_resolve_provider(const config_t *cfg, const char *override_name,
                             provider_config_toml_t *out);
 
+/* Load ~/.nash/credentials.toml and merge API keys into named providers.
+ * Optional file - returns 0 if file doesn't exist.
+ * Warns if file permissions are too open (not 0600).
+ * API key precedence: env var > credentials.toml > config.toml. */
+int config_load_credentials(config_t *cfg, const char *nash_dir);
+
 #endif
