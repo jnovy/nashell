@@ -66,7 +66,7 @@ typedef struct {
 
 typedef struct {
     char *dir;          /* .memory/ directory path */
-    char *model;        /* model name for commit signoff (e.g. "claude-sonnet-4-20250514") */
+    char *model;        /* model name for commit signoff (e.g. "claude-opus-4-6") */
     embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
 
     /* Recall tuning parameters — set once via memory_set_recall_config().

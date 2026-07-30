@@ -21,7 +21,7 @@
 /* Default models for image analysis when none configured.
  * Keep in sync with provider_openai.c / provider_anthropic.c. */
 #define IMAGE_OPENAI_DEFAULT_MODEL    "gpt-4o"
-#define IMAGE_ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
+#define IMAGE_ANTHROPIC_DEFAULT_MODEL "claude-opus-4-6"
 
 /* API version strings — keep in sync with provider_anthropic.c */
 #define IMAGE_VERTEX_VERSION "vertex-2023-10-16"

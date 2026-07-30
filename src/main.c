@@ -1205,7 +1205,7 @@ int main(int argc, char **argv) {
         /* Create reflection provider (same as student by default) */
         provider_t *reflection_provider = provider;
         if (reflect_model_arg) {
-            /* Parse reflect-model as "provider/model" e.g. "anthropic/claude-sonnet-4-20250514" */
+            /* Parse reflect-model as "provider/model" e.g. "anthropic/claude-opus-4-6" */
             char *slash = strchr(reflect_model_arg, '/');
             if (slash) {
                 char ptype[64];
@@ -1235,7 +1235,7 @@ int main(int argc, char **argv) {
                     reflection_provider = provider;  /* fallback to student */
                 }
             } else {
-                fprintf(stderr, "[optimize] --reflect-model format: provider/model (e.g. anthropic/claude-sonnet-4-20250514)\n");
+                fprintf(stderr, "[optimize] --reflect-model format: provider/model (e.g. anthropic/claude-opus-4-6)\n");
                 fprintf(stderr, "[optimize] using student model as reflection model\n");
             }
         }

@@ -28,7 +28,7 @@
 #include <unistd.h>
 
 /* Default fallback model when none configured */
-#define ANTHROPIC_DEFAULT_MODEL "claude-sonnet-4-20250514"
+#define ANTHROPIC_DEFAULT_MODEL "claude-opus-4-6"
 
 /* API version strings — centralised for easy updates */
 #define ANTHROPIC_API_VERSION     "2023-06-01"

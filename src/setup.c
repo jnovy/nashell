@@ -223,7 +223,8 @@ static int configure_anthropic(setup_provider_t *sp) {
         sp->store_key_in_file = (choice == 2);
     }
 
-    prompt("Default model", "claude-sonnet-4-20250514",
+    const char *env_model = getenv("ANTHROPIC_MODEL");
+    prompt("Default model", env_model ? env_model : "claude-opus-4-6",
            sp->model_id, sizeof(sp->model_id));
     prompt("Provider name", "anthropic", sp->name, sizeof(sp->name));
 
@@ -268,7 +269,9 @@ static int configure_openai(setup_provider_t *sp) {
         sp->store_key_in_file = (choice == 2);
     }
 
-    prompt("Default model", "gpt-4o", sp->model_id, sizeof(sp->model_id));
+    const char *env_model = getenv("OPENAI_MODEL");
+    prompt("Default model", env_model ? env_model : "gpt-4o",
+           sp->model_id, sizeof(sp->model_id));
     prompt("Provider name", "openai", sp->name, sizeof(sp->name));
 
     if (existing || sp->api_key_value[0]) {
@@ -287,13 +290,20 @@ static int configure_openai(setup_provider_t *sp) {
 static int configure_vertex(setup_provider_t *sp) {
     snprintf(sp->type, sizeof(sp->type), "vertex");
 
-    prompt("GCP Project ID", NULL, sp->project_id, sizeof(sp->project_id));
+    /* Use well-known env vars as defaults (same ones config.c checks at runtime) */
+    const char *env_proj = getenv("ANTHROPIC_VERTEX_PROJECT_ID");
+    const char *env_region = getenv("CLOUD_ML_REGION");
+    const char *env_model = getenv("ANTHROPIC_MODEL");
+
+    prompt("GCP Project ID", env_proj, sp->project_id, sizeof(sp->project_id));
     if (!sp->project_id[0]) {
         fprintf(stderr, "Project ID is required for Vertex AI.\n");
         return -1;
     }
-    prompt("Region", "us-east5", sp->region, sizeof(sp->region));
-    prompt("Model", "claude-sonnet-4-20250514", sp->model_id, sizeof(sp->model_id));
+    prompt("Region", env_region ? env_region : "us-east5",
+           sp->region, sizeof(sp->region));
+    prompt("Model", env_model ? env_model : "claude-opus-4-6",
+           sp->model_id, sizeof(sp->model_id));
     sp->caching = prompt_yn("Enable prompt caching?", 1);
     prompt("Provider name", "vertex", sp->name, sizeof(sp->name));
 
