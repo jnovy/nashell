@@ -19,6 +19,18 @@ static const tool_plugin_t *plugin_registry[TOOL_PLUGIN_MAX];
 static void *plugin_dlhandles[TOOL_PLUGIN_MAX]; /* non-NULL for dlopen'd plugins */
 static int n_plugins = 0;
 
+/* External-loading context: set by tool_plugin_load() around dlopen() so that
+ * tool_plugin_register() (called from the .so constructor) knows it may
+ * override an existing tool instead of rejecting a duplicate name. */
+static int loading_external = 0;
+
+/* Pending overrides: filled by tool_plugin_register() during external loading.
+ * tool_plugin_load() reads these after dlopen() to tag new dlhandles and
+ * dlclose orphaned old handles. */
+static void *pending_old_handles[TOOL_PLUGIN_MAX];
+static int   pending_override_slots[TOOL_PLUGIN_MAX];
+static int   n_pending_overrides = 0;
+
 int tool_plugin_register(const tool_plugin_t *plugin) {
     if (!plugin || !plugin->name) return -1;
     if (plugin->abi_version != TOOL_PLUGIN_ABI_VERSION) {
@@ -36,9 +48,20 @@ int tool_plugin_register(const tool_plugin_t *plugin) {
     /* Check for duplicate names */
     for (int i = 0; i < n_plugins; i++) {
         if (strcmp(plugin_registry[i]->name, plugin->name) == 0) {
-            fprintf(stderr, "tool_plugin: duplicate tool name '%s'\n",
+            if (!loading_external) {
+                fprintf(stderr, "tool_plugin: duplicate tool name '%s'\n",
+                        plugin->name);
+                return -1;
+            }
+            /* External plugin overrides existing tool in-place */
+            fprintf(stderr, "tool_plugin: '%s' overridden by external plugin\n",
                     plugin->name);
-            return -1;
+            pending_old_handles[n_pending_overrides] = plugin_dlhandles[i];
+            pending_override_slots[n_pending_overrides] = i;
+            n_pending_overrides++;
+            plugin_registry[i] = plugin;
+            plugin_dlhandles[i] = NULL; /* tagged by tool_plugin_load() */
+            return 0;
         }
     }
     plugin_registry[n_plugins++] = plugin;
@@ -118,25 +141,56 @@ int tool_plugin_load(const char *so_path) {
 
     int before = n_plugins;
 
+    /* Allow the constructor to override existing tools */
+    loading_external = 1;
+    n_pending_overrides = 0;
+
     void *handle = dlopen(so_path, RTLD_NOW);
+
+    loading_external = 0;
+
     if (!handle) {
         fprintf(stderr, "tool_plugin: dlopen '%s': %s\n",
                 so_path, dlerror());
+        n_pending_overrides = 0;
         return -1;
     }
 
+    int new_count = n_plugins - before;
+
     /* The .so's constructor should have called tool_plugin_register().
-     * Check that at least one new plugin was added. */
-    if (n_plugins == before) {
+     * Check that at least one new plugin was added or overridden. */
+    if (new_count == 0 && n_pending_overrides == 0) {
         fprintf(stderr, "tool_plugin: '%s' registered no tools "
                 "(missing TOOL_PLUGIN_REGISTER?)\n", so_path);
         dlclose(handle);
         return -1;
     }
 
-    /* Tag all newly registered plugins with this dlhandle */
+    /* Tag all newly appended plugins with this dlhandle */
     for (int i = before; i < n_plugins; i++)
         plugin_dlhandles[i] = handle;
+
+    /* Tag overridden slots with the new dlhandle and clean up old handles */
+    for (int k = 0; k < n_pending_overrides; k++) {
+        int slot = pending_override_slots[k];
+        plugin_dlhandles[slot] = handle;
+
+        /* dlclose the old handle if it is no longer used by any plugin */
+        void *old_h = pending_old_handles[k];
+        if (old_h) {
+            int still_used = 0;
+            for (int j = 0; j < n_plugins; j++) {
+                if (plugin_dlhandles[j] == old_h) {
+                    still_used = 1;
+                    break;
+                }
+            }
+            if (!still_used)
+                dlclose(old_h);
+        }
+    }
+    n_pending_overrides = 0;
 
     return 0;
 }
@@ -176,11 +230,6 @@ int tool_plugin_unload(const char *name) {
             continue;
 
         void *handle = plugin_dlhandles[i];
-        if (!handle) {
-            fprintf(stderr, "tool_plugin: '%s' is statically linked, "
-                    "cannot unload\n", name);
-            return -1;
-        }
 
         /* Remove from registry by shifting down */
         for (int j = i; j < n_plugins - 1; j++) {
@@ -191,17 +240,20 @@ int tool_plugin_unload(const char *name) {
         plugin_registry[n_plugins]  = NULL;
         plugin_dlhandles[n_plugins] = NULL;
 
-        /* Check if any other plugin shares this dlhandle
-         * (multi-tool .so files).  Only dlclose if no references remain. */
-        int still_used = 0;
-        for (int j = 0; j < n_plugins; j++) {
-            if (plugin_dlhandles[j] == handle) {
-                still_used = 1;
-                break;
+        /* For dlopen'd plugins, dlclose the handle if no other plugin
+         * shares it.  Built-in tools (handle == NULL) have no handle
+         * to close - their structs live in the .data segment. */
+        if (handle) {
+            int still_used = 0;
+            for (int j = 0; j < n_plugins; j++) {
+                if (plugin_dlhandles[j] == handle) {
+                    still_used = 1;
+                    break;
+                }
             }
+            if (!still_used)
+                dlclose(handle);
         }
-        if (!still_used)
-            dlclose(handle);
 
         return 0;
     }

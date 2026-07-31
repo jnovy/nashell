@@ -152,6 +152,9 @@ void tool_plugin_sort(void);
 /* Load an external plugin from a shared object (.so) file.
  * The .so must contain a TOOL_PLUGIN_REGISTER() constructor that calls
  * tool_plugin_register().  dlopen(RTLD_NOW) triggers the constructor.
+ * If the .so registers a tool whose name matches a built-in (or
+ * previously loaded) tool, the new plugin overrides it in-place.
+ * The old dlhandle (if any) is dlclose'd when no other tool shares it.
  * Returns 0 on success, -1 on error (file not found, symbol errors,
  * constructor didn't register, ABI version mismatch). */
 int tool_plugin_load(const char *so_path);
@@ -163,10 +166,12 @@ int tool_plugin_load(const char *so_path);
  * directory open failure. */
 int tool_plugin_load_dir(const char *dir_path);
 
-/* Unload an external plugin by name.  Removes it from the registry
- * and dlclose's the shared object.
- * Only works for dlopen'd plugins (not statically linked ones).
- * Returns 0 on success, -1 if not found or not a dynamic plugin. */
+/* Unload a plugin by name.  Removes it from the registry.
+ * For dlopen'd plugins, also dlclose's the shared object (unless
+ * other plugins from the same .so are still registered).
+ * For built-in (statically linked) tools, removes the registry entry
+ * without closing anything (the struct lives in .data).
+ * Returns 0 on success, -1 if not found. */
 int tool_plugin_unload(const char *name);
 
 /* Close all dlopen'd plugin handles.  Call at shutdown.
