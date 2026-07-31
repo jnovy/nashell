@@ -591,7 +591,6 @@ Nash provides a full ncurses-based TUI with:
 | `/dream` | Run memory consolidation (alias for `/play dream`) |
 | `/play NAME` | Run a named playbook in background (e.g., `/play reflect`) |
 | `/play list` | List all available playbooks with descriptions |
-| `/fork N` | Fork the session at step N — copies journal, symlinks, and checkpoint to a new session |
 | `/name NAME` | Create a named symlink to the current session (`~/.nash/sessions/NAME`) |
 | `/cwd DIR` | Change working directory; creates the directory if it doesn't exist (`mkdir -p`) |
 | `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
@@ -657,16 +656,6 @@ Use `/name PROJECT` to create a human-readable symlink to the current session:
 ~/.nash/sessions/my-refactor → ~/.nash/sessions/1779970830.40871
 ```
 Named sessions can be resumed with `--session ~/.nash/sessions/my-refactor`.
-
-#### Session Forking
-
-`/fork N` creates a new session branched at step N:
-1. Journal entries up to step N are copied
-2. Store symlinks (R0S0, R0S1, ...) are replicated
-3. A checkpoint is written at the fork point
-4. The TUI switches to the forked session
-
-This enables exploring alternative strategies from any point in a session's history.
 
 #### Lazy Sessions (Headless Mode)
 

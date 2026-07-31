@@ -328,7 +328,6 @@ static const char *tool_arg_subs[] = {
 /* ── Command definitions table ───────────────────────────── */
 
 static const cmd_def_t command_defs[] = {
-    { "fork",          NULL,      NULL, NULL, NULL },
     { "name",          NULL,      NULL, NULL, NULL },
     { "cwd",           NULL,      NULL, provide_dirs, NULL },
     { "dream",         NULL,      NULL, NULL, NULL },

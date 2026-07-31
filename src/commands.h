@@ -23,15 +23,14 @@ enum infer_state {
 };
 
 /* Context struct for TUI slash-command handlers.
- * Bundles all mutable/shared session state needed by commands.
- * Pointers-to-pointers are used for fields that /fork mutates. */
+ * Bundles all mutable/shared session state needed by commands. */
 typedef struct {
-    char        **session_dir;     /* /fork replaces session dir */
+    char         *session_dir;
     const char   *nash_dir;
     tool_ctx_t   *tools;
     react_ctx_t  *react;
     ui_state_t   *ui;
-    journal_t   **journal;         /* /fork replaces journal */
+    journal_t    *journal;
     provider_t   *provider;
     provider_t   *consolidation_provider; /* [routing].consolidation — NULL = use provider */
     config_t     *cfg;

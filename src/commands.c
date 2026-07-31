@@ -27,93 +27,10 @@ static int cmp_str_desc(const void *a, const void *b) {
     return strcmp(*(const char **)b, *(const char **)a);
 }
 
-/* ── /fork <step> ──────────────────────────────────────────────── */
-static int cmd_fork(command_ctx_t *ctx, const char *arg) {
-    int fork_step = atoi(arg);
-    if (fork_step <= 0) return CMD_CONTINUE;
-
-    char *session_dir = *ctx->session_dir;
-    tool_ctx_t *tools = ctx->tools;
-    react_ctx_t *react = ctx->react;
-    ui_state_t *ui = ctx->ui;
-
-    char *new_dir = create_session_dir(ctx->nash_dir, ctx->cfg->workspace);
-    /* Copy journal lines where step <= fork_step */
-    char src_j[NASH_PATH_MAX], dst_j[NASH_PATH_MAX];
-    snprintf(src_j, sizeof(src_j), "%s/journal.jsonl", session_dir);
-    snprintf(dst_j, sizeof(dst_j), "%s/journal.jsonl", new_dir);
-    FILE *sf = fopen(src_j, "r");
-    FILE *df = fopen(dst_j, "w");
-    if (sf && df) {
-        char jl[NASH_LINE_MAX];
-        while (fgets(jl, sizeof(jl), sf)) {
-            cJSON *e = cJSON_Parse(jl);
-            if (e) {
-                int s = (int)cJSON_GetNumberValue(
-                    cJSON_GetObjectItem(e, "step"));
-                if (s <= fork_step) fputs(jl, df);
-                cJSON_Delete(e);
-            }
-        }
-    }
-    if (sf) fclose(sf);
-    if (df) fclose(df);
-    /* Copy symlinks from all react loops.
-     * Use the alias map's next_seq as the upper bound —
-     * it tracks the actual number of aliases created. */
-    int max_alias = tools->aliases ? tools->aliases->next_seq : fork_step + 5;
-    for (int loop = 0; loop <= tools->react_loop; loop++) {
-        for (int i = 0; i <= max_alias; i++) {
-            char ref[32], sl[NASH_PATH_MAX], tgt[NASH_PATH_MAX], dl[NASH_PATH_MAX];
-            snprintf(ref, sizeof(ref), "R%dS%d", loop, i);
-            snprintf(sl, sizeof(sl), "%s/%s", session_dir, ref);
-            ssize_t n = readlink(sl, tgt, sizeof(tgt) - 1);
-            if (n > 0) {
-                tgt[n] = '\0';
-                snprintf(dl, sizeof(dl), "%s/%s", new_dir, ref);
-                symlink(tgt, dl);
-            }
-        }
-    }
-    /* Write checkpoint */
-    cJSON *cp = cJSON_CreateObject();
-    cJSON_AddNumberToObject(cp, "version", 1);
-    cJSON_AddNumberToObject(cp, "step", fork_step);
-    cJSON_AddNumberToObject(cp, "react_loop", tools->react_loop);
-    if (react->last_query)
-        cJSON_AddStringToObject(cp, "user_query", react->last_query);
-    /* Legacy scratchpad string removed — checkpoint restore
-     * falls back to scratchpad_parse from checkpoint JSON
-     * if section files don't exist (very old sessions). */
-    char *cpj = cJSON_Print(cp);
-    char cp_path[NASH_PATH_MAX];
-    snprintf(cp_path, sizeof(cp_path), "%s/checkpoint.json", new_dir);
-    write_file(cp_path, cpj, strlen(cpj));
-    free(cpj);
-    cJSON_Delete(cp);
-    /* Persist scratchpad to the forked session directory
-     * so it survives resume. Without this, the forked
-     * session starts with an empty scratchpad. */
-    scratchpad_save(&tools->scratch, new_dir);
-    /* Switch to forked session */
-    session_lock_release(tools->session_lock_fd);  /* release old session lock */
-    journal_free(*ctx->journal);
-    free(session_dir);
-    *ctx->session_dir = new_dir;
-    *ctx->journal = journal_new(new_dir);
-    tools->journal = *ctx->journal;
-    tools->session_dir = new_dir;
-    tools->session_lock_fd = session_lock_acquire(new_dir);  /* lock new session */
-    alias_map_clear(tools->aliases);
-    ui_state_set_status(ui, STATUS_READY, "Forked — ready for new query");
-    tui_render(ui);
-    return CMD_CONTINUE;
-}
-
 /* ── /name <name> ──────────────────────────────────────────────── */
 static int cmd_name(command_ctx_t *ctx, const char *name) {
     ui_state_t *ui = ctx->ui;
-    char *session_dir = *ctx->session_dir;
+    char *session_dir = ctx->session_dir;
 
     if (strlen(name) == 0 || strlen(name) > 255 ||
         strchr(name, '/') != NULL || strchr(name, '\n') != NULL) {
@@ -706,8 +623,8 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
     /* ── L3: Session history search ─────────────── */
     if (!key && (query || pattern)) {
         char sessions_dir[NASH_PATH_MAX] = {0};
-        if (ctx->session_dir && *ctx->session_dir) {
-            snprintf(sessions_dir, sizeof(sessions_dir), "%s", *ctx->session_dir);
+        if (ctx->session_dir) {
+            snprintf(sessions_dir, sizeof(sessions_dir), "%s", ctx->session_dir);
             char *last_slash = strrchr(sessions_dir, '/');
             if (last_slash) *last_slash = '\0';
         }
@@ -837,9 +754,9 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
     }
 
     /* ── Write search.md to session directory ──── */
-    if (ctx->session_dir && *ctx->session_dir) {
+    if (ctx->session_dir) {
         char md_path[NASH_PATH_MAX];
-        snprintf(md_path, sizeof(md_path), "%s/search.md", *ctx->session_dir);
+        snprintf(md_path, sizeof(md_path), "%s/search.md", ctx->session_dir);
         FILE *fp = fopen(md_path, "w");
         if (fp) {
             const char *md_data = str_cstr(&md_file);
@@ -880,12 +797,6 @@ static int cmd_search(command_ctx_t *ctx) {
 int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     char *sq = *submitted_query;
 
-    if (strncmp(sq, "/fork ", 6) == 0) {
-        int rc = cmd_fork(ctx, sq + 6);
-        free(sq);
-        *submitted_query = NULL;
-        return rc;
-    }
     if (strncmp(sq, "/name ", 6) == 0) {
         int rc = cmd_name(ctx, sq + 6);
         free(sq);
@@ -969,7 +880,7 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     /* Handle /continue: resolve to original query from checkpoint */
     if (strcmp(sq, "continue") == 0 ||
         strcmp(sq, "/continue") == 0) {
-        char *orig = checkpoint_read_query(*ctx->session_dir);
+        char *orig = checkpoint_read_query(ctx->session_dir);
         if (orig) {
             free(sq);
             *submitted_query = orig;
