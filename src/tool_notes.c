@@ -119,6 +119,6 @@ static const tool_param_t notes_params[] = {
 
 static const tool_plugin_t notes_plugin =
     TOOL_DEF("notes",
-             "Persistent scratchpad that survives context compaction. Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, notes(op=\"append\", section=\"name\", content=\"...\") to append, notes(op=\"clear\", section=\"name\") to delete a section. Priority 1=highest, 9=lowest (default 5). Record key findings in notes -- they survive context eviction. Save incrementally (every 3-5 file reads), not in one batch at the end.",
+             "Persistent scratchpad that survives context compaction. Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, notes(op=\"append\", section=\"name\", content=\"...\") to append, notes(op=\"clear\", section=\"name\") to delete a section. Priority 1=highest, 9=lowest (default 5). Record key findings in notes -- they survive context eviction. Save incrementally (every 3-5 file reads), not in one batch at the end. For complex tasks, use structured sections: findings (verified facts with file:line or source URLs), rejected (dead ends and failed approaches so you do not retry them), unresolved (open questions not yet addressed), plan (next steps and current hypothesis). Rewrite sections to remove obsolete info rather than only appending.",
              notes_params, tool_notes);
 TOOL_PLUGIN_REGISTER(notes_plugin)
