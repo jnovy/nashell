@@ -467,11 +467,6 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             line_start = scan + 1;
         }
 
-        /* Compute 1-based line number of line_start */
-        int start_lnum = 1;
-        for (const char *p = content; p < line_start; p++)
-            if (*p == '\n') start_lnum++;
-
         /* Walk backward from the byte before line_start, skipping the
          * newline that terminates the line before the edit line. Then
          * count ctx_before more newlines to find our context boundary. */

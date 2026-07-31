@@ -160,8 +160,10 @@ static int cmd_todo_list_all(command_ctx_t *ctx) {
             while ((ent = readdir(d)) != NULL) {
                 if (ent->d_name[0] == '.') continue;
                 char tpath[NASH_PATH_MAX];
-                snprintf(tpath, sizeof(tpath), "%s/%s/todo.md",
-                         ws_dir, ent->d_name);
+                if (snprintf(tpath, sizeof(tpath), "%s/%s/todo.md",
+                             ws_dir, ent->d_name)
+                        >= (int)sizeof(tpath))
+                    continue;
                 /* Only show workspaces that have a todo.md */
                 if (access(tpath, F_OK) != 0) continue;
                 int wo = 0, wd = 0;

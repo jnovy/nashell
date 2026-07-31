@@ -82,15 +82,6 @@ static void tg_route_map_add(telegram_ctx_t *ctx, const char *task_id,
     ctx->route_map_next = (idx + 1) % TG_MAX_ROUTE_MAP;
 }
 
-static long long tg_route_map_lookup(telegram_ctx_t *ctx, const char *task_id) {
-    for (int i = 0; i < TG_MAX_ROUTE_MAP; i++) {
-        if (ctx->route_map[i].task_id[0] &&
-            strcmp(ctx->route_map[i].task_id, task_id) == 0)
-            return ctx->route_map[i].thread_id;
-    }
-    return 0;  /* not found — send to general/main chat */
-}
-
 /* ── Session thread tracking ─────────────────────────────── */
 
 /* Store the thread root message_id for a topic */

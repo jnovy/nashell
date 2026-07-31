@@ -567,7 +567,9 @@ static void list_workspaces_recurse(const char *base, const char *prefix,
         if (ent->d_name[0] == '.') continue;
 
         char fullpath[NASH_PATH_MAX];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, ent->d_name);
+        if (snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, ent->d_name)
+                >= (int)sizeof(fullpath))
+            continue;
 
         struct stat st;
         if (stat(fullpath, &st) != 0 || !S_ISDIR(st.st_mode))
@@ -587,11 +589,13 @@ static void list_workspaces_recurse(const char *base, const char *prefix,
 
         /* Check if this dir has a memory/ subdirectory - that makes it a workspace */
         char mempath[NASH_PATH_MAX];
-        snprintf(mempath, sizeof(mempath), "%s/memory", fullpath);
-        struct stat mst;
-        if (stat(mempath, &mst) == 0 && S_ISDIR(mst.st_mode)) {
-            printf("  %s\n", relname);
-            (*count)++;
+        if (snprintf(mempath, sizeof(mempath), "%s/memory", fullpath)
+                < (int)sizeof(mempath)) {
+            struct stat mst;
+            if (stat(mempath, &mst) == 0 && S_ISDIR(mst.st_mode)) {
+                printf("  %s\n", relname);
+                (*count)++;
+            }
         }
 
         /* Recurse into subdirectories for nested workspaces (e.g. rh/container-tools) */

@@ -583,8 +583,10 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
         while ((we = readdir(wd)) != NULL) {
             if (we->d_name[0] == '.') continue;
             char ws_sessions[NASH_PATH_MAX];
-            snprintf(ws_sessions, sizeof(ws_sessions), "%s/%s/sessions",
-                     ws_base, we->d_name);
+            if (snprintf(ws_sessions, sizeof(ws_sessions), "%s/%s/sessions",
+                         ws_base, we->d_name)
+                    >= (int)sizeof(ws_sessions))
+                continue;
             pm_collect_sessions(ws_sessions, &dirs, &n_dirs, &dirs_cap);
         }
         closedir(wd);

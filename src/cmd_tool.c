@@ -450,7 +450,14 @@ static int cmd_tool_save(command_ctx_t *ctx, const char *profile) {
     char path[NASH_PATH_MAX];
     char dir[NASH_PATH_MAX];
     tool_profiles_dir(ctx->nash_dir, dir, sizeof(dir));
-    snprintf(path, sizeof(path), "%s/%s", dir, profile);
+    if (snprintf(path, sizeof(path), "%s/%s", dir, profile)
+            >= (int)sizeof(path)) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/tool save: path too long");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
 
     FILE *f = fopen(path, "w");
     if (!f) {
@@ -530,7 +537,14 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
     char dir[NASH_PATH_MAX];
     tool_profiles_dir(ctx->nash_dir, dir, sizeof(dir));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", dir, profile);
+    if (snprintf(path, sizeof(path), "%s/%s", dir, profile)
+            >= (int)sizeof(path)) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "/tool load: path too long");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
 
     FILE *f = fopen(path, "r");
     if (!f) {

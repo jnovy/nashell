@@ -619,7 +619,6 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
         embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
         if (!results) return NULL;
 
-        int total_received = 0;
         for (int offset = 0; offset < n_texts; offset += BATCH_SIZE) {
             int chunk = n_texts - offset;
             if (chunk > BATCH_SIZE) chunk = BATCH_SIZE;
@@ -628,19 +627,15 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
             embed_vec_t *chunk_results = call_api_batch(ctx, texts + offset,
                                                         chunk, &chunk_count);
             if (chunk_results) {
-                for (int i = 0; i < chunk && i < chunk_count; i++) {
+                for (int i = 0; i < chunk && i < chunk_count; i++)
                     results[offset + i] = chunk_results[i];
-                    if (chunk_results[i].data) total_received++;
-                }
-                free(chunk_results);  /* array only — vecs moved to results */
+                free(chunk_results);  /* array only - vecs moved to results */
             } else {
-                /* Batch call failed — fall back to sequential for this chunk */
+                /* Batch call failed - fall back to sequential for this chunk */
                 nash_log("[embed] batch API failed for chunk %d-%d, "
                         "falling back to sequential", offset, offset + chunk);
-                for (int i = 0; i < chunk; i++) {
+                for (int i = 0; i < chunk; i++)
                     results[offset + i] = embed_text(ctx, texts[offset + i]);
-                    if (results[offset + i].data) total_received++;
-                }
             }
         }
         *out_count = n_texts;
