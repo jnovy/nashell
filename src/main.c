@@ -501,8 +501,14 @@ int main(int argc, char **argv) {
             /* --api URL: create an ad-hoc local provider and select it */
             const char *url = argv[++i];
             int n = cfg->n_named_providers;
-            cfg->named_providers = realloc(cfg->named_providers,
-                                           (n + 1) * sizeof(named_provider_t));
+            named_provider_t *tmp = realloc(cfg->named_providers,
+                                            (n + 1) * sizeof(named_provider_t));
+            if (!tmp) {
+                fprintf(stderr, "nash: out of memory for --api provider\n");
+                config_free(cfg);
+                return 1;
+            }
+            cfg->named_providers = tmp;
             memset(&cfg->named_providers[n], 0, sizeof(named_provider_t));
             cfg->named_providers[n].name = strdup("__cli_api");
             cfg->named_providers[n].config.type = strdup("local");
@@ -591,6 +597,11 @@ int main(int argc, char **argv) {
                     for (int j = i + 1; j < argc && argv[j][0] != '-'; j++)
                         total += strlen(argv[j]) + 1;
                     agent_arguments = malloc(total + 1);
+                    if (!agent_arguments) {
+                        fprintf(stderr, "nash: out of memory for agent arguments\n");
+                        config_free(cfg);
+                        return 1;
+                    }
                     agent_arguments[0] = '\0';
                     for (int j = i + 1; j < argc && argv[j][0] != '-'; j++) {
                         if (agent_arguments[0]) strcat(agent_arguments, " ");
@@ -869,6 +880,10 @@ int main(int argc, char **argv) {
         .retry_base_sec  = cfg->provider_retry_base,
     };
     provider_t *provider = provider_create(&pcfg);
+
+    /* SECURITY: scrub credential env vars now that provider has copied the key.
+     * Prevents API keys from leaking to child processes (shell_exec, git). */
+    config_scrub_credential_env(cfg);
 
     /* Fetch model info (local server: /props + /v1/models) */
     int context_size = 0;
@@ -1484,7 +1499,8 @@ int main(int argc, char **argv) {
         sigaction(SIGINT, &sa, NULL);
 
         /* Telegram bridge: start thread that bridges mailbox ↔ Telegram API */
-        pthread_t tg_thread = 0;
+        pthread_t tg_thread;
+        int tg_started = 0;
         telegram_ctx_t tg_ctx;
         if (telegram_mode) {
             telegram_init(&tg_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
@@ -1497,12 +1513,18 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-            pthread_create(&tg_thread, NULL, telegram_run, &tg_ctx);
-            fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
+            if (pthread_create(&tg_thread, NULL, telegram_run, &tg_ctx) != 0) {
+                fprintf(stderr, "[telegram] failed to create bridge thread\n");
+                telegram_free(&tg_ctx);
+            } else {
+                tg_started = 1;
+                fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
+            }
         }
 
         /* Matrix bridge: start thread that bridges mailbox ↔ Matrix API */
-        pthread_t mx_thread = 0;
+        pthread_t mx_thread;
+        int mx_started = 0;
         matrix_ctx_t mx_ctx;
         if (matrix_mode) {
             matrix_init(&mx_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
@@ -1515,8 +1537,13 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-            pthread_create(&mx_thread, NULL, matrix_run, &mx_ctx);
-            fprintf(stderr, "[matrix] bot bridge active — send messages to the Matrix room\n");
+            if (pthread_create(&mx_thread, NULL, matrix_run, &mx_ctx) != 0) {
+                fprintf(stderr, "[matrix] failed to create bridge thread\n");
+                matrix_free(&mx_ctx);
+            } else {
+                mx_started = 1;
+                fprintf(stderr, "[matrix] bot bridge active — send messages to the Matrix room\n");
+            }
         }
 
         /* ── Workspace context pool for daemon mode ────────────────────
@@ -1539,6 +1566,7 @@ int main(int argc, char **argv) {
             tool_ctx_t   tools;
             react_ctx_t  react;
             int          active;        /* 1 = initialized */
+            time_t       last_used;     /* monotonic timestamp for LRU eviction */
         } daemon_ws_slot_t;
 
         daemon_ws_slot_t ws_pool[DAEMON_MAX_WS_SLOTS];
@@ -1557,6 +1585,7 @@ int main(int argc, char **argv) {
                                s->ws, s->session_dir, cfg, provider);
             session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
             s->active = 1;
+            s->last_used = time(NULL);
             ws_pool_count = 1;
             fprintf(stderr, "[daemon] default session: %s (workspace: %s)\n",
                     s->session_dir, s->name ? s->name : "global");
@@ -1656,9 +1685,37 @@ int main(int argc, char **argv) {
                 }
             }
 
-            /* Create new slot if needed */
-            if (!slot && ws_pool_count < DAEMON_MAX_WS_SLOTS) {
-                daemon_ws_slot_t *s = &ws_pool[ws_pool_count];
+            /* Create new slot if needed — evict LRU when pool is full */
+            if (!slot) {
+                daemon_ws_slot_t *s;
+                if (ws_pool_count < DAEMON_MAX_WS_SLOTS) {
+                    s = &ws_pool[ws_pool_count];
+                    ws_pool_count++;
+                } else {
+                    /* Evict least-recently-used slot (skip slot 0 = default) */
+                    int lru = 1;
+                    for (int ei = 2; ei < ws_pool_count; ei++) {
+                        if (ws_pool[ei].active &&
+                            ws_pool[ei].last_used < ws_pool[lru].last_used)
+                            lru = ei;
+                    }
+                    s = &ws_pool[lru];
+                    fprintf(stderr, "[daemon] evicting LRU workspace slot '%s'\n",
+                            s->name ? s->name : "global");
+                    /* Clean up evicted slot (mirrors shutdown cleanup) */
+                    if (s->tools.scratch.count > 0)
+                        scratchpad_save(&s->tools.scratch, s->session_dir);
+                    free(s->react.last_query);
+                    free(s->react.last_result);
+                    session_cleanup(&s->tools, &s->react, s->journal);
+                    if (is_dir_empty(s->session_dir))
+                        rmdir(s->session_dir);
+                    free(s->session_dir);
+                    if (s->ws)
+                        workspace_free(s->ws);
+                    free(s->name);
+                    memset(s, 0, sizeof(*s));
+                }
                 s->name = task_ws ? strdup(task_ws) : NULL;
                 int ws_iso = cfg->workspace_isolated ||
                              (cfg->workspace_global_recall == 0);
@@ -1680,17 +1737,12 @@ int main(int argc, char **argv) {
                                    cfg, provider);
                 session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
                 s->active = 1;
-                ws_pool_count++;
                 slot = s;
                 fprintf(stderr, "[daemon] created workspace slot '%s': %s\n",
                         s->name ? s->name : "global", s->session_dir);
             }
 
-            if (!slot) {
-                /* Pool full — use default slot */
-                slot = &ws_pool[0];
-                fprintf(stderr, "[daemon] workspace pool full, using default\n");
-            }
+            slot->last_used = time(NULL);
 
             fprintf(stderr, "\n[daemon] === task: %s (R%d, ws=%s) ===\n",
                     task->task_id ? task->task_id : "unknown",
@@ -1760,11 +1812,11 @@ int main(int argc, char **argv) {
             }
             free(s->name);
         }
-        if (telegram_mode && tg_thread) {
+        if (tg_started) {
             pthread_join(tg_thread, NULL);
             telegram_free(&tg_ctx);
         }
-        if (matrix_mode && mx_thread) {
+        if (mx_started) {
             pthread_join(mx_thread, NULL);
             matrix_free(&mx_ctx);
         }
@@ -1975,12 +2027,12 @@ int main(int argc, char **argv) {
                      agent_arguments ? agent_arguments : "");
             char *auto_cmd = strdup(agent_cmd);
             command_ctx_t cmd_ctx = {
-                .session_dir  = &session_dir,
+                .session_dir  = session_dir,
                 .nash_dir     = nash_dir,
                 .tools        = &tools,
                 .react        = &react,
                 .ui           = ui,
-                .journal      = &journal,
+                .journal      = journal,
                 .provider     = provider,
                 .consolidation_provider = g_consolidation_provider,
                 .cfg          = cfg,
@@ -2196,8 +2248,8 @@ int main(int argc, char **argv) {
                 /* FIX #4: Guard slash commands that access shared inference state.
                  * During inference, only user_ask, exit/quit, and regular queries
                  * (which get stashed as pending_redirect) are safe. Slash commands
-                 * like /fork read aliases->next_seq which is written by the inference
-                 * thread without synchronization. Defer them until inference completes. */
+                 * may read shared state written by the inference thread without
+                 * synchronization. Defer them until inference completes. */
                 if (inferring && submitted_query[0] == '/'
                     && strncmp(submitted_query, "/quit", 5) != 0
                     && strncmp(submitted_query, "/exit", 5) != 0) {
@@ -2218,12 +2270,12 @@ int main(int argc, char **argv) {
                 /* Dispatch slash commands via command_dispatch */
                 {
                     command_ctx_t cmd_ctx = {
-                        .session_dir  = &session_dir,
+                        .session_dir  = session_dir,
                         .nash_dir     = nash_dir,
                         .tools        = &tools,
                         .react        = &react,
                         .ui           = ui,
-                        .journal      = &journal,
+                        .journal      = journal,
                         .provider     = provider,
                         .consolidation_provider = g_consolidation_provider,
                         .cfg          = cfg,

@@ -257,7 +257,13 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * the original provider is freed/modified concurrently (e.g. model switch
      * during playbook pass). provider_create() strdup's its input, but the
      * input itself must be valid at the time of the call.
-     * FIX MED#10: Inherit llm_timeout to prevent indefinite blocking. */
+     * FIX MED#10: Inherit llm_timeout to prevent indefinite blocking.
+     *
+     * WARNING (FIX #21): Shallow struct copy below — ALL pointer fields in
+     * provider_config_t MUST be deep-copied.  Currently 5 pointer fields:
+     *   model_id, api_base, api_key_env, project_id, region
+     * If you add a new pointer field to provider_config_t, add a strdup here
+     * or the copy will share ownership with ctx->provider->cfg. */
     provider_config_t cons_cfg = ctx->provider->cfg;
     cons_cfg.model_id    = cons_cfg.model_id    ? strdup(cons_cfg.model_id)    : NULL;
     cons_cfg.api_base    = cons_cfg.api_base    ? strdup(cons_cfg.api_base)    : NULL;
@@ -525,7 +531,11 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
             if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
                 ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
                 ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
-                ctx->deferred_consol[ctx->n_deferred_consol].target = store_target;
+                /* FIX #4: Store flag instead of raw memory_t* pointer.
+                 * The pointer could become dangling after session reset
+                 * in daemon mode. Resolve to live pointer at flush time. */
+                ctx->deferred_consol[ctx->n_deferred_consol].is_workspace =
+                    (store_target != ctx->memory);
                 ctx->n_deferred_consol++;
             }
         }
@@ -702,8 +712,12 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                 int has_semantic = (r->semantic_score > 0.01);
 
                 if (has_lex_matches || has_semantic) {
+                    const char *clabel = (r->confidence >= 0 &&
+                                          r->confidence < 3)
+                                         ? conf_labels[r->confidence]
+                                         : "UNKNOWN";
                     str_appendf(&out, "[SESSION — %s  %s  score=%.3f",
-                                ts_buf, conf_labels[r->confidence],
+                                ts_buf, clabel,
                                 r->composite_score);
                     if (has_semantic)
                         str_appendf(&out, " sem=%.2f", r->semantic_score);

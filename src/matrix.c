@@ -47,7 +47,6 @@ static int  mx_api_whoami(matrix_ctx_t *ctx);
 static int  mx_api_sync(matrix_ctx_t *ctx, cJSON **out_rooms);
 static int  mx_api_send_message(matrix_ctx_t *ctx, const char *text,
                                 const char *html);
-static int  mx_api_send_markdown(matrix_ctx_t *ctx, const char *md_text);
 static int  mx_api_join_room(matrix_ctx_t *ctx, const char *room_id_or_alias);
 static int  mx_api_create_room(matrix_ctx_t *ctx, const char *name,
                                const char *invite_user);
@@ -64,9 +63,6 @@ static int  mx_download_image(matrix_ctx_t *ctx, const char *mxc_url,
                               char *out_path, size_t out_sz);
 static int  mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
                                 char *out_mxc, size_t mxc_sz);
-static int  mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
-                              const char *filename, const char *mimetype,
-                              size_t filesize);
 static char *mx_auth_header(matrix_ctx_t *ctx);
 static int  mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
                                 const char *text, const char *html);
@@ -84,7 +80,6 @@ static int  mx_api_send_image_to(matrix_ctx_t *ctx, const char *room_id,
 static const char *mx_workspace_for_room(matrix_ctx_t *ctx, const char *room_id);
 static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
                              const char *room_id);
-static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id);
 
 /* Room existence check + auto-creation for ephemeral rooms */
 static int  mx_api_invite_user(matrix_ctx_t *ctx, const char *room_id,
@@ -313,17 +308,6 @@ static void mx_route_map_add(matrix_ctx_t *ctx, const char *task_id,
     snprintf(ctx->route_map[idx].room_id, sizeof(ctx->route_map[idx].room_id),
              "%s", room_id);
     ctx->route_map_next = (idx + 1) % MX_MAX_ROUTE_MAP;
-}
-
-/* Look up source room_id for a given task_id */
-__attribute__((unused))
-static const char *mx_route_map_lookup(matrix_ctx_t *ctx, const char *task_id) {
-    for (int i = 0; i < MX_MAX_ROUTE_MAP; i++) {
-        if (ctx->route_map[i].task_id[0] &&
-            strcmp(ctx->route_map[i].task_id, task_id) == 0)
-            return ctx->route_map[i].room_id;
-    }
-    return NULL;
 }
 
 
@@ -1251,18 +1235,6 @@ static char *mx_html_fixup(const char *html) {
     return str_steal(&out);
 }
 
-/* Send markdown as an HTML-formatted Matrix message (default room) */
-__attribute__((unused))
-static int mx_api_send_markdown(matrix_ctx_t *ctx, const char *md_text) {
-    /* Convert markdown to HTML, then fix up for Matrix */
-    char *tg_html = md_to_html(md_text);
-    char *html = mx_html_fixup(tg_html);
-    free(tg_html);
-    int rc = mx_api_send_message(ctx, md_text, html);
-    free(html);
-    return rc;
-}
-
 /* Send markdown to a specific room (for multi-room routing) */
 static int mx_api_send_markdown_to(matrix_ctx_t *ctx, const char *room_id,
                                    const char *md_text) {
@@ -1698,15 +1670,6 @@ static int mx_api_send_image_to(matrix_ctx_t *ctx, const char *room_id,
     free(auth);
     free(body_str);
     return rc;
-}
-
-/* Backward-compatible wrapper: send image to default room */
-__attribute__((unused))
-static int mx_api_send_image(matrix_ctx_t *ctx, const char *mxc_url,
-                             const char *filename, const char *mimetype,
-                             size_t filesize) {
-    return mx_api_send_image_to(ctx, ctx->room_id, mxc_url, filename,
-                                mimetype, filesize);
 }
 
 

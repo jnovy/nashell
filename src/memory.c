@@ -621,12 +621,18 @@ int memory_store(memory_t *m, const char *key, const char *value,
     int need_embed = m->embed && m->embed->available &&
                      !atomic_load(&m->consolidating);
 
-    /* Git commit first (while we still hold the lock) */
+    /* Prepare git commit message while we still hold the lock, but
+     * defer the actual commit (fork+exec) until after unlock to avoid
+     * blocking concurrent memory operations for 50-500ms.  */
     char commit_msg[256];
     snprintf(commit_msg, sizeof(commit_msg), "memory: store %s", key);
-    memory_git_commit(m, commit_msg);
 
     pthread_mutex_unlock(&m->mtx);
+
+    /* Git commit outside the lock — only needs m->dir/m->model which
+     * are stable after init, and the on-disk files which are already
+     * written. */
+    memory_git_commit(m, commit_msg);
 
     if (need_embed) {
         memory_embed_entry(m, key, value);
@@ -641,6 +647,15 @@ int memory_store(memory_t *m, const char *key, const char *value,
             if (ie->has_emb) embed_multi_vec_free(&ie->emb);
             ie->emb = embed_multi_vec_load(emb_path);
             ie->has_emb = (ie->emb.data && ie->emb.dim > 0) ? 1 : 0;
+        } else {
+            /* Key was deleted by another thread while we were generating
+             * the embedding (TOCTOU race).  Remove the orphan .emb file
+             * so it doesn't linger on disk. */
+            char emb_fname[512];
+            key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
+            char emb_orphan[NASH_PATH_MAX];
+            snprintf(emb_orphan, sizeof(emb_orphan), "%s/%s", m->dir, emb_fname);
+            unlink(emb_orphan);  /* best-effort; ignore errors */
         }
         pthread_mutex_unlock(&m->mtx);
     }
@@ -686,13 +701,15 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
         if (ie) ie->pinned = pinned;
     }
 
-    /* Git: commit pin/unpin change */
+    /* Prepare commit message under lock, but run git outside to avoid
+     * blocking concurrent operations during fork+exec. */
     char msg[600];
     snprintf(msg, sizeof(msg), "memory: %s %s",
              pinned ? "pin" : "unpin", key);
-    memory_git_commit(m, msg);
 
     pthread_mutex_unlock(&m->mtx);
+
+    memory_git_commit(m, msg);
     return 0;
 }
 
@@ -993,6 +1010,10 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     /* P1: Score all entries from in-memory index — no filesystem I/O */
     int scored_cap = m->idx.count > 64 ? m->idx.count : 64;
     scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
+    if (!scored) {
+        pthread_mutex_unlock(&m->mtx);
+        return results;
+    }
     int n_scored = 0;
 
     for (int i = 0; i < m->idx.count; i++) {
@@ -1119,6 +1140,11 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     int n = n_scored < max_results ? n_scored : max_results;
     if (n <= 0) { free(scored); pthread_mutex_unlock(&m->mtx); return results; }
     results.entries = calloc((size_t)n, sizeof(memory_entry_t));
+    if (!results.entries) {
+        free(scored);
+        pthread_mutex_unlock(&m->mtx);
+        return results;
+    }
     results.count = 0;
 
     for (int i = 0; i < n; i++) {
@@ -1450,12 +1476,13 @@ int memory_delete(memory_t *m, const char *key) {
      * scanning the filesystem.  Still O(N) but avoids N disk reads. */
     gc_refs_index(m, key);
 
-    /* Git commit */
+    /* Prepare commit message under lock; run git outside. */
     char msg[256];
     snprintf(msg, sizeof(msg), "memory: delete %s", key);
-    memory_git_commit(m, msg);
 
     pthread_mutex_unlock(&m->mtx);
+
+    memory_git_commit(m, msg);
     return 0;
 }
 
@@ -1518,17 +1545,19 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
      * using the in-memory index instead of filesystem scan. */
     gc_refs_multi_index(m, found_keys, n_found);
 
-    /* Phase 3: Single git commit for all deletions */
+    /* Phase 3: Single git commit for all deletions.
+     * Build msg under lock, run git outside to avoid blocking. */
     char msg[1024];
     if (n_found == 1) {
         snprintf(msg, sizeof(msg), "memory: delete %s", found_keys[0]);
     } else {
         snprintf(msg, sizeof(msg), "memory: batch delete %d entries", n_found);
     }
-    memory_git_commit(m, msg);
 
     free(found_keys);
     pthread_mutex_unlock(&m->mtx);
+
+    memory_git_commit(m, msg);
     return n_found;
 }
 
@@ -2267,12 +2296,13 @@ int memory_reindex_entry(memory_t *m, const char *key) {
     }
     cJSON_Delete(entry);
 
-    /* Git commit for the new file */
+    /* Prepare commit message under lock; run git outside. */
     char commit_msg[256];
     snprintf(commit_msg, sizeof(commit_msg), "memory: reindex %s", key);
-    memory_git_commit(m, commit_msg);
 
     pthread_mutex_unlock(&m->mtx);
+
+    memory_git_commit(m, commit_msg);
     return 0;
 }
 
@@ -2292,7 +2322,9 @@ void memory_git_flush(memory_t *m, const char *msg) {
     m->git_deferred = 0;
     int pending = m->git_deferred_count;
     m->git_deferred_count = 0;
+    pthread_mutex_unlock(&m->mtx);
+
+    /* Run git outside the lock to avoid blocking concurrent ops. */
     if (pending > 0)
         memory_git_commit(m, msg ? msg : "memory: batch update");
-    pthread_mutex_unlock(&m->mtx);
 }

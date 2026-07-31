@@ -110,6 +110,10 @@ typedef struct {
      * NULL if not in TUI mode, viewing session.md, or no file loaded.
      * Ownership: strdup'd by main thread, freed after pthread_join. */
     char         *tui_viewing_file;
+
+    /* [INIT-ONLY] Agent deadline (0 = no deadline).
+     * If set, the react loop aborts when time(NULL) >= deadline. */
+    time_t        deadline;
 } react_ctx_t;
 
 /* Run the react loop for a user query.

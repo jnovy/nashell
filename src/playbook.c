@@ -799,6 +799,13 @@ void *playbook_worker(void *arg) {
     for (int pass = 0; pass < pb->n_passes; pass++) {
         pa->current_pass = pass;
 
+        /* Check agent deadline */
+        if (pa->deadline > 0 && time(NULL) >= pa->deadline) {
+            fprintf(stderr, "[play] agent deadline exceeded, aborting\n");
+            playbook_ok = 0;
+            break;
+        }
+
         /* Update TUI status */
         char status[256];
         if (n_mem_phases > 1)
@@ -935,6 +942,7 @@ void *playbook_worker(void *arg) {
                                     ? pb->passes[pass].system_prompt_replace
                                     : pb->system_prompt_replace,
             .headless = (pa->ui == NULL) ? 1 : 0,
+            .deadline = pa->deadline,
         };
 
         /* Change 2: Update event context with pass provenance */

@@ -742,8 +742,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                         if (body) body++; else body = jc.texts[ci];
                                         char pbuf[201];
                                         size_t plen = strlen(body);
-                                        if (plen > 200) plen = 200;
-                                        while (plen > 0 && ((unsigned char)body[plen] & 0xC0) == 0x80) plen--;
+                                        if (plen > 200) plen = utf8_clamp(body, 200);
                                         memcpy(pbuf, body, plen);
                                         pbuf[plen] = '\0';
                                         previews[vi] = strdup(pbuf);

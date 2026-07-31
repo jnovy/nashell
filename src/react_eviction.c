@@ -1535,7 +1535,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 if (first_end && (first_end - c) < 400)
                     first_len = (int)(first_end - c);
                 else
-                    first_len = clen < 400 ? clen : 400;
+                    first_len = clen < 400 ? clen : (int)utf8_clamp(c, 400);
 
                 /* Find start of last paragraph */
                 const char *last_start = c + clen;
@@ -1548,7 +1548,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 int last_len = (int)(c + clen - last_start);
                 if (last_len > 400) {
                     last_start = c + clen - 400;
-                    last_len = 400;
+                    last_len = (int)utf8_clamp(last_start, 400);
                 }
 
                 /* Only compress if we'd save significant space */

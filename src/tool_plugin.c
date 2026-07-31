@@ -64,6 +64,21 @@ const tool_plugin_t *tool_plugin_get(int index) {
 }
 
 void tool_plugin_clear(void) {
+    /* Close unique dlhandles before clearing (mirrors tool_plugin_cleanup) */
+    void *closed[TOOL_PLUGIN_MAX];
+    int n_closed = 0;
+    for (int i = 0; i < n_plugins; i++) {
+        void *h = plugin_dlhandles[i];
+        if (!h) continue;
+        int dup = 0;
+        for (int j = 0; j < n_closed; j++) {
+            if (closed[j] == h) { dup = 1; break; }
+        }
+        if (!dup) {
+            dlclose(h);
+            closed[n_closed++] = h;
+        }
+    }
     n_plugins = 0;
     memset(plugin_registry, 0, sizeof(plugin_registry));
     memset(plugin_dlhandles, 0, sizeof(plugin_dlhandles));

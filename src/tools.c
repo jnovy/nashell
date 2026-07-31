@@ -684,7 +684,11 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
 
     for (int i = 0; i < ctx->n_deferred_consol; i++) {
         if (ctx->deferred_consol[i].key && ctx->deferred_consol[i].value) {
-            memory_t *tgt = ctx->deferred_consol[i].target;
+            /* FIX #4: Resolve is_workspace flag to live memory_t pointer.
+             * Previously stored a raw memory_t* that could dangle after
+             * session reset in daemon mode. */
+            memory_t *tgt = ctx->deferred_consol[i].is_workspace
+                            ? ws_mem : ctx->memory;
             if (!tgt) tgt = ctx->memory;
             char *dk = tools_memory_try_consolidate(ctx, ctx->deferred_consol[i].key,
                                                     ctx->deferred_consol[i].value, tgt);
@@ -708,21 +712,25 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
 
     /* Batch delete, grouped by target memory_t */
     if (n_del > 0 && del_entries) {
-        /* Delete from global memory */
-        const char *gl_keys[64];
+        /* FIX #9: dynamically size batch arrays instead of fixed 64 */
+        const char **gl_keys = malloc(sizeof(const char *) * (size_t)n_del);
+        const char **ws_keys = malloc(sizeof(const char *) * (size_t)n_del);
         int n_gl = 0;
-        const char *ws_keys[64];
         int n_ws = 0;
-        for (int i = 0; i < n_del && i < 64; i++) {
-            if (del_entries[i].target == ws_mem && ws_mem)
-                ws_keys[n_ws++] = del_entries[i].key;
-            else
-                gl_keys[n_gl++] = del_entries[i].key;
+        if (gl_keys && ws_keys) {
+            for (int i = 0; i < n_del; i++) {
+                if (del_entries[i].target == ws_mem && ws_mem)
+                    ws_keys[n_ws++] = del_entries[i].key;
+                else
+                    gl_keys[n_gl++] = del_entries[i].key;
+            }
+            if (n_gl > 0 && ctx->memory)
+                memory_delete_batch(ctx->memory, gl_keys, n_gl);
+            if (n_ws > 0 && ws_mem)
+                memory_delete_batch(ws_mem, ws_keys, n_ws);
         }
-        if (n_gl > 0 && ctx->memory)
-            memory_delete_batch(ctx->memory, gl_keys, n_gl);
-        if (n_ws > 0 && ws_mem)
-            memory_delete_batch(ws_mem, ws_keys, n_ws);
+        free(gl_keys);
+        free(ws_keys);
         for (int i = 0; i < n_del; i++) free(del_entries[i].key);
     }
     free(del_entries);

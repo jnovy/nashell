@@ -274,6 +274,11 @@ config_t *config_load(const char *path) {
         int ntab = toml_table_ntab(providers_tbl);
         if (ntab > 0) {
             cfg->named_providers = calloc(ntab, sizeof(named_provider_t));
+            if (!cfg->named_providers) {
+                toml_free(root);
+                config_set_defaults(cfg);
+                return cfg;
+            }
             int idx = 0;
             for (int i = 0; ; i++) {
                 const char *key = toml_key_in(providers_tbl, i);
@@ -290,9 +295,11 @@ config_t *config_load(const char *path) {
                     strncmp(np->config.api_base, "http://", 7) != 0 &&
                     strncmp(np->config.api_base, "https://", 8) != 0) {
                     char *fixed = malloc(7 + strlen(np->config.api_base) + 1);
-                    sprintf(fixed, "http://%s", np->config.api_base);
-                    free(np->config.api_base);
-                    np->config.api_base = fixed;
+                    if (fixed) {
+                        sprintf(fixed, "http://%s", np->config.api_base);
+                        free(np->config.api_base);
+                        np->config.api_base = fixed;
+                    }
                 }
                 np->config.api_key_env    = toml_str(ptab, "api_key_env");
                 np->config.project_id     = toml_str(ptab, "project_id");
@@ -1712,7 +1719,10 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
                     toml_datum_t api_key = toml_string_in(ptab, "api_key");
                     if (api_key.ok && api_key.u.s) {
                         if (!cfg->named_providers[j].config.api_key_env) {
-                            /* Store as a direct key - we'll set a synthetic env var */
+                            /* Store as a direct key - we'll set a synthetic env var.
+                             * SECURITY: env vars are inherited by child processes
+                             * (shell_exec, git).  Call config_scrub_credential_env()
+                             * after provider_create() to limit the exposure window. */
                             char env_name[128];
                             snprintf(env_name, sizeof(env_name),
                                      "NASH_CRED_%s_API_KEY", key);
@@ -1722,7 +1732,8 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
                             setenv(env_name, api_key.u.s, 0);  /* don't override existing */
                             cfg->named_providers[j].config.api_key_env = strdup(env_name);
                         } else {
-                            /* api_key_env is set - populate env var if not already set */
+                            /* api_key_env is set - populate env var if not already set.
+                             * SECURITY: same exposure risk as above. */
                             setenv(cfg->named_providers[j].config.api_key_env,
                                    api_key.u.s, 0);  /* don't override existing */
                         }
@@ -1736,6 +1747,23 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
 
     toml_free(root);
     return 0;
+}
+
+void config_scrub_credential_env(const config_t *cfg) {
+    /* SECURITY: Remove credential env vars set by config_load_credentials().
+     * Call this after all provider_create() calls that need these vars.
+     * Providers copy the key at init time, so the env var is not needed
+     * after creation.  This prevents leaking API keys to child processes
+     * (shell_exec, git) and via /proc/PID/environ.
+     *
+     * In daemon mode, call this after all initial providers are created.
+     * Agent providers created later will need their own env setup. */
+    for (int i = 0; i < cfg->n_named_providers; i++) {
+        const char *env_name = cfg->named_providers[i].config.api_key_env;
+        if (env_name && strncmp(env_name, "NASH_CRED_", 10) == 0) {
+            unsetenv(env_name);
+        }
+    }
 }
 
 int config_write_default(const char *path) {

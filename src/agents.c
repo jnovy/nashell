@@ -288,7 +288,9 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 /* Build agent entry */
                 if (*n_agents >= *cap_agents) {
                     *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
-                    *agents = realloc(*agents, *cap_agents * sizeof(agent_entry_t));
+                    agent_entry_t *tmp = realloc(*agents, *cap_agents * sizeof(agent_entry_t));
+                    if (!tmp) { yaml_free(root); closedir(dp); return; }
+                    *agents = tmp;
                 }
 
                 agent_entry_t *a = &(*agents)[*n_agents];
@@ -454,7 +456,9 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
         /* Build agent entry */
         if (*n_agents >= *cap_agents) {
             *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
-            *agents = realloc(*agents, (size_t)*cap_agents * sizeof(agent_entry_t));
+            agent_entry_t *tmp = realloc(*agents, (size_t)*cap_agents * sizeof(agent_entry_t));
+            if (!tmp) { yaml_free(root); closedir(dp); return; }
+            *agents = tmp;
         }
 
         agent_entry_t *a = &(*agents)[*n_agents];
@@ -915,8 +919,17 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
      *   3 base vars + 1 {{arguments}} (always) + n {{argN}} tokens */
     int n_extra = 3 + 1 + n_arg_tokens;
     int new_nvars = pb->n_vars + n_extra;
-    pb->var_keys   = realloc(pb->var_keys,   (size_t)new_nvars * sizeof(char *));
-    pb->var_values = realloc(pb->var_values,  (size_t)new_nvars * sizeof(char *));
+    char **tmp_keys = realloc(pb->var_keys, (size_t)new_nvars * sizeof(char *));
+    char **tmp_vals = realloc(pb->var_values, (size_t)new_nvars * sizeof(char *));
+    if (!tmp_keys || !tmp_vals) {
+        /* Preserve originals on partial failure */
+        if (tmp_keys) pb->var_keys = tmp_keys;
+        if (tmp_vals) pb->var_values = tmp_vals;
+        for (int ti2 = 0; ti2 < n_arg_tokens; ti2++) free(arg_tokens[ti2]);
+        return pb; /* return with existing vars; caller still gets a usable playbook */
+    }
+    pb->var_keys   = tmp_keys;
+    pb->var_values = tmp_vals;
     int vi = pb->n_vars;
     pb->var_keys[vi]       = strdup("workspace_name");
     pb->var_values[vi]     = strdup(a->workspace_name);
@@ -1049,15 +1062,16 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             fprintf(stderr, "[agent] ✗ failed to load agent '%s'\n", a->id);
             n_fail++;
             workspace_free(agent_ws);
+            if (owns_provider) {
+                provider_free(active_provider);
+                active_provider = NULL;
+            }
             continue;
         }
 
         /* Run with timeout */
         struct timespec start_ts;
         clock_gettime(CLOCK_REALTIME, &start_ts);
-
-        if (a->timeout > 0)
-            alarm((unsigned)a->timeout);
 
         playbook_args_t pargs = {
             .playbook = pb,
@@ -1074,6 +1088,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             .agent_ws = agent_ws,
             .agent_id = strdup(a->id),
             .agent_start_time = time(NULL),
+            .deadline = (a->timeout > 0) ? time(NULL) + a->timeout : 0,
         };
 
         playbook_worker(&pargs);
@@ -1086,9 +1101,6 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             provider_free(active_provider);
             active_provider = NULL;
         }
-
-        if (a->timeout > 0)
-            alarm(0); /* cancel alarm */
 
         /* Record result */
         struct timespec end_ts;

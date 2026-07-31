@@ -123,6 +123,8 @@ typedef struct {
     char            *result_text;
     /* Session dir of the last pass (caller must free; NULL on failure) */
     char            *last_session_dir;
+    /* Agent timeout deadline (0 = no deadline) */
+    time_t           deadline;
 } playbook_args_t;
 
 /* ── API ─────────────────────────────────────────────── */

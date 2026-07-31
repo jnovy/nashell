@@ -93,7 +93,9 @@ typedef struct {
     struct {
         char *key;
         char *value;
-        memory_t *target;  /* which memory_t to consolidate against */
+        int   is_workspace; /* FIX #4: flag instead of raw memory_t* to avoid
+                             * dangling pointer after session reset. Resolved
+                             * to the live memory_t at flush time. */
     }             *deferred_consol;
     int            n_deferred_consol;
     int            cap_deferred_consol;

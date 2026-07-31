@@ -262,6 +262,21 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
 }
 
+/* ── path traversal guard ────────────────────────────── */
+
+/* Returns 1 if path contains a ".." component (path traversal). */
+static int path_has_traversal(const char *path) {
+    const char *p = path;
+    while ((p = strstr(p, "..")) != NULL) {
+        /* Check that ".." is a full component: preceded by / or start, followed by / or end */
+        int at_start = (p == path || p[-1] == '/');
+        int at_end   = (p[2] == '\0' || p[2] == '/');
+        if (at_start && at_end) return 1;
+        p += 2;
+    }
+    return 0;
+}
+
 /* ── file_write ──────────────────────────────────────── */
 
 tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
@@ -274,6 +289,10 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
 
     const char *path = path_j->valuestring;
     const char *content = content_j->valuestring;
+
+    /* Reject path traversal attempts */
+    if (path_has_traversal(path))
+        return tools_make_error("file_write: path must not contain '..' components.");
 
     /* FIX 5b: Create parent directories if they don't exist.
      * Previously file_write to a non-existent directory path failed
@@ -344,6 +363,10 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     const char *path = path_j->valuestring;
     const char *old_text = old_text_j->valuestring;
     const char *new_text = new_text_j->valuestring;
+
+    /* Reject path traversal attempts */
+    if (path_has_traversal(path))
+        return tools_make_error("file_edit: path must not contain '..' components.");
 
     size_t flen = 0;
     char *content = slurp_file(path, &flen);
@@ -495,6 +518,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         /* Build diff output — summary is prepended after computing actual diff. */
         size_t diff_cap = 4096;
         char *diff = malloc(diff_cap);
+        if (!diff) { free(content); free(result); return tools_make_error("out of memory"); }
         int diff_len = 0;
         int actual_added = 0, actual_removed = 0;  /* filled by diff algorithm */
 

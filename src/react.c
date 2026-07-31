@@ -680,6 +680,40 @@ static int react_tool_index(const char *name) {
     return -1;
 }
 
+/* ── cue-anchored trigger callback (extracted from react_run for portability) ── */
+
+typedef struct {
+    const char *surface;
+    tool_ctx_t *tools;
+    llm_chat_t *chat;
+    int injected;
+} trig_ctx_t;
+
+static int trig_cb(const mem_index_entry_t *entry, void *ud) {
+    trig_ctx_t *tc = (trig_ctx_t *)ud;
+    if (tc->injected >= 2) return 1;  /* cap */
+    if (entry->n_triggers <= 0) return 0;
+    if (tool_fire_ledger_contains(tc->tools, entry->key)) return 0;
+    for (int t = 0; t < entry->n_triggers; t++) {
+        if (!entry->triggers[t] || !entry->triggers[t][0]) continue;
+        if (strcasestr(tc->surface, entry->triggers[t])) {
+            char hint[4096];
+            snprintf(hint, sizeof(hint),
+                "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
+                "--- %s ---\n%s",
+                entry->triggers[t], entry->key,
+                entry->value ? entry->value : "");
+            llm_chat_add_typed(tc->chat, "user", hint,
+                               LLM_MSG_MEMORY_HINT);
+            tool_fire_ledger_add(tc->tools, entry->key);
+            tool_track_recalled_key(tc->tools, entry->key);
+            tc->injected++;
+            return 0;  /* continue scanning */
+        }
+    }
+    return 0;
+}
+
 /* ── main react loop ─────────────────────────────────── */
 
 char *react_run(react_ctx_t *ctx, const char *user_query,
@@ -780,6 +814,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int total_400_errors = 0;            /* Track HTTP 400 errors (never reset) */
     int tools_executed = 0;              /* Hallucination guard: real tools executed */
     int total_errors = 0;                /* Error budget: total tool errors across session */
+    int error_budget_exhausted = 0;      /* Set when budget exceeded; break after 1 grace step */
 
     for (int step = resume_step; ctx->max_steps < 0 || step < ctx->max_steps; step++) {
         /* Check for pause request at the TOP of the loop — this catches
@@ -798,6 +833,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                   chat->last_tool_call_id);
             react_wait_for_redirect(ctx, chat, step, on_event, userdata);
         }
+
+        /* Check agent deadline */
+        if (ctx->deadline > 0 && time(NULL) >= ctx->deadline)
+            break;
+
+        /* Error budget exhausted on previous step — model had one grace step
+         * to call done().  If it didn't, force termination now. */
+        if (error_budget_exhausted)
+            break;
 
         ctx->tools->step = step + 1;
         nash_log_set_context(ctx->tools->react_loop, step + 1);
@@ -1133,16 +1177,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             cJSON_AddStringToObject(ua_params, "answer", answer);
             size_t ua_md_len = strlen(question) + strlen(answer) + 64;
             char *ua_md = malloc(ua_md_len);
-            snprintf(ua_md, ua_md_len,
-                     "## Question\n\n%s\n\n## Answer\n\n%s\n",
-                     question, answer);
-            char *ua_hash = store_save(ctx->tools->store, ua_md);
-            free(ua_md);
-            char *ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
-            journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                           step + 1, "user_ask", ua_params, ua_alias,
-                           strlen(answer), 0, NULL, NULL, 0);
-            free(ua_hash);
+            char *ua_alias = NULL;
+            if (ua_md) {
+                snprintf(ua_md, ua_md_len,
+                         "## Question\n\n%s\n\n## Answer\n\n%s\n",
+                         question, answer);
+                char *ua_hash = store_save(ctx->tools->store, ua_md);
+                free(ua_md);
+                ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
+                journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                               step + 1, "user_ask", ua_params, ua_alias,
+                               strlen(answer), 0, NULL, NULL, 0);
+                free(ua_hash);
+            }
 
             /* Build result message for the model (JSON-escape the answer) */
             cJSON *ans_obj = cJSON_CreateObject();
@@ -1151,8 +1198,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             cJSON_Delete(ans_obj);
             size_t ans_len = (ans_json ? strlen(ans_json) : 2) + 32;
             char *result_msg = malloc(ans_len);
-            snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
-                     ans_json ? ans_json : "{}", step + 1);
+            if (result_msg)
+                snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
+                         ans_json ? ans_json : "{}", step + 1);
+            else
+                result_msg = strdup("{}");  /* OOM fallback */
             free(ans_json);
 
             /* Add to chat as tool result */
@@ -1322,10 +1372,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         const char *cmd_s = cmd ? cmd : "";
         const char *path_s = path ? path : "";
         const char *pattern_s = pattern ? pattern : "";
-        /* 90 bytes for 10 hashed fields + 9 colons + 40 for ints + 1 null */
+        /* 99 bytes for 11 hashed fields (10 known + 1 catch-all) + colons + 40 for ints + 1 null */
         size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s)
-                       + strlen(pattern_s) + 90 + 48 + 1;
+                       + strlen(pattern_s) + 99 + 48 + 1;
         char *sig = malloc(sig_cap);
+        if (!sig) sig_cap = 0;  /* snprintf with 0 cap is safe (no-op) */
         #define SIG_HASH_FIELD(s) do { \
             unsigned _h = 2166136261u; \
             if (s) { for (const char *_p = (s); *_p; _p++) \
@@ -1349,9 +1400,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         SIG_HASH_FIELD(value);
         SIG_HASH_FIELD(op);
         SIG_HASH_FIELD(section);
+        /* Catch-all: hash any unknown params (e.g. plugin custom params)
+         * into a single combined FNV-1a hash so that different calls
+         * with different custom params aren't falsely detected as cycling. */
+        { unsigned _uh = 2166136261u;
+          static const char *known[] = { "command","path","pattern","content",
+              "old_text","new_text","query","question","url","key","value",
+              "op","section","start_line","end_line","priority","regex", NULL };
+          cJSON *_it;
+          cJSON_ArrayForEach(_it, action) {
+              int _known = 0;
+              for (const char **_k = known; *_k; _k++)
+                  if (strcmp(_it->string, *_k) == 0) { _known = 1; break; }
+              if (!_known) {
+                  /* Hash key name */
+                  for (const char *_p = _it->string; *_p; _p++)
+                      _uh = (_uh ^ (unsigned char)*_p) * 16777619u;
+                  /* Hash value (string or printed number) */
+                  const char *_vs = cJSON_IsString(_it) ? _it->valuestring : NULL;
+                  char _nb[32]; 
+                  if (!_vs && cJSON_IsNumber(_it)) {
+                      snprintf(_nb, sizeof(_nb), "%g", _it->valuedouble);
+                      _vs = _nb;
+                  }
+                  if (_vs) for (const char *_p = _vs; *_p; _p++)
+                      _uh = (_uh ^ (unsigned char)*_p) * 16777619u;
+              }
+          }
+          sig_pos += snprintf(sig + sig_pos, sig_cap - (size_t)sig_pos,
+                     "%08x:", _uh);
+        }
         #undef SIG_HASH_FIELD
 
-        int is_repeat = (last_sig && strcmp(last_sig, sig) == 0);
+        int is_repeat = (last_sig && sig && strcmp(last_sig, sig) == 0);
 
         /* Exempt device_control from cycling detection entirely.
          * The signature doesn't capture GUI-specific params (x, y,
@@ -1655,9 +1736,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         free(sig);  /* no-op if ownership was transferred above */
         size_t result_len = strlen(meta_str) + 128;
         char *result_msg = malloc(result_len);
-        { char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
-        snprintf(result_msg, result_len, "%s\n[step %d | %s]",
-                 meta_str, step + 1, _dur); }
+        if (result_msg) {
+            char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
+            snprintf(result_msg, result_len, "%s\n[step %d | %s]",
+                     meta_str, step + 1, _dur);
+        } else {
+            result_msg = strdup(meta_str);  /* OOM fallback: use raw result */
+        }
 
         /* Harness-1 §3.2: Assign importance to tool result messages */
         int tool_imp = react_tool_importance(action_name, tr.success);
@@ -1686,7 +1771,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 free(result_msg);
                 result_len = 128;
                 result_msg = malloc(result_len);
-                if (dedup_step >= 0)
+                if (!result_msg) {
+                    result_msg = strdup("{\"note\":\"dedup\"}");
+                } else if (dedup_step >= 0)
                     snprintf(result_msg, result_len,
                         "{\"note\":\"Same content as step %d — see earlier result\"}\n[step %d | dedup]",
                         dedup_step, step + 1);
@@ -1800,52 +1887,25 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 + (params_str ? strlen(params_str) : 0) + 1
                 + strlen(meta_str) + 1;
             char *match_surface = malloc(surface_len);
-            snprintf(match_surface, surface_len, "%s %s %s",
-                     action_name, params_str ? params_str : "", meta_str);
-            free(params_str);
+            if (match_surface) {
+                snprintf(match_surface, surface_len, "%s %s %s",
+                         action_name, params_str ? params_str : "", meta_str);
+                free(params_str);
 
-            /* Iterate memories and check triggers */
-            typedef struct {
-                const char *surface;
-                tool_ctx_t *tools;
-                llm_chat_t *chat;
-                int injected;
-            } trig_ctx_t;
-            trig_ctx_t tctx = { match_surface, ctx->tools, chat, 0 };
+                /* Iterate memories and check triggers */
+                trig_ctx_t tctx = { match_surface, ctx->tools, chat, 0 };
 
-            int trig_cb(const mem_index_entry_t *entry, void *ud) {
-                trig_ctx_t *tc = (trig_ctx_t *)ud;
-                if (tc->injected >= 2) return 1;  /* cap */
-                if (entry->n_triggers <= 0) return 0;
-                if (tool_fire_ledger_contains(tc->tools, entry->key)) return 0;
-                for (int t = 0; t < entry->n_triggers; t++) {
-                    if (!entry->triggers[t] || !entry->triggers[t][0]) continue;
-                    if (strcasestr(tc->surface, entry->triggers[t])) {
-                        char hint[4096];
-                        snprintf(hint, sizeof(hint),
-                            "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
-                            "--- %s ---\n%s",
-                            entry->triggers[t], entry->key,
-                            entry->value ? entry->value : "");
-                        llm_chat_add_typed(tc->chat, "user", hint,
-                                           LLM_MSG_MEMORY_HINT);
-                        tool_fire_ledger_add(tc->tools, entry->key);
-                        tool_track_recalled_key(tc->tools, entry->key);
-                        tc->injected++;
-                        return 0;  /* continue scanning */
-                    }
+                if (ctx->tools->ws) {
+                    memory_iterate(ctx->tools->ws->global, trig_cb, &tctx);
+                    if (tctx.injected < 2 && ctx->tools->ws->workspace)
+                        memory_iterate(ctx->tools->ws->workspace, trig_cb, &tctx);
+                } else {
+                    memory_iterate(ctx->tools->memory, trig_cb, &tctx);
                 }
-                return 0;
-            }
-
-            if (ctx->tools->ws) {
-                memory_iterate(ctx->tools->ws->global, trig_cb, &tctx);
-                if (tctx.injected < 2 && ctx->tools->ws->workspace)
-                    memory_iterate(ctx->tools->ws->workspace, trig_cb, &tctx);
+                free(match_surface);
             } else {
-                memory_iterate(ctx->tools->memory, trig_cb, &tctx);
+                free(params_str);
             }
-            free(match_surface);
         }
 
         /* Cycling escalation: after 3+ consecutive refusals, inject a forceful
@@ -2101,8 +2161,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.message = "Error budget exceeded — forcing wrap-up";
                 react_emit(on_event, userdata, &ev);
 
-                /* Reset to avoid spamming the message every step */
-                total_errors = 0;
+                /* Give model one grace step to call done(), then terminate.
+                 * Previous approach reset to 0, allowing unlimited retries. */
+                error_budget_exhausted = 1;
             }
         }
 

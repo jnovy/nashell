@@ -255,7 +255,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                 double recent_cutoff = now - recent_days * 86400.0;
                 double older_cutoff = now - older_days * 86400.0;
 
-                typedef struct { const char *key; const char *desc; double ts; } tcal_entry_t;
+                typedef struct { char *key; char *desc; double ts; } tcal_entry_t;
                 int tcal_cap = max_entries * 2 < 64 ? 64 : max_entries * 2;
                 tcal_entry_t *recent = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
                 tcal_entry_t *older = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
@@ -271,9 +271,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                         const mem_index_entry_t *e = &mem->idx.entries[mi];
                         if (!e->key || !e->description) continue;
                         if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
-                            recent[n_recent++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                            recent[n_recent++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
                         } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
-                            older[n_older++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                            older[n_older++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
                         }
                     }
                     pthread_mutex_unlock(&mem->mtx);
@@ -287,9 +287,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                         const mem_index_entry_t *e = &ws_mem->idx.entries[mi];
                         if (!e->key || !e->description) continue;
                         if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
-                            recent[n_recent++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                            recent[n_recent++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
                         } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
-                            older[n_older++] = (tcal_entry_t){ e->key, e->description, e->created_at };
+                            older[n_older++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
                         }
                     }
                     pthread_mutex_unlock(&ws_mem->mtx);
@@ -344,6 +344,14 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                     }
                     llm_chat_add_typed(chat, "user", str_cstr(&cal), LLM_MSG_TEMPORAL);
                     str_free(&cal);
+                }
+                for (int i = 0; i < n_recent; i++) {
+                    free(recent[i].key);
+                    free(recent[i].desc);
+                }
+                for (int i = 0; i < n_older; i++) {
+                    free(older[i].key);
+                    free(older[i].desc);
                 }
                 free(recent);
                 free(older);

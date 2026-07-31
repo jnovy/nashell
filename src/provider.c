@@ -242,6 +242,10 @@ provider_t *provider_create(const provider_config_t *cfg) {
         case PROVIDER_VERTEX:
             provider_anthropic_init(p);
             break;
+        default:
+            fprintf(stderr, "[provider] unknown provider type %d\n", (int)cfg->type);
+            provider_free(p);
+            return NULL;
     }
 
     return p;
