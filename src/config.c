@@ -1066,6 +1066,14 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
      * Only override if the profile explicitly sets a filter — preserve
      * user config.toml settings (e.g., tools.memory_search = false). */
     if (p->n_tools_allow > 0) {
+        /* Free previous allocation if re-applying profile (Bug #C9 fix). */
+        if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
+            for (int i = 0; i < cfg->n_profile_tools_allow; i++)
+                free(cfg->profile_tools_allow[i]);
+            free(cfg->profile_tools_allow);
+            cfg->profile_tools_allow = NULL;
+            cfg->n_profile_tools_allow = 0;
+        }
         /* Deep-copy so cfg owns the memory (consistent with block/desc). */
         cfg->profile_tools_allow = calloc(p->n_tools_allow, sizeof(char *));
         if (cfg->profile_tools_allow) {
@@ -1076,6 +1084,14 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         }
     }
     if (p->n_tools_block > 0) {
+        /* Free previous allocation if re-applying profile (Bug #C9 fix). */
+        if (cfg->profile_tools_block) {
+            for (int i = 0; i < cfg->n_profile_tools_block; i++)
+                free(cfg->profile_tools_block[i]);
+            free(cfg->profile_tools_block);
+            cfg->profile_tools_block = NULL;
+            cfg->n_profile_tools_block = 0;
+        }
         /* Deep-copy so cfg owns the memory (safe to free in config_free
          * and config_load_spec_overlay). Bug #41/#22 fix. */
         cfg->profile_tools_block = calloc(p->n_tools_block, sizeof(char *));
@@ -1103,6 +1119,14 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
 
         /* Use the preset if max_tools >= 8, otherwise take the first max_tools */
         int n = p->max_tools < N_SMALL_MODEL_TOOLS ? p->max_tools : N_SMALL_MODEL_TOOLS;
+        /* Free previous allocation if re-applying profile (Bug #C9 fix). */
+        if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
+            for (int i = 0; i < cfg->n_profile_tools_allow; i++)
+                free(cfg->profile_tools_allow[i]);
+            free(cfg->profile_tools_allow);
+            cfg->profile_tools_allow = NULL;
+            cfg->n_profile_tools_allow = 0;
+        }
         /* Allocate and copy — these are stack strings, so we need strdup.
          * Allocated on cfg lifetime (freed in config_free). */
         cfg->profile_tools_allow = calloc(n, sizeof(char *));
@@ -1117,6 +1141,18 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     /* [tools.<name>] description overrides — deep-copy so cfg owns the
      * memory (safe to free in config_free / config_load_spec_overlay). */
     if (p->n_tool_descs > 0) {
+        /* Free previous allocation if re-applying profile (Bug #C9 fix). */
+        if (cfg->profile_tool_desc_names) {
+            for (int i = 0; i < cfg->n_profile_tool_descs; i++) {
+                free(cfg->profile_tool_desc_names[i]);
+                free(cfg->profile_tool_desc_values[i]);
+            }
+            free(cfg->profile_tool_desc_names);
+            free(cfg->profile_tool_desc_values);
+            cfg->profile_tool_desc_names = NULL;
+            cfg->profile_tool_desc_values = NULL;
+            cfg->n_profile_tool_descs = 0;
+        }
         cfg->profile_tool_desc_names = calloc(p->n_tool_descs, sizeof(char *));
         cfg->profile_tool_desc_values = calloc(p->n_tool_descs, sizeof(char *));
         if (cfg->profile_tool_desc_names && cfg->profile_tool_desc_values) {
@@ -1954,7 +1990,7 @@ int config_write_default(const char *path) {
         "[memory_belief_entropy]\n"
         "enabled = false              # enable Belief Entropy monitoring\n"
         "alpha = 1.0                  # weight vs outcome reward (Eq. 6)\n"
-        "anchor_question = \\\"Based on current memory, what is our task progress and what information is still needed?\\\"\n"
+        "anchor_question = \"Based on current memory, what is our task progress and what information is still needed?\"\n"
         "probe_tokens = 30            # tokens to generate in entropy probe\n"
         "probe_n_probs = 10           # top-N logprobs to request\n"
         "probe_temperature = 0.6      # probe sampling temperature\n"

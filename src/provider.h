@@ -3,6 +3,7 @@
 
 #include "llm.h"
 #include "cJSON.h"
+#include <stdatomic.h>
 
 /* ── Provider types ─────────────────────────────────────────────── */
 
@@ -104,7 +105,7 @@ struct provider {
     const struct tool_filter_t *tool_filter;  /* NULL = all tools */
 
     /* ── Abort flag for interruptible retry sleeps ── */
-    volatile int abort_retry;   /* set to 1 to cancel retry sleep early */
+    _Atomic int abort_retry;    /* set to 1 to cancel retry sleep early */
 
     /* ── Error diagnostics (populated on error, read by react.c) ── */
     char *last_error;           /* error message (curl error, HTTP error, etc.) */

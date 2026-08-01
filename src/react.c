@@ -474,6 +474,7 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
         /* Truncate query to 200 chars for compactness (UTF-8 safe) */
         char qtrunc[201];
         strncpy(qtrunc, query, 200);
+        qtrunc[200] = '\0';
         qtrunc[utf8_clamp(qtrunc, 200)] = '\0';
         /* Strip newlines for single-line log */
         for (int i = 0; qtrunc[i]; i++) {

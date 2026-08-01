@@ -237,9 +237,11 @@ sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report)
 
             if (ci < 0) {
                 if (bundle->n_clusters >= clusters_cap) {
-                    clusters_cap *= 2;
-                    bundle->clusters = realloc(bundle->clusters,
-                                               clusters_cap * sizeof(sh_cluster_t));
+                    int new_cap = clusters_cap * 2;
+                    if (safe_realloc((void **)&bundle->clusters,
+                                     (size_t)new_cap * sizeof(sh_cluster_t)))
+                        continue;
+                    clusters_cap = new_cap;
                 }
                 ci = bundle->n_clusters++;
                 sh_cluster_t *fc = &bundle->clusters[ci];
@@ -253,10 +255,11 @@ sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report)
             sh_cluster_t *fc = &bundle->clusters[ci];
             int idx = fc->n_entries;
             if (idx >= 16 && (idx & (idx - 1)) == 0) {
-                int nc = idx * 2;
-                fc->query_ids = realloc(fc->query_ids, nc * sizeof(char *));
-                fc->trace_excerpts = realloc(fc->trace_excerpts, nc * sizeof(char *));
-                fc->crit_details = realloc(fc->crit_details, nc * sizeof(char *));
+                size_t nc = (size_t)idx * 2;
+                if (safe_realloc((void **)&fc->query_ids, nc * sizeof(char *)) ||
+                    safe_realloc((void **)&fc->trace_excerpts, nc * sizeof(char *)) ||
+                    safe_realloc((void **)&fc->crit_details, nc * sizeof(char *)))
+                    continue;
             }
             fc->query_ids[idx] = strdup(qr->query_id);
             fc->trace_excerpts[idx] = truncate_trace(qr->trace_summary, 600);
@@ -1303,9 +1306,11 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     fprintf(stderr, ")\n");
                     log_query_flips(flips, n_flips, n_fixes, n_regr);
                     if (n_rejected >= rejected_cap) {
-                        rejected_cap *= 2;
-                        rejected = realloc(rejected,
-                            rejected_cap * sizeof(rejected_proposal_t));
+                        int new_cap = rejected_cap * 2;
+                        if (safe_realloc((void **)&rejected,
+                                         (size_t)new_cap * sizeof(rejected_proposal_t)))
+                            goto skip_reject;
+                        rejected_cap = new_cap;
                     }
                     rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
                     /* SkillOpt: generate brief rejection audit with per-query detail */
@@ -1337,6 +1342,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     rejected[n_rejected].delta_in = d_in;
                     rejected[n_rejected].delta_out = d_ho;
                     n_rejected++;
+skip_reject: ;
                 }
                 free(flips);
                 free(prompt_only);
@@ -1804,9 +1810,13 @@ char *optimize_parse_proposal(const char *raw_text,
 
             if (desc_end > p) {
                 if (n >= cap) {
-                    cap *= 2;
-                    names = realloc(names, cap * sizeof(char *));
-                    descs = realloc(descs, cap * sizeof(char *));
+                    int new_cap = cap * 2;
+                    if (safe_realloc((void **)&names, (size_t)new_cap * sizeof(char *)) ||
+                        safe_realloc((void **)&descs, (size_t)new_cap * sizeof(char *))) {
+                        free(name);
+                        break;
+                    }
+                    cap = new_cap;
                 }
                 names[n] = name;
                 descs[n] = strndup(p, desc_end - p);
@@ -1928,8 +1938,10 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
             while (end > start && end[-1] == ' ') end--;
             if (end > start) {
                 if (m.n_expect_fix >= cap) {
-                    cap *= 2;
-                    m.expect_fix = realloc(m.expect_fix, cap * sizeof(char *));
+                    int new_cap = cap * 2;
+                    if (safe_realloc((void **)&m.expect_fix, (size_t)new_cap * sizeof(char *)))
+                        break;
+                    cap = new_cap;
                 }
                 m.expect_fix[m.n_expect_fix++] = strndup(start, end - start);
             }
@@ -1955,8 +1967,10 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
             while (end > start && end[-1] == ' ') end--;
             if (end > start) {
                 if (m.n_at_risk >= cap) {
-                    cap *= 2;
-                    m.at_risk = realloc(m.at_risk, cap * sizeof(char *));
+                    int new_cap = cap * 2;
+                    if (safe_realloc((void **)&m.at_risk, (size_t)new_cap * sizeof(char *)))
+                        break;
+                    cap = new_cap;
                 }
                 m.at_risk[m.n_at_risk++] = strndup(start, end - start);
             }

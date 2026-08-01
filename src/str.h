@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <curl/curl.h>
@@ -184,5 +185,16 @@ void for_each_dir_entry(const char *dirpath, const char *suffix,
  * Returns a newly allocated string, or NULL if the name is empty
  * after sanitization.  Caller must free(). */
 char *sanitize_workspace_name(const char *display_name);
+
+/* ── Safe realloc wrapper ────────────────────────────────────────────
+ * Attempts realloc.  On success, updates *ptr and returns 0.
+ * On failure, *ptr is left unchanged (no leak) and returns -1.
+ * Usage:  if (safe_realloc((void **)&buf, new_size)) { handle error } */
+static inline int safe_realloc(void **ptr, size_t new_size) {
+    void *tmp = realloc(*ptr, new_size);
+    if (!tmp) return -1;
+    *ptr = tmp;
+    return 0;
+}
 
 #endif

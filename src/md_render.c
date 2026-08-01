@@ -1916,8 +1916,9 @@ static void heading_to_slug(const char *heading, char *buf, int buf_size) {
     buf[j] = '\0';
 }
 
-int md_find_anchor(md_doc_t *doc, const char *fragment) {
+int md_find_anchor(md_doc_t *doc, const char *fragment, int cols) {
     if (!doc || !doc->source || !fragment || !*fragment) return -1;
+    if (cols <= 0) cols = 80;
 
     const char *src = doc->source;
     int render_line = 0;
@@ -1958,7 +1959,13 @@ int md_find_anchor(md_doc_t *doc, const char *fragment) {
             }
         }
 
-        render_line++;
+        /* Account for word-wrapping: code block lines don't wrap,
+         * but all other lines may occupy multiple render lines. */
+        if (in_code_fence) {
+            render_line++;
+        } else {
+            render_line += count_wrapped_lines(src, line_len, cols);
+        }
         src = eol ? eol + 1 : src + line_len;
     }
 

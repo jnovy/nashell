@@ -161,7 +161,7 @@ void ui_state_enter(ui_state_t *ui) {
     /* Handle #anchor links (same-document section navigation) */
     if (uri[0] == '#') {
         const char *fragment = uri + 1;
-        int target_line = md_find_anchor(ui->doc, fragment);
+        int target_line = md_find_anchor(ui->doc, fragment, ui->visible_cols);
         if (target_line >= 0) {
             ui->scroll_y = target_line;
         }

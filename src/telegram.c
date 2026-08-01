@@ -109,21 +109,18 @@ static long long tg_session_thread_get(telegram_ctx_t *ctx, long long thread_id)
     return 0;
 }
 
-/* Clear the session thread for a specific topic */
+/* Clear session threads for a specific topic (or all if thread_id == -1) */
 static void tg_session_thread_clear(telegram_ctx_t *ctx, long long thread_id) {
-    for (int i = 0; i < ctx->session_thread_count; i++) {
-        if (ctx->session_threads[i].thread_id == thread_id) {
-            for (int j = i; j < ctx->session_thread_count - 1; j++)
-                ctx->session_threads[j] = ctx->session_threads[j + 1];
-            ctx->session_thread_count--;
-            return;
-        }
+    if (thread_id < 0) {
+        ctx->session_thread_count = 0;
+        return;
     }
-}
-
-/* Clear all session threads */
-static void tg_session_thread_clear_all(telegram_ctx_t *ctx) {
-    ctx->session_thread_count = 0;
+    int dst = 0;
+    for (int i = 0; i < ctx->session_thread_count; i++) {
+        if (ctx->session_threads[i].thread_id != thread_id)
+            ctx->session_threads[dst++] = ctx->session_threads[i];
+    }
+    ctx->session_thread_count = dst;
 }
 
 /* Look up workspace name for a given thread_id from topic_map config */
@@ -1273,7 +1270,7 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
             str_t msg = str_new(strlen(actual_content) + 64);
             str_append_cstr(&msg, "\xe2\x9d\x93 ");
             str_append_cstr(&msg, actual_content);
-            str_append_cstr(&msg, "\n\\n<i>(Reply to this message to answer)</i>");
+            str_append_cstr(&msg, "\n\n<i>(Reply to this message to answer)</i>");
             if (reply_to > 0) {
                 tg_api_send_message_reply(ctx, msg.data, "HTML", thread_id, reply_to);
             } else {
@@ -1424,7 +1421,7 @@ void *telegram_run(void *arg) {
                 if (!cid || (long long)cid->valuedouble != ctx->chat_id) {
                     fprintf(stderr, "[telegram] ignoring message from "
                             "unauthorized chat %lld\n",
-                            (long long)cid->valuedouble);
+                            (long long)(cid ? cid->valuedouble : 0));
                     continue;
                 }
 
@@ -1546,7 +1543,8 @@ void *telegram_run(void *arg) {
                 int is_reply = tg_is_reply_to_bot(msg);
 
                 if (ctx->pending_ask_id[0] &&
-                    msg_thread_id == ctx->pending_ask_thread_id) {
+                    msg_thread_id == ctx->pending_ask_thread_id &&
+                    is_reply) {
                     /* This is an answer to a user_ask question from the correct topic */
                     const char *answer = msg_text ? msg_text : "(photo)";
                     fprintf(stderr, "[telegram] routing as answer to ask_%s\n",
@@ -1608,7 +1606,7 @@ void *telegram_run(void *arg) {
                     if (!is_reply) {
                         /* New standalone message -> reset session first */
                         tg_write_cmd_new(ctx->mailbox_dir);
-                        tg_session_thread_clear_all(ctx);
+                        tg_session_thread_clear(ctx, msg_thread_id);
                         fprintf(stderr, "[telegram] new message -> session reset\n");
                         /* Small delay so daemon processes cmd_new before task */
                         usleep(100000);  /* 100ms */

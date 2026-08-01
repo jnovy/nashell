@@ -71,8 +71,8 @@ void md_osc8_flush(WINDOW *win, int win_row_offset);
 
 /* Find the rendered line number of a heading matching a #fragment anchor.
  * fragment: the anchor string WITHOUT the leading '#' (e.g., "1-current-state").
- * The document must have been rendered at least once (md_render called) so that
- * render_line counts are accurate.  Returns -1 if no matching heading found. */
-int md_find_anchor(md_doc_t *doc, const char *fragment);
+ * cols: terminal width used to account for word-wrapped lines.
+ * Returns -1 if no matching heading found. */
+int md_find_anchor(md_doc_t *doc, const char *fragment, int cols);
 
 #endif

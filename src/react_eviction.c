@@ -878,14 +878,21 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
              * content only, not the fixed header prefix. */
             if ((long)(breadcrumb.len - header_len) >= breadcrumb_index_cap) continue;
 
-            /* Simple linear dedup */
+            /* Simple linear dedup.
+             * FIX BUG-E4: When the seen array is full, we can still
+             * detect duplicates of the first 256 aliases but can't
+             * track new ones.  Wrap the scan in the capacity check
+             * so we skip dedup entirely once full (accepting rare
+             * duplicates among 257+ aliases rather than guaranteed
+             * duplicates from untracked entries). */
             const char *alias = chat->msgs[mi].store_alias;
             int dup = 0;
-            for (int s = 0; s < n_seen; s++) {
-                if (strcmp(seen_aliases[s], alias) == 0) { dup = 1; break; }
-            }
-            if (!dup && n_seen < REACT_BREADCRUMB_MAX_ALIASES)
-                seen_aliases[n_seen++] = alias;
+            if (n_seen < REACT_BREADCRUMB_MAX_ALIASES) {
+                for (int s = 0; s < n_seen; s++) {
+                    if (strcmp(seen_aliases[s], alias) == 0) { dup = 1; break; }
+                }
+                if (!dup) seen_aliases[n_seen++] = alias;
+            } /* else: array full, skip dedup — accept potential duplicates */
             if (dup) continue;
 
             char brief[REACT_BREADCRUMB_STRUCT_LEN + 1];
@@ -1548,7 +1555,15 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                 int last_len = (int)(c + clen - last_start);
                 if (last_len > 400) {
                     last_start = c + clen - 400;
-                    last_len = (int)utf8_clamp(last_start, 400);
+                    /* FIX BUG-E5: Advance past any UTF-8 continuation
+                     * bytes (0x80-0xBF) so we start at a valid sequence
+                     * boundary.  utf8_clamp only fixes the END. */
+                    while ((unsigned char)*last_start >= 0x80 &&
+                           (unsigned char)*last_start < 0xC0 &&
+                           last_start < c + clen)
+                        last_start++;
+                    last_len = (int)(c + clen - last_start);
+                    last_len = (int)utf8_clamp(last_start, (size_t)last_len);
                 }
 
                 /* Only compress if we'd save significant space */

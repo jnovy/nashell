@@ -621,6 +621,16 @@ int memory_store(memory_t *m, const char *key, const char *value,
     int need_embed = m->embed && m->embed->available &&
                      !atomic_load(&m->consolidating);
 
+    /* FIX BUG-MEM4: Save the entry's value pointer before releasing the
+     * lock so we can detect if another thread updated the same key while
+     * we were generating the embedding (TOCTOU race).  We only compare
+     * the pointer address after re-lock — never dereference. */
+    const char *pre_unlock_value = NULL;
+    if (need_embed) {
+        mem_index_entry_t *ie_pre = mem_index_find(&m->idx, key);
+        if (ie_pre) pre_unlock_value = ie_pre->value;
+    }
+
     /* Prepare git commit message while we still hold the lock, but
      * defer the actual commit (fork+exec) until after unlock to avoid
      * blocking concurrent memory operations for 50-500ms.  */
@@ -641,7 +651,17 @@ int memory_store(memory_t *m, const char *key, const char *value,
          * sees it immediately.  Re-acquire lock for index mutation. */
         pthread_mutex_lock(&m->mtx);
         mem_index_entry_t *ie = mem_index_find(&m->idx, key);
-        if (ie) {
+        if (ie && ie->value != pre_unlock_value) {
+            /* FIX BUG-MEM4: Value was updated by another thread while we
+             * were generating the embedding — our embedding is stale for
+             * the current value.  Remove the orphan .emb file. The new
+             * value's store call will generate its own embedding. */
+            char emb_fname[512];
+            key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
+            char emb_orphan[NASH_PATH_MAX];
+            snprintf(emb_orphan, sizeof(emb_orphan), "%s/%s", m->dir, emb_fname);
+            unlink(emb_orphan);
+        } else if (ie) {
             char emb_path[NASH_PATH_MAX];
             json_to_emb_path(ie->path, emb_path, sizeof(emb_path));
             if (ie->has_emb) embed_multi_vec_free(&ie->emb);
@@ -983,15 +1003,29 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                 embed_vec_t *vecs = embed_text_batch(
                     m->embed, (const char **)chunks, n_chunks, &out_count);
                 if (vecs && out_count > 0) {
-                    int dim = vecs[0].dim;
-                    query_mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)out_count);
+                    /* Find dimension and count valid embeddings
+                     * (some entries may have .data == NULL on failure) */
+                    int dim = 0, valid_count = 0;
+                    for (int ci = 0; ci < out_count; ci++) {
+                        if (vecs[ci].data && vecs[ci].dim > 0) {
+                            if (dim == 0) dim = vecs[ci].dim;
+                            if (vecs[ci].dim == dim) valid_count++;
+                        }
+                    }
+                    if (valid_count > 0 && dim > 0) {
+                    query_mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
                     if (query_mv.data) {
                         query_mv.dim = dim;
-                        query_mv.n_chunks = out_count;
-                        for (int ci = 0; ci < out_count; ci++)
-                            memcpy(query_mv.data + ci * dim,
+                        query_mv.n_chunks = valid_count;
+                        int vi = 0;
+                        for (int ci = 0; ci < out_count; ci++) {
+                            if (!vecs[ci].data || vecs[ci].dim != dim) continue;
+                            memcpy(query_mv.data + vi * dim,
                                    vecs[ci].data, sizeof(float) * (size_t)dim);
+                            vi++;
+                        }
                         has_semantic = 1;
+                    }
                     }
                     for (int ci = 0; ci < out_count; ci++)
                         embed_vec_free(&vecs[ci]);
@@ -1950,6 +1984,8 @@ int memory_init_embeddings(memory_t *m, const char *type,
 
 void memory_set_embed(memory_t *m, embed_ctx_t *ctx) {
     if (!m || !ctx) return;
+    if (m->embed && m->embed != ctx)
+        embed_free(m->embed);
     m->embed = ctx;
 
     /* Embed memories with missing, stale, or wrong-dimension .emb files */

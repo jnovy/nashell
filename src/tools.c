@@ -694,16 +694,16 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
                                                     ctx->deferred_consol[i].value, tgt);
             if (dk) {
                 if (n_del >= del_cap) {
-                    del_cap = del_cap ? del_cap * 2 : 16;
-                    del_entries = realloc(del_entries, sizeof(del_entry_t) * (size_t)del_cap);
+                    int new_cap = del_cap ? del_cap * 2 : 16;
+                    if (safe_realloc((void **)&del_entries, sizeof(del_entry_t) * (size_t)new_cap)) {
+                        free(dk);
+                        continue;
+                    }
+                    del_cap = new_cap;
                 }
-                if (del_entries) {
-                    del_entries[n_del].key = dk;
-                    del_entries[n_del].target = tgt;
-                    n_del++;
-                } else {
-                    free(dk);
-                }
+                del_entries[n_del].key = dk;
+                del_entries[n_del].target = tgt;
+                n_del++;
             }
         }
     }

@@ -525,8 +525,12 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
         if (!pb) continue;
 
         if (*count >= cap) {
-            cap = cap ? cap * 2 : 8;
-            list = realloc(list, cap * sizeof(playbook_t *));
+            int new_cap = cap ? cap * 2 : 8;
+            if (safe_realloc((void **)&list, (size_t)new_cap * sizeof(playbook_t *))) {
+                playbook_free(pb);
+                continue;
+            }
+            cap = new_cap;
         }
         list[(*count)++] = pb;
     }
@@ -1041,10 +1045,12 @@ void *playbook_worker(void *arg) {
                     while (fgets(line, sizeof(line), fp)) {
                         size_t ll = strlen(line);
                         if (buf_len + ll + 1 > buf_cap) {
-                            buf_cap = (buf_cap ? buf_cap * 2 : 4096);
-                            if (buf_cap < buf_len + ll + 1)
-                                buf_cap = buf_len + ll + 1;
-                            buf = realloc(buf, buf_cap);
+                            size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
+                            if (new_cap < buf_len + ll + 1)
+                                new_cap = buf_len + ll + 1;
+                            if (safe_realloc((void **)&buf, new_cap))
+                                break;
+                            buf_cap = new_cap;
                         }
                         memcpy(buf + buf_len, line, ll);
                         buf_len += ll;
@@ -1215,8 +1221,10 @@ void *playbook_worker(void *arg) {
                 if (strncmp(key, "fact:", 5) != 0) continue;
 
                 if (n_del >= del_cap) {
-                    del_cap = del_cap ? del_cap * 2 : 8;
-                    del_keys = realloc(del_keys, sizeof(char *) * (size_t)del_cap);
+                    int new_cap = del_cap ? del_cap * 2 : 8;
+                    if (safe_realloc((void **)&del_keys, sizeof(char *) * (size_t)new_cap))
+                        continue;
+                    del_cap = new_cap;
                 }
                 del_keys[n_del++] = strdup(key);
             }

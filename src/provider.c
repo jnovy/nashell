@@ -1475,11 +1475,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
         /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
          * Also enable progress callback for abort-on-demand during streaming. */
-        {
-            long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
-                                                  : PROVIDER_DEFAULT_TIMEOUT;
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-        }
+        long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
+                                              : PROVIDER_DEFAULT_TIMEOUT;
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
         curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
@@ -1575,7 +1573,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             if (res == CURLE_OPERATION_TIMEDOUT) {
                 nash_log("[provider] LLM call timed out after %lds "
                          "(streaming_tokens=%d) — not retrying",
-                         (long)300, st.streaming_token_count);
+                         timeout, st.streaming_token_count);
                 free(p->last_error);
                 p->last_error = strdup("LLM call timed out (response too long)");
                 free(p->last_error_request);

@@ -114,7 +114,7 @@ typedef struct {
     int              playbook_ok;
     atomic_int       done;
     /* Inter-pass pause */
-    volatile int     waiting_for_user;
+    _Atomic int      waiting_for_user;
     char            *inter_pass_message;
     /* Agent tracking (for interactive /agent run history logging) */
     char            *agent_id;          /* NULL when not an agent run */

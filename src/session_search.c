@@ -85,8 +85,8 @@ static char *extract_match_snippet(const char *line, const char *match_pos,
     int before = SS_SNIPPET_MAX / 2;
     int after  = SS_SNIPPET_MAX / 2;
 
-    const char *start = match_pos - before;
-    if (start < line) start = line;
+    ptrdiff_t match_off = match_pos - line;
+    const char *start = (match_off > (ptrdiff_t)before) ? match_pos - before : line;
     const char *end = match_pos + match_len + after;
     if (end > line + linelen) end = line + linelen;
 

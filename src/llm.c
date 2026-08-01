@@ -318,11 +318,12 @@ int llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
  * this call. Updates content_len and total_chars incrementally. */
 void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content /*consumed*/) {
     if (!chat || idx < 0 || idx >= chat->n_msgs) { free(new_content); return; }
+    if (!new_content) return;  /* keep old content — preserves non-NULL invariant */
     llm_msg_t *m = &chat->msgs[idx];
     chat->total_chars -= (long)m->content_len;
     free(m->content);
     m->content = new_content;
-    m->content_len = new_content ? strlen(new_content) : 0;
+    m->content_len = strlen(new_content);
     chat->total_chars += (long)m->content_len;
 }
 

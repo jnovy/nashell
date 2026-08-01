@@ -257,6 +257,9 @@ static void finish_paste(ui_state_t *ui) {
             ui->input_buffer = tmp;
             ui->input_cap = new_cap;
         }
+        /* Skip paste if buffer didn't grow enough (OOM) */
+        if (ui->input_len + nbytes >= ui->input_cap - 1)
+            goto paste_done;
         /* Make room at cursor position */
         memmove(ui->input_buffer + ui->cursor_pos + nbytes,
                 ui->input_buffer + ui->cursor_pos,
@@ -266,6 +269,7 @@ static void finish_paste(ui_state_t *ui) {
         ui->cursor_pos += nbytes;
         ui->input_len += nbytes;
         ui->dirty = 1;
+paste_done: ;
     } else {
         /* Multi-line paste: store in clip_store, insert token */
         if (clip_count < MAX_CLIPS) {
