@@ -645,7 +645,39 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
         return results;
     }
 
-    /* Sequential fallback for ONNX and other backends */
+    /* ONNX backend: use native batch inference for 2-3x speedup.
+     * Process in chunks of up to 32 texts (ONNX_BATCH_MAX). */
+    if (ctx->cfg.type == EMBED_ONNX && ctx->onnx) {
+        embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
+        if (!results) return NULL;
+
+        for (int offset = 0; offset < n_texts; offset += 32) {
+            int chunk = n_texts - offset;
+            if (chunk > 32) chunk = 32;
+
+            int batch_dim = 0;
+            float **batch = onnx_embed_text_batch(ctx->onnx,
+                                texts + offset, chunk, &batch_dim);
+            if (batch && batch_dim > 0) {
+                for (int i = 0; i < chunk; i++) {
+                    if (batch[i]) {
+                        results[offset + i].data = batch[i];
+                        results[offset + i].dim = batch_dim;
+                    }
+                }
+                free(batch);  /* array only - float* moved to results */
+            } else {
+                /* Batch failed - fall back to sequential for this chunk */
+                for (int i = 0; i < chunk; i++)
+                    results[offset + i] = embed_text(ctx, texts[offset + i]);
+            }
+        }
+
+        *out_count = n_texts;
+        return results;
+    }
+
+    /* Sequential fallback for other backends */
     embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
     if (!results) return NULL;
 

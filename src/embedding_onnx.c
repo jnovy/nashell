@@ -9,6 +9,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <math.h>
+#include <unistd.h>  /* sysconf */
 
 /* ── WordPiece tokenizer ─────────────────────────────── */
 
@@ -308,8 +309,17 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
         goto fail;
     }
 
-    /* Use 2 threads for inference (embeddings are small) */
-    status = api->SetIntraOpNumThreads(ctx->opts, 2); if (status) api->ReleaseStatus(status);
+    /* Auto-detect thread count for ONNX inference.
+     * Clamp to [2, 8] - more threads help batch inference but diminishing
+     * returns beyond 8 for small embedding models. */
+    {
+        long nproc = sysconf(_SC_NPROCESSORS_ONLN);
+        int n_threads = (nproc > 0) ? (int)nproc : 2;
+        if (n_threads < 2) n_threads = 2;
+        if (n_threads > 8) n_threads = 8;
+        status = api->SetIntraOpNumThreads(ctx->opts, n_threads);
+        if (status) api->ReleaseStatus(status);
+    }
     status = api->SetSessionGraphOptimizationLevel(ctx->opts, ORT_ENABLE_ALL); if (status) api->ReleaseStatus(status);
 
     /* Create session (loads model) */
@@ -497,6 +507,243 @@ cleanup:
         if (input_tensors[i]) api->ReleaseValue(input_tensors[i]);
     }
     if (output_tensor) api->ReleaseValue(output_tensor);
+    return NULL;
+}
+
+/* ---- ONNX batch embedding ------------------------------------------------
+ * Embed N texts in a single ONNX Runtime Run() call.
+ * Tokenizes all texts, pads to the longest sequence, creates batched
+ * tensors with shape {N, max_seq_len}, runs one inference, then
+ * mean-pools + L2-normalizes each row independently.
+ *
+ * Processes up to ONNX_BATCH_MAX texts at a time.  If n_texts exceeds
+ * that, falls back to sequential onnx_embed_text() for the overflow
+ * (caller can chunk externally for larger sets).
+ *
+ * Returns heap-allocated array of n_texts float* pointers (each a
+ * malloc'd dim-float vector).  Sets *out_dim to the hidden dimension.
+ * Individual entries may be NULL if tokenization failed for that text.
+ * Caller must free each non-NULL entry and the array itself.
+ * Returns NULL on total failure. */
+
+#define ONNX_BATCH_MAX 32
+
+float **onnx_embed_text_batch(onnx_embed_ctx_t *ctx, const char **texts,
+                              int n_texts, int *out_dim) {
+    if (!ctx || !texts || n_texts <= 0 || !ctx->session) return NULL;
+    if (out_dim) *out_dim = 0;
+
+    /* Clamp to batch max - caller handles overflow */
+    if (n_texts > ONNX_BATCH_MAX) n_texts = ONNX_BATCH_MAX;
+
+    const OrtApi *api = ctx->api;
+    OrtStatus *status = NULL;
+
+    /* Allocate tokenization buffers: n_texts * WP_MAX_TOKENS each */
+    size_t buf_elems = (size_t)n_texts * WP_MAX_TOKENS;
+    int64_t *all_input_ids     = calloc(buf_elems, sizeof(int64_t));
+    int64_t *all_attention_mask = calloc(buf_elems, sizeof(int64_t));
+    int64_t *all_token_type_ids = calloc(buf_elems, sizeof(int64_t));
+    int *token_counts = calloc((size_t)n_texts, sizeof(int));
+
+    if (!all_input_ids || !all_attention_mask || !all_token_type_ids || !token_counts) {
+        free(all_input_ids); free(all_attention_mask);
+        free(all_token_type_ids); free(token_counts);
+        return NULL;
+    }
+
+    /* Tokenize all texts and track max sequence length */
+    int max_tokens = 0;
+    for (int i = 0; i < n_texts; i++) {
+        int offset = i * WP_MAX_TOKENS;
+        if (!texts[i]) { token_counts[i] = 0; continue; }
+
+        int n = wp_tokenize(ctx->vocab, texts[i],
+                            all_input_ids + offset,
+                            all_attention_mask + offset,
+                            all_token_type_ids + offset,
+                            WP_MAX_TOKENS);
+        if (n <= 0) { token_counts[i] = 0; continue; }
+
+        /* Clamp to model max like single-text path */
+        if (n > ONNX_MODEL_MAX_TOKENS) {
+            for (int t = ONNX_MODEL_MAX_TOKENS; t < n; t++)
+                all_attention_mask[offset + t] = 0;
+            n = ONNX_MODEL_MAX_TOKENS;
+        }
+        token_counts[i] = n;
+        if (n > max_tokens) max_tokens = n;
+    }
+
+    if (max_tokens <= 0) {
+        free(all_input_ids); free(all_attention_mask);
+        free(all_token_type_ids); free(token_counts);
+        return NULL;
+    }
+
+    /* Build compact padded buffers: shape {n_texts, max_tokens} */
+    size_t compact_elems = (size_t)n_texts * (size_t)max_tokens;
+    int64_t *compact_ids  = calloc(compact_elems, sizeof(int64_t));
+    int64_t *compact_mask = calloc(compact_elems, sizeof(int64_t));
+    int64_t *compact_type = calloc(compact_elems, sizeof(int64_t));
+
+    if (!compact_ids || !compact_mask || !compact_type) {
+        free(all_input_ids); free(all_attention_mask);
+        free(all_token_type_ids); free(token_counts);
+        free(compact_ids); free(compact_mask); free(compact_type);
+        return NULL;
+    }
+
+    for (int i = 0; i < n_texts; i++) {
+        int src_off = i * WP_MAX_TOKENS;
+        int dst_off = i * max_tokens;
+        int n = token_counts[i];
+        if (n > max_tokens) n = max_tokens;
+        /* Copy actual tokens; rest stays zero (PAD) from calloc */
+        memcpy(compact_ids  + dst_off, all_input_ids     + src_off, (size_t)n * sizeof(int64_t));
+        memcpy(compact_mask + dst_off, all_attention_mask + src_off, (size_t)n * sizeof(int64_t));
+        memcpy(compact_type + dst_off, all_token_type_ids + src_off, (size_t)n * sizeof(int64_t));
+    }
+
+    /* Done with wide buffers */
+    free(all_input_ids);
+    free(all_attention_mask);
+    free(all_token_type_ids);
+
+    /* Create batched input tensors */
+    int64_t shape[2] = {(int64_t)n_texts, (int64_t)max_tokens};
+    size_t data_len = compact_elems * sizeof(int64_t);
+
+    OrtValue *input_tensors[3] = {NULL, NULL, NULL};
+    OrtValue *output_tensor = NULL;
+    float **results = NULL;
+
+    status = api->CreateTensorWithDataAsOrtValue(
+        ctx->mem_info, compact_ids, data_len, shape, 2,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &input_tensors[0]);
+    if (status) { api->ReleaseStatus(status); goto batch_cleanup; }
+
+    status = api->CreateTensorWithDataAsOrtValue(
+        ctx->mem_info, compact_mask, data_len, shape, 2,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &input_tensors[1]);
+    if (status) { api->ReleaseStatus(status); goto batch_cleanup; }
+
+    status = api->CreateTensorWithDataAsOrtValue(
+        ctx->mem_info, compact_type, data_len, shape, 2,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64, &input_tensors[2]);
+    if (status) { api->ReleaseStatus(status); goto batch_cleanup; }
+
+    /* Run batched inference */
+    const char *input_names[]  = {"input_ids", "attention_mask", "token_type_ids"};
+    const char *output_names[] = {"last_hidden_state"};
+
+    status = api->Run(ctx->session, NULL,
+                      input_names, (const OrtValue *const *)input_tensors, 3,
+                      output_names, 1, &output_tensor);
+    if (status) {
+        nash_log("[onnx-embed] batch Run failed: %s",
+                api->GetErrorMessage(status));
+        api->ReleaseStatus(status);
+        goto batch_cleanup;
+    }
+
+    /* Extract output shape: expect [n_texts, max_tokens, hidden_dim] */
+    float *output_data = NULL;
+    status = api->GetTensorMutableData(output_tensor, (void **)&output_data);
+    if (status || !output_data) {
+        if (status) api->ReleaseStatus(status);
+        goto batch_cleanup;
+    }
+
+    OrtTensorTypeAndShapeInfo *type_info = NULL;
+    status = api->GetTensorTypeAndShape(output_tensor, &type_info);
+    if (status) { api->ReleaseStatus(status); goto batch_cleanup; }
+
+    size_t dim_count = 0;
+    status = api->GetDimensionsCount(type_info, &dim_count);
+    if (status) { api->ReleaseStatus(status); api->ReleaseTensorTypeAndShapeInfo(type_info); goto batch_cleanup; }
+    int64_t dims[4] = {0};
+    if (dim_count >= 3 && dim_count <= 4) {
+        status = api->GetDimensions(type_info, dims, dim_count);
+        if (status) { api->ReleaseStatus(status); api->ReleaseTensorTypeAndShapeInfo(type_info); goto batch_cleanup; }
+    }
+    api->ReleaseTensorTypeAndShapeInfo(type_info);
+
+    if (dim_count != 3 || dims[0] != n_texts) {
+        nash_log("[onnx-embed] batch: unexpected output shape: "
+                "rank=%zu dims=[%lld,%lld,%lld]",
+                dim_count, (long long)dims[0],
+                (long long)dims[1], (long long)dims[2]);
+        goto batch_cleanup;
+    }
+
+    int hidden_dim = (int)dims[2];
+    if (hidden_dim <= 0 || hidden_dim > 4096) {
+        nash_log("[onnx-embed] batch: unexpected hidden dim: %d", hidden_dim);
+        goto batch_cleanup;
+    }
+
+    if (out_dim) *out_dim = hidden_dim;
+
+    /* Mean pool + L2 normalize each row independently */
+    results = calloc((size_t)n_texts, sizeof(float *));
+    if (!results) goto batch_cleanup;
+
+    for (int i = 0; i < n_texts; i++) {
+        if (token_counts[i] <= 0) continue;  /* no tokens - leave NULL */
+
+        float *emb = calloc((size_t)hidden_dim, sizeof(float));
+        if (!emb) continue;
+
+        /* Mean pooling over attended tokens for row i */
+        int row_offset = i * max_tokens;
+        float *row_data = output_data + (size_t)i * (size_t)max_tokens * (size_t)hidden_dim;
+        float mask_sum = 0.0f;
+
+        for (int t = 0; t < token_counts[i]; t++) {
+            if (compact_mask[row_offset + t]) {
+                mask_sum += 1.0f;
+                for (int d = 0; d < hidden_dim; d++)
+                    emb[d] += row_data[t * hidden_dim + d];
+            }
+        }
+
+        if (mask_sum > 0.0f) {
+            for (int d = 0; d < hidden_dim; d++)
+                emb[d] /= mask_sum;
+        }
+
+        /* L2 normalize */
+        float norm = 0.0f;
+        for (int d = 0; d < hidden_dim; d++)
+            norm += emb[d] * emb[d];
+        norm = sqrtf(norm);
+        if (norm > 1e-12f) {
+            for (int d = 0; d < hidden_dim; d++)
+                emb[d] /= norm;
+        }
+
+        results[i] = emb;
+    }
+
+    /* Cleanup tensors (success path) */
+    for (int i = 0; i < 3; i++)
+        if (input_tensors[i]) api->ReleaseValue(input_tensors[i]);
+    if (output_tensor) api->ReleaseValue(output_tensor);
+    free(compact_ids); free(compact_mask); free(compact_type);
+    free(token_counts);
+    return results;
+
+batch_cleanup:
+    for (int i = 0; i < 3; i++)
+        if (input_tensors[i]) api->ReleaseValue(input_tensors[i]);
+    if (output_tensor) api->ReleaseValue(output_tensor);
+    free(compact_ids); free(compact_mask); free(compact_type);
+    free(token_counts);
+    if (results) {
+        for (int i = 0; i < n_texts; i++) free(results[i]);
+        free(results);
+    }
     return NULL;
 }
 

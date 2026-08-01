@@ -30,6 +30,16 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir);
  * Caller must free() the returned array. */
 float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim);
 
+/* Batch embed N texts in a single ONNX Run() call.
+ * Returns array of N float* pointers (each malloc'd, dim floats).
+ * Individual entries may be NULL if tokenization failed.
+ * Sets *out_dim to the hidden dimension.
+ * Caller must free each non-NULL entry and the array.
+ * Processes up to 32 texts; caller should chunk for larger sets.
+ * Returns NULL on total failure. */
+float **onnx_embed_text_batch(onnx_embed_ctx_t *ctx, const char **texts,
+                              int n_texts, int *out_dim);
+
 /* Free ONNX embedding context */
 void onnx_embed_free(onnx_embed_ctx_t *ctx);
 

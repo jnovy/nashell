@@ -439,6 +439,54 @@ static void cleanup_globals(store_t *shared_store, workspace_t *ws,
     config_free(cfg);
 }
 
+/* ---- Background session chunk backfill thread -------------------------
+ * Runs session_index_chunk_backfill in a detached thread so startup
+ * is not blocked.  Creates its own embed_ctx (separate ONNX session)
+ * for thread safety. The session_index_t.mtx protects concurrent
+ * access between this thread and the react loop's memory_query. */
+
+typedef struct {
+    char            *nash_dir;     /* strdup'd */
+    char            *workspace;    /* strdup'd, may be NULL */
+    embed_config_t   embed_cfg;    /* copied config (strings strdup'd) */
+    session_index_t *session_idx;  /* shared, protected by its own mtx */
+} backfill_args_t;
+
+static void *backfill_thread_fn(void *arg) {
+    backfill_args_t *a = arg;
+
+    /* Create our own embed context with a private ONNX session */
+    embed_ctx_t *embed = embed_new(&a->embed_cfg);
+    if (!embed || !embed_probe(embed)) {
+        nash_log("[backfill] failed to init embed context");
+        embed_free(embed);
+        goto done;
+    }
+
+    /* Backfill global sessions */
+    char sessions_dir[NASH_PATH_MAX];
+    snprintf(sessions_dir, sizeof(sessions_dir), "%s/sessions", a->nash_dir);
+    session_index_chunk_backfill(sessions_dir, embed, a->session_idx);
+
+    /* Backfill workspace sessions */
+    if (a->workspace && a->workspace[0]) {
+        char *ws_sessions = sessions_base_dir(a->nash_dir, a->workspace);
+        session_index_chunk_backfill(ws_sessions, embed, a->session_idx);
+        free(ws_sessions);
+    }
+
+    embed_free(embed);
+
+done:
+    free(a->nash_dir);
+    free(a->workspace);
+    free(a->embed_cfg.model);
+    free(a->embed_cfg.api_base);
+    free(a->embed_cfg.model_path);
+    free(a);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -1071,19 +1119,35 @@ int main(int argc, char **argv) {
         }
 
         /* v4.1: Backfill chunk embeddings for sessions without chunks.emb.
-         * Runs at startup, skips sessions already processed.
-         * ~5ms per chunk via ONNX, ~5 chunks/session avg. */
+         * Runs in a background thread so startup is not blocked.
+         * The thread creates its own ONNX session for thread safety.
+         * session_index_t.mtx protects concurrent index access. */
         if (memory && memory_has_embeddings(memory)) {
-            embed_ctx_t *backfill_embed = memory_embed_ctx(memory);
-            if (backfill_embed) {
-                session_index_chunk_backfill(sessions_dir, backfill_embed,
-                                            session_idx);
-                /* Also backfill workspace sessions */
-                if (cfg->workspace && cfg->workspace[0]) {
-                    char *ws_sessions = sessions_base_dir(nash_dir, cfg->workspace);
-                    session_index_chunk_backfill(ws_sessions, backfill_embed,
-                                                session_idx);
-                    free(ws_sessions);
+            embed_ctx_t *src_embed = memory_embed_ctx(memory);
+            if (src_embed) {
+                backfill_args_t *bfa = calloc(1, sizeof(*bfa));
+                if (bfa) {
+                    bfa->nash_dir = strdup(nash_dir);
+                    bfa->workspace = (cfg->workspace && cfg->workspace[0])
+                                   ? strdup(cfg->workspace) : NULL;
+                    bfa->embed_cfg.type = src_embed->cfg.type;
+                    bfa->embed_cfg.model = src_embed->cfg.model
+                                         ? strdup(src_embed->cfg.model) : NULL;
+                    bfa->embed_cfg.api_base = src_embed->cfg.api_base
+                                            ? strdup(src_embed->cfg.api_base) : NULL;
+                    bfa->embed_cfg.model_path = src_embed->cfg.model_path
+                                              ? strdup(src_embed->cfg.model_path) : NULL;
+                    bfa->embed_cfg.dimension = src_embed->cfg.dimension;
+                    bfa->embed_cfg.max_input_chars = src_embed->cfg.max_input_chars;
+                    bfa->session_idx = session_idx;
+
+                    pthread_t bf_tid;
+                    if (pthread_create(&bf_tid, NULL, backfill_thread_fn, bfa) == 0) {
+                        pthread_detach(bf_tid);
+                    } else {
+                        nash_log("[backfill] failed to create thread, running synchronously");
+                        backfill_thread_fn(bfa);  /* fallback: blocking */
+                    }
                 }
             }
         }
