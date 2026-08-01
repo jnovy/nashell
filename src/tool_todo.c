@@ -1,14 +1,12 @@
 #include "tools_internal.h"
 #include "tool_plugin.h"
+#include "todo_core.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <errno.h>
-
-/* Forward declarations */
-static void todo_free_lines(char **lines, int count);
 
 /* ── Persistent per-workspace TODO list ──────────────── */
 /* Storage: {workspace_root}/todo.md  (or {nash_root}/todo.md if no workspace)
@@ -17,110 +15,6 @@ static void todo_free_lines(char **lines, int count);
  *   - [x] Completed item
  */
 
-/* Derive the todo.md path from the active workspace.
- * Uses memory_dir() on the appropriate memory_t, strips "/memory" suffix,
- * and appends "/todo.md". */
-static int todo_path(tool_ctx_t *ctx, char *buf, size_t sz) {
-    const char *mdir = NULL;
-
-    /* Prefer workspace memory if active, else global */
-    if (ctx->ws && ctx->ws->workspace)
-        mdir = memory_dir(ctx->ws->workspace);
-    else if (ctx->ws && ctx->ws->global)
-        mdir = memory_dir(ctx->ws->global);
-    else if (ctx->memory)
-        mdir = memory_dir(ctx->memory);
-
-    if (!mdir) return -1;
-
-    /* mdir is "{root}/memory" — strip the "/memory" suffix to get root */
-    size_t mlen = strlen(mdir);
-    const char *suffix = "/memory";
-    size_t slen = strlen(suffix);
-
-    if (mlen > slen && strcmp(mdir + mlen - slen, suffix) == 0) {
-        /* Build "{root}/todo.md" */
-        size_t rlen = mlen - slen;
-        if (rlen + sizeof("/todo.md") > sz) return -1;
-        memcpy(buf, mdir, rlen);
-        memcpy(buf + rlen, "/todo.md", sizeof("/todo.md")); /* includes NUL */
-    } else {
-        /* Fallback: just put todo.md next to the memory dir */
-        snprintf(buf, sz, "%s/../todo.md", mdir);
-    }
-    return 0;
-}
-
-/* Load all lines from todo.md into a dynamic array.
- * Returns line count; *lines_out is heap-allocated (caller frees each + array).
- * Returns 0 with *lines_out = NULL if file doesn't exist. */
-static int todo_load(const char *path, char ***lines_out) {
-    *lines_out = NULL;
-    FILE *f = fopen(path, "r");
-    if (!f) return 0;
-
-    char **lines = NULL;
-    int count = 0, cap = 0;
-    char linebuf[4096];
-
-    while (fgets(linebuf, sizeof(linebuf), f)) {
-        /* Strip trailing newline */
-        size_t len = strlen(linebuf);
-        while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
-            linebuf[--len] = '\0';
-
-        /* Skip empty lines */
-        if (len == 0) continue;
-
-        if (count >= cap) {
-            cap = cap ? cap * 2 : 16;
-            char **tmp = realloc(lines, sizeof(char *) * (size_t)cap);
-            if (!tmp) {
-                todo_free_lines(lines, count);
-                fclose(f);
-                return -1;
-            }
-            lines = tmp;
-        }
-        char *dup = strdup(linebuf);
-        if (!dup) {
-            todo_free_lines(lines, count);
-            fclose(f);
-            return -1;
-        }
-        lines[count++] = dup;
-    }
-    fclose(f);
-    *lines_out = lines;
-    return count;
-}
-
-/* Write lines back to file atomically (.tmp + rename). */
-static int todo_save(const char *path, char **lines, int count) {
-    char tmp[NASH_PATH_MAX + 8];
-    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
-
-    FILE *f = fopen(tmp, "w");
-    if (!f) return -1;
-
-    for (int i = 0; i < count; i++)
-        fprintf(f, "%s\n", lines[i]);
-
-    fclose(f);
-    if (rename(tmp, path) != 0) {
-        unlink(tmp);
-        return -1;
-    }
-    return 0;
-}
-
-static void todo_free_lines(char **lines, int count) {
-    if (!lines) return;
-    for (int i = 0; i < count; i++)
-        free(lines[i]);
-    free(lines);
-}
-
 tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
     cJSON *op_j = cJSON_GetObjectItem(params, "op");
     if (!op_j || !op_j->valuestring)
@@ -128,7 +22,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
     const char *op = op_j->valuestring;
     char fpath[NASH_PATH_MAX];
-    if (todo_path(ctx, fpath, sizeof(fpath)) != 0)
+    if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0)
         return tools_make_error("cannot determine todo.md path (no workspace or memory)");
 
     /* ── ADD ── */
@@ -156,15 +50,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         if (count < 0)
             return tools_make_error("cannot read todo.md");
 
-        /* Grow by one slot for the new item */
-        char **tmp = realloc(lines, sizeof(char *) * (size_t)(count + 1));
-        if (!tmp) {
-            todo_free_lines(lines, count);
-            return tools_make_error("cannot allocate memory for todo.md");
-        }
-        lines = tmp;
-        lines[count++] = strdup(line);
-        if (!lines[count - 1]) {
+        count = todo_add(&lines, count, line);
+        if (count < 0) {
             todo_free_lines(lines, count);
             return tools_make_error("cannot allocate memory for todo.md");
         }
@@ -247,20 +134,11 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
         char **lines;
         int count = todo_load(fpath, &lines);
-        if (idx < 1 || idx > count) {
+        const char *err_msg = NULL;
+        if (todo_mark_done(lines, count, idx, &err_msg) != 0) {
             todo_free_lines(lines, count);
-            return tools_make_error("index out of range");
+            return tools_make_error(err_msg ? err_msg : "cannot mark done");
         }
-
-        /* Flip - [ ] → - [x] */
-        char *line = lines[idx - 1];
-        char *check = strstr(line, "- [ ]");
-        if (!check) {
-            todo_free_lines(lines, count);
-            return tools_make_error("item is not open (already done?)");
-        }
-        /* Replace [ ] with [x] — [x] is same width as [ ] */
-        check[3] = 'x';
 
         todo_save(fpath, lines, count);
 
@@ -286,18 +164,13 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
         char **lines;
         int count = todo_load(fpath, &lines);
-        if (idx < 1 || idx > count) {
+        char *removed = NULL;
+        const char *err_msg = NULL;
+        count = todo_remove(lines, count, idx, &removed, &err_msg);
+        if (count < 0) {
             todo_free_lines(lines, count);
-            return tools_make_error("index out of range");
+            return tools_make_error(err_msg ? err_msg : "cannot remove");
         }
-
-        char *removed = strdup(lines[idx - 1]);
-
-        /* Shift lines down */
-        free(lines[idx - 1]);
-        for (int i = idx - 1; i < count - 1; i++)
-            lines[i] = lines[i + 1];
-        count--;
 
         todo_save(fpath, lines, count);
 
@@ -319,20 +192,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         char **lines;
         int count = todo_load(fpath, &lines);
 
-        /* Keep only non-[x] lines */
-        int kept = 0, purged = 0;
-        for (int i = 0; i < count; i++) {
-            if (strstr(lines[i], "- [x]")) {
-                free(lines[i]);
-                lines[i] = NULL;
-                purged++;
-            }
-        }
-        /* Compact */
-        for (int i = 0; i < count; i++) {
-            if (lines[i])
-                lines[kept++] = lines[i];
-        }
+        int purged = 0;
+        int kept = todo_purge(lines, count, &purged);
 
         todo_save(fpath, lines, kept);
 

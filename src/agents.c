@@ -80,18 +80,6 @@ static void parse_agent_metadata(yaml_node_t *root, agent_entry_t *a) {
     a->n_tags = parse_tags(yaml_get(root, "tags"), &a->tags);
 }
 
-static void mkdirp(const char *path) {
-    char tmp[NASH_PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, 0755);
-}
 
 /* Reject path components containing traversal sequences.
  * An agent_id has the form "workspace/name" — each slash-separated
@@ -684,7 +672,7 @@ int agent_queue_save(const agent_queue_t *q, const char *nash_dir) {
     /* Ensure agent/ directory exists */
     char agents_dir[NASH_PATH_MAX];
     snprintf(agents_dir, sizeof(agents_dir), "%s/agent", nash_dir);
-    mkdirp(agents_dir);
+    mkdir_p(agents_dir, 0755);
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "version", 1);
@@ -821,7 +809,7 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
 
     char agents_dir[NASH_PATH_MAX];
     snprintf(agents_dir, sizeof(agents_dir), "%s/agent", nash_dir);
-    mkdirp(agents_dir);
+    mkdir_p(agents_dir, 0755);
 
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/agent/history.jsonl", nash_dir);
@@ -859,7 +847,7 @@ void agent_save_result(const char *nash_dir, const char *agent_id,
 
     char dir[NASH_PATH_MAX];
     snprintf(dir, sizeof(dir), "%s/agent/results/%s", nash_dir, agent_id);
-    mkdirp(dir);
+    mkdir_p(dir, 0755);
 
     /* Symlink latest.md -> session's result.md (no duplication).
      * Agent sessions run headless (no TUI) so session.md is never

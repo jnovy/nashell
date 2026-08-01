@@ -19,12 +19,7 @@ extern void tui_on_event(const react_event_t *ev, void *userdata);
 
 /* ── Helpers ──────────────────────────────────────────── */
 
-static int mkdirp(const char *path) {
-    struct stat st;
-    if (stat(path, &st) == 0) return 0;
-    if (mkdir(path, 0700) == 0) return 0;
-    return -1;
-}
+
 
 const char *mailbox_gen_id(void) {
     static _Thread_local char buf[32];
@@ -68,13 +63,13 @@ static int write_file_atomic(const char *path, const char *content) {
 
 int mailbox_init(const char *nash_dir, char *mailbox_dir_out, size_t out_size) {
     snprintf(mailbox_dir_out, out_size, "%s/mailbox", nash_dir);
-    if (mkdirp(mailbox_dir_out) != 0) return -1;
+    if (mkdir_p(mailbox_dir_out, 0700) != 0) return -1;
 
     char inbox[NASH_PATH_MAX], outbox[NASH_PATH_MAX];
     snprintf(inbox, sizeof(inbox), "%s/inbox", mailbox_dir_out);
     snprintf(outbox, sizeof(outbox), "%s/outbox", mailbox_dir_out);
-    if (mkdirp(inbox) != 0) return -1;
-    if (mkdirp(outbox) != 0) return -1;
+    if (mkdir_p(inbox, 0700) != 0) return -1;
+    if (mkdir_p(outbox, 0700) != 0) return -1;
     return 0;
 }
 

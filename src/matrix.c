@@ -95,25 +95,18 @@ static const char *mx_ensure_room(matrix_ctx_t *ctx, const char *room_id,
 /* ── URL encoding helper ─────────────────────────────────── */
 
 /* URL-encode a string (for room IDs with ! and : characters).
- * Returns heap-allocated string. Caller frees. */
+ * Uses libcurl for correct encoding. Returns heap-allocated string.
+ * Caller frees with free(). */
 static char *url_encode(const char *s) {
     if (!s) return strdup("");
-    size_t len = strlen(s);
-    /* Worst case: every char becomes %XX (3x) */
-    char *out = malloc(len * 3 + 1);
-    if (!out) return strdup("");
-    char *p = out;
-    for (size_t i = 0; i < len; i++) {
-        char c = s[i];
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-            *p++ = c;
-        } else {
-            p += sprintf(p, "%%%02X", (unsigned char)c);
-        }
-    }
-    *p = '\0';
-    return out;
+    CURL *c = curl_easy_init();
+    if (!c) return strdup("");
+    char *enc = curl_easy_escape(c, s, 0);
+    curl_easy_cleanup(c);
+    if (!enc) return strdup("");
+    char *out = strdup(enc);
+    curl_free(enc);
+    return out ? out : strdup("");
 }
 
 

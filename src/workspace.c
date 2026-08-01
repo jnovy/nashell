@@ -30,18 +30,7 @@ static int ws_name_is_safe(const char *name) {
 }
 
 /* Recursive mkdir -p.  Creates all intermediate directories. */
-static void mkdirp(const char *path) {
-    char tmp[NASH_PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(tmp, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, 0755);
-}
+
 
 /* Check if a key exists in a memory_t's index.
  * Uses memory_has_key() for O(1) hash lookup under the mutex,
@@ -78,7 +67,7 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
         char ws_root[NASH_PATH_MAX];
         snprintf(ws_root, sizeof(ws_root), "%s/workspaces/%s",
                  nash_dir, ws_name);
-        mkdirp(ws_root);
+        mkdir_p(ws_root, 0755);
 
         ws->workspace = memory_new(ws_root);
         /* workspace memory is optional — if it fails, we still have global */

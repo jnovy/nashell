@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <curl/curl.h>
 
@@ -90,6 +91,13 @@ int http_get_web(const char *url, long timeout_sec, str_t *out, long *http_code)
  * Returns 0 on success, -1 on failure. */
 int http_post(const char *url, const char *body,
               struct curl_slist *headers, long timeout_sec, str_t *out);
+
+/* Perform an HTTP PUT with a JSON body.
+ * headers is a curl_slist (caller frees after call).
+ * Caller must str_free(*out) on success.
+ * Returns 0 on success, -1 on failure. */
+int http_put(const char *url, const char *body,
+             struct curl_slist *headers, long timeout_sec, str_t *out);
 
 /* Curl write callback that appends to a str_t.
  * Exported so callers can use str_t with custom curl setups. */
@@ -195,6 +203,57 @@ static inline int safe_realloc(void **ptr, size_t new_size) {
     if (!tmp) return -1;
     *ptr = tmp;
     return 0;
+}
+
+/* ── Convenience micro-helpers ───────────────────────────────────────
+ * Small inline utilities that eliminate common boilerplate patterns
+ * (prefix/suffix checks, path building, file existence tests). */
+
+#include <sys/stat.h>
+#include <errno.h>
+
+/* Check if string s starts with prefix pfx. */
+static inline int starts_with(const char *s, const char *pfx) {
+    return strncmp(s, pfx, strlen(pfx)) == 0;
+}
+
+/* Check if string s ends with suffix sfx. */
+static inline int ends_with(const char *s, const char *sfx) {
+    size_t slen = strlen(s), xlen = strlen(sfx);
+    return slen >= xlen && memcmp(s + slen - xlen, sfx, xlen) == 0;
+}
+
+/* Return 1 if path exists (any type), 0 otherwise. */
+static inline int file_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
+/* Return 1 if path exists and is a directory, 0 otherwise. */
+static inline int dir_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* Create directory if it does not already exist. Returns 0 on success
+ * (including already-exists), -1 on failure. */
+static inline int ensure_dir(const char *path, mode_t mode) {
+    if (mkdir(path, mode) == 0) return 0;
+    return (errno == EEXIST) ? 0 : -1;
+}
+
+/* Build "a/b" into buf. Returns buf for convenience. */
+static inline char *path_join(char *buf, size_t sz,
+                              const char *a, const char *b) {
+    snprintf(buf, sz, "%s/%s", a, b);
+    return buf;
+}
+
+/* Return pointer to the basename portion of path (after last '/').
+ * Returns path itself if no '/' is found. Never allocates. */
+static inline const char *path_basename(const char *path) {
+    const char *p = strrchr(path, '/');
+    return p ? p + 1 : path;
 }
 
 #endif

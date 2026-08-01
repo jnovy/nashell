@@ -15,30 +15,7 @@
 #include "tui.h"
 #include "ui_state_internal.h"
 #include "memory.h"
-
-static int cmd_todo_path(command_ctx_t *ctx, char *buf, size_t sz) {
-    const char *mdir = NULL;
-    if (ctx->ws && ctx->ws->workspace)
-        mdir = memory_dir(ctx->ws->workspace);
-    else if (ctx->ws && ctx->ws->global)
-        mdir = memory_dir(ctx->ws->global);
-    else if (ctx->memory)
-        mdir = memory_dir(ctx->memory);
-    if (!mdir) return -1;
-
-    size_t mlen = strlen(mdir);
-    const char *suffix = "/memory";
-    size_t slen = strlen(suffix);
-    if (mlen > slen && strcmp(mdir + mlen - slen, suffix) == 0) {
-        size_t rlen = mlen - slen;
-        if (rlen + sizeof("/todo.md") > sz) return -1;
-        memcpy(buf, mdir, rlen);
-        memcpy(buf + rlen, "/todo.md", sizeof("/todo.md"));
-    } else {
-        snprintf(buf, sz, "%s/../todo.md", mdir);
-    }
-    return 0;
-}
+#include "todo_core.h"
 
 /* Check if user is currently viewing todo.md */
 static int viewing_todo(ui_state_t *ui) {
@@ -223,7 +200,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
     ui_state_t *ui = ctx->ui;
     char fpath[NASH_PATH_MAX];
 
-    if (cmd_todo_path(ctx, fpath, sizeof(fpath)) != 0) {
+    if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0) {
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_ERROR,
             "Cannot determine todo.md path (no workspace or memory)");
@@ -248,92 +225,36 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         }
         /* Load existing lines, append new one, save atomically */
         char **lines = NULL;
-        int count = 0, cap = 0;
-        char linebuf[4096];
-        FILE *f = fopen(fpath, "r");
-        if (f) {
-            while (fgets(linebuf, sizeof(linebuf), f)) {
-                size_t len = strlen(linebuf);
-                while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
-                    linebuf[--len] = '\0';
-                if (len == 0) continue;
-                if (count >= cap) {
-                    cap = cap ? cap * 2 : 16;
-                    char **tmp2 = realloc(lines, sizeof(char*) * (size_t)cap);
-                    if (!tmp2) {
-                        for (int i = 0; i < count; i++) free(lines[i]);
-                        free(lines); fclose(f);
-                        pthread_mutex_lock(&ui->mtx);
-                        ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                        pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                        return CMD_CONTINUE;
-                    }
-                    lines = tmp2;
-                }
-                char *dup = strdup(linebuf);
-                if (!dup) {
-                    for (int i = 0; i < count; i++) free(lines[i]);
-                    free(lines); fclose(f);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                    pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                    return CMD_CONTINUE;
-                }
-                lines[count++] = dup;
-            }
-            fclose(f);
-        }
-        /* Ensure capacity for new line */
-        if (count >= cap) {
-            cap = cap ? cap * 2 : 16;
-            char **tmp2 = realloc(lines, sizeof(char*) * (size_t)cap);
-            if (!tmp2) {
-                for (int i = 0; i < count; i++) free(lines[i]);
-                free(lines);
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                return CMD_CONTINUE;
-            }
-            lines = tmp2;
-        }
-        char new_line[4096];
-        snprintf(new_line, sizeof(new_line), "- [ ] %s", text);
-        char *dup = strdup(new_line);
-        if (!dup) {
-            for (int i = 0; i < count; i++) free(lines[i]);
-            free(lines);
+        int count = todo_load(fpath, &lines);
+        if (count < 0) {
             pthread_mutex_lock(&ui->mtx);
             ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
             pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        lines[count++] = dup;
-
-        /* Atomic save */
-        char tmp[NASH_PATH_MAX + 8];
-        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
-        f = fopen(tmp, "w");
-        if (!f) {
-            /* Try creating parent dir */
-            char *slash = strrchr(fpath, '/');
-            if (slash) { *slash = '\0'; mkdir(fpath, 0755); *slash = '/'; }
-            f = fopen(tmp, "w");
-        }
-        if (!f) {
-            for (int i = 0; i < count; i++) free(lines[i]);
-            free(lines);
+        char new_line[4096];
+        snprintf(new_line, sizeof(new_line), "- [ ] %s", text);
+        count = todo_add(&lines, count, new_line);
+        if (count < 0) {
+            todo_free_lines(lines, count);
             pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Cannot write todo.md");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
-        fclose(f);
-        if (rename(tmp, fpath) != 0) unlink(tmp);
-        for (int i = 0; i < count; i++) free(lines[i]);
-        free(lines);
+        if (todo_save(fpath, lines, count) != 0) {
+            /* Try creating parent dir and retry */
+            char *slash = strrchr(fpath, '/');
+            if (slash) { *slash = '\0'; mkdir(fpath, 0755); *slash = '/'; }
+            if (todo_save(fpath, lines, count) != 0) {
+                todo_free_lines(lines, count);
+                pthread_mutex_lock(&ui->mtx);
+                ui_state_set_status(ui, STATUS_ERROR, "Cannot write todo.md");
+                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+                return CMD_CONTINUE;
+            }
+        }
+        todo_free_lines(lines, count);
 
         char status[256];
         snprintf(status, sizeof(status), "Added: %s", text);
@@ -367,82 +288,33 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
             return CMD_CONTINUE;
         }
         /* Load, flip, save */
-        FILE *f = fopen(fpath, "r");
-        if (!f) {
+        char **lines = NULL;
+        int count = todo_load(fpath, &lines);
+        if (count < 0) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        if (count == 0) {
+            todo_free_lines(lines, count);
             pthread_mutex_lock(&ui->mtx);
             ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        char **lines = NULL;
-        int count = 0, cap = 0;
-        char linebuf[4096];
-        while (fgets(linebuf, sizeof(linebuf), f)) {
-            size_t len = strlen(linebuf);
-            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
-                linebuf[--len] = '\0';
-            if (len == 0) continue;
-            if (count >= cap) {
-                cap = cap ? cap * 2 : 16;
-                char **tmp = realloc(lines, sizeof(char*) * (size_t)cap);
-                if (!tmp) {
-                    for (int i = 0; i < count; i++) free(lines[i]);
-                    free(lines); fclose(f);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                    pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                    return CMD_CONTINUE;
-                }
-                lines = tmp;
-            }
-            char *dup = strdup(linebuf);
-            if (!dup) {
-                for (int i = 0; i < count; i++) free(lines[i]);
-                free(lines); fclose(f);
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                return CMD_CONTINUE;
-            }
-            lines[count++] = dup;
-        }
-        fclose(f);
-        if (idx > count) {
-            for (int i = 0; i < count; i++) free(lines[i]);
-            free(lines);
+        const char *done_err = NULL;
+        if (todo_mark_done(lines, count, idx, &done_err) != 0) {
+            todo_free_lines(lines, count);
             pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Index out of range");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_state_set_status(ui, STATUS_ERROR, done_err ? done_err : "Cannot mark done");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        char *check = strstr(lines[idx-1], "- [ ]");
-        if (!check) {
-            for (int i = 0; i < count; i++) free(lines[i]);
-            free(lines);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Item is not open (already done?)");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
-            return CMD_CONTINUE;
-        }
-        check[3] = 'x';
-        /* Atomic save */
-        char tmp[NASH_PATH_MAX + 8];
-        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
-        f = fopen(tmp, "w");
-        if (f) {
-            for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
-            fclose(f);
-            if (rename(tmp, fpath) != 0) unlink(tmp);
-        } else {
-            unlink(tmp);
-        }
+        todo_save(fpath, lines, count);
         char status[256];
         snprintf(status, sizeof(status), "Done: %s", lines[idx-1]);
-        for (int i = 0; i < count; i++) free(lines[i]);
-        free(lines);
+        todo_free_lines(lines, count);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
@@ -482,73 +354,36 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
             tui_render(ui);
             return CMD_CONTINUE;
         }
-        FILE *f = fopen(fpath, "r");
-        if (!f) {
+        char **lines = NULL;
+        int count = todo_load(fpath, &lines);
+        if (count < 0) {
             pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        char **lines = NULL;
-        int count = 0, cap = 0;
-        char linebuf[4096];
-        while (fgets(linebuf, sizeof(linebuf), f)) {
-            size_t len = strlen(linebuf);
-            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
-                linebuf[--len] = '\0';
-            if (len == 0) continue;
-            if (count >= cap) {
-                cap = cap ? cap * 2 : 16;
-                char **tmp2 = realloc(lines, sizeof(char*) * (size_t)cap);
-                if (!tmp2) {
-                    for (int i = 0; i < count; i++) free(lines[i]);
-                    free(lines); fclose(f);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                    pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                    return CMD_CONTINUE;
-                }
-                lines = tmp2;
-            }
-            char *dup = strdup(linebuf);
-            if (!dup) {
-                for (int i = 0; i < count; i++) free(lines[i]);
-                free(lines); fclose(f);
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                return CMD_CONTINUE;
-            }
-            lines[count++] = dup;
-        }
-        fclose(f);
-        if (idx > count) {
-            for (int i = 0; i < count; i++) free(lines[i]);
-            free(lines);
+        if (count == 0) {
+            todo_free_lines(lines, count);
             pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Index out of range");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            return CMD_CONTINUE;
+        }
+        char *removed_text = NULL;
+        const char *rm_err = NULL;
+        int new_count = todo_remove(lines, count, idx, &removed_text, &rm_err);
+        if (new_count < 0) {
+            todo_free_lines(lines, count);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, rm_err ? rm_err : "Cannot remove");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
         char status[256];
-        snprintf(status, sizeof(status), "Removed: %s", lines[idx-1]);
-        free(lines[idx-1]);
-        for (int i = idx-1; i < count-1; i++) lines[i] = lines[i+1];
-        count--;
-        char tmp[NASH_PATH_MAX + 8];
-        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
-        f = fopen(tmp, "w");
-        if (f) {
-            for (int i = 0; i < count; i++) fprintf(f, "%s\n", lines[i]);
-            fclose(f);
-            if (rename(tmp, fpath) != 0) unlink(tmp);
-        } else {
-            unlink(tmp);
-        }
-        for (int i = 0; i < count; i++) free(lines[i]);
-        free(lines);
+        snprintf(status, sizeof(status), "Removed: %s", removed_text ? removed_text : "");
+        free(removed_text);
+        todo_save(fpath, lines, new_count);
+        todo_free_lines(lines, new_count);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
         pthread_mutex_lock(&ui->mtx);
         ui_state_set_status(ui, STATUS_READY, status);
@@ -560,64 +395,25 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
 
     /* /todo purge */
     if (strcmp(args, "purge") == 0) {
-        FILE *f = fopen(fpath, "r");
-        if (!f) {
+        char **lines = NULL;
+        int count = todo_load(fpath, &lines);
+        if (count < 0) {
             pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_READY, "No todo.md found (nothing to purge)");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
             return CMD_CONTINUE;
         }
-        char **lines = NULL;
-        int count = 0, cap = 0;
-        char linebuf[4096];
-        while (fgets(linebuf, sizeof(linebuf), f)) {
-            size_t len = strlen(linebuf);
-            while (len > 0 && (linebuf[len-1] == '\n' || linebuf[len-1] == '\r'))
-                linebuf[--len] = '\0';
-            if (len == 0) continue;
-            if (count >= cap) {
-                cap = cap ? cap * 2 : 16;
-                char **tmp2 = realloc(lines, sizeof(char*) * (size_t)cap);
-                if (!tmp2) {
-                    for (int i = 0; i < count; i++) free(lines[i]);
-                    free(lines); fclose(f);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                    pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                    return CMD_CONTINUE;
-                }
-                lines = tmp2;
-            }
-            char *dup = strdup(linebuf);
-            if (!dup) {
-                for (int i = 0; i < count; i++) free(lines[i]);
-                free(lines); fclose(f);
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
-                return CMD_CONTINUE;
-            }
-            lines[count++] = dup;
+        if (count == 0) {
+            todo_free_lines(lines, count);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_READY, "No todo.md found (nothing to purge)");
+            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            return CMD_CONTINUE;
         }
-        fclose(f);
-        int kept = 0, purged = 0;
-        for (int i = 0; i < count; i++) {
-            if (strstr(lines[i], "- [x]")) { free(lines[i]); lines[i] = NULL; purged++; }
-        }
-        for (int i = 0; i < count; i++) { if (lines[i]) lines[kept++] = lines[i]; }
-        char tmp[NASH_PATH_MAX + 8];
-        snprintf(tmp, sizeof(tmp), "%s.tmp", fpath);
-        f = fopen(tmp, "w");
-        if (f) {
-            for (int i = 0; i < kept; i++) fprintf(f, "%s\n", lines[i]);
-            fclose(f);
-            if (rename(tmp, fpath) != 0) unlink(tmp);
-        } else {
-            unlink(tmp);
-        }
-        for (int i = 0; i < kept; i++) free(lines[i]);
-        free(lines);
+        int purged = 0;
+        int kept = todo_purge(lines, count, &purged);
+        todo_save(fpath, lines, kept);
+        todo_free_lines(lines, kept);
         char status[128];
         snprintf(status, sizeof(status), "Purged %d completed items, %d remaining", purged, kept);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);

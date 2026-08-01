@@ -415,6 +415,7 @@ int http_get(const char *url, long timeout_sec, str_t *out) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
@@ -435,6 +436,7 @@ int http_get_web(const char *url, long timeout_sec, str_t *out, long *http_code)
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = curl_easy_perform(curl);
     if (http_code)
@@ -456,6 +458,32 @@ int http_post(const char *url, const char *body,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK) ? 0 : -1;
+}
+
+/* Perform an HTTP PUT with a JSON body.
+ * headers is a curl_slist (caller frees after call).
+ * Caller must str_free(*out) on success.
+ * Returns 0 on success, -1 on failure. */
+int http_put(const char *url, const char *body,
+             struct curl_slist *headers, long timeout_sec, str_t *out) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    if (headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
