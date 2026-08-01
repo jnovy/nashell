@@ -764,6 +764,10 @@ static long long tg_send_long(telegram_ctx_t *ctx, const char *text,
                 else {
                     while (chunk_len > 0 && ((unsigned char)pos[chunk_len] & 0xC0) == 0x80)
                         chunk_len--;
+                    /* If all bytes were continuation bytes (malformed UTF-8),
+                     * skip at least 1 byte to avoid an infinite loop. */
+                    if (chunk_len == 0)
+                        chunk_len = 1;
                 }
             }
         }
@@ -904,6 +908,10 @@ static int tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text,
                 else {
                     while (chunk_len > 0 && ((unsigned char)pos[chunk_len] & 0xC0) == 0x80)
                         chunk_len--;
+                    /* If all bytes were continuation bytes (malformed UTF-8),
+                     * skip at least 1 byte to avoid an infinite loop. */
+                    if (chunk_len == 0)
+                        chunk_len = 1;
                 }
             }
         }
@@ -1273,6 +1281,11 @@ static void tg_process_outbox_file(telegram_ctx_t *ctx, const char *filename) {
             }
             str_free(&msg);
         }
+        /* Record which topic this ask was sent to, so only a reply
+         * from the same topic is accepted as the answer (bug #32). */
+        snprintf(ctx->pending_ask_id, sizeof(ctx->pending_ask_id),
+                 "%s", filename + 4);  /* skip "ask_" prefix */
+        ctx->pending_ask_thread_id = thread_id;
     } else if (strncmp(filename, "status_", 7) == 0) {
         if (strncmp(actual_content, "[done]", 6) == 0) {
             free(route_token); free(workspace); free(user_query);
@@ -1352,10 +1365,6 @@ void *telegram_run(void *arg) {
         fprintf(stderr, "[telegram] inotify_init failed: %s (will use polling)\n",
                 strerror(errno));
     }
-
-    /* Pending ask ID: when nash writes ask_*, we track it so the next
-     * Telegram reply is routed as an answer rather than a new task. */
-    char pending_ask_id[128] = {0};
 
     /* Process any existing outbox files */
     tg_scan_outbox(ctx);
@@ -1536,13 +1545,14 @@ void *telegram_run(void *arg) {
                  */
                 int is_reply = tg_is_reply_to_bot(msg);
 
-                if (pending_ask_id[0]) {
-                    /* This is an answer to a user_ask question */
+                if (ctx->pending_ask_id[0] &&
+                    msg_thread_id == ctx->pending_ask_thread_id) {
+                    /* This is an answer to a user_ask question from the correct topic */
                     const char *answer = msg_text ? msg_text : "(photo)";
                     fprintf(stderr, "[telegram] routing as answer to ask_%s\n",
-                            pending_ask_id);
-                    tg_write_answer(ctx->mailbox_dir, pending_ask_id, answer);
-                    pending_ask_id[0] = 0;
+                            ctx->pending_ask_id);
+                    tg_write_answer(ctx->mailbox_dir, ctx->pending_ask_id, answer);
+                    ctx->pending_ask_id[0] = 0;
                     tg_api_send_message(ctx, "\xe2\x9c\x93 Answer received", NULL, msg_thread_id);
                 } else if (image_file_id) {
                     /* Photo/image message → download and create image task */
@@ -1655,15 +1665,9 @@ void *telegram_run(void *arg) {
                 while (ptr < evbuf + nread) {
                     struct inotify_event *ev = (struct inotify_event *)ptr;
                     if (ev->len > 0 && ev->name[0] != '.') {
-                        /* Check if this is an ask_* file → set pending ask */
-                        if (strncmp(ev->name, "ask_", 4) == 0) {
-                            /* Extract ask ID */
-                            size_t nlen = strlen(ev->name);
-                            if (nlen < sizeof(pending_ask_id)) {
-                                snprintf(pending_ask_id, sizeof(pending_ask_id),
-                                         "%s", ev->name + 4);
-                            }
-                        }
+                        /* tg_process_outbox_file handles ask_* detection
+                         * and sets ctx->pending_ask_id with the correct
+                         * thread_id for per-topic routing. */
                         tg_process_outbox_file(ctx, ev->name);
                     }
                     ptr += sizeof(struct inotify_event) + ev->len;

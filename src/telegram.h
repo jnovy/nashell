@@ -62,6 +62,11 @@ typedef struct {
         long long root_message_id;   /* message_id of the thread root */
     } session_threads[TG_MAX_TOPIC_MAP];
     int       session_thread_count;
+
+    /* Pending user_ask: tracks which topic the ask was sent to so that
+     * only a reply from the correct topic is routed as the answer. */
+    char      pending_ask_id[128];
+    long long pending_ask_thread_id;
 } telegram_ctx_t;
 
 /* Initialize telegram context from config.

@@ -21,6 +21,14 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
+/* Reject workspace names containing path traversal sequences. */
+static int ws_name_is_safe(const char *name) {
+    if (!name || !*name || *name == '/') return 0;
+    if (strstr(name, "..")) return 0;
+    if (strchr(name, '\\')) return 0;
+    return 1;
+}
+
 /* Recursive mkdir -p.  Creates all intermediate directories. */
 static void mkdirp(const char *path) {
     char tmp[NASH_PATH_MAX];
@@ -62,8 +70,8 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
         return NULL;
     }
 
-    /* Create workspace memory if name is provided */
-    if (ws_name && ws_name[0]) {
+    /* Create workspace memory if name is provided and safe */
+    if (ws_name && ws_name[0] && ws_name_is_safe(ws_name)) {
         ws->name = strdup(ws_name);
 
         /* Build workspace root: ~/.nash/workspaces/<name>/ */

@@ -34,8 +34,11 @@ static void add_candidate(char ***arr, int *count, int *cap,
     if (prefix_len > 0 && strncmp(value, prefix, (size_t)prefix_len) != 0)
         return;
     if (*count >= *cap) {
-        *cap = *cap ? *cap * 2 : 16;
-        *arr = realloc(*arr, (size_t)*cap * sizeof(char *));
+        int new_cap = *cap ? *cap * 2 : 16;
+        void *tmp = realloc(*arr, (size_t)new_cap * sizeof(char *));
+        if (!tmp) return;
+        *arr = tmp;
+        *cap = new_cap;
     }
     (*arr)[(*count)++] = strdup(value);
 }
@@ -285,8 +288,11 @@ static int provide_dirs(const char *nash_dir, const char *prefix,
             snprintf(cand, sizeof(cand), "%s", ent->d_name);
         }
         if (*count >= *cap) {
-            *cap = *cap ? *cap * 2 : 16;
-            *arr = realloc(*arr, (size_t)*cap * sizeof(char *));
+            int new_cap = *cap ? *cap * 2 : 16;
+            void *tmp = realloc(*arr, (size_t)new_cap * sizeof(char *));
+            if (!tmp) break;
+            *arr = tmp;
+            *cap = new_cap;
         }
         (*arr)[(*count)++] = strdup(cand);
         added++;
@@ -615,8 +621,11 @@ static void replace_input(ui_state_t *ui, int start, int old_len,
     int delta = new_len - old_len;
     /* Ensure capacity */
     while (ui->input_len + delta >= ui->input_cap - 1) {
-        ui->input_cap *= 2;
-        ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+        int new_cap = ui->input_cap * 2;
+        void *tmp = realloc(ui->input_buffer, (size_t)new_cap);
+        if (!tmp) return;
+        ui->input_buffer = tmp;
+        ui->input_cap = new_cap;
     }
     /* Shift tail */
     memmove(ui->input_buffer + start + new_len,

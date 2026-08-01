@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <openssl/sha.h>
 
 store_t *store_new(const char *project_root) {
@@ -240,8 +241,11 @@ int store_gc(store_t *s, const char *nash_dir) {
     snprintf(workspaces_path, sizeof(workspaces_path), "%s/workspaces", nash_dir);
     scan_tree_for_sessions(workspaces_path, s->dir, &refs, 0);
 
-    /* Phase 2: Delete unreferenced store entries */
+    /* Phase 2: Delete unreferenced store entries older than 60s.
+     * The age threshold avoids racing with concurrent store_save():
+     * a new session could reference an entry created after our ref scan. */
     int removed = 0;
+    time_t now = time(NULL);
     DIR *store_d = opendir(s->dir);
     if (!store_d) { hashset_free(&refs); return -1; }
     struct dirent *de;
@@ -250,6 +254,9 @@ int store_gc(store_t *s, const char *nash_dir) {
         if (!hashset_contains(&refs, de->d_name)) {
             char path[NASH_PATH_MAX];
             snprintf(path, sizeof(path), "%s/%s", s->dir, de->d_name);
+            struct stat st;
+            if (stat(path, &st) == 0 && difftime(now, st.st_mtime) < 60)
+                continue;  /* too recent — may be referenced by an in-flight save */
             if (unlink(path) == 0) removed++;
         }
     }

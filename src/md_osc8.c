@@ -1,6 +1,9 @@
 /* md_osc8.c -- OSC 8 terminal hyperlink support. Extracted from md_render.c. */
 
+#define _XOPEN_SOURCE_EXTENDED 1  /* for cchar_t, mvwin_wch, getcchar */
 #include "md_render_internal.h"
+#include <wchar.h>
+#include <limits.h>
 
 /* ── OSC 8 terminal hyperlinks (deferred) ── */
 
@@ -84,17 +87,26 @@ void md_osc8_flush(WINDOW *win, int win_row_offset) {
         printf("\033]8;;%s\033\\", lk->uri);
 
         /* Re-output link text cell-by-cell, preserving ncurses
-         * attributes.  mvwinch() returns both character and attrs
-         * (bold, reverse, color pair, etc.) so cursor highlights
-         * and link colors survive the OSC 8 re-output. */
+         * attributes.  Use mvwin_wch() (wide-char variant) instead
+         * of mvwinch() to correctly handle multi-byte UTF-8
+         * characters — mvwinch() only returns the low byte via
+         * A_CHARTEXT (0xFF), destroying any non-ASCII text. */
         attr_t prev_attrs = 0;
         short  prev_pair  = -1;
         for (int c = 0; c < link_len; c++) {
-            chtype ch = mvwinch(win, lk->row, lk->col_start + c);
-            attr_t attrs = ch & A_ATTRIBUTES;
-            short  pair  = (short)PAIR_NUMBER(ch);
-            char   chr   = ch & A_CHARTEXT;
-            if (chr == '\0') chr = ' ';
+            cchar_t cch;
+            if (mvwin_wch(win, lk->row, lk->col_start + c, &cch) != OK) {
+                putchar(' ');
+                continue;
+            }
+            attr_t attrs = 0;
+            short  pair  = 0;
+            wchar_t wchars[CCHARW_MAX];
+            if (getcchar(&cch, wchars, &attrs, &pair, NULL) == ERR) {
+                putchar(' ');
+                continue;
+            }
+            if (wchars[0] == L'\0') wchars[0] = L' ';
 
             /* Emit SGR only when attributes change */
             if (c == 0 || attrs != prev_attrs || pair != prev_pair) {
@@ -102,7 +114,12 @@ void md_osc8_flush(WINDOW *win, int win_row_offset) {
                 prev_attrs = attrs;
                 prev_pair  = pair;
             }
-            putchar(chr);
+            /* Convert wide char(s) to multibyte UTF-8 and output */
+            char mb[MB_LEN_MAX];
+            for (int w = 0; wchars[w] != L'\0'; w++) {
+                int n = wctomb(mb, wchars[w]);
+                if (n > 0) fwrite(mb, 1, (size_t)n, stdout);
+            }
         }
 
         /* SGR reset + OSC 8 end */

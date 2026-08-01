@@ -144,4 +144,7 @@ int agent_run_due(const char *nash_dir, store_t *shared_store, config_t *cfg,
                   volatile sig_atomic_t *shutdown_flag,
                   const char *mailbox_dir);
 
+/* Reject path components containing traversal sequences (".." etc.) */
+int is_safe_path_component(const char *s);
+
 #endif /* AGENTS_H */

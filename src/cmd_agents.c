@@ -474,6 +474,16 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
     ui_state_t *ui = ctx->ui;
     while (*id == ' ') id++;
 
+    /* Reject path traversal in user-supplied ID */
+    if (!is_safe_path_component(id)) {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR,
+            "/agent result: invalid agent ID");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        return CMD_CONTINUE;
+    }
+
     /* Try exact ID first, then resolve via scan */
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path),
@@ -488,7 +498,7 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
             agent_queue_load(q, ctx->nash_dir);
             agent_queue_schedule(q, time(NULL));
             const agent_entry_t *found = agent_find(q, id);
-            if (found) {
+            if (found && is_safe_path_component(found->id)) {
                 snprintf(path, sizeof(path),
                          "%s/agent/results/%s/latest.md", ctx->nash_dir, found->id);
                 content = slurp_file(path, &clen);

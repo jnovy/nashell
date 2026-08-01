@@ -101,18 +101,11 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                     mem_index_entry_t *e = &m->idx.entries[i];
                     snap[i].key = e->key ? strdup(e->key) : NULL;
                     snap[i].path = e->path ? strdup(e->path) : NULL;
-                    snap[i].has_emb = e->has_emb;
-                    /* Deep-copy embedding data for thread-safe access */
-                    if (e->has_emb && e->emb.data) {
-                        snap[i].emb.dim = e->emb.dim;
-                        snap[i].emb.n_chunks = e->emb.n_chunks;
-                        size_t emb_bytes = sizeof(float) * (size_t)e->emb.dim * (size_t)e->emb.n_chunks;
-                        snap[i].emb.data = malloc(emb_bytes);
-                        if (snap[i].emb.data)
-                            memcpy(snap[i].emb.data, e->emb.data, emb_bytes);
-                        else
-                            snap[i].has_emb = 0;
-                    }
+                    /* Don't deep-copy embeddings under the mutex — the bulk
+                     * mallocs block all concurrent memory operations.  Instead
+                     * record whether an embedding exists and load from disk
+                     * outside the lock (the fallback path already handles this). */
+                    snap[i].has_emb = 0;
                 }
             }
         }

@@ -457,8 +457,11 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             }
             if (!qi) {
                 if (qcount >= qcap) {
-                    qcap = qcap ? qcap * 2 : 16;
-                    qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                    int new_cap = qcap ? qcap * 2 : 16;
+                    void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
+                    if (!tmp) { cJSON_Delete(entry); continue; }
+                    qinfos = tmp;
+                    qcap = new_cap;
                 }
                 qi = &qinfos[qcount++];
                 memset(qi, 0, sizeof(*qi));
@@ -483,8 +486,11 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             }
             if (!already_known) {
                 if (qcount >= qcap) {
-                    qcap = qcap ? qcap * 2 : 16;
-                    qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                    int new_cap = qcap ? qcap * 2 : 16;
+                    void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
+                    if (!tmp) { cJSON_Delete(entry); continue; }
+                    qinfos = tmp;
+                    qcap = new_cap;
                 }
                 qinfo_t *qi = &qinfos[qcount++];
                 memset(qi, 0, sizeof(*qi));
@@ -548,8 +554,11 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 }
                 if (!qi) {
                     if (qcount >= qcap) {
-                        qcap = qcap ? qcap * 2 : 16;
-                        qinfos = realloc(qinfos, (size_t)qcap * sizeof(qinfo_t));
+                        int new_cap = qcap ? qcap * 2 : 16;
+                        void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
+                        if (!tmp) { cJSON_Delete(entry); continue; }
+                        qinfos = tmp;
+                        qcap = new_cap;
                     }
                     qi = &qinfos[qcount++];
                     memset(qi, 0, sizeof(*qi));
@@ -849,8 +858,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             journal_compaction_stats_t cs;
             journal_parse_compaction_stats(params, &cs);
             if (nsteps >= scap) {
-                scap = scap ? scap * 2 : 32;
-                steps = realloc(steps, (size_t)scap * sizeof(step_info_t));
+                int new_cap = scap ? scap * 2 : 32;
+                void *tmp = realloc(steps, (size_t)new_cap * sizeof(step_info_t));
+                if (!tmp) { cJSON_Delete(entry); continue; }
+                steps = tmp;
+                scap = new_cap;
             }
             step_info_t *si = &steps[nsteps++];
             memset(si, 0, sizeof(*si));
@@ -886,8 +898,11 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         /* Collect step info */
         if (nsteps >= scap) {
-            scap = scap ? scap * 2 : 32;
-            steps = realloc(steps, (size_t)scap * sizeof(step_info_t));
+            int new_cap = scap ? scap * 2 : 32;
+            void *tmp = realloc(steps, (size_t)new_cap * sizeof(step_info_t));
+            if (!tmp) { cJSON_Delete(entry); continue; }
+            steps = tmp;
+            scap = new_cap;
         }
         step_info_t *si = &steps[nsteps++];
         memset(si, 0, sizeof(*si));

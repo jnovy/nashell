@@ -107,22 +107,27 @@ void config_set_defaults(config_t *cfg) {
     /* Cycling-triggered retrieval */
     if (cfg->cycling_recall_candidates <= 0)    cfg->cycling_recall_candidates = 2;
     if (cfg->cycling_recall_min_relevance <= 0) cfg->cycling_recall_min_relevance = 0.30;
-    /* Temporal event calendar (default: enabled) */
-    if (cfg->temporal_calendar <= 0)       cfg->temporal_calendar = 1;
+    /* Temporal event calendar (default: enabled).
+     * Use == 0 (not <= 0) so users can set to -1 to explicitly disable. */
+    if (cfg->temporal_calendar == 0)       cfg->temporal_calendar = 1;
     if (cfg->temporal_recent_days <= 0)    cfg->temporal_recent_days = 7;
     if (cfg->temporal_older_days <= 0)     cfg->temporal_older_days = 30;
     if (cfg->temporal_max_entries <= 0)    cfg->temporal_max_entries = 20;
-    /* Episodic recall (default: enabled) */
-    if (cfg->episodic_recall <= 0)         cfg->episodic_recall = 1;
+    /* Episodic recall (default: enabled).
+     * Use == 0 so users can set to -1 to explicitly disable. */
+    if (cfg->episodic_recall == 0)         cfg->episodic_recall = 1;
     if (cfg->episodic_max_results <= 0)    cfg->episodic_max_results = 2;
     if (cfg->episodic_min_score <= 0)      cfg->episodic_min_score = 0.35;
-    /* Associative graph walk (default: depth 1) */
-    if (cfg->associative_depth <= 0)       cfg->associative_depth = 1;
-    /* Repo map (default: enabled, 8000 chars) */
-    if (cfg->repo_map <= 0)               cfg->repo_map = 1;
+    /* Associative graph walk (default: depth 1).
+     * Use == 0 so users can set to -1 to explicitly disable. */
+    if (cfg->associative_depth == 0)       cfg->associative_depth = 1;
+    /* Repo map (default: enabled, 8000 chars).
+     * Use == 0 so users can set to -1 to explicitly disable. */
+    if (cfg->repo_map == 0)               cfg->repo_map = 1;
     if (cfg->repo_map_max_chars <= 0)     cfg->repo_map_max_chars = 8000;
-    /* Working memory auto-promotion (default: enabled) */
-    if (cfg->auto_promote <= 0)            cfg->auto_promote = 1;
+    /* Working memory auto-promotion (default: enabled).
+     * Use == 0 so users can set to -1 to explicitly disable. */
+    if (cfg->auto_promote == 0)            cfg->auto_promote = 1;
     if (cfg->auto_promote_min_length <= 0) cfg->auto_promote_min_length = 500;
     if (cfg->auto_promote_max_chars <= 0)  cfg->auto_promote_max_chars = 2000;
     if (cfg->dream_reminder_threshold <= 0)   cfg->dream_reminder_threshold = 50;
@@ -558,14 +563,17 @@ config_t *config_load(const char *path) {
         if (mr.ok && !mr.u.b) {
             /* Block the memory_search tool */
             int n = cfg->n_profile_tools_block;
-            cfg->profile_tools_block = realloc(cfg->profile_tools_block,
-                                                (n + 1) * sizeof(char *));
+            void *tmp = realloc(cfg->profile_tools_block,
+                                (n + 1) * sizeof(char *));
+            if (!tmp) goto done_tools;
+            cfg->profile_tools_block = tmp;
             cfg->profile_tools_block[n] = strdup("memory_search");
             cfg->n_profile_tools_block = n + 1;
             /* Also disable automatic memory injection */
             cfg->profile_inject_memory = 0;
         }
     }
+done_tools:
 
     toml_free(root);
     config_set_defaults(cfg);
@@ -621,12 +629,30 @@ void config_free(config_t *cfg) {
     free(cfg->device_control.type_cmd);
     free(cfg->device_control.click_cmd);
     free(cfg->device_control.stream_preset);
-    /* Free auto-generated max_tools allow list (owned by cfg, not profile) */
+    /* Free owned tools allow list */
     if (cfg->profile_tools_allow_owned && cfg->profile_tools_allow) {
         for (int i = 0; i < cfg->n_profile_tools_allow; i++)
             free(cfg->profile_tools_allow[i]);
         free(cfg->profile_tools_allow);
         cfg->profile_tools_allow = NULL;
+    }
+    /* Free owned tools block list (Bug #41 fix) */
+    if (cfg->profile_tools_block) {
+        for (int i = 0; i < cfg->n_profile_tools_block; i++)
+            free(cfg->profile_tools_block[i]);
+        free(cfg->profile_tools_block);
+        cfg->profile_tools_block = NULL;
+    }
+    /* Free owned tool description overrides (Bug #41 fix) */
+    if (cfg->profile_tool_desc_names) {
+        for (int i = 0; i < cfg->n_profile_tool_descs; i++) {
+            free(cfg->profile_tool_desc_names[i]);
+            free(cfg->profile_tool_desc_values[i]);
+        }
+        free(cfg->profile_tool_desc_names);
+        free(cfg->profile_tool_desc_values);
+        cfg->profile_tool_desc_names = NULL;
+        cfg->profile_tool_desc_values = NULL;
     }
     config_free_model_profiles(cfg);
     free(cfg);
@@ -758,8 +784,14 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         /* Grow array if needed */
         if (cfg->n_model_profiles >= cap) {
             cap *= 2;
-            cfg->model_profiles = realloc(cfg->model_profiles,
-                                          cap * sizeof(model_profile_t));
+            void *tmp = realloc(cfg->model_profiles,
+                                cap * sizeof(model_profile_t));
+            if (!tmp) {
+                free(match);
+                toml_free(root);
+                break;
+            }
+            cfg->model_profiles = tmp;
         }
 
         model_profile_t *p = &cfg->model_profiles[cfg->n_model_profiles];
@@ -1034,12 +1066,24 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
      * Only override if the profile explicitly sets a filter — preserve
      * user config.toml settings (e.g., tools.memory_search = false). */
     if (p->n_tools_allow > 0) {
-        cfg->profile_tools_allow = p->tools_allow;
-        cfg->n_profile_tools_allow = p->n_tools_allow;
+        /* Deep-copy so cfg owns the memory (consistent with block/desc). */
+        cfg->profile_tools_allow = calloc(p->n_tools_allow, sizeof(char *));
+        if (cfg->profile_tools_allow) {
+            cfg->n_profile_tools_allow = p->n_tools_allow;
+            cfg->profile_tools_allow_owned = 1;
+            for (int i = 0; i < p->n_tools_allow; i++)
+                cfg->profile_tools_allow[i] = strdup(p->tools_allow[i]);
+        }
     }
     if (p->n_tools_block > 0) {
-        cfg->profile_tools_block = p->tools_block;
-        cfg->n_profile_tools_block = p->n_tools_block;
+        /* Deep-copy so cfg owns the memory (safe to free in config_free
+         * and config_load_spec_overlay). Bug #41/#22 fix. */
+        cfg->profile_tools_block = calloc(p->n_tools_block, sizeof(char *));
+        if (cfg->profile_tools_block) {
+            cfg->n_profile_tools_block = p->n_tools_block;
+            for (int i = 0; i < p->n_tools_block; i++)
+                cfg->profile_tools_block[i] = strdup(p->tools_block[i]);
+        }
     }
 
     /* max_tools: auto-populate allow list with essential tools when
@@ -1070,10 +1114,19 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         }
     }
 
-    /* [tools.<name>] description overrides */
-    cfg->profile_tool_desc_names = p->tool_desc_names;
-    cfg->profile_tool_desc_values = p->tool_desc_values;
-    cfg->n_profile_tool_descs = p->n_tool_descs;
+    /* [tools.<name>] description overrides — deep-copy so cfg owns the
+     * memory (safe to free in config_free / config_load_spec_overlay). */
+    if (p->n_tool_descs > 0) {
+        cfg->profile_tool_desc_names = calloc(p->n_tool_descs, sizeof(char *));
+        cfg->profile_tool_desc_values = calloc(p->n_tool_descs, sizeof(char *));
+        if (cfg->profile_tool_desc_names && cfg->profile_tool_desc_values) {
+            cfg->n_profile_tool_descs = p->n_tool_descs;
+            for (int i = 0; i < p->n_tool_descs; i++) {
+                cfg->profile_tool_desc_names[i] = strdup(p->tool_desc_names[i]);
+                cfg->profile_tool_desc_values[i] = strdup(p->tool_desc_values[i]);
+            }
+        }
+    }
 }
 
 /* ── Unified Spec: dump resolved spec as TOML ── */
@@ -1082,9 +1135,10 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
     if (!cfg || !out) return;
 
     time_t now = time(NULL);
-    struct tm *tm = gmtime(&now);
+    struct tm tm_buf;
+    gmtime_r(&now, &tm_buf);
     char ts[64];
-    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", tm);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
 
     fprintf(out, "# Nash Spec (fully resolved)\n");
     if (cfg->provider.model_id)
@@ -1512,12 +1566,15 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
           if (mr.ok && !mr.u.b) {
               /* Add "memory_search" to the block list */
               int n = cfg->n_profile_tools_block;
-              cfg->profile_tools_block = realloc(cfg->profile_tools_block,
-                                                  (n + 1) * sizeof(char *));
-              cfg->profile_tools_block[n] = strdup("memory_search");
-              cfg->n_profile_tools_block = n + 1;
-              /* Also disable automatic memory injection */
-              cfg->profile_inject_memory = 0;
+              void *tmp = realloc(cfg->profile_tools_block,
+                                  (n + 1) * sizeof(char *));
+              if (tmp) {
+                  cfg->profile_tools_block = tmp;
+                  cfg->profile_tools_block[n] = strdup("memory_search");
+                  cfg->n_profile_tools_block = n + 1;
+                  /* Also disable automatic memory injection */
+                  cfg->profile_inject_memory = 0;
+              }
           }
         }
 

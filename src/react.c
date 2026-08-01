@@ -51,7 +51,7 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
      * if the TUI thread crashes/exits without signaling, the inference
      * thread won't block forever — it checks g_tui_active each cycle
      * and breaks out with a synthetic "quit" redirect. */
-    ctx->pause_waiting = 1;
+    atomic_store(&ctx->pause_waiting, 1);
     pthread_mutex_lock(&ctx->pause_mutex);
     while (!ctx->pause_query) {
         struct timespec ts;
@@ -65,8 +65,8 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
     }
     char *redirect = ctx->pause_query;
     ctx->pause_query = NULL;
-    ctx->pause_waiting = 0;
-    ctx->pause_requested = 0;
+    atomic_store(&ctx->pause_waiting, 0);
+    atomic_store(&ctx->pause_requested, 0);
     pthread_mutex_unlock(&ctx->pause_mutex);
 
     /* Reset abort flag so next LLM call proceeds normally */
@@ -675,7 +675,7 @@ static int react_tool_index(const char *name) {
     for (int i = 0; i < tool_plugin_count(); i++) {
         const tool_plugin_t *p = tool_plugin_get(i);
         if (p && strcmp(p->name, name) == 0)
-            return (i < 32) ? i : -1;
+            return (i < MAX_TOOL_TRACKED) ? i : -1;
     }
     return -1;
 }
@@ -1131,37 +1131,40 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 continue;
             }
 
-            /* Store question in shared state for TUI to read */
-            free(ctx->user_ask_question);
-            ctx->user_ask_question = strdup(question);
-            free(ctx->user_ask_answer);
-            ctx->user_ask_answer = NULL;
-            ctx->user_ask_pending = 1;
             ctx->user_ask_used = 1;
 
             /* Emit event so TUI shows the question */
-            react_event_t ev = {0};
-            ev.react_loop = ctx->tools->react_loop;
-            ev.type = REACT_EVENT_USER_ASK;
-            ev.step = step + 1;
-            ev.message = question;
-            react_emit(on_event, userdata, &ev);
+            {
+                react_event_t ev = {0};
+                ev.react_loop = ctx->tools->react_loop;
+                ev.type = REACT_EVENT_USER_ASK;
+                ev.step = step + 1;
+                ev.message = question;
+                react_emit(on_event, userdata, &ev);
+            }
 
             /* P7: Wait on condition variable instead of polling.
              * The TUI thread signals user_ask_cond after setting the answer.
              * Uses pthread_cond_timedwait with 2s timeout as escape hatch:
              * if the TUI exits without answering, we unblock with "(quit)". */
             pthread_mutex_lock(&ctx->user_ask_mutex);
-            while (ctx->user_ask_pending) {
+            /* Store question in shared state for TUI to read (under mutex
+             * to avoid use-after-free race with TUI thread reads). */
+            free(ctx->user_ask_question);
+            ctx->user_ask_question = strdup(question);
+            free(ctx->user_ask_answer);
+            ctx->user_ask_answer = NULL;
+            atomic_store(&ctx->user_ask_pending, 1);
+            while (atomic_load(&ctx->user_ask_pending)) {
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
                 ts.tv_sec += 2;
                 pthread_cond_timedwait(&ctx->user_ask_cond, &ctx->user_ask_mutex, &ts);
                 /* Escape hatch: TUI gone → unblock with synthetic answer */
-                if (ctx->user_ask_pending && !atomic_load(&g_tui_active)) {
+                if (atomic_load(&ctx->user_ask_pending) && !atomic_load(&g_tui_active)) {
                     free(ctx->user_ask_answer);
                     ctx->user_ask_answer = strdup("(quit)");
-                    ctx->user_ask_pending = 0;
+                    atomic_store(&ctx->user_ask_pending, 0);
                     break;
                 }
             }
@@ -1660,10 +1663,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     free(tool_names);
 
                     if (chat->last_tool_call_id) {
-                        /* Tool calls API: send error as tool result */
+                        /* Tool calls API: add assistant tool_call then error result */
+                        llm_chat_add_assistant_tool_call(chat, response,
+                            chat->last_tool_calls_json);
                         llm_chat_add_tool_result(chat, chat->last_tool_call_id,
                                                   correction);
                     } else {
+                        llm_chat_add(chat, "assistant", response);
                         llm_chat_add(chat, "user", correction);
                     }
 
@@ -1951,7 +1957,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* Harness-1 §4.2: Track tool usage for diversity nudging */
         {
             int tidx = react_tool_index(action_name);
-            if (tidx >= 0 && tidx < 32)
+            if (tidx >= 0 && tidx < MAX_TOOL_TRACKED)
                 ctx->tools->tool_use_counts[tidx]++;
             ctx->tools->n_tool_uses++;
         }

@@ -162,7 +162,12 @@ static int wp_tokenize_word(const wp_vocab_t *vocab, const char *word, int word_
 
 /* Full BERT tokenization: lowercase + basic tokenize + WordPiece.
  * Adds [CLS] at start and [SEP] at end.
- * Returns total number of tokens. */
+ * Returns total number of tokens.
+ *
+ * TODO(flaw-I): isspace/ispunct/tolower are ASCII-only. Multi-byte UTF-8
+ * characters are split into individual bytes and mapped to [UNK], degrading
+ * embedding quality for non-English text. Need ICU or a UTF-8-aware
+ * ctype replacement for proper Unicode tokenization. */
 static int wp_tokenize(const wp_vocab_t *vocab, const char *text,
                        int64_t *input_ids, int64_t *attention_mask,
                        int64_t *token_type_ids, int max_len) {
@@ -366,9 +371,15 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
                                WP_MAX_TOKENS);
     if (n_tokens <= 0) return NULL;
 
-    if (n_tokens > ONNX_MODEL_MAX_TOKENS)
-        nash_log("[onnx-embed] warning: input produced %d tokens "
-                "(model trained on %d)", n_tokens, ONNX_MODEL_MAX_TOKENS);
+    if (n_tokens > ONNX_MODEL_MAX_TOKENS) {
+        nash_log("[onnx-embed] clamping %d tokens to model max %d",
+                n_tokens, ONNX_MODEL_MAX_TOKENS);
+        /* Zero out attention beyond the trained context window so mean
+         * pooling ignores positions with untrained positional embeddings. */
+        for (int i = ONNX_MODEL_MAX_TOKENS; i < n_tokens; i++)
+            attention_mask[i] = 0;
+        n_tokens = ONNX_MODEL_MAX_TOKENS;
+    }
 
     /* Create input tensors */
     int64_t shape[2] = {1, (int64_t)n_tokens};

@@ -137,10 +137,28 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 pending_tool_id = NULL;
             }
 
-            /* Convert assistant message to content blocks */
-            cJSON *asst_msg = cJSON_CreateObject();
-            cJSON_AddStringToObject(asst_msg, "role", "assistant");
-            cJSON *blocks = cJSON_CreateArray();
+            /* Convert assistant message to content blocks.
+             * If the last api_messages entry is also "assistant", merge
+             * into it to maintain strict user/assistant alternation
+             * (can happen when context eviction removes a user message
+             * between two assistant messages). */
+            int merge_asst = 0;
+            cJSON *blocks = NULL;
+            {
+                int nm = cJSON_GetArraySize(api_messages);
+                cJSON *prev = nm > 0 ? cJSON_GetArrayItem(api_messages, nm - 1) : NULL;
+                cJSON *pr = prev ? cJSON_GetObjectItem(prev, "role") : NULL;
+                if (pr && strcmp(pr->valuestring, "assistant") == 0) {
+                    blocks = cJSON_GetObjectItem(prev, "content");
+                    merge_asst = 1;
+                }
+            }
+            cJSON *asst_msg = NULL;
+            if (!merge_asst) {
+                asst_msg = cJSON_CreateObject();
+                cJSON_AddStringToObject(asst_msg, "role", "assistant");
+                blocks = cJSON_CreateArray();
+            }
 
             /* Check if this is a tool call (has tool_calls_json) */
             if (chat->msgs[i].tool_calls_json) {
@@ -213,8 +231,10 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 }
             }
 
-            cJSON_AddItemToObject(asst_msg, "content", blocks);
-            cJSON_AddItemToArray(api_messages, asst_msg);
+            if (!merge_asst) {
+                cJSON_AddItemToObject(asst_msg, "content", blocks);
+                cJSON_AddItemToArray(api_messages, asst_msg);
+            }
             continue;
         }
 
@@ -332,17 +352,36 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 free(pending_tool_id);
                 pending_tool_id = NULL;
             } else {
-                /* Regular user message */
-                cJSON *user_msg = cJSON_CreateObject();
-                cJSON_AddStringToObject(user_msg, "role", "user");
-                cJSON *uc = cJSON_CreateArray();
+                /* Regular user message — merge into previous user message
+                 * if the last api_messages entry is also "user" (can happen
+                 * when context eviction removes an assistant message between
+                 * two user messages). Anthropic requires strict alternation. */
                 cJSON *tb = cJSON_CreateObject();
                 cJSON_AddStringToObject(tb, "type", "text");
                 cJSON_AddStringToObject(tb, "text",
                                         (content && content[0]) ? content : "(empty)");
-                cJSON_AddItemToArray(uc, tb);
-                cJSON_AddItemToObject(user_msg, "content", uc);
-                cJSON_AddItemToArray(api_messages, user_msg);
+
+                int nm = cJSON_GetArraySize(api_messages);
+                cJSON *last = nm > 0 ? cJSON_GetArrayItem(api_messages, nm - 1) : NULL;
+                cJSON *lr = last ? cJSON_GetObjectItem(last, "role") : NULL;
+                if (lr && strcmp(lr->valuestring, "user") == 0) {
+                    /* Merge: append text block to existing user message */
+                    cJSON *lc = cJSON_GetObjectItem(last, "content");
+                    if (lc && cJSON_IsArray(lc)) {
+                        cJSON_AddItemToArray(lc, tb);
+                    } else {
+                        cJSON *uc = cJSON_CreateArray();
+                        cJSON_AddItemToArray(uc, tb);
+                        cJSON_ReplaceItemInObject(last, "content", uc);
+                    }
+                } else {
+                    cJSON *user_msg = cJSON_CreateObject();
+                    cJSON_AddStringToObject(user_msg, "role", "user");
+                    cJSON *uc = cJSON_CreateArray();
+                    cJSON_AddItemToArray(uc, tb);
+                    cJSON_AddItemToObject(user_msg, "content", uc);
+                    cJSON_AddItemToArray(api_messages, user_msg);
+                }
             }
             continue;
         }
@@ -541,23 +580,35 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
 
 static const char *anthropic_get_endpoint(provider_t *p) {
     if (p->type == PROVIDER_VERTEX) {
+        /* Vertex AI uses :streamRawPredict for streaming (returns SSE) and
+         * :rawPredict for non-streaming (returns plain JSON).  Using the
+         * wrong suffix causes the response parser to fail. */
+        const char *suffix = p->_requesting_stream
+                                 ? ":streamRawPredict" : ":rawPredict";
+        /* Cache streaming and non-streaming endpoints separately */
+        char **cache = p->_requesting_stream
+                           ? &p->_cached_endpoint : &p->_cached_endpoint_ns;
+        if (*cache) return *cache;
+
         const char *region = p->cfg.region ? p->cfg.region : "global";
+        const char *project = p->cfg.project_id ? p->cfg.project_id : "";
+        const char *model = p->cfg.model_id ? p->cfg.model_id
+                                            : ANTHROPIC_DEFAULT_MODEL;
         int is_global = (strcmp(region, "global") == 0);
+        char url[1024];
         if (is_global) {
-            return provider_cache_endpoint(p,
+            snprintf(url, sizeof(url),
                 "https://aiplatform.googleapis.com/v1/projects/%s/"
-                "locations/global/publishers/anthropic/models/%s:streamRawPredict",
-                p->cfg.project_id ? p->cfg.project_id : "",
-                p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
+                "locations/global/publishers/anthropic/models/%s%s",
+                project, model, suffix);
         } else {
-            return provider_cache_endpoint(p,
+            snprintf(url, sizeof(url),
                 "https://%s-aiplatform.googleapis.com/v1/projects/%s/"
-                "locations/%s/publishers/anthropic/models/%s:streamRawPredict",
-                region,
-                p->cfg.project_id ? p->cfg.project_id : "",
-                region,
-                p->cfg.model_id ? p->cfg.model_id : ANTHROPIC_DEFAULT_MODEL);
+                "locations/%s/publishers/anthropic/models/%s%s",
+                region, project, region, model, suffix);
         }
+        *cache = strdup(url);
+        return *cache;
     } else {
         const char *base = p->cfg.api_base;
         if (!base || !base[0]) base = "https://api.anthropic.com/v1";

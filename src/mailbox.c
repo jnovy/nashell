@@ -27,7 +27,7 @@ static int mkdirp(const char *path) {
 }
 
 const char *mailbox_gen_id(void) {
-    static char buf[32];
+    static _Thread_local char buf[32];
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     snprintf(buf, sizeof(buf), "%lx%04lx",
@@ -439,19 +439,17 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
 
         char *answer = mailbox_ask(mbox->mailbox_dir, ev->message,
                                    mbox->timeout_sec);
-        if (answer && mbox->react_ctx) {
+        if (mbox->react_ctx) {
             /* Set answer directly — we're called from the react thread,
              * before the cond_wait, so setting pending=0 makes the
              * react loop skip the wait entirely. */
             free(mbox->react_ctx->user_ask_answer);
-            mbox->react_ctx->user_ask_answer = answer;
+            mbox->react_ctx->user_ask_answer = answer ? answer : strdup(
+                "(no answer — mailbox timeout)");
             mbox->react_ctx->user_ask_pending = 0;
         } else {
-            /* Timeout or error — provide empty answer to unblock */
-            free(mbox->react_ctx->user_ask_answer);
-            mbox->react_ctx->user_ask_answer = strdup(
-                answer ? answer : "(no answer — mailbox timeout)");
-            mbox->react_ctx->user_ask_pending = 0;
+            /* No react context — can't deliver answer, just clean up */
+            nash_log("[mailbox] user_ask: no react context to deliver answer");
             free(answer);
         }
         return;  /* Don't pass to tui_on_event */

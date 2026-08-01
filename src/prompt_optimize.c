@@ -1473,7 +1473,6 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     free(slow_guidance);
     optimize_free_candidate(&round_baseline);
     regression_free_report(round_baseline_report);
-    optimize_free_evidence_bundle(evidence);
     for (int i = 0; i < n_rejected; i++) {
         free(rejected[i].prompt_text);
         free(rejected[i].audit);
@@ -1528,6 +1527,8 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
         else
             fprintf(stderr, "  No lessons generated\n");
     }
+
+    optimize_free_evidence_bundle(evidence);
 
     return best;
 }

@@ -10,6 +10,34 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+/* ── sensitive environment variables to scrub in child ───────────── */
+
+static const char *const sensitive_env_vars[] = {
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "AZURE_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY",
+    "TOGETHER_API_KEY", "DEEPSEEK_API_KEY", "XAI_API_KEY",
+    "OPENROUTER_API_KEY", "REPLICATE_API_TOKEN",
+    "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    "TELEGRAM_BOT_TOKEN", "NASH_API_KEY",
+    NULL
+};
+
+static void scrub_env(void) {
+    for (int i = 0; sensitive_env_vars[i]; i++)
+        unsetenv(sensitive_env_vars[i]);
+}
+
+/* ── close all FDs above stderr (except keep_fd if >= 0) ─────────── */
+
+static void close_extra_fds(int keep_fd) {
+    int maxfd = (int)sysconf(_SC_OPEN_MAX);
+    if (maxfd < 0) maxfd = 1024;
+    for (int fd = STDERR_FILENO + 1; fd < maxfd; fd++) {
+        if (fd != keep_fd)
+            close(fd);
+    }
+}
+
 /* ── child setup (shared by both helpers) ────────────────────────── */
 
 static void child_setup(int pipe_wr, unsigned flags, const char *workdir) {
@@ -37,6 +65,12 @@ static void child_setup(int pipe_wr, unsigned flags, const char *workdir) {
         }
         close(devnull);
     }
+
+    /* Close all leaked FDs (pipe_wr already closed/dup'd above) */
+    close_extra_fds(-1);
+
+    /* Scrub sensitive environment variables */
+    scrub_env();
 }
 
 /* ── kill + reap ─────────────────────────────────────────────────── */
@@ -58,7 +92,7 @@ subprocess_result_t subprocess_run(char *const argv[],
     subprocess_result_t r = { .exit_code = -1 };
 
     int pipefd[2];
-    if (pipe(pipefd) < 0) return r;
+    if (pipe2(pipefd, O_CLOEXEC) < 0) return r;
 
     pid_t pid = fork();
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return r; }
@@ -214,13 +248,15 @@ int subprocess_run_silent(char *const argv[],
         if (w > 0)
             return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed = (now.tv_sec - start.tv_sec) +
-                         (now.tv_nsec - start.tv_nsec) / 1e9;
-        if (elapsed > timeout_sec) {
-            kill_and_reap(pid, &status);
-            return -2;
+        if (timeout_sec > 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            double elapsed = (now.tv_sec - start.tv_sec) +
+                             (now.tv_nsec - start.tv_nsec) / 1e9;
+            if (elapsed > timeout_sec) {
+                kill_and_reap(pid, &status);
+                return -2;
+            }
         }
 
         struct timespec sl = {0, 100000000};  /* 100ms */

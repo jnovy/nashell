@@ -638,7 +638,17 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
                     results[offset + i] = embed_text(ctx, texts[offset + i]);
             }
         }
-        *out_count = n_texts;
+        /* Compact: only count entries with valid data so callers
+         * never dereference NULL vectors (Bug #30). */
+        int valid = 0;
+        for (int i = 0; i < n_texts; i++) {
+            if (results[i].data) {
+                if (valid != i)
+                    results[valid] = results[i];
+                valid++;
+            }
+        }
+        *out_count = valid;
         return results;
     }
 
@@ -649,7 +659,17 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
     for (int i = 0; i < n_texts; i++) {
         results[i] = embed_text(ctx, texts[i]);
     }
-    *out_count = n_texts;
+
+    /* Compact: only count entries with valid data (Bug #30). */
+    int valid = 0;
+    for (int i = 0; i < n_texts; i++) {
+        if (results[i].data) {
+            if (valid != i)
+                results[valid] = results[i];
+            valid++;
+        }
+    }
+    *out_count = valid;
     return results;
 }
 

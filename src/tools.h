@@ -2,6 +2,11 @@
 #define TOOLS_H
 
 #include <stdint.h>
+
+/* Maximum number of tools tracked for usage diversity nudging.
+ * Must be >= total built-in + plugin tools to avoid silently
+ * ignoring tools beyond this index. */
+#define MAX_TOOL_TRACKED 64
 #include "cJSON.h"
 #include "tool_plugin.h"   /* tool_result_t, tool_plugin_t, tool_param_t */
 #include "store.h"
@@ -109,7 +114,7 @@ typedef struct {
     int            dedup_steps[64];  /* step number for each hash */
     int            dedup_count;      /* entries in dedup buffer */
     /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
-    int            tool_use_counts[32]; /* indexed by tool_registry order */
+    int            tool_use_counts[MAX_TOOL_TRACKED]; /* indexed by tool_registry order */
     int            n_tool_uses;     /* total tool invocations this loop */
     /* Incremental notes tracking: detect deferred synthesis anti-pattern.
      * When the model reads many files without saving findings, compaction

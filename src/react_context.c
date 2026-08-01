@@ -215,29 +215,17 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     return serialized;
 }
 
-void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
-                         const char *user_query,
-                         react_event_fn on_event, void *userdata) {
-    (void)on_event; (void)userdata;
-
-    /* Reset per-loop counters FIRST — before any journal logging that uses step. */
-    ctx->tools->step = 0;
-
-    /* System message */
-    react_add_system_prompt(chat, ctx);
-
-    /* No manifest injection — scratchpad is the sole persistence mechanism.
-     * Cross-loop state is carried via scratchpad (auto-saved done results +
-     * LLM-pruned summaries). Within-loop recovery uses LLM summarization
-     * instead of manifest re-injection. */
-
-    /* Inject memory summary (counts only — no alphabetical listing) */
-    if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
-        /* Use shared helper for memory index + pinned injection */
-        char *mem_summary = NULL, *pinned = NULL;
-        react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
-
-        /* ── Change 1: Temporal Event Calendar ──────────────────────────
+/* ── Shared recall context injection ───────────────────────────────────
+ * Injects temporal calendar, episodic recall, type-specific memory recall
+ * (skills/lessons/strategies/antipatterns), and associative graph walk.
+ * Used by both react_build_context() and react_checkpoint_restore() to
+ * ensure structurally identical context. (Bug #24 fix)
+ * mem_summary/pinned are borrowed for logging only (not freed here). */
+void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
+                                  const char *user_query,
+                                  const char *mem_summary,
+                                  const char *pinned) {
+    /* ── Change 1: Temporal Event Calendar ──────────────────────────
          * arXiv 2605.15184 Finding #5: temporal event structuring is the
          * most impactful single component. Inject a chronological overview
          * of recent memory activity to enable temporal reasoning. */
@@ -500,14 +488,35 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
             }
         }
 
-        /* Log memory context for debugging — before freeing mem_summary/pinned */
-        react_log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_summary, pinned,
-                           &all_memories, user_query);
+    /* Log memory context for debugging */
+    react_log_memory_context(ctx->tools, ctx->tools->react_loop,
+                       ctx->tools->step, mem_summary, pinned,
+                       &all_memories, user_query);
+
+    memory_results_free(&all_memories);
+}
+
+void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
+                         const char *user_query,
+                         react_event_fn on_event, void *userdata) {
+    (void)on_event; (void)userdata;
+
+    /* Reset per-loop counters FIRST — before any journal logging that uses step. */
+    ctx->tools->step = 0;
+
+    /* System message */
+    react_add_system_prompt(chat, ctx);
+
+    /* Inject memory summary (counts only — no alphabetical listing) */
+    if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
+        char *mem_summary = NULL, *pinned = NULL;
+        react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
+
+        /* Inject recall context: temporal, episodic, type-specific, associative */
+        react_inject_recall_context(chat, ctx, user_query, mem_summary, pinned);
 
         free(mem_summary);
         free(pinned);
-        memory_results_free(&all_memories);
     }
 
     /* ── Repo Map: structural codebase context ─────────────────────

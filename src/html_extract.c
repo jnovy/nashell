@@ -49,6 +49,11 @@ int html_decode_entity(const char *src, char *out, int *advance) {
             out[1] = (char)(0x80 | (cp & 0x3F));
             return 2;
         }
+        if (cp >= 0xD800 && cp <= 0xDFFF) {
+            /* Surrogate codepoints are invalid in UTF-8; replace with U+FFFD */
+            out[0] = (char)0xEF; out[1] = (char)0xBF; out[2] = (char)0xBD;
+            return 3;
+        }
         if (cp >= 0x800 && cp <= 0xFFFF) {
             out[0] = (char)(0xE0 | (cp >> 12));
             out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));

@@ -72,9 +72,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             }
             if (!found) {
                 if (ui->pb_pass_count >= ui->pb_pass_cap) {
-                    ui->pb_pass_cap = ui->pb_pass_cap ? ui->pb_pass_cap * 2 : 8;
-                    ui->pb_passes = realloc(ui->pb_passes,
-                                             (size_t)ui->pb_pass_cap * sizeof(pb_pass_info_t));
+                    int new_cap = ui->pb_pass_cap ? ui->pb_pass_cap * 2 : 8;
+                    void *tmp = realloc(ui->pb_passes,
+                                        (size_t)new_cap * sizeof(pb_pass_info_t));
+                    if (!tmp) goto done_event;
+                    ui->pb_passes = tmp;
+                    ui->pb_pass_cap = new_cap;
                 }
                 pb_pass_info_t *pi = &ui->pb_passes[ui->pb_pass_count++];
                 pi->session_dir = strdup(ev->session_dir);
@@ -181,9 +184,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if ((ev->step <= 1 || loop_changed || pass_dir_changed) &&
             !viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
-                ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-                ui->nav_stack = realloc(ui->nav_stack,
-                                         (size_t)ui->nav_cap * sizeof(nav_entry_t));
+                int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+                void *tmp = realloc(ui->nav_stack,
+                                     (size_t)new_cap * sizeof(nav_entry_t));
+                if (!tmp) break;
+                ui->nav_stack = tmp;
+                ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
             ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
@@ -216,9 +222,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (ev->token && ev->token[0]) {
             int tlen = (int)strlen(ev->token);
             if (ui->stream_len + tlen >= ui->stream_cap - 1) {
-                ui->stream_cap = (ui->stream_len + tlen + 1) * 2;
-                ui->stream_tokens = realloc(ui->stream_tokens,
-                                             (size_t)ui->stream_cap);
+                int new_cap = (ui->stream_len + tlen + 1) * 2;
+                void *tmp = realloc(ui->stream_tokens,
+                                     (size_t)new_cap);
+                if (!tmp) break;
+                ui->stream_tokens = tmp;
+                ui->stream_cap = new_cap;
             }
             memcpy(ui->stream_tokens + ui->stream_len, ev->token, (size_t)tlen);
             ui->stream_len += tlen;
@@ -269,9 +278,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * so the user sees what tool is about to run in the main content,
          * not just in the small status bar. */
         if (flen >= ui->stream_cap - 1) {
-            ui->stream_cap = flen + 2;
-            ui->stream_tokens = realloc(ui->stream_tokens,
-                                         (size_t)ui->stream_cap);
+            int new_cap = flen + 2;
+            void *tmp = realloc(ui->stream_tokens,
+                                 (size_t)new_cap);
+            if (!tmp) { free(full); break; }
+            ui->stream_tokens = tmp;
+            ui->stream_cap = new_cap;
         }
         memcpy(ui->stream_tokens, full, (size_t)flen + 1);
         ui->stream_len = flen;
@@ -384,9 +396,12 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * status bar hint "see main pane" but no visible question. */
         if (!viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
-                ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-                ui->nav_stack = realloc(ui->nav_stack,
-                                         (size_t)ui->nav_cap * sizeof(nav_entry_t));
+                int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+                void *tmp = realloc(ui->nav_stack,
+                                     (size_t)new_cap * sizeof(nav_entry_t));
+                if (!tmp) break;
+                ui->nav_stack = tmp;
+                ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
             ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
@@ -442,6 +457,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         break;
     }
 
+done_event:
     /* Every event modifies UI state (status, stream tokens, react MD, etc.)
      * so mark dirty to ensure tui_render() actually redraws.
      * Without this, the main loop's `if (ui->dirty) tui_render(ui)` and

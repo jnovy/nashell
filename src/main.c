@@ -280,7 +280,7 @@ static void threaded_event_cb(const react_event_t *ev, void *userdata) {
 static void *infer_worker(void *arg) {
     infer_args_t *a = (infer_args_t *)arg;
     a->result = react_run(a->react, a->query, threaded_event_cb, a);
-    a->done = 1;
+    atomic_store(&a->done, 1);
     return NULL;
 }
 
@@ -2052,7 +2052,7 @@ int main(int argc, char **argv) {
 
         while (running) {
             /* Check if playbook thread completed */
-            if (inferring == INFER_PLAYBOOK && pargs_tui.done) {
+            if (atomic_load(&inferring) == INFER_PLAYBOOK && atomic_load(&pargs_tui.done)) {
                 pthread_join(infer_tid, NULL);
 
                 /* Log to agent history if this was an /agent run */
@@ -2105,13 +2105,13 @@ int main(int argc, char **argv) {
                 pargs_tui.last_session_dir = NULL;
                 playbook_free(pargs_tui.playbook);
                 pargs_tui.playbook = NULL;
-                inferring = INFER_IDLE;
+                atomic_store(&inferring, INFER_IDLE);
                 tui_render(ui);
             }
 
             /* Check if inference thread is paused and waiting for redirect.
              * Update status bar so user knows they can type a new query. */
-            if (inferring == INFER_REACT && react.pause_waiting &&
+            if (atomic_load(&inferring) == INFER_REACT && atomic_load(&react.pause_waiting) &&
                 ui->status != STATUS_READY) {
                 pthread_mutex_lock(&ui->mtx);
                 ui_state_set_status(ui, STATUS_READY,
@@ -2121,9 +2121,9 @@ int main(int argc, char **argv) {
             }
 
             /* Check if inference thread completed */
-            if (inferring == INFER_REACT && iargs.done) {
+            if (atomic_load(&inferring) == INFER_REACT && atomic_load(&iargs.done)) {
                 pthread_join(infer_tid, NULL);
-                inferring = INFER_IDLE;
+                atomic_store(&inferring, INFER_IDLE);
                 tools.react_loop++;  /* increment for next query */
                 /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
                 memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
@@ -2136,7 +2136,7 @@ int main(int argc, char **argv) {
                     ui_state_set_status(ui, STATUS_DONE, "Done");
                     /* Refresh journal view to show completed query */
                     ui_state_load_journal(ui, journal);
-                } else if (react.pause_requested && !pending_redirect) {
+                } else if (atomic_load(&react.pause_requested) && !pending_redirect) {
                     /* FIX #3: Only enter pause path if no redirect is pending.
                      * Race condition: if user types while inference is finishing,
                      * the main thread may set pause_requested=1 after the inference
@@ -2144,13 +2144,13 @@ int main(int argc, char **argv) {
                      * When pending_redirect is set, the user intended to start a
                      * new query, not pause — so skip the pause path and let the
                      * redirect be dispatched on the next iteration (line 1201). */
-                    react.pause_requested = 0;  /* reset for next run */
+                    atomic_store(&react.pause_requested, 0);  /* reset for next run */
                     react.paused = 1;
                     ui_state_set_status(ui, STATUS_READY,
                         "Paused (Space to resume, type query to redirect)");
                 } else {
                     /* Clear stale pause_requested if redirect will take over */
-                    react.pause_requested = 0;
+                    atomic_store(&react.pause_requested, 0);
                     if (pending_redirect) {
                         ui_state_set_status(ui, STATUS_READY, "Redirecting...");
                     } else if (ui->status != STATUS_ERROR) {
@@ -2192,14 +2192,14 @@ int main(int argc, char **argv) {
              * (b) the thread is paused and waiting on the condvar.
              * In both cases, inject the stashed query immediately. */
             if (!submitted_query && pending_redirect &&
-                (!inferring || react.pause_waiting)) {
+                (!atomic_load(&inferring) || atomic_load(&react.pause_waiting))) {
                 submitted_query = pending_redirect;
                 pending_redirect = NULL;
             }
 
             if (submitted_query) {
                 /* Check if inference thread is waiting for user_ask answer */
-                if (inferring && react.user_ask_pending) {
+                if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
                     /* Pass the user's answer to the waiting react loop.
                      * All writes to shared state (user_ask_answer, user_ask_pending)
                      * are done inside the mutex to ensure proper happens-before
@@ -2208,7 +2208,7 @@ int main(int argc, char **argv) {
                     free(react.user_ask_answer);
                     react.user_ask_answer = submitted_query;
                     submitted_query = NULL;  /* ownership transferred */
-                    react.user_ask_pending = 0;  /* unblock the react loop */
+                    atomic_store(&react.user_ask_pending, 0);  /* unblock the react loop */
                     pthread_cond_signal(&react.user_ask_cond);
                     pthread_mutex_unlock(&react.user_ask_mutex);
                     pthread_mutex_lock(&ui->mtx);
@@ -2219,7 +2219,7 @@ int main(int argc, char **argv) {
                 }
 
                 /* Check if inference thread is paused and waiting for redirect */
-                if (inferring && react.pause_waiting) {
+                if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
                     /* Pass the user's redirect query to the waiting react loop.
                      * This preserves the full chat context (no new react_run). */
                     pthread_mutex_lock(&react.pause_mutex);
@@ -2250,14 +2250,14 @@ int main(int argc, char **argv) {
                  * (which get stashed as pending_redirect) are safe. Slash commands
                  * may read shared state written by the inference thread without
                  * synchronization. Defer them until inference completes. */
-                if (inferring && submitted_query[0] == '/'
+                if (atomic_load(&inferring) && submitted_query[0] == '/'
                     && strncmp(submitted_query, "/quit", 5) != 0
                     && strncmp(submitted_query, "/exit", 5) != 0) {
                     /* Stash as pending_redirect — will execute after join */
                     free(pending_redirect);
                     pending_redirect = submitted_query;
                     submitted_query = NULL;
-                    react.pause_requested = 1;
+                    atomic_store(&react.pause_requested, 1);
                     provider->abort_retry = 1;  /* wake provider_sleep early */
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING,
@@ -2300,7 +2300,7 @@ int main(int argc, char **argv) {
                 }
 
                 /* Regular query — spawn inference in background thread */
-                if (inferring) {
+                if (atomic_load(&inferring)) {
                     /* User typed while inference is running — auto-pause and
                      * stash the query.  When the react loop breaks at the next
                      * step boundary the stashed query is dispatched immediately,
@@ -2308,7 +2308,7 @@ int main(int argc, char **argv) {
                     free(pending_redirect);  /* replace any earlier stash */
                     pending_redirect = submitted_query;
                     submitted_query = NULL;  /* ownership transferred */
-                    react.pause_requested = 1;
+                    atomic_store(&react.pause_requested, 1);
                     provider->abort_retry = 1;  /* wake provider_sleep early */
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_RUNNING,
@@ -2424,7 +2424,7 @@ int main(int argc, char **argv) {
                                       ws && ws->name ? ws->name : NULL, NULL,
                                       tools.react_loop == 0 ? 1 : 0);
                 pthread_create(&infer_tid, NULL, infer_worker, &iargs);
-                inferring = INFER_REACT;
+                atomic_store(&inferring, INFER_REACT);
                 tui_render(ui);
             }
 
@@ -2439,7 +2439,7 @@ int main(int argc, char **argv) {
              *
              * Throttled to 100ms intervals to avoid redundant work when
              * multiple events fire in rapid succession. */
-            if (inferring) {
+            if (atomic_load(&inferring)) {
                 static struct timespec last_refresh = {0, 0};
                 struct timespec now;
                 clock_gettime(CLOCK_MONOTONIC, &now);
@@ -2509,32 +2509,33 @@ int main(int argc, char **argv) {
                     tui_render(ui);
                 }
             }
-            { struct timespec ts = {0, 10000000}; nanosleep(&ts, NULL); }  /* 10ms */
+            /* TODO(perf): Replace busy-wait with poll/select + eventfd for proper wake-up signaling */
+            { struct timespec ts = {0, 50000000}; nanosleep(&ts, NULL); }  /* 50ms */
         }
 
         /* If inference thread is paused on condvar, wake it up so it can exit.
          * Send a "quit" redirect that will cause the loop to take one more step
          * and then exit naturally (or we just signal to unblock it). */
-        if (inferring && react.pause_waiting) {
+        if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
             pthread_mutex_lock(&react.pause_mutex);
             free(react.pause_query);
             react.pause_query = strdup("quit");
-            react.pause_requested = 0;  /* clear so loop doesn't re-pause */
+            atomic_store(&react.pause_requested, 0);  /* clear so loop doesn't re-pause */
             pthread_cond_signal(&react.pause_cond);
             pthread_mutex_unlock(&react.pause_mutex);
         }
         /* If inference thread is paused on user_ask condvar, unblock it too */
-        if (inferring && react.user_ask_pending) {
+        if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
             pthread_mutex_lock(&react.user_ask_mutex);
             free(react.user_ask_answer);
             react.user_ask_answer = strdup("(quit)");
-            react.user_ask_pending = 0;
+            atomic_store(&react.user_ask_pending, 0);
             pthread_cond_signal(&react.user_ask_cond);
             pthread_mutex_unlock(&react.user_ask_mutex);
         }
-        if (inferring) {
+        if (atomic_load(&inferring)) {
             pthread_join(infer_tid, NULL);
-            inferring = INFER_IDLE;
+            atomic_store(&inferring, INFER_IDLE);
             free(iargs.result);
             free(iargs.query);
         }

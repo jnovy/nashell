@@ -123,8 +123,23 @@ static int skip_dir(const char *name) {
 /* Recursively discover source files via git ls-files or directory walk */
 static void discover_files(rm_state_t *st, const char *root) {
     /* Try git ls-files first — respects .gitignore */
-    char cmd[NASH_PATH_MAX + 32];
-    snprintf(cmd, sizeof(cmd), "git -C '%s' ls-files 2>/dev/null", root);
+    /* Escape single quotes in root to prevent shell injection:
+     * replace each ' with '\'' (end quote, literal quote, start quote) */
+    char escaped_root[NASH_PATH_MAX * 2];
+    size_t ei = 0;
+    for (size_t ri = 0; root[ri] && ei < sizeof(escaped_root) - 5; ri++) {
+        if (root[ri] == '\'') {
+            escaped_root[ei++] = '\'';
+            escaped_root[ei++] = '\\';
+            escaped_root[ei++] = '\'';
+            escaped_root[ei++] = '\'';
+        } else {
+            escaped_root[ei++] = root[ri];
+        }
+    }
+    escaped_root[ei] = '\0';
+    char cmd[NASH_PATH_MAX * 2 + 64];
+    snprintf(cmd, sizeof(cmd), "git -C '%s' ls-files 2>/dev/null", escaped_root);
     FILE *fp = popen(cmd, "r");
     if (fp) {
         char line[NASH_PATH_MAX];
@@ -818,6 +833,9 @@ static int distribute_rank(rm_state_t *st, rm_graph_t *g,
         }
 
         /* Distribute rank to each definition */
+        /* TODO(perf): O(n^4) complexity — files × tags × edges × tags.
+         * Build a hash map from (file_idx, symbol_name) -> edge weight sum
+         * to reduce the inner two loops from O(edges × tags) to O(edges + tags). */
         for (int t = 0; t < st->n_tags && n_ranked < max_ranked; t++) {
             if (st->tags[t].file_idx != fi || st->tags[t].kind != TAG_DEFINITION)
                 continue;
@@ -1151,27 +1169,33 @@ int repomap_file_symbols(const char *content, int content_len,
         return 0;
     }
 
-    /* Build minimal rm_state_t with one file entry */
-    rm_state_t st;
-    memset(&st, 0, sizeof(st));
-    st.n_files = 1;
-    st.files[0].lines = lines;
-    st.files[0].n_lines = n_lines;
+    /* Build minimal rm_state_t with one file entry.
+     * Heap-allocated because rm_state_t is ~3.3MB (files[512] with
+     * NASH_PATH_MAX paths + tags[8192]), far too large for the stack. */
+    rm_state_t *st = calloc(1, sizeof(*st));
+    if (!st) {
+        for (int i = 0; i < n_lines; i++) free(lines[i]);
+        free(lines);
+        return 0;
+    }
+    st->n_files = 1;
+    st->files[0].lines = lines;
+    st->files[0].n_lines = n_lines;
     /* path is only used for graph building, not needed here */
-    st.files[0].path[0] = '\0';
+    st->files[0].path[0] = '\0';
 
     /* Run Phase 1 C tag extraction */
-    extract_c_tags(&st, 0);
+    extract_c_tags(st, 0);
 
     /* Collect TAG_DEFINITION entries into output buffer */
     int written = 0;
     int n_syms = 0;
-    for (int i = 0; i < st.n_tags; i++) {
-        if (st.tags[i].kind != TAG_DEFINITION) continue;
-        if (st.tags[i].sym_type == SYM_INCLUDE) continue;  /* skip #include refs */
+    for (int i = 0; i < st->n_tags; i++) {
+        if (st->tags[i].kind != TAG_DEFINITION) continue;
+        if (st->tags[i].sym_type == SYM_INCLUDE) continue;  /* skip #include refs */
 
-        const char *name = st.tags[i].name;
-        const char *suf = sym_suffix(st.tags[i].sym_type);
+        const char *name = st->tags[i].name;
+        const char *suf = sym_suffix(st->tags[i].sym_type);
         int name_len = (int)strlen(name);
         int suf_len = (int)strlen(suf);
         int sep_len = (n_syms > 0) ? 2 : 0;  /* ", " separator */
@@ -1194,6 +1218,7 @@ int repomap_file_symbols(const char *content, int content_len,
     /* Cleanup */
     for (int i = 0; i < n_lines; i++) free(lines[i]);
     free(lines);
+    free(st);
 
     return written;
 }

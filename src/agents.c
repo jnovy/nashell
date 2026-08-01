@@ -93,6 +93,63 @@ static void mkdirp(const char *path) {
     mkdir(tmp, 0755);
 }
 
+/* Reject path components containing traversal sequences.
+ * An agent_id has the form "workspace/name" — each slash-separated
+ * segment must not be "..", empty, or start with '/'.  Backslashes
+ * are also rejected to prevent Windows-style traversal. */
+int is_safe_path_component(const char *s) {
+    if (!s || !*s || *s == '/') return 0;
+    const char *p = s;
+    while (*p) {
+        /* Extract segment between slashes */
+        const char *seg = p;
+        while (*p && *p != '/') p++;
+        size_t slen = (size_t)(p - seg);
+        /* Reject empty segments (double slash), ".." and "." */
+        if (slen == 0) return 0;
+        if (slen == 2 && seg[0] == '.' && seg[1] == '.') return 0;
+        if (slen == 1 && seg[0] == '.') return 0;
+        /* Reject backslashes anywhere in the segment */
+        for (const char *c = seg; c < seg + slen; c++)
+            if (*c == '\\') return 0;
+        if (*p == '/') p++;
+    }
+    return 1;
+}
+
+/* Escape a string for safe JSON embedding.  Caller must free the result.
+ * Handles quotes, backslashes, and control characters. */
+static char *json_escape_str(const char *s) {
+    if (!s) return strdup("");
+    size_t cap = strlen(s) * 2 + 1;
+    char *out = malloc(cap);
+    if (!out) return strdup("");
+    size_t j = 0;
+    for (size_t i = 0; s[i]; i++) {
+        if (j + 8 > cap) {
+            cap *= 2;
+            char *tmp = realloc(out, cap);
+            if (!tmp) { out[j] = '\0'; return out; }
+            out = tmp;
+        }
+        switch (s[i]) {
+        case '"':  out[j++] = '\\'; out[j++] = '"';  break;
+        case '\\': out[j++] = '\\'; out[j++] = '\\'; break;
+        case '\n': out[j++] = '\\'; out[j++] = 'n';  break;
+        case '\r': out[j++] = '\\'; out[j++] = 'r';  break;
+        case '\t': out[j++] = '\\'; out[j++] = 't';  break;
+        default:
+            if ((unsigned char)s[i] < 0x20) {
+                j += (size_t)snprintf(out + j, cap - j, "\\u%04x", (unsigned char)s[i]);
+            } else {
+                out[j++] = s[i];
+            }
+        }
+    }
+    out[j] = '\0';
+    return out;
+}
+
 /* ── Cron parsing ─────────────────────────────────────── */
 
 /* Parse a single cron field into a bitmask array.
@@ -224,7 +281,10 @@ time_t agent_next_occurrence(const agent_schedule_t *sched, time_t after) {
 static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                                 const char *ws_prefix,
                                 agent_entry_t **agents, int *n_agents,
-                                int *cap_agents) {
+                                int *cap_agents, int depth) {
+    /* Guard against symlink loops or excessively deep nesting */
+    if (depth > 8) return;
+
     /* Check if this directory has an agent/ subdirectory */
     char agents_dir[NASH_PATH_MAX];
     snprintf(agents_dir, sizeof(agents_dir), "%s/agent", dir_path);
@@ -347,7 +407,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
             snprintf(subprefix, sizeof(subprefix), "%s", de->d_name);
 
         scan_workspace_dir(nash_dir, subpath, subprefix,
-                           agents, n_agents, cap_agents);
+                           agents, n_agents, cap_agents, depth + 1);
     }
     closedir(dp);
 }
@@ -551,7 +611,7 @@ agent_queue_t *agent_scan(const char *nash_dir) {
     char ws_root[NASH_PATH_MAX];
     snprintf(ws_root, sizeof(ws_root), "%s/workspaces", nash_dir);
     scan_workspace_dir(nash_dir, ws_root, "",
-                       &q->agents, &q->n_agents, &cap);
+                       &q->agents, &q->n_agents, &cap, 0);
 
     /* Fix IDs: remove leading slash if ws_prefix was "" */
     for (int i = 0; i < q->n_agents; i++) {
@@ -769,13 +829,22 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
     FILE *f = fopen(path, "a");
     if (!f) return -1;
 
+    char *esc_id  = json_escape_str(agent->id);
+    char *esc_st   = json_escape_str(status ? status : "unknown");
     fprintf(f, "{\"id\":\"%s\",\"ts\":%ld,\"dur\":%d,\"st\":\"%s\"",
-            agent->id, (long)time(NULL), duration,
-            status ? status : "unknown");
-    if (session_id)
-        fprintf(f, ",\"session\":\"%s\"", session_id);
-    if (agent->version && agent->version[0])
-        fprintf(f, ",\"ver\":\"%s\"", agent->version);
+            esc_id, (long)time(NULL), duration, esc_st);
+    free(esc_id);
+    free(esc_st);
+    if (session_id) {
+        char *esc_sid = json_escape_str(session_id);
+        fprintf(f, ",\"session\":\"%s\"", esc_sid);
+        free(esc_sid);
+    }
+    if (agent->version && agent->version[0]) {
+        char *esc_ver = json_escape_str(agent->version);
+        fprintf(f, ",\"ver\":\"%s\"", esc_ver);
+        free(esc_ver);
+    }
     fprintf(f, "}\n");
     fclose(f);
     return 0;
@@ -784,6 +853,9 @@ int agent_history_append(const char *nash_dir, const agent_entry_t *agent,
 void agent_save_result(const char *nash_dir, const char *agent_id,
                        const char *session_dir) {
     if (!nash_dir || !agent_id || !session_dir) return;
+
+    /* Reject agent_id with path traversal sequences */
+    if (!is_safe_path_component(agent_id)) return;
 
     char dir[NASH_PATH_MAX];
     snprintf(dir, sizeof(dir), "%s/agent/results/%s", nash_dir, agent_id);

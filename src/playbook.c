@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdint.h>
 #include <pthread.h>
 /* ── YAML → Playbook parsing ────────────────────────── */
 
@@ -312,25 +313,65 @@ tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
 
 /* ── Template expansion ──────────────────────────────── */
 
+/* Shell-escape a string by wrapping in single quotes.
+ * Used to sanitize LLM output before embedding in shell commands.
+ * Returns a malloc'd string: 'value' with internal ' replaced by '\'' */
+static char *shell_escape_value(const char *val) {
+    if (!val || !val[0]) return strdup("''");
+    /* Count single quotes to determine output size */
+    size_t n_sq = 0;
+    for (const char *p = val; *p; p++)
+        if (*p == '\'') n_sq++;
+    /* output: ' + (len + n_sq*3) + ' + NUL
+     * each ' in input becomes: '\'' (close, escaped, reopen) = 4 chars vs 1 */
+    size_t vlen = strlen(val);
+    size_t out_len = vlen + n_sq * 3 + 2;
+    char *out = malloc(out_len + 1);
+    if (!out) return strdup("''");
+    char *d = out;
+    *d++ = '\'';
+    for (const char *p = val; *p; p++) {
+        if (*p == '\'') {
+            *d++ = '\''; *d++ = '\\'; *d++ = '\''; *d++ = '\'';
+        } else {
+            *d++ = *p;
+        }
+    }
+    *d++ = '\'';
+    *d = '\0';
+    return out;
+}
+
 /* Replace all occurrences of {{key}} with value in a string */
 static char *str_replace_all(const char *src, const char *key, const char *val) {
     if (!src || !key || !val) return src ? strdup(src) : NULL;
 
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "{{%s}}", key);
-    int plen = (int)strlen(pattern);
-    int vlen = (int)strlen(val);
+    size_t plen = strlen(pattern);
+    size_t vlen = strlen(val);
 
     /* Count occurrences */
-    int count = 0;
+    size_t count = 0;
     const char *p = src;
     while ((p = strstr(p, pattern)) != NULL) { count++; p += plen; }
 
     if (count == 0) return strdup(src);
 
-    int slen = (int)strlen(src);
-    int new_len = slen + count * (vlen - plen);
+    size_t slen = strlen(src);
+    /* Overflow-safe size calculation */
+    size_t new_len;
+    if (vlen >= plen) {
+        size_t growth = vlen - plen;
+        if (growth > 0 && count > (SIZE_MAX - slen - 1) / growth)
+            return strdup(src);  /* overflow — return unmodified copy */
+        new_len = slen + count * growth;
+    } else {
+        size_t shrink = plen - vlen;
+        new_len = slen - count * shrink;  /* always safe: shrinking */
+    }
     char *result = malloc(new_len + 1);
+    if (!result) return strdup(src);
     char *dst = result;
     p = src;
     while (*p) {
@@ -361,8 +402,9 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
 
         char datebuf[32];
     time_t now = time(NULL);
-    struct tm *utc = gmtime(&now);
-    strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", utc);
+    struct tm utc;
+    gmtime_r(&now, &utc);
+    strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &utc);
 
     char cwdbuf[NASH_PATH_MAX];
     if (!getcwd(cwdbuf, sizeof(cwdbuf)))
@@ -386,8 +428,6 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
         {"date",            datebuf},
         {"pass_number",     pass_num},
         {"total_passes",    total_passes},
-        {"prev_result",     prev_result ? prev_result : ""},
-        {"prev_scratchpad", prev_scratch_text ? prev_scratch_text : ""},
         {NULL, NULL},
     };
 
@@ -400,6 +440,21 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
     /* User-defined variables */
     for (int i = 0; i < pb->n_vars; i++) {
         char *next = str_replace_all(result, pb->var_keys[i], pb->var_values[i]);
+        free(result);
+        result = next;
+    }
+
+    /* Expand LLM-sourced variables LAST so their content cannot inject
+     * builtin or user-defined variable references (Bug #8 fix).
+     * str_replace_all is non-recursive, so {{...}} patterns inside
+     * prev_result/prev_scratchpad remain literal after this point. */
+    {
+        char *next = str_replace_all(result, "prev_result",
+                                     prev_result ? prev_result : "");
+        free(result);
+        result = next;
+        next = str_replace_all(result, "prev_scratchpad",
+                               prev_scratch_text ? prev_scratch_text : "");
         free(result);
         result = next;
     }
@@ -955,10 +1010,14 @@ void *playbook_worker(void *arg) {
         char *result = NULL;
         if (pb->passes[pass].type == PB_PASS_SCRIPT) {
             /* Script pass: run shell command, no LLM call.
-             * Expand {{var}} placeholders in the command string. */
+             * Expand {{var}} placeholders in the command string.
+             * Shell-escape LLM output (prev_result) to prevent
+             * command injection via crafted model responses. */
+            char *safe_prev = shell_escape_value(prev_result);
             char *expanded_cmd = playbook_expand(pb,
                 pb->passes[pass].command ? pb->passes[pass].command : "",
-                pass, prev_result, mdir, model, NULL, pa->nash_dir);
+                pass, safe_prev, mdir, model, NULL, pa->nash_dir);
+            free(safe_prev);
             if (expanded_cmd && expanded_cmd[0]) {
                 if (pa->ui) {
                     pthread_mutex_lock(&pa->ui->mtx);
@@ -1226,6 +1285,6 @@ void *playbook_worker(void *arg) {
     free(shared_session_dir);
     scratchpad_free(&shared_scratch);
     pa->playbook_ok = playbook_ok;
-    pa->done = 1;
+    atomic_store(&pa->done, 1);
     return NULL;
 }

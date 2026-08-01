@@ -272,6 +272,15 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
     snprintf(rdir, sizeof(rdir), "%s/runs", ctx->nash_dir);
 
     if (show_detail && show_id && *show_id) {
+        /* Validate run ID to prevent path traversal */
+        if (!is_safe_path_component(show_id)) {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR,
+                "/runs show: invalid run ID");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
         /* /runs show <id> — display a specific run log */
         char rpath[NASH_PATH_MAX + NASH_PATH_MAX];
         /* Try exact filename, or append .jsonl */

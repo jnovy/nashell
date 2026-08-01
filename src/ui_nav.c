@@ -131,22 +131,29 @@ void ui_state_enter(ui_state_t *ui) {
     if (strncmp(uri, "http://", 7) == 0 || strncmp(uri, "https://", 8) == 0) {
         pid_t pid = fork();
         if (pid == 0) {
-            /* Child: detach from terminal, redirect output to /dev/null */
-            setsid();
-            int devnull = open("/dev/null", O_RDWR);
-            if (devnull >= 0) {
-                dup2(devnull, STDIN_FILENO);
-                dup2(devnull, STDOUT_FILENO);
-                dup2(devnull, STDERR_FILENO);
-                if (devnull > 2) close(devnull);
+            /* Double-fork: grandchild is reparented to init/systemd,
+             * so no zombie accumulates.  First child exits immediately
+             * and is reaped by the blocking waitpid below. */
+            pid_t pid2 = fork();
+            if (pid2 == 0) {
+                /* Grandchild: detach from terminal, redirect output to /dev/null */
+                setsid();
+                int devnull = open("/dev/null", O_RDWR);
+                if (devnull >= 0) {
+                    dup2(devnull, STDIN_FILENO);
+                    dup2(devnull, STDOUT_FILENO);
+                    dup2(devnull, STDERR_FILENO);
+                    if (devnull > 2) close(devnull);
+                }
+                execlp("xdg-open", "xdg-open", uri, (char *)NULL);
+                _exit(127);
             }
-            execlp("xdg-open", "xdg-open", uri, (char *)NULL);
-            _exit(127);
+            /* First child exits immediately */
+            _exit(pid2 < 0 ? 1 : 0);
         }
-        /* Parent: reap zombie asynchronously (SIGCHLD default ignores) */
+        /* Parent: reap first child (exits immediately, no hang) */
         if (pid > 0) {
-            /* Non-blocking waitpid — xdg-open may take a while */
-            waitpid(pid, NULL, WNOHANG);
+            waitpid(pid, NULL, 0);
         }
         return;
     }
@@ -168,9 +175,12 @@ void ui_state_enter(ui_state_t *ui) {
 
         /* Save current state to nav stack */
         if (ui->nav_depth >= ui->nav_cap) {
-            ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-            ui->nav_stack = realloc(ui->nav_stack,
-                                     (size_t)ui->nav_cap * sizeof(nav_entry_t));
+            int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+            void *tmp = realloc(ui->nav_stack,
+                                     (size_t)new_cap * sizeof(nav_entry_t));
+            if (!tmp) return;
+            ui->nav_stack = tmp;
+            ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
         entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
@@ -305,9 +315,12 @@ void ui_state_enter(ui_state_t *ui) {
 
     /* Save current state to nav stack */
     if (ui->nav_depth >= ui->nav_cap) {
-        ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-        ui->nav_stack = realloc(ui->nav_stack,
-                                 (size_t)ui->nav_cap * sizeof(nav_entry_t));
+        int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+        void *tmp = realloc(ui->nav_stack,
+                                 (size_t)new_cap * sizeof(nav_entry_t));
+        if (!tmp) return;
+        ui->nav_stack = tmp;
+        ui->nav_cap = new_cap;
     }
     nav_entry_t *raw_entry = &ui->nav_stack[ui->nav_depth];
     raw_entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
@@ -412,9 +425,12 @@ void ui_state_toggle_preview(ui_state_t *ui) {
 
     /* Not expanded — add it */
     if (ui->expanded_count >= ui->expanded_cap) {
-        ui->expanded_cap = ui->expanded_cap ? ui->expanded_cap * 2 : 16;
-        ui->expanded_uris = realloc(ui->expanded_uris,
-                                     (size_t)ui->expanded_cap * sizeof(char *));
+        int new_cap = ui->expanded_cap ? ui->expanded_cap * 2 : 16;
+        void *tmp = realloc(ui->expanded_uris,
+                                     (size_t)new_cap * sizeof(char *));
+        if (!tmp) goto regen;
+        ui->expanded_uris = tmp;
+        ui->expanded_cap = new_cap;
     }
     ui->expanded_uris[ui->expanded_count++] = strdup(uri);
 
@@ -529,9 +545,12 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
 
     /* 2. Push current view onto nav stack */
     if (ui->nav_depth >= ui->nav_cap) {
-        ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-        ui->nav_stack = realloc(ui->nav_stack,
-                                (size_t)ui->nav_cap * sizeof(nav_entry_t));
+        int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+        void *tmp = realloc(ui->nav_stack,
+                                (size_t)new_cap * sizeof(nav_entry_t));
+        if (!tmp) return;
+        ui->nav_stack = tmp;
+        ui->nav_cap = new_cap;
     }
     nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
     entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
@@ -648,8 +667,11 @@ static void collect_session_dirs(const char *sessions_dir,
         if (ent->d_name[0] == '.') continue;
         if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
         if (*count >= *cap) {
-            *cap = *cap ? *cap * 2 : 256;
-            *names = realloc(*names, (size_t)*cap * sizeof(char *));
+            int new_cap = *cap ? *cap * 2 : 256;
+            void *tmp = realloc(*names, (size_t)new_cap * sizeof(char *));
+            if (!tmp) break;
+            *names = tmp;
+            *cap = new_cap;
         }
         char full[NASH_PATH_MAX];
         snprintf(full, sizeof(full), "%s/%s", sessions_dir, ent->d_name);
@@ -969,9 +991,12 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     /* If this is the first search, push current view onto nav stack */
     if (!ui->search_active) {
         if (ui->nav_depth >= ui->nav_cap) {
-            ui->nav_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-            ui->nav_stack = realloc(ui->nav_stack,
-                                     (size_t)ui->nav_cap * sizeof(nav_entry_t));
+            int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+            void *tmp = realloc(ui->nav_stack,
+                                     (size_t)new_cap * sizeof(nav_entry_t));
+            if (!tmp) return;
+            ui->nav_stack = tmp;
+            ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
         entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;

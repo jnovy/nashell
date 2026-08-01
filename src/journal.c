@@ -9,6 +9,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <sys/file.h>  /* flock */
+#include <unistd.h>    /* fdatasync, fileno */
 
 /* Recursively unwrap nested JSON in a thought string.
  * The LLM sometimes echoes its own previous response as a thought,
@@ -169,6 +170,8 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     fprintf(f, "%s\n", json);
     free(json);
     cJSON_Delete(entry);
+    fflush(f);
+    fdatasync(fileno(f));
     fclose(f);
     pthread_mutex_unlock(&j->mtx);  /* FIX CRIT2 */
     return 0;
@@ -586,9 +589,10 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
         if (base) base++; else base = session_dir;
         double ts = atof(base);
         time_t ts_t = (time_t)ts;
-        struct tm *tm = localtime(&ts_t);
+        struct tm tm;
+        localtime_r(&ts_t, &tm);
         char date_buf[32];
-        strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", tm);
+        strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm);
         if (query_text[0])
             snprintf(prefix, sizeof(prefix), "Session %s | Query: %s\n",
                      date_buf, query_text);

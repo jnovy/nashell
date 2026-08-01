@@ -41,8 +41,12 @@ static void mapping_add(yaml_node_t *map, const char *key, yaml_node_t *val) {
     if (!map || map->type != YAML_MAPPING || !val) return;
     if (map->n_children >= map->cap_children) {
         int newcap = map->cap_children ? map->cap_children * 2 : 8;
-        map->keys = realloc(map->keys, newcap * sizeof(char *));
-        map->values = realloc(map->values, newcap * sizeof(yaml_node_t *));
+        void *tmp_k = realloc(map->keys, newcap * sizeof(char *));
+        if (!tmp_k) return;
+        map->keys = tmp_k;
+        void *tmp_v = realloc(map->values, newcap * sizeof(yaml_node_t *));
+        if (!tmp_v) return;
+        map->values = tmp_v;
         map->cap_children = newcap;
     }
     map->keys[map->n_children] = strdup(key);
@@ -54,7 +58,9 @@ static void sequence_add(yaml_node_t *seq, yaml_node_t *item) {
     if (!seq || seq->type != YAML_SEQUENCE || !item) return;
     if (seq->n_items >= seq->cap_items) {
         int newcap = seq->cap_items ? seq->cap_items * 2 : 8;
-        seq->items = realloc(seq->items, newcap * sizeof(yaml_node_t *));
+        void *tmp = realloc(seq->items, newcap * sizeof(yaml_node_t *));
+        if (!tmp) return;
+        seq->items = tmp;
         seq->cap_items = newcap;
     }
     seq->items[seq->n_items++] = item;
@@ -123,12 +129,46 @@ static void strip_comment(char *s) {
     }
 }
 
+/* Process YAML escape sequences in a double-quoted string (in-place).
+ * Handles: \n \t \r \\ \" \/ \0 \a \b \e \f \v */
+static void process_dq_escapes(char *s) {
+    char *r = s, *w = s;
+    while (*r) {
+        if (*r == '\\' && r[1]) {
+            switch (r[1]) {
+                case 'n':  *w++ = '\n'; r += 2; break;
+                case 't':  *w++ = '\t'; r += 2; break;
+                case 'r':  *w++ = '\r'; r += 2; break;
+                case '\\': *w++ = '\\'; r += 2; break;
+                case '"':  *w++ = '"';  r += 2; break;
+                case '/':  *w++ = '/';  r += 2; break;
+                case '0':  *w++ = '\0'; r += 2; break;
+                case 'a':  *w++ = '\a'; r += 2; break;
+                case 'b':  *w++ = '\b'; r += 2; break;
+                case 'e':  *w++ = '\x1B'; r += 2; break;
+                case 'f':  *w++ = '\f'; r += 2; break;
+                case 'v':  *w++ = '\v'; r += 2; break;
+                default:   *w++ = *r++; break;  /* Unknown escape: keep as-is */
+            }
+        } else {
+            *w++ = *r++;
+        }
+    }
+    *w = '\0';
+}
+
 /* Unquote a scalar value */
 static char *unquote(const char *s) {
     int len = (int)strlen(s);
     if (len >= 2) {
-        if ((s[0] == '\"' && s[len-1] == '\"') ||
-            (s[0] == '\'' && s[len-1] == '\'')) {
+        if (s[0] == '"' && s[len-1] == '"') {
+            char *r = malloc(len - 1);
+            memcpy(r, s + 1, len - 2);
+            r[len - 2] = '\0';
+            process_dq_escapes(r);
+            return r;
+        }
+        if (s[0] == '\'' && s[len-1] == '\'') {
             char *r = malloc(len - 1);
             memcpy(r, s + 1, len - 2);
             r[len - 2] = '\0';
@@ -161,8 +201,16 @@ static parser_t parser_init(const char *input) {
             char *trimmed = strdup(line);
             strip_trailing(trimmed);
             if (!is_blank_or_comment(trimmed) || idx == 0) {
-                p.lines = realloc(p.lines, (idx + 1) * sizeof(char *));
-                p.indents = realloc(p.indents, (idx + 1) * sizeof(int));
+                void *tmp_l = realloc(p.lines, (idx + 1) * sizeof(char *));
+                void *tmp_i = realloc(p.indents, (idx + 1) * sizeof(int));
+                if (!tmp_l || !tmp_i) {
+                    if (tmp_l) p.lines = tmp_l;
+                    if (tmp_i) p.indents = tmp_i;
+                    free(trimmed);
+                    break;
+                }
+                p.lines = tmp_l;
+                p.indents = tmp_i;
                 p.indents[idx] = calc_indent(trimmed);
                 p.lines[idx] = trimmed;
                 idx++;
@@ -244,7 +292,9 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
         size_t clen = strlen(content);
         while (len + clen + 2 > cap) {
             cap *= 2;
-            result = realloc(result, cap);
+            void *tmp = realloc(result, cap);
+            if (!tmp) { free(result); return strdup(""); }
+            result = tmp;
         }
 
         if (literal) {
@@ -274,7 +324,11 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
 
     /* Always ensure trailing newline for literal */
     if (literal && len > 0 && result[len-1] != '\n') {
-        if (len + 1 >= cap) result = realloc(result, cap + 2);
+        if (len + 1 >= cap) {
+            void *tmp = realloc(result, cap + 2);
+            if (!tmp) { free(result); return strdup(""); }
+            result = tmp;
+        }
         result[len++] = '\n';
         result[len] = '\0';
     }

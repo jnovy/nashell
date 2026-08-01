@@ -251,8 +251,11 @@ static void finish_paste(ui_state_t *ui) {
         int nbytes = paste_len;
         /* Ensure capacity */
         while (ui->input_len + nbytes >= ui->input_cap - 1) {
-            ui->input_cap *= 2;
-            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+            int new_cap = ui->input_cap * 2;
+            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
+            if (!tmp) break;
+            ui->input_buffer = tmp;
+            ui->input_cap = new_cap;
         }
         /* Make room at cursor position */
         memmove(ui->input_buffer + ui->cursor_pos + nbytes,
@@ -1110,8 +1113,11 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     ui->history_idx--;
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
                     if (hlen >= ui->input_cap) {
-                        ui->input_cap = hlen + 64;
-                        ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                        int new_cap = hlen + 64;
+                        char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
+                        if (!tmp) break;
+                        ui->input_buffer = tmp;
+                        ui->input_cap = new_cap;
                     }
                     memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
                     ui->input_len = hlen;
@@ -1189,8 +1195,11 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         /* Past end — restore stashed in-progress input */
                         int hlen = ui->saved_input ? ui->saved_input_len : 0;
                         if (hlen >= ui->input_cap) {
-                            ui->input_cap = hlen + 64;
-                            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                            int new_cap = hlen + 64;
+                            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
+                            if (!tmp) break;
+                            ui->input_buffer = tmp;
+                            ui->input_cap = new_cap;
                         }
                         if (hlen > 0)
                             memcpy(ui->input_buffer, ui->saved_input, (size_t)hlen);
@@ -1202,8 +1211,11 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     } else {
                         int hlen = (int)strlen(ui->history[ui->history_idx]);
                         if (hlen >= ui->input_cap) {
-                            ui->input_cap = hlen + 64;
-                            ui->input_buffer = realloc(ui->input_buffer, (size_t)ui->input_cap);
+                            int new_cap = hlen + 64;
+                            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
+                            if (!tmp) break;
+                            ui->input_buffer = tmp;
+                            ui->input_cap = new_cap;
                         }
                         memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
                         ui->input_len = hlen;

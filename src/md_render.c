@@ -462,7 +462,7 @@ static int render_segs_wrapped_ex(WINDOW *win, int start_row, int col,
              * because it sets segs[partial_seg].len = partial_byte. */
             int did_split = 0;
             if (partial_seg >= 0 && partial_byte > 0 && partial_byte < segs[partial_seg].len) {
-                split_segment(segs, &n_segs, 256, partial_seg, partial_byte);
+                split_segment(segs, &n_segs, MAX_INLINE_SEGS, partial_seg, partial_byte);
                 did_split = 1;
             }
             /* After split, render up to and including the first part of the split.
@@ -483,7 +483,7 @@ static int render_segs_wrapped_ex(WINDOW *win, int start_row, int col,
                 int b = 0;
                 while (b < segs[0].len && segs[0].text[b] && (segs[0].text[b] & 0xC0) == 0x80) b++;
                 if (b < segs[0].len) {
-                    split_segment(segs, &n_segs, 256, 0, b + 1);
+                    split_segment(segs, &n_segs, MAX_INLINE_SEGS, 0, b + 1);
                 }
                 render_segs_on_line(win, current_row, cur_col, segs, 1, cur_width);
             }
@@ -605,9 +605,12 @@ md_doc_t *md_parse(const char *source) {
                 if (uri_end) {
                     /* Found a link */
                     if (doc->link_count >= doc->link_cap) {
-                        doc->link_cap = doc->link_cap ? doc->link_cap * 2 : 16;
-                        doc->links = realloc(doc->links,
-                                             doc->link_cap * sizeof(md_link_t));
+                        size_t new_cap = doc->link_cap ? doc->link_cap * 2 : 16;
+                        void *tmp = realloc(doc->links,
+                                            new_cap * sizeof(md_link_t));
+                        if (!tmp) break;
+                        doc->links = tmp;
+                        doc->link_cap = new_cap;
                     }
                     md_link_t *lk = &doc->links[doc->link_count++];
                     lk->text = strndup(text_start, (size_t)(text_end - text_start));

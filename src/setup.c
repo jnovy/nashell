@@ -569,6 +569,14 @@ static int write_credentials_toml(const char *nash_dir,
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/credentials.toml", nash_dir);
 
+    /* Back up existing credentials before overwriting */
+    struct stat cred_st;
+    if (stat(path, &cred_st) == 0) {
+        char bak[NASH_PATH_MAX];
+        snprintf(bak, sizeof(bak), "%s.bak", path);
+        rename(path, bak);
+    }
+
     FILE *f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "Error: cannot write %s: %s\n", path, strerror(errno));

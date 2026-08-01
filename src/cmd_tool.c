@@ -534,6 +534,19 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
         return CMD_CONTINUE;
     }
 
+    /* Validate profile name: alphanumeric + dash + underscore only
+     * (mirrors cmd_tool_save validation, prevents path traversal) */
+    for (const char *p = profile; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR,
+                "/tool load: profile name must be alphanumeric (a-z, 0-9, -, _)");
+            pthread_mutex_unlock(&ui->mtx);
+            tui_render(ui);
+            return CMD_CONTINUE;
+        }
+    }
+
     char dir[NASH_PATH_MAX];
     tool_profiles_dir(ctx->nash_dir, dir, sizeof(dir));
     char path[NASH_PATH_MAX];

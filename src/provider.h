@@ -94,9 +94,11 @@ struct provider {
     void (*destroy)(provider_t *p);
 
     /* ── Provider-specific state ── */
-    char *_cached_endpoint;     /* cached endpoint URL string */
+    char *_cached_endpoint;     /* cached endpoint URL string (streaming) */
+    char *_cached_endpoint_ns;  /* cached endpoint URL string (non-streaming) */
     char *_cached_auth_token;   /* cached OAuth2 token (Vertex) */
     long  _auth_token_expiry;   /* token expiry time (Vertex) */
+    int   _requesting_stream;   /* set before get_endpoint: 1=streaming, 0=non-streaming */
 
     /* ── Tool filter (set by caller before provider_complete) ── */
     const struct tool_filter_t *tool_filter;  /* NULL = all tools */

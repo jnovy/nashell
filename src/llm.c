@@ -52,8 +52,8 @@ void llm_chat_free(llm_chat_t *chat) {
     free(chat);
 }
 
-void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
-    if (llm_chat_ensure_capacity(chat) != 0) return;
+int llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
+    if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
@@ -62,11 +62,12 @@ void llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
         nash_log("[llm] CRITICAL: strdup failed for message role=%s — context will be incomplete", role);
         free(m->role);
         free(m->content);
-        return;
+        return -1;
     }
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     chat->n_msgs++;
+    return 0;
 }
 
 
@@ -113,9 +114,9 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
 }
 
 /* Add a typed message — sets msg_type for structured routing. */
-void llm_chat_add_typed(llm_chat_t *chat, const char *role,
-                         const char *content, llm_msg_type_t type) {
-    if (llm_chat_ensure_capacity(chat) != 0) return;
+int llm_chat_add_typed(llm_chat_t *chat, const char *role,
+                        const char *content, llm_msg_type_t type) {
+    if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup(role);
@@ -124,13 +125,14 @@ void llm_chat_add_typed(llm_chat_t *chat, const char *role,
         nash_log("[llm] CRITICAL: strdup failed for typed message role=%s", role);
         free(m->role);
         free(m->content);
-        return;
+        return -1;
     }
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
+    return 0;
 }
 
 /* Add a typed message with printf-style formatting.
@@ -149,9 +151,9 @@ int llm_chat_add_formatted(llm_chat_t *chat, const char *role,
     if (!buf) { va_end(ap2); return -1; }
     vsnprintf(buf, (size_t)needed + 1, fmt, ap2);
     va_end(ap2);
-    llm_chat_add_typed(chat, role, buf, type);
+    int rc = llm_chat_add_typed(chat, role, buf, type);
     free(buf);
-    return 0;
+    return rc;
 }
 
 /* Remove all messages of a given type. Returns count removed. */
@@ -215,11 +217,11 @@ void llm_chat_remove_range(llm_chat_t *chat, int start, int end) {
 /* FIX D5: Insert a typed message at a specific position.
  * Grows array if needed, shifts messages from pos..n_msgs-1 forward.
  * BUG 4 FIX: strdup BEFORE memmove — if strdup fails, chat array is untouched. */
-void llm_chat_insert_typed(llm_chat_t *chat, int pos,
-                            const char *role, const char *content,
-                            llm_msg_type_t type) {
-    if (!chat || pos < 0 || pos > chat->n_msgs) return;
-    if (llm_chat_ensure_capacity(chat) != 0) return;
+int llm_chat_insert_typed(llm_chat_t *chat, int pos,
+                           const char *role, const char *content,
+                           llm_msg_type_t type) {
+    if (!chat || pos < 0 || pos > chat->n_msgs) return -1;
+    if (llm_chat_ensure_capacity(chat) != 0) return -1;
     /* BUG 4 FIX: Allocate strings BEFORE shifting array.
      * Previously, memmove ran first, then strdup failure left a
      * corrupted hole at pos with shifted messages at pos+1..n_msgs. */
@@ -229,7 +231,7 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
         nash_log("[llm] CRITICAL: strdup failed for inserted typed message role=%s", role);
         free(r);
         free(c);
-        return;
+        return -1;
     }
     /* Shift existing messages to make room */
     int tail = chat->n_msgs - pos;
@@ -245,12 +247,13 @@ void llm_chat_insert_typed(llm_chat_t *chat, int pos,
     m->msg_type = type;
     m->importance = llm_importance_for_type(type);
     chat->n_msgs++;
+    return 0;
 }
 
 /* Add a tool result message (role: "tool" with tool_call_id) */
-void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
-                               const char *content) {
-    if (llm_chat_ensure_capacity(chat) != 0) return;
+int llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
+                              const char *content) {
+    if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup("tool");
@@ -261,21 +264,22 @@ void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
         free(m->role);
         free(m->content);
         free(m->tool_call_id);
-        return;
+        return -1;
     }
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     m->msg_type = LLM_MSG_TOOL_RESULT;
     m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
+    return 0;
 }
 
 /* Add an assistant message with tool_calls (for conversation history).
  * Proposal C: Caches the outbound tool_call_id from tool_calls_json at creation
  * time for O(1) partner matching during eviction (eliminates repeated JSON parsing). */
-void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
-                                       const char *tool_calls_json) {
-    if (llm_chat_ensure_capacity(chat) != 0) return;
+int llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
+                                      const char *tool_calls_json) {
+    if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
     m->role = strdup("assistant");
@@ -286,7 +290,7 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
         free(m->role);
         free(m->content);
         free(m->tool_calls_json);
-        return;
+        return -1;
     }
     /* Proposal C: Extract and cache outbound tool_call_id from JSON */
     if (m->tool_calls_json) {
@@ -306,6 +310,7 @@ void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     m->msg_type = LLM_MSG_GENERIC; // Assistant tool calls are generally generic context
     m->importance = llm_importance_for_type(m->msg_type);
     chat->n_msgs++;
+    return 0;
 }
 
 /* Replace the content of message at index `idx` with `new_content`.
@@ -367,9 +372,18 @@ static char *extract_json_string_value(const char *text, const char *key) {
     if (*p != '"') return NULL;
     p++;  /* skip opening quote */
 
-    /* Find closing quote (handle escapes) */
+    /* Find closing quote (handle escapes -- count consecutive backslashes) */
     const char *val_start = p;
-    while (*p && !(*p == '"' && *(p - 1) != '\\')) p++;
+    while (*p) {
+        if (*p == '"') {
+            /* Count consecutive backslashes preceding this quote */
+            int n_bs = 0;
+            const char *b = p - 1;
+            while (b >= val_start && *b == '\\') { n_bs++; b--; }
+            if (n_bs % 2 == 0) break; /* even backslashes = unescaped quote */
+        }
+        p++;
+    }
     if (!*p) return NULL;
 
     size_t vlen = (size_t)(p - val_start);

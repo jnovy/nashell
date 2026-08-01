@@ -38,18 +38,20 @@ void str_clear(str_t *s) {
     if (s->data) s->data[0] = '\0';
 }
 
-static void str_grow(str_t *s, size_t need) {
-    if (s->len + need + 1 <= s->cap) return;
+/* Returns 0 on success, -1 on OOM (buffer unchanged). */
+static int str_grow(str_t *s, size_t need) {
+    if (s->len + need + 1 <= s->cap) return 0;
     size_t new_cap = s->cap ? s->cap * 2 : 64;
     while (new_cap < s->len + need + 1) new_cap *= 2;
     char *p = realloc(s->data, new_cap);
-    if (!p) return;  /* keep old data on OOM */
+    if (!p) return -1;  /* keep old data on OOM */
     s->data = p;
     s->cap  = new_cap;
+    return 0;
 }
 
 void str_append(str_t *s, const char *data, size_t len) {
-    str_grow(s, len);
+    if (str_grow(s, len) != 0) return;  /* OOM: skip append */
     memcpy(s->data + s->len, data, len);
     s->len += len;
     s->data[s->len] = '\0';
@@ -67,7 +69,7 @@ void str_appendf(str_t *s, const char *fmt, ...) {
     int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (n > 0) {
-        str_grow(s, (size_t)n);
+        if (str_grow(s, (size_t)n) != 0) { va_end(ap2); return; }
         vsnprintf(s->data + s->len, (size_t)n + 1, fmt, ap2);
         s->len += (size_t)n;
     }
@@ -462,13 +464,15 @@ int http_post(const char *url, const char *body,
 }
 
 int write_file(const char *path, const char *data, size_t len) {
-    /* FIX 3b: Atomic write via temp file + rename.  Prevents data corruption
+    /* Atomic write via temp file + rename.  Prevents data corruption
      * (empty/partial file) if the process crashes between open and close.
-     * Previously used fopen("w") which truncates immediately. */
+     * Uses mkstemp for thread-safe unique temp filenames. */
     char tmp[NASH_PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid());
-    FILE *f = fopen(tmp, "w");
-    if (!f) return -1;
+    snprintf(tmp, sizeof(tmp), "%s.tmp.XXXXXX", path);
+    int fd = mkstemp(tmp);
+    if (fd < 0) return -1;
+    FILE *f = fdopen(fd, "w");
+    if (!f) { close(fd); unlink(tmp); return -1; }
     size_t n = fwrite(data, 1, len, f);
     if (fflush(f) != 0 || n != len) {
         fclose(f);

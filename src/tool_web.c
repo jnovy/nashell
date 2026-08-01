@@ -47,7 +47,7 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
     if (buf->len + total > 512000) {
         size_t remaining = 512000 - buf->len;
         if (remaining > 0) str_append(buf, ptr, remaining);
-        return total;  /* signal curl we're done; excess data is silently dropped */
+        return 0;  /* abort transfer — returning != total tells curl to stop */
     }
     str_append(buf, ptr, total);
     return total;
@@ -89,7 +89,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK) {
+    if (res != CURLE_OK && !(res == CURLE_WRITE_ERROR && body.len > 0)) {
         char msg[512];
         snprintf(msg, sizeof(msg), "fetch failed: %s", curl_easy_strerror(res));
         str_free(&body);

@@ -14,7 +14,10 @@ void scratchpad_init(scratchpad_t *sp) {
     sp->sections = calloc((size_t)sp->cap, sizeof(scratchpad_section_t));
 }
 
-void scratchpad_free(scratchpad_t *sp) {
+/* Clear all scratchpad data but preserve the mutex.
+ * Used by scratchpad_parse() which needs to reset contents
+ * without destroying the mutex it will immediately re-use. */
+static void scratchpad_reset(scratchpad_t *sp) {
     for (int i = 0; i < sp->count; i++) {
         free(sp->sections[i].name);
         free(sp->sections[i].content);
@@ -29,17 +32,22 @@ void scratchpad_free(scratchpad_t *sp) {
     sp->cleared_names = NULL;
     sp->n_cleared = 0;
     sp->cleared_cap = 0;
+}
+
+void scratchpad_free(scratchpad_t *sp) {
+    scratchpad_reset(sp);
     pthread_mutex_destroy(&sp->mtx);  /* FIX CRIT2 */
 }
 
 void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
-    scratchpad_free(dst);
-    /* FIX BUG#8: Don't bitwise-copy pthread_mutex_t (undefined behavior).
-     * Copy data fields individually, then init a fresh mutex on dst. */
+    /* FIX BUG#4: use scratchpad_reset() to preserve dst's mutex.
+     * FIX BUG#8: Don't bitwise-copy pthread_mutex_t (undefined behavior).
+     * Copy data fields individually, keep dst's existing mutex. */
+    scratchpad_reset(dst);
     dst->sections = src->sections;
     dst->count = src->count;
     dst->cap = src->cap;
-    pthread_mutex_init(&dst->mtx, NULL);
+    /* dst->mtx is preserved (not destroyed/re-initialized) */
     /* Destroy src's mutex properly before zeroing */
     pthread_mutex_destroy(&src->mtx);
     memset(src, 0, sizeof(*src));
@@ -423,9 +431,13 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
         return scratchpad_load_legacy(sp, session_dir);
     }
 
-    /* Parse JSONL: last entry per section name wins */
-    char line[1024 * 1024];  /* 1MB max per line */
-    while (fgets(line, (int)sizeof(line), f)) {
+    /* Parse JSONL: last entry per section name wins.
+     * FIX BUG#12: heap-allocate the line buffer instead of 1MB on the stack,
+     * which risks stack overflow especially in worker threads. */
+    size_t line_cap = 1024 * 1024;  /* 1MB max per line */
+    char *line = malloc(line_cap);
+    if (!line) { fclose(f); return -1; }
+    while (fgets(line, (int)line_cap, f)) {
         /* Strip trailing newline */
         size_t len = strlen(line);
         while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
@@ -457,6 +469,7 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
         }
         cJSON_Delete(obj);
     }
+    free(line);
     fclose(f);
 
     /* Mark all loaded sections as not dirty (they came from disk) */
@@ -509,15 +522,18 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
     }
 
     if (!first_hdr) {
-        /* No section headers — store as single fallback section */
-        scratchpad_free(sp);
+        /* No section headers — store as single fallback section.
+         * FIX BUG#4: use scratchpad_reset() instead of scratchpad_free()
+         * to avoid destroying the mutex before scratchpad_write() locks it. */
+        scratchpad_reset(sp);
         scratchpad_write(sp, fallback_name ? fallback_name : "pruned",
                          text, default_priority);
         return 0;
     }
 
-    /* Parse structured content into sections */
-    scratchpad_free(sp);
+    /* Parse structured content into sections.
+     * FIX BUG#4: use scratchpad_reset() to preserve the mutex. */
+    scratchpad_reset(sp);
     int count = 0;
     const char *p = first_hdr;
 

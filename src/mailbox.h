@@ -65,7 +65,7 @@ void mailbox_write_result(const char *mailbox_dir, const char *task_id,
 char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                         int timeout_sec);
 
-/* Generate a unique message ID. Returns static buffer (not thread-safe). */
+/* Generate a unique message ID. Returns thread-local static buffer. */
 const char *mailbox_gen_id(void);
 
 /* ── Extended mailbox protocol with workspace routing ────── */

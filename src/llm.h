@@ -135,11 +135,11 @@ typedef struct {
 /* Initialize/free chat */
 llm_chat_t *llm_chat_new(void);
 void        llm_chat_free(llm_chat_t *chat);
-void        llm_chat_add(llm_chat_t *chat, const char *role, const char *content);
+int         llm_chat_add(llm_chat_t *chat, const char *role, const char *content);
 
 /* Add a typed message — sets msg_type for structured routing.
  * Replaces content-prefix scanning with type-safe dispatch. */
-void        llm_chat_add_typed(llm_chat_t *chat, const char *role,
+int         llm_chat_add_typed(llm_chat_t *chat, const char *role,
                                const char *content, llm_msg_type_t type);
 
 /* Add a typed message with printf-style formatting.
@@ -180,17 +180,17 @@ void        llm_chat_remove_range(llm_chat_t *chat, int start, int end);
 /* FIX D5: Insert a typed message at a specific position.
  * Shifts existing messages from pos..n_msgs-1 to make room.
  * Encapsulates the manual realloc+memmove pattern used by context eviction. */
-void        llm_chat_insert_typed(llm_chat_t *chat, int pos,
+int         llm_chat_insert_typed(llm_chat_t *chat, int pos,
                                   const char *role, const char *content,
                                   llm_msg_type_t type);
 
 /* Add a tool result message (role: "tool" with tool_call_id) */
-void llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
-                               const char *content);
+int llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
+                              const char *content);
 
 /* Add an assistant message with tool_calls (for conversation history) */
-void llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
-                                       const char *tool_calls_json);
+int llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
+                                      const char *tool_calls_json);
 
 /* Replace the content of message at index `idx` with `new_content` (takes ownership).
  * Updates content_len and total_chars incrementally.

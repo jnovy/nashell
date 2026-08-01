@@ -216,6 +216,8 @@ provider_t *provider_create(const provider_config_t *cfg) {
     p->cfg.enable_thinking = cfg->enable_thinking;
     p->cfg.thinking_budget = cfg->thinking_budget;
     p->cfg.llm_timeout     = cfg->llm_timeout;
+    p->cfg.max_retries     = cfg->max_retries;
+    p->cfg.retry_base_sec  = cfg->retry_base_sec;
     /* Deep-copy all string fields so provider owns its own strings. */
     p->cfg.model_id    = cfg->model_id    ? strdup(cfg->model_id)    : NULL;
     p->cfg.api_base    = cfg->api_base    ? strdup(cfg->api_base)    : NULL;
@@ -255,6 +257,7 @@ void provider_free(provider_t *p) {
     if (!p) return;
     if (p->destroy) p->destroy(p);
     free(p->_cached_endpoint);
+    free(p->_cached_endpoint_ns);
     free(p->_cached_auth_token);
     /* Free error diagnostic strings (heap-allocated on provider errors) */
     free(p->last_error);
@@ -1157,6 +1160,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 
     char *endpoint = NULL;
     if (p->get_endpoint) {
+        p->_requesting_stream = 0;
         endpoint = strdup(p->get_endpoint(p));
     }
     if (!endpoint) {
@@ -1227,7 +1231,21 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 }
                 continue;
             }
-            free(req_body); free(endpoint); str_free(&response);
+            /* Populate error diagnostics for react.c journal entry */
+            free(p->last_error);
+            {
+                char ebuf[512];
+                snprintf(ebuf, sizeof(ebuf), "curl error: %s",
+                         curl_easy_strerror(res));
+                p->last_error = strdup(ebuf);
+            }
+            free(p->last_error_request);
+            p->last_error_request = req_body; req_body = NULL;
+            free(p->last_error_response);
+            p->last_error_response = response.len > 0
+                ? strdup(str_cstr(&response)) : NULL;
+            str_free(&response);
+            free(endpoint);
             return NULL;
         }
 
@@ -1267,8 +1285,21 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 continue;
             }
             /* Non-retryable 4xx or retries exhausted — fail immediately */
+            /* Populate error diagnostics for react.c journal entry */
+            free(p->last_error);
+            {
+                char ebuf[512];
+                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code,
+                         response.len > 0 ? str_cstr(&response) : "(empty)");
+                p->last_error = strdup(ebuf);
+            }
+            free(p->last_error_request);
+            p->last_error_request = req_body; req_body = NULL;
+            free(p->last_error_response);
+            p->last_error_response = response.len > 0
+                ? strdup(str_cstr(&response)) : NULL;
             str_free(&response);
-            free(req_body); free(endpoint);
+            free(endpoint);
             return NULL;
         }
 
@@ -1285,7 +1316,14 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 }
                 continue;
             }
-            free(req_body); free(endpoint);
+            /* Populate error diagnostics for react.c journal entry */
+            free(p->last_error);
+            p->last_error = strdup("JSON parse failed on provider response");
+            free(p->last_error_request);
+            p->last_error_request = req_body; req_body = NULL;
+            free(p->last_error_response);
+            p->last_error_response = NULL; /* response already freed */
+            free(endpoint);
             return NULL;
         }
 
@@ -1301,16 +1339,29 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
             nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
                      msg, attempt, PROVIDER_MAX_RETRIES(p), delay);
-            cJSON_Delete(resp);
-            if (attempt < PROVIDER_MAX_RETRIES(p)) {
-                if (provider_sleep(p, delay)) {
-                    free(req_body); free(endpoint);
-                    return NULL;  /* aborted */
+            if (attempt >= PROVIDER_MAX_RETRIES(p)) {
+                /* Populate error diagnostics before freeing resp
+                 * (msg points into the cJSON tree) */
+                free(p->last_error);
+                {
+                    char ebuf[512];
+                    snprintf(ebuf, sizeof(ebuf), "API error: %.480s", msg);
+                    p->last_error = strdup(ebuf);
                 }
-                continue;
+                free(p->last_error_request);
+                p->last_error_request = req_body; req_body = NULL;
+                free(p->last_error_response);
+                p->last_error_response = NULL;
+                cJSON_Delete(resp);
+                free(endpoint);
+                return NULL;
             }
-            free(req_body); free(endpoint);
-            return NULL;
+            cJSON_Delete(resp);
+            if (provider_sleep(p, delay)) {
+                free(req_body); free(endpoint);
+                return NULL;  /* aborted */
+            }
+            continue;
         }
 
         break;  /* success */
@@ -1341,6 +1392,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                                void *progress_userdata) {
     if (stats) memset(stats, 0, sizeof(*stats));
 
+    if (p->get_endpoint) p->_requesting_stream = 1;
     const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
     if (!endpoint) {
         nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
@@ -1405,6 +1457,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         st.last_token_idx = 0;
         st.first_token_seen = 0;
         st.streaming_token_count = 0;
+        st.multi_tool_count = 0;
         if (stats) memset(stats, 0, sizeof(*stats));
 
         CURL *curl = curl_easy_init();

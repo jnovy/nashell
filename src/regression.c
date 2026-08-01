@@ -152,7 +152,12 @@ query_bank_t *regression_load_banks(const char *dir, int *count) {
 
         if (n >= cap) {
             cap *= 2;
-            banks = realloc(banks, cap * sizeof(query_bank_t));
+            void *tmp = realloc(banks, cap * sizeof(query_bank_t));
+            if (!tmp) {
+                yaml_free(root);
+                break;
+            }
+            banks = tmp;
         }
 
         banks[n] = parse_bank(root, path);
@@ -243,8 +248,10 @@ static void analyze_journal(const char *journal_path, int react_loop,
                     if (!found) {
                         if (out->n_tools_used >= tools_cap) {
                             tools_cap *= 2;
-                            out->tools_used = realloc(out->tools_used,
-                                                      tools_cap * sizeof(char *));
+                            void *tmp = realloc(out->tools_used,
+                                                tools_cap * sizeof(char *));
+                            if (!tmp) break;
+                            out->tools_used = tmp;
                         }
                         out->tools_used[out->n_tools_used++] = strdup(tool);
                     }

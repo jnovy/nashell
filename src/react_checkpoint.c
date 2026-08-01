@@ -1,6 +1,8 @@
 /* react_checkpoint.c — Checkpoint save/restore/remove for crash recovery.
  * Extracted from react.c (P1 decomposition). */
 #include "react_internal.h"
+#include "session_index.h"
+#include "repomap.h"
 
 /* ── Checkpoint Restore ─────────────────────────────── */
 
@@ -47,18 +49,32 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     /* No manifest injection — scratchpad carries all cross-loop state. */
 
-    /* Step 2: Add memory context (only when inject_memory flag is set) */
+    /* Step 2: Add memory context + recall (only when inject_memory flag is set) */
     if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
         char *mem_summary = NULL, *pinned = NULL;
         react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
-        /* Log memory context for debugging (checkpoint restore path) */
-        react_log_memory_context(ctx->tools, ctx->tools->react_loop,
-                           ctx->tools->step, mem_summary, pinned,
-                           NULL, user_query);
+        /* Inject recall context: temporal, episodic, type-specific, associative.
+         * Matches react_build_context() for structurally identical context.
+         * (Bug #24 fix — checkpoint restore previously skipped all of these.) */
+        react_inject_recall_context(chat, ctx, user_query, mem_summary, pinned);
 
         free(mem_summary);
         free(pinned);
+    }
+
+    /* Step 3: Repo map injection (matches react_build_context) */
+    {
+        int do_repomap = ctx->flags.inject_repomap;
+        if (do_repomap) {
+            int rm_budget = ctx->tools->cfg
+                ? ctx->tools->cfg->repo_map_max_chars : 8000;
+            char *map = repomap_build(NULL, user_query, NULL, 0, rm_budget);
+            if (map && map[0]) {
+                llm_chat_add_typed(chat, "user", map, LLM_MSG_REPO_MAP);
+            }
+            free(map);
+        }
     }
 
     /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup). */
@@ -120,10 +136,25 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         /* Only replay entries from the current react loop */
         if (loop != saved_loop) { cJSON_Delete(entry); continue; }
 
-        /* Skip system, query, parse_error entries */
+        /* Skip metadata entries that are not actual tool calls.
+         * Only replay: actual tool calls (file_read, shell_exec, etc.),
+         * "thinking" (handled specially below), and "unknown_tool". */
         if (!tool || strcmp(tool, "system") == 0 ||
             strcmp(tool, "query") == 0 ||
-            strcmp(tool, "parse_error") == 0) {
+            strcmp(tool, "parse_error") == 0 ||
+            strcmp(tool, "memory_context") == 0 ||
+            strcmp(tool, "spec") == 0 ||
+            strcmp(tool, "compaction") == 0 ||
+            strcmp(tool, "server_error") == 0 ||
+            strcmp(tool, "log") == 0 ||
+            strcmp(tool, "checkpoint_restore") == 0 ||
+            strcmp(tool, "reflection_dedup") == 0 ||
+            strcmp(tool, "memory_quality") == 0 ||
+            strcmp(tool, "cycling_cached") == 0 ||
+            strcmp(tool, "cycling_refused") == 0 ||
+            strcmp(tool, "cycling_escalated") == 0 ||
+            strcmp(tool, "user_ask") == 0 ||
+            strncmp(tool, "ctx:", 4) == 0) {
             cJSON_Delete(entry);
             continue;
         }

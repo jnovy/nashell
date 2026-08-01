@@ -478,6 +478,16 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
                               memory_results_t *all_memories,
                               const char *query);
 
+/* Inject recall context: temporal calendar, episodic recall, type-specific
+ * memory recall (skills/lessons/strategies/antipatterns), and associative
+ * graph walk.  Shared between react_build_context() and
+ * react_checkpoint_restore() for structurally identical context.
+ * mem_summary/pinned are borrowed for logging only (not freed). */
+void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
+                                  const char *user_query,
+                                  const char *mem_summary,
+                                  const char *pinned);
+
 /* ── Checkpoint ──────────────────────────────────────── */
 
 /* Restore conversation from checkpoint. Returns resume step, or -1 if none. */
