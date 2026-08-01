@@ -783,9 +783,8 @@ static int split_into_segments(const char *text, size_t text_len,
     #define ADD_SEG(o, l) do { \
         if (count >= cap) { \
             cap *= 2; \
-            chunk_seg_t *tmp = realloc(segs, sizeof(chunk_seg_t) * (size_t)cap); \
-            if (!tmp) goto done; \
-            segs = tmp; \
+            if (safe_realloc((void **)&segs, sizeof(chunk_seg_t) * (size_t)cap)) \
+                goto done; \
         } \
         segs[count].off = (o); \
         segs[count].len = (l); \

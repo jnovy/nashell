@@ -9,12 +9,8 @@
 /* ── file_read ───────────────────────────────────────── */
 
 tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *path_j = cJSON_GetObjectItem(params, "path");
-    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
-        return tools_make_error("file_read requires a non-empty 'path' string. "
-                          "Provide the file path to read.");
-
-    const char *path = path_j->valuestring;
+    TOOL_REQ_STR(params, "path", path);
+    const char *orig_path = path;  /* before resolve */
 
     /* Resolve aliases and store/ paths */
     char *resolved = NULL;
@@ -129,7 +125,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "path", path_j->valuestring);
+    cJSON_AddStringToObject(meta, "path", orig_path);
     cJSON_AddNumberToObject(meta, "total_lines", total_lines);
     if (display_content) {
         /* Range mode: show which lines */
@@ -199,13 +195,13 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
      * signatures as structural context. This encodes the "auto-surfaces contract
      * hints from files near each command" pattern from AHE's evolved harness. */
     {
-        const char *ext = strrchr(path_j->valuestring, '.');
+        const char *ext = strrchr(orig_path, '.');
         if (ext && strcmp(ext, ".c") == 0) {
             /* Build companion .h path */
-            size_t base_len = (size_t)(ext - path_j->valuestring);
+            size_t base_len = (size_t)(ext - orig_path);
             char *h_path = malloc(base_len + 3);
             if (h_path) {
-                memcpy(h_path, path_j->valuestring, base_len);
+                memcpy(h_path, orig_path, base_len);
                 strcpy(h_path + base_len, ".h");
                 struct stat h_st;
                 if (stat(h_path, &h_st) == 0 && S_ISREG(h_st.st_mode) &&
@@ -280,14 +276,10 @@ static int path_has_traversal(const char *path) {
 /* ── file_write ──────────────────────────────────────── */
 
 tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *path_j = cJSON_GetObjectItem(params, "path");
+    TOOL_REQ_STR(params, "path", path);
     cJSON *content_j = cJSON_GetObjectItem(params, "content");
-    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
-        return tools_make_error("file_write requires a non-empty 'path' string.");
     if (!content_j || !content_j->valuestring)
         return tools_make_error("file_write requires a 'content' parameter.");
-
-    const char *path = path_j->valuestring;
     const char *content = content_j->valuestring;
 
     /* Reject path traversal attempts */
@@ -329,39 +321,29 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     char *hash = store_save(ctx->store, content);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "ok");
-    cJSON_AddStringToObject(meta, "path", path);
-    cJSON_AddNumberToObject(meta, "bytes", (double)len);
-    cJSON_AddStringToObject(meta, "ref", alias);
+    tool_result_t res = tool_result_ok();
+    cJSON_AddStringToObject(res.meta, "path", path);
+    cJSON_AddNumberToObject(res.meta, "bytes", (double)len);
+    cJSON_AddStringToObject(res.meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "file_write", params, alias,
                    len, count_lines(content), NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    res.store_ref = strdup(alias);
     free(alias);
     free(hash);
-    return tools_make_result(1, meta, ref_copy);
+    return res;
 }
 
 /* ── file_edit ───────────────────────────────────────── */
 
 tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *path_j     = cJSON_GetObjectItem(params, "path");
-    cJSON *old_text_j = cJSON_GetObjectItem(params, "old_text");
+    TOOL_REQ_STR(params, "path", path);
+    TOOL_REQ_STR(params, "old_text", old_text);
     cJSON *new_text_j = cJSON_GetObjectItem(params, "new_text");
-    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
-        return tools_make_error("file_edit requires a non-empty 'path' string.");
-    if (!old_text_j || !old_text_j->valuestring || !old_text_j->valuestring[0])
-        return tools_make_error("file_edit requires a non-empty 'old_text' string. "
-                          "Copy the exact text to replace from the file. "
-                          "Use file_read first to see the current content.");
     if (!new_text_j || !new_text_j->valuestring)
         return tools_make_error("file_edit requires a 'new_text' parameter.");
-
-    const char *path = path_j->valuestring;
-    const char *old_text = old_text_j->valuestring;
     const char *new_text = new_text_j->valuestring;
 
     /* Reject path traversal attempts */
@@ -528,9 +510,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             int llen = nl ? (int)(nl - cl) : (int)(line_start - cl);
             if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
-                char *tmp = realloc(diff, diff_cap);
-                if (!tmp) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                diff = tmp;
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
             }
             diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                  "  %5d  %.*s\n", new_lnum, llen, cl);
@@ -562,9 +542,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 int llen = nl ? (int)(nl - p) : (int)(pos + old_len - p);
                 if (old_cnt >= old_cap) {
                     old_cap *= 2;
-                    dline_t *tmp = realloc(old_lines, (size_t)old_cap * sizeof(dline_t));
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    old_lines = tmp;
+                    if (safe_realloc((void **)&old_lines, (size_t)old_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 old_lines[old_cnt++] = (dline_t){ p, llen };
                 p = nl ? nl + 1 : p + llen;
@@ -577,9 +555,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 int llen = nl ? (int)(nl - p) : (int)(new_text + new_len - p);
                 if (new_cnt >= new_cap) {
                     new_cap *= 2;
-                    dline_t *tmp = realloc(new_lines, (size_t)new_cap * sizeof(dline_t));
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    new_lines = tmp;
+                    if (safe_realloc((void **)&new_lines, (size_t)new_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 new_lines[new_cnt++] = (dline_t){ p, llen };
                 p = nl ? nl + 1 : p + llen;
@@ -678,9 +654,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    char *tmp = realloc(diff, diff_cap);
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    diff = tmp;
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
@@ -693,9 +667,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &old_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    char *tmp = realloc(diff, diff_cap);
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    diff = tmp;
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d -%.*s\n", old_lnum, dl->len, dl->s);
@@ -708,9 +680,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    char *tmp = realloc(diff, diff_cap);
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    diff = tmp;
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d +%.*s\n", new_lnum, dl->len, dl->s);
@@ -725,9 +695,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[new_cnt - suffix + (i - (old_cnt - suffix))];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    char *tmp = realloc(diff, diff_cap);
-                    if (!tmp) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                    diff = tmp;
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
@@ -763,9 +731,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             int llen = nl ? (int)(nl - cl) : (int)(ctx_end - cl);
             if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
-                char *tmp = realloc(diff, diff_cap);
-                if (!tmp) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                diff = tmp;
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
             }
             diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                  "  %5d  %.*s\n", new_lnum, llen, cl);
@@ -782,9 +748,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             /* Grow buffer if needed, then shift body right and insert header */
             if ((size_t)(diff_len + hlen + 1) >= diff_cap) {
                 diff_cap = (size_t)(diff_len + hlen + 64);
-                char *tmp = realloc(diff, diff_cap);
-                if (!tmp) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
-                diff = tmp;
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
             }
             memmove(diff + hlen, diff, (size_t)diff_len + 1);  /* +1 for NUL */
             memcpy(diff, hdr, (size_t)hlen);
@@ -797,11 +761,10 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         free(diff);
         free(diff_hash);
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddStringToObject(meta, "path", path);
-        cJSON_AddStringToObject(meta, "pre_ref", pre_alias);
-        cJSON_AddStringToObject(meta, "post_ref", post_alias);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddStringToObject(res.meta, "path", path);
+        cJSON_AddStringToObject(res.meta, "pre_ref", pre_alias);
+        cJSON_AddStringToObject(res.meta, "post_ref", post_alias);
 
         tools_inject_thought(ctx, params);
         tool_journal(ctx, "file_edit", params, diff_alias,
@@ -813,7 +776,8 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         free(pre_hash);
         free(post_hash);
         free(post_alias);
-        return tools_make_result(1, meta, diff_alias);
+        res.store_ref = diff_alias;
+        return res;
     }
 }
 

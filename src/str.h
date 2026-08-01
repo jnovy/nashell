@@ -205,6 +205,74 @@ static inline int safe_realloc(void **ptr, size_t new_size) {
     return 0;
 }
 
+/* ── Dynamic array push macro ────────────────────────────────────────
+ * Appends an item to a dynamically-growing array with count/capacity
+ * tracking.  Doubles capacity on overflow; uses safe_realloc.
+ *
+ * Usage:
+ *   char **lines = NULL; int n = 0, cap = 0;
+ *   VEC_PUSH(lines, n, cap, strdup("hello"));
+ *
+ * On realloc failure, the item is NOT added and control falls through
+ * (caller should check n after if critical). */
+#define VEC_PUSH(arr, count, cap, item) do {          \
+    if ((count) >= (cap)) {                           \
+        int _new_cap = (cap) ? (cap) * 2 : 8;        \
+        if (safe_realloc((void **)&(arr),             \
+            (size_t)_new_cap * sizeof(*(arr))) == 0)  \
+            (cap) = _new_cap;                         \
+        else break;                                   \
+    }                                                 \
+    (arr)[(count)++] = (item);                        \
+} while (0)
+
+/* ── Free a string array ─────────────────────────────────────────────
+ * Frees each element then the array itself.  Safe with NULL arr. */
+static inline void free_string_array(char **arr, int count) {
+    if (!arr) return;
+    for (int i = 0; i < count; i++)
+        free(arr[i]);
+    free(arr);
+}
+
+/* ── JSONL iteration helper ──────────────────────────────────────────
+ * Opens a .jsonl file and calls cb(entry, user_data) for each parsed
+ * JSON line.  Callback returns 0 to continue, non-zero to stop.
+ * Returns number of entries processed, or -1 on file open failure. */
+int jsonl_iterate(const char *path,
+                  int (*cb)(struct cJSON *entry, void *user_data),
+                  void *user_data);
+
+/* ── Directory listing helper ────────────────────────────────────────
+ * Returns a malloc'd array of filenames (strdup'd) in dirpath that
+ * end with suffix (NULL suffix = all files).  Dot-files are skipped.
+ * *out_count receives the number of entries.  Caller must
+ * free_string_array() the result. */
+char **list_dir(const char *dirpath, const char *suffix, int *out_count);
+
+/* ── cJSON message helper ────────────────────────────────────────────
+ * Create a {"role":"...","content":"..."} cJSON object.
+ * Caller must cJSON_Delete() or add to an array (which takes ownership). */
+struct cJSON *cjson_msg(const char *role, const char *content);
+
+/* ── Timestamp formatting helpers ────────────────────────────────────
+ * Format a time_t into buf.  Returns buf for convenience.
+ * format_iso_date:     "2026-08-01"
+ * format_iso_datetime: "2026-08-01 17:50:00" */
+#include <time.h>
+static inline char *format_iso_date(time_t t, char *buf, size_t sz) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(buf, sz, "%Y-%m-%d", &tm);
+    return buf;
+}
+static inline char *format_iso_datetime(time_t t, char *buf, size_t sz) {
+    struct tm tm;
+    localtime_r(&t, &tm);
+    strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tm);
+    return buf;
+}
+
 /* ── Convenience micro-helpers ───────────────────────────────────────
  * Small inline utilities that eliminate common boilerplate patterns
  * (prefix/suffix checks, path building, file existence tests). */

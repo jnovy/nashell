@@ -29,12 +29,10 @@
 static int si_grow(session_index_t *idx) {
     if (idx->count < idx->cap) return 0;
     int new_cap = idx->cap ? idx->cap * 2 : 64;
-    session_index_entry_t *new_e = realloc(idx->entries,
-        (size_t)new_cap * sizeof(session_index_entry_t));
-    if (!new_e) return -1;
-    memset(new_e + idx->cap, 0,
+    if (safe_realloc((void **)&idx->entries,
+        (size_t)new_cap * sizeof(session_index_entry_t))) return -1;
+    memset(idx->entries + idx->cap, 0,
         (size_t)(new_cap - idx->cap) * sizeof(session_index_entry_t));
-    idx->entries = new_e;
     idx->cap = new_cap;
     return 0;
 }
@@ -59,38 +57,26 @@ static int entry_cmp_ts(const void *a, const void *b) {
 
 /* ── Chunk preview I/O ─────────────────────────────────── */
 
+/* Callback for jsonl_iterate: collect preview strings */
+static int load_previews_cb(cJSON *entry, void *user_data) {
+    struct { char **arr; int count; int cap; } *ctx = user_data;
+    cJSON *preview_j = cJSON_GetObjectItem(entry, "preview");
+    if (preview_j && preview_j->valuestring)
+        VEC_PUSH(ctx->arr, ctx->count, ctx->cap, strdup(preview_j->valuestring));
+    return 0;
+}
+
 /* Load chunk previews from chunks.idx (JSONL format).
  * Each line: {"id":0,"preview":"text..."}
  * Returns array of strings (caller frees each + array).
  * Sets *out_count to number of previews loaded. */
 static char **load_chunk_previews(const char *idx_path, int *out_count) {
     *out_count = 0;
-    FILE *f = fopen(idx_path, "r");
-    if (!f) return NULL;
-
-    int cap = 16;
-    char **previews = calloc((size_t)cap, sizeof(char *));
-    if (!previews) { fclose(f); return NULL; }
-
-    char line[NASH_PATH_MAX];
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
-        cJSON *preview_j = cJSON_GetObjectItem(entry, "preview");
-        if (preview_j && preview_j->valuestring) {
-            if (*out_count >= cap) {
-                cap *= 2;
-                char **new_p = realloc(previews, (size_t)cap * sizeof(char *));
-                if (!new_p) { cJSON_Delete(entry); break; }
-                previews = new_p;
-            }
-            previews[*out_count] = strdup(preview_j->valuestring);
-            (*out_count)++;
-        }
-        cJSON_Delete(entry);
-    }
-    fclose(f);
-    return previews;
+    struct { char **arr; int count; int cap; } ctx = {0};
+    if (jsonl_iterate(idx_path, load_previews_cb, &ctx) < 0)
+        return NULL;
+    *out_count = ctx.count;
+    return ctx.arr;
 }
 
 /* Save chunk previews to chunks.idx (JSONL format). */
@@ -115,9 +101,7 @@ static int save_chunk_previews(const char *idx_path, char **previews,
 
 /* Free chunk previews array */
 static void free_chunk_previews(char **previews, int count) {
-    if (!previews) return;
-    for (int i = 0; i < count; i++) free(previews[i]);
-    free(previews);
+    free_string_array(previews, count);
 }
 
 /* Build preview text for a chunk (first ~200 chars, stripping prefix) */

@@ -116,9 +116,7 @@ static char *json_escape_str(const char *s) {
     for (size_t i = 0; s[i]; i++) {
         if (j + 8 > cap) {
             cap *= 2;
-            char *tmp = realloc(out, cap);
-            if (!tmp) { out[j] = '\0'; return out; }
-            out = tmp;
+            if (safe_realloc((void **)&out, cap)) { out[j] = '\0'; return out; }
         }
         switch (s[i]) {
         case '"':  out[j++] = '\\'; out[j++] = '"';  break;
@@ -336,9 +334,8 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 /* Build agent entry */
                 if (*n_agents >= *cap_agents) {
                     *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
-                    agent_entry_t *tmp = realloc(*agents, *cap_agents * sizeof(agent_entry_t));
-                    if (!tmp) { yaml_free(root); closedir(dp); return; }
-                    *agents = tmp;
+                    if (safe_realloc((void **)agents, *cap_agents * sizeof(agent_entry_t)))
+                    { yaml_free(root); closedir(dp); return; }
                 }
 
                 agent_entry_t *a = &(*agents)[*n_agents];
@@ -415,9 +412,7 @@ static void agent_entry_free_fields(agent_entry_t *a) {
     free(a->last_status);
     free(a->version);
     free(a->provider_name);
-    for (int i = 0; i < a->n_tags; i++)
-        free(a->tags[i]);
-    free(a->tags);
+    free_string_array(a->tags, a->n_tags);
     memset(a, 0, sizeof(*a));
 }
 
@@ -504,9 +499,8 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
         /* Build agent entry */
         if (*n_agents >= *cap_agents) {
             *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
-            agent_entry_t *tmp = realloc(*agents, (size_t)*cap_agents * sizeof(agent_entry_t));
-            if (!tmp) { yaml_free(root); closedir(dp); return; }
-            *agents = tmp;
+            if (safe_realloc((void **)agents, (size_t)*cap_agents * sizeof(agent_entry_t)))
+            { yaml_free(root); closedir(dp); return; }
         }
 
         agent_entry_t *a = &(*agents)[*n_agents];
@@ -979,17 +973,11 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
      *   3 base vars + 1 {{arguments}} (always) + n {{argN}} tokens */
     int n_extra = 3 + 1 + n_arg_tokens;
     int new_nvars = pb->n_vars + n_extra;
-    char **tmp_keys = realloc(pb->var_keys, (size_t)new_nvars * sizeof(char *));
-    char **tmp_vals = realloc(pb->var_values, (size_t)new_nvars * sizeof(char *));
-    if (!tmp_keys || !tmp_vals) {
-        /* Preserve originals on partial failure */
-        if (tmp_keys) pb->var_keys = tmp_keys;
-        if (tmp_vals) pb->var_values = tmp_vals;
+    if (safe_realloc((void **)&pb->var_keys, (size_t)new_nvars * sizeof(char *)) ||
+        safe_realloc((void **)&pb->var_values, (size_t)new_nvars * sizeof(char *))) {
         for (int ti2 = 0; ti2 < n_arg_tokens; ti2++) free(arg_tokens[ti2]);
         return pb; /* return with existing vars; caller still gets a usable playbook */
     }
-    pb->var_keys   = tmp_keys;
-    pb->var_values = tmp_vals;
     int vi = pb->n_vars;
     pb->var_keys[vi]       = strdup("workspace_name");
     pb->var_values[vi]     = strdup(a->workspace_name);

@@ -91,15 +91,7 @@ typedef struct {
 } failure_list_t;
 
 static void add_failure(failure_list_t *list, failure_instance_t fi) {
-    if (list->n_failures >= list->cap) {
-        int new_cap = list->cap ? list->cap * 2 : 32;
-        void *tmp = realloc(list->failures,
-                            new_cap * sizeof(failure_instance_t));
-        if (!tmp) return;
-        list->failures = tmp;
-        list->cap = new_cap;
-    }
-    list->failures[list->n_failures++] = fi;
+    VEC_PUSH(list->failures, list->n_failures, list->cap, fi);
 }
 
 /* ── SWE-Shepherd: Step-level trajectory scoring [arXiv:2604.10493] ────────
@@ -137,26 +129,14 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
                 strcmp(tool, "context") != 0 && strcmp(tool, "memory_context") != 0) {
                 if (n >= cap) {
                     int new_cap = cap * 2;
-                    void *t1 = realloc(tools, (size_t)new_cap * sizeof(char *));
-                    void *t2 = realloc(refs, (size_t)new_cap * sizeof(char *));
-                    void *t3 = realloc(failed, (size_t)new_cap * sizeof(int));
-                    void *t4 = realloc(steps, (size_t)new_cap * sizeof(int));
-                    void *t5 = realloc(params_str, (size_t)new_cap * sizeof(char *));
-                    if (!t1 || !t2 || !t3 || !t4 || !t5) {
-                        /* Preserve any successful reallocs */
-                        if (t1) tools = t1;
-                        if (t2) refs = t2;
-                        if (t3) failed = t3;
-                        if (t4) steps = t4;
-                        if (t5) params_str = t5;
+                    if (safe_realloc((void **)&tools, (size_t)new_cap * sizeof(char *)) ||
+                        safe_realloc((void **)&refs, (size_t)new_cap * sizeof(char *)) ||
+                        safe_realloc((void **)&failed, (size_t)new_cap * sizeof(int)) ||
+                        safe_realloc((void **)&steps, (size_t)new_cap * sizeof(int)) ||
+                        safe_realloc((void **)&params_str, (size_t)new_cap * sizeof(char *))) {
                         cJSON_Delete(entry);
                         break;
                     }
-                    tools = t1;
-                    refs = t2;
-                    failed = (int *)t3;
-                    steps = (int *)t4;
-                    params_str = t5;
                     cap = new_cap;
                 }
                 tools[n] = strdup(tool);
@@ -458,9 +438,8 @@ static void cluster_failures(failure_list_t *list,
             /* Create new cluster */
             if (n_clusters >= max_clusters) {
                 int new_max = max_clusters * 2;
-                void *tmp = realloc(clusters, new_max * sizeof(failure_cluster_t));
-                if (!tmp) continue;
-                clusters = tmp;
+                if (safe_realloc((void **)&clusters, new_max * sizeof(failure_cluster_t)))
+                    continue;
                 memset(&clusters[n_clusters], 0,
                        (new_max - n_clusters) * sizeof(failure_cluster_t));
                 max_clusters = new_max;
@@ -472,18 +451,13 @@ static void cluster_failures(failure_list_t *list,
             clusters[found].instances = calloc(5, sizeof(failure_instance_t));
 
             /* Grow session tracking arrays */
-            void *ts = realloc(cluster_sessions,
-                               n_clusters * sizeof(char **));
-            void *tc = realloc(cluster_session_caps,
-                               n_clusters * sizeof(int));
-            if (!ts || !tc) {
-                if (ts) cluster_sessions = ts;
-                if (tc) cluster_session_caps = tc;
+            if (safe_realloc((void **)&cluster_sessions,
+                             n_clusters * sizeof(char **)) ||
+                safe_realloc((void **)&cluster_session_caps,
+                             n_clusters * sizeof(int))) {
                 n_clusters--;
                 continue;
             }
-            cluster_sessions = ts;
-            cluster_session_caps = tc;
             cluster_sessions[found] = NULL;
             cluster_session_caps[found] = 0;
         }
@@ -504,11 +478,9 @@ static void cluster_failures(failure_list_t *list,
                 if (clusters[found].n_sessions >= cluster_session_caps[found]) {
                     int new_cap = cluster_session_caps[found]
                                   ? cluster_session_caps[found] * 2 : 8;
-                    void *tmp = realloc(
-                        cluster_sessions[found],
-                        new_cap * sizeof(char *));
-                    if (!tmp) goto next_failure;
-                    cluster_sessions[found] = tmp;
+                    if (safe_realloc((void **)&cluster_sessions[found],
+                                     new_cap * sizeof(char *)))
+                        goto next_failure;
                     cluster_session_caps[found] = new_cap;
                 }
                 cluster_sessions[found][clusters[found].n_sessions] =
@@ -588,9 +560,8 @@ static void pm_collect_sessions(const char *sessions_dir,
         if (stat(path, &st) != 0) continue;
         if (*n_dirs >= *dirs_cap) {
             int new_cap = *dirs_cap * 2;
-            void *tmp = realloc(*dirs, (size_t)new_cap * sizeof(char *));
-            if (!tmp) continue;
-            *dirs = tmp;
+            if (safe_realloc((void **)dirs, (size_t)new_cap * sizeof(char *)))
+                continue;
             *dirs_cap = new_cap;
         }
         snprintf(path, sizeof(path), "%s/%s", sessions_dir, ent->d_name);
@@ -759,9 +730,7 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
     }
     free(failures.failures);
 
-    for (int i = 0; i < n_dirs; i++)
-        free(dirs[i]);
-    free(dirs);
+    free_string_array(dirs, n_dirs);
 
     return report;
 }

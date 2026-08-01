@@ -35,9 +35,7 @@ void llm_msg_free_fields(llm_msg_t *m) {
 static int llm_chat_ensure_capacity(llm_chat_t *chat) {
     if (chat->n_msgs < chat->cap_msgs) return 0;
     int new_cap = chat->cap_msgs * 2;
-    llm_msg_t *tmp = realloc(chat->msgs, (size_t)new_cap * sizeof(llm_msg_t));
-    if (!tmp) return -1;
-    chat->msgs = tmp;
+    if (safe_realloc((void **)&chat->msgs, (size_t)new_cap * sizeof(llm_msg_t))) return -1;
     chat->cap_msgs = new_cap;
     return 0;
 }
@@ -963,9 +961,7 @@ char *llm_apply_template(const char *api_base, const char *user_query) {
 
     cJSON *req = cJSON_CreateObject();
     cJSON *msgs = cJSON_CreateArray();
-    cJSON *msg = cJSON_CreateObject();
-    cJSON_AddStringToObject(msg, "role", "user");
-    cJSON_AddStringToObject(msg, "content", user_query);
+    cJSON *msg = cjson_msg("user", user_query);
     cJSON_AddItemToArray(msgs, msg);
     cJSON_AddItemToObject(req, "messages", msgs);
 

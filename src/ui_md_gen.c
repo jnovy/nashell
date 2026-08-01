@@ -458,9 +458,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             if (!qi) {
                 if (qcount >= qcap) {
                     int new_cap = qcap ? qcap * 2 : 16;
-                    void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
-                    if (!tmp) { cJSON_Delete(entry); continue; }
-                    qinfos = tmp;
+                    if (safe_realloc((void **)&qinfos, (size_t)new_cap * sizeof(qinfo_t))) { cJSON_Delete(entry); continue; }
                     qcap = new_cap;
                 }
                 qi = &qinfos[qcount++];
@@ -487,9 +485,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             if (!already_known) {
                 if (qcount >= qcap) {
                     int new_cap = qcap ? qcap * 2 : 16;
-                    void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
-                    if (!tmp) { cJSON_Delete(entry); continue; }
-                    qinfos = tmp;
+                    if (safe_realloc((void **)&qinfos, (size_t)new_cap * sizeof(qinfo_t))) { cJSON_Delete(entry); continue; }
                     qcap = new_cap;
                 }
                 qinfo_t *qi = &qinfos[qcount++];
@@ -555,9 +551,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 if (!qi) {
                     if (qcount >= qcap) {
                         int new_cap = qcap ? qcap * 2 : 16;
-                        void *tmp = realloc(qinfos, (size_t)new_cap * sizeof(qinfo_t));
-                        if (!tmp) { cJSON_Delete(entry); continue; }
-                        qinfos = tmp;
+                        if (safe_realloc((void **)&qinfos, (size_t)new_cap * sizeof(qinfo_t))) { cJSON_Delete(entry); continue; }
                         qcap = new_cap;
                     }
                     qi = &qinfos[qcount++];
@@ -677,9 +671,7 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             /* Format timestamp */
             char ts_buf[32] = "";
             if (qi->ts > 0) {
-                time_t t = (time_t)qi->ts;
-                struct tm *tm = localtime(&t);
-                if (tm) strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%d %H:%M:%S", tm);
+                format_iso_datetime((time_t)qi->ts, ts_buf, sizeof(ts_buf));
             }
 
             /* Effective session dir for this query */
@@ -859,9 +851,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             journal_parse_compaction_stats(params, &cs);
             if (nsteps >= scap) {
                 int new_cap = scap ? scap * 2 : 32;
-                void *tmp = realloc(steps, (size_t)new_cap * sizeof(step_info_t));
-                if (!tmp) { cJSON_Delete(entry); continue; }
-                steps = tmp;
+                if (safe_realloc((void **)&steps, (size_t)new_cap * sizeof(step_info_t))) { cJSON_Delete(entry); continue; }
                 scap = new_cap;
             }
             step_info_t *si = &steps[nsteps++];
@@ -899,9 +889,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* Collect step info */
         if (nsteps >= scap) {
             int new_cap = scap ? scap * 2 : 32;
-            void *tmp = realloc(steps, (size_t)new_cap * sizeof(step_info_t));
-            if (!tmp) { cJSON_Delete(entry); continue; }
-            steps = tmp;
+            if (safe_realloc((void **)&steps, (size_t)new_cap * sizeof(step_info_t))) { cJSON_Delete(entry); continue; }
             scap = new_cap;
         }
         step_info_t *si = &steps[nsteps++];

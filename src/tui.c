@@ -252,9 +252,7 @@ static void finish_paste(ui_state_t *ui) {
         /* Ensure capacity */
         while (ui->input_len + nbytes >= ui->input_cap - 1) {
             int new_cap = ui->input_cap * 2;
-            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
-            if (!tmp) break;
-            ui->input_buffer = tmp;
+            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
             ui->input_cap = new_cap;
         }
         /* Skip paste if buffer didn't grow enough (OOM) */
@@ -540,9 +538,7 @@ static void page_search_scan_matches(ui_state_t *ui) {
             /* Record this match line */
             if (ui->page_search_total >= ui->page_search_lines_cap) {
                 int new_cap = ui->page_search_lines_cap ? ui->page_search_lines_cap * 2 : 64;
-                int *new_arr = realloc(ui->page_search_lines, (size_t)new_cap * sizeof(int));
-                if (new_arr) {
-                    ui->page_search_lines = new_arr;
+                if (!safe_realloc((void **)&ui->page_search_lines, (size_t)new_cap * sizeof(int))) {
                     ui->page_search_lines_cap = new_cap;
                 }
             }
@@ -1118,9 +1114,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
                     if (hlen >= ui->input_cap) {
                         int new_cap = hlen + 64;
-                        char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
-                        if (!tmp) break;
-                        ui->input_buffer = tmp;
+                        if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
                         ui->input_cap = new_cap;
                     }
                     memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
@@ -1200,9 +1194,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         int hlen = ui->saved_input ? ui->saved_input_len : 0;
                         if (hlen >= ui->input_cap) {
                             int new_cap = hlen + 64;
-                            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
-                            if (!tmp) break;
-                            ui->input_buffer = tmp;
+                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
                             ui->input_cap = new_cap;
                         }
                         if (hlen > 0)
@@ -1216,9 +1208,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         int hlen = (int)strlen(ui->history[ui->history_idx]);
                         if (hlen >= ui->input_cap) {
                             int new_cap = hlen + 64;
-                            char *tmp = realloc(ui->input_buffer, (size_t)new_cap);
-                            if (!tmp) break;
-                            ui->input_buffer = tmp;
+                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
                             ui->input_cap = new_cap;
                         }
                         memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
@@ -1284,10 +1274,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                 /* Add to history (grow array if needed) */
                 if (ui->history_count >= ui->history_cap) {
                     int new_cap = ui->history_cap ? ui->history_cap * 2 : 32;
-                    char **new_hist = realloc(ui->history,
-                                              (size_t)new_cap * sizeof(char *));
-                    if (new_hist) {
-                        ui->history = new_hist;
+                    if (!safe_realloc((void **)&ui->history, (size_t)new_cap * sizeof(char *))) {
                         ui->history_cap = new_cap;
                     }
                 }

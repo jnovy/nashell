@@ -116,6 +116,33 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
     if (out_pinned) *out_pinned = pinned; else free(pinned);
 }
 
+/* Callback for jsonl_iterate: build parent-loop map from query entries */
+typedef struct { int *pmap; int pmap_cap; } pmap_ctx_t;
+
+static int build_pmap_cb(cJSON *entry, void *user_data) {
+    pmap_ctx_t *ctx = user_data;
+    if (!ctx->pmap) return 1;  /* allocation failed earlier, stop */
+    const char *jtool = cJSON_GetStringValue(
+        cJSON_GetObjectItem(entry, "tool"));
+    if (!jtool || strcmp(jtool, "query") != 0) return 0;
+    int rl = (int)cJSON_GetNumberValue(
+        cJSON_GetObjectItem(entry, "react_loop"));
+    cJSON *pp = cJSON_GetObjectItem(
+        cJSON_GetObjectItem(entry, "params"), "parent_loop");
+    if (!pp || !cJSON_IsNumber(pp) || rl < 0) return 0;
+    if (rl >= ctx->pmap_cap) {
+        int new_cap = ctx->pmap_cap;
+        while (new_cap <= rl) new_cap *= 2;
+        if (safe_realloc((void **)&ctx->pmap, sizeof(int) * (size_t)new_cap))
+            return 0;  /* skip this entry on alloc failure */
+        memset(ctx->pmap + ctx->pmap_cap, -1,
+               sizeof(int) * (size_t)(new_cap - ctx->pmap_cap));
+        ctx->pmap_cap = new_cap;
+    }
+    ctx->pmap[rl] = (int)pp->valuedouble;
+    return 0;
+}
+
 /* Extracted from react_build_context — was 65 lines nested 4 deep.
  * Filters scratchpad sections for branching: only R*_result sections from
  * ancestor loops are included. Returns malloc'd serialized string (caller frees).
@@ -132,63 +159,26 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     int n_ancestors = 0;
     ancestors[n_ancestors++] = parent_loop;
 
-    char jpath[NASH_PATH_MAX];
-    FILE *jf = NULL;
     if (session_dir) {
+        char jpath[NASH_PATH_MAX];
         snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
-        jf = fopen(jpath, "r");
-    }
-    if (jf) {
-        int pmap_cap = 1024;
-        int *pmap = malloc(sizeof(int) * (size_t)pmap_cap);
-        if (pmap)
-            memset(pmap, -1, sizeof(int) * (size_t)pmap_cap);
-        char jline[NASH_LINE_MAX];
-        while (pmap && fgets(jline, sizeof(jline), jf)) {
-            cJSON *entry = cJSON_Parse(jline);
-            if (!entry) continue;
-            const char *jtool = cJSON_GetStringValue(
-                cJSON_GetObjectItem(entry, "tool"));
-            if (jtool && strcmp(jtool, "query") == 0) {
-                int rl = (int)cJSON_GetNumberValue(
-                    cJSON_GetObjectItem(entry, "react_loop"));
-                cJSON *pp = cJSON_GetObjectItem(
-                    cJSON_GetObjectItem(entry, "params"), "parent_loop");
-                if (pp && cJSON_IsNumber(pp) && rl >= 0) {
-                    if (rl >= pmap_cap) {
-                        int new_cap = pmap_cap;
-                        while (new_cap <= rl) new_cap *= 2;
-                        int *tmp = realloc(pmap, sizeof(int) * (size_t)new_cap);
-                        if (tmp) {
-                            memset(tmp + pmap_cap, -1,
-                                   sizeof(int) * (size_t)(new_cap - pmap_cap));
-                            pmap = tmp;
-                            pmap_cap = new_cap;
-                        } else {
-                            cJSON_Delete(entry);
-                            continue;
-                        }
-                    }
-                    pmap[rl] = (int)pp->valuedouble;
-                }
-            }
-            cJSON_Delete(entry);
-        }
-        fclose(jf);
-        if (pmap) {
+        pmap_ctx_t pm = { .pmap_cap = 1024 };
+        pm.pmap = malloc(sizeof(int) * (size_t)pm.pmap_cap);
+        if (pm.pmap)
+            memset(pm.pmap, -1, sizeof(int) * (size_t)pm.pmap_cap);
+        jsonl_iterate(jpath, build_pmap_cb, &pm);
+        if (pm.pmap) {
             int cur = parent_loop;
-            while (cur >= 0 && cur < pmap_cap && pmap[cur] >= 0) {
+            while (cur >= 0 && cur < pm.pmap_cap && pm.pmap[cur] >= 0) {
                 if (n_ancestors >= anc_cap) {
                     int new_cap = anc_cap * 2;
-                    int *tmp = realloc(ancestors, sizeof(int) * (size_t)new_cap);
-                    if (!tmp) break;
-                    ancestors = tmp;
+                    if (safe_realloc((void **)&ancestors, sizeof(int) * (size_t)new_cap)) break;
                     anc_cap = new_cap;
                 }
-                cur = pmap[cur];
+                cur = pm.pmap[cur];
                 ancestors[n_ancestors++] = cur;
             }
-            free(pmap);
+            free(pm.pmap);
         }
     }
 
@@ -309,10 +299,8 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                         int limit = n_recent < max_entries / 2 ? n_recent : max_entries / 2;
                         for (int i = 0; i < limit; i++) {
                             time_t ts = (time_t)recent[i].ts;
-                            struct tm tm;
-                            localtime_r(&ts, &tm);
                             char datebuf[16];
-                            strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &tm);
+                            format_iso_date(ts, datebuf, sizeof(datebuf));
                             str_appendf(&cal, "  %s  %s — %s\n",
                                 datebuf, recent[i].key, recent[i].desc);
                         }
@@ -322,10 +310,8 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                         int limit = n_older < max_entries / 2 ? n_older : max_entries / 2;
                         for (int i = 0; i < limit; i++) {
                             time_t ts = (time_t)older[i].ts;
-                            struct tm tm;
-                            localtime_r(&ts, &tm);
                             char datebuf[16];
-                            strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &tm);
+                            format_iso_date(ts, datebuf, sizeof(datebuf));
                             str_appendf(&cal, "  %s  %s — %s\n",
                                 datebuf, older[i].key, older[i].desc);
                         }

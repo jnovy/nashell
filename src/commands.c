@@ -254,6 +254,34 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
     return CMD_CONTINUE;
 }
 
+/* Callback for jsonl_iterate: format run log events */
+static int format_run_event_cb(cJSON *ev, void *user_data) {
+    str_t *display = user_data;
+    const char *e = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "e"));
+    if (!e) return 0;
+
+    if (strcmp(e, "start") == 0) {
+        str_appendf(display, "**Playbook**: %s  \n",
+            cJSON_GetStringValue(cJSON_GetObjectItem(ev, "pb")));
+        str_appendf(display, "**Passes**: %d\n\n",
+            (int)cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "n")));
+    } else if (strcmp(e, "pass") == 0) {
+        int idx = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "i"));
+        const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "l"));
+        const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "sid"));
+        str_appendf(display, "- **Pass %d**: %s\n  session: `%s`\n",
+            idx + 1, label ? label : "?", sid ? sid : "?");
+    } else if (strcmp(e, "done") == 0) {
+        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
+        double ts = cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "ts"));
+        str_appendf(display, "  status: %s  (%.0f)\n", st ? st : "?", ts);
+    } else if (strcmp(e, "end") == 0) {
+        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
+        str_appendf(display, "\n**Result**: %s\n", st ? st : "?");
+    }
+    return 0;
+}
+
 /* ── /runs [list|show <id>] ────────────────────────────────────── */
 static int cmd_runs(command_ctx_t *ctx, const char *sub) {
     ui_state_t *ui = ctx->ui;
@@ -289,8 +317,10 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
         else
             snprintf(rpath, sizeof(rpath), "%s/%s.jsonl", rdir, show_id);
 
-        FILE *rf = fopen(rpath, "r");
-        if (!rf) {
+        str_t display = str_new(2048);
+        str_appendf(&display, "# Run Log: %s\n\n", show_id);
+        if (jsonl_iterate(rpath, format_run_event_cb, &display) < 0) {
+            str_free(&display);
             pthread_mutex_lock(&ui->mtx);
             ui_state_set_status(ui, STATUS_ERROR,
                 "/runs show: run log not found");
@@ -298,51 +328,6 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
             tui_render(ui);
             return CMD_CONTINUE;
         }
-
-        str_t display = str_new(2048);
-        str_appendf(&display, "# Run Log: %s\n\n", show_id);
-        char line[NASH_LINE_MAX];
-        while (fgets(line, sizeof(line), rf)) {
-            cJSON *ev = cJSON_Parse(line);
-            if (!ev) continue;
-            const char *e = cJSON_GetStringValue(
-                cJSON_GetObjectItem(ev, "e"));
-            if (!e) { cJSON_Delete(ev); continue; }
-
-            if (strcmp(e, "start") == 0) {
-                str_appendf(&display, "**Playbook**: %s  \n",
-                    cJSON_GetStringValue(
-                        cJSON_GetObjectItem(ev, "pb")));
-                str_appendf(&display, "**Passes**: %d\n\n",
-                    (int)cJSON_GetNumberValue(
-                        cJSON_GetObjectItem(ev, "n")));
-            } else if (strcmp(e, "pass") == 0) {
-                int idx = (int)cJSON_GetNumberValue(
-                    cJSON_GetObjectItem(ev, "i"));
-                const char *label = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(ev, "l"));
-                const char *sid = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(ev, "sid"));
-                str_appendf(&display,
-                    "- **Pass %d**: %s\n  session: `%s`\n",
-                    idx + 1, label ? label : "?",
-                    sid ? sid : "?");
-            } else if (strcmp(e, "done") == 0) {
-                const char *st = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(ev, "st"));
-                double ts = cJSON_GetNumberValue(
-                    cJSON_GetObjectItem(ev, "ts"));
-                str_appendf(&display, "  status: %s  (%.0f)\n",
-                    st ? st : "?", ts);
-            } else if (strcmp(e, "end") == 0) {
-                const char *st = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(ev, "st"));
-                str_appendf(&display, "\n**Result**: %s\n",
-                    st ? st : "?");
-            }
-            cJSON_Delete(ev);
-        }
-        fclose(rf);
 
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
@@ -372,13 +357,7 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
                 while ((ent = readdir(d))) {
                     int nlen = (int)strlen(ent->d_name);
                     if (nlen > 6 && strcmp(ent->d_name + nlen - 6, ".jsonl") == 0) {
-                        if (nnames >= names_cap) {
-                            names_cap *= 2;
-                            char **tmp = realloc(names, sizeof(char *) * (size_t)names_cap);
-                            if (!tmp) break;  /* stop collecting on OOM */
-                            names = tmp;
-                        }
-                        names[nnames++] = strdup(ent->d_name);
+                        VEC_PUSH(names, nnames, names_cap, strdup(ent->d_name));
                     }
                 }
             }

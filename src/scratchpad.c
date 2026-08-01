@@ -57,11 +57,9 @@ void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
 static int scratchpad_grow(scratchpad_t *sp) {
     if (sp->count < sp->cap) return 0;
     int new_cap = sp->cap ? sp->cap * 2 : SCRATCHPAD_INIT_CAP;
-    scratchpad_section_t *new_s = realloc(sp->sections,
-                                          (size_t)new_cap * sizeof(scratchpad_section_t));
-    if (!new_s) return -1;
-    memset(new_s + sp->cap, 0, (size_t)(new_cap - sp->cap) * sizeof(scratchpad_section_t));
-    sp->sections = new_s;
+    if (safe_realloc((void **)&sp->sections,
+                     (size_t)new_cap * sizeof(scratchpad_section_t))) return -1;
+    memset(sp->sections + sp->cap, 0, (size_t)(new_cap - sp->cap) * sizeof(scratchpad_section_t));
     sp->cap = new_cap;
     return 0;
 }
@@ -135,9 +133,7 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
     /* Track cleared name for JSONL op:clear on next save */
     if (sp->n_cleared >= sp->cleared_cap) {
         int new_cap = sp->cleared_cap ? sp->cleared_cap * 2 : 8;
-        char **new_names = realloc(sp->cleared_names, (size_t)new_cap * sizeof(char *));
-        if (new_names) {
-            sp->cleared_names = new_names;
+        if (!safe_realloc((void **)&sp->cleared_names, (size_t)new_cap * sizeof(char *))) {
             sp->cleared_cap = new_cap;
         }
     }

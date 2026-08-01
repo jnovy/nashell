@@ -116,10 +116,8 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
     free(e->description);
     free(e->value);
     free(e->path);
-    for (int i = 0; i < e->n_refs; i++) free(e->refs[i]);
-    free(e->refs);
-    for (int i = 0; i < e->n_triggers; i++) free(e->triggers[i]);
-    free(e->triggers);
+    free_string_array(e->refs, e->n_refs);
+    free_string_array(e->triggers, e->n_triggers);
     if (e->has_emb) embed_multi_vec_free(&e->emb);
     free(e->supersedes);
     memset(e, 0, sizeof(*e));
@@ -186,10 +184,9 @@ static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
 static int mem_index_grow(mem_index_t *idx) {
     if (idx->count >= idx->cap) {
         int new_cap = idx->cap ? idx->cap * 2 : 64;
-        void *tmp = realloc(idx->entries,
-                            (size_t)new_cap * sizeof(mem_index_entry_t));
-        if (!tmp) return -1;
-        idx->entries = tmp;
+        if (safe_realloc((void **)&idx->entries,
+                         (size_t)new_cap * sizeof(mem_index_entry_t)))
+            return -1;
         idx->cap = new_cap;
     }
     return 0;
@@ -566,8 +563,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
             for (int i = 0; i < t_cnt; i++)
                 cJSON_AddItemToArray(trigs, cJSON_CreateString(t_arr[i]));
         }
-        for (int i = 0; i < n_old_triggers; i++) free(old_triggers[i]);
-        free(old_triggers);
+        free_string_array(old_triggers, n_old_triggers);
     }
 
     /* P2: Lesson lineage — preserve supersedes and version from old entry.
@@ -1031,8 +1027,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                         embed_vec_free(&vecs[ci]);
                     free(vecs);
                 }
-                for (int ci = 0; ci < n_chunks; ci++) free(chunks[ci]);
-                free(chunks);
+                free_string_array(chunks, n_chunks);
             }
         }
     }
@@ -1675,13 +1670,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         int evidence = hits + misses;
         double vscore = (hits + 1.0) / (hits + misses + 2.0);
         if (vscore < min_score && evidence >= min_evidence) {
-            if (count >= cap) {
-                cap = cap ? cap * 2 : 16;
-                char **tmp = realloc(keys, sizeof(char *) * (size_t)cap);
-                if (!tmp) break;
-                keys = tmp;
-            }
-            keys[count++] = strdup(e->key);
+            VEC_PUSH(keys, count, cap, strdup(e->key));
         }
     }
 
@@ -1692,9 +1681,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
     if (count > 0) {
         memory_delete_batch(m, (const char **)keys, count);
     }
-    for (int i = 0; i < count; i++)
-        free(keys[i]);
-    free(keys);
+    free_string_array(keys, count);
 
     /* FIX #15: Release mutex before orphan .emb sweep — the sweep is pure
      * filesystem I/O that doesn't access in-memory index state. Holding
@@ -2017,8 +2004,7 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
                                           n_chunks, &out_count);
 
     /* Free chunk strings */
-    for (int i = 0; i < n_chunks; i++) free(chunks[i]);
-    free(chunks);
+    free_string_array(chunks, n_chunks);
 
     if (!vecs || out_count <= 0) {
         free(vecs);
@@ -2137,10 +2123,9 @@ int memory_embed_all(memory_t *m) {
         /* Grow pending array if needed */
         if (pending_count >= pending_cap) {
             pending_cap *= 2;
-            pending_embed_t *tmp = realloc(pending,
-                sizeof(pending_embed_t) * (size_t)pending_cap);
-            if (!tmp) break;
-            pending = tmp;
+            if (safe_realloc((void **)&pending,
+                            sizeof(pending_embed_t) * (size_t)pending_cap))
+                break;
         }
 
         pending[pending_count].key = strdup(ie->key);
@@ -2281,8 +2266,7 @@ void memory_find_free(mem_index_entry_t *entry) {
     free(entry->description);
     free(entry->value);
     free(entry->path);
-    for (int i = 0; i < entry->n_refs; i++) free(entry->refs[i]);
-    free(entry->refs);
+    free_string_array(entry->refs, entry->n_refs);
     free(entry->supersedes);
     free(entry);
 }

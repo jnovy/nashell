@@ -171,9 +171,7 @@ void ui_state_input_char(ui_state_t *ui, int ch) {
     /* Ensure capacity for nbytes */
     while (ui->input_len + nbytes >= ui->input_cap - 1) {
         ui->input_cap *= 2;
-        void *tmp = realloc(ui->input_buffer, (size_t)ui->input_cap);
-        if (!tmp) return;
-        ui->input_buffer = tmp;
+        if (safe_realloc((void **)&ui->input_buffer, (size_t)ui->input_cap)) return;
     }
     memmove(ui->input_buffer + ui->cursor_pos + nbytes,
             ui->input_buffer + ui->cursor_pos,
@@ -319,10 +317,8 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
     if (query_text && query_text[0]) {
         if (ui->history_count >= ui->history_cap) {
             ui->history_cap = ui->history_cap ? ui->history_cap * 2 : 32;
-            void *tmp = realloc(ui->history,
-                                (size_t)ui->history_cap * sizeof(char *));
-            if (!tmp) return;
-            ui->history = tmp;
+            if (safe_realloc((void **)&ui->history,
+                                (size_t)ui->history_cap * sizeof(char *))) return;
         }
         ui->history[ui->history_count++] = strdup(query_text);
         ui->history_idx = ui->history_count;

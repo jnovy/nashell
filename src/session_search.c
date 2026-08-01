@@ -13,6 +13,7 @@
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 
 #include "session_search.h"
+#include "str.h"
 #include "nash_limits.h"
 #include "journal.h"
 #include <stdio.h>
@@ -306,12 +307,10 @@ static int scan_journal_lexical(const char *session_dir,
                 int new_cap = match_cap * 2;
                 if (new_cap > SS_MAX_MATCHES_PER_SESSION)
                     new_cap = SS_MAX_MATCHES_PER_SESSION;
-                ss_match_t *new_m = realloc(matches,
-                                            (size_t)new_cap * sizeof(ss_match_t));
-                if (new_m) {
-                    memset(new_m + match_cap, 0,
+                if (!safe_realloc((void **)&matches,
+                                  (size_t)new_cap * sizeof(ss_match_t))) {
+                    memset(matches + match_cap, 0,
                            (size_t)(new_cap - match_cap) * sizeof(ss_match_t));
-                    matches = new_m;
                     match_cap = new_cap;
                 } else {
                     /* Can't grow — stop collecting but keep counting */
@@ -404,12 +403,10 @@ static int scan_file_lexical(const char *filepath, const char *filename,
             if (new_cap > SS_MAX_MATCHES_PER_SESSION)
                 new_cap = SS_MAX_MATCHES_PER_SESSION;
             if (new_cap < idx + 1) new_cap = idx + 1;
-            ss_match_t *new_m = realloc(scored->matches,
-                                        (size_t)new_cap * sizeof(ss_match_t));
-            if (new_m) {
-                memset(new_m + old_cap, 0,
+            if (!safe_realloc((void **)&scored->matches,
+                              (size_t)new_cap * sizeof(ss_match_t))) {
+                memset(scored->matches + old_cap, 0,
                        (size_t)(new_cap - old_cap) * sizeof(ss_match_t));
-                scored->matches = new_m;
                 match_cap = new_cap;
             } else {
                 continue;  /* allocation failed, skip storing */
@@ -553,9 +550,7 @@ static int phase_lexical(session_index_t *idx,
                     if (de->d_name[0] == '.') continue;
                     if (n_dirs >= cap_dirs) {
                         cap_dirs *= 2;
-                        dir_entry_t *new_d = realloc(dirs, (size_t)cap_dirs * sizeof(dir_entry_t));
-                        if (!new_d) break;
-                        dirs = new_d;
+                        if (safe_realloc((void **)&dirs, (size_t)cap_dirs * sizeof(dir_entry_t))) break;
                     }
                     snprintf(dirs[n_dirs].dir, NASH_PATH_MAX, "%s/%s",
                              sessions_dir, de->d_name);

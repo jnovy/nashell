@@ -72,9 +72,7 @@ static char **tokenize_words(const char *text, int *n_words) {
                 w[wlen] = '\0';
                 if (count >= cap) {
                     cap *= 2;
-                    char **tmp = realloc(words, (size_t)cap * sizeof(char *));
-                    if (!tmp) { free(w); break; }
-                    words = tmp;
+                    if (safe_realloc((void **)&words, (size_t)cap * sizeof(char *))) { free(w); break; }
                 }
                 words[count++] = w;
             }
@@ -84,27 +82,14 @@ static char **tokenize_words(const char *text, int *n_words) {
     return words;
 }
 
-static void free_words(char **words, int n) {
-    if (!words) return;
-    for (int i = 0; i < n; i++) free(words[i]);
-    free(words);
-}
-
-/* DEDUP 1 FIX: Extracted chunk-freeing pattern (was 4 identical copies). */
-static void free_chunks(char **chunks, int n) {
-    if (!chunks) return;
-    for (int i = 0; i < n; i++) free(chunks[i]);
-    free(chunks);
-}
+/* free_words / free_chunks replaced by free_string_array (str.h) */
 
 /* DEDUP 2 FIX: Extracted grow-and-add pattern (was duplicated in FLUSH_MERGE
  * macro and emit-as-own-chunk block). Returns 0 on success, -1 on OOM. */
 static int push_chunk(char ***chunks, int *count, int *cap, char *chunk) {
     if (*count >= *cap) {
         int new_cap = *cap * 2;
-        char **tmp = realloc(*chunks, (size_t)new_cap * sizeof(char *));
-        if (!tmp) return -1;
-        *chunks = tmp;
+        if (safe_realloc((void **)chunks, (size_t)new_cap * sizeof(char *))) return -1;
         *cap = new_cap;
     }
     (*chunks)[(*count)++] = chunk;
@@ -320,9 +305,7 @@ static char **split_chunks(const char *text, int *n_chunks) {
             if (need > merge_cap) {
                 int new_cap = merge_cap;
                 while (new_cap < need) new_cap *= 2;
-                char *tmp = realloc(merge_buf, (size_t)new_cap);
-                if (!tmp) goto done;
-                merge_buf = tmp;
+                if (safe_realloc((void **)&merge_buf, (size_t)new_cap)) goto done;
                 merge_cap = new_cap;
             }
             if (merge_len > 0) merge_buf[merge_len++] = ' ';
@@ -439,7 +422,7 @@ char *compress_to_relevant(const char *text, const char *query,
         if (out)
             emit_chunks(out, chunks, NULL, n_chunks, max_chars,
                         n_chunks);
-        free_chunks(chunks, n_chunks);
+        free_string_array(chunks, n_chunks);
         return out;
     }
 
@@ -450,8 +433,8 @@ char *compress_to_relevant(const char *text, const char *query,
     /* Score each chunk by query relevance using BM25 TF saturation */
     scored_chunk_t *scored = malloc((size_t)n_chunks * sizeof(scored_chunk_t));
     if (!scored) {
-        free_words(qwords, n_qwords);
-        free_chunks(chunks, n_chunks);
+        free_string_array(qwords, n_qwords);
+        free_string_array(chunks, n_chunks);
         return NULL;
     }
 
@@ -460,8 +443,8 @@ char *compress_to_relevant(const char *text, const char *query,
     int *wordcounts = malloc((size_t)n_chunks * sizeof(int));
     if (!wordcounts) {
         free(scored);
-        free_words(qwords, n_qwords);
-        free_chunks(chunks, n_chunks);
+        free_string_array(qwords, n_qwords);
+        free_string_array(chunks, n_chunks);
         return NULL;
     }
     int total_words = 0;
@@ -512,8 +495,8 @@ char *compress_to_relevant(const char *text, const char *query,
     char *out = malloc(out_cap);
     if (!out) {
         free(scored);
-        free_words(qwords, n_qwords);
-        free_chunks(chunks, n_chunks);
+        free_string_array(qwords, n_qwords);
+        free_string_array(chunks, n_chunks);
         return NULL;
     }
     int *indices = malloc((size_t)keep * sizeof(int));
@@ -527,7 +510,7 @@ char *compress_to_relevant(const char *text, const char *query,
 
     /* Cleanup */
     free(scored);
-    free_words(qwords, n_qwords);
-    free_chunks(chunks, n_chunks);
+    free_string_array(qwords, n_qwords);
+    free_string_array(chunks, n_chunks);
     return out;
 }

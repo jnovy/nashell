@@ -207,10 +207,8 @@ playbook_t *playbook_load(const char *path) {
 }
 
 static void free_react_overrides(pb_react_overrides_t *ro) {
-    for (int i = 0; i < ro->n_tools_allow; i++) free(ro->tools_allow[i]);
-    free(ro->tools_allow);
-    for (int i = 0; i < ro->n_tools_block; i++) free(ro->tools_block[i]);
-    free(ro->tools_block);
+    free_string_array(ro->tools_allow, ro->n_tools_allow);
+    free_string_array(ro->tools_block, ro->n_tools_block);
 }
 
 void playbook_free(playbook_t *pb) {
@@ -1237,9 +1235,7 @@ void *playbook_worker(void *arg) {
                 memory_delete_batch(cur_mem,
                                     (const char **)del_keys, n_del);
             }
-            for (int i = 0; i < n_del; i++)
-                free(del_keys[i]);
-            free(del_keys);
+            free_string_array(del_keys, n_del);
         }
     }
 

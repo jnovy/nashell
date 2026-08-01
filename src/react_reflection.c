@@ -782,8 +782,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                     }
                                 }
 
-                                for (int pi = 0; pi < valid; pi++) free(previews[pi]);
-                                free(previews);
+                                free_string_array(previews, valid);
                                 embed_multi_vec_free(&mv);
                             }
 

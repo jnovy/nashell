@@ -2,6 +2,7 @@
 #include "toml.h"
 #include "tool_plugin.h"
 #include "nash_limits.h"
+#include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -563,10 +564,9 @@ config_t *config_load(const char *path) {
         if (mr.ok && !mr.u.b) {
             /* Block the memory_search tool */
             int n = cfg->n_profile_tools_block;
-            void *tmp = realloc(cfg->profile_tools_block,
-                                (n + 1) * sizeof(char *));
-            if (!tmp) goto done_tools;
-            cfg->profile_tools_block = tmp;
+            if (safe_realloc((void **)&cfg->profile_tools_block,
+                            (n + 1) * sizeof(char *)))
+                goto done_tools;
             cfg->profile_tools_block[n] = strdup("memory_search");
             cfg->n_profile_tools_block = n + 1;
             /* Also disable automatic memory injection */
@@ -784,14 +784,12 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         /* Grow array if needed */
         if (cfg->n_model_profiles >= cap) {
             cap *= 2;
-            void *tmp = realloc(cfg->model_profiles,
-                                cap * sizeof(model_profile_t));
-            if (!tmp) {
+            if (safe_realloc((void **)&cfg->model_profiles,
+                            cap * sizeof(model_profile_t))) {
                 free(match);
                 toml_free(root);
                 break;
             }
-            cfg->model_profiles = tmp;
         }
 
         model_profile_t *p = &cfg->model_profiles[cfg->n_model_profiles];
@@ -984,16 +982,10 @@ void config_free_model_profiles(config_t *cfg) {
         free(p->source_file);
         free(p->system_prompt_extra);
         /* Unified Spec: free extended fields */
-        for (int j = 0; j < p->n_tools_allow; j++) free(p->tools_allow[j]);
-        free(p->tools_allow);
-        for (int j = 0; j < p->n_tools_block; j++) free(p->tools_block[j]);
-        free(p->tools_block);
-        for (int j = 0; j < p->n_tool_descs; j++) {
-            free(p->tool_desc_names[j]);
-            free(p->tool_desc_values[j]);
-        }
-        free(p->tool_desc_names);
-        free(p->tool_desc_values);
+        free_string_array(p->tools_allow, p->n_tools_allow);
+        free_string_array(p->tools_block, p->n_tools_block);
+        free_string_array(p->tool_desc_names, p->n_tool_descs);
+        free_string_array(p->tool_desc_values, p->n_tool_descs);
     }
     free(cfg->model_profiles);
     cfg->model_profiles = NULL;
@@ -1602,10 +1594,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
           if (mr.ok && !mr.u.b) {
               /* Add "memory_search" to the block list */
               int n = cfg->n_profile_tools_block;
-              void *tmp = realloc(cfg->profile_tools_block,
-                                  (n + 1) * sizeof(char *));
-              if (tmp) {
-                  cfg->profile_tools_block = tmp;
+              if (!safe_realloc((void **)&cfg->profile_tools_block,
+                               (n + 1) * sizeof(char *))) {
                   cfg->profile_tools_block[n] = strdup("memory_search");
                   cfg->n_profile_tools_block = n + 1;
                   /* Also disable automatic memory injection */

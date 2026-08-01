@@ -32,6 +32,37 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
 /* tools_make_result() and tools_make_error() are static inline in
  * tool_plugin.h (included transitively via tools.h). */
 
+/* ── Tool parameter extraction macros ────────────────────────────────
+ * Reduce boilerplate in tool handlers.  Both declare a local `const char *`
+ * variable.  TOOL_REQ_STR returns an error if the param is missing/empty.
+ * TOOL_OPT_STR sets the variable to NULL if the param is absent.
+ *
+ * Usage:
+ *   TOOL_REQ_STR(params, "path", path);   // declares const char *path
+ *   TOOL_OPT_STR(params, "query", query); // declares const char *query (may be NULL)
+ */
+#define TOOL_REQ_STR(params, name, var)                                      \
+    cJSON *var##_j_ = cJSON_GetObjectItem((params), (name));                 \
+    if (!var##_j_ || !cJSON_IsString(var##_j_) ||                            \
+        !var##_j_->valuestring[0])                                           \
+        return tools_make_error(name " is required and must be a "           \
+                                "non-empty string");                         \
+    const char *var = var##_j_->valuestring
+
+#define TOOL_OPT_STR(params, name, var)                                      \
+    cJSON *var##_j_ = cJSON_GetObjectItem((params), (name));                 \
+    const char *var = (var##_j_ && cJSON_IsString(var##_j_) &&               \
+                       var##_j_->valuestring[0])                             \
+                      ? var##_j_->valuestring : NULL
+
+/* Build a success result with {"status":"ok"} and optional extra fields.
+ * Caller can cJSON_AddXToObject(meta, ...) before returning. */
+static inline tool_result_t tool_result_ok(void) {
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "status", "ok");
+    return tools_make_result(1, m, NULL);
+}
+
 /* Resolve a tool path: step alias → store path, store/ prefix → session-relative.
  * Writes resolved path into resolved_buf (size NASH_PATH_MAX).
  * Returns the path to use (may be the original, resolved alias, or resolved_buf).

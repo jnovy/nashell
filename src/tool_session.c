@@ -40,15 +40,8 @@ static void format_ts(double ts, char *buf, size_t buflen) {
 
 tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
     /* Extract parameters */
-    const char *query = NULL;
-    cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (query_j && query_j->valuestring && query_j->valuestring[0])
-        query = query_j->valuestring;
-
-    const char *pattern = NULL;
-    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
-    if (pattern_j && pattern_j->valuestring && pattern_j->valuestring[0])
-        pattern = pattern_j->valuestring;
+    TOOL_OPT_STR(params, "query", query);
+    TOOL_OPT_STR(params, "pattern", pattern);
 
     if (!query && !pattern)
         return tools_make_error(

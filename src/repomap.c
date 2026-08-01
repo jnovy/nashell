@@ -226,9 +226,8 @@ static void load_file_lines(rm_file_t *f, const char *root) {
     while (fgets(buf, sizeof(buf), fp)) {
         if (f->n_lines >= cap) {
             cap *= 2;
-            char **tmp = realloc(f->lines, sizeof(char *) * (size_t)cap);
-            if (!tmp) break;
-            f->lines = tmp;
+            if (safe_realloc((void **)&f->lines, sizeof(char *) * (size_t)cap))
+                break;
         }
         size_t len = strlen(buf);
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
@@ -1123,9 +1122,8 @@ static char **split_content_lines(const char *content, int content_len,
 
         if (*out_n_lines >= cap) {
             cap *= 2;
-            char **tmp = realloc(lines, sizeof(char *) * (size_t)cap);
-            if (!tmp) break;
-            lines = tmp;
+            if (safe_realloc((void **)&lines, sizeof(char *) * (size_t)cap))
+                break;
         }
 
         lines[*out_n_lines] = malloc((size_t)(len + 1));
@@ -1174,8 +1172,7 @@ int repomap_file_symbols(const char *content, int content_len,
      * NASH_PATH_MAX paths + tags[8192]), far too large for the stack. */
     rm_state_t *st = calloc(1, sizeof(*st));
     if (!st) {
-        for (int i = 0; i < n_lines; i++) free(lines[i]);
-        free(lines);
+        free_string_array(lines, n_lines);
         return 0;
     }
     st->n_files = 1;
@@ -1216,8 +1213,7 @@ int repomap_file_symbols(const char *content, int content_len,
     out[written] = '\0';
 
     /* Cleanup */
-    for (int i = 0; i < n_lines; i++) free(lines[i]);
-    free(lines);
+    free_string_array(lines, n_lines);
     free(st);
 
     return written;

@@ -160,9 +160,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     if (found->last_run > 0) {
         char timebuf[64];
-        struct tm tm;
-        localtime_r(&found->last_run, &tm);
-        strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
+        format_iso_datetime(found->last_run, timebuf, sizeof(timebuf));
         char durbuf[32];
         fmt_duration((double)found->last_duration, durbuf, sizeof(durbuf));
         str_appendf(&display,
@@ -178,9 +176,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     if (found->next_due > 0 && !found->schedule.is_startup) {
         char timebuf[64];
-        struct tm tm;
-        localtime_r(&found->next_due, &tm);
-        strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M:%S", &tm);
+        format_iso_datetime(found->next_due, timebuf, sizeof(timebuf));
         str_appendf(&display, "**Next due**: %s\n\n", timebuf);
     }
 

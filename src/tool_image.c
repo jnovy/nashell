@@ -247,11 +247,8 @@ static char *extract_response_text(provider_t *p, const char *resp_json) {
 #define IMAGE_MAX_SIZE (20 * 1024 * 1024)  /* 20 MB max */
 
 tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *path_j = cJSON_GetObjectItem(params, "path");
-    if (!path_j || !path_j->valuestring || !path_j->valuestring[0])
-        return tools_make_error("image_analyze requires a non-empty 'path' string.");
-
-    const char *path = path_j->valuestring;
+    TOOL_REQ_STR(params, "path", path);
+    const char *orig_path = path;  /* before resolve */
 
     /* Optional question/prompt about the image */
     cJSON *question_j = cJSON_GetObjectItem(params, "question");
@@ -416,7 +413,7 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
     cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "path", path_j->valuestring);
+    cJSON_AddStringToObject(meta, "path", orig_path);
     cJSON_AddStringToObject(meta, "mime_type", mime);
     cJSON_AddNumberToObject(meta, "image_size", (double)img_len);
     cJSON_AddStringToObject(meta, "question", question);

@@ -33,14 +33,7 @@ static void add_candidate(char ***arr, int *count, int *cap,
                           const char *value, const char *prefix, int prefix_len) {
     if (prefix_len > 0 && strncmp(value, prefix, (size_t)prefix_len) != 0)
         return;
-    if (*count >= *cap) {
-        int new_cap = *cap ? *cap * 2 : 16;
-        void *tmp = realloc(*arr, (size_t)new_cap * sizeof(char *));
-        if (!tmp) return;
-        *arr = tmp;
-        *cap = new_cap;
-    }
-    (*arr)[(*count)++] = strdup(value);
+    VEC_PUSH(*arr, *count, *cap, strdup(value));
 }
 
 /* Compute the longest common prefix of an array of strings. */
@@ -287,14 +280,7 @@ static int provide_dirs(const char *nash_dir, const char *prefix,
         } else {
             snprintf(cand, sizeof(cand), "%s", ent->d_name);
         }
-        if (*count >= *cap) {
-            int new_cap = *cap ? *cap * 2 : 16;
-            void *tmp = realloc(*arr, (size_t)new_cap * sizeof(char *));
-            if (!tmp) break;
-            *arr = tmp;
-            *cap = new_cap;
-        }
-        (*arr)[(*count)++] = strdup(cand);
+        VEC_PUSH(*arr, *count, *cap, strdup(cand));
         added++;
     }
     closedir(d);
@@ -622,9 +608,7 @@ static void replace_input(ui_state_t *ui, int start, int old_len,
     /* Ensure capacity */
     while (ui->input_len + delta >= ui->input_cap - 1) {
         int new_cap = ui->input_cap * 2;
-        void *tmp = realloc(ui->input_buffer, (size_t)new_cap);
-        if (!tmp) return;
-        ui->input_buffer = tmp;
+        if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) return;
         ui->input_cap = new_cap;
     }
     /* Shift tail */

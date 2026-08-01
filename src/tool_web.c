@@ -54,12 +54,7 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 }
 
 tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *url_j = cJSON_GetObjectItem(params, "url");
-    if (!url_j || !url_j->valuestring || !url_j->valuestring[0])
-        return tools_make_error("web_fetch requires a non-empty 'url' string. "
-                          "Provide the full URL (https://...) to fetch.");
-
-    const char *url = url_j->valuestring;
+    TOOL_REQ_STR(params, "url", url);
 
     CURL *curl = curl_easy_init();
     if (!curl) return tools_make_error("curl_easy_init failed");
@@ -151,12 +146,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
 /* ── web_search ────────────────────────────────────────── */
 
 tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
-        return tools_make_error("web_search requires a non-empty 'query' string. "
-                          "Provide specific search terms.");
-
-    const char *query = query_j->valuestring;
+    TOOL_REQ_STR(params, "query", query);
     const char *searxng_url = (ctx->cfg) ? ctx->cfg->searxng_url : NULL;
     char *results_text = NULL;
     int result_count = 0;

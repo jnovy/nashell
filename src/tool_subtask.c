@@ -43,11 +43,7 @@ static void subtask_event_cb(const react_event_t *ev, void *userdata) {
 }
 
 tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (!query_j || !query_j->valuestring || !query_j->valuestring[0])
-        return tools_make_error("subtask requires a 'query' parameter");
-
-    const char *query = query_j->valuestring;
+    TOOL_REQ_STR(params, "query", query);
 
     /* Subtask runs with unlimited steps (same as parent) */
     int max_steps = -1;

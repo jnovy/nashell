@@ -487,6 +487,23 @@ done:
     return NULL;
 }
 
+/* Callback for jsonl_iterate: find parent query text by react_loop */
+static int find_parent_query_cb(cJSON *entry, void *user_data) {
+    struct { int target_loop; char *buf; } *ctx = user_data;
+    const char *jtool = cJSON_GetStringValue(
+        cJSON_GetObjectItem(entry, "tool"));
+    int rl = (int)cJSON_GetNumberValue(
+        cJSON_GetObjectItem(entry, "react_loop"));
+    if (jtool && strcmp(jtool, "query") == 0 && rl == ctx->target_loop) {
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+        cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
+        if (text && text->valuestring)
+            snprintf(ctx->buf, 256, "%.250s", text->valuestring);
+        return 1;  /* stop iteration */
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -549,14 +566,12 @@ int main(int argc, char **argv) {
             /* --api URL: create an ad-hoc local provider and select it */
             const char *url = argv[++i];
             int n = cfg->n_named_providers;
-            named_provider_t *tmp = realloc(cfg->named_providers,
-                                            (n + 1) * sizeof(named_provider_t));
-            if (!tmp) {
+            if (safe_realloc((void **)&cfg->named_providers,
+                             (n + 1) * sizeof(named_provider_t))) {
                 fprintf(stderr, "nash: out of memory for --api provider\n");
                 config_free(cfg);
                 return 1;
             }
-            cfg->named_providers = tmp;
             memset(&cfg->named_providers[n], 0, sizeof(named_provider_t));
             cfg->named_providers[n].name = strdup("__cli_api");
             cfg->named_providers[n].config.type = strdup("local");
@@ -2429,30 +2444,8 @@ int main(int argc, char **argv) {
                     char parent_query_text[256] = "";
                     char jpath2[NASH_PATH_MAX];
                     snprintf(jpath2, sizeof(jpath2), "%s/journal.jsonl", session_dir);
-                    FILE *jf2 = fopen(jpath2, "r");
-                    if (jf2) {
-                        char jline2[NASH_LINE_MAX];
-                        while (fgets(jline2, sizeof(jline2), jf2)) {
-                            cJSON *entry = cJSON_Parse(jline2);
-                            if (!entry) continue;
-                            const char *jtool = cJSON_GetStringValue(
-                                cJSON_GetObjectItem(entry, "tool"));
-                            int rl = (int)cJSON_GetNumberValue(
-                                cJSON_GetObjectItem(entry, "react_loop"));
-                            if (jtool && strcmp(jtool, "query") == 0 && rl == parent_loop) {
-                                cJSON *params = cJSON_GetObjectItem(entry, "params");
-                                cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
-                                if (text && text->valuestring) {
-                                    snprintf(parent_query_text, sizeof(parent_query_text),
-                                             "%.250s", text->valuestring);
-                                }
-                                cJSON_Delete(entry);
-                                break;
-                            }
-                            cJSON_Delete(entry);
-                        }
-                        fclose(jf2);
-                    }
+                    struct { int target_loop; char *buf; } pq_ctx = { parent_loop, parent_query_text };
+                    jsonl_iterate(jpath2, find_parent_query_cb, &pq_ctx);
                     size_t fqlen = strlen(submitted_query) + 512;
                     final_query = malloc(fqlen);
                     if (final_query) {

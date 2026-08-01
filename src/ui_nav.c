@@ -176,10 +176,8 @@ void ui_state_enter(ui_state_t *ui) {
         /* Save current state to nav stack */
         if (ui->nav_depth >= ui->nav_cap) {
             int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-            void *tmp = realloc(ui->nav_stack,
-                                     (size_t)new_cap * sizeof(nav_entry_t));
-            if (!tmp) return;
-            ui->nav_stack = tmp;
+            if (safe_realloc((void **)&ui->nav_stack,
+                             (size_t)new_cap * sizeof(nav_entry_t))) return;
             ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
@@ -316,10 +314,8 @@ void ui_state_enter(ui_state_t *ui) {
     /* Save current state to nav stack */
     if (ui->nav_depth >= ui->nav_cap) {
         int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-        void *tmp = realloc(ui->nav_stack,
-                                 (size_t)new_cap * sizeof(nav_entry_t));
-        if (!tmp) return;
-        ui->nav_stack = tmp;
+        if (safe_realloc((void **)&ui->nav_stack,
+                         (size_t)new_cap * sizeof(nav_entry_t))) return;
         ui->nav_cap = new_cap;
     }
     nav_entry_t *raw_entry = &ui->nav_stack[ui->nav_depth];
@@ -426,10 +422,8 @@ void ui_state_toggle_preview(ui_state_t *ui) {
     /* Not expanded — add it */
     if (ui->expanded_count >= ui->expanded_cap) {
         int new_cap = ui->expanded_cap ? ui->expanded_cap * 2 : 16;
-        void *tmp = realloc(ui->expanded_uris,
-                                     (size_t)new_cap * sizeof(char *));
-        if (!tmp) goto regen;
-        ui->expanded_uris = tmp;
+        if (safe_realloc((void **)&ui->expanded_uris,
+                         (size_t)new_cap * sizeof(char *))) goto regen;
         ui->expanded_cap = new_cap;
     }
     ui->expanded_uris[ui->expanded_count++] = strdup(uri);
@@ -546,10 +540,8 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
     /* 2. Push current view onto nav stack */
     if (ui->nav_depth >= ui->nav_cap) {
         int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-        void *tmp = realloc(ui->nav_stack,
-                                (size_t)new_cap * sizeof(nav_entry_t));
-        if (!tmp) return;
-        ui->nav_stack = tmp;
+        if (safe_realloc((void **)&ui->nav_stack,
+                         (size_t)new_cap * sizeof(nav_entry_t))) return;
         ui->nav_cap = new_cap;
     }
     nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
@@ -668,9 +660,7 @@ static void collect_session_dirs(const char *sessions_dir,
         if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
         if (*count >= *cap) {
             int new_cap = *cap ? *cap * 2 : 256;
-            void *tmp = realloc(*names, (size_t)new_cap * sizeof(char *));
-            if (!tmp) break;
-            *names = tmp;
+            if (safe_realloc((void **)names, (size_t)new_cap * sizeof(char *))) break;
             *cap = new_cap;
         }
         char full[NASH_PATH_MAX];
@@ -984,18 +974,14 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     }
 
     /* Free session dirs */
-    for (int i = 0; i < session_count; i++)
-        free(session_dirs[i]);
-    free(session_dirs);
+    free_string_array(session_dirs, session_count);
 
     /* If this is the first search, push current view onto nav stack */
     if (!ui->search_active) {
         if (ui->nav_depth >= ui->nav_cap) {
             int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-            void *tmp = realloc(ui->nav_stack,
-                                     (size_t)new_cap * sizeof(nav_entry_t));
-            if (!tmp) return;
-            ui->nav_stack = tmp;
+            if (safe_realloc((void **)&ui->nav_stack,
+                             (size_t)new_cap * sizeof(nav_entry_t))) return;
             ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];

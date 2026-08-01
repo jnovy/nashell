@@ -73,10 +73,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             if (!found) {
                 if (ui->pb_pass_count >= ui->pb_pass_cap) {
                     int new_cap = ui->pb_pass_cap ? ui->pb_pass_cap * 2 : 8;
-                    void *tmp = realloc(ui->pb_passes,
-                                        (size_t)new_cap * sizeof(pb_pass_info_t));
-                    if (!tmp) goto done_event;
-                    ui->pb_passes = tmp;
+                    if (safe_realloc((void **)&ui->pb_passes,
+                                    (size_t)new_cap * sizeof(pb_pass_info_t))) goto done_event;
                     ui->pb_pass_cap = new_cap;
                 }
                 pb_pass_info_t *pi = &ui->pb_passes[ui->pb_pass_count++];
@@ -185,10 +183,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             !viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-                void *tmp = realloc(ui->nav_stack,
-                                     (size_t)new_cap * sizeof(nav_entry_t));
-                if (!tmp) break;
-                ui->nav_stack = tmp;
+                if (safe_realloc((void **)&ui->nav_stack,
+                                 (size_t)new_cap * sizeof(nav_entry_t))) break;
                 ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
@@ -223,10 +219,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             int tlen = (int)strlen(ev->token);
             if (ui->stream_len + tlen >= ui->stream_cap - 1) {
                 int new_cap = (ui->stream_len + tlen + 1) * 2;
-                void *tmp = realloc(ui->stream_tokens,
-                                     (size_t)new_cap);
-                if (!tmp) break;
-                ui->stream_tokens = tmp;
+                if (safe_realloc((void **)&ui->stream_tokens,
+                                 (size_t)new_cap)) break;
                 ui->stream_cap = new_cap;
             }
             memcpy(ui->stream_tokens + ui->stream_len, ev->token, (size_t)tlen);
@@ -279,10 +273,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * not just in the small status bar. */
         if (flen >= ui->stream_cap - 1) {
             int new_cap = flen + 2;
-            void *tmp = realloc(ui->stream_tokens,
-                                 (size_t)new_cap);
-            if (!tmp) { free(full); break; }
-            ui->stream_tokens = tmp;
+            if (safe_realloc((void **)&ui->stream_tokens,
+                             (size_t)new_cap)) { free(full); break; }
             ui->stream_cap = new_cap;
         }
         memcpy(ui->stream_tokens, full, (size_t)flen + 1);
@@ -397,10 +389,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         if (!viewing_react_file(ui, ui->current_react_loop, eff_session_dir)) {
             if (ui->nav_depth >= ui->nav_cap) {
                 int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
-                void *tmp = realloc(ui->nav_stack,
-                                     (size_t)new_cap * sizeof(nav_entry_t));
-                if (!tmp) break;
-                ui->nav_stack = tmp;
+                if (safe_realloc((void **)&ui->nav_stack,
+                                 (size_t)new_cap * sizeof(nav_entry_t))) break;
                 ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];

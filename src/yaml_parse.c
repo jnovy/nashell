@@ -41,12 +41,8 @@ static void mapping_add(yaml_node_t *map, const char *key, yaml_node_t *val) {
     if (!map || map->type != YAML_MAPPING || !val) return;
     if (map->n_children >= map->cap_children) {
         int newcap = map->cap_children ? map->cap_children * 2 : 8;
-        void *tmp_k = realloc(map->keys, newcap * sizeof(char *));
-        if (!tmp_k) return;
-        map->keys = tmp_k;
-        void *tmp_v = realloc(map->values, newcap * sizeof(yaml_node_t *));
-        if (!tmp_v) return;
-        map->values = tmp_v;
+        if (safe_realloc((void **)&map->keys, newcap * sizeof(char *)) ||
+            safe_realloc((void **)&map->values, newcap * sizeof(yaml_node_t *))) return;
         map->cap_children = newcap;
     }
     map->keys[map->n_children] = strdup(key);
@@ -58,9 +54,7 @@ static void sequence_add(yaml_node_t *seq, yaml_node_t *item) {
     if (!seq || seq->type != YAML_SEQUENCE || !item) return;
     if (seq->n_items >= seq->cap_items) {
         int newcap = seq->cap_items ? seq->cap_items * 2 : 8;
-        void *tmp = realloc(seq->items, newcap * sizeof(yaml_node_t *));
-        if (!tmp) return;
-        seq->items = tmp;
+        if (safe_realloc((void **)&seq->items, newcap * sizeof(yaml_node_t *))) return;
         seq->cap_items = newcap;
     }
     seq->items[seq->n_items++] = item;
@@ -201,16 +195,11 @@ static parser_t parser_init(const char *input) {
             char *trimmed = strdup(line);
             strip_trailing(trimmed);
             if (!is_blank_or_comment(trimmed) || idx == 0) {
-                void *tmp_l = realloc(p.lines, (idx + 1) * sizeof(char *));
-                void *tmp_i = realloc(p.indents, (idx + 1) * sizeof(int));
-                if (!tmp_l || !tmp_i) {
-                    if (tmp_l) p.lines = tmp_l;
-                    if (tmp_i) p.indents = tmp_i;
+                if (safe_realloc((void **)&p.lines, (idx + 1) * sizeof(char *)) ||
+                    safe_realloc((void **)&p.indents, (idx + 1) * sizeof(int))) {
                     free(trimmed);
                     break;
                 }
-                p.lines = tmp_l;
-                p.indents = tmp_i;
                 p.indents[idx] = calc_indent(trimmed);
                 p.lines[idx] = trimmed;
                 idx++;
@@ -292,9 +281,7 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
         size_t clen = strlen(content);
         while (len + clen + 2 > cap) {
             cap *= 2;
-            void *tmp = realloc(result, cap);
-            if (!tmp) { free(result); return strdup(""); }
-            result = tmp;
+            if (safe_realloc((void **)&result, cap)) { free(result); return strdup(""); }
         }
 
         if (literal) {
@@ -325,9 +312,7 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
     /* Always ensure trailing newline for literal */
     if (literal && len > 0 && result[len-1] != '\n') {
         if (len + 1 >= cap) {
-            void *tmp = realloc(result, cap + 2);
-            if (!tmp) { free(result); return strdup(""); }
-            result = tmp;
+            if (safe_realloc((void **)&result, cap + 2)) { free(result); return strdup(""); }
         }
         result[len++] = '\n';
         result[len] = '\0';

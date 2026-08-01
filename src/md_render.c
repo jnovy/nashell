@@ -1,4 +1,5 @@
 #include "md_render_internal.h"
+#include "str.h"
 #include <utf8proc.h>
 
 /* Forward declarations for functions that remain in this file */
@@ -43,7 +44,7 @@ static int codepoint_width(wchar_t cp) {
 }
 
 /* Return the display width (columns) of one UTF-8 character. */
-static int utf8_char_width(const char *s, int max_bytes) {
+static int md_utf8_char_width(const char *s, int max_bytes) {
     wchar_t cp;
     utf8_decode(s, max_bytes, &cp);
     int w = codepoint_width(cp);
@@ -63,7 +64,7 @@ static int seg_col_to_byte(const char *text, int seg_len, int col_offset) {
     int col = 0, i = 0;
     while (i < seg_len && text[i]) {
         if (col >= col_offset) return i;
-        int w = utf8_char_width(text + i, seg_len - i);
+        int w = md_utf8_char_width(text + i, seg_len - i);
         wchar_t cp;
         int clen = utf8_decode(text + i, seg_len - i, &cp);
         col += w;
@@ -606,10 +607,8 @@ md_doc_t *md_parse(const char *source) {
                     /* Found a link */
                     if (doc->link_count >= doc->link_cap) {
                         size_t new_cap = doc->link_cap ? doc->link_cap * 2 : 16;
-                        void *tmp = realloc(doc->links,
-                                            new_cap * sizeof(md_link_t));
-                        if (!tmp) break;
-                        doc->links = tmp;
+                        if (safe_realloc((void **)&doc->links,
+                                         new_cap * sizeof(md_link_t))) break;
                         doc->link_cap = new_cap;
                     }
                     md_link_t *lk = &doc->links[doc->link_count++];
@@ -647,7 +646,7 @@ void md_doc_free(md_doc_t *doc) {
 int utf8_display_len(const char *s, int max_bytes) {
     int cols = 0, i = 0;
     while (i < max_bytes && s[i]) {
-        int w = utf8_char_width(s + i, max_bytes - i);
+        int w = md_utf8_char_width(s + i, max_bytes - i);
         wchar_t cp;
         int clen = utf8_decode(s + i, max_bytes - i, &cp);
         cols += w;
@@ -669,7 +668,7 @@ static int render_segment(WINDOW *win, int row, int col, const char *text,
         int cols = 0;
         int byte_pos = 0;
         while (byte_pos < len) {
-            int w = utf8_char_width(text + byte_pos, len - byte_pos);
+            int w = md_utf8_char_width(text + byte_pos, len - byte_pos);
             if (cols + w > max_cols) break;
             wchar_t cp;
             int clen = utf8_decode(text + byte_pos, len - byte_pos, &cp);

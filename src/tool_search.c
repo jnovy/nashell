@@ -10,13 +10,8 @@
 /* ── grep_search ─────────────────────────────────────── */
 
 tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
+    TOOL_REQ_STR(params, "pattern", pattern);
     cJSON *path_j    = cJSON_GetObjectItem(params, "path");
-    if (!pattern_j || !pattern_j->valuestring || !pattern_j->valuestring[0])
-        return tools_make_error("grep_search requires a non-empty 'pattern' string. "
-                          "Provide a regex pattern to search for.");
-
-    const char *pattern = pattern_j->valuestring;
     const char *path = path_j && path_j->valuestring && path_j->valuestring[0]
                        ? path_j->valuestring : ".";
 
@@ -149,12 +144,7 @@ static void parse_glob_pattern(const char *pattern,
 }
 
 tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
-    if (!pattern_j || !pattern_j->valuestring || !pattern_j->valuestring[0])
-        return tools_make_error("glob_search requires a non-empty 'pattern' string. "
-                          "Use wildcards like **/*.c or src/**/*.h");
-
-    const char *pattern = pattern_j->valuestring;
+    TOOL_REQ_STR(params, "pattern", pattern);
     cJSON *path_j = cJSON_GetObjectItem(params, "path");
     const char *search_path = path_j && path_j->valuestring ? path_j->valuestring : ".";
 

@@ -340,10 +340,8 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
     if (ctx->n_recalled_keys >= ctx->recalled_keys_cap) {
         int new_cap = ctx->recalled_keys_cap ? ctx->recalled_keys_cap * 2 : 16;
         if (new_cap > RECALLED_KEYS_MAX) new_cap = RECALLED_KEYS_MAX;
-        char **new_keys = realloc(ctx->recalled_keys,
-                                   (size_t)new_cap * sizeof(char *));
-        if (!new_keys) return;
-        ctx->recalled_keys = new_keys;
+        if (safe_realloc((void **)&ctx->recalled_keys,
+                         (size_t)new_cap * sizeof(char *))) return;
         ctx->recalled_keys_cap = new_cap;
     }
     char *dup = strdup(key);
@@ -372,10 +370,8 @@ void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key) {
     if (ctx->n_fire_ledger >= ctx->fire_ledger_cap) {
         int new_cap = ctx->fire_ledger_cap ? ctx->fire_ledger_cap * 2 : 16;
         if (new_cap > FIRE_LEDGER_MAX) new_cap = FIRE_LEDGER_MAX;
-        char **new_arr = realloc(ctx->fire_ledger,
-                                  (size_t)new_cap * sizeof(char *));
-        if (!new_arr) return;
-        ctx->fire_ledger = new_arr;
+        if (safe_realloc((void **)&ctx->fire_ledger,
+                         (size_t)new_cap * sizeof(char *))) return;
         ctx->fire_ledger_cap = new_cap;
     }
     char *dup = strdup(key);

@@ -16,22 +16,14 @@
  */
 
 tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *op_j = cJSON_GetObjectItem(params, "op");
-    if (!op_j || !op_j->valuestring)
-        return tools_make_error("missing 'op' (add|list|done|remove|purge)");
-
-    const char *op = op_j->valuestring;
+    TOOL_REQ_STR(params, "op", op);
     char fpath[NASH_PATH_MAX];
     if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0)
         return tools_make_error("cannot determine todo.md path (no workspace or memory)");
 
     /* ── ADD ── */
     if (strcmp(op, "add") == 0) {
-        cJSON *text_j = cJSON_GetObjectItem(params, "text");
-        if (!text_j || !text_j->valuestring || !text_j->valuestring[0])
-            return tools_make_error("'add' requires non-empty 'text'");
-
-        const char *text = text_j->valuestring;
+        TOOL_REQ_STR(params, "text", text);
 
         /* Build the line: - [ ] {text} (session:{dir_basename}) */
         char line[4096];
@@ -73,12 +65,11 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         int index = count;
         todo_free_lines(lines, count);
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddNumberToObject(meta, "index", index);
-        cJSON_AddStringToObject(meta, "item", line);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddNumberToObject(res.meta, "index", index);
+        cJSON_AddStringToObject(res.meta, "item", line);
         if (ctx->ws && ctx->ws->name)
-            cJSON_AddStringToObject(meta, "workspace", ctx->ws->name);
+            cJSON_AddStringToObject(res.meta, "workspace", ctx->ws->name);
 
         /* Audit trail */
         char *hash = store_save(ctx->store, line);
@@ -87,7 +78,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         tool_journal(ctx, "todo",
                        params, alias, strlen(line), 0, NULL, NULL);
         free(alias); free(hash);
-        return tools_make_result(1, meta, NULL);
+        return res;
 
     /* ── LIST ── */
     } else if (strcmp(op, "list") == 0) {
@@ -142,9 +133,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
         todo_save(fpath, lines, count);
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddStringToObject(meta, "item", lines[idx - 1]);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddStringToObject(res.meta, "item", lines[idx - 1]);
 
         char *hash = store_save(ctx->store, lines[idx - 1]);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
@@ -153,7 +143,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
                        params, alias, strlen(lines[idx - 1]), 0, NULL, NULL);
         free(alias); free(hash);
         todo_free_lines(lines, count);
-        return tools_make_result(1, meta, NULL);
+        return res;
 
     /* ── REMOVE ── */
     } else if (strcmp(op, "remove") == 0) {
@@ -174,9 +164,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
         todo_save(fpath, lines, count);
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddStringToObject(meta, "removed", removed);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddStringToObject(res.meta, "removed", removed);
 
         char *hash = store_save(ctx->store, removed);
         char *alias = tool_register_alias(ctx, hash ? hash : "");
@@ -185,7 +174,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
                        params, alias, strlen(removed), 0, NULL, NULL);
         free(alias); free(hash); free(removed);
         todo_free_lines(lines, count);
-        return tools_make_result(1, meta, NULL);
+        return res;
 
     /* ── PURGE ── */
     } else if (strcmp(op, "purge") == 0) {
@@ -197,10 +186,9 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
         todo_save(fpath, lines, kept);
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddStringToObject(meta, "status", "ok");
-        cJSON_AddNumberToObject(meta, "purged", purged);
-        cJSON_AddNumberToObject(meta, "remaining", kept);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddNumberToObject(res.meta, "purged", purged);
+        cJSON_AddNumberToObject(res.meta, "remaining", kept);
 
         char info[128];
         snprintf(info, sizeof(info), "purged %d completed items, %d remaining", purged, kept);
@@ -211,7 +199,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
                        params, alias, strlen(info), 0, NULL, NULL);
         free(alias); free(hash);
         todo_free_lines(lines, kept);
-        return tools_make_result(1, meta, NULL);
+        return res;
 
     } else {
         return tools_make_error("unknown op (use: add, list, done, remove, purge)");

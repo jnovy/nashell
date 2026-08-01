@@ -763,10 +763,8 @@ static int evict_compress(llm_chat_t *chat, int keep_head, int keep_tail,
             (int)chat->msgs[i].content_len > compress_threshold) {
             if (n_candidates >= cand_cap) {
                 cand_cap = cand_cap ? cand_cap * 2 : 16;
-                compress_cand_t *tmp = realloc(candidates,
-                    (size_t)cand_cap * sizeof(compress_cand_t));
-                if (!tmp) break;
-                candidates = tmp;
+                if (safe_realloc((void **)&candidates,
+                    (size_t)cand_cap * sizeof(compress_cand_t))) break;
             }
             candidates[n_candidates].idx = i;
             candidates[n_candidates].len = (int)chat->msgs[i].content_len;

@@ -634,3 +634,57 @@ char *sanitize_workspace_name(const char *display_name) {
 
     return buf;
 }
+
+/* ── jsonl_iterate ───────────────────────────────────────────────────── */
+int jsonl_iterate(const char *path,
+                  int (*cb)(cJSON *entry, void *user_data),
+                  void *user_data) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return -1;
+
+    char line[65536];
+    int count = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        /* Skip blank lines */
+        if (line[0] == '\n' || line[0] == '\r' || line[0] == '\0')
+            continue;
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+        int rc = cb(entry, user_data);
+        cJSON_Delete(entry);
+        count++;
+        if (rc != 0) break;
+    }
+    fclose(fp);
+    return count;
+}
+
+/* ── list_dir ────────────────────────────────────────────────────────── */
+typedef struct {
+    char **entries;
+    int    count;
+    int    cap;
+} list_dir_ctx_t;
+
+static int list_dir_cb(const char *dirpath, const char *filename,
+                       const char *fullpath, void *user_data) {
+    (void)dirpath; (void)fullpath;
+    list_dir_ctx_t *ld = user_data;
+    VEC_PUSH(ld->entries, ld->count, ld->cap, strdup(filename));
+    return 0;
+}
+
+char **list_dir(const char *dirpath, const char *suffix, int *out_count) {
+    list_dir_ctx_t ld = {0};
+    for_each_dir_entry(dirpath, suffix, list_dir_cb, &ld);
+    if (out_count) *out_count = ld.count;
+    return ld.entries;
+}
+
+/* ── cjson_msg ───────────────────────────────────────────────────────── */
+cJSON *cjson_msg(const char *role, const char *content) {
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "role", role);
+    cJSON_AddStringToObject(msg, "content", content);
+    return msg;
+}

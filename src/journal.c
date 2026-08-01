@@ -562,9 +562,7 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
         if (seg.len > 15) {
             if (seg_count >= seg_cap) {
                 seg_cap *= 2;
-                seg_t *new_segs = realloc(segs, (size_t)seg_cap * sizeof(seg_t));
-                if (!new_segs) { str_free(&seg); break; }
-                segs = new_segs;
+                if (safe_realloc((void **)&segs, (size_t)seg_cap * sizeof(seg_t))) { str_free(&seg); break; }
             }
             segs[seg_count].text = str_steal(&seg);
             seg_count++;
@@ -589,10 +587,8 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
         if (base) base++; else base = session_dir;
         double ts = atof(base);
         time_t ts_t = (time_t)ts;
-        struct tm tm;
-        localtime_r(&ts_t, &tm);
         char date_buf[32];
-        strftime(date_buf, sizeof(date_buf), "%Y-%m-%d", &tm);
+        format_iso_date(ts_t, date_buf, sizeof(date_buf));
         if (query_text[0])
             snprintf(prefix, sizeof(prefix), "Session %s | Query: %s\n",
                      date_buf, query_text);

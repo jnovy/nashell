@@ -372,17 +372,8 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 /* ── memory_store ──────────────────────────────────────── */
 
 tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    cJSON *val_j = cJSON_GetObjectItem(params, "value");
-    if (!key_j || !key_j->valuestring || !key_j->valuestring[0])
-        return tools_make_error("memory_store requires a non-empty 'key' string. "
-                          "Use format 'type:descriptive-name' (e.g. lesson:config-sentinel-values).");
-    if (!val_j || !val_j->valuestring || !val_j->valuestring[0])
-        return tools_make_error("memory_store requires a non-empty 'value' string. "
-                          "Provide the knowledge to store.");
-
-    const char *key = key_j->valuestring;
-    const char *value = val_j->valuestring;
+    TOOL_REQ_STR(params, "key", key);
+    TOOL_REQ_STR(params, "value", value);
 
     int pinned = 0;
     cJSON *pin_j = cJSON_GetObjectItem(params, "pinned");
@@ -464,12 +455,12 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
     /* P2: Lesson lineage — if 'supersedes' is provided, set the lineage chain.
      * Self-Harness [arXiv:2606.09498] — harness lineage h₀→h₁→h₂. */
-    cJSON *sup_j = cJSON_GetObjectItem(params, "supersedes");
-    if (sup_j && sup_j->valuestring && sup_j->valuestring[0]) {
+    TOOL_OPT_STR(params, "supersedes", supersedes);
+    if (supersedes) {
         if (ctx->ws)
-            workspace_set_supersedes(ctx->ws, key, sup_j->valuestring);
+            workspace_set_supersedes(ctx->ws, key, supersedes);
         else
-            memory_set_supersedes(ctx->memory, key, sup_j->valuestring);
+            memory_set_supersedes(ctx->memory, key, supersedes);
     }
 
     /* Belief Entropy probe — compute ℋ_BE for the new memory entry.
@@ -514,10 +505,8 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
             if (ctx->n_deferred_consol >= ctx->cap_deferred_consol) {
                 int new_cap = ctx->cap_deferred_consol ? ctx->cap_deferred_consol * 2 : 16;
                 if (new_cap > DEFERRED_CONSOL_MAX) new_cap = DEFERRED_CONSOL_MAX;
-                void *tmp = realloc(ctx->deferred_consol,
-                                    (size_t)new_cap * sizeof(ctx->deferred_consol[0]));
-                if (tmp) {
-                    ctx->deferred_consol = tmp;
+                if (!safe_realloc((void **)&ctx->deferred_consol,
+                                  (size_t)new_cap * sizeof(ctx->deferred_consol[0]))) {
                     ctx->cap_deferred_consol = new_cap;
                 }
             }
@@ -538,19 +527,18 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     char *hash = store_save(ctx->store, value);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 
-    cJSON *meta = cJSON_CreateObject();
-    cJSON_AddStringToObject(meta, "status", "ok");
-    cJSON_AddStringToObject(meta, "key", key);
-    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    tool_result_t res = tool_result_ok();
+    cJSON_AddStringToObject(res.meta, "key", key);
+    if (alias) cJSON_AddStringToObject(res.meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "memory_store",
                    params, alias, strlen(value), 0, NULL, NULL);
 
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    res.store_ref = alias ? strdup(alias) : NULL;
     free(alias);
     free(hash);
-    return tools_make_result(1, meta, ref_copy);
+    return res;
 }
 
 /* ── memory_search (v4.4 unified: curated memory + session history) ── */
@@ -561,20 +549,9 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
 tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
     /* Extract parameters */
-    const char *query = NULL;
-    cJSON *query_j = cJSON_GetObjectItem(params, "query");
-    if (query_j && query_j->valuestring && query_j->valuestring[0])
-        query = query_j->valuestring;
-
-    const char *key = NULL;
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (key_j && key_j->valuestring && key_j->valuestring[0])
-        key = key_j->valuestring;
-
-    const char *pattern = NULL;
-    cJSON *pattern_j = cJSON_GetObjectItem(params, "pattern");
-    if (pattern_j && pattern_j->valuestring && pattern_j->valuestring[0])
-        pattern = pattern_j->valuestring;
+    TOOL_OPT_STR(params, "query", query);
+    TOOL_OPT_STR(params, "key", key);
+    TOOL_OPT_STR(params, "pattern", pattern);
 
     if (!query && !key && !pattern)
         return tools_make_error(

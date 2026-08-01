@@ -70,13 +70,11 @@ int todo_load(const char *path, char ***lines_out) {
 
         if (count >= cap) {
             cap = cap ? cap * 2 : 16;
-            char **tmp = realloc(lines, sizeof(char *) * (size_t)cap);
-            if (!tmp) {
+            if (safe_realloc((void **)&lines, sizeof(char *) * (size_t)cap)) {
                 todo_free_lines(lines, count);
                 fclose(f);
                 return -1;
             }
-            lines = tmp;
         }
         char *dup = strdup(linebuf);
         if (!dup) {
@@ -112,19 +110,14 @@ int todo_save(const char *path, char **lines, int count) {
 
 /* Free a lines array. */
 void todo_free_lines(char **lines, int count) {
-    if (!lines) return;
-    for (int i = 0; i < count; i++)
-        free(lines[i]);
-    free(lines);
+    free_string_array(lines, count);
 }
 
 /* Append a new line to the lines array.
  * Returns new count, or -1 on alloc failure. */
 int todo_add(char ***lines_ptr, int count, const char *line) {
     char **lines = *lines_ptr;
-    char **tmp = realloc(lines, sizeof(char *) * (size_t)(count + 1));
-    if (!tmp) return -1;
-    lines = tmp;
+    if (safe_realloc((void **)&lines, sizeof(char *) * (size_t)(count + 1))) return -1;
 
     char *dup = strdup(line);
     if (!dup) return -1;

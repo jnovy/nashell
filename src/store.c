@@ -150,8 +150,7 @@ static int hashset_contains(hashset_t *hs, const char *key) {
 
 static void hashset_free(hashset_t *hs) {
     if (!hs->buckets) return;
-    for (int i = 0; i < hs->cap; i++) free(hs->buckets[i]);
-    free(hs->buckets);
+    free_string_array(hs->buckets, hs->cap);
 }
 
 /* Scan a session directory for symlinks → store. Extract the hash. */

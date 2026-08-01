@@ -1419,8 +1419,7 @@ skip_reject: ;
             for (int a = 0; a < n_accepted; a++)
                 optimize_free_candidate(&accepted_list[a]);
             free(accepted_list);
-            for (int k = 0; k < K; k++) free(cand_texts[k]);
-            free(cand_texts);
+            free_string_array(cand_texts, K);
 
             if (best.score >= 0.999) {
                 fprintf(stderr, "  Perfect score — stopping early!\n");
@@ -2084,9 +2083,7 @@ char *optimize_format_manifest_feedback(const manifest_entry_t *manifest) {
 
 void optimize_free_manifest(manifest_entry_t *m) {
     if (!m) return;
-    for (int i = 0; i < m->n_expect_fix; i++) free(m->expect_fix[i]);
-    free(m->expect_fix);
-    for (int i = 0; i < m->n_at_risk; i++) free(m->at_risk[i]);
-    free(m->at_risk);
+    free_string_array(m->expect_fix, m->n_expect_fix);
+    free_string_array(m->at_risk, m->n_at_risk);
     memset(m, 0, sizeof(*m));
 }

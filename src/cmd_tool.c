@@ -63,11 +63,9 @@ static void ensure_filter_owned(tool_filter_t *tf) {
 static void runtime_block_add(tool_filter_t *tf, const char *name) {
     if (is_runtime_blocked(tf, name)) return;
     ensure_filter_owned(tf);
-    const char **new_blocked = realloc((void *)tf->blocked,
-                                       (size_t)(tf->n_blocked + 1) * sizeof(char *));
-    if (!new_blocked) return;
-    new_blocked[tf->n_blocked] = strdup(name);
-    tf->blocked = new_blocked;
+    if (safe_realloc((void **)&tf->blocked,
+                     (size_t)(tf->n_blocked + 1) * sizeof(char *))) return;
+    tf->blocked[tf->n_blocked] = strdup(name);
     tf->n_blocked++;
 }
 
