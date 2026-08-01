@@ -1026,6 +1026,59 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
     pb->n_vars = vi;
 
     free(arg_tokens);
+
+    /* Early validation: scan all pass templates for {{argN}} references
+     * and fail immediately if the caller didn't provide enough arguments.
+     * This gives a clear error at launch time rather than mid-execution. */
+    {
+        int max_required = 0;
+        for (int pi = 0; pi < pb->n_passes; pi++) {
+            const char *templates[2] = {
+                pb->passes[pi].prompt_template,
+                pb->passes[pi].command,
+            };
+            for (int ti = 0; ti < 2; ti++) {
+                const char *t = templates[ti];
+                if (!t) continue;
+                const char *p = t;
+                while ((p = strstr(p, "{{arg")) != NULL) {
+                    p += 5;  /* skip "{{arg" */
+                    if (*p >= '1' && *p <= '9') {
+                        int n = 0;
+                        const char *d = p;
+                        while (*d >= '0' && *d <= '9') {
+                            n = n * 10 + (*d - '0');
+                            d++;
+                        }
+                        if (d[0] == '}' && d[1] == '}' && n > max_required)
+                            max_required = n;
+                        p = d;
+                    }
+                }
+            }
+        }
+        if (max_required > n_arg_tokens) {
+            char missing[256] = {0};
+            int mpos = 0;
+            for (int mi = n_arg_tokens + 1; mi <= max_required && mi <= n_arg_tokens + 8; mi++) {
+                if (mpos > 0) missing[mpos++] = ',';
+                mpos += snprintf(missing + mpos, sizeof(missing) - (size_t)mpos,
+                                 " {{arg%d}}", mi);
+            }
+            fprintf(stderr,
+                "[agent] ERROR: agent '%s' requires %d argument(s) but %d provided\n"
+                "[agent] Missing:%s\n",
+                a->id, max_required, n_arg_tokens, missing);
+            if (a->description && a->description[0])
+                fprintf(stderr, "[agent] Usage:\n%s\n", a->description);
+            else
+                fprintf(stderr,
+                    "[agent] Usage: /agent run %s arg1 arg2 ...\n", a->id);
+            playbook_free(pb);
+            return NULL;
+        }
+    }
+
     return pb;
 }
 

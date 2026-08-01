@@ -253,10 +253,26 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
 
     playbook_t *pb = agent_prepare_playbook(found, agent_arguments);
     if (!pb) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
-            "/agent run: cannot load agent playbook");
-        pthread_mutex_unlock(&ui->mtx);
+        char errbuf[256];
+        snprintf(errbuf, sizeof(errbuf),
+                 "/agent run %s: missing required arguments", found->id);
+        if (found->description && found->description[0]) {
+            str_t usage = str_new(512);
+            str_appendf(&usage, "# Agent: %s\n\n", found->id);
+            if (found->summary && found->summary[0])
+                str_appendf(&usage, "%s\n\n", found->summary);
+            str_appendf(&usage, "## Usage\n%s\n", found->description);
+            char *banner = str_steal(&usage);
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_push_content(ui, "agent-usage", banner);
+            ui_state_set_status(ui, STATUS_ERROR, errbuf);
+            pthread_mutex_unlock(&ui->mtx);
+            free(banner);
+        } else {
+            pthread_mutex_lock(&ui->mtx);
+            ui_state_set_status(ui, STATUS_ERROR, errbuf);
+            pthread_mutex_unlock(&ui->mtx);
+        }
         tui_render(ui);
         agent_queue_free(q);
         free(id_buf);
