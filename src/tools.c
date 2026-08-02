@@ -200,6 +200,12 @@ void *alias_map_insert(alias_map_t *map, const char *alias, const char *hash) {
     if (!new_node) return NULL;
     new_node->alias = strdup(alias);
     new_node->hash = hash ? strdup(hash) : strdup("");
+    if (!new_node->alias || !new_node->hash) {
+        free(new_node->alias);
+        free(new_node->hash);
+        free(new_node);
+        return NULL;
+    }
     new_node->next = map->buckets[h];
     map->buckets[h] = new_node;
     map->count++;
@@ -668,7 +674,8 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
     int expected = 0;
     if (ctx->memory &&
         !atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
-        tool_free_deferred_consolidations(ctx);
+        /* Another consolidation is in progress - keep entries queued for retry
+         * instead of discarding them (which would silently lose work). */
         return;
     }
     memory_t *ws_mem = (ctx->ws && ctx->ws->workspace) ? ctx->ws->workspace : NULL;

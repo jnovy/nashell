@@ -988,7 +988,6 @@ void evict_lifecycle_stale_reads(llm_chat_t *chat,
 
         /* Check if any later message edits or re-reads this path */
         int stale_reason = 0;  /* 1=edited, 2=superseded */
-        int stale_by = -1;     /* index of the message that made it stale */
         for (int j = i + 1; j < chat->n_msgs; j++) {
             const llm_msg_t *later = &chat->msgs[j];
             if (!later->tool_name || !later->tool_path) continue;
@@ -996,12 +995,10 @@ void evict_lifecycle_stale_reads(llm_chat_t *chat,
             if (strcmp(later->tool_name, "file_edit") == 0 ||
                 strcmp(later->tool_name, "file_write") == 0) {
                 stale_reason = 1;
-                stale_by = j;
                 break;  /* edited — definitely stale */
             }
             if (strcmp(later->tool_name, "file_read") == 0) {
                 stale_reason = 2;
-                stale_by = j;
                 /* Don't break — a later edit is more definitive */
             }
         }
@@ -1013,9 +1010,9 @@ void evict_lifecycle_stale_reads(llm_chat_t *chat,
         const char *reason_str = (stale_reason == 1) ? "edited" : "re-read";
         char marker[256];
         snprintf(marker, sizeof(marker),
-                 "[Stale: read %s (%zu chars). File was %s in msg %d. "
+                 "[Stale: read %s (%zu chars). File was %s later. "
                  "Re-read if needed.]",
-                 m->tool_path, m->content_len, reason_str, stale_by + 1);
+                 m->tool_path, m->content_len, reason_str);
 
         /* Replace content — llm_chat_replace_content updates content_len
          * and total_chars incrementally. */

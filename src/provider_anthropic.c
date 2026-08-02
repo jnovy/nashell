@@ -113,7 +113,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 /* Find or create last user message to append tool_result */
                 cJSON *last = cJSON_GetArrayItem(api_messages,
                               cJSON_GetArraySize(api_messages) - 1);
-                if (last && strcmp(cJSON_GetObjectItem(last, "role")->valuestring,
+                cJSON *last_role = last ? cJSON_GetObjectItem(last, "role") : NULL;
+                if (last_role && strcmp(last_role->valuestring,
                                   "user") == 0) {
                     cJSON *lc = cJSON_GetObjectItem(last, "content");
                     cJSON *tr = cJSON_CreateObject();

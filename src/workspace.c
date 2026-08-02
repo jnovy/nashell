@@ -219,6 +219,9 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
                 for (int r = 0; r < merged.entries[j].n_refs; r++)
                     free(merged.entries[j].refs[r]);
                 free(merged.entries[j].refs);
+                for (int t = 0; t < merged.entries[j].n_triggers; t++)
+                    free(merged.entries[j].triggers[t]);
+                free(merged.entries[j].triggers);
                 /* Shift remaining entries down */
                 memmove(&merged.entries[j], &merged.entries[j + 1],
                         (size_t)(merged.count - j - 1) * sizeof(memory_entry_t));
@@ -271,6 +274,11 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
                 for (int r = 0; r < merged.entries[i].n_refs; r++)
                     free(merged.entries[i].refs[r]);
                 free(merged.entries[i].refs);
+            }
+            if (merged.entries[i].triggers) {
+                for (int t = 0; t < merged.entries[i].n_triggers; t++)
+                    free(merged.entries[i].triggers[t]);
+                free(merged.entries[i].triggers);
             }
         }
         merged.count = max_results;

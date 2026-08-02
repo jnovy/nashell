@@ -424,6 +424,15 @@ static int tg_config_load(telegram_ctx_t *ctx) {
     return rc;
 }
 
+static void fprint_toml_str(FILE *f, const char *key, const char *val) {
+    fprintf(f, "%s = \"", key);
+    for (const char *p = val; *p; p++) {
+        if (*p == '\\' || *p == '"') fputc('\\', f);
+        fputc(*p, f);
+    }
+    fprintf(f, "\"\n");
+}
+
 static int tg_config_save(telegram_ctx_t *ctx) {
     /* Read existing config, append [telegram] section */
     char *existing = slurp_file(ctx->config_path, NULL);
@@ -438,17 +447,16 @@ static int tg_config_save(telegram_ctx_t *ctx) {
     if (existing) {
         /* Remove any existing [telegram] section first */
         char *tg_start = strstr(existing, "\n[telegram]");
+        int at_start = (!tg_start && strncmp(existing, "[telegram]", 10) == 0);
+        if (at_start) tg_start = existing;
         if (tg_start) {
             /* Find next section or EOF */
-            char *next = strstr(tg_start + 1, "\n[");
-            if (next) {
-                /* Write before [telegram] and after next section */
+            char *sect = at_start ? tg_start : tg_start + 1;
+            char *next = strstr(sect, "\n[");
+            if (!at_start)
                 fwrite(existing, 1, (size_t)(tg_start - existing), f);
+            if (next)
                 fputs(next, f);
-            } else {
-                /* [telegram] is last section — truncate */
-                fwrite(existing, 1, (size_t)(tg_start - existing), f);
-            }
         } else {
             fputs(existing, f);
         }
@@ -456,8 +464,9 @@ static int tg_config_save(telegram_ctx_t *ctx) {
     }
 
     /* Append [telegram] section */
-    fprintf(f, "\n[telegram]\nbot_token = \"%s\"\nchat_id = %lld\n",
-            ctx->bot_token, ctx->chat_id);
+    fprintf(f, "\n[telegram]\n");
+    fprint_toml_str(f, "bot_token", ctx->bot_token);
+    fprintf(f, "chat_id = %lld\n", ctx->chat_id);
 
     fclose(f);
     return 0;
@@ -1554,15 +1563,6 @@ void *telegram_run(void *arg) {
                     tg_api_send_message(ctx, "\xe2\x9c\x93 Answer received", NULL, msg_thread_id);
                 } else if (image_file_id) {
                     /* Photo/image message → download and create image task */
-                    if (!is_reply) {
-                        /* New standalone message → reset session first */
-                        tg_write_cmd_new(ctx->mailbox_dir);
-                        fprintf(stderr, "[telegram] new message → session reset\n");
-                        /* Small delay so daemon processes cmd_new before task */
-                        usleep(100000);  /* 100ms */
-                    } else {
-                        fprintf(stderr, "[telegram] reply → continuing session\n");
-                    }
                     char image_path[768];
                     if (tg_download_photo(ctx, image_file_id,
                                           image_path, sizeof(image_path)) == 0) {
@@ -1584,8 +1584,8 @@ void *telegram_run(void *arg) {
                         char task_id[64];
                         struct timespec ts;
                         clock_gettime(CLOCK_REALTIME, &ts);
-                        snprintf(task_id, sizeof(task_id), "tg%lx%04lx",
-                                 (long)ts.tv_sec, ts.tv_nsec / 100000L);
+                        snprintf(task_id, sizeof(task_id), "tg%lx%09lx",
+                                 (long)ts.tv_sec, (long)ts.tv_nsec);
 
                         fprintf(stderr, "[telegram] creating image task_%s\n",
                                 task_id);
@@ -1593,6 +1593,16 @@ void *telegram_run(void *arg) {
                         tg_write_task(ctx->mailbox_dir, task_id, task_text.data,
                                       msg_workspace, msg_thread_id);
                         str_free(&task_text);
+
+                        if (!is_reply) {
+                            /* New standalone message → reset session */
+                            tg_session_thread_clear(ctx, msg_thread_id);
+                            tg_write_cmd_new(ctx->mailbox_dir);
+                            fprintf(stderr, "[telegram] new message → session reset\n");
+                        } else {
+                            fprintf(stderr, "[telegram] reply → continuing session\n");
+                        }
+
                         tg_api_send_message(ctx, "\xf0\x9f\x93\xb7 Analyzing image...",
                                             NULL, msg_thread_id);
                     } else {
@@ -1603,26 +1613,25 @@ void *telegram_run(void *arg) {
                     }
                 } else {
                     /* Plain text task query */
-                    if (!is_reply) {
-                        /* New standalone message -> reset session first */
-                        tg_write_cmd_new(ctx->mailbox_dir);
-                        tg_session_thread_clear(ctx, msg_thread_id);
-                        fprintf(stderr, "[telegram] new message -> session reset\n");
-                        /* Small delay so daemon processes cmd_new before task */
-                        usleep(100000);  /* 100ms */
-                    } else {
-                        fprintf(stderr, "[telegram] reply -> continuing session\n");
-                    }
                     char task_id[64];
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
-                    snprintf(task_id, sizeof(task_id), "tg%lx%04lx",
-                             (long)ts.tv_sec, ts.tv_nsec / 100000L);
+                    snprintf(task_id, sizeof(task_id), "tg%lx%09lx",
+                             (long)ts.tv_sec, (long)ts.tv_nsec);
 
                     fprintf(stderr, "[telegram] creating task_%s\n", task_id);
                     tg_route_map_add(ctx, task_id, msg_thread_id);
                     tg_write_task(ctx->mailbox_dir, task_id, msg_text,
                                   msg_workspace, msg_thread_id);
+
+                    if (!is_reply) {
+                        /* New standalone message -> reset session */
+                        tg_session_thread_clear(ctx, msg_thread_id);
+                        tg_write_cmd_new(ctx->mailbox_dir);
+                        fprintf(stderr, "[telegram] new message -> session reset\n");
+                    } else {
+                        fprintf(stderr, "[telegram] reply -> continuing session\n");
+                    }
 
                     /* Send ack -- for new sessions this becomes the thread root */
                     {

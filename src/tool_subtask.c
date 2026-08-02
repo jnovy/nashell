@@ -97,6 +97,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
         .react_loop     = 0,               /* fresh loop numbering */
         .aliases        = alias_map_new(),  /* own: fresh alias map */
         .last_notes_step = -1,             /* init: no notes yet */
+        .session_idx    = ctx->session_idx, /* inherit: session index for memory_search */
     };
 
     /* Scratchpad: snapshot parent's scratchpad into child (read-only copy).

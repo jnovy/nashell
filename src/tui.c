@@ -273,6 +273,7 @@ paste_done: ;
         if (clip_count < MAX_CLIPS) {
             int idx = clip_count++;
             clip_store[idx].data = malloc((size_t)paste_len + 1);
+            if (!clip_store[idx].data) { clip_count--; goto paste_done; }
             memcpy(clip_store[idx].data, paste_buf, (size_t)paste_len);
             clip_store[idx].data[paste_len] = '\0';
             clip_store[idx].len = paste_len;
@@ -293,10 +294,20 @@ paste_done: ;
 static char *expand_clipboard_tokens(const char *input, int input_len) {
     if (clip_count == 0) return strndup(input, (size_t)input_len);
 
-    /* Worst case: every token expands to max clip size */
+    /* Count actual occurrences of each token to size the buffer correctly */
     size_t cap = (size_t)input_len + 1;
-    for (int i = 0; i < clip_count; i++)
-        cap += (size_t)clip_store[i].len + 32;
+    for (int i = 0; i < clip_count; i++) {
+        char token[32];
+        int tlen = snprintf(token, sizeof(token), "[clipboard%d]", i + 1);
+        int occurrences = 0;
+        for (int p = 0; p <= input_len - tlen; p++) {
+            if (memcmp(input + p, token, (size_t)tlen) == 0)
+                occurrences++;
+        }
+        /* Each occurrence replaces tlen bytes with clip_store[i].len bytes */
+        if (occurrences > 0 && clip_store[i].len > tlen)
+            cap += (size_t)occurrences * ((size_t)clip_store[i].len - (size_t)tlen);
+    }
     char *out = malloc(cap);
     int olen = 0;
     int pos = 0;
@@ -1114,7 +1125,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     int hlen = (int)strlen(ui->history[ui->history_idx]);
                     if (hlen >= ui->input_cap) {
                         int new_cap = hlen + 64;
-                        if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
+                        if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) { ui->history_idx++; break; }
                         ui->input_cap = new_cap;
                     }
                     memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
@@ -1194,7 +1205,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         int hlen = ui->saved_input ? ui->saved_input_len : 0;
                         if (hlen >= ui->input_cap) {
                             int new_cap = hlen + 64;
-                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
+                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) { ui->history_idx--; break; }
                             ui->input_cap = new_cap;
                         }
                         if (hlen > 0)
@@ -1208,7 +1219,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                         int hlen = (int)strlen(ui->history[ui->history_idx]);
                         if (hlen >= ui->input_cap) {
                             int new_cap = hlen + 64;
-                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) break;
+                            if (safe_realloc((void **)&ui->input_buffer, (size_t)new_cap)) { ui->history_idx--; break; }
                             ui->input_cap = new_cap;
                         }
                         memcpy(ui->input_buffer, ui->history[ui->history_idx], (size_t)hlen);
@@ -1348,8 +1359,8 @@ int tui_input(ui_state_t *ui, char **out_query) {
             /* Running → pause: abort the in-progress HTTP call so the
              * react loop reaches the pause_requested check immediately
              * instead of waiting for the full LLM response to complete. */
-            *ui->pause_flag = 1;
-            if (ui->abort_flag) *ui->abort_flag = 1;
+            atomic_store(ui->pause_flag, 1);
+            if (ui->abort_flag) atomic_store(ui->abort_flag, 1);
             ui_state_set_status(ui, STATUS_READY, "Pausing...");
             ui->dirty = 1;
             break;

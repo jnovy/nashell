@@ -80,6 +80,12 @@ void session_lock_release(int fd);
  * Returns 0 on success, -1 on failure. */
 int http_get(const char *url, long timeout_sec, str_t *out);
 
+/* Like http_get but with optional custom headers (e.g. Authorization).
+ * headers is a curl_slist (caller frees after call).  May be NULL.
+ * Returns 0 on success, -1 on failure. */
+int http_get_h(const char *url, struct curl_slist *headers,
+               long timeout_sec, str_t *out);
+
 /* Like http_get but with web-browsing defaults: follow redirects, user-agent,
  * protocol restrictions. Stores HTTP status code in *http_code if non-NULL.
  * Returns 0 on success, -1 on curl failure. */

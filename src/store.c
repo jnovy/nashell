@@ -105,13 +105,17 @@ static void hashset_init(hashset_t *hs) {
     hs->cap = HASHSET_INIT_CAP;
     hs->count = 0;
     hs->buckets = calloc((size_t)hs->cap, sizeof(char *));
+    if (!hs->buckets) { hs->cap = 0; }
 }
 
 static void hashset_grow(hashset_t *hs) {
     int old_cap = hs->cap;
     char **old = hs->buckets;
-    hs->cap *= 2;
-    hs->buckets = calloc((size_t)hs->cap, sizeof(char *));
+    int new_cap = hs->cap * 2;
+    char **nb = calloc((size_t)new_cap, sizeof(char *));
+    if (!nb) return;  /* keep existing table on OOM */
+    hs->cap = new_cap;
+    hs->buckets = nb;
     hs->count = 0;
     for (int i = 0; i < old_cap; i++) {
         if (old[i]) {
@@ -127,6 +131,7 @@ static void hashset_grow(hashset_t *hs) {
 
 static void hashset_add(hashset_t *hs, const char *key) {
     if (!hs->buckets) hashset_init(hs);
+    if (!hs->buckets) return;  /* OOM during init */
     /* Grow at 70% load factor */
     if (hs->count * 10 >= hs->cap * 7) hashset_grow(hs);
     unsigned int idx = fnv1a(key) & (unsigned)(hs->cap - 1);

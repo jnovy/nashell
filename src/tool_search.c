@@ -46,7 +46,31 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     if (r.output_capped)
         str_append_cstr(&out, "\n... [output truncated at limit]\n");
 
+    /* grep -m N limits per-file, not globally. Truncate to max_matches total
+     * lines so a recursive search doesn't return N * num_files matches. */
     int matches = count_lines(out.data);
+    if (matches > max_matches && out.data) {
+        char *p = out.data;
+        for (int i = 0; i < max_matches && *p; i++) {
+            p = strchr(p, '\n');
+            if (!p) break;
+            p++;
+        }
+        if (p && *p) {
+            int shown = max_matches;
+            int omitted = matches - shown;
+            /* Truncate and append notice */
+            size_t keep = (size_t)(p - out.data);
+            out.len = keep;
+            out.data[keep] = '\0';
+            char notice[128];
+            snprintf(notice, sizeof(notice),
+                     "... [%d more matches omitted, showing first %d]\n",
+                     omitted, shown);
+            str_append_cstr(&out, notice);
+            matches = shown;
+        }
+    }
     char *hash = store_save(ctx->store, out.data);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
 

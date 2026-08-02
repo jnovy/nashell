@@ -429,11 +429,13 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "image_analyze",
                    params, alias, strlen(analysis), 0, NULL, NULL);
 
-    tool_result_t result = tools_make_result(1, meta, hash);
+    char *ref_copy = strdup(alias);
+    tool_result_t result = tools_make_result(1, meta, ref_copy);
     result.importance = 2;  /* high — user explicitly requested analysis */
 
     free(analysis);
     free(alias);
+    free(hash);
     free(resolved);
 
     return result;

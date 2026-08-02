@@ -301,6 +301,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         .nash_dir     = (char *)ctx->nash_dir,
         .store        = ctx->store,
         .memory       = agent_ws ? agent_ws->global : ctx->memory,
+        .ws_memory    = agent_ws ? agent_ws->workspace : NULL,
         .cfg          = ctx->cfg,
         .provider     = ctx->provider,
         .server_model = (char *)ctx->server_model,
@@ -314,7 +315,19 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     };
 
     ctx->provider->abort_retry = 0;
-    pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
+    if (pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs) != 0) {
+        free(ctx->pargs->agent_id);
+        free(ctx->pargs->workspace_override);
+        ctx->pargs->agent_id = NULL;
+        ctx->pargs->workspace_override = NULL;
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_ERROR, "Error: thread creation failed");
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+        agent_queue_free(q);
+        free(id_buf);
+        return CMD_CONTINUE;
+    }
     *ctx->inferring = INFER_PLAYBOOK;
 
     pthread_mutex_lock(&ui->mtx);

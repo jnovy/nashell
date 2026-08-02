@@ -56,6 +56,7 @@ typedef struct tool_filter_t {
     int          n_allowed;
     const char **blocked;    /* NULL = none blocked; non-NULL = blacklist */
     int          n_blocked;
+    int          blocked_owned; /* 1 if blocked[] is heap-owned (deep-copied) */
     /* Per-tool description overrides (parallel arrays, NULL = no overrides) */
     char       **desc_names;   /* tool names with overridden descriptions */
     char       **desc_values;  /* replacement description strings */

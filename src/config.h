@@ -367,7 +367,7 @@ typedef struct {
     int              n_model_profiles;
 
     /* Active model profile (set after model detection in main.c) */
-    const char      *system_prompt_extra;  /* points into matched profile, do NOT free */
+    char            *system_prompt_extra;  /* owned copy of profile's system_prompt_extra */
     const char      *matched_profile_file; /* source file of matched profile (diagnostics) */
 
     /* Was [thinking] section explicitly present in config.toml? */

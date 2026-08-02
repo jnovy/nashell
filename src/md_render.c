@@ -500,6 +500,8 @@ static int render_segs_wrapped_ex(WINDOW *win, int start_row, int col,
             advance = (fit_count >= n_segs) ? n_segs : fit_count;
         }
         if (advance > n_segs) advance = n_segs;
+        /* Guard against infinite loop: always consume at least one segment */
+        if (advance < 1 && n_segs > 0) advance = 1;
         memmove(segs, segs + advance, (n_segs - advance) * sizeof(inline_seg_t));
         n_segs -= advance;
 
@@ -1873,6 +1875,7 @@ step_line_done:
     }
 
     doc->total_lines = render_line;
+    free(code_lang);  /* streaming may end mid-code-block */
     wnoutrefresh(win);
     return render_line;
 }

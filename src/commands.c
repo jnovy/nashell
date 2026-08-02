@@ -165,8 +165,13 @@ static int cmd_dream(command_ctx_t *ctx) {
         .done = 0,
     };
     ctx->provider->abort_retry = 0;  /* reset before new inference */
-    pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
-    *ctx->inferring = INFER_PLAYBOOK;
+    if (pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs) == 0) {
+        *ctx->inferring = INFER_PLAYBOOK;
+    } else {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, "Error: thread creation failed");
+        pthread_mutex_unlock(&ui->mtx);
+    }
     tui_render(ui);
     return CMD_CONTINUE;
 }
@@ -239,6 +244,7 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
         .nash_dir = (char *)ctx->nash_dir,
         .store = ctx->store,
         .memory = ctx->memory,
+        .ws_memory = ctx->ws ? ctx->ws->workspace : NULL,
         .cfg = ctx->cfg,
         .provider = ctx->provider,
         .consolidation_provider = ctx->consolidation_provider,
@@ -248,8 +254,13 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
         .done = 0,
     };
     ctx->provider->abort_retry = 0;  /* reset before new inference */
-    pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs);
-    *ctx->inferring = INFER_PLAYBOOK;
+    if (pthread_create(ctx->infer_tid, NULL, playbook_worker, ctx->pargs) == 0) {
+        *ctx->inferring = INFER_PLAYBOOK;
+    } else {
+        pthread_mutex_lock(&ui->mtx);
+        ui_state_set_status(ui, STATUS_READY, "Error: thread creation failed");
+        pthread_mutex_unlock(&ui->mtx);
+    }
     tui_render(ui);
     return CMD_CONTINUE;
 }

@@ -13,8 +13,10 @@
 
 llm_chat_t *llm_chat_new(void) {
     llm_chat_t *c = calloc(1, sizeof(*c));
+    if (!c) return NULL;
     c->cap_msgs = 32;
     c->msgs = calloc(c->cap_msgs, sizeof(llm_msg_t));
+    if (!c->msgs) { free(c); return NULL; }
     return c;
 }
 

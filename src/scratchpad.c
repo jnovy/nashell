@@ -12,6 +12,7 @@ void scratchpad_init(scratchpad_t *sp) {
     pthread_mutex_init(&sp->mtx, NULL);  /* FIX CRIT2: thread-safe scratchpad */
     sp->cap = SCRATCHPAD_INIT_CAP;
     sp->sections = calloc((size_t)sp->cap, sizeof(scratchpad_section_t));
+    if (!sp->sections) sp->cap = 0;
 }
 
 /* Clear all scratchpad data but preserve the mutex.
@@ -120,9 +121,20 @@ int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, i
         pthread_mutex_unlock(&sp->mtx);
         return 0;
     }
+    /* Create new section inline while still holding the lock to avoid
+     * TOCTOU race (another thread could create the same section between
+     * our unlock and scratchpad_write's re-lock). */
+    if (scratchpad_grow(sp) < 0) {
+        pthread_mutex_unlock(&sp->mtx);
+        return -1;
+    }
+    sp->sections[sp->count].name = strdup(name);
+    sp->sections[sp->count].content = strdup(content);
+    sp->sections[sp->count].priority = priority;
+    sp->sections[sp->count].dirty = 1;
+    sp->count++;
     pthread_mutex_unlock(&sp->mtx);
-    /* Create new section — scratchpad_write acquires its own lock */
-    return scratchpad_write(sp, name, content, priority);
+    return 0;
 }
 
 int scratchpad_clear(scratchpad_t *sp, const char *name) {

@@ -466,7 +466,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     /* Belief Entropy probe — compute ℋ_BE for the new memory entry.
      * Only runs when enabled in config AND provider is local (has /completion).
      * The probe is lightweight (~30 tokens) and non-blocking on failure. */
-    if (ctx->cfg->belief_entropy.enabled && ctx->provider &&
+    if (ctx->cfg && ctx->cfg->belief_entropy.enabled && ctx->provider &&
         ctx->provider->type == PROVIDER_LOCAL) {
         belief_entropy_config_t *bec = &ctx->cfg->belief_entropy;
         belief_entropy_result_t be = llm_belief_entropy_probe(

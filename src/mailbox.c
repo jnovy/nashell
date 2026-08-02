@@ -25,8 +25,8 @@ const char *mailbox_gen_id(void) {
     static _Thread_local char buf[32];
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    snprintf(buf, sizeof(buf), "%lx%04lx",
-             (long)ts.tv_sec, ts.tv_nsec / 100000L);
+    snprintf(buf, sizeof(buf), "%lx%09lx",
+             (long)ts.tv_sec, (long)ts.tv_nsec);
     return buf;
 }
 
@@ -95,11 +95,10 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     snprintf(answer_file, sizeof(answer_file), "%s/inbox/ask_%s",
              mailbox_dir, msg_id);
 
-    /* Check if answer already exists (race-safe) */
+    /* Check if answer already exists (race-safe: read directly, no TOCTOU) */
     char *answer = NULL;
-    if (access(answer_file, F_OK) == 0) {
-        goto read_answer;
-    }
+    answer = read_file(answer_file);
+    if (answer) goto got_answer;
 
     /* Set up inotify */
     int ifd = inotify_init1(IN_NONBLOCK);
@@ -109,7 +108,8 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
         /* Fallback: poll with stat() every second */
         time_t deadline = timeout_sec > 0 ? time(NULL) + timeout_sec : 0;
         while (1) {
-            if (access(answer_file, F_OK) == 0) goto read_answer;
+            answer = read_file(answer_file);
+            if (answer) goto got_answer;
             if (deadline > 0 && time(NULL) >= deadline) {
                 nash_log("[mailbox] timeout waiting for answer");
                 return NULL;
@@ -126,11 +126,12 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
         return NULL;
     }
 
-    /* Re-check after adding watch (close race window) */
-    if (access(answer_file, F_OK) == 0) {
+    /* Re-check after adding watch (close race window — read directly) */
+    answer = read_file(answer_file);
+    if (answer) {
         inotify_rm_watch(ifd, wd);
         close(ifd);
-        goto read_answer;
+        goto got_answer;
     }
 
     /* Poll loop with timeout */
@@ -173,8 +174,6 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
                             strcmp(iev->name, expected_name) == 0) {
                             inotify_rm_watch(ifd, wd);
                             close(ifd);
-                            /* Small delay for atomic write to complete */
-                            usleep(50000);
                             goto read_answer;
                         }
                         ptr += sizeof(struct inotify_event) + iev->len;
@@ -182,11 +181,12 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
                 }
             }
 
-            /* Periodic check (handles edge cases) */
-            if (access(answer_file, F_OK) == 0) {
+            /* Periodic check (handles edge cases — read directly, no TOCTOU) */
+            answer = read_file(answer_file);
+            if (answer) {
                 inotify_rm_watch(ifd, wd);
                 close(ifd);
-                goto read_answer;
+                goto got_answer;
             }
         }
         inotify_rm_watch(ifd, wd);
@@ -195,9 +195,6 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     return NULL;
 
 read_answer:
-    /* Small delay to ensure writer has finished */
-    usleep(50000);
-
     /* Answer is just plain text — the entire file content IS the answer */
     answer = read_file(answer_file);
     if (!answer) {
@@ -206,6 +203,7 @@ read_answer:
         return NULL;
     }
 
+got_answer:
     /* Clean up processed files */
     unlink(answer_file);
     unlink(outpath);

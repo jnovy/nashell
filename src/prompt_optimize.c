@@ -658,9 +658,9 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
     cand.round = round;
     if (out_report) *out_report = NULL;
 
-    /* Save and swap system_prompt_extra */
-    const char *saved_extra = cfg->system_prompt_extra;
-    cfg->system_prompt_extra = prompt_text;
+    /* Save and swap system_prompt_extra (temporary, restored after regression) */
+    char *saved_extra = cfg->system_prompt_extra;
+    cfg->system_prompt_extra = (char *)prompt_text;
 
     /* Save and swap tool descriptions [Rec #2: AHE tool optimization] */
     char **saved_td_names = cfg->profile_tool_desc_names;
@@ -886,7 +886,7 @@ static int write_prompt_to_profile(const char *profile_path,
         str_append(&out, data, spe - data);
         str_append_cstr(&out, "system_prompt_extra = \"\"\"\n");
         str_append_cstr(&out, prompt_text);
-        if (prompt_text[strlen(prompt_text) - 1] != '\n')
+        if (strlen(prompt_text) > 0 && prompt_text[strlen(prompt_text) - 1] != '\n')
             str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\"\"\"\n");
 
@@ -902,10 +902,10 @@ static int write_prompt_to_profile(const char *profile_path,
         str_append_cstr(&out, val_start);
     } else {
         str_append_cstr(&out, data);
-        if (data[strlen(data) - 1] != '\n') str_append_cstr(&out, "\n");
+        if (strlen(data) > 0 && data[strlen(data) - 1] != '\n') str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\nsystem_prompt_extra = \"\"\"\n");
         str_append_cstr(&out, prompt_text);
-        if (prompt_text[strlen(prompt_text) - 1] != '\n')
+        if (strlen(prompt_text) > 0 && prompt_text[strlen(prompt_text) - 1] != '\n')
             str_append_cstr(&out, "\n");
         str_append_cstr(&out, "\"\"\"\n");
     }

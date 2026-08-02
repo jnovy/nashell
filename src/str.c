@@ -403,8 +403,12 @@ void for_each_dir_entry(const char *dirpath, const char *suffix,
 /* Curl write callback that appends to a str_t */
 size_t str_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     str_t *s = userdata;
-    str_append(s, ptr, size * nmemb);
-    return size * nmemb;
+    size_t total = size * nmemb;
+    size_t prev_len = s->len;
+    str_append(s, ptr, total);
+    if (total > 0 && s->len == prev_len)
+        return 0;  /* signal OOM to libcurl */
+    return total;
 }
 
 int http_get(const char *url, long timeout_sec, str_t *out) {
@@ -412,6 +416,25 @@ int http_get(const char *url, long timeout_sec, str_t *out) {
     if (!curl) return -1;
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    return (res == CURLE_OK) ? 0 : -1;
+}
+
+int http_get_h(const char *url, struct curl_slist *headers,
+               long timeout_sec, str_t *out) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    if (headers)
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);

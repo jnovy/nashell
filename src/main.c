@@ -406,6 +406,10 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
     alias_map_free(tools->aliases);
     free(tools->last_spec_hash);
     tools->last_spec_hash = NULL;
+    free(react->last_query);
+    react->last_query = NULL;
+    free(react->last_result);
+    react->last_result = NULL;
     session_lock_release(tools->session_lock_fd);
     tools->session_lock_fd = -1;
     journal_free(journal);
@@ -1867,6 +1871,9 @@ int main(int argc, char **argv) {
             /* Tier 1 dreaming */
             memory_prune(slot->mem, cfg->prune_min_score,
                          cfg->prune_min_evidence);
+            if (slot->ws && slot->ws->workspace)
+                memory_prune(slot->ws->workspace, cfg->prune_min_score,
+                             cfg->prune_min_evidence);
 
             free(result);
             mailbox_task_free(task);
@@ -2048,7 +2055,7 @@ int main(int argc, char **argv) {
         ui->context_size = context_size;
         ui->context_used = 0;
         ui->pause_flag = &react.pause_requested;  /* Space → pause react loop */
-        ui->abort_flag = &provider->abort_retry;    /* abort in-progress HTTP call */
+        ui->abort_flag = provider ? &provider->abort_retry : NULL;  /* abort in-progress HTTP call */
         ui->bg_jobs = 0;
         /* Show dream reminder in status bar if threshold exceeded */
         if (cfg->dream_reminder_threshold > 0 && dream_new_count >= cfg->dream_reminder_threshold) {
@@ -2480,8 +2487,14 @@ int main(int argc, char **argv) {
                 route_query_to_outbox(nash_dir, final_query,
                                       ws && ws->name ? ws->name : NULL, NULL,
                                       tools.react_loop == 0 ? 1 : 0);
-                pthread_create(&infer_tid, NULL, infer_worker, &iargs);
-                atomic_store(&inferring, INFER_REACT);
+                if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
+                    atomic_store(&inferring, INFER_REACT);
+                } else {
+                    nash_log("[main] failed to create inference thread");
+                    pthread_mutex_lock(&ui->mtx);
+                    ui_state_set_status(ui, STATUS_READY, "Error: thread creation failed");
+                    pthread_mutex_unlock(&ui->mtx);
+                }
                 tui_render(ui);
             }
 

@@ -651,7 +651,13 @@ int memory_store(memory_t *m, const char *key, const char *value,
             /* FIX BUG-MEM4: Value was updated by another thread while we
              * were generating the embedding — our embedding is stale for
              * the current value.  Remove the orphan .emb file. The new
-             * value's store call will generate its own embedding. */
+             * value's store call will generate its own embedding.
+             *
+             * TODO(aba-race): This raw pointer comparison is subject to ABA:
+             * malloc may reuse the same address for a new value string,
+             * causing this check to falsely pass and cache a stale embedding.
+             * A proper fix requires a generation counter on mem_index_entry_t
+             * that is incremented on every value update. */
             char emb_fname[512];
             key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
             char emb_orphan[NASH_PATH_MAX];
@@ -1041,6 +1047,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
     if (!scored) {
         pthread_mutex_unlock(&m->mtx);
+        embed_multi_vec_free(&query_mv);
         return results;
     }
     int n_scored = 0;
@@ -1105,6 +1112,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
 
         struct ref_map_entry { const char *key; int idx; };
         struct ref_map_entry *ref_map = calloc((size_t)map_cap, sizeof(*ref_map));
+        if (!ref_map) goto skip_ref_boost;
 
         for (int j = 0; j < n_scored; j++) {
             const char *k = m->idx.entries[scored[j].idx_pos].key;
@@ -1137,6 +1145,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                 }
             }
         }
+skip_ref_boost:
         free(ref_map);
     }
 
@@ -2253,6 +2262,15 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
                 copy->refs[i] = src->refs[i] ? strdup(src->refs[i]) : NULL;
         }
     }
+    /* Copy triggers from index */
+    copy->n_triggers = src->n_triggers;
+    if (src->triggers && src->n_triggers > 0) {
+        copy->triggers = calloc((size_t)src->n_triggers, sizeof(char *));
+        if (copy->triggers) {
+            for (int i = 0; i < src->n_triggers; i++)
+                copy->triggers[i] = src->triggers[i] ? strdup(src->triggers[i]) : NULL;
+        }
+    }
     /* Don't copy embedding data — callers only need metadata */
     copy->has_emb = 0;
     memset(&copy->emb, 0, sizeof(copy->emb));
@@ -2267,6 +2285,7 @@ void memory_find_free(mem_index_entry_t *entry) {
     free(entry->value);
     free(entry->path);
     free_string_array(entry->refs, entry->n_refs);
+    free_string_array(entry->triggers, entry->n_triggers);
     free(entry->supersedes);
     free(entry);
 }

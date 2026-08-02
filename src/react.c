@@ -1947,7 +1947,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     "Do NOT re-run this command -- "
                     "analyze the stored output instead.",
                     (int)(ems->valuedouble / 1000.0),
-                    ref_j ? ref_j->valuestring : "?",
+                    (ref_j && ref_j->valuestring) ? ref_j->valuestring : "?",
                     chars_j ? (int)chars_j->valuedouble : 0,
                     lines_j ? (int)lines_j->valuedouble : 0);
                 llm_chat_add_typed(chat, "user", nudge,

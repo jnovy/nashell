@@ -1010,6 +1010,7 @@ void *playbook_worker(void *arg) {
 
         /* Run the pass -- either LLM react loop or shell script */
         char *result = NULL;
+        int script_exit_status = 0;
         if (pb->passes[pass].type == PB_PASS_SCRIPT) {
             /* Script pass: run shell command, no LLM call.
              * Expand {{var}} placeholders in the command string.
@@ -1054,6 +1055,7 @@ void *playbook_worker(void *arg) {
                         buf_len += ll;
                     }
                     int status = pclose(fp);
+                    script_exit_status = status;
                     if (buf) {
                         buf[buf_len] = '\0';
                         result = buf;
@@ -1081,12 +1083,13 @@ void *playbook_worker(void *arg) {
             scratchpad_move(&shared_scratch, &pass_tools.scratch);
         }
 
-        int pass_failed = (result == NULL);
+        int pass_failed = (result == NULL || script_exit_status != 0);
 
         /* Per-pass error policy handling */
         if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_CONTINUE) {
             fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
                     pass + 1, pb->n_passes, pb->passes[pass].label);
+            free(result);
             result = strdup("");  /* provide empty result for next pass */
             pass_failed = 0;
         } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
@@ -1103,8 +1106,57 @@ void *playbook_worker(void *arg) {
                 result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
                 free(retry_prompt);
                 pass_failed = (result == NULL);
+            } else {
+                /* Script retries just re-run the same command */
+                free(result);
+                result = NULL;
+                script_exit_status = 0;
+                char *safe_prev = shell_escape_value(prev_result);
+                char *expanded_cmd = playbook_expand(pb,
+                    pb->passes[pass].command ? pb->passes[pass].command : "",
+                    pass, safe_prev, mdir, model, NULL, pa->nash_dir);
+                free(safe_prev);
+                if (expanded_cmd && expanded_cmd[0]) {
+                    char popen_cmd[NASH_PATH_MAX * 2];
+                    snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
+                    FILE *fp = popen(popen_cmd, "r");
+                    if (fp) {
+                        char *buf = NULL;
+                        size_t buf_len = 0, buf_cap = 0;
+                        char line[1024];
+                        while (fgets(line, sizeof(line), fp)) {
+                            size_t ll = strlen(line);
+                            if (buf_len + ll + 1 > buf_cap) {
+                                size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
+                                if (new_cap < buf_len + ll + 1)
+                                    new_cap = buf_len + ll + 1;
+                                if (safe_realloc((void **)&buf, new_cap))
+                                    break;
+                                buf_cap = new_cap;
+                            }
+                            memcpy(buf + buf_len, line, ll);
+                            buf_len += ll;
+                        }
+                        int status = pclose(fp);
+                        script_exit_status = status;
+                        if (buf) {
+                            buf[buf_len] = '\0';
+                            result = buf;
+                        } else {
+                            result = strdup("");
+                        }
+                        if (status != 0) {
+                            fprintf(stderr, "[play] script retry exited with status %d\n",
+                                    WEXITSTATUS(status));
+                            if (!result) result = strdup("(script failed)");
+                        }
+                    } else {
+                        fprintf(stderr, "[play] popen failed on retry: %s\n", strerror(errno));
+                    }
+                }
+                free(expanded_cmd);
+                pass_failed = (result == NULL || script_exit_status != 0);
             }
-            /* Script retries just re-run the same command (no prompt to modify) */
         }
 
         /* Run log: emit pass done */

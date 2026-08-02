@@ -47,6 +47,7 @@ typedef struct {
     long long txn_counter;       /* incrementing txn ID for idempotent sends */
     char     *nash_dir;          /* path to ~/.nash (for workspace scanning) */
     char     *invite_user;       /* user to invite to new rooms (e.g. @jnovy:localhost) */
+    char     *allowed_users;    /* comma-separated allowlist of Matrix user IDs (e.g. "@alice:server,@bob:server"); NULL = allow all */
 
     /* Room-to-workspace mapping (from [matrix.rooms] in config.toml) */
     mx_room_map_entry_t room_map[MX_MAX_ROOM_MAP];

@@ -41,22 +41,22 @@ static int is_runtime_blocked(const tool_filter_t *tf, const char *name) {
 
 /* Copy-on-write: the initial tool_filter_t.blocked may point into config
  * memory (set by build_profile_tool_filter in main.c).  Before any mutation,
- * we must deep-copy it to heap memory so realloc/free are safe. */
-static int s_filter_owned = 0;
+ * we must deep-copy it to heap memory so realloc/free are safe.
+ * Ownership is tracked per-filter via tf->blocked_owned (not a global). */
 
 static void ensure_filter_owned(tool_filter_t *tf) {
-    if (s_filter_owned) return;
+    if (tf->blocked_owned) return;
     if (tf->blocked && tf->n_blocked > 0) {
-        const char **owned = malloc((size_t)tf->n_blocked * sizeof(char *));
-        if (!owned) return;
+        const char **copy = malloc((size_t)tf->n_blocked * sizeof(char *));
+        if (!copy) return;
         for (int i = 0; i < tf->n_blocked; i++)
-            owned[i] = strdup(tf->blocked[i]);
-        tf->blocked = owned;
+            copy[i] = strdup(tf->blocked[i]);
+        tf->blocked = copy;
     } else {
         tf->blocked = NULL;
         tf->n_blocked = 0;
     }
-    s_filter_owned = 1;
+    tf->blocked_owned = 1;
 }
 
 /* Add a tool name to the runtime blocked list. */
@@ -91,11 +91,11 @@ static void runtime_block_remove(tool_filter_t *tf, const char *name) {
 
 /* Free all runtime blocked entries (for reset). */
 static void runtime_block_clear(tool_filter_t *tf) {
-    if (!s_filter_owned) {
+    if (!tf->blocked_owned) {
         /* Not owned — just clear the pointers without freeing */
         tf->blocked = NULL;
         tf->n_blocked = 0;
-        s_filter_owned = 1;  /* now we own (empty) */
+        tf->blocked_owned = 1;  /* now we own (empty) */
         return;
     }
     if (!tf->blocked) return;

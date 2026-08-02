@@ -152,12 +152,16 @@ static char *mx_api_get_room_name(matrix_ctx_t *ctx, const char *room_id) {
     char *enc_room = url_encode(room_id);
     char url[MX_URL_MAX * 2];
     snprintf(url, sizeof(url),
-             "%s/_matrix/client/v3/rooms/%s/state/m.room.name?access_token=%s",
-             ctx->homeserver, enc_room, ctx->access_token);
+             "%s/_matrix/client/v3/rooms/%s/state/m.room.name",
+             ctx->homeserver, enc_room);
     free(enc_room);
 
+    char *auth = mx_auth_header(ctx);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth);
+
     str_t resp = str_new(512);
-    int rc = http_get(url, 10, &resp);
+    int rc = http_get_h(url, headers, 10, &resp);
     char *result = NULL;
 
     if (rc == 0 && resp.len > 0) {
@@ -171,6 +175,8 @@ static char *mx_api_get_room_name(matrix_ctx_t *ctx, const char *room_id) {
         }
     }
     str_free(&resp);
+    curl_slist_free_all(headers);
+    free(auth);
     return result;
 }
 
@@ -328,6 +334,7 @@ void matrix_free(matrix_ctx_t *ctx) {
     free(ctx->room_id);
     free(ctx->since_token);
     free(ctx->invite_user);
+    free(ctx->allowed_users);
     free(ctx->nash_dir);
     free(ctx->mailbox_dir);
     free(ctx->config_path);
@@ -338,6 +345,41 @@ void matrix_free(matrix_ctx_t *ctx) {
     memset(ctx, 0, sizeof(*ctx));
 }
 
+
+/* ── User allowlist check ────────────────────────────────── */
+
+/* Check if sender_id is in the comma-separated allowed_users list.
+ * Returns 1 if allowed, 0 if denied.
+ * If allowed_users is NULL or empty, all users are allowed. */
+static int mx_user_allowed(const matrix_ctx_t *ctx, const char *sender_id) {
+    if (!ctx->allowed_users || ctx->allowed_users[0] == '\0')
+        return 1;  /* no allowlist configured -> allow all */
+    if (!sender_id)
+        return 0;
+
+    size_t sender_len = strlen(sender_id);
+    const char *p = ctx->allowed_users;
+    while (*p) {
+        /* skip leading whitespace and commas */
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+
+        /* find end of this entry */
+        const char *end = p;
+        while (*end && *end != ',') end++;
+
+        /* trim trailing whitespace */
+        const char *trim = end;
+        while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
+
+        size_t entry_len = (size_t)(trim - p);
+        if (entry_len == sender_len && strncmp(p, sender_id, entry_len) == 0)
+            return 1;  /* match found */
+
+        p = end;
+    }
+    return 0;  /* not in allowlist */
+}
 
 /* ── Config load/save ────────────────────────────────────── */
 
@@ -372,6 +414,9 @@ static int mx_config_load(matrix_ctx_t *ctx) {
         d = toml_string_in(mx, "invite_user");
         if (d.ok) ctx->invite_user = d.u.s;
 
+        d = toml_string_in(mx, "allowed_users");
+        if (d.ok) ctx->allowed_users = d.u.s;
+
         /* Parse [matrix.rooms] — room-to-workspace mapping */
         toml_table_t *rooms_tbl = toml_table_in(mx, "rooms");
         if (rooms_tbl) {
@@ -396,6 +441,15 @@ static int mx_config_load(matrix_ctx_t *ctx) {
     return (ctx->homeserver && ctx->access_token && ctx->room_id) ? 0 : -1;
 }
 
+static void fprint_toml_str(FILE *f, const char *key, const char *val) {
+    fprintf(f, "%s = \"", key);
+    for (const char *p = val; *p; p++) {
+        if (*p == '\\' || *p == '"') fputc('\\', f);
+        fputc(*p, f);
+    }
+    fprintf(f, "\"\n");
+}
+
 static int mx_config_save(matrix_ctx_t *ctx) {
     /* Read existing config, replace [matrix] section */
     char *existing = slurp_file(ctx->config_path, NULL);
@@ -409,14 +463,15 @@ static int mx_config_save(matrix_ctx_t *ctx) {
     /* Write back existing content, removing old [matrix] section */
     if (existing) {
         char *mx_start = strstr(existing, "\n[matrix]");
+        int at_start = (!mx_start && strncmp(existing, "[matrix]", 8) == 0);
+        if (at_start) mx_start = existing;
         if (mx_start) {
-            char *next = strstr(mx_start + 1, "\n[");
-            if (next) {
+            char *sect = at_start ? mx_start : mx_start + 1;
+            char *next = strstr(sect, "\n[");
+            if (!at_start)
                 fwrite(existing, 1, (size_t)(mx_start - existing), f);
+            if (next)
                 fputs(next, f);
-            } else {
-                fwrite(existing, 1, (size_t)(mx_start - existing), f);
-            }
         } else {
             fputs(existing, f);
         }
@@ -424,17 +479,17 @@ static int mx_config_save(matrix_ctx_t *ctx) {
     }
 
     /* Append [matrix] section */
-    fprintf(f, "\n[matrix]\nhomeserver = \"%s\"\naccess_token = \"%s\"\n",
-            ctx->homeserver ? ctx->homeserver : "",
-            ctx->access_token ? ctx->access_token : "");
+    fprintf(f, "\n[matrix]\n");
+    fprint_toml_str(f, "homeserver", ctx->homeserver ? ctx->homeserver : "");
+    fprint_toml_str(f, "access_token", ctx->access_token ? ctx->access_token : "");
     if (ctx->user_id)
-        fprintf(f, "user_id = \"%s\"\n", ctx->user_id);
+        fprint_toml_str(f, "user_id", ctx->user_id);
     if (ctx->room_id)
-        fprintf(f, "room_id = \"%s\"\n", ctx->room_id);
+        fprint_toml_str(f, "room_id", ctx->room_id);
     if (ctx->since_token)
-        fprintf(f, "since_token = \"%s\"\n", ctx->since_token);
+        fprint_toml_str(f, "since_token", ctx->since_token);
     if (ctx->invite_user)
-        fprintf(f, "invite_user = \"%s\"\n", ctx->invite_user);
+        fprint_toml_str(f, "invite_user", ctx->invite_user);
 
     fclose(f);
     return 0;
@@ -613,15 +668,12 @@ static int mx_api_whoami(matrix_ctx_t *ctx) {
     snprintf(url, sizeof(url), "%s/_matrix/client/v3/account/whoami",
              ctx->homeserver);
 
-    /* Add auth header via curl handle — but we use http_get which doesn't
-     * support custom headers. So we'll use http_post with GET method...
-     * Actually, let's just build the URL with access_token query param */
-    char authed_url[MX_URL_MAX * 2];
-    snprintf(authed_url, sizeof(authed_url), "%s?access_token=%s",
-             url, ctx->access_token);
+    char *auth = mx_auth_header(ctx);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth);
 
     str_t resp = str_new(512);
-    int rc = http_get(authed_url, 10, &resp);
+    int rc = http_get_h(url, headers, 10, &resp);
 
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
@@ -642,6 +694,8 @@ static int mx_api_whoami(matrix_ctx_t *ctx) {
     }
 
     str_free(&resp);
+    curl_slist_free_all(headers);
+    free(auth);
     return rc;
 }
 
@@ -848,6 +902,7 @@ static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
                         cJSON *retry = cJSON_GetObjectItem(rjson, "retry_after_ms");
                         if (retry && retry->valueint > 0)
                             wait_ms = retry->valueint + 100;  /* plus margin */
+                        if (wait_ms > 60000) wait_ms = 60000;  /* cap at 1 min */
                         cJSON_Delete(rjson);
                         curl_easy_cleanup(curl);
                         str_free(&resp);
@@ -953,11 +1008,6 @@ static void mx_session_thread_clear(matrix_ctx_t *ctx, const char *room_id) {
             return;
         }
     }
-}
-
-/* Clear all session threads (on cmd_new / global session reset) */
-static void mx_session_thread_clear_all(matrix_ctx_t *ctx) {
-    ctx->session_thread_count = 0;
 }
 
 /* Forward declaration */
@@ -1865,16 +1915,20 @@ static int mx_api_invite_user(matrix_ctx_t *ctx, const char *room_id,
 static int mx_is_room_joined(matrix_ctx_t *ctx, const char *room_id) {
     if (!room_id || !room_id[0]) return 0;
 
-    /* Try to fetch room name state — succeeds only if we're in the room */
+    /* Try to fetch room create state — succeeds only if we're in the room */
     char *enc_room = url_encode(room_id);
     char url[MX_URL_MAX * 2];
     snprintf(url, sizeof(url),
-             "%s/_matrix/client/v3/rooms/%s/state/m.room.create?access_token=%s",
-             ctx->homeserver, enc_room, ctx->access_token);
+             "%s/_matrix/client/v3/rooms/%s/state/m.room.create",
+             ctx->homeserver, enc_room);
     free(enc_room);
 
+    char *auth = mx_auth_header(ctx);
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, auth);
+
     str_t resp = str_new(256);
-    int rc = http_get(url, 10, &resp);
+    int rc = http_get_h(url, headers, 10, &resp);
     int joined = 0;
 
     if (rc == 0 && resp.len > 0) {
@@ -1887,6 +1941,8 @@ static int mx_is_room_joined(matrix_ctx_t *ctx, const char *room_id) {
         }
     }
     str_free(&resp);
+    curl_slist_free_all(headers);
+    free(auth);
     return joined;
 }
 
@@ -2321,6 +2377,14 @@ void *matrix_run(void *arg) {
                     strcmp(sender->valuestring, ctx->user_id) == 0)
                     continue;
 
+                /* Check user allowlist (if configured) */
+                if (!mx_user_allowed(ctx, sender->valuestring)) {
+                    fprintf(stderr, "[matrix] ignoring message from "
+                            "unauthorized user %s\n",
+                            sender->valuestring);
+                    continue;
+                }
+
                 /* Extract message content */
                 cJSON *content = cJSON_GetObjectItem(ev, "content");
                 if (!content) continue;
@@ -2364,15 +2428,18 @@ void *matrix_run(void *arg) {
                         }
                     }
 
-                    /* Check if this is a reply to a pending ask */
-                    if (pending_ask_id[0]) {
+                    /* Check if this is a reply to a pending ask.
+                     * Validate that the answer comes from the same room
+                     * that originated the ask to prevent cross-room
+                     * answer injection. */
+                    if (pending_ask_id[0] && pending_ask_room[0] &&
+                        strcmp(ev_room, pending_ask_room) == 0) {
                         fprintf(stderr, "[matrix] routing as answer to ask_%s\n",
                                 pending_ask_id);
                         mx_write_answer(ctx->mailbox_dir, pending_ask_id,
                                        msg_text);
                         pending_ask_id[0] = 0;
-                        mx_api_send_to_room(ctx,
-                            pending_ask_room[0] ? pending_ask_room : ev_room,
+                        mx_api_send_to_room(ctx, pending_ask_room,
                             "\xe2\x9c\x93 Answer received", NULL);
                         pending_ask_room[0] = 0;
                         continue;
@@ -2387,22 +2454,12 @@ void *matrix_run(void *arg) {
                         if (in_reply) is_reply = 1;
                     }
 
-                    if (!is_reply) {
-                        /* New standalone message -> reset session */
-                        mx_write_cmd_new(ctx->mailbox_dir);
-                        mx_session_thread_clear_all(ctx);
-                        fprintf(stderr, "[matrix] new message -> session reset\n");
-                        usleep(100000);  /* 100ms for daemon to process cmd_new */
-                    } else {
-                        fprintf(stderr, "[matrix] reply -> continuing session\n");
-                    }
-
                     /* Create task */
                     char task_id[64];
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
-                    snprintf(task_id, sizeof(task_id), "mx%lx%04lx",
-                             (long)ts.tv_sec, ts.tv_nsec / 100000L);
+                    snprintf(task_id, sizeof(task_id), "mx%lx%09lx",
+                             (long)ts.tv_sec, (long)ts.tv_nsec);
 
                     fprintf(stderr, "[matrix] creating task_%s (room=%s ws=%s)\n",
                             task_id, ev_room,
@@ -2410,6 +2467,15 @@ void *matrix_run(void *arg) {
                     mx_write_task(ctx->mailbox_dir, task_id, msg_text,
                                   ev_workspace, ev_room);
                     mx_route_map_add(ctx, task_id, ev_room);
+
+                    if (!is_reply) {
+                        /* New standalone message -> reset session */
+                        mx_session_thread_clear(ctx, ev_room);
+                        mx_write_cmd_new(ctx->mailbox_dir);
+                        fprintf(stderr, "[matrix] new message -> session reset\n");
+                    } else {
+                        fprintf(stderr, "[matrix] reply -> continuing session\n");
+                    }
 
                     /* Send ack -- for new sessions this becomes the thread root */
                     {
@@ -2448,16 +2514,17 @@ void *matrix_run(void *arg) {
                     fprintf(stderr, "[matrix] received image from %s: %s\n",
                             sender->valuestring, img_url->valuestring);
 
-                    /* Check if this is a reply to a pending ask */
-                    if (pending_ask_id[0]) {
+                    /* Check if this is a reply to a pending ask.
+                     * Validate room match (see text handler above). */
+                    if (pending_ask_id[0] && pending_ask_room[0] &&
+                        strcmp(ev_room, pending_ask_room) == 0) {
                         fprintf(stderr,
                                 "[matrix] routing image as answer to ask_%s\n",
                                 pending_ask_id);
                         mx_write_answer(ctx->mailbox_dir, pending_ask_id,
                                        caption ? caption : "(image)");
                         pending_ask_id[0] = 0;
-                        mx_api_send_to_room(ctx,
-                            pending_ask_room[0] ? pending_ask_room : ev_room,
+                        mx_api_send_to_room(ctx, pending_ask_room,
                             "\xe2\x9c\x93 Answer received", NULL);
                         pending_ask_room[0] = 0;
                         continue;
@@ -2471,16 +2538,6 @@ void *matrix_run(void *arg) {
                         cJSON *in_reply = cJSON_GetObjectItem(relates,
                                                               "m.in_reply_to");
                         if (in_reply) is_reply = 1;
-                    }
-
-                    if (!is_reply) {
-                        mx_write_cmd_new(ctx->mailbox_dir);
-                        fprintf(stderr,
-                                "[matrix] new image message -> session reset\n");
-                        usleep(100000);  /* 100ms for daemon to process */
-                    } else {
-                        fprintf(stderr,
-                                "[matrix] image reply -> continuing session\n");
                     }
 
                     /* Download the image */
@@ -2504,8 +2561,8 @@ void *matrix_run(void *arg) {
                         char task_id[64];
                         struct timespec ts;
                         clock_gettime(CLOCK_REALTIME, &ts);
-                        snprintf(task_id, sizeof(task_id), "mx%lx%04lx",
-                                 (long)ts.tv_sec, ts.tv_nsec / 100000L);
+                        snprintf(task_id, sizeof(task_id), "mx%lx%09lx",
+                                 (long)ts.tv_sec, (long)ts.tv_nsec);
 
                         fprintf(stderr,
                                 "[matrix] creating image task_%s (room=%s ws=%s)\n",
@@ -2515,6 +2572,17 @@ void *matrix_run(void *arg) {
                                      task_text.data, ev_workspace, ev_room);
                         mx_route_map_add(ctx, task_id, ev_room);
                         str_free(&task_text);
+
+                        if (!is_reply) {
+                            mx_session_thread_clear(ctx, ev_room);
+                            mx_write_cmd_new(ctx->mailbox_dir);
+                            fprintf(stderr,
+                                    "[matrix] new image message -> session reset\n");
+                        } else {
+                            fprintf(stderr,
+                                    "[matrix] image reply -> continuing session\n");
+                        }
+
                         mx_api_send_to_room(ctx, ev_room,
                             "\xf0\x9f\x93\xb7 Analyzing image...", NULL);
                     } else {

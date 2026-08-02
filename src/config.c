@@ -48,8 +48,8 @@ void config_set_defaults(config_t *cfg) {
      * only for fields where 0 is NOT a valid user value.
      * For timeout/size fields where 0 = "no limit", we check == -1 only. */
     if (cfg->shell_timeout == -1)       cfg->shell_timeout = 30;
-    if (cfg->shell_max_output <= 0)     cfg->shell_max_output = 512000;
-    if (cfg->file_max_size <= 0)        cfg->file_max_size = 52428800;
+    if (cfg->shell_max_output == -1)    cfg->shell_max_output = 512000;
+    if (cfg->file_max_size == -1)       cfg->file_max_size = 52428800;
     if (cfg->grep_timeout == -1)        cfg->grep_timeout = 60;
     if (cfg->grep_max_matches <= 0)     cfg->grep_max_matches = 50;
     if (cfg->web_timeout == -1)         cfg->web_timeout = 30;
@@ -169,20 +169,20 @@ void config_set_defaults(config_t *cfg) {
      * Bool fields (enabled, eviction_gate): 0 = disabled is the correct
      * default AND the calloc value, so no action needed — TOML can set to 1
      * and it won't be overwritten. */
-    if (cfg->belief_entropy.alpha == 0)
+    if (cfg->belief_entropy.alpha < 0)
         cfg->belief_entropy.alpha = 1.0;
     if (!cfg->belief_entropy.anchor_question)
         cfg->belief_entropy.anchor_question = strdup(
             "Based on current memory, what is our task progress and what information is still needed?");
-    if (cfg->belief_entropy.probe_tokens == 0)
+    if (cfg->belief_entropy.probe_tokens <= 0)
         cfg->belief_entropy.probe_tokens = 30;
-    if (cfg->belief_entropy.probe_n_probs == 0)
+    if (cfg->belief_entropy.probe_n_probs <= 0)
         cfg->belief_entropy.probe_n_probs = 10;
-    if (cfg->belief_entropy.probe_temperature == 0)
+    if (cfg->belief_entropy.probe_temperature < 0)
         cfg->belief_entropy.probe_temperature = 0.6f;
-    if (cfg->belief_entropy.best_of_n_summaries == 0)
+    if (cfg->belief_entropy.best_of_n_summaries <= 0)
         cfg->belief_entropy.best_of_n_summaries = 1;
-    if (cfg->belief_entropy.warn_threshold == 0)
+    if (cfg->belief_entropy.warn_threshold < 0)
         cfg->belief_entropy.warn_threshold = 0.15f;
 
     cfg->stream = 1;     /* always on for now */
@@ -547,14 +547,14 @@ config_t *config_load(const char *path) {
     toml_table_t *be = toml_table_in(root, "memory_belief_entropy");
     if (be) {
         cfg->belief_entropy.enabled         = toml_bl(be, "enabled", 0);
-        cfg->belief_entropy.alpha           = toml_dbl(be, "alpha", 0);
+        cfg->belief_entropy.alpha           = toml_dbl(be, "alpha", -1.0);
         cfg->belief_entropy.anchor_question = toml_str(be, "anchor_question");
-        cfg->belief_entropy.probe_tokens    = toml_int(be, "probe_tokens", 0);
-        cfg->belief_entropy.probe_n_probs   = toml_int(be, "probe_n_probs", 0);
-        cfg->belief_entropy.probe_temperature = (float)toml_dbl(be, "probe_temperature", 0);
+        cfg->belief_entropy.probe_tokens    = toml_int(be, "probe_tokens", -1);
+        cfg->belief_entropy.probe_n_probs   = toml_int(be, "probe_n_probs", -1);
+        cfg->belief_entropy.probe_temperature = (float)toml_dbl(be, "probe_temperature", -1.0);
         cfg->belief_entropy.eviction_gate   = toml_bl(be, "eviction_gate", 0);
-        cfg->belief_entropy.best_of_n_summaries = toml_int(be, "best_of_n_summaries", 0);
-        cfg->belief_entropy.warn_threshold  = (float)toml_dbl(be, "warn_threshold", 0);
+        cfg->belief_entropy.best_of_n_summaries = toml_int(be, "best_of_n_summaries", -1);
+        cfg->belief_entropy.warn_threshold  = (float)toml_dbl(be, "warn_threshold", -1.0);
     }
 
     /* [tools] — per-tool toggles (e.g., memory_search = false) */
@@ -616,6 +616,7 @@ void config_free(config_t *cfg) {
     free(cfg->search_engine);
     free(cfg->searxng_url);
     free(cfg->telegram_bot_token);
+    free(cfg->system_prompt_extra);
     free(cfg->belief_entropy.anchor_question);
     /* [device_control] strings */
     free(cfg->device_control.vnc_host);
@@ -748,6 +749,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
     struct dirent *ent;
     int cap = 8;
     cfg->model_profiles = calloc(cap, sizeof(model_profile_t));
+    if (!cfg->model_profiles) { closedir(d); return -1; }
     cfg->n_model_profiles = 0;
 
     while ((ent = readdir(d)) != NULL) {
@@ -1009,9 +1011,11 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
     if (p->thinking.budget != INT_MIN)
         cfg->thinking.budget = p->thinking.budget;
 
-    /* system_prompt_extra: store for react.c to use */
-    if (p->system_prompt_extra)
-        cfg->system_prompt_extra = p->system_prompt_extra;
+    /* system_prompt_extra: store for react.c to use (owned copy) */
+    if (p->system_prompt_extra) {
+        free(cfg->system_prompt_extra);
+        cfg->system_prompt_extra = strdup(p->system_prompt_extra);
+    }
 
     /* [client] overrides */
     if (p->temperature >= 0)    cfg->temperature = p->temperature;
@@ -1648,10 +1652,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
         int v;
         v = toml_int(limits, "shell_timeout", -1);
         if (v >= 0) cfg->shell_timeout = v;
-        v = toml_int(limits, "shell_max_output", 0);
-        if (v > 0) cfg->shell_max_output = v;
-        v = toml_int(limits, "file_max_size", 0);
-        if (v > 0) cfg->file_max_size = v;
+        v = toml_int(limits, "shell_max_output", -1);
+        if (v >= 0) cfg->shell_max_output = v;
+        v = toml_int(limits, "file_max_size", -1);
+        if (v >= 0) cfg->file_max_size = v;
         v = toml_int(limits, "grep_timeout", -1);
         if (v >= 0) cfg->grep_timeout = v;
         v = toml_int(limits, "grep_max_matches", 0);
@@ -1738,21 +1742,21 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     if (be) {
         { toml_datum_t td = toml_bool_in(be, "enabled");
           if (td.ok) cfg->belief_entropy.enabled = td.u.b; }
-        { double d = toml_dbl(be, "alpha", 0);
-          if (d > 0) cfg->belief_entropy.alpha = d; }
+        { double d = toml_dbl(be, "alpha", -1.0);
+          if (d >= 0) cfg->belief_entropy.alpha = d; }
         int v;
-        v = toml_int(be, "probe_tokens", 0);
-        if (v > 0) cfg->belief_entropy.probe_tokens = v;
-        v = toml_int(be, "probe_n_probs", 0);
-        if (v > 0) cfg->belief_entropy.probe_n_probs = v;
-        { double d = toml_dbl(be, "probe_temperature", 0);
-          if (d > 0) cfg->belief_entropy.probe_temperature = (float)d; }
+        v = toml_int(be, "probe_tokens", -1);
+        if (v >= 0) cfg->belief_entropy.probe_tokens = v;
+        v = toml_int(be, "probe_n_probs", -1);
+        if (v >= 0) cfg->belief_entropy.probe_n_probs = v;
+        { double d = toml_dbl(be, "probe_temperature", -1.0);
+          if (d >= 0) cfg->belief_entropy.probe_temperature = (float)d; }
         { toml_datum_t td = toml_bool_in(be, "eviction_gate");
           if (td.ok) cfg->belief_entropy.eviction_gate = td.u.b; }
-        v = toml_int(be, "best_of_n_summaries", 0);
-        if (v > 0) cfg->belief_entropy.best_of_n_summaries = v;
-        { double d = toml_dbl(be, "warn_threshold", 0);
-          if (d > 0) cfg->belief_entropy.warn_threshold = (float)d; }
+        v = toml_int(be, "best_of_n_summaries", -1);
+        if (v >= 0) cfg->belief_entropy.best_of_n_summaries = v;
+        { double d = toml_dbl(be, "warn_threshold", -1.0);
+          if (d >= 0) cfg->belief_entropy.warn_threshold = (float)d; }
     }
 
     toml_free(root);

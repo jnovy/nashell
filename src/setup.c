@@ -32,6 +32,16 @@ static int read_line(char *buf, size_t bufsz) {
     return 0;
 }
 
+/* Write a TOML key = "value" pair, escaping \ and " in value. */
+static void fprint_toml_str(FILE *f, const char *key, const char *val) {
+    fprintf(f, "%s = \"", key);
+    for (const char *p = val; *p; p++) {
+        if (*p == '\\' || *p == '"') fputc('\\', f);
+        fputc(*p, f);
+    }
+    fprintf(f, "\"\n");
+}
+
 /* Prompt with a default value.  Fills buf with user input or default. */
 static void prompt(const char *label, const char *def, char *buf, size_t bufsz) {
     if (def && def[0])
@@ -592,7 +602,7 @@ static int write_credentials_toml(const char *nash_dir,
         setup_provider_t *sp = &providers[i];
         if (sp->store_key_in_file && sp->api_key_value[0]) {
             fprintf(f, "[providers.%s]\n", sp->name);
-            fprintf(f, "api_key = \"%s\"\n", sp->api_key_value);
+            fprint_toml_str(f, "api_key", sp->api_key_value);
             fprintf(f, "\n");
         }
     }

@@ -19,6 +19,7 @@ static const char *const sensitive_env_vars[] = {
     "OPENROUTER_API_KEY", "REPLICATE_API_TOKEN",
     "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
     "TELEGRAM_BOT_TOKEN", "NASH_API_KEY",
+    "GH_TOKEN", "GITHUB_TOKEN",
     NULL
 };
 

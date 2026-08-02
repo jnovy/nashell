@@ -780,7 +780,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
     FILE *f = fopen(jpath, "r");
-    if (!f) return;
+    if (!f) { str_free(&md); return; }
 
     /* Collect all entries for this react loop into an array */
     typedef struct {

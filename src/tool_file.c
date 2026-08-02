@@ -22,15 +22,18 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     if (stat(path, &st) != 0) {
         char msg[4224];
         snprintf(msg, sizeof(msg), "cannot stat '%.4095s': %s", path, strerror(errno));
+        free(resolved);
         return tools_make_error(msg);
     }
     if (!S_ISREG(st.st_mode)) {
+        free(resolved);
         return tools_make_error("not a regular file (refusing to read pipes, devices, etc.)");
     }
     int max_file = ctx->cfg ? ctx->cfg->file_max_size : 52428800;  /* 50MB default */
     if (st.st_size > max_file) {
         char msg[256];
         snprintf(msg, sizeof(msg), "file too large (%ld bytes, limit %d)", (long)st.st_size, max_file);
+        free(resolved);
         return tools_make_error(msg);
     }
 
@@ -495,7 +498,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
         /* Build diff output — summary is prepended after computing actual diff. */
         size_t diff_cap = 4096;
         char *diff = malloc(diff_cap);
-        if (!diff) { free(content); free(result); return tools_make_error("out of memory"); }
+        if (!diff) { free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
         int diff_len = 0;
         int actual_added = 0, actual_removed = 0;  /* filled by diff algorithm */
 
@@ -510,7 +513,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             int llen = nl ? (int)(nl - cl) : (int)(line_start - cl);
             if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
-                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
             }
             diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                  "  %5d  %.*s\n", new_lnum, llen, cl);
@@ -532,6 +535,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             if (!old_lines || !new_lines) {
                 free(old_lines); free(new_lines); free(diff);
                 free(content); free(result);
+                free(pre_hash); free(pre_alias); free(post_hash); free(post_alias);
                 return tools_make_error("out of memory");
             }
 
@@ -542,7 +546,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 int llen = nl ? (int)(nl - p) : (int)(pos + old_len - p);
                 if (old_cnt >= old_cap) {
                     old_cap *= 2;
-                    if (safe_realloc((void **)&old_lines, (size_t)old_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&old_lines, (size_t)old_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 old_lines[old_cnt++] = (dline_t){ p, llen };
                 p = nl ? nl + 1 : p + llen;
@@ -555,7 +559,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 int llen = nl ? (int)(nl - p) : (int)(new_text + new_len - p);
                 if (new_cnt >= new_cap) {
                     new_cap *= 2;
-                    if (safe_realloc((void **)&new_lines, (size_t)new_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&new_lines, (size_t)new_cap * sizeof(dline_t))) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 new_lines[new_cnt++] = (dline_t){ p, llen };
                 p = nl ? nl + 1 : p + llen;
@@ -654,7 +658,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
@@ -667,7 +671,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &old_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d -%.*s\n", old_lnum, dl->len, dl->s);
@@ -680,7 +684,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[i];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d +%.*s\n", new_lnum, dl->len, dl->s);
@@ -695,7 +699,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
                 dline_t *dl = &new_lines[new_cnt - suffix + (i - (old_cnt - suffix))];
                 if ((size_t)(diff_len + dl->len + 16) >= diff_cap) {
                     diff_cap *= 2;
-                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                    if (safe_realloc((void **)&diff, diff_cap)) { free(old_lines); free(new_lines); free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
                 }
                 diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                      "  %5d  %.*s\n", new_lnum, dl->len, dl->s);
@@ -731,7 +735,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             int llen = nl ? (int)(nl - cl) : (int)(ctx_end - cl);
             if ((size_t)(diff_len + llen + 16) >= diff_cap) {
                 diff_cap *= 2;
-                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
             }
             diff_len += snprintf(diff + diff_len, diff_cap - (size_t)diff_len,
                                  "  %5d  %.*s\n", new_lnum, llen, cl);
@@ -748,7 +752,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             /* Grow buffer if needed, then shift body right and insert header */
             if ((size_t)(diff_len + hlen + 1) >= diff_cap) {
                 diff_cap = (size_t)(diff_len + hlen + 64);
-                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); return tools_make_error("out of memory"); }
+                if (safe_realloc((void **)&diff, diff_cap)) { free(diff); free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
             }
             memmove(diff + hlen, diff, (size_t)diff_len + 1);  /* +1 for NUL */
             memcpy(diff, hdr, (size_t)hlen);
