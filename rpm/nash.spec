@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        11%{?dist}
+Release:        12%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
 # TODO: Set the correct license once a LICENSE file is added upstream
@@ -83,8 +83,10 @@ make clean || true
 %install
 install -D -p -m 0755 nash %{buildroot}%{_bindir}/nash
 
-# Install shared library
-install -D -p -m 0755 libnash.so %{buildroot}%{_libdir}/libnash.so
+# Install shared library (versioned)
+install -D -p -m 0755 libnash.so.%{version} %{buildroot}%{_libdir}/libnash.so.%{version}
+ln -s libnash.so.%{version} %{buildroot}%{_libdir}/libnash.so.0
+ln -s libnash.so.0 %{buildroot}%{_libdir}/libnash.so
 
 # Install development headers
 install -d %{buildroot}%{_includedir}/nash
@@ -125,14 +127,22 @@ make test CC=gcc \
 %files
 %doc README.md
 %{_bindir}/nash
-%{_libdir}/libnash.so
+%{_libdir}/libnash.so.%{version}
+%{_libdir}/libnash.so.0
 %{_datadir}/%{name}/
 %(pkg-config --variable=completionsdir bash-completion)/nash
 
 %files devel
+%{_libdir}/libnash.so
 %{_includedir}/nash/
 
 %changelog
+* Sun Aug 02 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-12
+- Add proper soname versioning to libnash.so. Build with
+  -Wl,-soname,libnash.so.0, ship versioned libnash.so.0.1.0 and soname symlink
+  libnash.so.0 in main package. Move unversioned libnash.so linker symlink to
+  -devel subpackage. ldconfig_scriptlets now functional.
+
 * Thu Jul 30 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-11
 - Add interactive setup wizard (--setup) and credentials.toml support. Validate
   API key availability at startup before creating provider.

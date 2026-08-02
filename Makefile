@@ -73,9 +73,11 @@ SRC     = src/main.c src/str.c src/cJSON.c \
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
-LIB     = libnash.so
+LIB_REAL    = libnash.so.$(VERSION)
+LIB_SONAME  = libnash.so.0
+LIB_LINKER  = libnash.so
 
-all: $(LIB) $(BIN)
+all: $(LIB_REAL) $(BIN)
 
 # Header dependencies -- ALL .o files depend on ALL headers.
 # This is conservative but safe: changing any header recompiles everything.
@@ -136,11 +138,13 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Shared library: everything except main.c
-$(LIB): $(LIB_OBJ)
-	$(CC) -shared -o $@ $^ $(LDFLAGS)
+$(LIB_REAL): $(LIB_OBJ)
+	$(CC) -shared -Wl,-soname,$(LIB_SONAME) -o $@ $^ $(LDFLAGS)
+	ln -sf $(LIB_REAL) $(LIB_SONAME)
+	ln -sf $(LIB_SONAME) $(LIB_LINKER)
 
 # Binary: main.o links against libnash.so
-$(BIN): src/main.o $(LIB)
+$(BIN): src/main.o $(LIB_REAL)
 	$(CC) $(CFLAGS) -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN' $(LDFLAGS)
 
 # Test binaries
@@ -157,14 +161,14 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
                  tests/sample_plugin_multi.so
 
-tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h $(LIB)
+tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h $(LIB_REAL)
 	$(CC) -shared -fPIC $(CFLAGS) -I src -o $@ $< -L. -lnash
 
 # dlopen test depends on sample .so files
-tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB) $(SAMPLE_PLUGINS)
+tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB_REAL) $(SAMPLE_PLUGINS)
 	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
 
-tests/test_%: tests/test_%.c $(LIB)
+tests/test_%: tests/test_%.c $(LIB_REAL)
 	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
 
 test: $(TEST_BIN)
@@ -177,7 +181,7 @@ test: $(TEST_BIN)
 	echo "=== $$failures failures ==="
 
 clean:
-	rm -f $(OBJ) $(BIN) $(LIB) $(TEST_BIN) $(SAMPLE_PLUGINS)
+	rm -f $(OBJ) $(BIN) $(LIB_REAL) $(LIB_SONAME) $(LIB_LINKER) $(TEST_BIN) $(SAMPLE_PLUGINS)
 	rm -rf tests/plugin_dir
 
 # Source tarball for RPM builds (matches spec Source0: nash-VERSION.tar.zst)
