@@ -137,7 +137,6 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     /* Poll loop with timeout */
     {
         struct pollfd pfd = { .fd = ifd, .events = POLLIN };
-        int timeout_ms = timeout_sec > 0 ? timeout_sec * 1000 : -1;
         time_t start = time(NULL);
 
         char expected_name[256];
@@ -145,9 +144,10 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
 
         while (1) {
             int remaining_ms = -1;
-            if (timeout_ms > 0) {
-                int elapsed = (int)(time(NULL) - start);
-                remaining_ms = timeout_ms - elapsed * 1000;
+            if (timeout_sec > 0) {
+                time_t elapsed = time(NULL) - start;
+                long remaining_sec = (long)timeout_sec - (long)elapsed;
+                remaining_ms = remaining_sec > 0 ? (int)(remaining_sec > 2000000 ? 2000000000 : remaining_sec * 1000) : 0;
                 if (remaining_ms <= 0) {
                     nash_log("[mailbox] timeout waiting for answer");
                     inotify_rm_watch(ifd, wd);

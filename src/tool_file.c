@@ -42,6 +42,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     if (!content) {
         char msg[4224];
         snprintf(msg, sizeof(msg), "cannot read '%.4095s': %s", path, strerror(errno));
+        free(resolved);
         return tools_make_error(msg);
     }
 

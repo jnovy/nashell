@@ -207,8 +207,8 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
                     pbs[i]->n_passes);
                 playbook_free(pbs[i]);
             }
-            free(pbs);
         }
+        free(pbs);
         char *banner = str_steal(&display);
         pthread_mutex_lock(&ui->mtx);
         ui_state_push_content(ui, "playbooks", banner);
@@ -705,7 +705,8 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
 
                 str_appendf(&md_file,
                     "### %d. 📅 %s  %s  (score: %.3f",
-                    rank, ts_buf, conf_labels[r->confidence],
+                    rank, ts_buf,
+                    (r->confidence >= 0 && r->confidence < 3) ? conf_labels[r->confidence] : "UNKNOWN",
                     r->composite_score);
                 if (has_sem)
                     str_appendf(&md_file, " sem=%.2f", r->semantic_score);

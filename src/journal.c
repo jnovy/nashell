@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -46,6 +47,7 @@ char *unwrap_thought(const char *thought) {
         char *next = strdup(inner->valuestring);
         cJSON_Delete(nested);
         free(current);
+        if (!next) return NULL;  /* OOM */
         if (next[0] != '{') return next;  /* fully unwrapped — plain text */
         current = next;  /* still JSON, continue unwrapping */
     }
@@ -110,12 +112,14 @@ static int journal_create_lazy_session(journal_t *j) {
     snprintf(path, sizeof(path), "%s/%ld.%05ld",
              base, (long)tp.tv_sec, tp.tv_nsec / 10000);
     free(base);
-    mkdir(path, 0755);
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
 
     j->session_dir = strdup(path);
+    if (!j->session_dir) return -1;
     char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", path);
     j->path = strdup(jpath);
+    if (!j->path) { free(j->session_dir); j->session_dir = NULL; return -1; }
     j->lazy_created = 1;
     return 0;
 }

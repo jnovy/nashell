@@ -128,7 +128,7 @@ subprocess_result_t subprocess_run(char *const argv[],
         }
 
         /* Check caps */
-        if (max_bytes > 0 && (int)out->len >= max_bytes) {
+        if (max_bytes > 0 && out->len >= (size_t)max_bytes) {
             r.output_capped = 1;
             break;
         }
@@ -147,7 +147,7 @@ subprocess_result_t subprocess_run(char *const argv[],
             if (n <= 0) break;  /* EOF or error */
 
             /* Enforce byte cap with partial write */
-            if (max_bytes > 0 && (int)(out->len + (size_t)n) > max_bytes) {
+            if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
                 size_t remaining = (size_t)max_bytes - out->len;
                 if (remaining > 0) str_append(out, buf, remaining);
                 /* Count lines in the accepted portion */
@@ -171,7 +171,7 @@ subprocess_result_t subprocess_run(char *const argv[],
             char buf[NASH_PATH_MAX];
             ssize_t n;
             while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                if (max_bytes > 0 && (int)(out->len + (size_t)n) > max_bytes) {
+                if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
                     size_t remaining = (size_t)max_bytes - out->len;
                     if (remaining > 0) str_append(out, buf, remaining);
                     break;
@@ -190,7 +190,7 @@ subprocess_result_t subprocess_run(char *const argv[],
                 char buf[NASH_PATH_MAX];
                 ssize_t n;
                 while ((n = read(pipefd[0], buf, sizeof(buf))) > 0) {
-                    if (max_bytes > 0 && (int)(out->len + (size_t)n) > max_bytes) {
+                    if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
                         size_t remaining = (size_t)max_bytes - out->len;
                         if (remaining > 0) str_append(out, buf, remaining);
                         break;

@@ -224,6 +224,13 @@ provider_t *provider_create(const provider_config_t *cfg) {
     p->cfg.api_key_env = cfg->api_key_env ? strdup(cfg->api_key_env) : NULL;
     p->cfg.project_id  = cfg->project_id  ? strdup(cfg->project_id)  : NULL;
     p->cfg.region      = cfg->region      ? strdup(cfg->region)      : NULL;
+    /* OOM check: if any source string was non-NULL but strdup returned NULL */
+    if ((cfg->model_id && !p->cfg.model_id) ||
+        (cfg->api_base && !p->cfg.api_base) ||
+        (cfg->api_key_env && !p->cfg.api_key_env)) {
+        provider_free(p);
+        return NULL;
+    }
 
     /* Set defaults */
     if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;

@@ -156,9 +156,10 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         int count = todo_load(fpath, &lines);
         char *removed = NULL;
         const char *err_msg = NULL;
+        int orig_count = count;
         count = todo_remove(lines, count, idx, &removed, &err_msg);
         if (count < 0) {
-            todo_free_lines(lines, count);
+            todo_free_lines(lines, orig_count);
             return tools_make_error(err_msg ? err_msg : "cannot remove");
         }
 

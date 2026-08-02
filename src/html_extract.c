@@ -174,7 +174,7 @@ char *html_extract_text(const char *html, size_t len) {
             if (html_ci_prefix(tag_start, "a ") || html_ci_prefix(tag_start, "a\t")) {
                 /* Extract href */
                 const char *href = NULL;
-                for (const char *q = tag_start; q < gt - 4; q++) {
+                for (const char *q = tag_start; q <= gt - 4; q++) {
                     if (html_ci_prefix(q, "href")) {
                         q += 4;
                         while (q < gt && (*q == ' ' || *q == '=')) q++;

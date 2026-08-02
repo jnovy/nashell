@@ -1034,7 +1034,7 @@ void *playbook_worker(void *arg) {
                     fprintf(stderr, "[play] script: %s\n", expanded_cmd);
                 }
                 /* Capture stdout+stderr via popen */
-                char popen_cmd[NASH_PATH_MAX * 2];
+                char popen_cmd[NASH_PATH_MAX * 2 + 8];
                 snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
                 FILE *fp = popen(popen_cmd, "r");
                 if (fp) {
@@ -1117,7 +1117,7 @@ void *playbook_worker(void *arg) {
                     pass, safe_prev, mdir, model, NULL, pa->nash_dir);
                 free(safe_prev);
                 if (expanded_cmd && expanded_cmd[0]) {
-                    char popen_cmd[NASH_PATH_MAX * 2];
+                    char popen_cmd[NASH_PATH_MAX * 2 + 8];
                     snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
                     FILE *fp = popen(popen_cmd, "r");
                     if (fp) {

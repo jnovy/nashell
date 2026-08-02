@@ -227,12 +227,11 @@ static void analyze_journal(const char *journal_path, int react_loop,
                     if (step >= out->total_steps)
                         out->total_steps = step + 1;
 
-                    /* Check for errors */
+                    /* Check for errors (count at most once per step) */
                     cJSON *failed = cJSON_GetObjectItem(entry, "failed");
-                    if (failed && cJSON_IsTrue(failed))
-                        out->error_count++;
                     cJSON *err = cJSON_GetObjectItem(entry, "error");
-                    if (err && cJSON_IsString(err) && err->valuestring[0])
+                    if ((failed && cJSON_IsTrue(failed)) ||
+                        (err && cJSON_IsString(err) && err->valuestring[0]))
                         out->error_count++;
 
                     /* Track unique tools */

@@ -259,7 +259,7 @@ int llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
     m->role = strdup("tool");
     m->content = strdup(content);
     m->tool_call_id = tool_call_id ? strdup(tool_call_id) : NULL;
-    if (!m->role || !m->content) {
+    if (!m->role || !m->content || (tool_call_id && !m->tool_call_id)) {
         nash_log("[llm] CRITICAL: strdup failed for tool result");
         free(m->role);
         free(m->content);
@@ -285,7 +285,7 @@ int llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     m->role = strdup("assistant");
     m->content = content ? strdup(content) : strdup("");
     m->tool_calls_json = tool_calls_json ? strdup(tool_calls_json) : NULL;
-    if (!m->role || !m->content) {
+    if (!m->role || !m->content || (tool_calls_json && !m->tool_calls_json)) {
         nash_log("[llm] CRITICAL: strdup failed for assistant tool call");
         free(m->role);
         free(m->content);
@@ -526,8 +526,9 @@ static cJSON *parse_hybrid_tool_call(const char *text) {
         }
     }
 
+    cJSON *act_item = cJSON_GetObjectItem(result, "action");
     nash_log("[llm] parsed hybrid JSON+XML tool call (action=%s)",
-             cJSON_GetObjectItem(result, "action")->valuestring);
+             act_item ? act_item->valuestring : "(unknown)");
     return result;
 }
 
@@ -736,8 +737,8 @@ cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
 static char *repair_json(const char *src) {
     if (!src) return NULL;
     size_t len = strlen(src);
-    /* Allocate extra space for inserted colons */
-    char *buf = malloc(len * 2 + 1);
+    /* Allocate extra space for inserted colons + post-loop closing quote + NUL */
+    char *buf = malloc(len * 2 + 3);
     if (!buf) return NULL;
 
     size_t j = 0;
@@ -964,6 +965,12 @@ char *llm_apply_template(const char *api_base, const char *user_query) {
     cJSON *req = cJSON_CreateObject();
     cJSON *msgs = cJSON_CreateArray();
     cJSON *msg = cjson_msg("user", user_query);
+    if (!req || !msgs || !msg) {
+        cJSON_Delete(msg);
+        cJSON_Delete(msgs);
+        cJSON_Delete(req);
+        return NULL;
+    }
     cJSON_AddItemToArray(msgs, msg);
     cJSON_AddItemToObject(req, "messages", msgs);
 

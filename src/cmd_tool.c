@@ -49,8 +49,14 @@ static void ensure_filter_owned(tool_filter_t *tf) {
     if (tf->blocked && tf->n_blocked > 0) {
         const char **copy = malloc((size_t)tf->n_blocked * sizeof(char *));
         if (!copy) return;
-        for (int i = 0; i < tf->n_blocked; i++)
+        for (int i = 0; i < tf->n_blocked; i++) {
             copy[i] = strdup(tf->blocked[i]);
+            if (!copy[i]) {
+                for (int j = 0; j < i; j++) free((char *)copy[j]);
+                free(copy);
+                return;
+            }
+        }
         tf->blocked = copy;
     } else {
         tf->blocked = NULL;
@@ -66,6 +72,7 @@ static void runtime_block_add(tool_filter_t *tf, const char *name) {
     if (safe_realloc((void **)&tf->blocked,
                      (size_t)(tf->n_blocked + 1) * sizeof(char *))) return;
     tf->blocked[tf->n_blocked] = strdup(name);
+    if (!tf->blocked[tf->n_blocked]) return;
     tf->n_blocked++;
 }
 

@@ -703,6 +703,8 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     if (!nash_dir) {
         /* Derive from session_dir: ~/.nash/sessions/XXX → ~/.nash */
         if (!ui->session_dir) return;
+        /* NB: static buffer — not thread-safe.  Acceptable because
+         * this code path is only reached from the single TUI thread. */
         static char derived[NASH_PATH_MAX];
         snprintf(derived, sizeof(derived), "%s", ui->session_dir);
         /* Go up two levels: sessions/XXX → sessions → nash_dir */

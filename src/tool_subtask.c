@@ -218,6 +218,10 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     scratchpad_free(&child_tools.scratch);
     alias_map_free(child_tools.aliases);
     tool_free_deferred_consolidations(&child_tools);
+    for (int i = 0; i < child_tools.n_recalled_keys; i++)
+        free(child_tools.recalled_keys[i]);
+    free(child_tools.recalled_keys);
+    tool_fire_ledger_free(&child_tools);
     journal_free(child_journal);
     free(enriched_query);  /* subtask preamble (NULL-safe) */
     /* child_dir is stack-allocated, no free needed */

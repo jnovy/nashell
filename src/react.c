@@ -1380,7 +1380,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s)
                        + strlen(pattern_s) + 99 + 48 + 1;
         char *sig = malloc(sig_cap);
-        if (!sig) sig_cap = 0;  /* snprintf with 0 cap is safe (no-op) */
+        if (!sig) goto skip_cycling;  /* OOM: skip cycling detection */
         #define SIG_HASH_FIELD(s) do { \
             unsigned _h = 2166136261u; \
             if (s) { for (const char *_p = (s); *_p; _p++) \
@@ -1436,6 +1436,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
         #undef SIG_HASH_FIELD
 
+        skip_cycling: ;
         int is_repeat = (last_sig && sig && strcmp(last_sig, sig) == 0);
 
         /* Exempt device_control from cycling detection entirely.

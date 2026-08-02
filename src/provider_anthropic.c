@@ -306,20 +306,22 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 if (tr_start > content) {
                     size_t prefix_len = (size_t)(tr_start - content);
                     char *prefix = malloc(prefix_len + 1);
-                    memcpy(prefix, content, prefix_len);
-                    prefix[prefix_len] = '\0';
-                    /* Trim trailing whitespace */
-                    while (prefix_len > 0 &&
-                           (prefix[prefix_len-1] == ' ' ||
-                            prefix[prefix_len-1] == '\n'))
-                        prefix[--prefix_len] = '\0';
-                    if (prefix_len > 0) {
-                        cJSON *tb = cJSON_CreateObject();
-                        cJSON_AddStringToObject(tb, "type", "text");
-                        cJSON_AddStringToObject(tb, "text", prefix);
-                        cJSON_AddItemToArray(uc, tb);
+                    if (prefix) {
+                        memcpy(prefix, content, prefix_len);
+                        prefix[prefix_len] = '\0';
+                        /* Trim trailing whitespace */
+                        while (prefix_len > 0 &&
+                               (prefix[prefix_len-1] == ' ' ||
+                                prefix[prefix_len-1] == '\n'))
+                            prefix[--prefix_len] = '\0';
+                        if (prefix_len > 0) {
+                            cJSON *tb = cJSON_CreateObject();
+                            cJSON_AddStringToObject(tb, "type", "text");
+                            cJSON_AddStringToObject(tb, "text", prefix);
+                            cJSON_AddItemToArray(uc, tb);
+                        }
+                        free(prefix);
                     }
-                    free(prefix);
                 }
 
                 cJSON *tr = cJSON_CreateObject();

@@ -606,6 +606,7 @@ int matrix_setup(matrix_ctx_t *ctx) {
 
 /* Build an Authorization header. Returns heap-allocated string. Caller frees. */
 static char *mx_auth_header(matrix_ctx_t *ctx) {
+    if (!ctx->access_token) return NULL;
     char *hdr = malloc(strlen(ctx->access_token) + 32);
     if (hdr) sprintf(hdr, "Authorization: Bearer %s", ctx->access_token);
     return hdr;
@@ -2170,11 +2171,11 @@ static void mx_process_outbox_file(matrix_ctx_t *ctx, const char *filename) {
         /* Image file -> upload to Matrix and send as m.image.
          * File format: first line = local file path
          *              optional second line = caption text */
-        char *img_path = content;
+        char *img_path = actual_content;
         char *caption = NULL;
 
         /* Split at first newline */
-        char *nl = strchr(content, '\n');
+        char *nl = strchr(actual_content, '\n');
         if (nl) {
             *nl = '\0';
             caption = nl + 1;

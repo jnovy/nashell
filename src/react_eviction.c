@@ -1361,7 +1361,9 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     evict_score_ctx_t score_ctx = {0};
     score_ctx.pmap = &pmap;
 
-    embed_ctx_t *emb = memory_embed_ctx(ctx->tools->memory);
+    /* Use global memory for embeddings when in a workspace context */
+    memory_t *emb_mem = ctx->tools->ws ? ctx->tools->ws->global : ctx->tools->memory;
+    embed_ctx_t *emb = memory_embed_ctx(emb_mem);
     if (emb && emb->available) {
         /* Build task text: user query + last assistant thought.
          * This captures both WHAT the user asked and WHERE the model is. */

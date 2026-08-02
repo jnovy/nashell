@@ -173,7 +173,7 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
             str_appendf(&out, "\n─── #%d  %s  [%s]  composite=%.3f "
                         "(sem=%.3f lex=%.3f matches=%d) ───\n",
                         i + 1, ts_buf,
-                        conf_labels[r->confidence],
+                        (r->confidence >= 0 && r->confidence < 3) ? conf_labels[r->confidence] : "UNKNOWN",
                         r->composite_score,
                         r->semantic_score, r->lexical_score,
                         r->match_count);
@@ -251,6 +251,8 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
         char preview[256];
         size_t copy_len = 200;
         if (copy_len > out.len) copy_len = out.len;
+        /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
+        copy_len = utf8_clamp(out.data, copy_len);
         memcpy(preview, out.data, copy_len);
         preview[copy_len] = '\0';
         strcat(preview, "...");

@@ -188,6 +188,7 @@ static char *truncate_trace(const char *trace, int max_chars) {
     int len = (int)strlen(trace);
     if (len <= max_chars) return strdup(trace);
     char *t = malloc(max_chars + 20);
+    if (!t) return strdup("(truncation failed)");
     memcpy(t, trace, max_chars);
     strcpy(t + max_chars, "\n...[truncated]");
     return t;

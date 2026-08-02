@@ -612,6 +612,16 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         int stack_cap = qcount > 0 ? qcount * 2 : 1;
         int *dfs_stack = malloc((size_t)stack_cap * sizeof(int));
         int *dfs_depth = malloc((size_t)stack_cap * sizeof(int));
+        if (!render_order || !render_depth || !visited || !dfs_stack || !dfs_depth) {
+            free(render_order); free(render_depth); free(visited);
+            free(dfs_stack); free(dfs_depth);
+            for (int i = 0; i < qcount; i++) {
+                free(qinfos[i].text); free(qinfos[i].result);
+                free(qinfos[i].session_dir); free(qinfos[i].pass_label);
+            }
+            free(qinfos);
+            goto write_out;
+        }
         int stop = 0;
 
         /* Find roots: parent_loop == -1, self-referencing (parent == self),

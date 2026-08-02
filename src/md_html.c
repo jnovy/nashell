@@ -76,9 +76,11 @@ static void unescape_pipes(char *s) {
  * Each cell points into 'buf' (a mutable copy the caller provides).
  * Escaped pipes (\|) are treated as literal pipe characters, not delimiters. */
 static int parse_table_cells(const char *line, const char *line_end,
-                             char *buf, char **cells, int max_cells) {
-    /* Copy line into buf */
+                             char *buf, int buf_size,
+                             char **cells, int max_cells) {
+    /* Copy line into buf (clamp to buffer size) */
     int len = (int)(line_end - line);
+    if (len >= buf_size) len = buf_size - 1;
     memcpy(buf, line, len);
     buf[len] = '\0';
 
@@ -149,7 +151,7 @@ char *md_tables_to_bullets(const char *md) {
                 /* Parse header row */
                 char hdr_buf[NASH_PATH_MAX];
                 char *headers[64];
-                int nhdr = parse_table_cells(q, eol, hdr_buf, headers, 64);
+                int nhdr = parse_table_cells(q, eol, hdr_buf, NASH_PATH_MAX, headers, 64);
 
                 if (nhdr > 0) {
                     /* Save header names (they'll be overwritten by parse_table_cells) */
@@ -192,7 +194,7 @@ char *md_tables_to_bullets(const char *md) {
                         char row_buf[NASH_PATH_MAX];
                         char *cells[64];
                         int ncells = parse_table_cells(rs, row_eol,
-                                                      row_buf, cells, 64);
+                                                      row_buf, NASH_PATH_MAX, cells, 64);
 
                         /* Emit bullet point */
                         str_append_cstr(&out, "• ");

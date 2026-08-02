@@ -358,6 +358,17 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                 a->summary = strdup(summ ? summ : "");
                 const char *desc = yaml_str(yaml_get(root, "description"));
                 a->description = strdup(desc ? desc : "");
+                if (!a->id || !a->workspace_name || !a->agent_file ||
+                    !a->workspace_dir || !a->schedule_str || !a->last_status ||
+                    !a->summary || !a->description) {
+                    free(a->id); free(a->workspace_name);
+                    free(a->agent_file); free(a->workspace_dir);
+                    free(a->schedule_str); free(a->last_status);
+                    free(a->summary); free(a->description);
+                    memset(a, 0, sizeof(*a));
+                    yaml_free(root);
+                    continue;
+                }
                 parse_agent_metadata(root, a);
 
                 (*n_agents)++;

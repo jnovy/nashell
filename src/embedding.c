@@ -222,8 +222,8 @@ static embed_vec_t parse_response(embed_ctx_t *ctx, const char *response) {
                 int dim = cJSON_GetArraySize(first);
                 if (dim > 0) {
                     result.data = malloc(sizeof(float) * (size_t)dim);
-                    result.dim = dim;
                     if (result.data) {
+                        result.dim = dim;
                         for (int i = 0; i < dim; i++) {
                             cJSON *v = cJSON_GetArrayItem(first, i);
                             result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
@@ -246,8 +246,8 @@ static embed_vec_t parse_response(embed_ctx_t *ctx, const char *response) {
                         int dim = cJSON_GetArraySize(embeddings);
                         if (dim > 0) {
                             result.data = malloc(sizeof(float) * (size_t)dim);
-                            result.dim = dim;
                             if (result.data) {
+                                result.dim = dim;
                                 for (int i = 0; i < dim; i++) {
                                     cJSON *v = cJSON_GetArrayItem(embeddings, i);
                                     result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;

@@ -309,6 +309,7 @@ static char *expand_clipboard_tokens(const char *input, int input_len) {
             cap += (size_t)occurrences * ((size_t)clip_store[i].len - (size_t)tlen);
     }
     char *out = malloc(cap);
+    if (!out) return NULL;
     int olen = 0;
     int pos = 0;
 
@@ -542,6 +543,9 @@ static void page_search_scan_matches(ui_state_t *ui) {
         /* Check if this line contains the search term */
         char line_buf[NASH_PATH_MAX];
         int copy_len = line_len < (int)sizeof(line_buf) - 1 ? line_len : (int)sizeof(line_buf) - 1;
+        /* Clamp to UTF-8 character boundary to avoid splitting multi-byte chars */
+        if (copy_len < line_len)
+            copy_len = (int)utf8_clamp(src, (size_t)copy_len);
         memcpy(line_buf, src, (size_t)copy_len);
         line_buf[copy_len] = '\0';
 
@@ -1290,7 +1294,9 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     }
                 }
                 if (ui->history_count < ui->history_cap) {
-                    ui->history[ui->history_count++] = strdup(*out_query);
+                    char *dup = strdup(*out_query);
+                    if (dup)
+                        ui->history[ui->history_count++] = dup;
                 }
                 ui->history_idx = ui->history_count;  /* past end = fresh input */
                 clip_store_clear();  /* discard expanded clipboard entries */

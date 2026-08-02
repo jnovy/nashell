@@ -308,7 +308,15 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         return del_key;
     }
 
-    /* Default: REDUNDANT — merge (extract text after first newline) */
+    /* Must explicitly start with REDUNDANT to proceed with merge.
+     * Reject unrecognized responses (LLM hallucinations, errors). */
+    if (strncmp(response, "REDUNDANT", 9) != 0) {
+        nash_log("[memory] consolidation: unrecognized response for '%s' vs '%s', skipping",
+                 old_key, new_key);
+        free(response);
+        cJSON_Delete(old_entry);
+        return NULL;
+    }
     {
         char *merged = NULL;
         char *newline = strchr(response, '\n');
@@ -345,10 +353,18 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         }
 
         /* Store merged version under the new key */
-        memory_store(target, new_key, merged,
-                     0, new_jref, NULL, 0, NULL, 0);
+        int store_ok = memory_store(target, new_key, merged,
+                                    0, new_jref, NULL, 0, NULL, 0);
 
         cJSON_Delete(new_entry_json);
+
+        if (store_ok != 0) {
+            /* Store failed (e.g. disk full) - don't delete old entry */
+            nash_log("[memory] consolidation: store failed for '%s', keeping old entry", new_key);
+            free(merged);
+            cJSON_Delete(old_entry);
+            return NULL;
+        }
 
         /* FIX D4: Return key for batch deletion instead of inline delete. */
         char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;

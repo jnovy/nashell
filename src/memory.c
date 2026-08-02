@@ -102,6 +102,7 @@ static char *generate_description(const char *value) {
     if (dlen <= 0) return strdup("");
 
     char *desc = malloc((size_t)dlen + 1);
+    if (!desc) return NULL;
     memcpy(desc, start, (size_t)dlen);
     desc[dlen] = '\0';
     return desc;
@@ -265,6 +266,7 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
 
     ie->key = (k && k->valuestring) ? strdup(k->valuestring) : strdup("");
     ie->value = (v && v->valuestring) ? strdup(v->valuestring) : strdup("");
+    if (!ie->key || !ie->value) return;  /* OOM — entry stays zeroed */
     ie->description = (d && d->valuestring) ? strdup(d->valuestring)
                                              : generate_description(ie->value);
     ie->pinned = p ? cJSON_IsTrue(p) : 0;
@@ -275,6 +277,7 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
     if (ca && ca->valuestring) ie->created_at = atof(ca->valuestring);
     else if (ca) ie->created_at = cJSON_GetNumberValue(ca);
     ie->path = strdup(filepath);
+    if (!ie->path) return;  /* OOM */
 
     /* Lesson lineage fields */
     cJSON *ss = cJSON_GetObjectItem(entry, "supersedes");
@@ -288,6 +291,7 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
         ie->n_refs = cJSON_GetArraySize(refs_arr);
         if (ie->n_refs > 0) {
             ie->refs = calloc((size_t)ie->n_refs, sizeof(char *));
+            if (!ie->refs) { ie->n_refs = 0; return; }
             for (int i = 0; i < ie->n_refs; i++) {
                 cJSON *ref = cJSON_GetArrayItem(refs_arr, i);
                 ie->refs[i] = (ref && ref->valuestring) ? strdup(ref->valuestring) : strdup("");
@@ -301,6 +305,7 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
         ie->n_triggers = cJSON_GetArraySize(trigs_arr);
         if (ie->n_triggers > 0) {
             ie->triggers = calloc((size_t)ie->n_triggers, sizeof(char *));
+            if (!ie->triggers) { ie->n_triggers = 0; return; }
             for (int i = 0; i < ie->n_triggers; i++) {
                 cJSON *t = cJSON_GetArrayItem(trigs_arr, i);
                 ie->triggers[i] = (t && t->valuestring) ? strdup(t->valuestring) : strdup("");
@@ -1206,16 +1211,20 @@ skip_ref_boost:
         if (ie->n_refs > 0) {
             e->n_refs = ie->n_refs;
             e->refs = calloc((size_t)e->n_refs, sizeof(char *));
+            if (!e->refs) { e->n_refs = 0; goto skip_refs; }
             for (int ri = 0; ri < e->n_refs; ri++)
                 e->refs[ri] = strdup(ie->refs[ri]);
+            skip_refs:;
         }
 
         /* Copy triggers from index */
         if (ie->n_triggers > 0) {
             e->n_triggers = ie->n_triggers;
             e->triggers = calloc((size_t)e->n_triggers, sizeof(char *));
+            if (!e->triggers) { e->n_triggers = 0; goto skip_trigs; }
             for (int ti = 0; ti < e->n_triggers; ti++)
                 e->triggers[ti] = strdup(ie->triggers[ti]);
+            skip_trigs:;
         }
 
         e->relevance = scored[i].score;
@@ -1291,8 +1300,9 @@ static int mem_key_type(const char *key) {
  * P1: Uses in-memory index cache — no filesystem scan needed.
  * Caller must free. Returns NULL if no memories. */
 char *memory_build_index(memory_t *m) {
-    if (!m || m->idx.count == 0) return NULL;
+    if (!m) return NULL;
     pthread_mutex_lock(&m->mtx);
+    if (m->idx.count == 0) { pthread_mutex_unlock(&m->mtx); return NULL; }
 
     /* Count by type using shared table */
     int counts[MEM_N_TYPES + 1] = {0};  /* last slot = "other" */
@@ -1324,8 +1334,9 @@ char *memory_build_index(memory_t *m) {
 /* ── memory_build_listing (on-demand full listing) ─────────── */
 
 char *memory_build_listing(memory_t *m, const char *type_filter) {
-    if (!m || m->idx.count == 0) return NULL;
+    if (!m) return NULL;
     pthread_mutex_lock(&m->mtx);
+    if (m->idx.count == 0) { pthread_mutex_unlock(&m->mtx); return NULL; }
 
     str_t result = str_new(4096);
 

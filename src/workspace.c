@@ -222,6 +222,9 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
                 for (int t = 0; t < merged.entries[j].n_triggers; t++)
                     free(merged.entries[j].triggers[t]);
                 free(merged.entries[j].triggers);
+                for (int t = 0; t < merged.entries[j].n_tags; t++)
+                    free(merged.entries[j].tags[t]);
+                free(merged.entries[j].tags);
                 /* Shift remaining entries down */
                 memmove(&merged.entries[j], &merged.entries[j + 1],
                         (size_t)(merged.count - j - 1) * sizeof(memory_entry_t));
@@ -528,14 +531,16 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
         free(edata);
     }
 
-    /* Delete from source (updates source index + git) */
-    memory_delete(src, key);
-
     /* FIX #8: Use memory_reindex_entry() instead of memory_store().
      * memory_store() would overwrite the copied JSON (losing created_at,
      * recall_hits, etc.) and regenerate the embedding we already copied.
-     * memory_reindex_entry() just reads the file and updates the index. */
-    memory_reindex_entry(dst, key);
+     * memory_reindex_entry() just reads the file and updates the index.
+     * Reindex destination BEFORE deleting source so that if reindex fails
+     * the entry is still present in source. */
+    if (memory_reindex_entry(dst, key) != 0) return -1;
+
+    /* Delete from source (updates source index + git) */
+    memory_delete(src, key);
 
     return 0;
 }
