@@ -477,7 +477,10 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     int timeout = cfg_timeout;
     cJSON *timeout_j = cJSON_GetObjectItem(params, "timeout");
     if (timeout_j && cJSON_IsNumber(timeout_j)) {
-        timeout = (int)timeout_j->valuedouble;
+        int t = (int)timeout_j->valuedouble;
+        if (t < 1) t = 1;
+        if (t > cfg_timeout * 10) t = cfg_timeout * 10;
+        timeout = t;
     }
     int max_out = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
 

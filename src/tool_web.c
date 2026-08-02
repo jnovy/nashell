@@ -4,6 +4,7 @@
 #include "searxng.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <curl/curl.h>
 #include <netdb.h>
@@ -56,34 +57,66 @@ static int is_internal_ip(const struct sockaddr *sa) {
     return 0;
 }
 
-/* Extract hostname from a URL and check if it resolves to an internal address.
- * Returns 1 if the URL targets an internal/private network. */
-static int url_targets_internal(const char *url) {
+/* Check if a URL targets an internal network.  On success (returns 0,
+ * meaning the URL is safe), *resolve_out receives a curl_slist of
+ * "+host:port:ip" entries that pin the resolved address so curl reuses
+ * the same IP we checked (prevents DNS rebinding TOCTOU).
+ * Returns 1 if internal/blocked; caller must curl_slist_free_all(*resolve_out). */
+static int url_check_ssrf(const char *url, struct curl_slist **resolve_out) {
+    *resolve_out = NULL;
     CURLU *cu = curl_url();
     if (!cu) return 1;  /* fail closed */
     if (curl_url_set(cu, CURLUPART_URL, url, 0) != CURLUE_OK) {
         curl_url_cleanup(cu);
         return 1;  /* fail closed */
     }
-    char *host = NULL;
+    char *host = NULL, *port = NULL, *scheme = NULL;
     curl_url_get(cu, CURLUPART_HOST, &host, 0);
+    curl_url_get(cu, CURLUPART_PORT, &port, 0);
+    curl_url_get(cu, CURLUPART_SCHEME, &scheme, 0);
     curl_url_cleanup(cu);
-    if (!host) return 1;
+    if (!host) { curl_free(port); curl_free(scheme); return 1; }
+
+    /* Determine effective port for CURLOPT_RESOLVE entry */
+    const char *eff_port = port;
+    if (!eff_port) {
+        if (scheme && strcmp(scheme, "https") == 0) eff_port = "443";
+        else eff_port = "80";
+    }
 
     struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
     struct addrinfo *res = NULL;
     int rc = getaddrinfo(host, NULL, &hints, &res);
-    curl_free(host);
     if (rc != 0 || !res) {
         if (res) freeaddrinfo(res);
-        return 1;  /* can't resolve → fail closed */
+        curl_free(host); curl_free(port); curl_free(scheme);
+        return 1;  /* can't resolve - fail closed */
     }
+
     int internal = 0;
+    struct curl_slist *resolve_list = NULL;
     for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
         if (is_internal_ip(ai->ai_addr)) { internal = 1; break; }
+        /* Build resolve entry to pin this IP */
+        char ipbuf[INET6_ADDRSTRLEN];
+        if (getnameinfo(ai->ai_addr, ai->ai_addrlen, ipbuf, sizeof(ipbuf),
+                        NULL, 0, NI_NUMERICHOST) == 0) {
+            char entry[512];
+            snprintf(entry, sizeof(entry), "+%s:%s:%s", host, eff_port, ipbuf);
+            resolve_list = curl_slist_append(resolve_list, entry);
+        }
     }
     freeaddrinfo(res);
-    return internal;
+
+    if (internal || !resolve_list) {
+        curl_slist_free_all(resolve_list);
+        curl_free(host); curl_free(port); curl_free(scheme);
+        return 1;
+    }
+
+    *resolve_out = resolve_list;
+    curl_free(host); curl_free(port); curl_free(scheme);
+    return 0;
 }
 
 /* ── web_fetch ──────────────────────────────────────────── */
@@ -121,6 +154,7 @@ static size_t utf8_sanitize(char *buf, size_t len) {
 
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     str_t *buf = userdata;
+    if (size > 0 && nmemb > SIZE_MAX / size) return 0;  /* overflow guard */
     size_t total = size * nmemb;
     /* Cap at 500KB to prevent memory explosion */
     if (buf->len + total > 512000) {
@@ -135,12 +169,18 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     TOOL_REQ_STR(params, "url", url);
 
-    /* SSRF protection: reject requests to internal/private networks */
-    if (url_targets_internal(url))
+    /* SSRF protection: reject requests to internal/private networks.
+     * Pin the resolved IP via CURLOPT_RESOLVE so curl reuses the same
+     * address we checked (prevents DNS rebinding TOCTOU). */
+    struct curl_slist *resolve_list = NULL;
+    if (url_check_ssrf(url, &resolve_list))
         return tools_make_error("Blocked: URL resolves to an internal/private network address");
 
     CURL *curl = curl_easy_init();
-    if (!curl) return tools_make_error("curl_easy_init failed");
+    if (!curl) {
+        curl_slist_free_all(resolve_list);
+        return tools_make_error("curl_easy_init failed");
+    }
 
     str_t body = str_new(8192);
 
@@ -151,6 +191,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve_list);
     long web_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
                        ? (long)ctx->cfg->web_timeout : 30L;
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, web_timeout);
@@ -166,6 +207,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     if (ct) content_type = strdup(ct);
 
     curl_easy_cleanup(curl);
+    curl_slist_free_all(resolve_list);
 
     if (res != CURLE_OK && !(res == CURLE_WRITE_ERROR && body.len > 0)) {
         char msg[512];

@@ -361,8 +361,8 @@ static embed_vec_t *parse_response_batch(embed_ctx_t *ctx, const char *response,
                     int dim = cJSON_GetArraySize(vec);
                     if (dim > 0) {
                         results[i].data = malloc(sizeof(float) * (size_t)dim);
-                        results[i].dim = dim;
                         if (results[i].data) {
+                            results[i].dim = dim;
                             for (int j = 0; j < dim; j++) {
                                 cJSON *v = cJSON_GetArrayItem(vec, j);
                                 results[i].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;

@@ -48,24 +48,25 @@ static void child_setup(int pipe_wr, unsigned flags, const char *workdir) {
 
     /* stdin from /dev/null */
     int devnull = open("/dev/null", O_RDWR);
-    if (devnull >= 0) {
-        dup2(devnull, STDIN_FILENO);
+    if (devnull < 0)
+        _exit(1);  /* cannot sandbox I/O - abort child */
 
-        if (pipe_wr >= 0) {
-            /* Capture mode: stdout to pipe, stderr to pipe or /dev/null */
-            dup2(pipe_wr, STDOUT_FILENO);
-            if (flags & SUBPROCESS_PIPE_STDERR)
-                dup2(pipe_wr, STDERR_FILENO);
-            else
-                dup2(devnull, STDERR_FILENO);
-            close(pipe_wr);
-        } else {
-            /* Silent mode: all output to /dev/null */
-            dup2(devnull, STDOUT_FILENO);
+    dup2(devnull, STDIN_FILENO);
+
+    if (pipe_wr >= 0) {
+        /* Capture mode: stdout to pipe, stderr to pipe or /dev/null */
+        dup2(pipe_wr, STDOUT_FILENO);
+        if (flags & SUBPROCESS_PIPE_STDERR)
+            dup2(pipe_wr, STDERR_FILENO);
+        else
             dup2(devnull, STDERR_FILENO);
-        }
-        close(devnull);
+        close(pipe_wr);
+    } else {
+        /* Silent mode: all output to /dev/null */
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
     }
+    close(devnull);
 
     /* Close all leaked FDs (pipe_wr already closed/dup'd above) */
     close_extra_fds(-1);
@@ -109,7 +110,8 @@ subprocess_result_t subprocess_run(char *const argv[],
 
     /* Non-blocking for poll-based reading */
     int fl = fcntl(pipefd[0], F_GETFL, 0);
-    fcntl(pipefd[0], F_SETFL, fl | O_NONBLOCK);
+    if (fl >= 0)
+        fcntl(pipefd[0], F_SETFL, fl | O_NONBLOCK);
 
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
@@ -214,9 +216,7 @@ subprocess_result_t subprocess_run(char *const argv[],
     if (r.timed_out || r.output_capped) {
         int status;
         kill_and_reap(pid, &status);
-        r.exit_code = r.timed_out ? -2
-                    : r.output_capped ? 0    /* output was capped but command was OK */
-                    : (WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        r.exit_code = r.timed_out ? -2 : 0;  /* output was capped but command was OK */
         return r;
     }
 

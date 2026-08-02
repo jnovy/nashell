@@ -199,7 +199,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
 
                         cJSON *name = cJSON_GetObjectItem(fn, "name");
                         cJSON_AddStringToObject(tu, "name",
-                                                name ? name->valuestring : "");
+                                                (name && cJSON_IsString(name)) ? name->valuestring : "");
 
                         cJSON *args_str = cJSON_GetObjectItem(fn, "arguments");
                         if (args_str && cJSON_IsString(args_str)) {
@@ -637,14 +637,14 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
         if (usage) {
             cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
             cJSON *ot = cJSON_GetObjectItem(usage, "output_tokens");
-            if (ot) stats->completion_tokens = ot->valueint;
+            if (ot && cJSON_IsNumber(ot)) stats->completion_tokens = ot->valueint;
             /* Anthropic prompt caching: input_tokens = uncached only.
              * Add cache_read + cache_creation to get the true total. */
             cJSON *cr = cJSON_GetObjectItem(usage, "cache_read_input_tokens");
-            if (cr) stats->cache_read_tokens = cr->valueint;
+            if (cr && cJSON_IsNumber(cr)) stats->cache_read_tokens = cr->valueint;
             cJSON *cc = cJSON_GetObjectItem(usage, "cache_creation_input_tokens");
-            if (cc) stats->cache_creation_tokens = cc->valueint;
-            if (it) stats->prompt_tokens = it->valueint
+            if (cc && cJSON_IsNumber(cc)) stats->cache_creation_tokens = cc->valueint;
+            if (it && cJSON_IsNumber(it)) stats->prompt_tokens = it->valueint
                                          + stats->cache_read_tokens
                                          + stats->cache_creation_tokens;
         }
@@ -718,7 +718,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
             thought_val = thought.data;
         cJSON_AddStringToObject(unified, "thought", thought_val);
         cJSON_AddStringToObject(unified, "action",
-                                name ? name->valuestring : "");
+                                (name && cJSON_IsString(name)) ? name->valuestring : "");
 
         /* Merge input params into unified */
         if (input && cJSON_IsObject(input)) {
@@ -748,7 +748,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
             cJSON_AddStringToObject(tc, "type", "function");
             cJSON *fn = cJSON_CreateObject();
             cJSON_AddStringToObject(fn, "name",
-                                    name ? name->valuestring : "");
+                                    (name && cJSON_IsString(name)) ? name->valuestring : "");
             char *args_str = input ? cJSON_PrintUnformatted(input) : strdup("{}");
             cJSON_AddStringToObject(fn, "arguments", args_str);
             free(args_str);

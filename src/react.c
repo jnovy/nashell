@@ -1201,12 +1201,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             char *ans_json = cJSON_PrintUnformatted(ans_obj);
             cJSON_Delete(ans_obj);
             size_t ans_len = (ans_json ? strlen(ans_json) : 2) + 32;
+            int result_msg_static = 0;
             char *result_msg = malloc(ans_len);
-            if (result_msg)
+            if (result_msg) {
                 snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
                          ans_json ? ans_json : "{}", step + 1);
-            else
-                result_msg = strdup("{}");  /* OOM fallback */
+            } else {
+                result_msg = strdup("{}");
+                if (!result_msg) {
+                    result_msg = (char *)"{}";  /* static fallback on double OOM */
+                    result_msg_static = 1;
+                }
+            }
             free(ans_json);
 
             /* Add to chat as tool result */
@@ -1224,7 +1230,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
             }
 
-            free(result_msg);
+            if (!result_msg_static) free(result_msg);
             free(ua_alias);
             cJSON_Delete(ua_params);
             cJSON_Delete(action);
