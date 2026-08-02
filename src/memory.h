@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include "cJSON.h"
 #include "embedding.h"
 
@@ -47,6 +48,7 @@ typedef struct {
     int    version;        /* lineage version (0 = original, 2+ = superseding) */
     char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
     int    n_triggers;     /* 0 = no triggers, purely semantic recall */
+    uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).

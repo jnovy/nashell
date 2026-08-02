@@ -6,6 +6,85 @@
 #include <stdlib.h>
 #include <string.h>
 #include <curl/curl.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+
+/* ── SSRF protection ───────────────────────────────────── */
+
+/* Check if a resolved IP address is internal/private.
+ * Returns 1 if the address is loopback, link-local, or RFC1918. */
+static int is_internal_ip(const struct sockaddr *sa) {
+    if (sa->sa_family == AF_INET) {
+        uint32_t addr = ntohl(((const struct sockaddr_in *)sa)->sin_addr.s_addr);
+        /* 127.0.0.0/8 (loopback) */
+        if ((addr >> 24) == 127) return 1;
+        /* 10.0.0.0/8 */
+        if ((addr >> 24) == 10) return 1;
+        /* 172.16.0.0/12 */
+        if ((addr >> 20) == (172 << 4 | 1)) return 1;  /* 0xAC1 */
+        /* 192.168.0.0/16 */
+        if ((addr >> 16) == ((192 << 8) | 168)) return 1;
+        /* 169.254.0.0/16 (link-local) */
+        if ((addr >> 16) == ((169 << 8) | 254)) return 1;
+        /* 0.0.0.0/8 */
+        if ((addr >> 24) == 0) return 1;
+        return 0;
+    } else if (sa->sa_family == AF_INET6) {
+        const uint8_t *b = ((const struct sockaddr_in6 *)sa)->sin6_addr.s6_addr;
+        /* ::1 loopback */
+        static const uint8_t lo[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+        if (memcmp(b, lo, 16) == 0) return 1;
+        /* fe80::/10 link-local */
+        if (b[0] == 0xfe && (b[1] & 0xc0) == 0x80) return 1;
+        /* ::ffff:0:0/96 IPv4-mapped — check the embedded IPv4 */
+        if (b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 &&
+            b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] == 0 &&
+            b[8] == 0 && b[9] == 0 && b[10] == 0xff && b[11] == 0xff) {
+            uint32_t v4 = ((uint32_t)b[12] << 24) | ((uint32_t)b[13] << 16) |
+                          ((uint32_t)b[14] << 8)  | (uint32_t)b[15];
+            if ((v4 >> 24) == 127) return 1;
+            if ((v4 >> 24) == 10) return 1;
+            if ((v4 >> 20) == (172 << 4 | 1)) return 1;
+            if ((v4 >> 16) == ((192 << 8) | 168)) return 1;
+            if ((v4 >> 16) == ((169 << 8) | 254)) return 1;
+            if ((v4 >> 24) == 0) return 1;
+        }
+        /* fc00::/7 unique local */
+        if ((b[0] & 0xfe) == 0xfc) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+/* Extract hostname from a URL and check if it resolves to an internal address.
+ * Returns 1 if the URL targets an internal/private network. */
+static int url_targets_internal(const char *url) {
+    CURLU *cu = curl_url();
+    if (!cu) return 1;  /* fail closed */
+    if (curl_url_set(cu, CURLUPART_URL, url, 0) != CURLUE_OK) {
+        curl_url_cleanup(cu);
+        return 1;  /* fail closed */
+    }
+    char *host = NULL;
+    curl_url_get(cu, CURLUPART_HOST, &host, 0);
+    curl_url_cleanup(cu);
+    if (!host) return 1;
+
+    struct addrinfo hints = { .ai_family = AF_UNSPEC, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *res = NULL;
+    int rc = getaddrinfo(host, NULL, &hints, &res);
+    curl_free(host);
+    if (rc != 0 || !res) {
+        if (res) freeaddrinfo(res);
+        return 1;  /* can't resolve → fail closed */
+    }
+    int internal = 0;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        if (is_internal_ip(ai->ai_addr)) { internal = 1; break; }
+    }
+    freeaddrinfo(res);
+    return internal;
+}
 
 /* ── web_fetch ──────────────────────────────────────────── */
 
@@ -55,6 +134,10 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 
 tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     TOOL_REQ_STR(params, "url", url);
+
+    /* SSRF protection: reject requests to internal/private networks */
+    if (url_targets_internal(url))
+        return tools_make_error("Blocked: URL resolves to an internal/private network address");
 
     CURL *curl = curl_easy_init();
     if (!curl) return tools_make_error("curl_easy_init failed");

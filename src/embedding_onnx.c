@@ -441,11 +441,11 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
     if (status) { api->ReleaseStatus(status); goto cleanup; }
 
     size_t dim_count = 0;
-    status = api->GetDimensionsCount(type_info, &dim_count); if (status) { api->ReleaseStatus(status); goto cleanup; }
+    status = api->GetDimensionsCount(type_info, &dim_count); if (status) { api->ReleaseStatus(status); api->ReleaseTensorTypeAndShapeInfo(type_info); goto cleanup; }
 
     int64_t dims[4] = {0};
     if (dim_count > 0 && dim_count <= 4) {
-        status = api->GetDimensions(type_info, dims, dim_count); if (status) { api->ReleaseStatus(status); goto cleanup; }
+        status = api->GetDimensions(type_info, dims, dim_count); if (status) { api->ReleaseStatus(status); api->ReleaseTensorTypeAndShapeInfo(type_info); goto cleanup; }
     }
     api->ReleaseTensorTypeAndShapeInfo(type_info);
 

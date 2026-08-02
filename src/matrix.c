@@ -444,8 +444,21 @@ static int mx_config_load(matrix_ctx_t *ctx) {
 static void fprint_toml_str(FILE *f, const char *key, const char *val) {
     fprintf(f, "%s = \"", key);
     for (const char *p = val; *p; p++) {
-        if (*p == '\\' || *p == '"') fputc('\\', f);
-        fputc(*p, f);
+        switch (*p) {
+        case '\\': fputs("\\\\", f); break;
+        case '"':  fputs("\\\"", f); break;
+        case '\n': fputs("\\n", f);  break;
+        case '\r': fputs("\\r", f);  break;
+        case '\t': fputs("\\t", f);  break;
+        case '\b': fputs("\\b", f);  break;
+        case '\f': fputs("\\f", f);  break;
+        default:
+            if ((unsigned char)*p < 0x20)
+                fprintf(f, "\\u%04X", (unsigned char)*p);
+            else
+                fputc(*p, f);
+            break;
+        }
     }
     fprintf(f, "\"\n");
 }
@@ -467,7 +480,12 @@ static int mx_config_save(matrix_ctx_t *ctx) {
         if (at_start) mx_start = existing;
         if (mx_start) {
             char *sect = at_start ? mx_start : mx_start + 1;
-            char *next = strstr(sect, "\n[");
+            /* Skip past [matrix.*] subtables to find the next non-matrix section */
+            char *next = sect;
+            while ((next = strstr(next + 1, "\n[")) != NULL) {
+                if (strncmp(next + 2, "matrix.", 7) != 0)
+                    break;
+            }
             if (!at_start)
                 fwrite(existing, 1, (size_t)(mx_start - existing), f);
             if (next)
@@ -490,6 +508,18 @@ static int mx_config_save(matrix_ctx_t *ctx) {
         fprint_toml_str(f, "since_token", ctx->since_token);
     if (ctx->invite_user)
         fprint_toml_str(f, "invite_user", ctx->invite_user);
+    if (ctx->allowed_users)
+        fprint_toml_str(f, "allowed_users", ctx->allowed_users);
+
+    /* Write [matrix.rooms] subtable */
+    if (ctx->room_map_count > 0) {
+        fprintf(f, "\n[matrix.rooms]\n");
+        for (int i = 0; i < ctx->room_map_count; i++) {
+            if (ctx->room_map[i].room_id && ctx->room_map[i].workspace)
+                fprint_toml_str(f, ctx->room_map[i].room_id,
+                                ctx->room_map[i].workspace);
+        }
+    }
 
     fclose(f);
     return 0;
@@ -544,9 +574,11 @@ int matrix_setup(matrix_ctx_t *ctx) {
 
     /* Step 3: Login */
     if (mx_api_login(ctx, username, buf) != 0) {
+        explicit_bzero(buf, sizeof(buf));
         fprintf(stderr, "[matrix] ✗ Login failed\n");
         return -1;
     }
+    explicit_bzero(buf, sizeof(buf));  /* clear password from stack */
     fprintf(stderr, "[matrix] ✓ Logged in as %s\n\n", ctx->user_id);
 
     /* Step 4: Room setup */
@@ -604,11 +636,17 @@ int matrix_setup(matrix_ctx_t *ctx) {
 
 /* ── Matrix API calls ────────────────────────────────────── */
 
-/* Build an Authorization header. Returns heap-allocated string. Caller frees. */
+/* Build an Authorization header. Returns heap-allocated string. Caller frees.
+ * Never returns NULL — returns an empty string on allocation failure
+ * so that callers can safely pass the result to curl_slist_append(). */
 static char *mx_auth_header(matrix_ctx_t *ctx) {
-    if (!ctx->access_token) return NULL;
+    if (!ctx->access_token) {
+        fprintf(stderr, "[matrix] warning: no access_token for auth header\n");
+        return strdup("");
+    }
     char *hdr = malloc(strlen(ctx->access_token) + 32);
-    if (hdr) sprintf(hdr, "Authorization: Bearer %s", ctx->access_token);
+    if (!hdr) return strdup("");
+    sprintf(hdr, "Authorization: Bearer %s", ctx->access_token);
     return hdr;
 }
 
@@ -709,29 +747,36 @@ static int mx_api_whoami(matrix_ctx_t *ctx) {
 static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
     *out_events = NULL;
 
-    /* Build /sync URL with since token and timeout */
-    char url[MX_URL_MAX * 2];
-    if (ctx->since_token) {
-        snprintf(url, sizeof(url),
-                 "%s/_matrix/client/v3/sync?timeout=%d&since=%s"
-                 "&filter={\"room\":{\"timeline\":{\"limit\":50},"
-                 "\"ephemeral\":{\"types\":[]}},"
-                 "\"presence\":{\"types\":[]}}",
-                 ctx->homeserver, MX_SYNC_TIMEOUT, ctx->since_token);
-    } else {
-        /* Initial sync — minimal data, just get the since token */
-        snprintf(url, sizeof(url),
-                 "%s/_matrix/client/v3/sync?timeout=0"
-                 "&filter={\"room\":{\"timeline\":{\"limit\":0},"
-                 "\"ephemeral\":{\"types\":[]}},"
-                 "\"presence\":{\"types\":[]}}",
-                 ctx->homeserver);
-    }
-
     /* We need to send auth header. http_get doesn't support custom headers,
      * so use a custom curl setup. */
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
+
+    /* Build /sync URL with URL-encoded filter parameter */
+    const char *filter_with_since =
+        "{\"room\":{\"timeline\":{\"limit\":50},"
+        "\"ephemeral\":{\"types\":[]}},"
+        "\"presence\":{\"types\":[]}}";
+    const char *filter_initial =
+        "{\"room\":{\"timeline\":{\"limit\":0},"
+        "\"ephemeral\":{\"types\":[]}},"
+        "\"presence\":{\"types\":[]}}";
+
+    const char *raw_filter = ctx->since_token ? filter_with_since : filter_initial;
+    char *enc_filter = curl_easy_escape(curl, raw_filter, 0);
+
+    char url[MX_URL_MAX * 2];
+    if (ctx->since_token) {
+        snprintf(url, sizeof(url),
+                 "%s/_matrix/client/v3/sync?timeout=%d&since=%s&filter=%s",
+                 ctx->homeserver, MX_SYNC_TIMEOUT, ctx->since_token,
+                 enc_filter ? enc_filter : "");
+    } else {
+        snprintf(url, sizeof(url),
+                 "%s/_matrix/client/v3/sync?timeout=0&filter=%s",
+                 ctx->homeserver, enc_filter ? enc_filter : "");
+    }
+    curl_free(enc_filter);
 
     str_t resp = str_new(4096);
     char *auth = mx_auth_header(ctx);
@@ -827,10 +872,12 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
 static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
                                        const char *text, const char *html,
                                        const char *thread_event_id,
-                                       int retries_left) {
+                                       int retries_left,
+                                       long long reuse_txn) {
     char *enc_room = url_encode(room_id);
     char url[MX_URL_MAX * 2];
-    long long txn = __sync_fetch_and_add(&ctx->txn_counter, 1);
+    long long txn = (reuse_txn >= 0) ? reuse_txn
+                                     : __sync_fetch_and_add(&ctx->txn_counter, 1);
     snprintf(url, sizeof(url),
              "%s/_matrix/client/v3/rooms/%s/send/m.room.message/m%lld",
              ctx->homeserver, enc_room, txn);
@@ -916,7 +963,8 @@ static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
                         return mx_api_send_message_inner(ctx, room_id,
                                                         text, html,
                                                         thread_event_id,
-                                                        retries_left - 1);
+                                                        retries_left - 1,
+                                                        txn);
                     }
                     fprintf(stderr, "[matrix] send error: %s\n",
                             err ? err->valuestring : "unknown");
@@ -937,7 +985,7 @@ static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
 /* Convenience wrappers that return int (0=ok, -1=error) for backward compat */
 static int mx_api_send_message(matrix_ctx_t *ctx, const char *text,
                                const char *html) {
-    char *eid = mx_api_send_message_inner(ctx, ctx->room_id, text, html, NULL, 3);
+    char *eid = mx_api_send_message_inner(ctx, ctx->room_id, text, html, NULL, 3, -1);
     int rc = eid ? 0 : -1;
     free(eid);
     return rc;
@@ -947,7 +995,7 @@ static int mx_api_send_message(matrix_ctx_t *ctx, const char *text,
 static int mx_api_send_to_room(matrix_ctx_t *ctx, const char *room_id,
                                const char *text, const char *html) {
     char *eid = mx_api_send_message_inner(ctx, room_id ? room_id : ctx->room_id,
-                                          text, html, NULL, 3);
+                                          text, html, NULL, 3, -1);
     int rc = eid ? 0 : -1;
     free(eid);
     return rc;
@@ -958,7 +1006,7 @@ static char *mx_api_send_to_room_threaded(matrix_ctx_t *ctx, const char *room_id
                                           const char *text, const char *html,
                                           const char *thread_event_id) {
     return mx_api_send_message_inner(ctx, room_id ? room_id : ctx->room_id,
-                                     text, html, thread_event_id, 3);
+                                     text, html, thread_event_id, 3, -1);
 }
 
 /* ── Session thread tracking ─────────────────────────────── */
@@ -1163,7 +1211,16 @@ static void mx_pre_table_to_html(str_t *out, const char *content, size_t content
 
             str_appendf(out, "<%s>", tag);
             if (ce > cs) {
-                str_append(out, &line[cs], ce - cs);
+                /* HTML-escape cell content to prevent injection */
+                for (size_t ci = cs; ci < ce; ci++) {
+                    switch (line[ci]) {
+                    case '&': str_append_cstr(out, "&amp;");  break;
+                    case '<': str_append_cstr(out, "&lt;");   break;
+                    case '>': str_append_cstr(out, "&gt;");   break;
+                    case '"': str_append_cstr(out, "&quot;"); break;
+                    default:  str_append(out, &line[ci], 1);  break;
+                    }
+                }
             }
             str_appendf(out, "</%s>", tag);
         }
@@ -1381,6 +1438,8 @@ static int mx_download_image(matrix_ctx_t *ctx, const char *mxc_url,
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE,
+                         (curl_off_t)(50 * 1024 * 1024));  /* 50 MB limit */
 
         http_code = 0;
         free(ct_buf); ct_buf = NULL;
@@ -1529,6 +1588,11 @@ static int mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
     struct stat st;
     if (stat(file_path, &st) != 0 || st.st_size == 0) {
         fprintf(stderr, "[matrix] upload: cannot stat %s\n", file_path);
+        return -1;
+    }
+    if (st.st_size > 50 * 1024 * 1024) {
+        fprintf(stderr, "[matrix] upload: file too large (%lld bytes, max 50 MB)\n",
+                (long long)st.st_size);
         return -1;
     }
 
@@ -2307,6 +2371,7 @@ void *matrix_run(void *arg) {
     /* Pending ask ID and room for routing replies as answers */
     char pending_ask_id[128] = {0};
     char pending_ask_room[256] = {0};
+    time_t pending_ask_time = 0;  /* timestamp when ask was posted */
 
     /* Process any existing outbox files */
     mx_scan_outbox(ctx);
@@ -2317,6 +2382,8 @@ void *matrix_run(void *arg) {
     /* Sync workspaces → create rooms for unmapped workspaces */
     mx_sync_workspaces(ctx);
     int ws_sync_counter = 0;
+    int save_counter = 0;
+    static unsigned task_seq = 0;
 
     /* Main loop */
     while (!*ctx->shutdown) {
@@ -2429,6 +2496,16 @@ void *matrix_run(void *arg) {
                         }
                     }
 
+                    /* Expire stale pending asks after 5 minutes */
+                    if (pending_ask_id[0] && pending_ask_time > 0 &&
+                        time(NULL) - pending_ask_time > 300) {
+                        fprintf(stderr, "[matrix] pending ask_%s timed out after 5min\n",
+                                pending_ask_id);
+                        pending_ask_id[0] = 0;
+                        pending_ask_room[0] = 0;
+                        pending_ask_time = 0;
+                    }
+
                     /* Check if this is a reply to a pending ask.
                      * Validate that the answer comes from the same room
                      * that originated the ask to prevent cross-room
@@ -2459,8 +2536,8 @@ void *matrix_run(void *arg) {
                     char task_id[64];
                     struct timespec ts;
                     clock_gettime(CLOCK_REALTIME, &ts);
-                    snprintf(task_id, sizeof(task_id), "mx%lx%09lx",
-                             (long)ts.tv_sec, (long)ts.tv_nsec);
+                    snprintf(task_id, sizeof(task_id), "mx%lx%09lx_%u",
+                             (long)ts.tv_sec, (long)ts.tv_nsec, ++task_seq);
 
                     fprintf(stderr, "[matrix] creating task_%s (room=%s ws=%s)\n",
                             task_id, ev_room,
@@ -2515,6 +2592,16 @@ void *matrix_run(void *arg) {
                     fprintf(stderr, "[matrix] received image from %s: %s\n",
                             sender->valuestring, img_url->valuestring);
 
+                    /* Expire stale pending asks after 5 minutes */
+                    if (pending_ask_id[0] && pending_ask_time > 0 &&
+                        time(NULL) - pending_ask_time > 300) {
+                        fprintf(stderr, "[matrix] pending ask_%s timed out after 5min\n",
+                                pending_ask_id);
+                        pending_ask_id[0] = 0;
+                        pending_ask_room[0] = 0;
+                        pending_ask_time = 0;
+                    }
+
                     /* Check if this is a reply to a pending ask.
                      * Validate room match (see text handler above). */
                     if (pending_ask_id[0] && pending_ask_room[0] &&
@@ -2562,8 +2649,8 @@ void *matrix_run(void *arg) {
                         char task_id[64];
                         struct timespec ts;
                         clock_gettime(CLOCK_REALTIME, &ts);
-                        snprintf(task_id, sizeof(task_id), "mx%lx%09lx",
-                                 (long)ts.tv_sec, (long)ts.tv_nsec);
+                        snprintf(task_id, sizeof(task_id), "mx%lx%09lx_%u",
+                                 (long)ts.tv_sec, (long)ts.tv_nsec, ++task_seq);
 
                         fprintf(stderr,
                                 "[matrix] creating image task_%s (room=%s ws=%s)\n",
@@ -2617,6 +2704,7 @@ void *matrix_run(void *arg) {
                             if (nlen < sizeof(pending_ask_id)) {
                                 snprintf(pending_ask_id, sizeof(pending_ask_id),
                                          "%s", iev->name + 4);
+                                pending_ask_time = time(NULL);
                             }
                             /* Read route_token from ask file before
                              * it gets unlinked by process_outbox */
@@ -2647,7 +2735,6 @@ void *matrix_run(void *arg) {
         }
 
         /* Periodically save since_token */
-        static int save_counter = 0;
         if (++save_counter >= 60) {  /* every ~60 sync cycles ≈ 5 min */
             mx_config_save(ctx);
             save_counter = 0;

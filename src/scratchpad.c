@@ -481,12 +481,14 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
     fclose(f);
 
     /* Mark all loaded sections as not dirty (they came from disk) */
+    pthread_mutex_lock(&sp->mtx);
     for (int i = 0; i < sp->count; i++)
         sp->sections[i].dirty = 0;
     /* Clear any clears tracked during load */
     for (int i = 0; i < sp->n_cleared; i++)
         free(sp->cleared_names[i]);
     sp->n_cleared = 0;
+    pthread_mutex_unlock(&sp->mtx);
 
     return 0;
 }

@@ -140,7 +140,11 @@ static void hashset_add(hashset_t *hs, const char *key) {
     if (!hs->buckets) hashset_init(hs);
     if (!hs->buckets) return;  /* OOM during init */
     /* Grow at 70% load factor */
-    if (hs->count * 10 >= hs->cap * 7) hashset_grow(hs);
+    if (hs->count * 10 >= hs->cap * 7) {
+        hashset_grow(hs);
+        /* If grow failed (OOM), bail out to prevent infinite probing loop */
+        if (hs->count >= hs->cap) return;
+    }
     unsigned int idx = fnv1a(key) & (unsigned)(hs->cap - 1);
     while (hs->buckets[idx]) {
         if (strcmp(hs->buckets[idx], key) == 0) return;  /* already present */

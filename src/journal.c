@@ -670,9 +670,12 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 /* Scan journal.jsonl and return the highest react_loop value found.
  * Returns -1 if the journal is empty or doesn't exist. */
 int journal_max_react_loop(journal_t *j) {
-    if (!j || !j->path) return -1;
+    if (!j) return -1;
 
+    pthread_mutex_lock(&j->mtx);
+    if (!j->path) { pthread_mutex_unlock(&j->mtx); return -1; }
     FILE *f = fopen(j->path, "r");
+    pthread_mutex_unlock(&j->mtx);  /* path is stable after read */
     if (!f) return -1;
     flock(fileno(f), LOCK_SH);  /* shared lock for reading */
 

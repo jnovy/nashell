@@ -116,7 +116,9 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 }
 
 /* Maximum total recovery attempts across all error types before giving up.
- * Prevents unbounded retries from alternating error types. */
+ * Prevents unbounded retries from alternating error types.
+ * TODO(react-recovery): Currently unused — no per-type recovery counters exist
+ * in react.c to aggregate. Wire up when recovery tracking is implemented. */
 #define REACT_MAX_TOTAL_RECOVERY    12
 
 /* Maximum keep_tail — prevents unbounded tail growth from

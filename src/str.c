@@ -40,6 +40,7 @@ void str_clear(str_t *s) {
 
 /* Returns 0 on success, -1 on OOM (buffer unchanged). */
 static int str_grow(str_t *s, size_t need) {
+    if (need > SIZE_MAX - s->len - 1) return -1;  /* overflow guard */
     if (s->len + need + 1 <= s->cap) return 0;
     size_t new_cap = s->cap ? s->cap * 2 : 64;
     while (new_cap < s->len + need + 1) new_cap *= 2;

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <math.h>
 #include <stdarg.h>
@@ -227,7 +228,9 @@ provider_t *provider_create(const provider_config_t *cfg) {
     /* OOM check: if any source string was non-NULL but strdup returned NULL */
     if ((cfg->model_id && !p->cfg.model_id) ||
         (cfg->api_base && !p->cfg.api_base) ||
-        (cfg->api_key_env && !p->cfg.api_key_env)) {
+        (cfg->api_key_env && !p->cfg.api_key_env) ||
+        (cfg->project_id && !p->cfg.project_id) ||
+        (cfg->region && !p->cfg.region)) {
         provider_free(p);
         return NULL;
     }
@@ -902,6 +905,16 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                     cJSON *text = cJSON_GetObjectItem(delta, "text");
                     if (text && cJSON_IsString(text)) {
                         const char *t = text->valuestring;
+                        size_t tlen = strlen(t);
+
+                        /* Max response size cap (matches OpenAI handler) */
+                        if (st->max_response > 0 &&
+                            st->full_content.len + tlen > st->max_response) {
+                            st->stopped = 1;
+                            cJSON_Delete(data);
+                            return;
+                        }
+
                         str_append_cstr(&st->full_content, t);
                         /* Wall-clock streaming timing for t/s computation */
                         st->streaming_token_count++;
@@ -909,6 +922,23 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                             clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
                             st->first_token_seen = 1;
                         }
+
+                        /* Repeat detection (matches OpenAI handler) */
+                        if (st->repeat_threshold > 0 && tlen > 0) {
+                            if (tlen == 1 && st->full_content.len >= 2 &&
+                                st->full_content.data[st->full_content.len - 1] ==
+                                st->full_content.data[st->full_content.len - 2]) {
+                                st->repeat_count++;
+                                if (st->repeat_count >= st->repeat_threshold) {
+                                    st->stopped = 1;
+                                    cJSON_Delete(data);
+                                    return;
+                                }
+                            } else {
+                                st->repeat_count = 0;
+                            }
+                        }
+
                         if (st->on_token && !st->in_tool_use) {
                             st->last_token_idx++;
                             st->on_token(t, st->userdata);
@@ -1197,6 +1227,14 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         if (!curl) { free(req_body); free(endpoint); str_free(&response); return NULL; }
 
         struct curl_slist *headers = p->build_headers(p);
+        if (!headers) {
+            nash_log("[provider] build_headers failed (missing credentials?)");
+            free(p->last_error);
+            p->last_error = strdup("Authentication credentials not available");
+            curl_easy_cleanup(curl);
+            free(req_body); free(endpoint); str_free(&response);
+            return NULL;
+        }
 
         curl_easy_setopt(curl, CURLOPT_URL, endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
@@ -1338,15 +1376,40 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         cJSON *error = cJSON_GetObjectItem(resp, "error");
         if (error) {
             const char *msg = "";
+            const char *etype = NULL;
             if (cJSON_IsString(error)) msg = error->valuestring;
             else {
                 cJSON *emsg = cJSON_GetObjectItem(error, "message");
                 if (emsg && cJSON_IsString(emsg)) msg = emsg->valuestring;
+                cJSON *et = cJSON_GetObjectItem(error, "type");
+                if (et && cJSON_IsString(et)) etype = et->valuestring;
+                if (!etype) {
+                    cJSON *ec = cJSON_GetObjectItem(error, "code");
+                    if (ec && cJSON_IsString(ec)) etype = ec->valuestring;
+                }
+            }
+            /* Non-retryable errors: bail immediately */
+            static const char *non_retryable[] = {
+                "invalid_api_key", "authentication_error",
+                "model_not_found", "invalid_request_error",
+                "permission_denied", "permission_error",
+                "not_found_error", "invalid_model",
+                NULL
+            };
+            int is_fatal = 0;
+            for (const char **nr = non_retryable; *nr; nr++) {
+                if ((etype && strcasecmp(etype, *nr) == 0) ||
+                    (msg[0] && strstr(msg, *nr))) {
+                    is_fatal = 1;
+                    break;
+                }
             }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-            nash_log("[provider] API error: %s (attempt %d/%d, retry in %ds)",
-                     msg, attempt, PROVIDER_MAX_RETRIES(p), delay);
-            if (attempt >= PROVIDER_MAX_RETRIES(p)) {
+            nash_log("[provider] API error: %s (type=%s, attempt %d/%d%s)",
+                     msg, etype ? etype : "unknown", attempt,
+                     PROVIDER_MAX_RETRIES(p),
+                     is_fatal ? ", non-retryable" : "");
+            if (is_fatal || attempt >= PROVIDER_MAX_RETRIES(p)) {
                 /* Populate error diagnostics before freeing resp
                  * (msg points into the cJSON tree) */
                 free(p->last_error);
@@ -1474,6 +1537,14 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         }
 
         struct curl_slist *headers = p->build_headers(p);
+        if (!headers) {
+            nash_log("[provider] build_headers failed (missing credentials?)");
+            free(p->last_error);
+            p->last_error = strdup("Authentication credentials not available");
+            curl_easy_cleanup(curl);
+            free(req_body);
+            goto cleanup;
+        }
 
         curl_easy_setopt(curl, CURLOPT_URL, endpoint);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);

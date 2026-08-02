@@ -6,6 +6,8 @@
 static int render_segment(WINDOW *win, int row, int col, const char *text,
                           int len, int max_cols);
 static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs);
+static int parse_inline_d(const char *text, int text_len, inline_seg_t *segs, int max_segs, int depth);
+#define MD_MAX_INLINE_DEPTH 32
 
 /* ── Helpers (Items 3-9) ── */
 
@@ -190,7 +192,8 @@ static void advance_render_line(int *render_line, int lines_consumed) {
  * On failure: p is unchanged, no segment emitted. */
 static int try_parse_marker(const char **pp, const char *end,
                             const char *marker, int mlen, int attr,
-                            inline_seg_t *segs, int *n, int max_segs) {
+                            inline_seg_t *segs, int *n, int max_segs,
+                            int depth) {
     const char *p = *pp;
     /* Check for opening marker */
     if (p + mlen > end) return 0;
@@ -220,8 +223,11 @@ static int try_parse_marker(const char **pp, const char *end,
          * Each sub-segment inherits the parent attribute (bold/italic). */
         int inner_len = (int)(p - start);
         int saved_n = *n;
-        int sub_n = parse_inline(start, inner_len,
-                                 segs + saved_n, max_segs - saved_n);
+        int sub_n = (depth < MD_MAX_INLINE_DEPTH)
+                    ? parse_inline_d(start, inner_len,
+                                     segs + saved_n, max_segs - saved_n,
+                                     depth + 1)
+                    : 0;  /* depth limit reached — emit flat */
         if (sub_n > 0) {
             /* Apply parent attr to all sub-segments */
             for (int si = saved_n; si < saved_n + sub_n; si++)
@@ -260,18 +266,18 @@ static int try_parse_marker(const char **pp, const char *end,
  * Handles **bold**, *italic*, `code` markers.
  * Returns number of segments written (0 on error).
  * Segments are coalesced: consecutive segments with same attr are merged. */
-static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs) {
+static int parse_inline_d(const char *text, int text_len, inline_seg_t *segs, int max_segs, int depth) {
     int n = 0;
     const char *p = text;
     const char *end = text + text_len;
 
     while (p < end && n < max_segs) {
         /* Item 1: use try_parse_marker for all three formatting types */
-        if (try_parse_marker(&p, end, "**", 2, A_BOLD, segs, &n, max_segs))
+        if (try_parse_marker(&p, end, "**", 2, A_BOLD, segs, &n, max_segs, depth))
             continue;
-        if (try_parse_marker(&p, end, "*", 1, A_UNDERLINE, segs, &n, max_segs))
+        if (try_parse_marker(&p, end, "*", 1, A_UNDERLINE, segs, &n, max_segs, depth))
             continue;
-        if (try_parse_marker(&p, end, "`", 1, COLOR_PAIR(C_STREAM), segs, &n, max_segs))
+        if (try_parse_marker(&p, end, "`", 1, COLOR_PAIR(C_STREAM), segs, &n, max_segs, depth))
             continue;
 
         /* Markdown link: [text](url) — render only text with link color */
@@ -329,6 +335,10 @@ static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int 
         }
     }
     return n;
+}
+
+static int parse_inline(const char *text, int text_len, inline_seg_t *segs, int max_segs) {
+    return parse_inline_d(text, text_len, segs, max_segs, 0);
 }
 
 /* Render all segments on a single display line, starting at (row, col).

@@ -57,6 +57,8 @@ static struct curl_slist *openai_build_headers(provider_t *p) {
     } else {
         nash_log("[provider/openai] WARNING: no API key found in $%s",
                  p->cfg.api_key_env ? p->cfg.api_key_env : "OPENAI_API_KEY");
+        curl_slist_free_all(headers);
+        return NULL;
     }
 
     return headers;

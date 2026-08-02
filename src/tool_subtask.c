@@ -54,7 +54,11 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
      * A simpler approach: pass depth through a naming convention. */
     int depth = 0;
     {
-        const char *p = ctx->session_dir;
+        /* Only count /subtask_ within the session hierarchy, not in the
+         * workspace prefix.  E.g. /projects/subtask_tests/.sessions/123/subtask_0
+         * should yield depth=1, not depth=2. */
+        const char *base = strstr(ctx->session_dir, "/.sessions/");
+        const char *p = base ? base : ctx->session_dir;
         while ((p = strstr(p, "/subtask_")) != NULL) {
             depth++;
             p += 9;

@@ -401,10 +401,14 @@ void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp) {
     if (!m) return;
+    /* FIX BUG-22: Acquire mutex so these writes are atomic with respect to
+     * memory_query() which reads these fields under the same lock. */
+    pthread_mutex_lock(&m->mtx);
     m->recall_min_score = min_score;
     m->recall_blend_semantic = blend_semantic;
     m->recall_blend_substring = blend_substring;
     m->vscore_exponent = vscore_exp;
+    pthread_mutex_unlock(&m->mtx);
 }
 
 /* ── embedding helpers ───────────────────────────────── */
@@ -592,8 +596,13 @@ int memory_store(memory_t *m, const char *key, const char *value,
     {
         mem_index_entry_t *existing = mem_index_find(&m->idx, key);
         if (existing) {
+            /* FIX BUG-7: Increment generation counter so the ABA check
+             * after embedding generation detects value changes reliably
+             * (pointer comparison can false-match after realloc reuse). */
+            uint64_t prev_gen = existing->gen;
             mem_index_entry_free(existing);
             mem_index_entry_from_json(existing, entry, path);
+            existing->gen = prev_gen + 1;
         } else {
             /* FIX #5: Check mem_index_grow return to avoid heap overflow */
             if (mem_index_grow(&m->idx) != 0) {
@@ -622,14 +631,16 @@ int memory_store(memory_t *m, const char *key, const char *value,
     int need_embed = m->embed && m->embed->available &&
                      !atomic_load(&m->consolidating);
 
-    /* FIX BUG-MEM4: Save the entry's value pointer before releasing the
+    /* FIX BUG-7: Save the entry's generation counter before releasing the
      * lock so we can detect if another thread updated the same key while
-     * we were generating the embedding (TOCTOU race).  We only compare
-     * the pointer address after re-lock — never dereference. */
-    const char *pre_unlock_value = NULL;
+     * we were generating the embedding (TOCTOU race).  Previous code compared
+     * raw value pointers, which was subject to ABA: malloc can reuse the same
+     * address for a new string, causing a stale embedding to be cached.
+     * The monotonic gen counter is immune to ABA. */
+    uint64_t pre_unlock_gen = 0;
     if (need_embed) {
         mem_index_entry_t *ie_pre = mem_index_find(&m->idx, key);
-        if (ie_pre) pre_unlock_value = ie_pre->value;
+        if (ie_pre) pre_unlock_gen = ie_pre->gen;
     }
 
     /* Prepare git commit message while we still hold the lock, but
@@ -652,17 +663,14 @@ int memory_store(memory_t *m, const char *key, const char *value,
          * sees it immediately.  Re-acquire lock for index mutation. */
         pthread_mutex_lock(&m->mtx);
         mem_index_entry_t *ie = mem_index_find(&m->idx, key);
-        if (ie && ie->value != pre_unlock_value) {
-            /* FIX BUG-MEM4: Value was updated by another thread while we
+        if (ie && ie->gen != pre_unlock_gen) {
+            /* FIX BUG-7: Value was updated by another thread while we
              * were generating the embedding — our embedding is stale for
              * the current value.  Remove the orphan .emb file. The new
              * value's store call will generate its own embedding.
              *
-             * TODO(aba-race): This raw pointer comparison is subject to ABA:
-             * malloc may reuse the same address for a new value string,
-             * causing this check to falsely pass and cache a stale embedding.
-             * A proper fix requires a generation counter on mem_index_entry_t
-             * that is incremented on every value update. */
+             * Uses monotonic generation counter instead of raw pointer
+             * comparison, which was subject to ABA (malloc address reuse). */
             char emb_fname[512];
             key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
             char emb_orphan[NASH_PATH_MAX];
@@ -1431,15 +1439,6 @@ char *memory_load_pinned(memory_t *m) {
 
 /* ── batch delete / gc_refs ──────────────────────────────── */
 
-/* Forward declarations */
-static void gc_refs_multi_index(memory_t *m, const char **deleted_keys, int n_deleted);
-
-/* Remove deleted_key from refs of all entries using in-memory index.
- * Delegates to batch version with n=1 to avoid code duplication. */
-static void gc_refs_index(memory_t *m, const char *deleted_key) {
-    gc_refs_multi_index(m, &deleted_key, 1);
-}
-
 /* Helper to rewrite a JSON file removing any of the given keys from refs. */
 static void gc_refs_rewrite_multi(const char *filepath,
                                    const char **deleted_keys, int n_deleted) {
@@ -1469,9 +1468,19 @@ static void gc_refs_rewrite_multi(const char *filepath,
     cJSON_Delete(entry);
 }
 
-/* FIX 2b: Remove any of deleted_keys[] from refs using the in-memory index.
- * Batch version of gc_refs_index — iterates entries once for all K deleted keys. */
-static void gc_refs_multi_index(memory_t *m, const char **deleted_keys, int n_deleted) {
+/* FIX BUG-8: Split gc_refs into two phases:
+ * Phase 1 (under mutex): Remove refs from in-memory index, collect paths needing rewrite.
+ * Phase 2 (after unlock): Do file I/O to rewrite JSON files.
+ * This prevents file I/O from blocking all concurrent memory operations. */
+
+/* Phase 1: Update in-memory refs and collect paths that need on-disk rewrite.
+ * Returns malloc'd array of strdup'd paths; caller must free each path and the array.
+ * Sets *n_paths_out to the number of paths collected. */
+static char **gc_refs_collect_modified_paths(memory_t *m, const char **deleted_keys,
+                                              int n_deleted, int *n_paths_out) {
+    char **paths = NULL;
+    int n_paths = 0, paths_cap = 0;
+
     for (int i = 0; i < m->idx.count; i++) {
         mem_index_entry_t *ie = &m->idx.entries[i];
         int modified = 0;
@@ -1489,9 +1498,31 @@ static void gc_refs_multi_index(memory_t *m, const char **deleted_keys, int n_de
             }
         }
         if (modified && ie->path) {
-            gc_refs_rewrite_multi(ie->path, deleted_keys, n_deleted);
+            if (n_paths >= paths_cap) {
+                int new_cap = paths_cap ? paths_cap * 2 : 8;
+                char **tmp = realloc(paths, sizeof(char *) * (size_t)new_cap);
+                if (!tmp) continue;  /* skip this path on OOM */
+                paths = tmp;
+                paths_cap = new_cap;
+            }
+            paths[n_paths++] = strdup(ie->path);
         }
     }
+    *n_paths_out = n_paths;
+    return paths;
+}
+
+/* Phase 2: Rewrite JSON files outside the mutex. Frees the paths array. */
+static void gc_refs_rewrite_collected(char **paths, int n_paths,
+                                       const char **deleted_keys, int n_deleted) {
+    if (!paths) return;
+    for (int i = 0; i < n_paths; i++) {
+        if (paths[i]) {
+            gc_refs_rewrite_multi(paths[i], deleted_keys, n_deleted);
+            free(paths[i]);
+        }
+    }
+    free(paths);
 }
 
 int memory_delete(memory_t *m, const char *key) {
@@ -1521,15 +1552,19 @@ int memory_delete(memory_t *m, const char *key) {
     /* P1: Remove from in-memory index */
     mem_index_remove(&m->idx, key);
 
-    /* FIX 2b: Clean dangling refs using in-memory index instead of
-     * scanning the filesystem.  Still O(N) but avoids N disk reads. */
-    gc_refs_index(m, key);
+    /* FIX BUG-8: Collect paths needing ref rewrite under mutex,
+     * then do file I/O after releasing the lock. */
+    int n_gc_paths = 0;
+    char **gc_paths = gc_refs_collect_modified_paths(m, &key, 1, &n_gc_paths);
 
     /* Prepare commit message under lock; run git outside. */
     char msg[256];
     snprintf(msg, sizeof(msg), "memory: delete %s", key);
 
     pthread_mutex_unlock(&m->mtx);
+
+    /* Phase 2: Rewrite JSON files outside the mutex */
+    gc_refs_rewrite_collected(gc_paths, n_gc_paths, &key, 1);
 
     memory_git_commit(m, msg);
     return 0;
@@ -1590,9 +1625,10 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
         return 0;
     }
 
-    /* FIX 2b: Phase 2 — remove ALL deleted keys from refs arrays
-     * using the in-memory index instead of filesystem scan. */
-    gc_refs_multi_index(m, found_keys, n_found);
+    /* FIX BUG-8: Phase 2 — remove deleted keys from in-memory refs arrays
+     * and collect paths needing on-disk rewrite (file I/O deferred). */
+    int n_gc_paths = 0;
+    char **gc_paths = gc_refs_collect_modified_paths(m, found_keys, n_found, &n_gc_paths);
 
     /* Phase 3: Single git commit for all deletions.
      * Build msg under lock, run git outside to avoid blocking. */
@@ -1605,6 +1641,10 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
 
     free(found_keys);
     pthread_mutex_unlock(&m->mtx);
+
+    /* FIX BUG-8: Phase 2b — rewrite JSON files outside the mutex
+     * so file I/O doesn't block concurrent memory operations. */
+    gc_refs_rewrite_collected(gc_paths, n_gc_paths, keys, n_keys);
 
     memory_git_commit(m, msg);
     return n_found;
@@ -2225,13 +2265,45 @@ embed_ctx_t *memory_embed_ctx(memory_t *m) {
 int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
     if (!m || !cb) return 0;
     pthread_mutex_lock(&m->mtx);
+
+    /* FIX BUG-6: Snapshot the index array before iterating.
+     * The mutex is recursive, so the callback could call memory_store()
+     * (which may trigger realloc on the entries array) or memory_delete()
+     * (which does swap-remove).  Either mutation would corrupt a live
+     * iteration over the original array.  A shallow copy of the struct
+     * array isolates the iterator from such mutations — the pointers
+     * inside each struct (key, value, etc.) remain valid because they
+     * are only freed inside mem_index_entry_free, which is called under
+     * the same mutex and would update the live array, not our copy. */
+    int snap_count = m->idx.count;
+    if (snap_count == 0) {
+        pthread_mutex_unlock(&m->mtx);
+        return 0;
+    }
+    size_t snap_sz = sizeof(mem_index_entry_t) * (size_t)snap_count;
+    mem_index_entry_t *snap = malloc(snap_sz);
+    if (!snap) {
+        /* OOM fallback: iterate live array (old behavior, best effort) */
+        int count = 0;
+        for (int i = 0; i < m->idx.count; i++) {
+            if (cb(&m->idx.entries[i], user_data) != 0)
+                break;
+            count++;
+        }
+        pthread_mutex_unlock(&m->mtx);
+        return count;
+    }
+    memcpy(snap, m->idx.entries, snap_sz);
+
+    pthread_mutex_unlock(&m->mtx);
+
     int count = 0;
-    for (int i = 0; i < m->idx.count; i++) {
-        if (cb(&m->idx.entries[i], user_data) != 0)
+    for (int i = 0; i < snap_count; i++) {
+        if (cb(&snap[i], user_data) != 0)
             break;
         count++;
     }
-    pthread_mutex_unlock(&m->mtx);
+    free(snap);
     return count;
 }
 

@@ -268,6 +268,7 @@ static int scan_journal_lexical(const char *session_dir,
     if (!line_buf) { fclose(f); return 0; }
 
     int count = 0;
+    int stored_count = 0;  /* actual entries stored (may be < count on realloc failure) */
 
     /* Pre-allocate match array */
     int match_cap = 16;
@@ -301,9 +302,8 @@ static int scan_journal_lexical(const char *session_dir,
         count++;
 
         /* Store match if under per-session cap */
-        if (matches && count <= SS_MAX_MATCHES_PER_SESSION) {
-            int idx = count - 1;
-            if (idx >= match_cap) {
+        if (matches && stored_count < SS_MAX_MATCHES_PER_SESSION) {
+            if (stored_count >= match_cap) {
                 int new_cap = match_cap * 2;
                 if (new_cap > SS_MAX_MATCHES_PER_SESSION)
                     new_cap = SS_MAX_MATCHES_PER_SESSION;
@@ -317,11 +317,12 @@ static int scan_journal_lexical(const char *session_dir,
                     continue;
                 }
             }
-            matches[idx].snippet = extract_match_snippet(line_buf, match_pos,
+            matches[stored_count].snippet = extract_match_snippet(line_buf, match_pos,
                                                           match_len);
-            matches[idx].react_loop = rl;
-            matches[idx].step = step;
-            snprintf(matches[idx].tool, sizeof(matches[idx].tool), "%s", tool);
+            matches[stored_count].react_loop = rl;
+            matches[stored_count].step = step;
+            snprintf(matches[stored_count].tool, sizeof(matches[stored_count].tool), "%s", tool);
+            stored_count++;
         }
     }
 
@@ -331,11 +332,9 @@ static int scan_journal_lexical(const char *session_dir,
     scored->match_count = count;
     scored->lexical_scanned = 1;
 
-    if (count > 0 && matches) {
-        int n_stored = count < SS_MAX_MATCHES_PER_SESSION
-                       ? count : SS_MAX_MATCHES_PER_SESSION;
+    if (stored_count > 0 && matches) {
         scored->matches = matches;
-        scored->n_matches = n_stored;
+        scored->n_matches = stored_count;
     } else {
         /* No matches — free the pre-allocated array */
         free(matches);

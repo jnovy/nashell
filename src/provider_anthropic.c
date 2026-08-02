@@ -554,6 +554,8 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
             headers = curl_slist_append(headers, auth);
         } else {
             nash_log("[provider/vertex] WARNING: no OAuth2 token available");
+            curl_slist_free_all(headers);
+            return NULL;
         }
     } else {
         /* Direct Anthropic: x-api-key header */
@@ -565,6 +567,8 @@ static struct curl_slist *anthropic_build_headers(provider_t *p) {
         } else {
             nash_log("[provider/anthropic] WARNING: no API key in $%s",
                      p->cfg.api_key_env ? p->cfg.api_key_env : "ANTHROPIC_API_KEY");
+            curl_slist_free_all(headers);
+            return NULL;
         }
         headers = curl_slist_append(headers, "anthropic-version: " ANTHROPIC_API_VERSION);
     }

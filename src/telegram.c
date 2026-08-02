@@ -35,6 +35,23 @@
 #include <curl/curl.h>
 #include <pthread.h>
 
+/* Extract a long long from a cJSON number item, avoiding double precision loss.
+ * cJSON stores numbers as double (53-bit mantissa), which loses precision
+ * for Telegram IDs > 2^53.  We print and re-parse via strtoll instead. */
+static long long tg_get_ll(const cJSON *item) {
+    if (!item) return 0;
+    /* Fast path: value fits in double without precision loss */
+    double v = item->valuedouble;
+    if (v > -9007199254740992.0 && v < 9007199254740992.0)
+        return (long long)v;
+    /* Slow path: print to string, parse as integer */
+    char *s = cJSON_PrintUnformatted(item);
+    if (!s) return (long long)v;
+    long long r = strtoll(s, NULL, 10);
+    free(s);
+    return r;
+}
+
 /* Telegram API limits */
 #define TG_MSG_MAX      4096    /* max chars per message */
 #define TG_API_BASE     "https://api.telegram.org/bot"
@@ -190,7 +207,7 @@ static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
                     cJSON *tid = cJSON_GetObjectItem(result,
                                                      "message_thread_id");
                     if (tid && cJSON_IsNumber(tid))
-                        thread_id = (long long)tid->valuedouble;
+                        thread_id = tg_get_ll(tid);
                 }
             } else {
                 cJSON *desc = cJSON_GetObjectItem(rjson, "description");
@@ -445,14 +462,22 @@ static int tg_config_save(telegram_ctx_t *ctx) {
 
     /* Write back existing content */
     if (existing) {
-        /* Remove any existing [telegram] section first */
+        /* Remove any existing [telegram] section (and subsections) first */
         char *tg_start = strstr(existing, "\n[telegram]");
         int at_start = (!tg_start && strncmp(existing, "[telegram]", 10) == 0);
         if (at_start) tg_start = existing;
         if (tg_start) {
-            /* Find next section or EOF */
+            /* Find next non-telegram section or EOF */
             char *sect = at_start ? tg_start : tg_start + 1;
-            char *next = strstr(sect, "\n[");
+            char *next = sect;
+            while ((next = strstr(next, "\n[")) != NULL) {
+                next++;  /* skip the newline */
+                if (strncmp(next, "[telegram]", 10) == 0 ||
+                    strncmp(next, "[telegram.", 10) == 0)
+                    continue;  /* skip telegram subsections */
+                next--;  /* back to newline */
+                break;
+            }
             if (!at_start)
                 fwrite(existing, 1, (size_t)(tg_start - existing), f);
             if (next)
@@ -467,6 +492,16 @@ static int tg_config_save(telegram_ctx_t *ctx) {
     fprintf(f, "\n[telegram]\n");
     fprint_toml_str(f, "bot_token", ctx->bot_token);
     fprintf(f, "chat_id = %lld\n", ctx->chat_id);
+
+    /* Write back [telegram.topics] if any */
+    if (ctx->topic_map_count > 0) {
+        fprintf(f, "\n[telegram.topics]\n");
+        for (int i = 0; i < ctx->topic_map_count; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "%lld", ctx->topic_map[i].thread_id);
+            fprint_toml_str(f, key, ctx->topic_map[i].workspace);
+        }
+    }
 
     fclose(f);
     return 0;
@@ -535,10 +570,10 @@ int telegram_setup(telegram_ctx_t *ctx) {
                 if (!chat) continue;
                 cJSON *cid = cJSON_GetObjectItem(chat, "id");
                 if (cid) {
-                    ctx->chat_id = (long long)cid->valuedouble;
+                    ctx->chat_id = tg_get_ll(cid);
                     /* Update offset past this update */
                     cJSON *uid = cJSON_GetObjectItem(upd, "update_id");
-                    if (uid) ctx->update_offset = (long long)uid->valuedouble + 1;
+                    if (uid) ctx->update_offset = tg_get_ll(uid) + 1;
                     break;
                 }
             }
@@ -684,7 +719,7 @@ static long long tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
                 if (result) {
                     cJSON *mid = cJSON_GetObjectItem(result, "message_id");
                     if (mid)
-                        result_msg_id = (long long)mid->valuedouble;
+                        result_msg_id = tg_get_ll(mid);
                 }
             }
             cJSON_Delete(rjson);
@@ -1415,7 +1450,7 @@ void *telegram_run(void *arg) {
                 cJSON *upd = cJSON_GetArrayItem(updates, i);
                 cJSON *uid = cJSON_GetObjectItem(upd, "update_id");
                 if (uid) {
-                    long long id = (long long)uid->valuedouble;
+                    long long id = tg_get_ll(uid);
                     if (id >= ctx->update_offset)
                         ctx->update_offset = id + 1;
                 }
@@ -1427,17 +1462,17 @@ void *telegram_run(void *arg) {
                 cJSON *chat = cJSON_GetObjectItem(msg, "chat");
                 if (!chat) continue;
                 cJSON *cid = cJSON_GetObjectItem(chat, "id");
-                if (!cid || (long long)cid->valuedouble != ctx->chat_id) {
+                if (!cid || tg_get_ll(cid) != ctx->chat_id) {
                     fprintf(stderr, "[telegram] ignoring message from "
                             "unauthorized chat %lld\n",
-                            (long long)(cid ? cid->valuedouble : 0));
+                            (cid ? tg_get_ll(cid) : 0));
                     continue;
                 }
 
                 /* Extract message_thread_id for forum topic routing */
                 cJSON *thread_j = cJSON_GetObjectItem(msg, "message_thread_id");
                 long long msg_thread_id = (thread_j && cJSON_IsNumber(thread_j))
-                                          ? (long long)thread_j->valuedouble : 0;
+                                          ? tg_get_ll(thread_j) : 0;
                 const char *msg_workspace = tg_workspace_for_thread(ctx, msg_thread_id);
 
                 /* Auto-discover topic names from service messages.
