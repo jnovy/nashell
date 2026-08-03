@@ -32,7 +32,6 @@ tests/test_semantic_scoring
 tests/test_breadcrumbs
 tests/test_optimizer
 tests/test_reflection
-tools/chunk_backfill
 scripts/perception*
 scripts/t
 
