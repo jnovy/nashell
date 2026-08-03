@@ -14,8 +14,8 @@ endif
 # plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
 LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl $(ORT_LDFLAGS)
 
-# Default data directory (playbooks, etc.) -- source tree for dev, /usr/share/nash for RPM
-NASH_DATADIR ?= $(CURDIR)
+# Default data directory (playbooks, etc.) -- /usr/share/nash for installed builds
+NASH_DATADIR ?= /usr/share/nash
 CFLAGS  += -DNASH_DATADIR='"$(NASH_DATADIR)"'
 
 SRC     = src/main.c src/str.c src/cJSON.c \
