@@ -15,6 +15,7 @@ tags
 *.png
 *.gif
 *.bmp
+!demo/nash-demo.gif
 tests/test_memory
 tests/test_store
 tests/test_config
