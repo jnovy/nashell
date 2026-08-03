@@ -10,18 +10,18 @@
 #include <curl/curl.h>
 
 typedef struct {
-    char  *data;
-    size_t len;
-    size_t cap;
+  char *data;
+  size_t len;
+  size_t cap;
 } str_t;
 
-str_t  str_new(size_t initial_cap);
-void   str_free(str_t *s);
-void   str_clear(str_t *s);
-void   str_append(str_t *s, const char *data, size_t len);
-void   str_append_cstr(str_t *s, const char *cstr);
-void   str_appendf(str_t *s, const char *fmt, ...);
-char  *str_steal(str_t *s);   /* take ownership, reset str_t */
+str_t str_new(size_t initial_cap);
+void str_free(str_t *s);
+void str_clear(str_t *s);
+void str_append(str_t *s, const char *data, size_t len);
+void str_append_cstr(str_t *s, const char *cstr);
+void str_appendf(str_t *s, const char *fmt, ...);
+char *str_steal(str_t *s); /* take ownership, reset str_t */
 const char *str_cstr(const str_t *s);
 
 /* Format seconds into human-readable duration: 5s, 1m30s, 2h05m30s, 1d02h05m30s
@@ -111,30 +111,30 @@ size_t str_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata);
 
 /* Check if a string is NULL, empty, or whitespace-only (spaces, tabs, newlines) */
 static inline int is_whitespace_only(const char *s) {
-    if (!s) return 1;
-    while (*s) {
-        if (*s != ' ' && *s != '\n' && *s != '\r' && *s != '\t')
-            return 0;
-        s++;
-    }
-    return 1;
+  if (!s) return 1;
+  while (*s) {
+    if (*s != ' ' && *s != '\n' && *s != '\r' && *s != '\t')
+      return 0;
+    s++;
+  }
+  return 1;
 }
 
 /* Skip leading whitespace (spaces, tabs, newlines).
  * Returns pointer to first non-whitespace char, or to the NUL terminator. */
 static inline const char *skip_whitespace(const char *s) {
-    while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t')
-        s++;
-    return s;
+  while (*s == ' ' || *s == '\n' || *s == '\r' || *s == '\t')
+    s++;
+  return s;
 }
 
 /* Trim trailing whitespace in-place by writing a NUL terminator.
  * Safe on empty strings. */
 static inline void rtrim_whitespace(char *s) {
-    char *end = s + strlen(s);
-    while (end > s && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\t'))
-        end--;
-    *end = '\0';
+  char *end = s + strlen(s);
+  while (end > s && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\t'))
+    end--;
+  *end = '\0';
 }
 
 /* Count newline characters in a string. */
@@ -205,41 +205,50 @@ char *sanitize_workspace_name(const char *display_name);
  * On failure, *ptr is left unchanged (no leak) and returns -1.
  * Usage:  if (safe_realloc((void **)&buf, new_size)) { handle error } */
 static inline int safe_realloc(void **ptr, size_t new_size) {
-    void *tmp = realloc(*ptr, new_size);
-    if (!tmp) return -1;
-    *ptr = tmp;
-    return 0;
+  void *tmp = realloc(*ptr, new_size);
+  if (!tmp) return -1;
+  *ptr = tmp;
+  return 0;
 }
 
 /* ── Abort-on-failure allocators ─────────────────────────────────────
  * Like malloc/calloc/strdup but abort on failure instead of returning
  * NULL.  Suitable for allocations where OOM is unrecoverable. */
 static inline void *xmalloc(size_t size) {
-    void *p = malloc(size);
-    if (!p && size) { fprintf(stderr, "xmalloc(%zu): out of memory\n", size); abort(); }
-    return p;
+  void *p = malloc(size);
+  if (!p && size) {
+    fprintf(stderr, "xmalloc(%zu): out of memory\n", size);
+    abort();
+  }
+  return p;
 }
 static inline void *xcalloc(size_t n, size_t size) {
-    void *p = calloc(n, size);
-    if (!p && n && size) { fprintf(stderr, "xcalloc(%zu,%zu): out of memory\n", n, size); abort(); }
-    return p;
+  void *p = calloc(n, size);
+  if (!p && n && size) {
+    fprintf(stderr, "xcalloc(%zu,%zu): out of memory\n", n, size);
+    abort();
+  }
+  return p;
 }
 static inline char *xstrdup(const char *s) {
-    char *p = strdup(s);
-    if (!p) { fprintf(stderr, "xstrdup: out of memory\n"); abort(); }
-    return p;
+  char *p = strdup(s);
+  if (!p) {
+    fprintf(stderr, "xstrdup: out of memory\n");
+    abort();
+  }
+  return p;
 }
 /* Like xstrdup but NULL input yields strdup("") instead of crash. */
 static inline char *xstrdupz(const char *s) {
-    return xstrdup(s ? s : "");
+  return xstrdup(s ? s : "");
 }
 
 /* ── String replacement helper ───────────────────────────────────────
  * Frees *dst, then sets *dst = strdup(src) (or NULL if src is NULL).
  * Eliminates the common free(x); x = strdup(y); two-liner. */
 static inline void str_replace(char **dst, const char *src) {
-    free(*dst);
-    *dst = src ? strdup(src) : NULL;
+  free(*dst);
+  *dst = src ? strdup(src) : NULL;
 }
 
 /* ── Dynamic array push macro ────────────────────────────────────────
@@ -252,24 +261,26 @@ static inline void str_replace(char **dst, const char *src) {
  *
  * On realloc failure, the item is NOT added and control falls through
  * (caller should check n after if critical). */
-#define VEC_PUSH(arr, count, cap, item) do {          \
-    if ((count) >= (cap)) {                           \
-        int _new_cap = (cap) ? (cap) * 2 : 8;        \
-        if (safe_realloc((void **)&(arr),             \
-            (size_t)_new_cap * sizeof(*(arr))) == 0)  \
-            (cap) = _new_cap;                         \
-        else break;                                   \
-    }                                                 \
-    (arr)[(count)++] = (item);                        \
-} while (0)
+#define VEC_PUSH(arr, count, cap, item) \
+  do { \
+    if ((count) >= (cap)) { \
+      int _new_cap = (cap) ? (cap) * 2 : 8; \
+      if (safe_realloc((void **)&(arr), \
+                       (size_t)_new_cap * sizeof(*(arr))) == 0) \
+        (cap) = _new_cap; \
+      else \
+        break; \
+    } \
+    (arr)[(count)++] = (item); \
+  } while (0)
 
 /* ── Free a string array ─────────────────────────────────────────────
  * Frees each element then the array itself.  Safe with NULL arr. */
 static inline void free_string_array(char **arr, int count) {
-    if (!arr) return;
-    for (int i = 0; i < count; i++)
-        free(arr[i]);
-    free(arr);
+  if (!arr) return;
+  for (int i = 0; i < count; i++)
+    free(arr[i]);
+  free(arr);
 }
 
 /* ── JSONL iteration helper ──────────────────────────────────────────
@@ -322,16 +333,16 @@ int dump_json(const char *path, struct cJSON *obj);
  * format_iso_datetime: "2026-08-01 17:50:00" */
 #include <time.h>
 static inline char *format_iso_date(time_t t, char *buf, size_t sz) {
-    struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(buf, sz, "%Y-%m-%d", &tm);
-    return buf;
+  struct tm tm;
+  localtime_r(&t, &tm);
+  strftime(buf, sz, "%Y-%m-%d", &tm);
+  return buf;
 }
 static inline char *format_iso_datetime(time_t t, char *buf, size_t sz) {
-    struct tm tm;
-    localtime_r(&t, &tm);
-    strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tm);
-    return buf;
+  struct tm tm;
+  localtime_r(&t, &tm);
+  strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tm);
+  return buf;
 }
 
 /* ── Convenience micro-helpers ───────────────────────────────────────
@@ -343,46 +354,46 @@ static inline char *format_iso_datetime(time_t t, char *buf, size_t sz) {
 
 /* Check if string s starts with prefix pfx. */
 static inline int starts_with(const char *s, const char *pfx) {
-    return strncmp(s, pfx, strlen(pfx)) == 0;
+  return strncmp(s, pfx, strlen(pfx)) == 0;
 }
 
 /* Check if string s ends with suffix sfx. */
 static inline int ends_with(const char *s, const char *sfx) {
-    size_t slen = strlen(s), xlen = strlen(sfx);
-    return slen >= xlen && memcmp(s + slen - xlen, sfx, xlen) == 0;
+  size_t slen = strlen(s), xlen = strlen(sfx);
+  return slen >= xlen && memcmp(s + slen - xlen, sfx, xlen) == 0;
 }
 
 /* Return 1 if path exists (any type), 0 otherwise. */
 static inline int file_exists(const char *path) {
-    struct stat st;
-    return stat(path, &st) == 0;
+  struct stat st;
+  return stat(path, &st) == 0;
 }
 
 /* Return 1 if path exists and is a directory, 0 otherwise. */
 static inline int dir_exists(const char *path) {
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+  struct stat st;
+  return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 /* Create directory if it does not already exist. Returns 0 on success
  * (including already-exists), -1 on failure. */
 static inline int ensure_dir(const char *path, mode_t mode) {
-    if (mkdir(path, mode) == 0) return 0;
-    return (errno == EEXIST) ? 0 : -1;
+  if (mkdir(path, mode) == 0) return 0;
+  return (errno == EEXIST) ? 0 : -1;
 }
 
 /* Build "a/b" into buf. Returns buf for convenience. */
 static inline char *path_join(char *buf, size_t sz,
                               const char *a, const char *b) {
-    snprintf(buf, sz, "%s/%s", a, b);
-    return buf;
+  snprintf(buf, sz, "%s/%s", a, b);
+  return buf;
 }
 
 /* Return pointer to the basename portion of path (after last '/').
  * Returns path itself if no '/' is found. Never allocates. */
 static inline const char *path_basename(const char *path) {
-    const char *p = strrchr(path, '/');
-    return p ? p + 1 : path;
+  const char *p = strrchr(path, '/');
+  return p ? p + 1 : path;
 }
 
 #endif

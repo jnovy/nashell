@@ -24,18 +24,18 @@
 /* ── Eviction Scoring Constants ────────────────────── */
 /* Shared between progressive (react_eviction.c) and emergency (react_error.c)
  * scorers.  Change here to keep both in sync. */
-#define REACT_SCORE_IMP_WEIGHT      100  /* points per importance tier */
-#define REACT_SCORE_REC_WEIGHT      10   /* points per recoverability tier */
-#define REACT_SCORE_POS_RANGE       19   /* position normalization range */
-#define REACT_SCORE_SIZE_MAX        90   /* max size_bonus (< one imp tier) */
-#define REACT_SCORE_SIZE_THRESH     200  /* min msg len for size bonus */
-#define REACT_SCORE_SIZE_DIV        500  /* size bonus divisor */
-#define REACT_SCORE_SEMANTIC_WEIGHT 40   /* max semantic relevance bonus (< half imp tier) */
+#define REACT_SCORE_IMP_WEIGHT 100     /* points per importance tier */
+#define REACT_SCORE_REC_WEIGHT 10      /* points per recoverability tier */
+#define REACT_SCORE_POS_RANGE 19       /* position normalization range */
+#define REACT_SCORE_SIZE_MAX 90        /* max size_bonus (< one imp tier) */
+#define REACT_SCORE_SIZE_THRESH 200    /* min msg len for size bonus */
+#define REACT_SCORE_SIZE_DIV 500       /* size bonus divisor */
+#define REACT_SCORE_SEMANTIC_WEIGHT 40 /* max semantic relevance bonus (< half imp tier) */
 
 /* Truncation limit for message content before embedding (chars).
  * The "topic" is usually in the first 500 chars; embedding the full
  * content of large tool results would waste compute for marginal gain. */
-#define REACT_EMBED_TRUNC_CHARS     500
+#define REACT_EMBED_TRUNC_CHARS 500
 
 /* ── Eviction Policy ───────────────────────────────── */
 /* Computed once at eviction entry from config.  Replaces 20+ scattered
@@ -48,86 +48,86 @@
  *   breadcrumb_budget_pct (combined breadcrumb %, default 5)
  *   compress_min_length   (min msg size for BM25, default 800) */
 typedef struct {
-    /* Direct from config */
-    int trigger_pct;          /* context_eviction_pct (70) */
-    int floor_pct;            /* eviction_floor_pct (20) */
-    int sp_budget_pct;        /* scratchpad_budget_pct (15) */
-    int breadcrumb_pct;       /* breadcrumb_budget_pct (5) */
-    int compress_min_len;     /* compress_min_length (800) */
+  /* Direct from config */
+  int trigger_pct;      /* context_eviction_pct (70) */
+  int floor_pct;        /* eviction_floor_pct (20) */
+  int sp_budget_pct;    /* scratchpad_budget_pct (15) */
+  int breadcrumb_pct;   /* breadcrumb_budget_pct (5) */
+  int compress_min_len; /* compress_min_length (800) */
 
-    /* Derived (computed once) */
-    int target_pct;           /* trigger - trigger/5  = 56 */
-    int emergency_target_pct; /* trigger + 10         = 80 */
-    int hysteresis_gap;       /* trigger/5, min 5     = 14 */
-    int warn_gap;             /* hysteresis/2, min 3  = 7  */
+  /* Derived (computed once) */
+  int target_pct;           /* trigger - trigger/5  = 56 */
+  int emergency_target_pct; /* trigger + 10         = 80 */
+  int hysteresis_gap;       /* trigger/5, min 5     = 14 */
+  int warn_gap;             /* hysteresis/2, min 3  = 7  */
 
-    int sp_max_remaining_pct; /* sp_budget * 8/3      ≈ 40 */
-    long sp_min_chars;        /* 2048 (absolute floor) */
-    long sp_shrink_min;       /* sp_min / 4           = 512 */
-    long sp_fallback;         /* 8192 (when context unknown) */
+  int sp_max_remaining_pct; /* sp_budget * 8/3      ≈ 40 */
+  long sp_min_chars;        /* 2048 (absolute floor) */
+  long sp_shrink_min;       /* sp_min / 4           = 512 */
+  long sp_fallback;         /* 8192 (when context unknown) */
 
-    int bc_index_pct;         /* breadcrumb * 2/5     = 2 */
-    int bc_summary_pct;       /* breadcrumb * 3/5     = 3 */
-    int summary_per_msg_min;  /* 200 (absolute floor) */
-    int summary_per_msg_max;  /* per_msg_min * 5      = 1000 */
+  int bc_index_pct;        /* breadcrumb * 2/5     = 2 */
+  int bc_summary_pct;      /* breadcrumb * 3/5     = 3 */
+  int summary_per_msg_min; /* 200 (absolute floor) */
+  int summary_per_msg_max; /* per_msg_min * 5      = 1000 */
 
-    int compress_min_chars;   /* compress_min_len / 2 = 400 */
-    int compress_min_units;   /* 4 (always) */
+  int compress_min_chars; /* compress_min_len / 2 = 400 */
+  int compress_min_units; /* 4 (always) */
 
-    long floor_min_chars;     /* 7000 (absolute floor — ~2000 tokens at 3.5 cpt) */
+  long floor_min_chars; /* 7000 (absolute floor — ~2000 tokens at 3.5 cpt) */
 } eviction_policy_t;
 
 /* Compute policy from config.  Call once at start of react_maybe_evict(). */
 static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
-    eviction_policy_t p = {0};
-    p.trigger_pct       = cfg ? cfg->context_eviction_pct : 70;
-    p.floor_pct         = cfg ? cfg->eviction_floor_pct : 20;
-    p.sp_budget_pct     = cfg ? cfg->scratchpad_budget_pct : 15;
-    p.breadcrumb_pct    = cfg ? cfg->breadcrumb_budget_pct : 5;
-    p.compress_min_len  = cfg ? cfg->compress_min_length : 800;
+  eviction_policy_t p = {0};
+  p.trigger_pct = cfg ? cfg->context_eviction_pct : 70;
+  p.floor_pct = cfg ? cfg->eviction_floor_pct : 20;
+  p.sp_budget_pct = cfg ? cfg->scratchpad_budget_pct : 15;
+  p.breadcrumb_pct = cfg ? cfg->breadcrumb_budget_pct : 5;
+  p.compress_min_len = cfg ? cfg->compress_min_length : 800;
 
-    /* Hysteresis */
-    p.hysteresis_gap    = p.trigger_pct / 5;
-    if (p.hysteresis_gap < 5) p.hysteresis_gap = 5;
-    p.target_pct        = p.trigger_pct - p.hysteresis_gap;
-    p.warn_gap          = p.hysteresis_gap / 2;
-    if (p.warn_gap < 3) p.warn_gap = 3;
-    p.emergency_target_pct = p.trigger_pct + 10;
-    if (p.emergency_target_pct > 95) p.emergency_target_pct = 95;
+  /* Hysteresis */
+  p.hysteresis_gap = p.trigger_pct / 5;
+  if (p.hysteresis_gap < 5) p.hysteresis_gap = 5;
+  p.target_pct = p.trigger_pct - p.hysteresis_gap;
+  p.warn_gap = p.hysteresis_gap / 2;
+  if (p.warn_gap < 3) p.warn_gap = 3;
+  p.emergency_target_pct = p.trigger_pct + 10;
+  if (p.emergency_target_pct > 95) p.emergency_target_pct = 95;
 
-    /* Scratchpad budget chain */
-    p.sp_max_remaining_pct = p.sp_budget_pct * 8 / 3;  /* ≈ 2.67× */
-    p.sp_min_chars      = 2048;
-    p.sp_shrink_min     = p.sp_min_chars / 4;           /* 512 */
-    p.sp_fallback       = 8192;
+  /* Scratchpad budget chain */
+  p.sp_max_remaining_pct = p.sp_budget_pct * 8 / 3; /* ≈ 2.67× */
+  p.sp_min_chars = 2048;
+  p.sp_shrink_min = p.sp_min_chars / 4; /* 512 */
+  p.sp_fallback = 8192;
 
-    /* Breadcrumb budget chain */
-    p.bc_index_pct      = p.breadcrumb_pct * 2 / 5;
-    p.bc_summary_pct    = p.breadcrumb_pct - p.bc_index_pct;
-    p.summary_per_msg_min = 200;
-    p.summary_per_msg_max = p.summary_per_msg_min * 5;  /* 1000 */
+  /* Breadcrumb budget chain */
+  p.bc_index_pct = p.breadcrumb_pct * 2 / 5;
+  p.bc_summary_pct = p.breadcrumb_pct - p.bc_index_pct;
+  p.summary_per_msg_min = 200;
+  p.summary_per_msg_max = p.summary_per_msg_min * 5; /* 1000 */
 
-    /* Compression chain */
-    p.compress_min_chars = p.compress_min_len / 2;      /* 400 */
-    p.compress_min_units = 4;
+  /* Compression chain */
+  p.compress_min_chars = p.compress_min_len / 2; /* 400 */
+  p.compress_min_units = 4;
 
-    p.floor_min_chars    = 7000;  /* ~2000 tokens at 3.5 cpt — anti-pattern minimum */
-    return p;
+  p.floor_min_chars = 7000; /* ~2000 tokens at 3.5 cpt — anti-pattern minimum */
+  return p;
 }
 
 /* Maximum total recovery attempts across all error types before giving up.
  * Prevents unbounded retries from alternating error types.
  * TODO(react-recovery): Currently unused — no per-type recovery counters exist
  * in react.c to aggregate. Wire up when recovery tracking is implemented. */
-#define REACT_MAX_TOTAL_RECOVERY    12
+#define REACT_MAX_TOTAL_RECOVERY 12
 
 /* Maximum keep_tail — prevents unbounded tail growth from
  * interleaved user_ask responses shrinking the evictable range. */
-#define REACT_KEEP_TAIL_MAX          8
+#define REACT_KEEP_TAIL_MAX 8
 
 /* ── Eviction Tuning Constants (stable algorithm internals) ──── */
 /* Thought/content truncation limit for BM25 query augmentation (chars). */
-#define REACT_THOUGHT_TRUNC_LEN     200
+#define REACT_THOUGHT_TRUNC_LEN 200
 
 /* Compaction hint text injected as MEMORY_HINT after eviction.
  * Extracted to a constant to eliminate 3 copies and the magic-130 estimate.
@@ -137,26 +137,26 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
  * and confirms that compaction occurred.  Saving is still mentioned as a
  * last resort for any analysis the model holds but hasn't yet persisted. */
 #define EVICT_COMPACT_HINT \
-    "[Context compacted. Some file contents have been evicted. " \
-    "If you have unsaved analysis, save it to notes() immediately " \
-    "\xe2\x80\x94 do NOT try to recall evicted file details from memory. " \
-    "Use memory_search to recover lost context.]"
+  "[Context compacted. Some file contents have been evicted. " \
+  "If you have unsaved analysis, save it to notes() immediately " \
+  "\xe2\x80\x94 do NOT try to recall evicted file details from memory. " \
+  "Use memory_search to recover lost context.]"
 
 /* Pre-compaction warning text injected BEFORE eviction fires, while file
  * contents are still in context.  Uses warn_gap (derived from trigger_pct)
  * to detect the warning zone — no hardcoded thresholds. */
 #define EVICT_PRE_COMPACT_WARN \
-    "[URGENT: Context nearing compaction threshold. Save your unsaved " \
-    "analysis to notes() NOW with exact file:line references. After " \
-    "compaction, evicted file contents CANNOT be recovered from " \
-    "memory \xe2\x80\x94 you will confabulate if you try to recall them " \
-    "later. Use notes(op=\"append\", section=\"findings\", " \
-    "content=\"...\").]"
+  "[URGENT: Context nearing compaction threshold. Save your unsaved " \
+  "analysis to notes() NOW with exact file:line references. After " \
+  "compaction, evicted file contents CANNOT be recovered from " \
+  "memory \xe2\x80\x94 you will confabulate if you try to recall them " \
+  "later. Use notes(op=\"append\", section=\"findings\", " \
+  "content=\"...\").]"
 
 /* Scratchpad message prefix — shared by react_inject_scratchpad_msg
  * and react_format_scratchpad_msg. */
-#define REACT_SP_PREFIX     "[SCRATCHPAD]\n"
-#define REACT_SP_PREFIX_LEN 13  /* strlen("[SCRATCHPAD]\n") */
+#define REACT_SP_PREFIX "[SCRATCHPAD]\n"
+#define REACT_SP_PREFIX_LEN 13 /* strlen("[SCRATCHPAD]\n") */
 
 /* ── Partner Index ──────────────────────── */
 
@@ -164,8 +164,8 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
  * Built once before eviction passes, eliminates repeated O(n) scanning
  * and JSON parsing during eviction. */
 typedef struct {
-    int *partner;     /* partner[i] = partner index for msg i, or -1 */
-    int  n_msgs;      /* number of messages (for bounds checking) */
+  int *partner; /* partner[i] = partner index for msg i, or -1 */
+  int n_msgs;   /* number of messages (for bounds checking) */
 } evict_partner_map_t;
 
 /* Extended scoring context for semantic-aware eviction.
@@ -174,11 +174,11 @@ typedef struct {
  * When similarities is NULL, the scorer falls back to the base formula
  * (zero overhead — graceful degradation when embeddings unavailable). */
 typedef struct {
-    evict_partner_map_t *pmap;        /* partner map (never NULL) */
-    float               *similarities; /* pre-computed cosine(task, msg[i]) per msg
+  evict_partner_map_t *pmap; /* partner map (never NULL) */
+  float *similarities;       /* pre-computed cosine(task, msg[i]) per msg
                                         * indexed by absolute msg index; NULL if
                                         * embeddings unavailable */
-    int                  n_msgs;       /* length of similarities array */
+  int n_msgs;                /* length of similarities array */
 } evict_score_ctx_t;
 
 /* ── Generic Mark-Sweep ────────────────────────────── */
@@ -215,20 +215,21 @@ int react_compute_keep_tail(const llm_chat_t *chat);
 /* Calculate usage percentage of context budget. Centralizes the repeated
  * pattern: (context_budget > 0) ? (int)(100L * chars / budget) : 0 */
 static inline int react_usage_pct(long total_chars, long context_budget) {
-    return (context_budget > 0)
-        ? (int)(100L * total_chars / context_budget) : 0;
+  return (context_budget > 0)
+           ? (int)(100L * total_chars / context_budget)
+           : 0;
 }
 
 /* Calculate total chars across all messages in a chat.
  * O(1) — returns cached total_chars maintained incrementally
  * by llm_chat_add, remove, insert, and replace_content. */
 static inline long react_calc_total_chars(const llm_chat_t *chat) {
-    return chat->total_chars;
+  return chat->total_chars;
 }
 
 /* Convenience wrapper — combines calc_total_chars + usage_pct. */
 static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
-    return react_usage_pct(react_calc_total_chars(chat), budget);
+  return react_usage_pct(react_calc_total_chars(chat), budget);
 }
 
 /* Compute eviction target_pct from config.
@@ -236,24 +237,24 @@ static inline int react_chat_usage_pct(const llm_chat_t *chat, long budget) {
  * to eliminate duplicated hysteresis gap calculation.
  * Now implemented via react_eviction_policy() derivation chain. */
 static inline int react_eviction_target_pct(const config_t *cfg) {
-    eviction_policy_t pol = react_eviction_policy(cfg);
-    return pol.target_pct;
+  eviction_policy_t pol = react_eviction_policy(cfg);
+  return pol.target_pct;
 }
 
 /* Compute total chars in head (messages before evict_start). */
 static inline long react_head_chars(const llm_chat_t *chat, int evict_start) {
-    long hc = 0;
-    for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
-        hc += (long)chat->msgs[i].content_len;
-    return hc;
+  long hc = 0;
+  for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
+    hc += (long)chat->msgs[i].content_len;
+  return hc;
 }
 
 /* Compute total chars in tail (messages at or after evict_end). */
 static inline long react_tail_chars(const llm_chat_t *chat, int evict_end) {
-    long tc = 0;
-    for (int i = evict_end; i < chat->n_msgs; i++)
-        tc += (long)chat->msgs[i].content_len;
-    return tc;
+  long tc = 0;
+  for (int i = evict_end; i < chat->n_msgs; i++)
+    tc += (long)chat->msgs[i].content_len;
+  return tc;
 }
 
 /* Shared floor calculation for progressive and emergency eviction.
@@ -269,23 +270,24 @@ static inline long react_calc_floor_chars_pol(const llm_chat_t *chat,
                                               long known_head_chars,
                                               long known_tail_chars,
                                               const eviction_policy_t *pol) {
-    long head_chars = (known_head_chars >= 0)
-        ? known_head_chars
-        : react_head_chars(chat, evict_start);
-    long tail_chars = (known_tail_chars >= 0)
-        ? known_tail_chars
-        : react_tail_chars(chat, evict_end);
-    long base = (context_budget > 0)
-        ? context_budget - head_chars - tail_chars
-        : react_calc_total_chars(chat) - head_chars - tail_chars;
-    long floor = base * pol->floor_pct / 100;
-    return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
+  long head_chars = (known_head_chars >= 0)
+                      ? known_head_chars
+                      : react_head_chars(chat, evict_start);
+  long tail_chars = (known_tail_chars >= 0)
+                      ? known_tail_chars
+                      : react_tail_chars(chat, evict_end);
+  long base = (context_budget > 0)
+                ? context_budget - head_chars - tail_chars
+                : react_calc_total_chars(chat) - head_chars - tail_chars;
+  long floor = base * pol->floor_pct / 100;
+  return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
 }
 /* Compute context_budget in chars from provider config. */
 static inline long react_context_budget(const react_ctx_t *ctx) {
-    double cpt = (double)react_get_chars_per_token(ctx);
-    return (ctx->provider && ctx->provider->cfg.context_size > 0)
-        ? (long)(ctx->provider->cfg.context_size * cpt) : 0;
+  double cpt = (double)react_get_chars_per_token(ctx);
+  return (ctx->provider && ctx->provider->cfg.context_size > 0)
+           ? (long)(ctx->provider->cfg.context_size * cpt)
+           : 0;
 }
 
 /* Compute scratchpad budget using the dual-cap policy.
@@ -297,90 +299,88 @@ static inline size_t react_scratchpad_budget_pol(long context_budget,
                                                  long current_chars,
                                                  size_t min_budget,
                                                  const eviction_policy_t *pol) {
-    if (context_budget <= 0)
-        return (size_t)pol->sp_fallback;
-    size_t abs_cap = (size_t)(context_budget
-                              * pol->sp_budget_pct / 100);
-    long remaining = context_budget - current_chars;
-    if (remaining < 0) remaining = 0;
-    size_t rel_cap = (size_t)(remaining
-                              * pol->sp_max_remaining_pct / 100);
-    size_t budget = abs_cap < rel_cap ? abs_cap : rel_cap;
-    return budget < min_budget ? min_budget : budget;
+  if (context_budget <= 0)
+    return (size_t)pol->sp_fallback;
+  size_t abs_cap = (size_t)(context_budget * pol->sp_budget_pct / 100);
+  long remaining = context_budget - current_chars;
+  if (remaining < 0) remaining = 0;
+  size_t rel_cap = (size_t)(remaining * pol->sp_max_remaining_pct / 100);
+  size_t budget = abs_cap < rel_cap ? abs_cap : rel_cap;
+  return budget < min_budget ? min_budget : budget;
 }
 /* Convenience wrapper using default policy from config. */
 static inline size_t react_scratchpad_budget(long context_budget,
-                                              long current_chars,
-                                              size_t min_budget) {
-    eviction_policy_t pol = react_eviction_policy(NULL);
-    return react_scratchpad_budget_pol(context_budget, current_chars,
-                                       min_budget, &pol);
+                                             long current_chars,
+                                             size_t min_budget) {
+  eviction_policy_t pol = react_eviction_policy(NULL);
+  return react_scratchpad_budget_pol(context_budget, current_chars,
+                                     min_budget, &pol);
 }
 
 /* Compute a budget cap = max(budget * pct / 100, min_val).
  * Shared between breadcrumb index and summary cap computations. */
 static inline long react_budget_cap(long budget, int pct, long min_val) {
-    long cap = budget * pct / 100;
-    return cap < min_val ? min_val : cap;
+  long cap = budget * pct / 100;
+  return cap < min_val ? min_val : cap;
 }
 
 /* Format and inject a "[SCRATCHPAD]\n..." message at position pos.
  * Returns the injected message length (0 if nothing injected). */
 static inline long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
-                                                const char *sp_content) {
-    if (!sp_content || !sp_content[0]) return 0;
-    size_t slen = strlen(sp_content);
-    size_t total = REACT_SP_PREFIX_LEN + slen + 1;
-    char *sp_msg = malloc(total);
-    if (!sp_msg) return 0;
-    snprintf(sp_msg, total, "%s%s", REACT_SP_PREFIX, sp_content);
-    llm_chat_insert_typed(chat, pos, "user", sp_msg, LLM_MSG_SCRATCHPAD);
-    long injected = (long)(total - 1);
-    free(sp_msg);
-    return injected;
+                                               const char *sp_content) {
+  if (!sp_content || !sp_content[0]) return 0;
+  size_t slen = strlen(sp_content);
+  size_t total = REACT_SP_PREFIX_LEN + slen + 1;
+  char *sp_msg = malloc(total);
+  if (!sp_msg) return 0;
+  snprintf(sp_msg, total, "%s%s", REACT_SP_PREFIX, sp_content);
+  llm_chat_insert_typed(chat, pos, "user", sp_msg, LLM_MSG_SCRATCHPAD);
+  long injected = (long)(total - 1);
+  free(sp_msg);
+  return injected;
 }
 
 /* Format a "[SCRATCHPAD]\n..." string without inserting into chat.
  * Returns malloc'd formatted string, or NULL.  Caller must free().
  * Used by react_error.c tier-2 recovery (replace in-place). */
 static inline char *react_format_scratchpad_msg(const char *content) {
-    if (!content || !content[0]) return NULL;
-    size_t clen = strlen(content);
-    size_t total = REACT_SP_PREFIX_LEN + clen + 1;
-    char *msg = malloc(total);
-    if (!msg) return NULL;
-    snprintf(msg, total, "%s%s", REACT_SP_PREFIX, content);
-    return msg;
+  if (!content || !content[0]) return NULL;
+  size_t clen = strlen(content);
+  size_t total = REACT_SP_PREFIX_LEN + clen + 1;
+  char *msg = malloc(total);
+  if (!msg) return NULL;
+  snprintf(msg, total, "%s%s", REACT_SP_PREFIX, content);
+  return msg;
 }
 
 /* Pair-safe boundary adjustment for eviction ranges.
  * Adjusts evict_start/evict_end so that no tool_call/tool_result pair is
  * split across the boundary.  Modifies *evict_start and *evict_end in place. */
 static inline void evict_adjust_boundaries(const llm_chat_t *chat,
-                                            int *evict_start, int *evict_end) {
-    /* Adjust evict_end: pull back if a tool_result sits just outside
+                                           int *evict_start, int *evict_end) {
+  /* Adjust evict_end: pull back if a tool_result sits just outside
      * the range (its tool_call partner would be inside) or if a tool_call
      * sits at the boundary edge (its result would be outside). */
-    while (*evict_end > *evict_start + 1) {
-        if (*evict_end < chat->n_msgs &&
-            chat->msgs[*evict_end].tool_call_id) {
-            (*evict_end)--;
-            continue;
-        }
-        if (*evict_end - 1 >= *evict_start &&
-            chat->msgs[*evict_end - 1].tool_calls_json) {
-            (*evict_end)--;
-            continue;
-        }
-        break;
+  while (*evict_end > *evict_start + 1) {
+    if (*evict_end < chat->n_msgs &&
+        chat->msgs[*evict_end].tool_call_id) {
+      (*evict_end)--;
+      continue;
     }
-    /* Adjust evict_start: advance past orphaned tool_results whose
+    if (*evict_end - 1 >= *evict_start &&
+        chat->msgs[*evict_end - 1].tool_calls_json) {
+      (*evict_end)--;
+      continue;
+    }
+    break;
+  }
+  /* Adjust evict_start: advance past orphaned tool_results whose
      * tool_call partner is in the protected keep_head zone. */
-    while (*evict_start < *evict_end &&
-           chat->msgs[*evict_start].tool_call_id &&
-           (*evict_start == 0 ||
-            !chat->msgs[*evict_start - 1].tool_calls_json))
-        (*evict_start)++;
+  while (*evict_start < *evict_end &&
+         chat->msgs[*evict_start].tool_call_id &&
+         (*evict_start == 0 ||
+          !chat->msgs[*evict_start - 1].tool_calls_json))
+    (*evict_start)++;
 }
 
 /* Mark-sweep helper — removes marked messages in reverse order
@@ -448,10 +448,10 @@ void react_emit(react_event_fn fn, void *ud, react_event_t *ev);
 
 /* Streaming token callback context */
 typedef struct {
-    react_event_fn on_event;
-    void          *userdata;
-    int            step;
-    int            react_loop;
+  react_event_fn on_event;
+  void *userdata;
+  int step;
+  int react_loop;
 } react_stream_ctx_t;
 
 /* Streaming token callback — bridges llm_token_fn to react_event_fn */
@@ -483,9 +483,9 @@ void react_log_memory_context(tool_ctx_t *tools, int react_loop, int step,
  * react_checkpoint_restore() for structurally identical context.
  * mem_summary/pinned are borrowed for logging only (not freed). */
 void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
-                                  const char *user_query,
-                                  const char *mem_summary,
-                                  const char *pinned);
+                                 const char *user_query,
+                                 const char *mem_summary,
+                                 const char *pinned);
 
 /* ── Checkpoint ──────────────────────────────────────── */
 
@@ -514,7 +514,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
  * Returns mem_summary and pinned via output params for logging (caller frees).
  * Pass NULL for output params if not needed. */
 void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
-                                     char **out_mem_summary, char **out_pinned);
+                                    char **out_mem_summary, char **out_pinned);
 
 /* ── Error Recovery ──────────────────────────────────── */
 
@@ -534,8 +534,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
  * skip_sp: when true, suppress scratchpad re-injection (used when Strategy 1
  * already stripped SP and re-injecting would defeat the strip). */
 void react_inject_emergency_breadcrumbs(react_ctx_t *ctx, llm_chat_t *chat,
-                                         int n_evicted, long context_budget,
-                                         int target_pct, int skip_sp);
+                                        int n_evicted, long context_budget,
+                                        int target_pct, int skip_sp);
 
 /* Emergency evict + scratchpad re-injection helper.
  * Combines react_emergency_evict + react_reinject_scratchpad into one call.
@@ -569,7 +569,7 @@ long react_reinject_scratchpad(react_ctx_t *ctx, llm_chat_t *chat,
  * result and vice versa. Built once before eviction, used by all phases.
  * Returns a heap-allocated map. Caller must call evict_free_partner_map(). */
 evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
-                                             int range_start, int range_end);
+                                            int range_start, int range_end);
 void evict_free_partner_map(evict_partner_map_t *map);
 
 /* Unified post-eviction finalization.  Re-injects scratchpad,
@@ -602,7 +602,7 @@ int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
 /* Pichay [arXiv:2603.09023]: Replace stale/superseded file_read results
  * with compact paging handles. Runs before the mark phase. */
 void evict_lifecycle_stale_reads(llm_chat_t *chat,
-                                int evict_start, int evict_end);
+                                 int evict_start, int evict_end);
 
 /* ── Step 4.5: Type-Aware Pre-Compression ────── */
 
@@ -627,22 +627,22 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
  * NORMAL to LOW so they shed first on the next eviction pass.
  * Pinned knowledge stays HIGH — it's pinned for a reason. */
 static inline void react_degrade_preamble(llm_chat_t *chat) {
-    for (int i = 0; i < chat->n_msgs; i++) {
-        switch (chat->msgs[i].msg_type) {
-            case LLM_MSG_MEMORY_INDEX:
-            case LLM_MSG_TEMPORAL:
-            case LLM_MSG_EPISODIC:
-            case LLM_MSG_SKILLS:
-            case LLM_MSG_LESSONS:
-            case LLM_MSG_STRATEGIES:
-            case LLM_MSG_ANTIPATTERNS:
-            case LLM_MSG_TUI_VIEW:
-                chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
-                break;
-            default:
-                break;
-        }
+  for (int i = 0; i < chat->n_msgs; i++) {
+    switch (chat->msgs[i].msg_type) {
+      case LLM_MSG_MEMORY_INDEX:
+      case LLM_MSG_TEMPORAL:
+      case LLM_MSG_EPISODIC:
+      case LLM_MSG_SKILLS:
+      case LLM_MSG_LESSONS:
+      case LLM_MSG_STRATEGIES:
+      case LLM_MSG_ANTIPATTERNS:
+      case LLM_MSG_TUI_VIEW:
+        chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
+        break;
+      default:
+        break;
     }
+  }
 }
 
 #endif /* REACT_INTERNAL_H */

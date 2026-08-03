@@ -16,208 +16,218 @@
  */
 
 tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
-    TOOL_REQ_STR(params, "op", op);
-    char fpath[NASH_PATH_MAX];
-    if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0)
-        return tools_make_error("cannot determine todo.md path (no workspace or memory)");
+  TOOL_REQ_STR(params, "op", op);
+  char fpath[NASH_PATH_MAX];
+  if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0)
+    return tools_make_error("cannot determine todo.md path (no workspace or memory)");
 
-    /* ── ADD ── */
-    if (strcmp(op, "add") == 0) {
-        TOOL_REQ_STR(params, "text", text);
+  /* ── ADD ── */
+  if (strcmp(op, "add") == 0) {
+    TOOL_REQ_STR(params, "text", text);
 
-        /* Build the line: - [ ] {text} (session:{dir_basename}) */
-        char line[4096];
-        const char *sess = ctx->session_dir;
-        const char *sbase = sess ? strrchr(sess, '/') : NULL;
-        if (sbase) sbase++; else sbase = sess;
+    /* Build the line: - [ ] {text} (session:{dir_basename}) */
+    char line[4096];
+    const char *sess = ctx->session_dir;
+    const char *sbase = sess ? strrchr(sess, '/') : NULL;
+    if (sbase)
+      sbase++;
+    else
+      sbase = sess;
 
-        if (sbase && sbase[0])
-            snprintf(line, sizeof(line), "- [ ] %s (session:%s)", text, sbase);
-        else
-            snprintf(line, sizeof(line), "- [ ] %s", text);
+    if (sbase && sbase[0])
+      snprintf(line, sizeof(line), "- [ ] %s (session:%s)", text, sbase);
+    else
+      snprintf(line, sizeof(line), "- [ ] %s", text);
 
-        /* Load existing lines, append new one, save atomically */
-        char **lines = NULL;
-        int count = todo_load(fpath, &lines);
-        if (count < 0)
-            return tools_make_error("cannot read todo.md");
+    /* Load existing lines, append new one, save atomically */
+    char **lines = NULL;
+    int count = todo_load(fpath, &lines);
+    if (count < 0)
+      return tools_make_error("cannot read todo.md");
 
-        count = todo_add(&lines, count, line);
-        if (count < 0) {
-            todo_free_lines(lines, count);
-            return tools_make_error("cannot allocate memory for todo.md");
-        }
+    count = todo_add(&lines, count, line);
+    if (count < 0) {
+      todo_free_lines(lines, count);
+      return tools_make_error("cannot allocate memory for todo.md");
+    }
 
-        /* Try creating parent dir if needed */
-        if (todo_save(fpath, lines, count) != 0) {
-            char *slash = strrchr(fpath, '/');
-            if (slash) {
-                *slash = '\0';
-                mkdir(fpath, 0755);
-                *slash = '/';
-            }
-            if (todo_save(fpath, lines, count) != 0) {
-                todo_free_lines(lines, count);
-                return tools_make_error("cannot write todo.md");
-            }
-        }
-
-        int index = count;
+    /* Try creating parent dir if needed */
+    if (todo_save(fpath, lines, count) != 0) {
+      char *slash = strrchr(fpath, '/');
+      if (slash) {
+        *slash = '\0';
+        mkdir(fpath, 0755);
+        *slash = '/';
+      }
+      if (todo_save(fpath, lines, count) != 0) {
         todo_free_lines(lines, count);
+        return tools_make_error("cannot write todo.md");
+      }
+    }
 
-        tool_result_t res = tool_result_ok();
-        cJSON_AddNumberToObject(res.meta, "index", index);
-        cJSON_AddStringToObject(res.meta, "item", line);
-        if (ctx->ws && ctx->ws->name)
-            cJSON_AddStringToObject(res.meta, "workspace", ctx->ws->name);
+    int index = count;
+    todo_free_lines(lines, count);
 
-        /* Audit trail */
-        char *hash = store_save(ctx->store, line);
-        char *alias = tool_register_alias(ctx, hash ? hash : "");
-        tools_inject_thought(ctx, params);
-        tool_journal(ctx, "todo",
-                       params, alias, strlen(line), 0, NULL, NULL);
-        free(alias); free(hash);
-        return res;
+    tool_result_t res = tool_result_ok();
+    cJSON_AddNumberToObject(res.meta, "index", index);
+    cJSON_AddStringToObject(res.meta, "item", line);
+    if (ctx->ws && ctx->ws->name)
+      cJSON_AddStringToObject(res.meta, "workspace", ctx->ws->name);
+
+    /* Audit trail */
+    char *hash = store_save(ctx->store, line);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "todo",
+                 params, alias, strlen(line), 0, NULL, NULL);
+    free(alias);
+    free(hash);
+    return res;
 
     /* ── LIST ── */
-    } else if (strcmp(op, "list") == 0) {
-        char **lines;
-        int count = todo_load(fpath, &lines);
+  } else if (strcmp(op, "list") == 0) {
+    char **lines;
+    int count = todo_load(fpath, &lines);
 
-        str_t out = str_new(512);
-        int open = 0, done_count = 0;
-        for (int i = 0; i < count; i++) {
-            str_appendf(&out, "%d. %s\n", i + 1, lines[i]);
-            if (strstr(lines[i], "- [ ]")) open++;
-            else if (strstr(lines[i], "- [x]")) done_count++;
-        }
+    str_t out = str_new(512);
+    int open = 0, done_count = 0;
+    for (int i = 0; i < count; i++) {
+      str_appendf(&out, "%d. %s\n", i + 1, lines[i]);
+      if (strstr(lines[i], "- [ ]"))
+        open++;
+      else if (strstr(lines[i], "- [x]"))
+        done_count++;
+    }
 
-        cJSON *meta = cJSON_CreateObject();
-        cJSON_AddNumberToObject(meta, "count", count);
-        cJSON_AddNumberToObject(meta, "open", open);
-        cJSON_AddNumberToObject(meta, "done", done_count);
-        if (ctx->ws && ctx->ws->name)
-            cJSON_AddStringToObject(meta, "workspace", ctx->ws->name);
-        if (count > 0)
-            cJSON_AddStringToObject(meta, "items", out.data);
-        else
-            cJSON_AddStringToObject(meta, "items", "(no items)");
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddNumberToObject(meta, "count", count);
+    cJSON_AddNumberToObject(meta, "open", open);
+    cJSON_AddNumberToObject(meta, "done", done_count);
+    if (ctx->ws && ctx->ws->name)
+      cJSON_AddStringToObject(meta, "workspace", ctx->ws->name);
+    if (count > 0)
+      cJSON_AddStringToObject(meta, "items", out.data);
+    else
+      cJSON_AddStringToObject(meta, "items", "(no items)");
 
-        char *hash = store_save(ctx->store, out.data);
-        char *alias = tool_register_alias(ctx, hash ? hash : "");
-        tools_inject_thought(ctx, params);
-        tool_journal(ctx, "todo",
-                       params, alias, out.len, count, NULL, NULL);
+    char *hash = store_save(ctx->store, out.data);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "todo",
+                 params, alias, out.len, count, NULL, NULL);
 
-        char *ref_copy = xstrdup(alias);
-        free(alias); free(hash);
-        todo_free_lines(lines, count);
-        str_free(&out);
-        return tools_make_result(1, meta, ref_copy);
+    char *ref_copy = xstrdup(alias);
+    free(alias);
+    free(hash);
+    todo_free_lines(lines, count);
+    str_free(&out);
+    return tools_make_result(1, meta, ref_copy);
 
     /* ── DONE ── */
-    } else if (strcmp(op, "done") == 0) {
-        cJSON *idx_j = cJSON_GetObjectItem(params, "index");
-        if (!idx_j || !cJSON_IsNumber(idx_j))
-            return tools_make_error("'done' requires 'index' (integer)");
-        int idx = (int)cJSON_GetNumberValue(idx_j);
+  } else if (strcmp(op, "done") == 0) {
+    cJSON *idx_j = cJSON_GetObjectItem(params, "index");
+    if (!idx_j || !cJSON_IsNumber(idx_j))
+      return tools_make_error("'done' requires 'index' (integer)");
+    int idx = (int)cJSON_GetNumberValue(idx_j);
 
-        char **lines;
-        int count = todo_load(fpath, &lines);
-        const char *err_msg = NULL;
-        if (todo_mark_done(lines, count, idx, &err_msg) != 0) {
-            todo_free_lines(lines, count);
-            return tools_make_error(err_msg ? err_msg : "cannot mark done");
-        }
+    char **lines;
+    int count = todo_load(fpath, &lines);
+    const char *err_msg = NULL;
+    if (todo_mark_done(lines, count, idx, &err_msg) != 0) {
+      todo_free_lines(lines, count);
+      return tools_make_error(err_msg ? err_msg : "cannot mark done");
+    }
 
-        todo_save(fpath, lines, count);
+    todo_save(fpath, lines, count);
 
-        tool_result_t res = tool_result_ok();
-        cJSON_AddStringToObject(res.meta, "item", lines[idx - 1]);
+    tool_result_t res = tool_result_ok();
+    cJSON_AddStringToObject(res.meta, "item", lines[idx - 1]);
 
-        char *hash = store_save(ctx->store, lines[idx - 1]);
-        char *alias = tool_register_alias(ctx, hash ? hash : "");
-        tools_inject_thought(ctx, params);
-        tool_journal(ctx, "todo",
-                       params, alias, strlen(lines[idx - 1]), 0, NULL, NULL);
-        free(alias); free(hash);
-        todo_free_lines(lines, count);
-        return res;
+    char *hash = store_save(ctx->store, lines[idx - 1]);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "todo",
+                 params, alias, strlen(lines[idx - 1]), 0, NULL, NULL);
+    free(alias);
+    free(hash);
+    todo_free_lines(lines, count);
+    return res;
 
     /* ── REMOVE ── */
-    } else if (strcmp(op, "remove") == 0) {
-        cJSON *idx_j = cJSON_GetObjectItem(params, "index");
-        if (!idx_j || !cJSON_IsNumber(idx_j))
-            return tools_make_error("'remove' requires 'index' (integer)");
-        int idx = (int)cJSON_GetNumberValue(idx_j);
+  } else if (strcmp(op, "remove") == 0) {
+    cJSON *idx_j = cJSON_GetObjectItem(params, "index");
+    if (!idx_j || !cJSON_IsNumber(idx_j))
+      return tools_make_error("'remove' requires 'index' (integer)");
+    int idx = (int)cJSON_GetNumberValue(idx_j);
 
-        char **lines;
-        int count = todo_load(fpath, &lines);
-        char *removed = NULL;
-        const char *err_msg = NULL;
-        int orig_count = count;
-        count = todo_remove(lines, count, idx, &removed, &err_msg);
-        if (count < 0) {
-            todo_free_lines(lines, orig_count);
-            return tools_make_error(err_msg ? err_msg : "cannot remove");
-        }
+    char **lines;
+    int count = todo_load(fpath, &lines);
+    char *removed = NULL;
+    const char *err_msg = NULL;
+    int orig_count = count;
+    count = todo_remove(lines, count, idx, &removed, &err_msg);
+    if (count < 0) {
+      todo_free_lines(lines, orig_count);
+      return tools_make_error(err_msg ? err_msg : "cannot remove");
+    }
 
-        todo_save(fpath, lines, count);
+    todo_save(fpath, lines, count);
 
-        tool_result_t res = tool_result_ok();
-        cJSON_AddStringToObject(res.meta, "removed", removed);
+    tool_result_t res = tool_result_ok();
+    cJSON_AddStringToObject(res.meta, "removed", removed);
 
-        char *hash = store_save(ctx->store, removed);
-        char *alias = tool_register_alias(ctx, hash ? hash : "");
-        tools_inject_thought(ctx, params);
-        tool_journal(ctx, "todo",
-                       params, alias, strlen(removed), 0, NULL, NULL);
-        free(alias); free(hash); free(removed);
-        todo_free_lines(lines, count);
-        return res;
+    char *hash = store_save(ctx->store, removed);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "todo",
+                 params, alias, strlen(removed), 0, NULL, NULL);
+    free(alias);
+    free(hash);
+    free(removed);
+    todo_free_lines(lines, count);
+    return res;
 
     /* ── PURGE ── */
-    } else if (strcmp(op, "purge") == 0) {
-        char **lines;
-        int count = todo_load(fpath, &lines);
+  } else if (strcmp(op, "purge") == 0) {
+    char **lines;
+    int count = todo_load(fpath, &lines);
 
-        int purged = 0;
-        int kept = todo_purge(lines, count, &purged);
+    int purged = 0;
+    int kept = todo_purge(lines, count, &purged);
 
-        todo_save(fpath, lines, kept);
+    todo_save(fpath, lines, kept);
 
-        tool_result_t res = tool_result_ok();
-        cJSON_AddNumberToObject(res.meta, "purged", purged);
-        cJSON_AddNumberToObject(res.meta, "remaining", kept);
+    tool_result_t res = tool_result_ok();
+    cJSON_AddNumberToObject(res.meta, "purged", purged);
+    cJSON_AddNumberToObject(res.meta, "remaining", kept);
 
-        char info[128];
-        snprintf(info, sizeof(info), "purged %d completed items, %d remaining", purged, kept);
-        char *hash = store_save(ctx->store, info);
-        char *alias = tool_register_alias(ctx, hash ? hash : "");
-        tools_inject_thought(ctx, params);
-        tool_journal(ctx, "todo",
-                       params, alias, strlen(info), 0, NULL, NULL);
-        free(alias); free(hash);
-        todo_free_lines(lines, kept);
-        return res;
+    char info[128];
+    snprintf(info, sizeof(info), "purged %d completed items, %d remaining", purged, kept);
+    char *hash = store_save(ctx->store, info);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "todo",
+                 params, alias, strlen(info), 0, NULL, NULL);
+    free(alias);
+    free(hash);
+    todo_free_lines(lines, kept);
+    return res;
 
-    } else {
-        return tools_make_error("unknown op (use: add, list, done, remove, purge)");
-    }
+  } else {
+    return tools_make_error("unknown op (use: add, list, done, remove, purge)");
+  }
 }
 
 /* ── plugin registration ──────────────────────────────── */
 
 static const tool_param_t todo_params[] = {
-    TOOL_PARAM("op",    "string",  "Operation: add, list, done, remove, purge", 1),
-    TOOL_PARAM("text",  "string",  "TODO text (for add)",                       0),
-    TOOL_PARAM("index", "integer", "Item number (for done/remove)",             0),
-    TOOL_PARAM_END
-};
+  TOOL_PARAM("op", "string", "Operation: add, list, done, remove, purge", 1),
+  TOOL_PARAM("text", "string", "TODO text (for add)", 0),
+  TOOL_PARAM("index", "integer", "Item number (for done/remove)", 0),
+  TOOL_PARAM_END};
 
 static const tool_plugin_t todo_plugin =
-    TOOL_DEF("todo",
-             "Persistent per-workspace TODO list that survives across sessions. Use to park findings, ideas, or action items for later. Stored in todo.md within the active workspace directory (human-editable).",
-             todo_params, tool_todo);
+  TOOL_DEF("todo",
+           "Persistent per-workspace TODO list that survives across sessions. Use to park findings, ideas, or action items for later. Stored in todo.md within the active workspace directory (human-editable).",
+           todo_params, tool_todo);
 TOOL_PLUGIN_REGISTER(todo_plugin)

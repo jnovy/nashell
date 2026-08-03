@@ -23,38 +23,38 @@ typedef struct onnx_embed_ctx onnx_embed_ctx_t;
 /* ── Embedding backend types ─────────────────────────── */
 
 typedef enum {
-    EMBED_NONE   = 0,  /* disabled — use substring matching */
-    EMBED_OLLAMA = 1,  /* Ollama API (http://host:11434/api/embed) */
-    EMBED_OPENAI = 2,  /* OpenAI-compatible (/v1/embeddings) */
-    EMBED_ONNX   = 3,  /* Local ONNX Runtime (all-MiniLM-L6-v2) */
+  EMBED_NONE = 0,   /* disabled — use substring matching */
+  EMBED_OLLAMA = 1, /* Ollama API (http://host:11434/api/embed) */
+  EMBED_OPENAI = 2, /* OpenAI-compatible (/v1/embeddings) */
+  EMBED_ONNX = 3,   /* Local ONNX Runtime (all-MiniLM-L6-v2) */
 } embed_type_t;
 
 /* ── Embedding configuration ─────────────────────────── */
 
 typedef struct {
-    embed_type_t type;
-    char *model;       /* e.g. "nomic-embed-text", "text-embedding-3-small" */
-    char *api_base;    /* e.g. "http://localhost:11434" */
-    char *model_path;  /* ONNX: directory containing onnx/model.onnx + vocab.txt */
-    int   dimension;   /* expected embedding dimension (0 = auto-detect) */
-    int   max_input_chars; /* max input chars for text preparation (0 = auto from model) */
+  embed_type_t type;
+  char *model;         /* e.g. "nomic-embed-text", "text-embedding-3-small" */
+  char *api_base;      /* e.g. "http://localhost:11434" */
+  char *model_path;    /* ONNX: directory containing onnx/model.onnx + vocab.txt */
+  int dimension;       /* expected embedding dimension (0 = auto-detect) */
+  int max_input_chars; /* max input chars for text preparation (0 = auto from model) */
 } embed_config_t;
 
 /* ── Embedding context ───────────────────────────────── */
 
 typedef struct {
-    embed_config_t cfg;
-    int  available;     /* 1 if embedding backend is ready */
-    int  detected_dim;  /* auto-detected dimension from first successful call */
-    onnx_embed_ctx_t *onnx;  /* ONNX backend context (NULL if not using ONNX) */
-    int  owns_onnx;     /* 1 if this ctx owns (and should free) the onnx ctx */
+  embed_config_t cfg;
+  int available;          /* 1 if embedding backend is ready */
+  int detected_dim;       /* auto-detected dimension from first successful call */
+  onnx_embed_ctx_t *onnx; /* ONNX backend context (NULL if not using ONNX) */
+  int owns_onnx;          /* 1 if this ctx owns (and should free) the onnx ctx */
 } embed_ctx_t;
 
 /* ── Embedding vector ────────────────────────────────── */
 
 typedef struct {
-    float *data;    /* float32 array */
-    int    dim;     /* dimension count */
+  float *data; /* float32 array */
+  int dim;     /* dimension count */
 } embed_vec_t;
 
 /* ── Lifecycle ───────────────────────────────────────── */
@@ -140,9 +140,9 @@ char *embed_prepare_text(const char *key, const char *value, int max_chars);
  * At recall time, similarity = max over all chunks (MaxSim). */
 
 typedef struct {
-    float *data;      /* float32 array: dim × n_chunks contiguous */
-    int    dim;       /* dimension of each chunk vector */
-    int    n_chunks;  /* number of chunk vectors (≥1) */
+  float *data;  /* float32 array: dim × n_chunks contiguous */
+  int dim;      /* dimension of each chunk vector */
+  int n_chunks; /* number of chunk vectors (≥1) */
 } embed_multi_vec_t;
 
 /* Prepare memory content as overlapping chunks for embedding.

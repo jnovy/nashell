@@ -12,365 +12,369 @@
 int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
                              const char *user_query,
                              react_event_fn on_event, void *userdata) {
-    if (!ctx->tools->session_dir) return -1;  /* no session dir (e.g. daemon mode) */
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json",
-             ctx->tools->session_dir);
+  if (!ctx->tools->session_dir) return -1; /* no session dir (e.g. daemon mode) */
+  char path[NASH_PATH_MAX];
+  snprintf(path, sizeof(path), "%s/checkpoint.json",
+           ctx->tools->session_dir);
 
-    cJSON *cp = slurp_json(path);
-    if (!cp) return -1;  /* no checkpoint — start fresh */
+  cJSON *cp = slurp_json(path);
+  if (!cp) return -1; /* no checkpoint — start fresh */
 
-    int saved_step = json_int(cp, "step", 0);
-    int saved_loop = json_int(cp, "react_loop", 0);
+  int saved_step = json_int(cp, "step", 0);
+  int saved_loop = json_int(cp, "react_loop", 0);
 
-    /* Restore scratchpad (section-based; handles legacy plain-text format too) */
-    scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
-    if (ctx->tools->scratch.count == 0) {
-        /* Try checkpoint JSON as last resort (very old sessions) */
-        const char *sp = json_str(cp, "scratchpad");
-        if (sp && sp[0]) {
-            scratchpad_parse(&ctx->tools->scratch, sp,
-                             "default", 5);
-        }
+  /* Restore scratchpad (section-based; handles legacy plain-text format too) */
+  scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
+  if (ctx->tools->scratch.count == 0) {
+    /* Try checkpoint JSON as last resort (very old sessions) */
+    const char *sp = json_str(cp, "scratchpad");
+    if (sp && sp[0]) {
+      scratchpad_parse(&ctx->tools->scratch, sp,
+                       "default", 5);
     }
+  }
 
-    /* Restore last_tc_id for tool_calls threading */
-    char *restored_tc_id = NULL;
-    const char *tc_id_s = json_str(cp, "last_tc_id");
-    if (tc_id_s)
-        restored_tc_id = xstrdup(tc_id_s);
+  /* Restore last_tc_id for tool_calls threading */
+  char *restored_tc_id = NULL;
+  const char *tc_id_s = json_str(cp, "last_tc_id");
+  if (tc_id_s)
+    restored_tc_id = xstrdup(tc_id_s);
 
-    cJSON_Delete(cp);
+  cJSON_Delete(cp);
 
-    /* Step 1: Add system prompt (fresh — may have changed) */
-    react_add_system_prompt(chat, ctx);
+  /* Step 1: Add system prompt (fresh — may have changed) */
+  react_add_system_prompt(chat, ctx);
 
-    /* No manifest injection — scratchpad carries all cross-loop state. */
+  /* No manifest injection — scratchpad carries all cross-loop state. */
 
-    /* Step 2: Add memory context + recall (only when inject_memory flag is set) */
-    if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
-        char *mem_summary = NULL, *pinned = NULL;
-        react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
+  /* Step 2: Add memory context + recall (only when inject_memory flag is set) */
+  if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
+    char *mem_summary = NULL, *pinned = NULL;
+    react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
 
-        /* Inject recall context: temporal, episodic, type-specific, associative.
+    /* Inject recall context: temporal, episodic, type-specific, associative.
          * Matches react_build_context() for structurally identical context.
          * (Bug #24 fix — checkpoint restore previously skipped all of these.) */
-        react_inject_recall_context(chat, ctx, user_query, mem_summary, pinned);
+    react_inject_recall_context(chat, ctx, user_query, mem_summary, pinned);
 
-        free(mem_summary);
-        free(pinned);
+    free(mem_summary);
+    free(pinned);
+  }
+
+  /* Step 3: Repo map injection (matches react_build_context) */
+  {
+    int do_repomap = ctx->flags.inject_repomap;
+    if (do_repomap) {
+      int rm_budget = ctx->tools->cfg
+                        ? ctx->tools->cfg->repo_map_max_chars
+                        : 8000;
+      char *map = repomap_build(NULL, user_query, NULL, 0, rm_budget);
+      if (map && map[0]) {
+        llm_chat_add_typed(chat, "user", map, LLM_MSG_REPO_MAP);
+      }
+      free(map);
     }
+  }
 
-    /* Step 3: Repo map injection (matches react_build_context) */
-    {
-        int do_repomap = ctx->flags.inject_repomap;
-        if (do_repomap) {
-            int rm_budget = ctx->tools->cfg
-                ? ctx->tools->cfg->repo_map_max_chars : 8000;
-            char *map = repomap_build(NULL, user_query, NULL, 0, rm_budget);
-            if (map && map[0]) {
-                llm_chat_add_typed(chat, "user", map, LLM_MSG_REPO_MAP);
-            }
-            free(map);
-        }
+  /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup). */
+  {
+    eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
+    long cb = react_context_budget(ctx);
+    long cc = react_calc_total_chars(chat);
+    size_t sp_max = react_scratchpad_budget_pol(cb, cc,
+                                                (size_t)pol.sp_min_chars, &pol);
+    char *sp_text = NULL;
+    if (ctx->tools->scratch.count > 0) {
+      sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
     }
+    react_inject_scratchpad_msg(chat, chat->n_msgs, sp_text);
+    free(sp_text);
+  }
 
-    /* Step 4: Add scratchpad if exists (budget-aware, matching normal startup). */
-    {
-        eviction_policy_t pol = react_eviction_policy(ctx->tools->cfg);
-        long cb = react_context_budget(ctx);
-        long cc = react_calc_total_chars(chat);
-        size_t sp_max = react_scratchpad_budget_pol(cb, cc,
-                                                     (size_t)pol.sp_min_chars, &pol);
-        char *sp_text = NULL;
-        if (ctx->tools->scratch.count > 0) {
-            sp_text = scratchpad_serialize_budget(&ctx->tools->scratch, sp_max);
-        }
-        react_inject_scratchpad_msg(chat, chat->n_msgs, sp_text);
-        free(sp_text);
+  /* Step 5: Add user query */
+  llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
+
+  /* Step 6: Replay tool calls from journal to rebuild conversation history */
+  char jpath[NASH_PATH_MAX];
+  snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
+           ctx->tools->session_dir);
+  FILE *f = fopen(jpath, "r");
+  if (!f) {
+    /* Restore last_tc_id even without journal replay */
+    if (restored_tc_id) {
+      free(chat->last_tool_call_id);
+      chat->last_tool_call_id = restored_tc_id;
     }
+    return saved_step;
+  }
 
-    /* Step 5: Add user query */
-    llm_chat_add_typed(chat, "user", user_query, LLM_MSG_USER_QUERY);
-
-    /* Step 6: Replay tool calls from journal to rebuild conversation history */
-    char jpath[NASH_PATH_MAX];
-    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl",
-             ctx->tools->session_dir);
-    FILE *f = fopen(jpath, "r");
-    if (!f) {
-        /* Restore last_tc_id even without journal replay */
-        if (restored_tc_id) {
-            free(chat->last_tool_call_id);
-            chat->last_tool_call_id = restored_tc_id;
-        }
-        return saved_step;
-    }
-
-    /* Track highest alias sequence number seen during replay so we can
+  /* Track highest alias sequence number seen during replay so we can
      * set next_seq after the loop to avoid collisions with restored aliases.
      * Without this, next_seq stays at 0 (reset in react_run) and new
      * tool_register_alias() calls would create R<N>S0, R<N>S1, etc.
      * that overwrite the in-memory map entries for restored aliases. */
-    int max_restored_seq = -1;
+  int max_restored_seq = -1;
 
-    char line[NASH_LINE_MAX];
-    while (fgets(line, sizeof(line), f)) {
-        cJSON *entry = cJSON_Parse(line);
-        if (!entry) continue;
+  char line[NASH_LINE_MAX];
+  while (fgets(line, sizeof(line), f)) {
+    cJSON *entry = cJSON_Parse(line);
+    if (!entry) continue;
 
-        int loop = json_int(entry, "react_loop", 0);
-        int step = json_int(entry, "step", 0);
-        const char *tool = json_str(entry, "tool");
-        const char *ref = json_str(entry, "ref");
-        const char *tc_id = json_str(entry, "tc_id");
-        cJSON *params = cJSON_GetObjectItem(entry, "params");
+    int loop = json_int(entry, "react_loop", 0);
+    int step = json_int(entry, "step", 0);
+    const char *tool = json_str(entry, "tool");
+    const char *ref = json_str(entry, "ref");
+    const char *tc_id = json_str(entry, "tc_id");
+    cJSON *params = cJSON_GetObjectItem(entry, "params");
 
-        /* Only replay entries from the current react loop */
-        if (loop != saved_loop) { cJSON_Delete(entry); continue; }
+    /* Only replay entries from the current react loop */
+    if (loop != saved_loop) {
+      cJSON_Delete(entry);
+      continue;
+    }
 
-        /* Skip metadata entries that are not actual tool calls.
+    /* Skip metadata entries that are not actual tool calls.
          * Only replay: actual tool calls (file_read, shell_exec, etc.),
          * "thinking" (handled specially below), and "unknown_tool". */
-        if (!tool || strcmp(tool, "system") == 0 ||
-            strcmp(tool, "query") == 0 ||
-            strcmp(tool, "parse_error") == 0 ||
-            strcmp(tool, "memory_context") == 0 ||
-            strcmp(tool, "spec") == 0 ||
-            strcmp(tool, "compaction") == 0 ||
-            strcmp(tool, "server_error") == 0 ||
-            strcmp(tool, "log") == 0 ||
-            strcmp(tool, "checkpoint_restore") == 0 ||
-            strcmp(tool, "reflection_dedup") == 0 ||
-            strcmp(tool, "memory_quality") == 0 ||
-            strcmp(tool, "cycling_cached") == 0 ||
-            strcmp(tool, "cycling_refused") == 0 ||
-            strcmp(tool, "cycling_escalated") == 0 ||
-            strcmp(tool, "user_ask") == 0 ||
-            strncmp(tool, "ctx:", 4) == 0) {
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        /* Re-register alias and track the hash for this entry */
-        const char *entry_hash = NULL;
-        char entry_hash_buf[128] = "";
-        if (ref) {
-            /* Extract hash from ref by resolving the symlink */
-            char ref_path[NASH_PATH_MAX];
-            path_join(ref_path, sizeof(ref_path),
-                     ctx->tools->session_dir, ref);
-            char link_target[NASH_PATH_MAX];
-            ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
-            if (llen > 0) {
-                link_target[llen] = '\0';
-                /* Extract hash from "<store_dir>/<hash>" (or legacy "../../store/<hash>") */
-                const char *slash = strrchr(link_target, '/');
-                if (slash) {
-                    slash++;  /* skip the '/' */
-                    snprintf(entry_hash_buf, sizeof(entry_hash_buf), "%s", slash);
-                    entry_hash = entry_hash_buf;
-                    /* Register in alias hash map */
-                    alias_map_insert(ctx->tools->aliases, ref, slash);
-
-                    /* Track highest seq number to set next_seq after replay.
-                     * Alias format: R<loop>S<seq> */
-                    int ref_seq = -1;
-                    if (sscanf(ref, "R%*dS%d", &ref_seq) == 1 &&
-                        ref_seq > max_restored_seq) {
-                        max_restored_seq = ref_seq;
-                    }
-                }
-            }
-        }
-
-        /* Handle thinking steps */
-        if (strcmp(tool, "thinking") == 0) {
-            const char *thought = params ? json_str(params, "thought") : NULL;
-            if (thought) {
-                /* Read the stored response for the full thinking content */
-                if (ref && entry_hash) {
-                    char *store_path = store_resolve(ctx->tools->store,
-                        entry_hash);
-                    if (store_path) {
-                        char *content = slurp_file(store_path, NULL);
-                        if (content) {
-                            llm_chat_add(chat, "assistant", content);
-                            free(content);
-                        }
-                        free(store_path);
-                    }
-                }
-            }
-            cJSON_Delete(entry);
-            continue;
-        }
-
-        /* Regular tool call — reconstruct assistant + tool result messages */
-        const char *thought = "";
-        const char *action_name = tool;
-        if (params) {
-            const char *tv = json_str(params, "thought");
-            if (tv) thought = tv;
-        }
-
-        if (tc_id) {
-            /* Native tool_calls API format */
-            cJSON *tc_arr = cJSON_CreateArray();
-            cJSON *tc = cJSON_CreateObject();
-            cJSON_AddStringToObject(tc, "id", tc_id);
-            cJSON_AddStringToObject(tc, "type", "function");
-            cJSON *fn = cJSON_CreateObject();
-            cJSON_AddStringToObject(fn, "name", action_name);
-
-            /* Build arguments from params (exclude thought and action) */
-            cJSON *args = cJSON_CreateObject();
-            if (params) {
-                cJSON *child = params->child;
-                while (child) {
-                    if (strcmp(child->string, "thought") != 0 &&
-                        strcmp(child->string, "action") != 0) {
-                        cJSON_AddItemToObject(args, child->string,
-                            cJSON_Duplicate(child, 1));
-                    }
-                    child = child->next;
-                }
-            }
-            char *args_str = cJSON_PrintUnformatted(args);
-            cJSON_AddStringToObject(fn, "arguments", args_str ? args_str : "{}");
-            free(args_str);
-            cJSON_Delete(args);
-
-            cJSON_AddItemToObject(tc, "function", fn);
-            cJSON_AddItemToArray(tc_arr, tc);
-
-            char *tc_json = cJSON_PrintUnformatted(tc_arr);
-            cJSON_Delete(tc_arr);
-
-            /* Add assistant message with tool_calls */
-            llm_chat_add_assistant_tool_call(chat,
-                (thought && thought[0]) ? thought : NULL,
-                tc_json);
-
-            /* Build tool result content */
-            char result_content[1024];
-            int rsize = json_int(entry, "size", 0);
-            snprintf(result_content, sizeof(result_content),
-                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
-                     ref ? ref : "?", rsize, step);
-
-            llm_chat_add_tool_result(chat, tc_id, result_content);
-            free(tc_json);
-        } else {
-            /* Legacy JSON-in-content format (no tc_id) */
-            cJSON *unified = cJSON_CreateObject();
-            cJSON_AddStringToObject(unified, "thought", thought);
-            cJSON_AddStringToObject(unified, "action", action_name);
-            if (params) {
-                cJSON *child = params->child;
-                while (child) {
-                    if (strcmp(child->string, "thought") != 0 &&
-                        strcmp(child->string, "action") != 0) {
-                        cJSON_AddItemToObject(unified, child->string,
-                            cJSON_Duplicate(child, 1));
-                    }
-                    child = child->next;
-                }
-            }
-            char *resp = cJSON_PrintUnformatted(unified);
-            cJSON_Delete(unified);
-
-            llm_chat_add(chat, "assistant", resp ? resp : "{}");
-
-            char result_content[1024];
-            int rsize = json_int(entry, "size", 0);
-            snprintf(result_content, sizeof(result_content),
-                     "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
-                     ref ? ref : "?", rsize, step);
-            llm_chat_add(chat, "user", result_content);
-            free(resp);
-        }
-
-        cJSON_Delete(entry);
+    if (!tool || strcmp(tool, "system") == 0 ||
+        strcmp(tool, "query") == 0 ||
+        strcmp(tool, "parse_error") == 0 ||
+        strcmp(tool, "memory_context") == 0 ||
+        strcmp(tool, "spec") == 0 ||
+        strcmp(tool, "compaction") == 0 ||
+        strcmp(tool, "server_error") == 0 ||
+        strcmp(tool, "log") == 0 ||
+        strcmp(tool, "checkpoint_restore") == 0 ||
+        strcmp(tool, "reflection_dedup") == 0 ||
+        strcmp(tool, "memory_quality") == 0 ||
+        strcmp(tool, "cycling_cached") == 0 ||
+        strcmp(tool, "cycling_refused") == 0 ||
+        strcmp(tool, "cycling_escalated") == 0 ||
+        strcmp(tool, "user_ask") == 0 ||
+        strncmp(tool, "ctx:", 4) == 0) {
+      cJSON_Delete(entry);
+      continue;
     }
-    fclose(f);
 
-    /* Advance next_seq past all restored aliases so new tool_register_alias()
+    /* Re-register alias and track the hash for this entry */
+    const char *entry_hash = NULL;
+    char entry_hash_buf[128] = "";
+    if (ref) {
+      /* Extract hash from ref by resolving the symlink */
+      char ref_path[NASH_PATH_MAX];
+      path_join(ref_path, sizeof(ref_path),
+                ctx->tools->session_dir, ref);
+      char link_target[NASH_PATH_MAX];
+      ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
+      if (llen > 0) {
+        link_target[llen] = '\0';
+        /* Extract hash from "<store_dir>/<hash>" (or legacy "../../store/<hash>") */
+        const char *slash = strrchr(link_target, '/');
+        if (slash) {
+          slash++; /* skip the '/' */
+          snprintf(entry_hash_buf, sizeof(entry_hash_buf), "%s", slash);
+          entry_hash = entry_hash_buf;
+          /* Register in alias hash map */
+          alias_map_insert(ctx->tools->aliases, ref, slash);
+
+          /* Track highest seq number to set next_seq after replay.
+                     * Alias format: R<loop>S<seq> */
+          int ref_seq = -1;
+          if (sscanf(ref, "R%*dS%d", &ref_seq) == 1 &&
+              ref_seq > max_restored_seq) {
+            max_restored_seq = ref_seq;
+          }
+        }
+      }
+    }
+
+    /* Handle thinking steps */
+    if (strcmp(tool, "thinking") == 0) {
+      const char *thought = params ? json_str(params, "thought") : NULL;
+      if (thought) {
+        /* Read the stored response for the full thinking content */
+        if (ref && entry_hash) {
+          char *store_path = store_resolve(ctx->tools->store,
+                                           entry_hash);
+          if (store_path) {
+            char *content = slurp_file(store_path, NULL);
+            if (content) {
+              llm_chat_add(chat, "assistant", content);
+              free(content);
+            }
+            free(store_path);
+          }
+        }
+      }
+      cJSON_Delete(entry);
+      continue;
+    }
+
+    /* Regular tool call — reconstruct assistant + tool result messages */
+    const char *thought = "";
+    const char *action_name = tool;
+    if (params) {
+      const char *tv = json_str(params, "thought");
+      if (tv) thought = tv;
+    }
+
+    if (tc_id) {
+      /* Native tool_calls API format */
+      cJSON *tc_arr = cJSON_CreateArray();
+      cJSON *tc = cJSON_CreateObject();
+      cJSON_AddStringToObject(tc, "id", tc_id);
+      cJSON_AddStringToObject(tc, "type", "function");
+      cJSON *fn = cJSON_CreateObject();
+      cJSON_AddStringToObject(fn, "name", action_name);
+
+      /* Build arguments from params (exclude thought and action) */
+      cJSON *args = cJSON_CreateObject();
+      if (params) {
+        cJSON *child = params->child;
+        while (child) {
+          if (strcmp(child->string, "thought") != 0 &&
+              strcmp(child->string, "action") != 0) {
+            cJSON_AddItemToObject(args, child->string,
+                                  cJSON_Duplicate(child, 1));
+          }
+          child = child->next;
+        }
+      }
+      char *args_str = cJSON_PrintUnformatted(args);
+      cJSON_AddStringToObject(fn, "arguments", args_str ? args_str : "{}");
+      free(args_str);
+      cJSON_Delete(args);
+
+      cJSON_AddItemToObject(tc, "function", fn);
+      cJSON_AddItemToArray(tc_arr, tc);
+
+      char *tc_json = cJSON_PrintUnformatted(tc_arr);
+      cJSON_Delete(tc_arr);
+
+      /* Add assistant message with tool_calls */
+      llm_chat_add_assistant_tool_call(chat,
+                                       (thought && thought[0]) ? thought : NULL,
+                                       tc_json);
+
+      /* Build tool result content */
+      char result_content[1024];
+      int rsize = json_int(entry, "size", 0);
+      snprintf(result_content, sizeof(result_content),
+               "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
+               ref ? ref : "?", rsize, step);
+
+      llm_chat_add_tool_result(chat, tc_id, result_content);
+      free(tc_json);
+    } else {
+      /* Legacy JSON-in-content format (no tc_id) */
+      cJSON *unified = cJSON_CreateObject();
+      cJSON_AddStringToObject(unified, "thought", thought);
+      cJSON_AddStringToObject(unified, "action", action_name);
+      if (params) {
+        cJSON *child = params->child;
+        while (child) {
+          if (strcmp(child->string, "thought") != 0 &&
+              strcmp(child->string, "action") != 0) {
+            cJSON_AddItemToObject(unified, child->string,
+                                  cJSON_Duplicate(child, 1));
+          }
+          child = child->next;
+        }
+      }
+      char *resp = cJSON_PrintUnformatted(unified);
+      cJSON_Delete(unified);
+
+      llm_chat_add(chat, "assistant", resp ? resp : "{}");
+
+      char result_content[1024];
+      int rsize = json_int(entry, "size", 0);
+      snprintf(result_content, sizeof(result_content),
+               "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
+               ref ? ref : "?", rsize, step);
+      llm_chat_add(chat, "user", result_content);
+      free(resp);
+    }
+
+    cJSON_Delete(entry);
+  }
+  fclose(f);
+
+  /* Advance next_seq past all restored aliases so new tool_register_alias()
      * calls don't collide with existing R<N>S0..R<N>S<max> aliases.
      * The +1 is because next_seq is the NEXT sequence to use. */
-    if (max_restored_seq >= 0) {
-        ctx->tools->aliases->next_seq = max_restored_seq + 1;
-    }
+  if (max_restored_seq >= 0) {
+    ctx->tools->aliases->next_seq = max_restored_seq + 1;
+  }
 
-    /* Set step counter to resume position */
-    ctx->tools->step = saved_step;
-    ctx->tools->react_loop = saved_loop;
+  /* Set step counter to resume position */
+  ctx->tools->step = saved_step;
+  ctx->tools->react_loop = saved_loop;
 
-    /* Log checkpoint restore to journal */
-    {
-        cJSON *cp_params = cJSON_CreateObject();
-        cJSON_AddNumberToObject(cp_params, "restored_step", saved_step);
-        cJSON_AddNumberToObject(cp_params, "react_loop", saved_loop);
-        cJSON_AddStringToObject(cp_params, "status", "checkpoint restored");
-        char *cp_json = cJSON_PrintUnformatted(cp_params);
-        char *cp_hash = store_save(ctx->tools->store, cp_json ? cp_json : "{}");
-        char *cp_alias = cp_hash ? tool_register_alias(ctx->tools, cp_hash) : NULL;
-        journal_append(ctx->tools->journal, saved_loop, saved_step,
-                       "checkpoint_restore", cp_params, cp_alias,
-                       cp_json ? strlen(cp_json) : 0, 0, NULL, NULL, 0);
-        free(cp_json);
-        free(cp_hash);
-        free(cp_alias);
-        cJSON_Delete(cp_params);
-    }
+  /* Log checkpoint restore to journal */
+  {
+    cJSON *cp_params = cJSON_CreateObject();
+    cJSON_AddNumberToObject(cp_params, "restored_step", saved_step);
+    cJSON_AddNumberToObject(cp_params, "react_loop", saved_loop);
+    cJSON_AddStringToObject(cp_params, "status", "checkpoint restored");
+    char *cp_json = cJSON_PrintUnformatted(cp_params);
+    char *cp_hash = store_save(ctx->tools->store, cp_json ? cp_json : "{}");
+    char *cp_alias = cp_hash ? tool_register_alias(ctx->tools, cp_hash) : NULL;
+    journal_append(ctx->tools->journal, saved_loop, saved_step,
+                   "checkpoint_restore", cp_params, cp_alias,
+                   cp_json ? strlen(cp_json) : 0, 0, NULL, NULL, 0);
+    free(cp_json);
+    free(cp_hash);
+    free(cp_alias);
+    cJSON_Delete(cp_params);
+  }
 
-    /* Restore last_tc_id for tool_calls threading after crash */
-    if (restored_tc_id) {
-        free(chat->last_tool_call_id);
-        chat->last_tool_call_id = restored_tc_id;
-    }
+  /* Restore last_tc_id for tool_calls threading after crash */
+  if (restored_tc_id) {
+    free(chat->last_tool_call_id);
+    chat->last_tool_call_id = restored_tc_id;
+  }
 
-    /* Emit restore event — include react_loop so UI tracks the correct loop */
-    {
-        react_event_t ev = {0};
-        ev.react_loop = saved_loop;
-        ev.type = REACT_EVENT_WARNING;
-        ev.step = saved_step;
-        ev.message = "Resuming from checkpoint";
-        react_emit(on_event, userdata, &ev);
-    }
+  /* Emit restore event — include react_loop so UI tracks the correct loop */
+  {
+    react_event_t ev = {0};
+    ev.react_loop = saved_loop;
+    ev.type = REACT_EVENT_WARNING;
+    ev.step = saved_step;
+    ev.message = "Resuming from checkpoint";
+    react_emit(on_event, userdata, &ev);
+  }
 
-    return saved_step;
+  return saved_step;
 }
 
 /* ── Checkpoint Save ────────────────────────────────── */
 
 void react_checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
                            const char *last_tc_id) {
-    if (!ctx->tools->session_dir) return;  /* no session dir (e.g. daemon mode) */
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
+  if (!ctx->tools->session_dir) return; /* no session dir (e.g. daemon mode) */
+  char path[NASH_PATH_MAX];
+  snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
 
-    /* Persist scratchpad to disk alongside checkpoint */
-    scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+  /* Persist scratchpad to disk alongside checkpoint */
+  scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
 
-    cJSON *cp = cJSON_CreateObject();
-    cJSON_AddNumberToObject(cp, "version", 1);
-    cJSON_AddNumberToObject(cp, "step", step);
-    cJSON_AddNumberToObject(cp, "react_loop", ctx->tools->react_loop);
-    if (user_query) cJSON_AddStringToObject(cp, "user_query", user_query);
-    if (last_tc_id)
-        cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
+  cJSON *cp = cJSON_CreateObject();
+  cJSON_AddNumberToObject(cp, "version", 1);
+  cJSON_AddNumberToObject(cp, "step", step);
+  cJSON_AddNumberToObject(cp, "react_loop", ctx->tools->react_loop);
+  if (user_query) cJSON_AddStringToObject(cp, "user_query", user_query);
+  if (last_tc_id)
+    cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
 
-    dump_json(path, cp);
-    cJSON_Delete(cp);
+  dump_json(path, cp);
+  cJSON_Delete(cp);
 }
 
 /* ── Checkpoint Remove ──────────────────────────────── */
 
 void react_checkpoint_remove(react_ctx_t *ctx) {
-    if (!ctx->tools->session_dir) return;  /* no session dir (e.g. daemon mode) */
-    char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
-    unlink(path);
+  if (!ctx->tools->session_dir) return; /* no session dir (e.g. daemon mode) */
+  char path[NASH_PATH_MAX];
+  snprintf(path, sizeof(path), "%s/checkpoint.json", ctx->tools->session_dir);
+  unlink(path);
 }

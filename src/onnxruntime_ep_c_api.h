@@ -17,7 +17,7 @@ extern "C" {
 ORT_RUNTIME_CLASS(Ep);
 ORT_RUNTIME_CLASS(EpFactory);
 ORT_RUNTIME_CLASS(EpGraphSupportInfo);
-ORT_RUNTIME_CLASS(MemoryDevice);  // opaque class to wrap onnxruntime::OrtDevice
+ORT_RUNTIME_CLASS(MemoryDevice); // opaque class to wrap onnxruntime::OrtDevice
 ORT_RUNTIME_CLASS(NodeComputeContext);
 
 ORT_RUNTIME_CLASS(DataTransferImpl);
@@ -43,16 +43,16 @@ ORT_RUNTIME_CLASS(ExternalResourceImporterImpl);
  * \since Version 1.24.
  */
 struct OrtExternalMemoryHandle {
-  uint32_t version;                        ///< Must be ORT_API_VERSION
-  const OrtEpDevice* ep_device;            ///< EP device that created this handle
-  OrtExternalMemoryDescriptor descriptor;  ///< External memory descriptor
+  uint32_t version;                       ///< Must be ORT_API_VERSION
+  const OrtEpDevice *ep_device;           ///< EP device that created this handle
+  OrtExternalMemoryDescriptor descriptor; ///< External memory descriptor
 
   /** \brief Release callback for this handle. EP sets this to its release function.
    *
    * ORT calls this when ReleaseExternalMemoryHandle is invoked. The EP's callback
    * should cast the handle to its derived type and delete it.
    */
-  void(ORT_API_CALL* Release)(_In_ OrtExternalMemoryHandle* handle);
+  void(ORT_API_CALL *Release)(_In_ OrtExternalMemoryHandle *handle);
 };
 
 /** \brief Base struct for imported external semaphore handles.
@@ -70,23 +70,23 @@ struct OrtExternalMemoryHandle {
  * \since Version 1.24.
  */
 struct OrtExternalSemaphoreHandle {
-  uint32_t version;                           ///< Must be ORT_API_VERSION
-  const OrtEpDevice* ep_device;               ///< EP device that created this handle
-  OrtExternalSemaphoreDescriptor descriptor;  ///< External semaphore descriptor
+  uint32_t version;                          ///< Must be ORT_API_VERSION
+  const OrtEpDevice *ep_device;              ///< EP device that created this handle
+  OrtExternalSemaphoreDescriptor descriptor; ///< External semaphore descriptor
 
   /** \brief Release callback for this handle. EP sets this to its release function.
    *
    * ORT calls this when ReleaseExternalSemaphoreHandle is invoked. The EP's callback
    * should cast the handle to its derived type and delete it.
    */
-  void(ORT_API_CALL* Release)(_In_ OrtExternalSemaphoreHandle* handle);
+  void(ORT_API_CALL *Release)(_In_ OrtExternalSemaphoreHandle *handle);
 };
 
 // Opaque types for kernel-based EPs
 ORT_RUNTIME_CLASS(KernelRegistry);
 ORT_RUNTIME_CLASS(KernelDefBuilder);
 ORT_RUNTIME_CLASS(KernelDef);
-ORT_RUNTIME_CLASS(DataType);  // combination of ONNXType (e.g., Tensor, Map, Sequence) and ONNXTensorElementDataType
+ORT_RUNTIME_CLASS(DataType); // combination of ONNXType (e.g., Tensor, Map, Sequence) and ONNXTensorElementDataType
 ORT_RUNTIME_CLASS(SharedPrePackedWeightCache);
 
 /** \brief Struct that an EP implements for IDataTransfer to copy between devices it uses and CPU.
@@ -94,7 +94,7 @@ ORT_RUNTIME_CLASS(SharedPrePackedWeightCache);
  * \since Version 1.23.
  */
 struct OrtDataTransferImpl {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   /** \brief Release the OrtDataTransferImpl instance.
    *
@@ -105,7 +105,7 @@ struct OrtDataTransferImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void, Release, _In_ OrtDataTransferImpl* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtDataTransferImpl *this_ptr);
 
   /** \brief Check if the implementation can copy between the source and destination memory devices.
    *
@@ -116,8 +116,8 @@ struct OrtDataTransferImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(bool, CanCopy, _In_ const OrtDataTransferImpl* this_ptr,
-            _In_ const OrtMemoryDevice* src_memory_device, _In_ const OrtMemoryDevice* dst_memory_device);
+  ORT_API_T(bool, CanCopy, _In_ const OrtDataTransferImpl *this_ptr,
+            _In_ const OrtMemoryDevice *src_memory_device, _In_ const OrtMemoryDevice *dst_memory_device);
 
   /** \brief Copy tensors from src_tensors to dst_tensors using the provided streams.
    *
@@ -135,10 +135,10 @@ struct OrtDataTransferImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CopyTensors, _In_ OrtDataTransferImpl* this_ptr,
-                  _In_reads_(num_tensors) const OrtValue** src_tensors,
-                  _In_reads_(num_tensors) OrtValue** dst_tensors,
-                  _In_reads_(num_tensors) OrtSyncStream** streams,
+  ORT_API2_STATUS(CopyTensors, _In_ OrtDataTransferImpl *this_ptr,
+                  _In_reads_(num_tensors) const OrtValue **src_tensors,
+                  _In_reads_(num_tensors) OrtValue **dst_tensors,
+                  _In_reads_(num_tensors) OrtSyncStream **streams,
                   _In_ size_t num_tensors);
 };
 
@@ -147,7 +147,7 @@ struct OrtDataTransferImpl {
  * \since Version 1.23.
  */
 struct OrtSyncNotificationImpl {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   /** \brief Release the OrtSyncNotificationImpl instance.
    *
@@ -158,7 +158,7 @@ struct OrtSyncNotificationImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void, Release, _In_ OrtSyncNotificationImpl* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtSyncNotificationImpl *this_ptr);
 
   /** \brief Called by ORT to activate the notification.
    *
@@ -166,7 +166,7 @@ struct OrtSyncNotificationImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Activate, _In_ OrtSyncNotificationImpl* this_ptr);
+  ORT_API2_STATUS(Activate, _In_ OrtSyncNotificationImpl *this_ptr);
 
   /** \brief Wait for a device to device operation to complete.
    *
@@ -175,7 +175,7 @@ struct OrtSyncNotificationImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(WaitOnDevice, _In_ OrtSyncNotificationImpl* this_ptr, _In_ OrtSyncStream* consumer_stream);
+  ORT_API2_STATUS(WaitOnDevice, _In_ OrtSyncNotificationImpl *this_ptr, _In_ OrtSyncStream *consumer_stream);
 
   /** \brief Wait for a device to host operation to complete.
    *
@@ -183,7 +183,7 @@ struct OrtSyncNotificationImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(WaitOnHost, _In_ OrtSyncNotificationImpl* this_ptr);
+  ORT_API2_STATUS(WaitOnHost, _In_ OrtSyncNotificationImpl *this_ptr);
 };
 
 /** \brief Struct that an EP implements if it wishes to implement Stream support.
@@ -193,7 +193,7 @@ struct OrtSyncNotificationImpl {
  * \since Version 1.23.
  */
 struct OrtSyncStreamImpl {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   /** \brief Release the OrtSyncStreamImpl instance.
    *
@@ -204,7 +204,7 @@ struct OrtSyncStreamImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void, Release, _In_ OrtSyncStreamImpl* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtSyncStreamImpl *this_ptr);
 
   /** \brief Get the handle of the stream.
    *
@@ -215,7 +215,7 @@ struct OrtSyncStreamImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void*, GetHandle, _In_ OrtSyncStreamImpl* this_ptr);
+  ORT_API_T(void *, GetHandle, _In_ OrtSyncStreamImpl *this_ptr);
 
   /** \brief Create an OrtSyncNotificationImpl for the OrtSyncStreamImpl instance.
    *
@@ -224,8 +224,8 @@ struct OrtSyncStreamImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateNotification, _In_ OrtSyncStreamImpl* this_ptr,
-                  _Outptr_ OrtSyncNotificationImpl** notification);
+  ORT_API2_STATUS(CreateNotification, _In_ OrtSyncStreamImpl *this_ptr,
+                  _Outptr_ OrtSyncNotificationImpl **notification);
 
   /** \brief Flush the stream.
    *
@@ -235,7 +235,7 @@ struct OrtSyncStreamImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Flush, _In_ OrtSyncStreamImpl* this_ptr);
+  ORT_API2_STATUS(Flush, _In_ OrtSyncStreamImpl *this_ptr);
 
   /** \brief Notify the stream that a session run has ended.
    *
@@ -246,7 +246,7 @@ struct OrtSyncStreamImpl {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OnSessionRunEnd, _In_ OrtSyncStreamImpl* this_ptr);
+  ORT_API2_STATUS(OnSessionRunEnd, _In_ OrtSyncStreamImpl *this_ptr);
 };
 
 /** \brief Struct that an EP implements for external resource import (memory + semaphore import).
@@ -258,7 +258,7 @@ struct OrtSyncStreamImpl {
  * \since Version 1.24.
  */
 struct OrtExternalResourceImporterImpl {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   // Memory operations (stream-independent)
 
@@ -271,7 +271,7 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API_T(bool, CanImportMemory,
-            _In_ const OrtExternalResourceImporterImpl* this_ptr,
+            _In_ const OrtExternalResourceImporterImpl *this_ptr,
             _In_ OrtExternalMemoryHandleType handle_type);
 
   /** \brief Import external memory.
@@ -288,9 +288,9 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(ImportMemory,
-                  _In_ OrtExternalResourceImporterImpl* this_ptr,
-                  _In_ const OrtExternalMemoryDescriptor* desc,
-                  _Outptr_ OrtExternalMemoryHandle** out_handle);
+                  _In_ OrtExternalResourceImporterImpl *this_ptr,
+                  _In_ const OrtExternalMemoryDescriptor *desc,
+                  _Outptr_ OrtExternalMemoryHandle **out_handle);
 
   /** \brief Release an imported external memory handle.
    *
@@ -302,8 +302,8 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API_T(void, ReleaseMemory,
-            _In_ OrtExternalResourceImporterImpl* this_ptr,
-            _In_ OrtExternalMemoryHandle* handle);
+            _In_ OrtExternalResourceImporterImpl *this_ptr,
+            _In_ OrtExternalMemoryHandle *handle);
 
   /** \brief Create a tensor backed by imported external memory.
    *
@@ -319,10 +319,10 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(CreateTensorFromMemory,
-                  _In_ OrtExternalResourceImporterImpl* this_ptr,
-                  _In_ const OrtExternalMemoryHandle* mem_handle,
-                  _In_ const OrtExternalTensorDescriptor* tensor_desc,
-                  _Outptr_ OrtValue** out_tensor);
+                  _In_ OrtExternalResourceImporterImpl *this_ptr,
+                  _In_ const OrtExternalMemoryHandle *mem_handle,
+                  _In_ const OrtExternalTensorDescriptor *tensor_desc,
+                  _Outptr_ OrtValue **out_tensor);
 
   // Semaphore operations (require stream)
 
@@ -335,7 +335,7 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API_T(bool, CanImportSemaphore,
-            _In_ const OrtExternalResourceImporterImpl* this_ptr,
+            _In_ const OrtExternalResourceImporterImpl *this_ptr,
             _In_ OrtExternalSemaphoreType type);
 
   /** \brief Import an external semaphore.
@@ -352,9 +352,9 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(ImportSemaphore,
-                  _In_ OrtExternalResourceImporterImpl* this_ptr,
-                  _In_ const OrtExternalSemaphoreDescriptor* desc,
-                  _Outptr_ OrtExternalSemaphoreHandle** out_handle);
+                  _In_ OrtExternalResourceImporterImpl *this_ptr,
+                  _In_ const OrtExternalSemaphoreDescriptor *desc,
+                  _Outptr_ OrtExternalSemaphoreHandle **out_handle);
 
   /** \brief Release an imported external semaphore handle.
    *
@@ -366,8 +366,8 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API_T(void, ReleaseSemaphore,
-            _In_ OrtExternalResourceImporterImpl* this_ptr,
-            _In_ OrtExternalSemaphoreHandle* handle);
+            _In_ OrtExternalResourceImporterImpl *this_ptr,
+            _In_ OrtExternalSemaphoreHandle *handle);
 
   /** \brief Wait on an external semaphore on the EP's stream.
    *
@@ -384,9 +384,9 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(WaitSemaphore,
-                  _In_ OrtExternalResourceImporterImpl* this_ptr,
-                  _In_ OrtExternalSemaphoreHandle* handle,
-                  _In_ OrtSyncStream* stream,
+                  _In_ OrtExternalResourceImporterImpl *this_ptr,
+                  _In_ OrtExternalSemaphoreHandle *handle,
+                  _In_ OrtSyncStream *stream,
                   _In_ uint64_t value);
 
   /** \brief Signal an external semaphore from the EP's stream.
@@ -404,9 +404,9 @@ struct OrtExternalResourceImporterImpl {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(SignalSemaphore,
-                  _In_ OrtExternalResourceImporterImpl* this_ptr,
-                  _In_ OrtExternalSemaphoreHandle* handle,
-                  _In_ OrtSyncStream* stream,
+                  _In_ OrtExternalResourceImporterImpl *this_ptr,
+                  _In_ OrtExternalSemaphoreHandle *handle,
+                  _In_ OrtSyncStream *stream,
                   _In_ uint64_t value);
 
   // Release the capability object itself
@@ -420,7 +420,7 @@ struct OrtExternalResourceImporterImpl {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(void, Release, _In_ OrtExternalResourceImporterImpl* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtExternalResourceImporterImpl *this_ptr);
 };
 
 struct OrtNodeFusionOptions;
@@ -488,9 +488,9 @@ struct OrtNodeComputeInfo {
    *
    * \since Version 1.23.
    */
-  OrtStatus*(ORT_API_CALL* CreateState)(_In_ OrtNodeComputeInfo* this_ptr,
-                                        _In_ OrtNodeComputeContext* compute_context,
-                                        _Outptr_ void** compute_state);
+  OrtStatus *(ORT_API_CALL *CreateState)(_In_ OrtNodeComputeInfo *this_ptr,
+                                         _In_ OrtNodeComputeContext *compute_context,
+                                         _Outptr_ void **compute_state);
 
   /** \brief Computation function called to execute the fused node compiled by an OrtEp instance.
    * \param[in] this_ptr The OrtNodeComputeInfo instance.
@@ -501,8 +501,8 @@ struct OrtNodeComputeInfo {
    *
    * \since Version 1.23.
    */
-  OrtStatus*(ORT_API_CALL* Compute)(_In_ OrtNodeComputeInfo* this_ptr, _In_ void* compute_state,
-                                    _In_ OrtKernelContext* kernel_context);
+  OrtStatus *(ORT_API_CALL *Compute)(_In_ OrtNodeComputeInfo *this_ptr, _In_ void *compute_state,
+                                     _In_ OrtKernelContext *kernel_context);
 
   /** \brief Releases the compute state returned by CreateState().
    * \param[in] this_ptr The OrtNodeComputeInfo instance.
@@ -510,7 +510,7 @@ struct OrtNodeComputeInfo {
    *
    * \since Version 1.23.
    */
-  void(ORT_API_CALL* ReleaseState)(_In_ OrtNodeComputeInfo* this_ptr, _Frees_ptr_opt_ void* compute_state);
+  void(ORT_API_CALL *ReleaseState)(_In_ OrtNodeComputeInfo *this_ptr, _Frees_ptr_opt_ void *compute_state);
 };
 
 struct OrtKernelImpl;
@@ -521,8 +521,8 @@ typedef struct OrtKernelImpl OrtKernelImpl;
  * \since Version 1.24.
  */
 struct OrtKernelImpl {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
-  uint32_t flags;                  ///< EP must initialize to 0. Used internally by ORT.
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
+  uint32_t flags;                 ///< EP must initialize to 0. Used internally by ORT.
 
   /** \brief Computation function called to execute the kernel on an EP.
    *
@@ -535,7 +535,7 @@ struct OrtKernelImpl {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(Compute, _In_ OrtKernelImpl* this_ptr, _In_ OrtKernelContext* context);
+  ORT_API2_STATUS(Compute, _In_ OrtKernelImpl *this_ptr, _In_ OrtKernelContext *context);
 
   /** \brief Called by ORT to release the OrtKernelImpl instance and its resources.
    *
@@ -545,7 +545,7 @@ struct OrtKernelImpl {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(void, Release, _In_ OrtKernelImpl* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtKernelImpl *this_ptr);
 
   /** \brief Optional function to pre-pack a constant tensor (i.e., a weight) to the kernel's preferred data layout.
    *
@@ -599,9 +599,9 @@ struct OrtKernelImpl {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(PrePackWeight, _In_ OrtKernelImpl* this_ptr, _In_ const OrtValue* tensor,
-                  _In_ int input_index, _Inout_ OrtAllocator* allocator,
-                  _In_opt_ OrtSharedPrePackedWeightCache* prepacked_weight_cache, _Out_ bool* is_packed);
+  ORT_API2_STATUS(PrePackWeight, _In_ OrtKernelImpl *this_ptr, _In_ const OrtValue *tensor,
+                  _In_ int input_index, _Inout_ OrtAllocator *allocator,
+                  _In_opt_ OrtSharedPrePackedWeightCache *prepacked_weight_cache, _Out_ bool *is_packed);
 
   /** \brief Optional function that receives data for a shared pre-packed weight from ORT.
    *
@@ -637,9 +637,9 @@ struct OrtKernelImpl {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(SetSharedPrePackedWeight, _In_ OrtKernelImpl* this_ptr,
-                  _In_reads_(num_buffers) const void* const* buffer_data_ptrs,
-                  _In_reads_(num_buffers) const size_t* buffer_data_sizes,
+  ORT_API2_STATUS(SetSharedPrePackedWeight, _In_ OrtKernelImpl *this_ptr,
+                  _In_reads_(num_buffers) const void *const *buffer_data_ptrs,
+                  _In_reads_(num_buffers) const size_t *buffer_data_sizes,
                   _In_ size_t num_buffers, _In_ int input_index);
 };
 
@@ -656,9 +656,9 @@ struct OrtKernelImpl {
  *
  * \since Version 1.24.
  */
-typedef OrtStatus*(ORT_API_CALL* OrtKernelCreateFunc)(_In_ void* kernel_create_func_state,
-                                                      _In_ const OrtKernelInfo* info,
-                                                      _Outptr_result_maybenull_ OrtKernelImpl** kernel_out);
+typedef OrtStatus *(ORT_API_CALL *OrtKernelCreateFunc)(_In_ void *kernel_create_func_state,
+                                                       _In_ const OrtKernelInfo *info,
+                                                       _Outptr_result_maybenull_ OrtKernelImpl **kernel_out);
 
 struct OrtLoopKernelHelper;
 typedef struct OrtLoopKernelHelper OrtLoopKernelHelper;
@@ -668,7 +668,7 @@ typedef struct OrtLoopKernelHelper OrtLoopKernelHelper;
  * \since Version 1.24.
  */
 struct OrtLoopKernelHelper {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   /** \brief Called by ORT to release the OrtLoopKernelHelper instance and its resources.
    *
@@ -676,7 +676,7 @@ struct OrtLoopKernelHelper {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(void, Release, _In_ OrtLoopKernelHelper* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtLoopKernelHelper *this_ptr);
 
   /** \brief Helper function that concatenates OrtValue instances from each loop iteration into a single
    *         pre-allocated output buffer.
@@ -697,9 +697,9 @@ struct OrtLoopKernelHelper {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(ConcatOutput, _In_ OrtLoopKernelHelper* this_ptr, _In_opt_ void* stream_handle,
-                  _In_reads_(num_per_iteration_outputs) const OrtValue* const* per_iteration_outputs,
-                  _In_ size_t num_per_iteration_outputs, _Out_writes_bytes_all_(output_size_in_bytes) void* output,
+  ORT_API2_STATUS(ConcatOutput, _In_ OrtLoopKernelHelper *this_ptr, _In_opt_ void *stream_handle,
+                  _In_reads_(num_per_iteration_outputs) const OrtValue *const *per_iteration_outputs,
+                  _In_ size_t num_per_iteration_outputs, _Out_writes_bytes_all_(output_size_in_bytes) void *output,
                   _In_ size_t output_size_in_bytes);
 };
 
@@ -711,7 +711,7 @@ typedef struct OrtScanKernelHelper OrtScanKernelHelper;
  * \since Version 1.24.
  */
 struct OrtScanKernelHelper {
-  uint32_t ort_version_supported;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t ort_version_supported; ///< Must be initialized to ORT_API_VERSION
 
   /** \brief Called by ORT to release the OrtScanKernelHelper instance and its resources.
    *
@@ -719,7 +719,7 @@ struct OrtScanKernelHelper {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(void, Release, _In_ OrtScanKernelHelper* this_ptr);
+  ORT_API_T(void, Release, _In_ OrtScanKernelHelper *this_ptr);
 
   /** \brief Helper function that transposes an OrtValue instance during execution of a Scan kernel.
    *
@@ -738,9 +738,9 @@ struct OrtScanKernelHelper {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(Transpose, _In_ OrtScanKernelHelper* this_ptr,
-                  _In_reads_(num_permutation_elems) const size_t* permutation, _In_ size_t num_permutation_elems,
-                  _In_ const OrtValue* input, _In_opt_ OrtSyncStream* stream, _Inout_ OrtValue* output);
+  ORT_API2_STATUS(Transpose, _In_ OrtScanKernelHelper *this_ptr,
+                  _In_reads_(num_permutation_elems) const size_t *permutation, _In_ size_t num_permutation_elems,
+                  _In_ const OrtValue *input, _In_opt_ OrtSyncStream *stream, _Inout_ OrtValue *output);
 };
 
 /**
@@ -762,11 +762,11 @@ struct OrtEpApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateEpDevice, _In_ OrtEpFactory* ep_factory,
-                  _In_ const OrtHardwareDevice* hardware_device,
-                  _In_opt_ const OrtKeyValuePairs* ep_metadata,
-                  _In_opt_ const OrtKeyValuePairs* ep_options,
-                  _Out_ OrtEpDevice** ep_device);
+  ORT_API2_STATUS(CreateEpDevice, _In_ OrtEpFactory *ep_factory,
+                  _In_ const OrtHardwareDevice *hardware_device,
+                  _In_opt_ const OrtKeyValuePairs *ep_metadata,
+                  _In_opt_ const OrtKeyValuePairs *ep_options,
+                  _Out_ OrtEpDevice **ep_device);
 
   ORT_CLASS_RELEASE(EpDevice);
 
@@ -787,9 +787,9 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(EpGraphSupportInfo_AddNodesToFuse, _In_ OrtEpGraphSupportInfo* graph_support_info,
-                  _In_reads_(num_nodes) const OrtNode* const* nodes, _In_ size_t num_nodes,
-                  _In_opt_ const OrtNodeFusionOptions* node_fusion_options);
+  ORT_API2_STATUS(EpGraphSupportInfo_AddNodesToFuse, _In_ OrtEpGraphSupportInfo *graph_support_info,
+                  _In_reads_(num_nodes) const OrtNode *const *nodes, _In_ size_t num_nodes,
+                  _In_opt_ const OrtNodeFusionOptions *node_fusion_options);
 
   /** \brief Specify a node that is supported by an OrtEp and should be run with a registered EP kernel.
    *
@@ -800,8 +800,8 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(EpGraphSupportInfo_AddSingleNode, _In_ OrtEpGraphSupportInfo* graph_support_info,
-                  _In_ const OrtNode* node);
+  ORT_API2_STATUS(EpGraphSupportInfo_AddSingleNode, _In_ OrtEpGraphSupportInfo *graph_support_info,
+                  _In_ const OrtNode *node);
 
   /** \brief Query a OrtNodeComputeContext for the name of the node that encapsulates the compiled/fused node.
    *
@@ -814,7 +814,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const char*, NodeComputeContext_NodeName, _In_ const OrtNodeComputeContext* context);
+  ORT_API_T(const char *, NodeComputeContext_NodeName, _In_ const OrtNodeComputeContext *context);
 
   /** \brief Register an allocator with the OrtEpDevice.
    *
@@ -838,8 +838,8 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(EpDevice_AddAllocatorInfo, _In_ OrtEpDevice* ep_device,
-                  _In_ const OrtMemoryInfo* allocator_memory_info);
+  ORT_API2_STATUS(EpDevice_AddAllocatorInfo, _In_ OrtEpDevice *ep_device,
+                  _In_ const OrtMemoryInfo *allocator_memory_info);
 
   /** \brief Get the OrtMemoryDevice from an OrtMemoryInfo instance.
    *
@@ -851,7 +851,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const OrtMemoryDevice*, MemoryInfo_GetMemoryDevice, _In_ const OrtMemoryInfo* memory_info);
+  ORT_API_T(const OrtMemoryDevice *, MemoryInfo_GetMemoryDevice, _In_ const OrtMemoryInfo *memory_info);
 
   /** \brief Get the OrtMemoryDevice from an OrtValue instance if it contains a Tensor.
    *
@@ -860,7 +860,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const OrtMemoryDevice*, Value_GetMemoryDevice, _In_ const OrtValue* value);
+  ORT_API_T(const OrtMemoryDevice *, Value_GetMemoryDevice, _In_ const OrtValue *value);
 
   /** \brief Compare two OrtMemoryDevice instances for equality.
    *
@@ -873,7 +873,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(bool, MemoryDevice_AreEqual, _In_ const OrtMemoryDevice* a, _In_ const OrtMemoryDevice* b);
+  ORT_API_T(bool, MemoryDevice_AreEqual, _In_ const OrtMemoryDevice *a, _In_ const OrtMemoryDevice *b);
 
   /** \brief Get the OrtMemoryInfoDeviceType value from an OrtMemoryDevice instance.
    *
@@ -882,7 +882,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(OrtMemoryInfoDeviceType, MemoryDevice_GetDeviceType, _In_ const OrtMemoryDevice* memory_device);
+  ORT_API_T(OrtMemoryInfoDeviceType, MemoryDevice_GetDeviceType, _In_ const OrtMemoryDevice *memory_device);
 
   /** \brief Get the OrtDeviceMemoryType value from an OrtMemoryDevice instance.
    *
@@ -891,7 +891,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(OrtDeviceMemoryType, MemoryDevice_GetMemoryType, _In_ const OrtMemoryDevice* memory_device);
+  ORT_API_T(OrtDeviceMemoryType, MemoryDevice_GetMemoryType, _In_ const OrtMemoryDevice *memory_device);
 
   /** \brief Get the vendor ID from an OrtMemoryDevice instance.
    *
@@ -904,7 +904,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(uint32_t, MemoryDevice_GetVendorId, _In_ const OrtMemoryDevice* memory_device);
+  ORT_API_T(uint32_t, MemoryDevice_GetVendorId, _In_ const OrtMemoryDevice *memory_device);
 
   /** \brief Get the device ID from an OrtMemoryDevice instance.
    *
@@ -913,7 +913,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(uint32_t, MemoryDevice_GetDeviceId, _In_ const OrtMemoryDevice* memory_device);
+  ORT_API_T(uint32_t, MemoryDevice_GetDeviceId, _In_ const OrtMemoryDevice *memory_device);
 
   /** \brief Get the OrtSyncStreamImpl associated with an OrtSyncStream instance.
    *
@@ -926,7 +926,7 @@ struct OrtEpApi {
    *
    * \remarks There should always be an OrtSyncStreamImpl associated with an OrtSyncStream instance that the EP gets.
    */
-  ORT_API_T(const OrtSyncStreamImpl*, SyncStream_GetImpl, _In_ const OrtSyncStream* stream);
+  ORT_API_T(const OrtSyncStreamImpl *, SyncStream_GetImpl, _In_ const OrtSyncStream *stream);
 
   /** \brief Get the current sync ID for a stream.
    *
@@ -935,7 +935,7 @@ struct OrtEpApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(uint64_t, SyncStream_GetSyncId, _In_ const OrtSyncStream* stream);
+  ORT_API_T(uint64_t, SyncStream_GetSyncId, _In_ const OrtSyncStream *stream);
 
   /** \brief Get the sync ID for the last time the consumer_stream waited on the producer_stream.
    *
@@ -948,7 +948,7 @@ struct OrtEpApi {
    * \since Version 1.23.
    */
   ORT_API_T(uint64_t, GetSyncIdForLastWaitOnSyncStream,
-            _In_ const OrtSyncStream* producer_stream, _In_ const OrtSyncStream* consumer_stream);
+            _In_ const OrtSyncStream *producer_stream, _In_ const OrtSyncStream *consumer_stream);
 
   /** \brief Create an OrtHardwareDevice.
    *
@@ -971,9 +971,9 @@ struct OrtEpApi {
   ORT_API2_STATUS(CreateHardwareDevice, _In_ OrtHardwareDeviceType type,
                   _In_ uint32_t vendor_id,
                   _In_ uint32_t device_id,
-                  _In_ const char* vendor_name,
-                  _In_opt_ const OrtKeyValuePairs* metadata,
-                  _Out_ OrtHardwareDevice** hardware_device);
+                  _In_ const char *vendor_name,
+                  _In_opt_ const OrtKeyValuePairs *metadata,
+                  _Out_ OrtHardwareDevice **hardware_device);
 
   ORT_CLASS_RELEASE(HardwareDevice);
 
@@ -989,7 +989,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(CreateKernelRegistry, _Outptr_ OrtKernelRegistry** kernel_registry);
+  ORT_API2_STATUS(CreateKernelRegistry, _Outptr_ OrtKernelRegistry **kernel_registry);
 
   ORT_CLASS_RELEASE(KernelRegistry);
 
@@ -1006,9 +1006,9 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelRegistry_AddKernel, _In_ OrtKernelRegistry* kernel_registry,
-                  _In_ const OrtKernelDef* kernel_def, _In_ OrtKernelCreateFunc kernel_create_func,
-                  _In_ void* kernel_create_func_state);
+  ORT_API2_STATUS(KernelRegistry_AddKernel, _In_ OrtKernelRegistry *kernel_registry,
+                  _In_ const OrtKernelDef *kernel_def, _In_ OrtKernelCreateFunc kernel_create_func,
+                  _In_ void *kernel_create_func_state);
 
   /** \brief Creates a kernel definition builder used to create instances of OrtKernelDef.
    *
@@ -1019,7 +1019,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(CreateKernelDefBuilder, _Outptr_ OrtKernelDefBuilder** kernel_def_builder_out);
+  ORT_API2_STATUS(CreateKernelDefBuilder, _Outptr_ OrtKernelDefBuilder **kernel_def_builder_out);
 
   ORT_CLASS_RELEASE(KernelDefBuilder);
 
@@ -1032,8 +1032,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetOperatorType, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _In_ const char* op_type);
+  ORT_API2_STATUS(KernelDefBuilder_SetOperatorType, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _In_ const char *op_type);
 
   /** \brief Sets the kernel's domain.
    *
@@ -1044,7 +1044,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetDomain, _In_ OrtKernelDefBuilder* kernel_def_builder, _In_ const char* domain);
+  ORT_API2_STATUS(KernelDefBuilder_SetDomain, _In_ OrtKernelDefBuilder *kernel_def_builder, _In_ const char *domain);
 
   /** \brief Sets the kernel's opset version range that is supported.
    *
@@ -1058,7 +1058,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetSinceVersion, _In_ OrtKernelDefBuilder* kernel_def_builder,
+  ORT_API2_STATUS(KernelDefBuilder_SetSinceVersion, _In_ OrtKernelDefBuilder *kernel_def_builder,
                   _In_ int since_version_start, _In_ int since_version_end);
 
   /** \brief Sets the name of the kernel's intended execution provider.
@@ -1070,8 +1070,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetExecutionProvider, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _In_ const char* ep_name);
+  ORT_API2_STATUS(KernelDefBuilder_SetExecutionProvider, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _In_ const char *ep_name);
 
   /** \brief Sets the memory type for a kernel input.
    *
@@ -1083,7 +1083,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetInputMemType, _In_ OrtKernelDefBuilder* kernel_def_builder,
+  ORT_API2_STATUS(KernelDefBuilder_SetInputMemType, _In_ OrtKernelDefBuilder *kernel_def_builder,
                   _In_ size_t input_index, _In_ OrtMemType mem_type);
 
   /** \brief Sets the memory type for a kernel output.
@@ -1096,7 +1096,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_SetOutputMemType, _In_ OrtKernelDefBuilder* kernel_def_builder,
+  ORT_API2_STATUS(KernelDefBuilder_SetOutputMemType, _In_ OrtKernelDefBuilder *kernel_def_builder,
                   _In_ size_t output_index, _In_ OrtMemType mem_type);
 
   /** \brief Adds type constraints for a kernel argument represented as a string (e.g., "T").
@@ -1111,8 +1111,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_AddTypeConstraint, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _In_ const char* arg_name, _In_reads_(num_types) const OrtDataType* const* types,
+  ORT_API2_STATUS(KernelDefBuilder_AddTypeConstraint, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _In_ const char *arg_name, _In_reads_(num_types) const OrtDataType *const *types,
                   _In_ size_t num_types);
 
   /** \brief Adds aliases for the given input and output pairs.
@@ -1130,9 +1130,9 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_AddInputOutputAliases, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _In_reads_(num_io_indices) int const* input_indices,
-                  _In_reads_(num_io_indices) int const* output_indices,
+  ORT_API2_STATUS(KernelDefBuilder_AddInputOutputAliases, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _In_reads_(num_io_indices) int const *input_indices,
+                  _In_reads_(num_io_indices) int const *output_indices,
                   _In_ size_t num_io_indices);
 
   /** \brief Adds mutable aliases for the given input and output pairs.
@@ -1150,9 +1150,9 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_AddInputOutputMutableAliases, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _In_reads_(num_io_indices) int const* input_indices,
-                  _In_reads_(num_io_indices) int const* output_indices,
+  ORT_API2_STATUS(KernelDefBuilder_AddInputOutputMutableAliases, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _In_reads_(num_io_indices) int const *input_indices,
+                  _In_reads_(num_io_indices) int const *output_indices,
                   _In_ size_t num_io_indices);
 
   /** \brief Creates a OrtKernelDef instance from the given kernel definition builder.
@@ -1164,8 +1164,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDefBuilder_Build, _In_ OrtKernelDefBuilder* kernel_def_builder,
-                  _Outptr_ OrtKernelDef** kernel_def_out);
+  ORT_API2_STATUS(KernelDefBuilder_Build, _In_ OrtKernelDefBuilder *kernel_def_builder,
+                  _Outptr_ OrtKernelDef **kernel_def_out);
 
   ORT_CLASS_RELEASE(KernelDef);
 
@@ -1176,7 +1176,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(const char*, KernelDef_GetOperatorType, _In_ const OrtKernelDef* kernel_def);
+  ORT_API_T(const char *, KernelDef_GetOperatorType, _In_ const OrtKernelDef *kernel_def);
 
   /** \brief Returns the operator's domain from the kernel definition.
    *
@@ -1185,7 +1185,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(const char*, KernelDef_GetDomain, _In_ const OrtKernelDef* kernel_def);
+  ORT_API_T(const char *, KernelDef_GetDomain, _In_ const OrtKernelDef *kernel_def);
 
   /** \brief Gets the kernel's opset version range that is supported.
    *
@@ -1197,8 +1197,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDef_GetSinceVersion, _In_ const OrtKernelDef* kernel_def,
-                  _Out_ int* start_version, _Out_ int* end_version);
+  ORT_API2_STATUS(KernelDef_GetSinceVersion, _In_ const OrtKernelDef *kernel_def,
+                  _Out_ int *start_version, _Out_ int *end_version);
 
   /** \brief Returns the name of the kernel's intended execution provider.
    *
@@ -1207,7 +1207,7 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API_T(const char*, KernelDef_GetExecutionProvider, _In_ const OrtKernelDef* kernel_def);
+  ORT_API_T(const char *, KernelDef_GetExecutionProvider, _In_ const OrtKernelDef *kernel_def);
 
   /** \brief Gets the memory type for a kernel input.
    *
@@ -1219,8 +1219,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDef_GetInputMemType, _In_ const OrtKernelDef* kernel_def,
-                  _In_ size_t input_index, _Out_ OrtMemType* mem_type);
+  ORT_API2_STATUS(KernelDef_GetInputMemType, _In_ const OrtKernelDef *kernel_def,
+                  _In_ size_t input_index, _Out_ OrtMemType *mem_type);
 
   /** \brief Gets the memory type for a kernel output.
    *
@@ -1232,8 +1232,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(KernelDef_GetOutputMemType, _In_ const OrtKernelDef* kernel_def,
-                  _In_ size_t output_index, _Out_ OrtMemType* mem_type);
+  ORT_API2_STATUS(KernelDef_GetOutputMemType, _In_ const OrtKernelDef *kernel_def,
+                  _In_ size_t output_index, _Out_ OrtMemType *mem_type);
 
   /** \brief Gets the OrtDataType that represents the data type for a tensor of the given element type.
    *
@@ -1245,7 +1245,7 @@ struct OrtEpApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(GetTensorDataType, _In_ ONNXTensorElementDataType elem_type,
-                  _Outptr_ const OrtDataType** out);
+                  _Outptr_ const OrtDataType **out);
 
   /** \brief Gets the kernel definition for a given node, if any exists for the calling execution provider.
    *
@@ -1262,8 +1262,8 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpGraphSupportInfo_LookUpKernel, _In_ OrtEpGraphSupportInfo* graph_support_info,
-                  _In_ const OrtNode* node, _Outptr_result_maybenull_ const OrtKernelDef** out_kernel_def);
+  ORT_API2_STATUS(EpGraphSupportInfo_LookUpKernel, _In_ OrtEpGraphSupportInfo *graph_support_info,
+                  _In_ const OrtNode *node, _Outptr_result_maybenull_ const OrtKernelDef **out_kernel_def);
 
   /** \brief Sets one or more data buffers that collectively hold the pre-packed data for a single shared weight.
    *
@@ -1290,8 +1290,8 @@ struct OrtEpApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(SharedPrePackedWeightCache_StoreWeightData,
-                  _In_ OrtSharedPrePackedWeightCache* prepacked_weight_cache,
-                  _In_reads_(num_buffers) void** buffer_data_ptrs, _In_reads_(num_buffers) size_t* buffer_data_sizes,
+                  _In_ OrtSharedPrePackedWeightCache *prepacked_weight_cache,
+                  _In_reads_(num_buffers) void **buffer_data_ptrs, _In_reads_(num_buffers) size_t *buffer_data_sizes,
                   _In_ size_t num_buffers);
 
   /** \brief Get the OrtEp instance to which the node is assigned from the OrtKernelInfo.
@@ -1304,7 +1304,7 @@ struct OrtEpApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(KernelInfo_GetEp, _In_ const OrtKernelInfo* info, _Outptr_ const OrtEp** ep);
+  ORT_API2_STATUS(KernelInfo_GetEp, _In_ const OrtKernelInfo *info, _Outptr_ const OrtEp **ep);
 
   /** \brief Set the details of an OrtDeviceEpIncompatibilityDetails instance.
    *
@@ -1322,10 +1322,10 @@ struct OrtEpApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(DeviceEpIncompatibilityDetails_SetDetails, _Inout_ OrtDeviceEpIncompatibilityDetails* details,
+  ORT_API2_STATUS(DeviceEpIncompatibilityDetails_SetDetails, _Inout_ OrtDeviceEpIncompatibilityDetails *details,
                   _In_ uint32_t reasons_bitmask,
                   _In_ int32_t error_code,
-                  _In_opt_z_ const char* notes);
+                  _In_opt_z_ const char *notes);
 
   /** \brief Creates an OrtKernelImpl instance for an If operator.
    *
@@ -1355,7 +1355,7 @@ struct OrtEpApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(CreateIfKernel, _In_ const OrtKernelInfo* kernel_info, _Outptr_ OrtKernelImpl** kernel_out);
+  ORT_API2_STATUS(CreateIfKernel, _In_ const OrtKernelInfo *kernel_info, _Outptr_ OrtKernelImpl **kernel_out);
 
   /** \brief Creates an OrtKernelImpl instance for a Loop operator.
    *
@@ -1391,8 +1391,8 @@ struct OrtEpApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(CreateLoopKernel, _In_ const OrtKernelInfo* kernel_info, _In_ OrtLoopKernelHelper* helper,
-                  _Outptr_ OrtKernelImpl** kernel_out);
+  ORT_API2_STATUS(CreateLoopKernel, _In_ const OrtKernelInfo *kernel_info, _In_ OrtLoopKernelHelper *helper,
+                  _Outptr_ OrtKernelImpl **kernel_out);
 
   /** \brief Creates an OrtKernelImpl instance for a Scan operator. Does not support opset versions older than 9.
    *
@@ -1423,8 +1423,8 @@ struct OrtEpApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(CreateScanKernel, _In_ const OrtKernelInfo* kernel_info, _In_ OrtScanKernelHelper* helper,
-                  _Outptr_ OrtKernelImpl** kernel_out);
+  ORT_API2_STATUS(CreateScanKernel, _In_ const OrtKernelInfo *kernel_info, _In_ OrtScanKernelHelper *helper,
+                  _Outptr_ OrtKernelImpl **kernel_out);
 
   ORT_CLASS_RELEASE(KernelImpl);
 
@@ -1443,7 +1443,7 @@ struct OrtEpApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(GetEnvConfigEntries, _Outptr_ OrtKeyValuePairs** config_entries);
+  ORT_API2_STATUS(GetEnvConfigEntries, _Outptr_ OrtKeyValuePairs **config_entries);
 };
 
 /**
@@ -1484,7 +1484,7 @@ struct OrtEp {
    *
    * \since Version 1.22.
    */
-  ORT_API_T(const char*, GetName, _In_ const OrtEp* this_ptr);
+  ORT_API_T(const char *, GetName, _In_ const OrtEp *this_ptr);
 
   /** \brief Get information about the nodes supported by the OrtEp instance.
    *
@@ -1502,8 +1502,8 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(GetCapability, _In_ OrtEp* this_ptr, _In_ const OrtGraph* graph,
-                  _Inout_ OrtEpGraphSupportInfo* graph_support_info);
+  ORT_API2_STATUS(GetCapability, _In_ OrtEp *this_ptr, _In_ const OrtGraph *graph,
+                  _Inout_ OrtEpGraphSupportInfo *graph_support_info);
 
   /** \brief Compile OrtGraph instances assigned to the OrtEp. Implementer must set a OrtNodeComputeInfo instance
    * for each OrtGraph in order to define its computation function.
@@ -1545,10 +1545,10 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Compile, _In_ OrtEp* this_ptr, _In_ const OrtGraph** graphs,
-                  _In_ const OrtNode** fused_nodes, _In_ size_t count,
-                  _Out_writes_all_(count) OrtNodeComputeInfo** node_compute_infos,
-                  _Out_writes_(count) OrtNode** ep_context_nodes);
+  ORT_API2_STATUS(Compile, _In_ OrtEp *this_ptr, _In_ const OrtGraph **graphs,
+                  _In_ const OrtNode **fused_nodes, _In_ size_t count,
+                  _Out_writes_all_(count) OrtNodeComputeInfo **node_compute_infos,
+                  _Out_writes_(count) OrtNode **ep_context_nodes);
 
   /** \brief Release OrtNodeComputeInfo instances.
    *
@@ -1561,8 +1561,8 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void, ReleaseNodeComputeInfos, _In_ OrtEp* this_ptr,
-            OrtNodeComputeInfo** node_compute_infos,
+  ORT_API_T(void, ReleaseNodeComputeInfos, _In_ OrtEp *this_ptr,
+            OrtNodeComputeInfo **node_compute_infos,
             _In_ size_t num_node_compute_infos);
 
   /** \brief Get the EP's preferred data layout.
@@ -1577,7 +1577,7 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(GetPreferredDataLayout, _In_ OrtEp* this_ptr, _Out_ OrtEpDataLayout* preferred_data_layout);
+  ORT_API2_STATUS(GetPreferredDataLayout, _In_ OrtEp *this_ptr, _Out_ OrtEpDataLayout *preferred_data_layout);
 
   /** \brief Given an op with domain `domain` and type `op_type`, determine whether an associated node's data layout
    *         should be converted to `target_data_layout`.
@@ -1601,10 +1601,10 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ShouldConvertDataLayoutForOp, _In_ OrtEp* this_ptr,
-                  _In_z_ const char* domain, _In_z_ const char* op_type,
+  ORT_API2_STATUS(ShouldConvertDataLayoutForOp, _In_ OrtEp *this_ptr,
+                  _In_z_ const char *domain, _In_z_ const char *op_type,
                   _In_ OrtEpDataLayout target_data_layout,
-                  _Outptr_ int* should_convert);
+                  _Outptr_ int *should_convert);
 
   /** \brief Set dynamic options on this EP.
    *
@@ -1622,9 +1622,9 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(SetDynamicOptions, _In_ OrtEp* this_ptr,
-                  _In_reads_(num_options) const char* const* option_keys,
-                  _In_reads_(num_options) const char* const* option_values,
+  ORT_API2_STATUS(SetDynamicOptions, _In_ OrtEp *this_ptr,
+                  _In_reads_(num_options) const char *const *option_keys,
+                  _In_reads_(num_options) const char *const *option_values,
                   _In_ size_t num_options);
 
   /** \brief Called by ORT to notify the EP of the start of a run.
@@ -1638,7 +1638,7 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OnRunStart, _In_ OrtEp* this_ptr, _In_ const OrtRunOptions* run_options);
+  ORT_API2_STATUS(OnRunStart, _In_ OrtEp *this_ptr, _In_ const OrtRunOptions *run_options);
 
   /** \brief Called by ORT to notify the EP of the end of a run.
    *
@@ -1653,7 +1653,7 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OnRunEnd, _In_ OrtEp* this_ptr, _In_ const OrtRunOptions* run_options, _In_ bool sync_stream);
+  ORT_API2_STATUS(OnRunEnd, _In_ OrtEp *this_ptr, _In_ const OrtRunOptions *run_options, _In_ bool sync_stream);
 
   /** \brief Create an OrtAllocator for the given OrtMemoryInfo for an OrtSession.
    *
@@ -1670,9 +1670,9 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateAllocator, _In_ OrtEp* this_ptr,
-                  _In_ const OrtMemoryInfo* memory_info,
-                  _Outptr_result_maybenull_ OrtAllocator** allocator);
+  ORT_API2_STATUS(CreateAllocator, _In_ OrtEp *this_ptr,
+                  _In_ const OrtMemoryInfo *memory_info,
+                  _Outptr_result_maybenull_ OrtAllocator **allocator);
 
   /** \brief Create a synchronization stream for the given memory device for an OrtSession.
    *
@@ -1690,9 +1690,9 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateSyncStreamForDevice, _In_ OrtEp* this_ptr,
-                  _In_ const OrtMemoryDevice* memory_device,
-                  _Outptr_ OrtSyncStreamImpl** stream);
+  ORT_API2_STATUS(CreateSyncStreamForDevice, _In_ OrtEp *this_ptr,
+                  _In_ const OrtMemoryDevice *memory_device,
+                  _Outptr_ OrtSyncStreamImpl **stream);
 
   /** \brief Get a string with details about the EP stack used to produce a compiled model.
    *
@@ -1709,8 +1709,8 @@ struct OrtEp {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const char*, GetCompiledModelCompatibilityInfo, _In_ OrtEp* this_ptr,
-            _In_ const OrtGraph* graph);
+  ORT_API_T(const char *, GetCompiledModelCompatibilityInfo, _In_ OrtEp *this_ptr,
+            _In_ const OrtGraph *graph);
 
   /** \brief Gets the execution provider's kernel registry, if any.
    *
@@ -1725,8 +1725,8 @@ struct OrtEp {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetKernelRegistry, _In_ OrtEp* this_ptr,
-                  _Outptr_result_maybenull_ const OrtKernelRegistry** kernel_registry);
+  ORT_API2_STATUS(GetKernelRegistry, _In_ OrtEp *this_ptr,
+                  _Outptr_result_maybenull_ const OrtKernelRegistry **kernel_registry);
 
   /** \brief Gets whether the execution provider supports concurrent run calls made on the session.
    *
@@ -1740,7 +1740,7 @@ struct OrtEp {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(IsConcurrentRunSupported, _In_ OrtEp* this_ptr, _Outptr_ bool* is_supported);
+  ORT_API2_STATUS(IsConcurrentRunSupported, _In_ OrtEp *this_ptr, _Outptr_ bool *is_supported);
 };
 
 /** \brief The function signature that ORT will call to create OrtEpFactory instances.
@@ -1762,10 +1762,10 @@ struct OrtEp {
  *
  * \since Version 1.22.
  */
-typedef OrtStatus* (*CreateEpApiFactoriesFn)(_In_ const char* registered_name, _In_ const OrtApiBase* ort_api_base,
-                                             _In_ const OrtLogger* default_logger,
-                                             _Inout_ OrtEpFactory** factories, _In_ size_t max_factories,
-                                             _Out_ size_t* num_factories);
+typedef OrtStatus *(*CreateEpApiFactoriesFn)(_In_ const char *registered_name, _In_ const OrtApiBase *ort_api_base,
+                                             _In_ const OrtLogger *default_logger,
+                                             _Inout_ OrtEpFactory **factories, _In_ size_t max_factories,
+                                             _Out_ size_t *num_factories);
 
 /** \brief The function signature that ORT will call to release an OrtEpFactory instance.
  *
@@ -1777,7 +1777,7 @@ typedef OrtStatus* (*CreateEpApiFactoriesFn)(_In_ const char* registered_name, _
  *
  * \since Version 1.22.
  */
-typedef OrtStatus* (*ReleaseEpApiFactoryFn)(_In_ OrtEpFactory* factory);
+typedef OrtStatus *(*ReleaseEpApiFactoryFn)(_In_ OrtEpFactory *factory);
 
 /**
  * \brief The OrtEpFactory provides functions to create and manage execution providers.
@@ -1802,7 +1802,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.22.
    */
-  ORT_API_T(const char*, GetName, const OrtEpFactory* this_ptr);
+  ORT_API_T(const char *, GetName, const OrtEpFactory *this_ptr);
 
   /** \brief Get the name of vendor who owns the execution provider that the factory creates.
    *
@@ -1813,7 +1813,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.22.
    */
-  ORT_API_T(const char*, GetVendor, const OrtEpFactory* this_ptr);  // return EP vendor
+  ORT_API_T(const char *, GetVendor, const OrtEpFactory *this_ptr); // return EP vendor
 
   /** \brief Get information from the execution provider about OrtHardwareDevice support.
    *
@@ -1832,12 +1832,12 @@ struct OrtEpFactory {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(GetSupportedDevices, _In_ OrtEpFactory* this_ptr,
-                  _In_reads_(num_devices) const OrtHardwareDevice* const* devices,
+  ORT_API2_STATUS(GetSupportedDevices, _In_ OrtEpFactory *this_ptr,
+                  _In_reads_(num_devices) const OrtHardwareDevice *const *devices,
                   _In_ size_t num_devices,
-                  _Inout_ OrtEpDevice** ep_devices,
+                  _Inout_ OrtEpDevice **ep_devices,
                   _In_ size_t max_ep_devices,
-                  _Out_ size_t* num_ep_devices);
+                  _Out_ size_t *num_ep_devices);
 
   /** \brief Function to create an OrtEp instance for use in a Session.
    *
@@ -1863,12 +1863,12 @@ struct OrtEpFactory {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateEp, _In_ OrtEpFactory* this_ptr,
-                  _In_reads_(num_devices) const OrtHardwareDevice* const* devices,
-                  _In_reads_(num_devices) const OrtKeyValuePairs* const* ep_metadata_pairs,
+  ORT_API2_STATUS(CreateEp, _In_ OrtEpFactory *this_ptr,
+                  _In_reads_(num_devices) const OrtHardwareDevice *const *devices,
+                  _In_reads_(num_devices) const OrtKeyValuePairs *const *ep_metadata_pairs,
                   _In_ size_t num_devices,
-                  _In_ const OrtSessionOptions* session_options,
-                  _In_ const OrtLogger* logger, _Outptr_ OrtEp** ep);
+                  _In_ const OrtSessionOptions *session_options,
+                  _In_ const OrtLogger *logger, _Outptr_ OrtEp **ep);
 
   /** \brief Release the OrtEp instance.
    *
@@ -1877,7 +1877,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.22.
    */
-  ORT_API_T(void, ReleaseEp, OrtEpFactory* this_ptr, struct OrtEp* ep);
+  ORT_API_T(void, ReleaseEp, OrtEpFactory *this_ptr, struct OrtEp *ep);
 
   /** \brief Get the vendor id who owns the execution provider that the factory creates.
    *
@@ -1888,7 +1888,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(uint32_t, GetVendorId, const OrtEpFactory* this_ptr);
+  ORT_API_T(uint32_t, GetVendorId, const OrtEpFactory *this_ptr);
 
   /** \brief Get the version of the execution provider that the factory creates.
    *
@@ -1902,7 +1902,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const char*, GetVersion, _In_ const OrtEpFactory* this_ptr);
+  ORT_API_T(const char *, GetVersion, _In_ const OrtEpFactory *this_ptr);
 
   /** \brief Validate the compatibility of a compiled model with the execution provider factory for one or more devices.
    *
@@ -1923,11 +1923,11 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValidateCompiledModelCompatibilityInfo, _In_ OrtEpFactory* this_ptr,
-                  _In_reads_(num_devices) const OrtHardwareDevice* const* devices,
+  ORT_API2_STATUS(ValidateCompiledModelCompatibilityInfo, _In_ OrtEpFactory *this_ptr,
+                  _In_reads_(num_devices) const OrtHardwareDevice *const *devices,
                   _In_ size_t num_devices,
-                  _In_ const char* compatibility_info,
-                  _Out_ OrtCompiledModelCompatibility* model_compatibility);
+                  _In_ const char *compatibility_info,
+                  _Out_ OrtCompiledModelCompatibility *model_compatibility);
 
   /** \brief Create an OrtAllocator that can be shared across sessions for the given OrtMemoryInfo.
    *
@@ -1943,16 +1943,16 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateAllocator, _In_ OrtEpFactory* this_ptr,
-                  _In_ const OrtMemoryInfo* memory_info,
-                  _In_opt_ const OrtKeyValuePairs* allocator_options,
-                  _Outptr_result_maybenull_ OrtAllocator** allocator);
+  ORT_API2_STATUS(CreateAllocator, _In_ OrtEpFactory *this_ptr,
+                  _In_ const OrtMemoryInfo *memory_info,
+                  _In_opt_ const OrtKeyValuePairs *allocator_options,
+                  _Outptr_result_maybenull_ OrtAllocator **allocator);
 
   /** \brief Release an OrtAllocator created by the factory.
    *
    * \since Version 1.23.
    */
-  ORT_API_T(void, ReleaseAllocator, _In_ OrtEpFactory* this_ptr, _In_ OrtAllocator* allocator);
+  ORT_API_T(void, ReleaseAllocator, _In_ OrtEpFactory *this_ptr, _In_ OrtAllocator *allocator);
 
   /** \brief Create an OrtDataTransferImpl instance for the factory.
    *
@@ -1966,8 +1966,8 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateDataTransfer, _In_ OrtEpFactory* this_ptr,
-                  _Outptr_result_maybenull_ OrtDataTransferImpl** data_transfer);
+  ORT_API2_STATUS(CreateDataTransfer, _In_ OrtEpFactory *this_ptr,
+                  _Outptr_result_maybenull_ OrtDataTransferImpl **data_transfer);
 
   /** \brief Check if execution providers created by the factory are stream aware.
    *
@@ -1976,7 +1976,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(bool, IsStreamAware, _In_ const OrtEpFactory* this_ptr);
+  ORT_API_T(bool, IsStreamAware, _In_ const OrtEpFactory *this_ptr);
 
   /** \brief Create a synchronization stream for the given memory device.
    *
@@ -1992,10 +1992,10 @@ struct OrtEpFactory {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateSyncStreamForDevice, _In_ OrtEpFactory* this_ptr,
-                  _In_ const OrtMemoryDevice* memory_device,
-                  _In_opt_ const OrtKeyValuePairs* stream_options,
-                  _Outptr_ OrtSyncStreamImpl** stream);
+  ORT_API2_STATUS(CreateSyncStreamForDevice, _In_ OrtEpFactory *this_ptr,
+                  _In_ const OrtMemoryDevice *memory_device,
+                  _In_opt_ const OrtKeyValuePairs *stream_options,
+                  _Outptr_ OrtSyncStreamImpl **stream);
 
   /** \brief Check for known incompatibility reasons between a hardware device and this execution provider.
    *
@@ -2017,9 +2017,9 @@ struct OrtEpFactory {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetHardwareDeviceIncompatibilityDetails, _In_ OrtEpFactory* this_ptr,
-                  _In_ const OrtHardwareDevice* hw,
-                  _Inout_ OrtDeviceEpIncompatibilityDetails* details);
+  ORT_API2_STATUS(GetHardwareDeviceIncompatibilityDetails, _In_ OrtEpFactory *this_ptr,
+                  _In_ const OrtHardwareDevice *hw,
+                  _Inout_ OrtDeviceEpIncompatibilityDetails *details);
 
   /** \brief Create an OrtExternalResourceImporterImpl for external resource import.
    *
@@ -2043,9 +2043,9 @@ struct OrtEpFactory {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(CreateExternalResourceImporterForDevice, _In_ OrtEpFactory* this_ptr,
-                  _In_ const OrtEpDevice* ep_device,
-                  _Outptr_result_maybenull_ OrtExternalResourceImporterImpl** out_importer);
+  ORT_API2_STATUS(CreateExternalResourceImporterForDevice, _In_ OrtEpFactory *this_ptr,
+                  _In_ const OrtEpDevice *ep_device,
+                  _Outptr_result_maybenull_ OrtExternalResourceImporterImpl **out_importer);
 
   /** \brief Returns the number of OrtCustomOpDomains that this factory provides.
    *
@@ -2056,7 +2056,7 @@ struct OrtEpFactory {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetNumCustomOpDomains, _In_ OrtEpFactory* this_ptr, _Out_ size_t* num_domains);
+  ORT_API2_STATUS(GetNumCustomOpDomains, _In_ OrtEpFactory *this_ptr, _Out_ size_t *num_domains);
 
   /** \brief Gets the EP-specific OrtCustomOpDomains.
    *
@@ -2103,8 +2103,8 @@ struct OrtEpFactory {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetCustomOpDomains, _In_ OrtEpFactory* this_ptr,
-                  _Out_writes_all_(num_domains) OrtCustomOpDomain** domains, _In_ size_t num_domains);
+  ORT_API2_STATUS(GetCustomOpDomains, _In_ OrtEpFactory *this_ptr,
+                  _Out_writes_all_(num_domains) OrtCustomOpDomain **domains, _In_ size_t num_domains);
 };
 
 #ifdef __cplusplus

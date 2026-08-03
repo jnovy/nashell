@@ -23,10 +23,10 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
                                 cJSON *params, const char *ref,
                                 size_t size, int lines,
                                 const char *error, const char *tool_call_id) {
-    ctx->journal_done = 1;
-    journal_append(ctx->journal, ctx->react_loop, ctx->step,
-                   tool, params, ref, size, lines, error, tool_call_id,
-                   ctx->start_ts);
+  ctx->journal_done = 1;
+  journal_append(ctx->journal, ctx->react_loop, ctx->step,
+                 tool, params, ref, size, lines, error, tool_call_id,
+                 ctx->start_ts);
 }
 
 /* tools_make_result() and tools_make_error() are static inline in
@@ -41,26 +41,27 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
  *   TOOL_REQ_STR(params, "path", path);   // declares const char *path
  *   TOOL_OPT_STR(params, "query", query); // declares const char *query (may be NULL)
  */
-#define TOOL_REQ_STR(params, name, var)                                      \
-    cJSON *var##_j_ = cJSON_GetObjectItem((params), (name));                 \
-    if (!var##_j_ || !cJSON_IsString(var##_j_) ||                            \
-        !var##_j_->valuestring[0])                                           \
-        return tools_make_error(name " is required and must be a "           \
-                                "non-empty string");                         \
-    const char *var = var##_j_->valuestring
+#define TOOL_REQ_STR(params, name, var) \
+  cJSON *var##_j_ = cJSON_GetObjectItem((params), (name)); \
+  if (!var##_j_ || !cJSON_IsString(var##_j_) || \
+      !var##_j_->valuestring[0]) \
+    return tools_make_error(name " is required and must be a " \
+                                 "non-empty string"); \
+  const char *var = var##_j_->valuestring
 
-#define TOOL_OPT_STR(params, name, var)                                      \
-    cJSON *var##_j_ = cJSON_GetObjectItem((params), (name));                 \
-    const char *var = (var##_j_ && cJSON_IsString(var##_j_) &&               \
-                       var##_j_->valuestring[0])                             \
-                      ? var##_j_->valuestring : NULL
+#define TOOL_OPT_STR(params, name, var) \
+  cJSON *var##_j_ = cJSON_GetObjectItem((params), (name)); \
+  const char *var = (var##_j_ && cJSON_IsString(var##_j_) && \
+                     var##_j_->valuestring[0]) \
+                      ? var##_j_->valuestring \
+                      : NULL
 
 /* Build a success result with {"status":"ok"} and optional extra fields.
  * Caller can cJSON_AddXToObject(meta, ...) before returning. */
 static inline tool_result_t tool_result_ok(void) {
-    cJSON *m = cJSON_CreateObject();
-    cJSON_AddStringToObject(m, "status", "ok");
-    return tools_make_result(1, m, NULL);
+  cJSON *m = cJSON_CreateObject();
+  cJSON_AddStringToObject(m, "status", "ok");
+  return tools_make_result(1, m, NULL);
 }
 
 /* Resolve a tool path: step alias → store path, store/ prefix → session-relative.

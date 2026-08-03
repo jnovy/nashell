@@ -28,37 +28,37 @@
 #define TOOL_PLUGIN_ABI_VERSION 3
 
 /* Capability flags (for future Phase 2 context narrowing) */
-#define TOOL_CAP_STORE       (1u << 0)
-#define TOOL_CAP_CONFIG      (1u << 1)
-#define TOOL_CAP_PROVIDER    (1u << 2)
-#define TOOL_CAP_MEMORY      (1u << 3)
-#define TOOL_CAP_WORKSPACE   (1u << 4)
-#define TOOL_CAP_SCRATCHPAD  (1u << 5)
-#define TOOL_CAP_SESSION     (1u << 6)
-#define TOOL_CAP_EVENTS      (1u << 7)
-#define TOOL_CAP_CORE        (1u << 31)
+#define TOOL_CAP_STORE (1u << 0)
+#define TOOL_CAP_CONFIG (1u << 1)
+#define TOOL_CAP_PROVIDER (1u << 2)
+#define TOOL_CAP_MEMORY (1u << 3)
+#define TOOL_CAP_WORKSPACE (1u << 4)
+#define TOOL_CAP_SCRATCHPAD (1u << 5)
+#define TOOL_CAP_SESSION (1u << 6)
+#define TOOL_CAP_EVENTS (1u << 7)
+#define TOOL_CAP_CORE (1u << 31)
 
 /* Tool result: metadata JSON + optional stored content hash.
  * Defined here (not tools.h) so external plugins can use it
  * without pulling in nash internals. */
 typedef struct {
-    cJSON  *meta;       /* metadata JSON returned to model context */
-    char   *store_ref;  /* hash in shared store (caller frees) */
-    int     success;    /* 1 = ok, 0 = error */
-    int     importance; /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 S3.2) */
+  cJSON *meta;     /* metadata JSON returned to model context */
+  char *store_ref; /* hash in shared store (caller frees) */
+  int success;     /* 1 = ok, 0 = error */
+  int importance;  /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 S3.2) */
 } tool_result_t;
 
 /* Convenience helpers for building tool results.
  * Provided as static inline so external plugins can use them
  * without linking against tools.c internals. */
 static inline tool_result_t tools_make_result(int success, cJSON *meta, char *ref) {
-    return (tool_result_t){ .meta = meta, .store_ref = ref, .success = success };
+  return (tool_result_t){.meta = meta, .store_ref = ref, .success = success};
 }
 
 static inline tool_result_t tools_make_error(const char *msg) {
-    cJSON *m = cJSON_CreateObject();
-    cJSON_AddStringToObject(m, "error", msg);
-    return tools_make_result(0, m, NULL);
+  cJSON *m = cJSON_CreateObject();
+  cJSON_AddStringToObject(m, "error", msg);
+  return tools_make_result(0, m, NULL);
 }
 
 /* Parameter descriptor for a single tool parameter.
@@ -68,12 +68,12 @@ static inline tool_result_t tools_make_error(const char *msg) {
  *
  * Sentinel-terminated: last entry has name == NULL. */
 typedef struct {
-    const char   *name;          /* "path", "command", "timeout" */
-    const char   *type;          /* "string", "integer", "boolean", "array" */
-    const char   *description;   /* LLM-facing help text */
-    int           required;      /* 1 = required, 0 = optional */
-    const char  **enum_values;   /* NULL-terminated list, or NULL if none */
-    const char   *items_type;    /* For type="array": element type, e.g. "string" */
+  const char *name;         /* "path", "command", "timeout" */
+  const char *type;         /* "string", "integer", "boolean", "array" */
+  const char *description;  /* LLM-facing help text */
+  int required;             /* 1 = required, 0 = optional */
+  const char **enum_values; /* NULL-terminated list, or NULL if none */
+  const char *items_type;   /* For type="array": element type, e.g. "string" */
 } tool_param_t;
 
 /* Plugin descriptor.
@@ -84,46 +84,46 @@ typedef struct {
  * tool_plugin.h and tools.h. Callers cast to/from tool_ctx_t*.
  * Actual type: tool_result_t (*)(tool_ctx_t*, cJSON*) */
 typedef struct tool_plugin_t {
-    int                abi_version;   /* must equal TOOL_PLUGIN_ABI_VERSION */
-    const char        *name;          /* "file_read", "device_control", etc. */
-    const char        *version;       /* semver: "1.0.0" (informational) */
-    const char        *description;   /* LLM-facing description */
-    const tool_param_t *params;       /* Parameter definitions (sentinel-terminated) */
+  int abi_version;            /* must equal TOOL_PLUGIN_ABI_VERSION */
+  const char *name;           /* "file_read", "device_control", etc. */
+  const char *version;        /* semver: "1.0.0" (informational) */
+  const char *description;    /* LLM-facing description */
+  const tool_param_t *params; /* Parameter definitions (sentinel-terminated) */
 
-    /* Handler: void* to avoid circular includes.
+  /* Handler: void* to avoid circular includes.
      * Actual type: tool_result_t (*)(tool_ctx_t*, cJSON*) */
-    void *execute;
+  void *execute;
 
-    /* Capability flags (Phase 2: used for context narrowing) */
-    uint32_t      caps;
+  /* Capability flags (Phase 2: used for context narrowing) */
+  uint32_t caps;
 
-    /* Behavioral flags (default-off, etc.) */
-    uint32_t      flags;
+  /* Behavioral flags (default-off, etc.) */
+  uint32_t flags;
 
-    /* Group name for multi-tool plugins (NULL = standalone) */
-    const char   *group;
+  /* Group name for multi-tool plugins (NULL = standalone) */
+  const char *group;
 
-    /* === ABI v3 additions (append-only for backward compat) === */
+  /* === ABI v3 additions (append-only for backward compat) === */
 
-    /* Session-end cleanup hook.  Called once per react loop exit.
+  /* Session-end cleanup hook.  Called once per react loop exit.
      * session_dir is the path to the current session directory.
      * NULL = no cleanup needed.  Only called if abi_version >= 3. */
-    void (*cleanup)(const char *session_dir);
+  void (*cleanup)(const char *session_dir);
 
-    /* Post-registration init hook.  Called after dlopen + registration
+  /* Post-registration init hook.  Called after dlopen + registration
      * with the user_data pointer (e.g. parsed config).
      * NULL = no init needed.  Only called if abi_version >= 3. */
-    void (*init)(void *user_data);
+  void (*init)(void *user_data);
 
-    /* Opaque plugin-owned state.  Set by the host (nash) or the plugin
+  /* Opaque plugin-owned state.  Set by the host (nash) or the plugin
      * itself.  Passed to init(), available to execute() via the plugin
      * pointer.  For external plugins, typically points to a config struct
      * populated by nash from config.toml. */
-    void *user_data;
+  void *user_data;
 } tool_plugin_t;
 
 /* Plugin flags */
-#define TOOL_FLAG_DEFAULT_OFF  (1u << 0)  /* disabled unless user runs /tool on */
+#define TOOL_FLAG_DEFAULT_OFF (1u << 0) /* disabled unless user runs /tool on */
 
 /* ---- Registration API ---- */
 
@@ -218,40 +218,43 @@ char *tool_registry_names_csv(void);
  * TOOL_PARAM_ENUM:  parameter with enum_values (NULL-terminated string array)
  * TOOL_PARAM_ARRAY: array-typed parameter with items_type (e.g. "string")
  * TOOL_PARAM_END:   sentinel terminator */
-#define TOOL_PARAM(n, t, d, r)             {(n), (t), (d), (r), NULL, NULL}
-#define TOOL_PARAM_ENUM(n, t, d, r, ev)    {(n), (t), (d), (r), (ev), NULL}
-#define TOOL_PARAM_ARRAY(n, d, r, it)      {(n), "array", (d), (r), NULL, (it)}
-#define TOOL_PARAM_END                     {0}
+#define TOOL_PARAM(n, t, d, r) {(n), (t), (d), (r), NULL, NULL}
+#define TOOL_PARAM_ENUM(n, t, d, r, ev) {(n), (t), (d), (r), (ev), NULL}
+#define TOOL_PARAM_ARRAY(n, d, r, it) {(n), "array", (d), (r), NULL, (it)}
+#define TOOL_PARAM_END {0}
 
 /* Plugin definition helpers.
  * TOOL_DEF:       standard tool (flags=0)
  * TOOL_DEF_FLAGS: tool with explicit flags (e.g. TOOL_FLAG_DEFAULT_OFF)
  * Both set abi_version and version automatically. */
 #define TOOL_DEF(tname, tdesc, tparams, thandler) \
-    { .abi_version = TOOL_PLUGIN_ABI_VERSION,     \
-      .name = (tname), .version = "1.0.0",        \
-      .description = (tdesc), .params = (tparams), \
-      .execute = (void *)(thandler) }
+  {.abi_version = TOOL_PLUGIN_ABI_VERSION, \
+   .name = (tname), \
+   .version = "1.0.0", \
+   .description = (tdesc), \
+   .params = (tparams), \
+   .execute = (void *)(thandler)}
 
 #define TOOL_DEF_FLAGS(tname, tdesc, tparams, thandler, tflags) \
-    { .abi_version = TOOL_PLUGIN_ABI_VERSION,                   \
-      .name = (tname), .version = "1.0.0",                      \
-      .description = (tdesc), .params = (tparams),               \
-      .execute = (void *)(thandler), .flags = (tflags) }
+  {.abi_version = TOOL_PLUGIN_ABI_VERSION, \
+   .name = (tname), \
+   .version = "1.0.0", \
+   .description = (tdesc), \
+   .params = (tparams), \
+   .execute = (void *)(thandler), \
+   .flags = (tflags)}
 
 /* Register a single plugin variable via constructor */
-#define TOOL_PLUGIN_REGISTER(var_name)                  \
-    __attribute__((constructor))                         \
-    static void _tool_register_##var_name(void) {        \
-        tool_plugin_register(&var_name);                 \
-    }
+#define TOOL_PLUGIN_REGISTER(var_name) \
+  __attribute__((constructor)) static void _tool_register_##var_name(void) { \
+    tool_plugin_register(&var_name); \
+  }
 
 /* Register an array of plugins via constructor */
-#define TOOL_PLUGIN_REGISTER_ARRAY(arr, count)           \
-    __attribute__((constructor))                          \
-    static void _tool_register_##arr(void) {              \
-        for (int _i = 0; _i < (count); _i++)              \
-            tool_plugin_register(&(arr)[_i]);              \
-    }
+#define TOOL_PLUGIN_REGISTER_ARRAY(arr, count) \
+  __attribute__((constructor)) static void _tool_register_##arr(void) { \
+    for (int _i = 0; _i < (count); _i++) \
+      tool_plugin_register(&(arr)[_i]); \
+  }
 
 #endif /* TOOL_PLUGIN_H */

@@ -23,42 +23,42 @@
 
 /* Confidence tiers based on signal agreement */
 typedef enum {
-    SS_CONFIDENCE_LOW,      /* neither signal strong */
-    SS_CONFIDENCE_MEDIUM,   /* one strong signal */
-    SS_CONFIDENCE_HIGH      /* both signals agree (high confidence) */
+  SS_CONFIDENCE_LOW,    /* neither signal strong */
+  SS_CONFIDENCE_MEDIUM, /* one strong signal */
+  SS_CONFIDENCE_HIGH    /* both signals agree (high confidence) */
 } ss_confidence_t;
 
 /* Per-match entry within a session */
 typedef struct {
-    char   *snippet;            /* match context (up to ~4000 chars) */
-    int     react_loop;         /* R{loop} attribution */
-    int     step;               /* S{step} attribution */
-    char    tool[64];           /* tool name */
+  char *snippet;  /* match context (up to ~4000 chars) */
+  int react_loop; /* R{loop} attribution */
+  int step;       /* S{step} attribution */
+  char tool[64];  /* tool name */
 } ss_match_t;
 
 /* Per-session search result */
 typedef struct {
-    char   *session_dir;        /* full path to sessions/<ts>/ */
-    double  timestamp;          /* session timestamp */
-    /* Semantic signal */
-    double  semantic_score;     /* raw MaxSim score [0..1] */
-    int     best_chunk;         /* index of best-matching chunk (-1 if none) */
-    char   *chunk_preview;      /* best-matching chunk text (NULL if none) */
-    /* Lexical signal — with full match list */
-    double  lexical_score;      /* normalized lexical score [0..1] */
-    int     match_count;        /* total lexical matches in this session */
-    ss_match_t *matches;        /* array of individual matches */
-    int     n_matches;          /* number of matches stored (≤ SS_MAX_MATCHES_PER_SESSION) */
-    /* Fused */
-    double  composite_score;    /* blended final score */
-    ss_confidence_t confidence; /* agreement-based confidence tier */
+  char *session_dir; /* full path to sessions/<ts>/ */
+  double timestamp;  /* session timestamp */
+  /* Semantic signal */
+  double semantic_score; /* raw MaxSim score [0..1] */
+  int best_chunk;        /* index of best-matching chunk (-1 if none) */
+  char *chunk_preview;   /* best-matching chunk text (NULL if none) */
+  /* Lexical signal — with full match list */
+  double lexical_score; /* normalized lexical score [0..1] */
+  int match_count;      /* total lexical matches in this session */
+  ss_match_t *matches;  /* array of individual matches */
+  int n_matches;        /* number of matches stored (≤ SS_MAX_MATCHES_PER_SESSION) */
+  /* Fused */
+  double composite_score;     /* blended final score */
+  ss_confidence_t confidence; /* agreement-based confidence tier */
 } ss_result_t;
 
 typedef struct {
-    ss_result_t *results;
-    int count;
-    int total_matches;          /* sum of all match_count across results */
-    int sessions_searched;      /* how many sessions were examined */
+  ss_result_t *results;
+  int count;
+  int total_matches;     /* sum of all match_count across results */
+  int sessions_searched; /* how many sessions were examined */
 } ss_results_t;
 
 /* ── Main search API ──────────────────────────────────── */
@@ -86,15 +86,14 @@ typedef struct {
  *
  * Caller must free with ss_results_free(). */
 ss_results_t session_search(
-    session_index_t *session_idx,
-    embed_ctx_t *embed,
-    const char *query,
-    const char *pattern,
-    int use_regex,
-    int max_results,
-    int days,
-    const char *sessions_dir
-);
+  session_index_t *session_idx,
+  embed_ctx_t *embed,
+  const char *query,
+  const char *pattern,
+  int use_regex,
+  int max_results,
+  int days,
+  const char *sessions_dir);
 
 /* Free search results (including per-match arrays). */
 void ss_results_free(ss_results_t *r);

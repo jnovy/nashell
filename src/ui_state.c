@@ -18,344 +18,351 @@
 /* Case-insensitive substring search (portable, no _GNU_SOURCE needed).
  * Declared in ui_state_internal.h, used by ui_md_gen.c and ui_nav.c. */
 const char *ui_ci_strstr(const char *haystack, const char *needle) {
-    if (!needle[0]) return haystack;
-    for (; *haystack; haystack++) {
-        const char *h = haystack, *n = needle;
-        while (*h && *n && (tolower((unsigned char)*h) == tolower((unsigned char)*n))) {
-            h++; n++;
-        }
-        if (!*n) return haystack;
+  if (!needle[0]) return haystack;
+  for (; *haystack; haystack++) {
+    const char *h = haystack, *n = needle;
+    while (*h && *n && (tolower((unsigned char)*h) == tolower((unsigned char)*n))) {
+      h++;
+      n++;
     }
-    return NULL;
+    if (!*n) return haystack;
+  }
+  return NULL;
 }
 
 /* ── Lifecycle ───────────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
-    ui_state_t *ui = xcalloc(1, sizeof(*ui));
-    ui->session_dir = session_dir ? xstrdup(session_dir) : NULL;
-    ui->store = store;
-    ui->focus = FOCUS_QUERY;
-    ui->status = STATUS_READY;
-    ui->status_text = xstrdup("Ready");
-    ui->input_cap = NASH_PATH_MAX;
-    ui->input_buffer = xcalloc(1, (size_t)ui->input_cap);
-    ui->stream_cap = 8192;
-    ui->stream_tokens = xcalloc(1, (size_t)ui->stream_cap);
-    ui->cursor_link = 0;
-    ui->nav_cap = 16;
-    ui->nav_stack = xcalloc((size_t)ui->nav_cap, sizeof(nav_entry_t));
-    ui->nav_depth = 0;
-    ui->current_react_loop = -1;
+  ui_state_t *ui = xcalloc(1, sizeof(*ui));
+  ui->session_dir = session_dir ? xstrdup(session_dir) : NULL;
+  ui->store = store;
+  ui->focus = FOCUS_QUERY;
+  ui->status = STATUS_READY;
+  ui->status_text = xstrdup("Ready");
+  ui->input_cap = NASH_PATH_MAX;
+  ui->input_buffer = xcalloc(1, (size_t)ui->input_cap);
+  ui->stream_cap = 8192;
+  ui->stream_tokens = xcalloc(1, (size_t)ui->stream_cap);
+  ui->cursor_link = 0;
+  ui->nav_cap = 16;
+  ui->nav_stack = xcalloc((size_t)ui->nav_cap, sizeof(nav_entry_t));
+  ui->nav_depth = 0;
+  ui->current_react_loop = -1;
 
-    /* Set initial file to session.md */
-    if (session_dir) {
-        char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/session.md", session_dir);
-        ui->current_filepath = xstrdup(path);
-    }
+  /* Set initial file to session.md */
+  if (session_dir) {
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/session.md", session_dir);
+    ui->current_filepath = xstrdup(path);
+  }
 
-    pthread_mutex_init(&ui->mtx, NULL);
-    return ui;
+  pthread_mutex_init(&ui->mtx, NULL);
+  return ui;
 }
 
 void ui_state_free(ui_state_t *ui) {
-    if (!ui) return;
-    md_doc_free(ui->doc);
-    free(ui->banner);
-    free(ui->session_dir);
-    free(ui->status_text);
-    free(ui->input_buffer);
-    free(ui->stream_tokens);
-    free(ui->tool_display);
-    free(ui->tool_ref);
-    free(ui->model_name);
-    free(ui->current_filepath);
-    free(ui->user_ask_question);
-    free(ui->playbook_session_dir);
-    for (int i = 0; i < ui->pb_pass_count; i++) {
-        free(ui->pb_passes[i].session_dir);
-        free(ui->pb_passes[i].pass_label);
-    }
-    free(ui->pb_passes);
-    free(ui->nash_dir);
-    free(ui->workspace_name);
-    free(ui->current_label);
-    for (int i = 0; i < ui->nav_depth; i++) {
-        free(ui->nav_stack[i].filepath);
-        free(ui->nav_stack[i].label);
-        md_doc_free(ui->nav_stack[i].saved_doc);
-    }
-    free(ui->nav_stack);
-    for (int i = 0; i < ui->history_count; i++)
-        free(ui->history[i]);
-    free(ui->history);
-    free(ui->saved_input);
-    for (int i = 0; i < ui->expanded_count; i++)
-        free(ui->expanded_uris[i]);
-    free(ui->expanded_uris);
-    free(ui->page_search_term);
-    free(ui->page_search_lines);
-    ui_state_completion_reset(ui);
-    pthread_mutex_destroy(&ui->mtx);
-    free(ui);
+  if (!ui) return;
+  md_doc_free(ui->doc);
+  free(ui->banner);
+  free(ui->session_dir);
+  free(ui->status_text);
+  free(ui->input_buffer);
+  free(ui->stream_tokens);
+  free(ui->tool_display);
+  free(ui->tool_ref);
+  free(ui->model_name);
+  free(ui->current_filepath);
+  free(ui->user_ask_question);
+  free(ui->playbook_session_dir);
+  for (int i = 0; i < ui->pb_pass_count; i++) {
+    free(ui->pb_passes[i].session_dir);
+    free(ui->pb_passes[i].pass_label);
+  }
+  free(ui->pb_passes);
+  free(ui->nash_dir);
+  free(ui->workspace_name);
+  free(ui->current_label);
+  for (int i = 0; i < ui->nav_depth; i++) {
+    free(ui->nav_stack[i].filepath);
+    free(ui->nav_stack[i].label);
+    md_doc_free(ui->nav_stack[i].saved_doc);
+  }
+  free(ui->nav_stack);
+  for (int i = 0; i < ui->history_count; i++)
+    free(ui->history[i]);
+  free(ui->history);
+  free(ui->saved_input);
+  for (int i = 0; i < ui->expanded_count; i++)
+    free(ui->expanded_uris[i]);
+  free(ui->expanded_uris);
+  free(ui->page_search_term);
+  free(ui->page_search_lines);
+  ui_state_completion_reset(ui);
+  pthread_mutex_destroy(&ui->mtx);
+  free(ui);
 }
 
 /* ── File reload ─────────────────────────────────────────── */
 
 void ui_state_reload_file(ui_state_t *ui) {
-    if (!ui || !ui->current_filepath) return;
+  if (!ui || !ui->current_filepath) return;
 
-    /* Skip reload for raw (non-.md) files — they are static store refs
+  /* Skip reload for raw (non-.md) files — they are static store refs
      * that were already wrapped in code fences by ui_state_enter().
      * Reloading them would read the raw content without wrapping,
      * causing a brief correct render followed by broken markdown. */
-    int len = (int)strlen(ui->current_filepath);
-    if (len < 3 || strcmp(ui->current_filepath + len - 3, ".md") != 0)
-        return;
+  int len = (int)strlen(ui->current_filepath);
+  if (len < 3 || strcmp(ui->current_filepath + len - 3, ".md") != 0)
+    return;
 
-    /* Skip reload for search results — virtual document, not on disk.
+  /* Skip reload for search results — virtual document, not on disk.
      * The search view is regenerated by ui_state_search(), not from a file. */
-    if (ui->search_active)
-        return;
+  if (ui->search_active)
+    return;
 
-    char *content = slurp_file(ui->current_filepath, NULL);
-    if (!content) content = xstrdup("*File not found*\n");
+  char *content = slurp_file(ui->current_filepath, NULL);
+  if (!content) content = xstrdup("*File not found*\n");
 
-    md_doc_free(ui->doc);
-    ui->doc = md_parse(content);
-    free(content);
+  md_doc_free(ui->doc);
+  ui->doc = md_parse(content);
+  free(content);
 
-    /* Clamp cursor */
-    if (ui->doc && ui->cursor_link >= ui->doc->link_count)
-        ui->cursor_link = ui->doc->link_count > 0 ? ui->doc->link_count - 1 : 0;
+  /* Clamp cursor */
+  if (ui->doc && ui->cursor_link >= ui->doc->link_count)
+    ui->cursor_link = ui->doc->link_count > 0 ? ui->doc->link_count - 1 : 0;
 
-    ui->dirty = 1;
+  ui->dirty = 1;
 }
 
 /* ── Input editing ─────────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch) {
-    if (!ui) return;
-    /* Allow printable ASCII, newline, and Unicode codepoints (UTF-8).
+  if (!ui) return;
+  /* Allow printable ASCII, newline, and Unicode codepoints (UTF-8).
      * With ncursesw, getch() returns full Unicode codepoints as int values.
      * We encode them as UTF-8 bytes into the input buffer. */
-    if (ch != '\n' && ch < 32) return;      /* reject control chars except newline */
-    if (ch == 127) return;                   /* reject DEL */
+  if (ch != '\n' && ch < 32) return; /* reject control chars except newline */
+  if (ch == 127) return;             /* reject DEL */
 
-    /* Encode codepoint to UTF-8 */
-    char utf8[4];
-    int nbytes;
-    if (ch < 0x80) {
-        utf8[0] = (char)ch;
-        nbytes = 1;
-    } else if (ch < 0x800) {
-        utf8[0] = (char)(0xC0 | (ch >> 6));
-        utf8[1] = (char)(0x80 | (ch & 0x3F));
-        nbytes = 2;
-    } else if (ch < 0x10000) {
-        utf8[0] = (char)(0xE0 | (ch >> 12));
-        utf8[1] = (char)(0x80 | ((ch >> 6) & 0x3F));
-        utf8[2] = (char)(0x80 | (ch & 0x3F));
-        nbytes = 3;
-    } else if (ch < 0x110000) {
-        utf8[0] = (char)(0xF0 | (ch >> 18));
-        utf8[1] = (char)(0x80 | ((ch >> 12) & 0x3F));
-        utf8[2] = (char)(0x80 | ((ch >> 6) & 0x3F));
-        utf8[3] = (char)(0x80 | (ch & 0x3F));
-        nbytes = 4;
-    } else {
-        return;  /* invalid codepoint */
-    }
+  /* Encode codepoint to UTF-8 */
+  char utf8[4];
+  int nbytes;
+  if (ch < 0x80) {
+    utf8[0] = (char)ch;
+    nbytes = 1;
+  } else if (ch < 0x800) {
+    utf8[0] = (char)(0xC0 | (ch >> 6));
+    utf8[1] = (char)(0x80 | (ch & 0x3F));
+    nbytes = 2;
+  } else if (ch < 0x10000) {
+    utf8[0] = (char)(0xE0 | (ch >> 12));
+    utf8[1] = (char)(0x80 | ((ch >> 6) & 0x3F));
+    utf8[2] = (char)(0x80 | (ch & 0x3F));
+    nbytes = 3;
+  } else if (ch < 0x110000) {
+    utf8[0] = (char)(0xF0 | (ch >> 18));
+    utf8[1] = (char)(0x80 | ((ch >> 12) & 0x3F));
+    utf8[2] = (char)(0x80 | ((ch >> 6) & 0x3F));
+    utf8[3] = (char)(0x80 | (ch & 0x3F));
+    nbytes = 4;
+  } else {
+    return; /* invalid codepoint */
+  }
 
-    /* Ensure capacity for nbytes */
-    while (ui->input_len + nbytes >= ui->input_cap - 1) {
-        ui->input_cap *= 2;
-        if (safe_realloc((void **)&ui->input_buffer, (size_t)ui->input_cap)) return;
-    }
-    memmove(ui->input_buffer + ui->cursor_pos + nbytes,
-            ui->input_buffer + ui->cursor_pos,
-            (size_t)(ui->input_len - ui->cursor_pos + 1));
-    memcpy(ui->input_buffer + ui->cursor_pos, utf8, (size_t)nbytes);
-    ui->cursor_pos += nbytes;
-    ui->input_len += nbytes;
-    ui_state_completion_reset(ui);
-    ui->dirty = 1;
+  /* Ensure capacity for nbytes */
+  while (ui->input_len + nbytes >= ui->input_cap - 1) {
+    ui->input_cap *= 2;
+    if (safe_realloc((void **)&ui->input_buffer, (size_t)ui->input_cap)) return;
+  }
+  memmove(ui->input_buffer + ui->cursor_pos + nbytes,
+          ui->input_buffer + ui->cursor_pos,
+          (size_t)(ui->input_len - ui->cursor_pos + 1));
+  memcpy(ui->input_buffer + ui->cursor_pos, utf8, (size_t)nbytes);
+  ui->cursor_pos += nbytes;
+  ui->input_len += nbytes;
+  ui_state_completion_reset(ui);
+  ui->dirty = 1;
 }
 
 /* Helper: count bytes in the UTF-8 character ending at buf[pos-1] (backspace).
  * Returns 1-4 for valid UTF-8, 1 for ASCII or malformed sequences. */
 static int utf8_char_len_back(const char *buf, int pos) {
-    if (pos <= 0) return 0;
-    /* Walk backward over continuation bytes (10xxxxxx = 0x80..0xBF) */
-    int i = pos - 1;
-    int count = 1;
-    while (i > 0 && count < 4 &&
-           ((unsigned char)buf[i] & 0xC0) == 0x80) {
-        i--;
-        count++;
-    }
-    return count;
+  if (pos <= 0) return 0;
+  /* Walk backward over continuation bytes (10xxxxxx = 0x80..0xBF) */
+  int i = pos - 1;
+  int count = 1;
+  while (i > 0 && count < 4 &&
+         ((unsigned char)buf[i] & 0xC0) == 0x80) {
+    i--;
+    count++;
+  }
+  return count;
 }
 
 /* Helper: count bytes in the UTF-8 character starting at buf[pos] (delete/right).
  * Returns 1-4 for valid UTF-8, 1 for ASCII or malformed sequences. */
 static int utf8_char_len_fwd(const char *buf, int pos, int len) {
-    if (pos >= len) return 0;
-    unsigned char c = (unsigned char)buf[pos];
-    if (c < 0x80) return 1;
-    if ((c & 0xE0) == 0xC0) return (pos + 2 <= len) ? 2 : 1;
-    if ((c & 0xF0) == 0xE0) return (pos + 3 <= len) ? 3 : 1;
-    if ((c & 0xF8) == 0xF0) return (pos + 4 <= len) ? 4 : 1;
-    return 1;  /* continuation byte or invalid — treat as single byte */
+  if (pos >= len) return 0;
+  unsigned char c = (unsigned char)buf[pos];
+  if (c < 0x80) return 1;
+  if ((c & 0xE0) == 0xC0) return (pos + 2 <= len) ? 2 : 1;
+  if ((c & 0xF0) == 0xE0) return (pos + 3 <= len) ? 3 : 1;
+  if ((c & 0xF8) == 0xF0) return (pos + 4 <= len) ? 4 : 1;
+  return 1; /* continuation byte or invalid — treat as single byte */
 }
 
 void ui_state_input_backspace(ui_state_t *ui) {
-    if (!ui || ui->cursor_pos <= 0) return;
-    int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
-    memmove(ui->input_buffer + ui->cursor_pos - nb,
-            ui->input_buffer + ui->cursor_pos,
-            (size_t)(ui->input_len - ui->cursor_pos + 1));
-    ui->cursor_pos -= nb;
-    ui->input_len -= nb;
-    ui_state_completion_reset(ui);
-    ui->dirty = 1;
+  if (!ui || ui->cursor_pos <= 0) return;
+  int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+  memmove(ui->input_buffer + ui->cursor_pos - nb,
+          ui->input_buffer + ui->cursor_pos,
+          (size_t)(ui->input_len - ui->cursor_pos + 1));
+  ui->cursor_pos -= nb;
+  ui->input_len -= nb;
+  ui_state_completion_reset(ui);
+  ui->dirty = 1;
 }
 
 void ui_state_input_delete_word(ui_state_t *ui) {
-    if (!ui || ui->cursor_pos <= 0) return;
-    int old_pos = ui->cursor_pos;
-    /* Skip whitespace backwards */
-    while (ui->cursor_pos > 0 &&
-           (unsigned char)ui->input_buffer[ui->cursor_pos - 1] == ' ')
-        ui->cursor_pos--;
-    /* Skip non-whitespace backwards (handles UTF-8 continuation bytes) */
-    while (ui->cursor_pos > 0 &&
-           (unsigned char)ui->input_buffer[ui->cursor_pos - 1] != ' ') {
-        int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
-        ui->cursor_pos -= nb;
-    }
-    int removed = old_pos - ui->cursor_pos;
-    memmove(ui->input_buffer + ui->cursor_pos,
-            ui->input_buffer + old_pos,
-            (size_t)(ui->input_len - old_pos + 1));
-    ui->input_len -= removed;
-    ui_state_completion_reset(ui);
-    ui->dirty = 1;
+  if (!ui || ui->cursor_pos <= 0) return;
+  int old_pos = ui->cursor_pos;
+  /* Skip whitespace backwards */
+  while (ui->cursor_pos > 0 &&
+         (unsigned char)ui->input_buffer[ui->cursor_pos - 1] == ' ')
+    ui->cursor_pos--;
+  /* Skip non-whitespace backwards (handles UTF-8 continuation bytes) */
+  while (ui->cursor_pos > 0 &&
+         (unsigned char)ui->input_buffer[ui->cursor_pos - 1] != ' ') {
+    int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+    ui->cursor_pos -= nb;
+  }
+  int removed = old_pos - ui->cursor_pos;
+  memmove(ui->input_buffer + ui->cursor_pos,
+          ui->input_buffer + old_pos,
+          (size_t)(ui->input_len - old_pos + 1));
+  ui->input_len -= removed;
+  ui_state_completion_reset(ui);
+  ui->dirty = 1;
 }
 
 void ui_state_input_delete(ui_state_t *ui) {
-    if (!ui || ui->cursor_pos >= ui->input_len) return;
-    int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
-    memmove(ui->input_buffer + ui->cursor_pos,
-            ui->input_buffer + ui->cursor_pos + nb,
-            (size_t)(ui->input_len - ui->cursor_pos - nb + 1));
-    ui->input_len -= nb;
-    ui_state_completion_reset(ui);
-    ui->dirty = 1;
+  if (!ui || ui->cursor_pos >= ui->input_len) return;
+  int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
+  memmove(ui->input_buffer + ui->cursor_pos,
+          ui->input_buffer + ui->cursor_pos + nb,
+          (size_t)(ui->input_len - ui->cursor_pos - nb + 1));
+  ui->input_len -= nb;
+  ui_state_completion_reset(ui);
+  ui->dirty = 1;
 }
 
 void ui_state_input_left(ui_state_t *ui) {
-    if (!ui || ui->cursor_pos <= 0) return;
-    int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
-    ui->cursor_pos -= nb;
-    ui->dirty = 1;
+  if (!ui || ui->cursor_pos <= 0) return;
+  int nb = utf8_char_len_back(ui->input_buffer, ui->cursor_pos);
+  ui->cursor_pos -= nb;
+  ui->dirty = 1;
 }
 void ui_state_input_right(ui_state_t *ui) {
-    if (!ui || ui->cursor_pos >= ui->input_len) return;
-    int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
-    ui->cursor_pos += nb;
-    ui->dirty = 1;
+  if (!ui || ui->cursor_pos >= ui->input_len) return;
+  int nb = utf8_char_len_fwd(ui->input_buffer, ui->cursor_pos, ui->input_len);
+  ui->cursor_pos += nb;
+  ui->dirty = 1;
 }
 void ui_state_input_home(ui_state_t *ui) {
-    if (ui) { ui->cursor_pos = 0; ui->dirty = 1; }
+  if (ui) {
+    ui->cursor_pos = 0;
+    ui->dirty = 1;
+  }
 }
 void ui_state_input_end(ui_state_t *ui) {
-    if (ui) { ui->cursor_pos = ui->input_len; ui->dirty = 1; }
+  if (ui) {
+    ui->cursor_pos = ui->input_len;
+    ui->dirty = 1;
+  }
 }
 
 /* ── Status & data updates ─────────────────────────────── */
 
 void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
-    if (!ui) return;
-    ui->status = status;
-    free(ui->status_text);
-    ui->status_text = text ? xstrdup(text) : NULL;
-    /* Clear user_ask question when leaving AWAITING_INPUT state */
-    if (status != STATUS_AWAITING_INPUT) {
-        free(ui->user_ask_question);
-        ui->user_ask_question = NULL;
-    }
-    ui->dirty = 1;
+  if (!ui) return;
+  ui->status = status;
+  free(ui->status_text);
+  ui->status_text = text ? xstrdup(text) : NULL;
+  /* Clear user_ask question when leaving AWAITING_INPUT state */
+  if (status != STATUS_AWAITING_INPUT) {
+    free(ui->user_ask_question);
+    ui->user_ask_question = NULL;
+  }
+  ui->dirty = 1;
 }
 
 void ui_state_set_banner(ui_state_t *ui, const char *banner) {
-    if (!ui) return;
-    free(ui->banner);
-    ui->banner = banner ? xstrdup(banner) : NULL;
-    ui_state_generate_session_md(ui);
-    if (viewing_session(ui)) {
-        ui_state_reload_file(ui);
-    } else if (banner && ui->session_dir) {
-        /* Navigate to session.md so the banner is visible even when
+  if (!ui) return;
+  free(ui->banner);
+  ui->banner = banner ? xstrdup(banner) : NULL;
+  ui_state_generate_session_md(ui);
+  if (viewing_session(ui)) {
+    ui_state_reload_file(ui);
+  } else if (banner && ui->session_dir) {
+    /* Navigate to session.md so the banner is visible even when
          * the user is viewing a different file (e.g. a react output).
          * Slash commands like /agent and /runs set banners that the
          * user expects to see immediately. */
-        char spath[NASH_PATH_MAX];
-        snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
-        str_replace(&ui->current_filepath, spath);
-        ui->scroll_y = 0;
-        ui->cursor_link = 0;
-        ui_state_reload_file(ui);
-    }
+    char spath[NASH_PATH_MAX];
+    snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
+    str_replace(&ui->current_filepath, spath);
+    ui->scroll_y = 0;
+    ui->cursor_link = 0;
+    ui_state_reload_file(ui);
+  }
 }
 
 void ui_state_add_query(ui_state_t *ui, const char *query_text) {
-    if (!ui) return;
-    /* Save to history */
-    if (query_text && query_text[0]) {
-        if (ui->history_count >= ui->history_cap) {
-            ui->history_cap = ui->history_cap ? ui->history_cap * 2 : 32;
-            if (safe_realloc((void **)&ui->history,
-                                (size_t)ui->history_cap * sizeof(char *))) return;
-        }
-        ui->history[ui->history_count++] = xstrdup(query_text);
-        ui->history_idx = ui->history_count;
+  if (!ui) return;
+  /* Save to history */
+  if (query_text && query_text[0]) {
+    if (ui->history_count >= ui->history_cap) {
+      ui->history_cap = ui->history_cap ? ui->history_cap * 2 : 32;
+      if (safe_realloc((void **)&ui->history,
+                       (size_t)ui->history_cap * sizeof(char *))) return;
     }
-    /* Session.md will be regenerated when the journal entry is written */
-    ui->dirty = 1;
+    ui->history[ui->history_count++] = xstrdup(query_text);
+    ui->history_idx = ui->history_count;
+  }
+  /* Session.md will be regenerated when the journal entry is written */
+  ui->dirty = 1;
 }
 
 void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
-    if (!ui) return;
-    ui->journal = journal;
-    ui_state_generate_session_md(ui);
-    ui_state_reload_file(ui);
+  if (!ui) return;
+  ui->journal = journal;
+  ui_state_generate_session_md(ui);
+  ui_state_reload_file(ui);
 }
 
 /* ── Locking convenience wrappers ────────────────────────── */
 
 void ui_locked_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, status, text);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
+  pthread_mutex_lock(&ui->mtx);
+  ui_state_set_status(ui, status, text);
+  pthread_mutex_unlock(&ui->mtx);
+  tui_render(ui);
 }
 
 void ui_locked_set_status_fmt(ui_state_t *ui, ui_status_t status,
                               const char *fmt, ...) {
-    char buf[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    ui_locked_set_status(ui, status, buf);
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  ui_locked_set_status(ui, status, buf);
 }
 
 void ui_locked_push_content(ui_state_t *ui, const char *name,
                             const char *markdown) {
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_push_content(ui, name, markdown);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
+  pthread_mutex_lock(&ui->mtx);
+  ui_state_push_content(ui, name, markdown);
+  pthread_mutex_unlock(&ui->mtx);
+  tui_render(ui);
 }

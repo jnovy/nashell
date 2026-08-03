@@ -7,12 +7,12 @@
 
 /* Journal handle — wraps the path to journal.jsonl */
 typedef struct {
-    char *path;       /* full path to journal.jsonl (NULL until created) */
-    char *session_dir;/* resolved session directory (NULL until created) */
-    char *nash_dir;   /* base dir for lazy session creation (NULL if not lazy) */
-    char *workspace;  /* workspace name for lazy session routing (NULL = global) */
-    int   lazy_created;/* 0=directory not yet created, 1=created */
-    pthread_mutex_t mtx;  /* FIX CRIT2: thread-safe append/read */
+  char *path;          /* full path to journal.jsonl (NULL until created) */
+  char *session_dir;   /* resolved session directory (NULL until created) */
+  char *nash_dir;      /* base dir for lazy session creation (NULL if not lazy) */
+  char *workspace;     /* workspace name for lazy session routing (NULL = global) */
+  int lazy_created;    /* 0=directory not yet created, 1=created */
+  pthread_mutex_t mtx; /* FIX CRIT2: thread-safe append/read */
 } journal_t;
 
 journal_t *journal_new(const char *session_dir);
@@ -20,7 +20,7 @@ journal_t *journal_new(const char *session_dir);
  * If the program exits without any append, no session directory exists.
  * workspace: workspace name for routing (NULL = global sessions dir). */
 journal_t *journal_new_lazy(const char *nash_dir, const char *workspace);
-void       journal_free(journal_t *j);
+void journal_free(journal_t *j);
 /* Returns session_dir once created, NULL if not yet created */
 const char *journal_session_dir(journal_t *j);
 
@@ -52,7 +52,7 @@ char *journal_manifest(journal_t *j, int max_steps);
  * detailed references to evicted context it can no longer access.
  * Caller must free returned string. */
 char *journal_manifest_filtered(journal_t *j, int max_steps,
-                                 int react_loop, int min_step);
+                                int react_loop, int min_step);
 
 /* Scan journal.jsonl and return the highest react_loop value found.
  * Returns -1 if the journal is empty or doesn't exist.
@@ -63,10 +63,10 @@ int journal_max_react_loop(journal_t *j);
 
 /* Parsed compaction statistics from a journal compaction event. */
 typedef struct {
-    int before_msgs;
-    int after_msgs;
-    int before_pct;
-    int after_pct;
+  int before_msgs;
+  int after_msgs;
+  int before_pct;
+  int after_pct;
 } journal_compaction_stats_t;
 
 /* Parse compaction stats from a cJSON params object.
@@ -93,8 +93,8 @@ int journal_is_structural_tool_search(const char *tool);
  * Each chunk is a text segment (~800-1000 chars) containing agent thoughts,
  * tool outputs, and reasoning from consecutive steps. */
 typedef struct {
-    char **texts;       /* chunk text strings (caller must free each + array) */
-    int    n_chunks;    /* number of chunks */
+  char **texts; /* chunk text strings (caller must free each + array) */
+  int n_chunks; /* number of chunks */
 } journal_chunks_t;
 
 /* Extract semantic text chunks from a journal session.
@@ -122,7 +122,7 @@ void journal_chunks_free(journal_chunks_t *jc);
  *            Caller must free().  Set to NULL when all tools were called.
  * Returns: number of missing tools (0 = all required tools were called). */
 int journal_check_required_tools(journal_t *j, int react_loop,
-                                  char **required, int n_required,
-                                  char **missing);
+                                 char **required, int n_required,
+                                 char **missing);
 
 #endif

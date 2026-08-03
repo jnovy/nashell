@@ -9,12 +9,12 @@
  * Dedup: same content = same hash = one file on disk. */
 
 typedef struct {
-    char *dir;   /* e.g. "/path/to/project/.store" */
+  char *dir; /* e.g. "/path/to/project/.store" */
 } store_t;
 
 /* Create shared store at project root (creates .store/ directory) */
 store_t *store_new(const char *project_root);
-void     store_free(store_t *s);
+void store_free(store_t *s);
 
 /* Save content to shared store. Returns the SHA256 hash (caller must free).
  * The actual file is at .store/<hash> (no extension).

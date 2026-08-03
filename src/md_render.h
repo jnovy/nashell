@@ -5,21 +5,21 @@
 
 /* ── Hyperlink in a parsed MD document ── */
 typedef struct {
-    char *uri;          /* relative ("reactR0.md") or absolute path */
-    char *text;         /* display text */
-    int   doc_line;     /* line in source where this link starts */
-    int   render_line;  /* line in rendered output (set by md_render, accounts for skipped ``` lines) */
+  char *uri;       /* relative ("reactR0.md") or absolute path */
+  char *text;      /* display text */
+  int doc_line;    /* line in source where this link starts */
+  int render_line; /* line in rendered output (set by md_render, accounts for skipped ``` lines) */
 } md_link_t;
 
 /* ── Parsed MD document ── */
 typedef struct {
-    char       *source;      /* raw MD source (owned) */
-    md_link_t  *links;       /* tracked hyperlinks */
-    int         link_count;
-    int         link_cap;
-    /* Rendered lines cache (computed by md_render) */
-    int         total_lines; /* total rendered lines (set after md_render) */
-    int         max_content_width; /* widest scrollable content in display columns (set by md_render) */
+  char *source;     /* raw MD source (owned) */
+  md_link_t *links; /* tracked hyperlinks */
+  int link_count;
+  int link_cap;
+  /* Rendered lines cache (computed by md_render) */
+  int total_lines;       /* total rendered lines (set after md_render) */
+  int max_content_width; /* widest scrollable content in display columns (set by md_render) */
 } md_doc_t;
 
 /* Parse MD source into a document, extracting [text](uri) links.
@@ -48,10 +48,10 @@ int md_link_line(md_doc_t *doc, int link_idx);
  * ncurses' doupdate() has flushed the screen buffer. */
 
 typedef struct {
-    int  row;        /* screen row (0-based, relative to window) */
-    int  col_start;  /* first column of link text */
-    int  col_end;    /* one past last column of link text */
-    char uri[4096];  /* resolved URI (file:// prefixed if needed) */
+  int row;        /* screen row (0-based, relative to window) */
+  int col_start;  /* first column of link text */
+  int col_end;    /* one past last column of link text */
+  char uri[4096]; /* resolved URI (file:// prefixed if needed) */
 } md_osc8_link_t;
 
 /* Max deferred links per render cycle */
@@ -59,7 +59,7 @@ typedef struct {
 
 /* Deferred link list — populated by md_render, flushed by md_osc8_flush */
 extern md_osc8_link_t md_osc8_links[];
-extern int            md_osc8_count;
+extern int md_osc8_count;
 
 /* Emit all deferred OSC 8 sequences directly to stdout.
  * Must be called AFTER ncurses doupdate() so the screen content

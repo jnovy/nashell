@@ -34,10 +34,10 @@
 
 /* Mailbox context — passed as userdata to the event handler */
 typedef struct {
-    react_ctx_t *react_ctx;     /* react context for setting user_ask_answer */
-    const char  *mailbox_dir;   /* ~/.nash/mailbox */
-    const char  *session_dir;   /* for reading store files (may be NULL) */
-    int          timeout_sec;   /* max seconds to wait for user_ask answer (0=forever) */
+  react_ctx_t *react_ctx;  /* react context for setting user_ask_answer */
+  const char *mailbox_dir; /* ~/.nash/mailbox */
+  const char *session_dir; /* for reading store files (may be NULL) */
+  int timeout_sec;         /* max seconds to wait for user_ask answer (0=forever) */
 } mailbox_ctx_t;
 
 /* Initialize mailbox directories. Returns 0 on success, -1 on error. */
@@ -85,10 +85,10 @@ const char *mailbox_gen_id(void);
 
 /* Parsed task with optional workspace routing metadata */
 typedef struct {
-    char *task_id;      /* from filename: task_{id} */
-    char *workspace;    /* X-Workspace header value (NULL = global) */
-    char *route_token;  /* X-Route-Token value (NULL = none) */
-    char *query;        /* actual query text (after --- separator) */
+  char *task_id;     /* from filename: task_{id} */
+  char *workspace;   /* X-Workspace header value (NULL = global) */
+  char *route_token; /* X-Route-Token value (NULL = none) */
+  char *query;       /* actual query text (after --- separator) */
 } mailbox_task_t;
 
 /* Free a mailbox_task_t (all fields + struct itself). */

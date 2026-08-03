@@ -12,11 +12,11 @@
  * architecture — all operations go to global. */
 
 typedef struct {
-    memory_t *global;        /* ~/.nash/.memory/ — always non-NULL */
-    memory_t *workspace;     /* ~/.nash/workspaces/<name>/.memory/ — NULL if none */
-    char     *name;          /* workspace name (NULL = global-only mode) */
-    int       isolated;      /* if true, skip global on recall */
-    double    global_weight; /* score multiplier for global results (default 0.8) */
+  memory_t *global;     /* ~/.nash/.memory/ — always non-NULL */
+  memory_t *workspace;  /* ~/.nash/workspaces/<name>/.memory/ — NULL if none */
+  char *name;           /* workspace name (NULL = global-only mode) */
+  int isolated;         /* if true, skip global on recall */
+  double global_weight; /* score multiplier for global results (default 0.8) */
 } workspace_t;
 
 /* Create a workspace.

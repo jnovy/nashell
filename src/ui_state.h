@@ -12,193 +12,194 @@
 
 /* ── Focus & Status enums ──────────────────────────────── */
 
-typedef enum { FOCUS_JOURNAL, FOCUS_QUERY } ui_focus_t;
+typedef enum { FOCUS_JOURNAL,
+               FOCUS_QUERY } ui_focus_t;
 typedef enum {
-    STATUS_READY,
-    STATUS_RUNNING,
-    STATUS_AWAITING_INPUT,
-    STATUS_DONE,
-    STATUS_ERROR
+  STATUS_READY,
+  STATUS_RUNNING,
+  STATUS_AWAITING_INPUT,
+  STATUS_DONE,
+  STATUS_ERROR
 } ui_status_t;
 
 /* ── Navigation stack entry ──────────────────────────────── */
 
 typedef struct {
-    char      *filepath;     /* absolute path to .md file */
-    char      *label;        /* display label for breadcrumb (NULL = use filepath) */
-    int        scroll_y;     /* saved scroll position */
-    int        scroll_x;     /* saved horizontal scroll */
-    int        cursor_link;  /* saved cursor position */
-    md_doc_t  *saved_doc;    /* non-NULL for virtual docs (search results) */
+  char *filepath;      /* absolute path to .md file */
+  char *label;         /* display label for breadcrumb (NULL = use filepath) */
+  int scroll_y;        /* saved scroll position */
+  int scroll_x;        /* saved horizontal scroll */
+  int cursor_link;     /* saved cursor position */
+  md_doc_t *saved_doc; /* non-NULL for virtual docs (search results) */
 } nav_entry_t;
 
 /* ── Playbook pass info (for session.md rendering) ─────── */
 
 typedef struct {
-    char *session_dir;
-    char *pass_label;
-    int   react_loop;
-    int   pass_index;
+  char *session_dir;
+  char *pass_label;
+  int react_loop;
+  int pass_index;
 } pb_pass_info_t;
 
 /* ── Main UI state (the ViewModel) ─────────────────────── */
 
 typedef struct {
-    /* ── MD document for main pane ── */
-    md_doc_t      *doc;              /* parsed MD document */
-    int            scroll_y;         /* vertical scroll offset */
-    int            scroll_x;         /* horizontal scroll offset */
-    int            visible_rows;     /* main pane height (set by tui.c) */
-    int            visible_cols;     /* main pane width  (set by tui.c) */
-    int            cursor_link;      /* index into doc->links[] */
+  /* ── MD document for main pane ── */
+  md_doc_t *doc;    /* parsed MD document */
+  int scroll_y;     /* vertical scroll offset */
+  int scroll_x;     /* horizontal scroll offset */
+  int visible_rows; /* main pane height (set by tui.c) */
+  int visible_cols; /* main pane width  (set by tui.c) */
+  int cursor_link;  /* index into doc->links[] */
 
-    /* ── Navigation stack (hierarchical MD browser) ── */
-    nav_entry_t   *nav_stack;        /* stack of parent views */
-    int            nav_depth;        /* current depth (0 = session.md) */
-    int            nav_cap;          /* allocated capacity */
-    char          *current_filepath; /* path of currently displayed file */
+  /* ── Navigation stack (hierarchical MD browser) ── */
+  nav_entry_t *nav_stack; /* stack of parent views */
+  int nav_depth;          /* current depth (0 = session.md) */
+  int nav_cap;            /* allocated capacity */
+  char *current_filepath; /* path of currently displayed file */
 
-    /* ── Source data ── */
-    char          *banner;           /* ASCII art + server info */
-    char          *session_dir;
-    store_t       *store;
-    journal_t     *journal;          /* for reading journal.jsonl */
+  /* ── Source data ── */
+  char *banner; /* ASCII art + server info */
+  char *session_dir;
+  store_t *store;
+  journal_t *journal; /* for reading journal.jsonl */
 
-    /* ── Query pane ── */
-    ui_focus_t     focus;
-    ui_status_t    status;
-    char          *status_text;
+  /* ── Query pane ── */
+  ui_focus_t focus;
+  ui_status_t status;
+  char *status_text;
 
-    char          *input_buffer;
-    int            input_len;
-    int            input_cap;
-    int            cursor_pos;
+  char *input_buffer;
+  int input_len;
+  int input_cap;
+  int cursor_pos;
 
-    /* Query history (arrow up/down on first/last wrapped line) */
-    char         **history;
-    int            history_count;
-    int            history_cap;
-    int            history_idx;   /* current position in history navigation */
-    char          *saved_input;   /* stashed in-progress text during history nav */
-    int            saved_input_len;
+  /* Query history (arrow up/down on first/last wrapped line) */
+  char **history;
+  int history_count;
+  int history_cap;
+  int history_idx;   /* current position in history navigation */
+  char *saved_input; /* stashed in-progress text during history nav */
+  int saved_input_len;
 
-    /* ── Streaming state ── */
-    char          *stream_tokens;
-    int            stream_len;
-    int            stream_cap;
-    int            current_step;
-    int            max_steps;
-    int            current_react_loop;  /* which react loop is active */
+  /* ── Streaming state ── */
+  char *stream_tokens;
+  int stream_len;
+  int stream_cap;
+  int current_step;
+  int max_steps;
+  int current_react_loop; /* which react loop is active */
 
-    /* ── Model / context info (for status bar) ── */
-    char          *model_name;
-    int            context_size;
-    int            context_used;
-    int            bg_jobs;
-    atomic_int    *pause_flag;
-    _Atomic int   *abort_flag;    /* provider->abort_retry — abort HTTP call on pause */
+  /* ── Model / context info (for status bar) ── */
+  char *model_name;
+  int context_size;
+  int context_used;
+  int bg_jobs;
+  atomic_int *pause_flag;
+  _Atomic int *abort_flag; /* provider->abort_retry — abort HTTP call on pause */
 
-    /* ── Preview toggle (expanded store refs) ── */
-    char         **expanded_uris;     /* URIs toggled to show preview */
-    int            expanded_count;
-    int            expanded_cap;
+  /* ── Preview toggle (expanded store refs) ── */
+  char **expanded_uris; /* URIs toggled to show preview */
+  int expanded_count;
+  int expanded_cap;
 
-    /* ── user_ask state ── */
-    char          *user_ask_question; /* full question text (while awaiting answer) */
+  /* ── user_ask state ── */
+  char *user_ask_question; /* full question text (while awaiting answer) */
 
-    /* ── Scroll control ── */
-    int            user_scrolled;    /* 1 = user scrolled away, suppress auto-scroll */
-    int            needs_auto_scroll; /* 1 = deferred auto-scroll after next md_render */
+  /* ── Scroll control ── */
+  int user_scrolled;     /* 1 = user scrolled away, suppress auto-scroll */
+  int needs_auto_scroll; /* 1 = deferred auto-scroll after next md_render */
 
-    /* ── Cumulative token stats for active react loop ── */
-    int            cum_prompt_tokens;       /* total prompt (input) tokens across all steps */
-    int            cum_completion_tokens;    /* total completion (output) tokens across all steps */
-    double         cum_predicted_per_second; /* last gen speed (t/s) — most recent step */
-    double         cum_prompt_per_second;    /* last prompt processing speed (t/s) */
-    double         react_total_elapsed;      /* total wall time for the react loop */
-    int            cum_llm_steps;            /* number of LLM calls with stats */
-    int            react_done;               /* 1 = react loop finished (show final stats) */
+  /* ── Cumulative token stats for active react loop ── */
+  int cum_prompt_tokens;           /* total prompt (input) tokens across all steps */
+  int cum_completion_tokens;       /* total completion (output) tokens across all steps */
+  double cum_predicted_per_second; /* last gen speed (t/s) — most recent step */
+  double cum_prompt_per_second;    /* last prompt processing speed (t/s) */
+  double react_total_elapsed;      /* total wall time for the react loop */
+  int cum_llm_steps;               /* number of LLM calls with stats */
+  int react_done;                  /* 1 = react loop finished (show final stats) */
 
-    /* ── Spinner phase for "processing..." indicator ── */
-    int            spinner_phase;
+  /* ── Spinner phase for "processing..." indicator ── */
+  int spinner_phase;
 
-    /* ── Live streaming progress (for "processing..." → actual metrics) ── */
-    struct timespec stream_step_start;    /* CLOCK_MONOTONIC when step started */
-    struct timespec stream_first_token;   /* CLOCK_MONOTONIC when first token arrived */
-    int            stream_first_token_seen; /* 1 = first token received, timing valid */
-    int            stream_token_count;    /* tokens received in current step */
+  /* ── Live streaming progress (for "processing..." → actual metrics) ── */
+  struct timespec stream_step_start;  /* CLOCK_MONOTONIC when step started */
+  struct timespec stream_first_token; /* CLOCK_MONOTONIC when first token arrived */
+  int stream_first_token_seen;        /* 1 = first token received, timing valid */
+  int stream_token_count;             /* tokens received in current step */
 
-    /* ── Tool execution state (for live elapsed-time display) ── */
-    int            tool_executing;        /* 1 = tool is currently running */
-    struct timespec tool_start_time;      /* CLOCK_MONOTONIC when tool started */
-    time_t         tool_start_wallclock;  /* wall-clock time when tool started */
-    char          *tool_display;          /* "tool_name: command..." for display */
-    char          *tool_ref;             /* predicted ref alias (e.g. "R0S3") */
-    int            tool_timeout_secs;     /* execution timeout in seconds (0=unknown) */
+  /* ── Tool execution state (for live elapsed-time display) ── */
+  int tool_executing;              /* 1 = tool is currently running */
+  struct timespec tool_start_time; /* CLOCK_MONOTONIC when tool started */
+  time_t tool_start_wallclock;     /* wall-clock time when tool started */
+  char *tool_display;              /* "tool_name: command..." for display */
+  char *tool_ref;                  /* predicted ref alias (e.g. "R0S3") */
+  int tool_timeout_secs;           /* execution timeout in seconds (0=unknown) */
 
-    /* ── Server-reported prompt processing progress ── */
-    int            prompt_progress_processed; /* tokens processed so far (from server) */
-    int            prompt_progress_total;     /* total tokens to process (from server) */
+  /* ── Server-reported prompt processing progress ── */
+  int prompt_progress_processed; /* tokens processed so far (from server) */
+  int prompt_progress_total;     /* total tokens to process (from server) */
 
-    /* ── Playbook session tracking ── */
-    char          *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */
-    int            playbook_react_loop;  /* react loop of active playbook pass */
+  /* ── Playbook session tracking ── */
+  char *playbook_session_dir; /* session dir of active playbook pass (NULL when no playbook) */
+  int playbook_react_loop;    /* react loop of active playbook pass */
 
-    /* Accumulated info about all playbook passes (for session.md rendering) */
-    pb_pass_info_t *pb_passes;
-    int              pb_pass_count;
-    int              pb_pass_cap;
+  /* Accumulated info about all playbook passes (for session.md rendering) */
+  pb_pass_info_t *pb_passes;
+  int pb_pass_count;
+  int pb_pass_cap;
 
-    /* ── Cross-session scratchpad search ── */
-    int            search_active;     /* 1 = search results shown in main pane */
-    char          *nash_dir;          /* ~/.nash (for finding sessions) */
-    char          *workspace_name;    /* workspace name (NULL = global-only) */
+  /* ── Cross-session scratchpad search ── */
+  int search_active;    /* 1 = search results shown in main pane */
+  char *nash_dir;       /* ~/.nash (for finding sessions) */
+  char *workspace_name; /* workspace name (NULL = global-only) */
 
-    /* ── In-page text search (? prefix) ── */
-    char          *page_search_term;  /* current search term (NULL = inactive) */
-    int            page_search_current; /* index of current match for 'n' nav */
-    int            page_search_total;   /* total matches found on last render */
-    int           *page_search_lines;   /* rendered line numbers of matches */
-    int            page_search_lines_cap; /* allocated capacity */
+  /* ── In-page text search (? prefix) ── */
+  char *page_search_term;    /* current search term (NULL = inactive) */
+  int page_search_current;   /* index of current match for 'n' nav */
+  int page_search_total;     /* total matches found on last render */
+  int *page_search_lines;    /* rendered line numbers of matches */
+  int page_search_lines_cap; /* allocated capacity */
 
-    /* ── Agent view flag ── */
-    int            agent_view;       /* 1 = viewing agent output */
-    int            agent_running;    /* 1 = playbook worker is active (don't clear agent_view on Esc) */
-    char          *current_label;    /* breadcrumb label for current view (NULL = use filepath) */
+  /* ── Agent view flag ── */
+  int agent_view;      /* 1 = viewing agent output */
+  int agent_running;   /* 1 = playbook worker is active (don't clear agent_view on Esc) */
+  char *current_label; /* breadcrumb label for current view (NULL = use filepath) */
 
-    /* ── Tab-completion state ── */
-    char         **completion_candidates;     /* current candidate list (NULL when inactive) */
-    int            completion_count;          /* number of candidates */
-    int            completion_index;          /* cycling index for repeated Tab (-1 = none) */
-    int            completion_replace_start;  /* byte offset where replacement begins */
-    int            completion_replace_len;    /* length of text being replaced */
-    int            completion_shown;          /* 1 = candidates displayed in status bar */
+  /* ── Tab-completion state ── */
+  char **completion_candidates; /* current candidate list (NULL when inactive) */
+  int completion_count;         /* number of candidates */
+  int completion_index;         /* cycling index for repeated Tab (-1 = none) */
+  int completion_replace_start; /* byte offset where replacement begins */
+  int completion_replace_len;   /* length of text being replaced */
+  int completion_shown;         /* 1 = candidates displayed in status bar */
 
-    /* ── Deferred regeneration flags ── */
-    /* Set by the inference thread's event handler (under mtx) to request
+  /* ── Deferred regeneration flags ── */
+  /* Set by the inference thread's event handler (under mtx) to request
      * expensive file I/O without holding the mutex during the actual I/O.
      * The main loop checks these flags and performs the regeneration. */
-    int            needs_react_regen;   /* 1 = regenerate reactRX.md */
-    int            needs_session_regen; /* 1 = regenerate session.md */
-    int            needs_file_reload;   /* 1 = reload current_filepath */
+  int needs_react_regen;   /* 1 = regenerate reactRX.md */
+  int needs_session_regen; /* 1 = regenerate session.md */
+  int needs_file_reload;   /* 1 = reload current_filepath */
 
-    /* ── Dirty flag + mutex ── */
-    int            dirty;
-    pthread_mutex_t mtx;
+  /* ── Dirty flag + mutex ── */
+  int dirty;
+  pthread_mutex_t mtx;
 } ui_state_t;
 
 /* ── Lifecycle ───────────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store);
-void        ui_state_free(ui_state_t *ui);
+void ui_state_free(ui_state_t *ui);
 
 /* ── Navigation ──────────────────────────────────────────── */
 
 void ui_state_tab(ui_state_t *ui);
 void ui_state_up(ui_state_t *ui);
 void ui_state_down(ui_state_t *ui);
-void ui_state_enter(ui_state_t *ui);     /* follow .md link or toggle step */
-void ui_state_back(ui_state_t *ui);      /* pop nav stack (Esc) */
+void ui_state_enter(ui_state_t *ui); /* follow .md link or toggle step */
+void ui_state_back(ui_state_t *ui);  /* pop nav stack (Esc) */
 void ui_state_page_up(ui_state_t *ui);
 void ui_state_page_down(ui_state_t *ui);
 

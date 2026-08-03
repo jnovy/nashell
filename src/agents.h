@@ -9,60 +9,60 @@
 
 /* ── Cron schedule (parsed from "M H D Mo DoW" string) ─ */
 typedef struct {
-    /* Bitmask arrays: 1 = this value matches */
-    unsigned char minute[60];
-    unsigned char hour[24];
-    unsigned char dom[31];    /* day of month 1-31 (index 0=day1) */
-    unsigned char month[12];  /* 1-12 (index 0=Jan) */
-    unsigned char dow[7];     /* 0-6, 0=Sun */
-    int is_startup;           /* @startup: always due */
+  /* Bitmask arrays: 1 = this value matches */
+  unsigned char minute[60];
+  unsigned char hour[24];
+  unsigned char dom[31];   /* day of month 1-31 (index 0=day1) */
+  unsigned char month[12]; /* 1-12 (index 0=Jan) */
+  unsigned char dow[7];    /* 0-6, 0=Sun */
+  int is_startup;          /* @startup: always due */
 } agent_schedule_t;
 
 /* ── Agent sensitivity levels ─────────────────────────── */
 typedef enum {
-    AGENT_SENSITIVITY_PUBLIC = 0,       /* no restrictions (default) */
-    AGENT_SENSITIVITY_INTERNAL,         /* local/self-hosted providers only */
-    AGENT_SENSITIVITY_CONFIDENTIAL,     /* internal + redact journal + suppress bridges */
+  AGENT_SENSITIVITY_PUBLIC = 0,   /* no restrictions (default) */
+  AGENT_SENSITIVITY_INTERNAL,     /* local/self-hosted providers only */
+  AGENT_SENSITIVITY_CONFIDENTIAL, /* internal + redact journal + suppress bridges */
 } agent_sensitivity_t;
 
 /* ── Single agent entry (discovered from 3-tier scan) ── */
 typedef struct {
-    char *id;               /* "workspace_name/agent_name" */
-    char *workspace_name;   /* workspace binding (from dir path or YAML "workspace:" field) */
-    char *agent_file;       /* full path to YAML */
-    char *workspace_dir;    /* full path to workspace dir */
-    char *summary;          /* one-line summary from YAML */
-    char *description;      /* multi-line help/usage from YAML */
+  char *id;             /* "workspace_name/agent_name" */
+  char *workspace_name; /* workspace binding (from dir path or YAML "workspace:" field) */
+  char *agent_file;     /* full path to YAML */
+  char *workspace_dir;  /* full path to workspace dir */
+  char *summary;        /* one-line summary from YAML */
+  char *description;    /* multi-line help/usage from YAML */
 
-    /* Parsed from YAML */
-    agent_schedule_t schedule;
-    char *schedule_str;     /* original cron string */
-    int   timeout;          /* seconds, 0 = no limit */
-    int   enabled;
+  /* Parsed from YAML */
+  agent_schedule_t schedule;
+  char *schedule_str; /* original cron string */
+  int timeout;        /* seconds, 0 = no limit */
+  int enabled;
 
-    /* New metadata fields (all optional) */
-    char *version;          /* agent version string (e.g. "1.2") */
-    char *provider_name;    /* per-agent provider override (references [providers.*]) */
-    agent_sensitivity_t sensitivity;  /* data classification gating */
-    char **tags;            /* organizational tags */
-    int   n_tags;
+  /* New metadata fields (all optional) */
+  char *version;                   /* agent version string (e.g. "1.2") */
+  char *provider_name;             /* per-agent provider override (references [providers.*]) */
+  agent_sensitivity_t sensitivity; /* data classification gating */
+  char **tags;                     /* organizational tags */
+  int n_tags;
 
-    /* From queue.json (persisted state) */
-    time_t last_run;
-    int    last_duration;   /* seconds */
-    char  *last_status;     /* "ok", "fail", "timeout", "never" */
+  /* From queue.json (persisted state) */
+  time_t last_run;
+  int last_duration; /* seconds */
+  char *last_status; /* "ok", "fail", "timeout", "never" */
 
-    /* Computed */
-    time_t next_due;
-    int    is_due;          /* 1 if next_due <= now */
+  /* Computed */
+  time_t next_due;
+  int is_due; /* 1 if next_due <= now */
 } agent_entry_t;
 
 /* ── Agent queue (full calendar) ───────────────────── */
 typedef struct {
-    agent_entry_t *agents;
-    int n_agents;
-    int n_due;
-    time_t built_at;
+  agent_entry_t *agents;
+  int n_agents;
+  int n_due;
+  time_t built_at;
 } agent_queue_t;
 
 /* ── API ───────────────────────────────────────────── */

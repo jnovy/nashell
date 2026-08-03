@@ -27,46 +27,46 @@
 /* Topic-to-workspace mapping entry (from [telegram.topics] config) */
 #define TG_MAX_TOPIC_MAP 32
 typedef struct {
-    long long thread_id;         /* Telegram message_thread_id */
-    char     *workspace;         /* workspace name */
+  long long thread_id; /* Telegram message_thread_id */
+  char *workspace;     /* workspace name */
 } tg_topic_map_entry_t;
 
 /* Route map: maps task_id -> thread_id for reply routing */
 #define TG_MAX_ROUTE_MAP 64
 typedef struct {
-    char      task_id[64];       /* task ID (e.g. "tg684abc12") */
-    long long thread_id;         /* source topic's thread_id (0 = general) */
+  char task_id[64];    /* task ID (e.g. "tg684abc12") */
+  long long thread_id; /* source topic's thread_id (0 = general) */
 } tg_route_entry_t;
 
 typedef struct {
-    char     *bot_token;         /* Telegram bot token from @BotFather */
-    long long chat_id;           /* Authorized chat ID */
-    long long update_offset;     /* getUpdates offset (last_update_id + 1) */
-    char     *mailbox_dir;       /* path to ~/.nash/mailbox */
-    char     *config_path;       /* path to config.toml (for saving setup) */
-    volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
-    int       rich_supported;    /* 1 = sendRichMessage available (Bot API 10.1+) */
-    char     *nash_dir;          /* path to ~/.nash (for workspace scanning) */
+  char *bot_token;                 /* Telegram bot token from @BotFather */
+  long long chat_id;               /* Authorized chat ID */
+  long long update_offset;         /* getUpdates offset (last_update_id + 1) */
+  char *mailbox_dir;               /* path to ~/.nash/mailbox */
+  char *config_path;               /* path to config.toml (for saving setup) */
+  volatile sig_atomic_t *shutdown; /* pointer to shutdown_requested flag */
+  int rich_supported;              /* 1 = sendRichMessage available (Bot API 10.1+) */
+  char *nash_dir;                  /* path to ~/.nash (for workspace scanning) */
 
-    /* Topic-to-workspace mapping (from [telegram.topics] in config.toml) */
-    tg_topic_map_entry_t topic_map[TG_MAX_TOPIC_MAP];
-    int       topic_map_count;
+  /* Topic-to-workspace mapping (from [telegram.topics] in config.toml) */
+  tg_topic_map_entry_t topic_map[TG_MAX_TOPIC_MAP];
+  int topic_map_count;
 
-    /* Reply routing: task_id -> thread_id (circular buffer) */
-    tg_route_entry_t route_map[TG_MAX_ROUTE_MAP];
-    int       route_map_next;    /* next write index (circular) */
+  /* Reply routing: task_id -> thread_id (circular buffer) */
+  tg_route_entry_t route_map[TG_MAX_ROUTE_MAP];
+  int route_map_next; /* next write index (circular) */
 
-    /* Session threading: tracks reply thread root message_id per topic */
-    struct {
-        long long thread_id;         /* forum topic (0 = general) */
-        long long root_message_id;   /* message_id of the thread root */
-    } session_threads[TG_MAX_TOPIC_MAP];
-    int       session_thread_count;
+  /* Session threading: tracks reply thread root message_id per topic */
+  struct {
+    long long thread_id;       /* forum topic (0 = general) */
+    long long root_message_id; /* message_id of the thread root */
+  } session_threads[TG_MAX_TOPIC_MAP];
+  int session_thread_count;
 
-    /* Pending user_ask: tracks which topic the ask was sent to so that
+  /* Pending user_ask: tracks which topic the ask was sent to so that
      * only a reply from the correct topic is routed as the answer. */
-    char      pending_ask_id[128];
-    long long pending_ask_thread_id;
+  char pending_ask_id[128];
+  long long pending_ask_thread_id;
 } telegram_ctx_t;
 
 /* Initialize telegram context from config.

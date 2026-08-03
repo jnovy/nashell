@@ -188,4 +188,8 @@ clean:
 dist:
 	git archive --format=tar --prefix=nash-$(VERSION)/ HEAD | zstd -o nash-$(VERSION).tar.zst
 
-.PHONY: all clean test dist
+# Format all C source files
+fmt:
+	git ls-files -z '*.c' '*.h' | xargs -0 clang-format -i
+
+.PHONY: all clean test dist fmt

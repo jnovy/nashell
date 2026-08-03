@@ -30,81 +30,81 @@
  * the filesystem, reducing recall from O(n) file reads to O(n) array
  * scan + O(k) file reads for top-k results only. */
 typedef struct {
-    char  *key;           /* memory key (owned) */
-    char  *description;   /* first sentence/line of value (owned, ≤250 chars) */
-    char  *value;         /* full value text (owned) */
-    int    pinned;
-    int    access_count;
-    int    recall_hits;
-    int    recall_misses;
-    double belief_entropy;
-    double created_at;
-    char **refs;          /* inter-memory ref keys (owned) */
-    int    n_refs;
-    embed_multi_vec_t emb; /* cached embedding (loaded once) */
-    int    has_emb;        /* 1 if emb is valid */
-    char  *path;           /* full path to .json file (owned) */
-    char  *supersedes;     /* key this entry supersedes (owned, NULL = none) */
-    int    version;        /* lineage version (0 = original, 2+ = superseding) */
-    char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
-    int    n_triggers;     /* 0 = no triggers, purely semantic recall */
-    uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
+  char *key;         /* memory key (owned) */
+  char *description; /* first sentence/line of value (owned, ≤250 chars) */
+  char *value;       /* full value text (owned) */
+  int pinned;
+  int access_count;
+  int recall_hits;
+  int recall_misses;
+  double belief_entropy;
+  double created_at;
+  char **refs; /* inter-memory ref keys (owned) */
+  int n_refs;
+  embed_multi_vec_t emb; /* cached embedding (loaded once) */
+  int has_emb;           /* 1 if emb is valid */
+  char *path;            /* full path to .json file (owned) */
+  char *supersedes;      /* key this entry supersedes (owned, NULL = none) */
+  int version;           /* lineage version (0 = original, 2+ = superseding) */
+  char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
+  int n_triggers;        /* 0 = no triggers, purely semantic recall */
+  uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
  * Without this, mem_index_find() was O(n) per call, making batch operations
  * during dream consolidation O(n²). */
 typedef struct {
-    int *slots;       /* maps hash bucket → entries[] index, -1 = empty */
-    int cap;          /* capacity (always power of 2) */
+  int *slots; /* maps hash bucket → entries[] index, -1 = empty */
+  int cap;    /* capacity (always power of 2) */
 } mem_index_map_t;
 
 typedef struct {
-    mem_index_entry_t *entries;
-    int count;
-    int cap;
-    mem_index_map_t map;
+  mem_index_entry_t *entries;
+  int count;
+  int cap;
+  mem_index_map_t map;
 } mem_index_t;
 
 typedef struct {
-    char *dir;          /* .memory/ directory path */
-    char *model;        /* model name for commit signoff (e.g. "claude-opus-4-6") */
-    embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
+  char *dir;          /* .memory/ directory path */
+  char *model;        /* model name for commit signoff (e.g. "claude-opus-4-6") */
+  embed_ctx_t *embed; /* embedding context for semantic matching (NULL = disabled) */
 
-    /* Recall tuning parameters — set once via memory_set_recall_config().
+  /* Recall tuning parameters — set once via memory_set_recall_config().
      * Centralizes the config→memory sync (was 4 manual copies in main.c). */
-    double recall_min_score;       /* min composite score for injection (default 0.15) */
-    float recall_blend_semantic;   /* semantic weight (default 0.5) */
-    float recall_blend_substring;  /* substring weight (default 0.5) */
-    float vscore_exponent;         /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
+  double recall_min_score;      /* min composite score for injection (default 0.15) */
+  float recall_blend_semantic;  /* semantic weight (default 0.5) */
+  float recall_blend_substring; /* substring weight (default 0.5) */
+  float vscore_exponent;        /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
 
-    /* Guard against recursive consolidation — set during
+  /* Guard against recursive consolidation — set during
      * memory_try_consolidate to prevent consolidation→store→consolidation loops.
      * FIX B2: atomic to prevent data race between consolidation and store. */
-    atomic_int consolidating;
+  atomic_int consolidating;
 
-    /* Deferred git commits — when git_deferred > 0, memory_git_commit()
+  /* Deferred git commits — when git_deferred > 0, memory_git_commit()
      * is skipped and git_deferred_count is incremented. Call
      * memory_git_flush() to batch-commit all deferred changes. */
-    int git_deferred;
-    int git_deferred_count;
+  int git_deferred;
+  int git_deferred_count;
 
-    /* Thread safety: protects idx and all index-dependent operations.
+  /* Thread safety: protects idx and all index-dependent operations.
      * The inference thread (react_run → tools) and the main thread
      * (/ms command) can both access memory concurrently.
      * All public memory_*() functions acquire this lock internally. */
-    pthread_mutex_t mtx;
+  pthread_mutex_t mtx;
 
-    /* P1: In-memory index — populated by memory_new(), updated by
+  /* P1: In-memory index — populated by memory_new(), updated by
      * memory_store()/memory_delete(). Used by memory_query() and
      * memory_build_index() to avoid filesystem scans. */
-    mem_index_t idx;
+  mem_index_t idx;
 } memory_t;
 
 typedef struct {
-    char  *key;           /* e.g. "lesson:redis-v7-changes" */
-    char  *value;         /* the knowledge text */
-    /* P6: Auto-generated description — first sentence or first 150 chars
+  char *key;   /* e.g. "lesson:redis-v7-changes" */
+  char *value; /* the knowledge text */
+  /* P6: Auto-generated description — first sentence or first 150 chars
      * of value. Enables progressive disclosure (P2) where the agent sees
      * key + description in the memory index without loading full content.
      *
@@ -117,18 +117,18 @@ typedef struct {
      *   AutoMEM [arXiv:2606.04315, Jun 2026] — self-managed flat text-file
      *     storage via tool calls achieves best cross-task ranking when
      *     agents can browse descriptions before loading full content. */
-    char  *description;   /* first sentence/line of value (≤250 chars) */
-    char **tags;          /* array of tag strings */
-    int    n_tags;
-    int    pinned;        /* 1 = always inject into system prompt */
-    double created_at;    /* unix epoch */
-    double last_accessed; /* unix epoch */
-    int    access_count;
-    int    recall_hits;   /* recalled during tasks that SUCCEEDED */
-    int    recall_misses; /* recalled during tasks that FAILED */
-    char  *journal_ref;   /* provenance: "session/journal.jsonl:R5" */
+  char *description; /* first sentence/line of value (≤250 chars) */
+  char **tags;       /* array of tag strings */
+  int n_tags;
+  int pinned;           /* 1 = always inject into system prompt */
+  double created_at;    /* unix epoch */
+  double last_accessed; /* unix epoch */
+  int access_count;
+  int recall_hits;   /* recalled during tasks that SUCCEEDED */
+  int recall_misses; /* recalled during tasks that FAILED */
+  char *journal_ref; /* provenance: "session/journal.jsonl:R5" */
 
-    /* Inter-memory relationships — "see also" links between related memories.
+  /* Inter-memory relationships — "see also" links between related memories.
      * Populated by dreaming's SYNTHESIZE pass to create a lightweight graph
      * structure without requiring a full graph database.
      *
@@ -142,14 +142,14 @@ typedef struct {
      *
      * During recall, if a high-scoring memory has refs, the ref'd memories
      * receive a score boost (+0.5), implementing associative retrieval. */
-    char **refs;          /* array of related memory keys */
-    int    n_refs;
-    double relevance;     /* final composite score from last memory_query */
-    double raw_relevance; /* semantic+substring blend [0,1] before importance/vscore */
-    double importance;    /* log access frequency [0,1] */
-    double belief_entropy; /* ℋ_BE — forward-looking quality signal (MMPO). -1 = not computed */
+  char **refs; /* array of related memory keys */
+  int n_refs;
+  double relevance;      /* final composite score from last memory_query */
+  double raw_relevance;  /* semantic+substring blend [0,1] before importance/vscore */
+  double importance;     /* log access frequency [0,1] */
+  double belief_entropy; /* ℋ_BE — forward-looking quality signal (MMPO). -1 = not computed */
 
-    /* P2: Lesson lineage tracking — Self-Harness harness lineage h₀→h₁→h₂.
+  /* P2: Lesson lineage tracking — Self-Harness harness lineage h₀→h₁→h₂.
      * When a new lesson supersedes an old one, record the superseded key.
      * This creates a chain: the agent can trace how its understanding evolved.
      * Based on: Self-Harness [arXiv:2606.09498, Jun 2026] — harness lineage
@@ -158,20 +158,20 @@ typedef struct {
      * The old entry is NOT deleted — it becomes inactive (low relevance via
      * validation scoring) while the new one takes over. The chain preserves
      * the full evolution history for retrospective analysis. */
-    char  *supersedes;    /* key of the memory this entry supersedes (NULL = none) */
-    int    version;       /* lineage version number (1 = original, 2+ = superseding) */
-    char **triggers;      /* content-match patterns for cue-anchored injection (owned, NULL = none) */
-    int    n_triggers;    /* 0 = no triggers, purely semantic recall */
+  char *supersedes; /* key of the memory this entry supersedes (NULL = none) */
+  int version;      /* lineage version number (1 = original, 2+ = superseding) */
+  char **triggers;  /* content-match patterns for cue-anchored injection (owned, NULL = none) */
+  int n_triggers;   /* 0 = no triggers, purely semantic recall */
 } memory_entry_t;
 
 typedef struct {
-    memory_entry_t *entries;
-    int count;
+  memory_entry_t *entries;
+  int count;
 } memory_results_t;
 
 /* Create/free memory store (creates .memory/ directory) */
 memory_t *memory_new(const char *project_root);
-void      memory_free(memory_t *m);
+void memory_free(memory_t *m);
 
 /* Set recall tuning parameters from config. Centralizes the config→memory
  * sync — call once after config_apply_profile() and config_set_defaults(). */

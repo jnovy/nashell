@@ -11,20 +11,20 @@
 /* React loop subsystem flags — controls which subsystems fire per react_run().
  * Default: all enabled (1). Playbooks/dream can selectively disable. */
 typedef struct {
-    unsigned int inject_memory       : 1;  /* inject memory index + pinned + recall */
-    unsigned int inject_prev_result  : 1;  /* inject result.md as [PREVIOUS RESULT] */
-    unsigned int inject_repomap      : 1;  /* inject aider-style repo map */
-    unsigned int enable_reflection   : 1;  /* post-task reflection (memory_store lessons) */
-    unsigned int enable_pruning      : 1;  /* post-reflection scratchpad pruning */
-    unsigned int enable_compaction   : 1;  /* LLM-based context eviction/summarization */
-    unsigned int enable_scoring      : 1;  /* validation scoring (recall_hits/misses) */
+  unsigned int inject_memory : 1;      /* inject memory index + pinned + recall */
+  unsigned int inject_prev_result : 1; /* inject result.md as [PREVIOUS RESULT] */
+  unsigned int inject_repomap : 1;     /* inject aider-style repo map */
+  unsigned int enable_reflection : 1;  /* post-task reflection (memory_store lessons) */
+  unsigned int enable_pruning : 1;     /* post-reflection scratchpad pruning */
+  unsigned int enable_compaction : 1;  /* LLM-based context eviction/summarization */
+  unsigned int enable_scoring : 1;     /* validation scoring (recall_hits/misses) */
 } react_flags_t;
 
 /* Default: all subsystems enabled except repo map (needs explicit PATH arg) */
-#define REACT_FLAGS_DEFAULT { 1, 1, 0, 1, 1, 1, 1 }
+#define REACT_FLAGS_DEFAULT {1, 1, 0, 1, 1, 1, 1}
 
 /* Bare mode: all subsystems disabled (for dream/playbook passes) */
-#define REACT_FLAGS_BARE    { 0, 0, 0, 0, 0, 0, 0 }
+#define REACT_FLAGS_BARE {0, 0, 0, 0, 0, 0, 0}
 
 /* Thread ownership contract for react_ctx_t:
  *
@@ -53,67 +53,67 @@ typedef struct {
  * These values change during react_run() and must NOT live in provider->cfg
  * (which is documented as INIT-ONLY). */
 typedef struct {
-    float chars_per_token;   /* EMA-calibrated chars/token ratio */
-    int   enable_thinking;   /* thinking mode (0=off, 1=on) */
-    int   thinking_budget;   /* thinking token budget */
-    int   preamble_consumed; /* 1 after plan() — degrade preamble importance to LOW */
+  float chars_per_token; /* EMA-calibrated chars/token ratio */
+  int enable_thinking;   /* thinking mode (0=off, 1=on) */
+  int thinking_budget;   /* thinking token budget */
+  int preamble_consumed; /* 1 after plan() — degrade preamble importance to LOW */
 } react_runtime_t;
 
 typedef struct {
-    provider_t   *provider;  /* [INIT-ONLY] default/worker provider */
-    provider_t   *planner_provider;    /* [INIT-ONLY] planning steps (step 0). NULL = use provider */
-    provider_t   *reflection_provider; /* [INIT-ONLY] post-task reflection. NULL = use provider */
-    tool_ctx_t   *tools;     /* [INIT-ONLY] tool context */
-    int           max_steps; /* [INIT-ONLY] max react loop iterations */
-    int           verbose;   /* [INIT-ONLY] verbosity level */
-    react_flags_t flags;     /* [INIT-ONLY] controls which subsystems fire */
-    const char   *custom_system_prompt; /* [INIT-ONLY] per-pass system prompt from YAML (NULL = default) */
-    int           system_prompt_replace; /* [INIT-ONLY] 0 = append to base, 1 = replace base entirely */
-    int           headless;  /* [INIT-ONLY] 1 = no UI (agent/headless mode) */
-    react_runtime_t rt;      /* [INFER-ONLY] mutable per-loop runtime state */
-    atomic_int    pause_requested;  /* [MAIN→INFER] set by TUI (Space) to pause */
-    int           paused;           /* [INFER→MAIN] 1 when paused (read after join) */
+  provider_t *provider;             /* [INIT-ONLY] default/worker provider */
+  provider_t *planner_provider;     /* [INIT-ONLY] planning steps (step 0). NULL = use provider */
+  provider_t *reflection_provider;  /* [INIT-ONLY] post-task reflection. NULL = use provider */
+  tool_ctx_t *tools;                /* [INIT-ONLY] tool context */
+  int max_steps;                    /* [INIT-ONLY] max react loop iterations */
+  int verbose;                      /* [INIT-ONLY] verbosity level */
+  react_flags_t flags;              /* [INIT-ONLY] controls which subsystems fire */
+  const char *custom_system_prompt; /* [INIT-ONLY] per-pass system prompt from YAML (NULL = default) */
+  int system_prompt_replace;        /* [INIT-ONLY] 0 = append to base, 1 = replace base entirely */
+  int headless;                     /* [INIT-ONLY] 1 = no UI (agent/headless mode) */
+  react_runtime_t rt;               /* [INFER-ONLY] mutable per-loop runtime state */
+  atomic_int pause_requested;       /* [MAIN→INFER] set by TUI (Space) to pause */
+  int paused;                       /* [INFER→MAIN] 1 when paused (read after join) */
 
-    /* user_ask: model asks user a question during the react loop.
+  /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
      * then waits on user_ask_cond until the TUI thread sets the answer.
      * All fields protected by user_ask_mutex except user_ask_pending (atomic). */
-    atomic_int    user_ask_pending;   /* [INFER→MAIN] 1 = waiting for answer */
-    char         *user_ask_question;  /* [INFER, guarded by user_ask_mutex] */
-    char         *user_ask_answer;    /* [MAIN, guarded by user_ask_mutex] */
-    pthread_mutex_t user_ask_mutex;   /* protects user_ask handoff */
-    pthread_cond_t  user_ask_cond;    /* signaled when answer is ready */
-    int             user_ask_used;    /* [INFER] 1 if user_ask was called this loop */
+  atomic_int user_ask_pending;    /* [INFER→MAIN] 1 = waiting for answer */
+  char *user_ask_question;        /* [INFER, guarded by user_ask_mutex] */
+  char *user_ask_answer;          /* [MAIN, guarded by user_ask_mutex] */
+  pthread_mutex_t user_ask_mutex; /* protects user_ask handoff */
+  pthread_cond_t user_ask_cond;   /* signaled when answer is ready */
+  int user_ask_used;              /* [INFER] 1 if user_ask was called this loop */
 
-    /* pause_wait: when the react loop is paused and waiting for user input.
+  /* pause_wait: when the react loop is paused and waiting for user input.
      * The inference thread sets pause_waiting=1, emits REACT_EVENT_WARNING,
      * then waits on pause_cond until the TUI thread provides a redirect query.
      * This keeps the llm_chat_t alive so conversation context is preserved.
      * All fields protected by pause_mutex except pause_waiting (atomic). */
-    atomic_int    pause_waiting;    /* [INFER→MAIN] 1 = paused, waiting for query */
-    char         *pause_query;     /* [MAIN, guarded by pause_mutex] redirect query */
-    pthread_mutex_t pause_mutex;   /* protects pause handoff */
-    pthread_cond_t  pause_cond;    /* signaled when redirect query is ready */
+  atomic_int pause_waiting;    /* [INFER→MAIN] 1 = paused, waiting for query */
+  char *pause_query;           /* [MAIN, guarded by pause_mutex] redirect query */
+  pthread_mutex_t pause_mutex; /* protects pause handoff */
+  pthread_cond_t pause_cond;   /* signaled when redirect query is ready */
 
-    /* Cross-query context inheritance.
+  /* Cross-query context inheritance.
      * [BETWEEN-RUNS] set by main thread after pthread_join, before next react_run.
      * Safe by happens-before guarantee of pthread_join → pthread_create. */
-    char         *last_query;    /* previous query text (NULL for first query) */
-    char         *last_result;   /* previous result text (NULL for first query) */
+  char *last_query;  /* previous query text (NULL for first query) */
+  char *last_result; /* previous result text (NULL for first query) */
 
-    /* [INIT-ONLY] Tree-based branching: parent of the current react loop.
+  /* [INIT-ONLY] Tree-based branching: parent of the current react loop.
      * -1 = root (no parent), otherwise the react_loop ID of the parent.
      * Set by main thread before pthread_create. */
-    int           parent_loop;
+  int parent_loop;
 
-    /* [INIT-ONLY] Path of file user was viewing in TUI at query time.
+  /* [INIT-ONLY] Path of file user was viewing in TUI at query time.
      * NULL if not in TUI mode, viewing session.md, or no file loaded.
      * Ownership: strdup'd by main thread, freed after pthread_join. */
-    char         *tui_viewing_file;
+  char *tui_viewing_file;
 
-    /* [INIT-ONLY] Agent deadline (0 = no deadline).
+  /* [INIT-ONLY] Agent deadline (0 = no deadline).
      * If set, the react loop aborts when time(NULL) >= deadline. */
-    time_t        deadline;
+  time_t deadline;
 } react_ctx_t;
 
 /* Run the react loop for a user query.

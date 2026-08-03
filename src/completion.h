@@ -14,11 +14,11 @@
 /* ── Completion result ───────────────────────────────────── */
 
 typedef struct {
-    char **candidates;      /* array of candidate strings */
-    int    count;           /* number of candidates */
-    char  *common_prefix;   /* longest common prefix of all candidates */
-    int    replace_start;   /* byte offset in input where replacement begins */
-    int    replace_len;     /* length of text being replaced */
+  char **candidates;   /* array of candidate strings */
+  int count;           /* number of candidates */
+  char *common_prefix; /* longest common prefix of all candidates */
+  int replace_start;   /* byte offset in input where replacement begins */
+  int replace_len;     /* length of text being replaced */
 } completion_result_t;
 
 /* ── API ─────────────────────────────────────────────────── */

@@ -147,15 +147,15 @@ extern "C" {
 #define ORT_API(RETURN_TYPE, NAME, ...) RETURN_TYPE ORT_API_CALL NAME(__VA_ARGS__) NO_EXCEPTION
 
 #define ORT_API_T(RETURN_TYPE, NAME, ...) \
-  RETURN_TYPE(ORT_API_CALL* NAME)(__VA_ARGS__) NO_EXCEPTION
+  RETURN_TYPE(ORT_API_CALL *NAME)(__VA_ARGS__) NO_EXCEPTION
 
-#define ORT_API_STATUS(NAME, ...)                                                                   \
+#define ORT_API_STATUS(NAME, ...) \
   _Success_(return == 0) _Check_return_ _Ret_maybenull_ OrtStatusPtr ORT_API_CALL NAME(__VA_ARGS__) \
   NO_EXCEPTION ORT_MUST_USE_RESULT
 
 // XXX: Unfortunately, SAL annotations are known to not work with function pointers
 #define ORT_API2_STATUS(NAME, ...) \
-  _Check_return_ _Ret_maybenull_ OrtStatusPtr(ORT_API_CALL* NAME)(__VA_ARGS__) NO_EXCEPTION ORT_MUST_USE_RESULT
+  _Check_return_ _Ret_maybenull_ OrtStatusPtr(ORT_API_CALL *NAME)(__VA_ARGS__) NO_EXCEPTION ORT_MUST_USE_RESULT
 
 // Used in *.cc files. Almost as same as ORT_API_STATUS, except without ORT_MUST_USE_RESULT and ORT_EXPORT
 #define ORT_API_STATUS_IMPL(NAME, ...) \
@@ -165,11 +165,11 @@ extern "C" {
 
 #ifdef __DOXYGEN__
 #undef ORT_API_STATUS
-#define ORT_API_STATUS(NAME, ...) OrtStatus* NAME(__VA_ARGS__)
+#define ORT_API_STATUS(NAME, ...) OrtStatus *NAME(__VA_ARGS__)
 #undef ORT_API2_STATUS
-#define ORT_API2_STATUS(NAME, ...) OrtStatus* NAME(__VA_ARGS__)
+#define ORT_API2_STATUS(NAME, ...) OrtStatus *NAME(__VA_ARGS__)
 #undef ORT_CLASS_RELEASE
-#define ORT_CLASS_RELEASE(X) void Release##X(Ort##X* input)
+#define ORT_CLASS_RELEASE(X) void Release##X(Ort##X *input)
 #undef NO_EXCEPTION
 #define NO_EXCEPTION
 #endif
@@ -183,35 +183,35 @@ extern "C" {
  */
 typedef enum ONNXTensorElementDataType {
   ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED,
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,   // maps to c type float
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8,   // maps to c type uint8_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8,    // maps to c type int8_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16,  // maps to c type uint16_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16,   // maps to c type int16_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32,   // maps to c type int32_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,   // maps to c type int64_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING,  // maps to c++ type std::string
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,  // maps to c type float
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8,  // maps to c type uint8_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8,   // maps to c type int8_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16, // maps to c type uint16_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16,  // maps to c type int16_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32,  // maps to c type int32_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,  // maps to c type int64_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_STRING, // maps to c++ type std::string
   ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL,
   ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16,
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,      // maps to c type double
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32,      // maps to c type uint32_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64,      // maps to c type uint64_t
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX64,   // complex with float32 real and imaginary components
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX128,  // complex with float64 real and imaginary components
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16,    // Non-IEEE floating-point format based on IEEE754 single-precision
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,     // maps to c type double
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT32,     // maps to c type uint32_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT64,     // maps to c type uint64_t
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX64,  // complex with float32 real and imaginary components
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_COMPLEX128, // complex with float64 real and imaginary components
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_BFLOAT16,   // Non-IEEE floating-point format based on IEEE754 single-precision
   // float 8 types were introduced in onnx 1.14, see https://onnx.ai/onnx/technical/float8.html
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FN,    // Non-IEEE floating-point format based on IEEE754 single-precision
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FNUZ,  // Non-IEEE floating-point format based on IEEE754 single-precision
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2,      // Non-IEEE floating-point format based on IEEE754 single-precision
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ,  // Non-IEEE floating-point format based on IEEE754 single-precision
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FN,   // Non-IEEE floating-point format based on IEEE754 single-precision
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E4M3FNUZ, // Non-IEEE floating-point format based on IEEE754 single-precision
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2,     // Non-IEEE floating-point format based on IEEE754 single-precision
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT8E5M2FNUZ, // Non-IEEE floating-point format based on IEEE754 single-precision
   // Int4 types were introduced in ONNX 1.16. See https://onnx.ai/onnx/technical/int4.html
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT4,  // maps to a pair of packed uint4 values (size == 1 byte)
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4,   // maps to a pair of packed int4 values (size == 1 byte)
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT4, // maps to a pair of packed uint4 values (size == 1 byte)
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT4,  // maps to a pair of packed int4 values (size == 1 byte)
   // Float4 types were introduced in ONNX 1.18. See https://onnx.ai/onnx/technical/float4.html
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT4E2M1,  // maps to a pair of packed float4 values (size == 1 byte)
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT4E2M1, // maps to a pair of packed float4 values (size == 1 byte)
   // Int2 types were introduced in ONNX 1.20. See https://onnx.ai/onnx/technical/int2.html
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT2,  // maps to 4 packed uint2 values (size == 1 byte)
-  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT2,   // maps to 4 packed int2 values (size == 1 byte)
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT2, // maps to 4 packed uint2 values (size == 1 byte)
+  ONNX_TENSOR_ELEMENT_DATA_TYPE_INT2,  // maps to 4 packed int2 values (size == 1 byte)
 } ONNXTensorElementDataType;
 
 // Synced with onnx TypeProto oneof
@@ -247,11 +247,11 @@ enum OrtSparseIndicesFormat {
  * In typical API usage, specifying a logging severity level specifies the minimum severity of log messages to show.
  */
 typedef enum OrtLoggingLevel {
-  ORT_LOGGING_LEVEL_VERBOSE,  ///< Verbose informational messages (least severe).
-  ORT_LOGGING_LEVEL_INFO,     ///< Informational messages.
-  ORT_LOGGING_LEVEL_WARNING,  ///< Warning messages.
-  ORT_LOGGING_LEVEL_ERROR,    ///< Error messages.
-  ORT_LOGGING_LEVEL_FATAL,    ///< Fatal error messages (most severe).
+  ORT_LOGGING_LEVEL_VERBOSE, ///< Verbose informational messages (least severe).
+  ORT_LOGGING_LEVEL_INFO,    ///< Informational messages.
+  ORT_LOGGING_LEVEL_WARNING, ///< Warning messages.
+  ORT_LOGGING_LEVEL_ERROR,   ///< Error messages.
+  ORT_LOGGING_LEVEL_FATAL,   ///< Fatal error messages (most severe).
 } OrtLoggingLevel;
 
 typedef enum OrtErrorCode {
@@ -286,7 +286,7 @@ typedef enum OrtOpAttrType {
 
 //! @}
 #define ORT_RUNTIME_CLASS(X) \
-  struct Ort##X;             \
+  struct Ort##X; \
   typedef struct Ort##X Ort##X
 
 /** \addtogroup Global
@@ -295,10 +295,10 @@ typedef enum OrtOpAttrType {
  */
 // The actual types defined have an Ort prefix
 ORT_RUNTIME_CLASS(Env);
-ORT_RUNTIME_CLASS(Status);  // nullptr for Status* indicates success
+ORT_RUNTIME_CLASS(Status); // nullptr for Status* indicates success
 ORT_RUNTIME_CLASS(MemoryInfo);
 ORT_RUNTIME_CLASS(IoBinding);
-ORT_RUNTIME_CLASS(Session);  // Don't call ReleaseSession from Dllmain (because session owns a thread pool)
+ORT_RUNTIME_CLASS(Session); // Don't call ReleaseSession from Dllmain (because session owns a thread pool)
 ORT_RUNTIME_CLASS(Value);
 ORT_RUNTIME_CLASS(RunOptions);
 ORT_RUNTIME_CLASS(TypeInfo);
@@ -331,19 +331,19 @@ ORT_RUNTIME_CLASS(ModelCompilationOptions);
 ORT_RUNTIME_CLASS(HardwareDevice);
 ORT_RUNTIME_CLASS(EpDevice);
 ORT_RUNTIME_CLASS(KeyValuePairs);
-ORT_RUNTIME_CLASS(SyncStream);  // Opaque class to create an onnxruntime::Stream.
+ORT_RUNTIME_CLASS(SyncStream); // Opaque class to create an onnxruntime::Stream.
 ORT_RUNTIME_CLASS(ExternalInitializerInfo);
-ORT_RUNTIME_CLASS(ExternalResourceImporter);  // Capability object for external resource import
-ORT_RUNTIME_CLASS(ExternalMemoryHandle);      // EP-imported view of shared external allocation
-ORT_RUNTIME_CLASS(ExternalSemaphoreHandle);   // EP-imported view of shared external semaphore
+ORT_RUNTIME_CLASS(ExternalResourceImporter); // Capability object for external resource import
+ORT_RUNTIME_CLASS(ExternalMemoryHandle);     // EP-imported view of shared external allocation
+ORT_RUNTIME_CLASS(ExternalSemaphoreHandle);  // EP-imported view of shared external semaphore
 ORT_RUNTIME_CLASS(DeviceEpIncompatibilityDetails);
 ORT_RUNTIME_CLASS(EpAssignedSubgraph);
 ORT_RUNTIME_CLASS(EpAssignedNode);
 
 #ifdef _MSC_VER
-typedef _Return_type_success_(return == 0) OrtStatus* OrtStatusPtr;
+typedef _Return_type_success_(return == 0) OrtStatus *OrtStatusPtr;
 #else
-typedef OrtStatus* OrtStatusPtr;
+typedef OrtStatus *OrtStatusPtr;
 #endif
 
 /** \brief Memory allocation interface
@@ -353,16 +353,16 @@ typedef OrtStatus* OrtStatusPtr;
  * When an allocator is passed to any function, be sure that the allocator object is not destroyed until the last allocated object using it is freed.
  */
 typedef struct OrtAllocator {
-  uint32_t version;  ///< Must be initialized to ORT_API_VERSION
+  uint32_t version; ///< Must be initialized to ORT_API_VERSION
 
   /// Returns a pointer to an allocated block of `size` bytes
-  void*(ORT_API_CALL* Alloc)(struct OrtAllocator* this_, size_t size);
+  void *(ORT_API_CALL *Alloc)(struct OrtAllocator *this_, size_t size);
 
   /// Free a block of memory previously allocated with OrtAllocator::Alloc
-  void(ORT_API_CALL* Free)(struct OrtAllocator* this_, void* p);
+  void(ORT_API_CALL *Free)(struct OrtAllocator *this_, void *p);
 
   /// Return a pointer to an ::OrtMemoryInfo that describes this allocator
-  const struct OrtMemoryInfo*(ORT_API_CALL* Info)(const struct OrtAllocator* this_);
+  const struct OrtMemoryInfo *(ORT_API_CALL *Info)(const struct OrtAllocator *this_);
   /**
    * @brief Optional allocation function to use for memory allocations made during session initialization.
    * Use this function if you want to separate allocations made by ORT during Run() calls from
@@ -373,7 +373,7 @@ typedef struct OrtAllocator {
    *
    * \since 1.18
    */
-  void*(ORT_API_CALL* Reserve)(struct OrtAllocator* this_, size_t size);
+  void *(ORT_API_CALL *Reserve)(struct OrtAllocator *this_, size_t size);
 
   /**
    * @brief Function used to get the statistics of the allocator.
@@ -400,7 +400,7 @@ typedef struct OrtAllocator {
    *
    * \since 1.23
    */
-  ORT_API2_STATUS(GetStats, _In_ const struct OrtAllocator* this_, _Outptr_ OrtKeyValuePairs** out);
+  ORT_API2_STATUS(GetStats, _In_ const struct OrtAllocator *this_, _Outptr_ OrtKeyValuePairs **out);
 
   /** \brief Allocate using a stream.
    *
@@ -417,12 +417,12 @@ typedef struct OrtAllocator {
    * \note Implementation of this function is optional and AllocOnStream may be set to a nullptr.
    * \since 1.23
    */
-  void*(ORT_API_CALL* AllocOnStream)(struct OrtAllocator* this_, size_t size, OrtSyncStream* stream);
+  void *(ORT_API_CALL *AllocOnStream)(struct OrtAllocator *this_, size_t size, OrtSyncStream *stream);
 } OrtAllocator;
 
-typedef void(ORT_API_CALL* OrtLoggingFunction)(
-    void* param, OrtLoggingLevel severity, const char* category, const char* logid, const char* code_location,
-    const char* message);
+typedef void(ORT_API_CALL *OrtLoggingFunction)(
+  void *param, OrtLoggingLevel severity, const char *category, const char *logid, const char *code_location,
+  const char *message);
 
 /** \brief Graph optimization level
  *
@@ -485,8 +485,8 @@ typedef enum OrtMemType {
 
 /** \brief This matches OrtDevice::MemoryType values */
 typedef enum OrtDeviceMemoryType {
-  OrtDeviceMemoryType_DEFAULT = 0,          ///< Device memory
-  OrtDeviceMemoryType_HOST_ACCESSIBLE = 5,  ///< Shared/pinned memory for transferring between CPU and the device
+  OrtDeviceMemoryType_DEFAULT = 0,         ///< Device memory
+  OrtDeviceMemoryType_HOST_ACCESSIBLE = 5, ///< Shared/pinned memory for transferring between CPU and the device
 } OrtDeviceMemoryType;
 
 /** \brief This mimics OrtDevice type constants so they can be returned in the API
@@ -545,14 +545,14 @@ typedef enum OrtDeviceEpIncompatibilityReason {
  *                    Use CreateStatus to provide error info. Use ORT_FAIL as the error code.
  *                    ORT will release the OrtStatus* if not null.
  */
-typedef OrtStatus*(ORT_API_CALL* EpSelectionDelegate)(_In_ const OrtEpDevice** ep_devices,
-                                                      _In_ size_t num_devices,
-                                                      _In_ const OrtKeyValuePairs* model_metadata,
-                                                      _In_opt_ const OrtKeyValuePairs* runtime_metadata,
-                                                      _Inout_ const OrtEpDevice** selected,
-                                                      _In_ size_t max_selected,
-                                                      _Out_ size_t* num_selected,
-                                                      _In_ void* state);
+typedef OrtStatus *(ORT_API_CALL *EpSelectionDelegate)(_In_ const OrtEpDevice **ep_devices,
+                                                       _In_ size_t num_devices,
+                                                       _In_ const OrtKeyValuePairs *model_metadata,
+                                                       _In_opt_ const OrtKeyValuePairs *runtime_metadata,
+                                                       _Inout_ const OrtEpDevice **selected,
+                                                       _In_ size_t max_selected,
+                                                       _Out_ size_t *num_selected,
+                                                       _In_ void *state);
 
 /** \brief Function called by ORT to write a buffer to a custom destination (e.g., file, stream, etc.).
  *
@@ -564,9 +564,9 @@ typedef OrtStatus*(ORT_API_CALL* EpSelectionDelegate)(_In_ const OrtEpDevice** e
  *                    Use CreateStatus to provide error info. Use ORT_FAIL as the error code.
  *                    ORT will release the OrtStatus* if not null.
  */
-typedef OrtStatus*(ORT_API_CALL* OrtWriteBufferFunc)(_In_ void* state,
-                                                     _In_ const void* buffer,
-                                                     _In_ size_t buffer_num_bytes);
+typedef OrtStatus *(ORT_API_CALL *OrtWriteBufferFunc)(_In_ void *state,
+                                                      _In_ const void *buffer,
+                                                      _In_ size_t buffer_num_bytes);
 
 /** \brief Function called by ORT to allow user to specify how an initializer should be saved, that is, either
  * written to an external file or stored within the model. ORT calls this function for every initializer when
@@ -598,19 +598,19 @@ typedef OrtStatus*(ORT_API_CALL* OrtWriteBufferFunc)(_In_ void* state,
  *                    Use CreateStatus to provide error info. Use ORT_FAIL as the error code.
  *                    ORT will release the OrtStatus* if not null.
  */
-typedef OrtStatus*(ORT_API_CALL* OrtGetInitializerLocationFunc)(
-    _In_ void* state,
-    _In_ const char* initializer_name,
-    _In_ const OrtValue* initializer_value,
-    _In_opt_ const OrtExternalInitializerInfo* external_info,
-    _Outptr_result_maybenull_ OrtExternalInitializerInfo** new_external_info);
+typedef OrtStatus *(ORT_API_CALL *OrtGetInitializerLocationFunc)(
+  _In_ void *state,
+  _In_ const char *initializer_name,
+  _In_ const OrtValue *initializer_value,
+  _In_opt_ const OrtExternalInitializerInfo *external_info,
+  _Outptr_result_maybenull_ OrtExternalInitializerInfo **new_external_info);
 
 /** \brief Algorithm to use for cuDNN Convolution Op
  */
 typedef enum OrtCudnnConvAlgoSearch {
-  OrtCudnnConvAlgoSearchExhaustive,  // expensive exhaustive benchmarking using cudnnFindConvolutionForwardAlgorithmEx
-  OrtCudnnConvAlgoSearchHeuristic,   // lightweight heuristic based search using cudnnGetConvolutionForwardAlgorithm_v7
-  OrtCudnnConvAlgoSearchDefault,     // default algorithm using CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM
+  OrtCudnnConvAlgoSearchExhaustive, // expensive exhaustive benchmarking using cudnnFindConvolutionForwardAlgorithmEx
+  OrtCudnnConvAlgoSearchHeuristic,  // lightweight heuristic based search using cudnnGetConvolutionForwardAlgorithm_v7
+  OrtCudnnConvAlgoSearchDefault,    // default algorithm using CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM
 } OrtCudnnConvAlgoSearch;
 
 /** \brief CUDA Provider Options
@@ -675,11 +675,11 @@ typedef struct OrtCUDAProviderOptions {
   /** \brief User provided compute stream.
    *   If provided, please set `has_user_compute_stream` to 1.
    */
-  void* user_compute_stream;
+  void *user_compute_stream;
 
   /** \brief CUDA memory arena configuration parameters
    */
-  OrtArenaCfg* default_memory_arena_cfg;
+  OrtArenaCfg *default_memory_arena_cfg;
 
   /** \brief Enable TunableOp for using.
    *   Set it to 1/0 to enable/disable TunableOp. Otherwise, it is disabled by default.
@@ -762,11 +762,11 @@ typedef struct OrtROCMProviderOptions {
   /** \brief User provided compute stream.
    *   If provided, please set `has_user_compute_stream` to 1.
    */
-  void* user_compute_stream;
+  void *user_compute_stream;
 
   /** \brief ROCM memory arena configuration parameters
    */
-  OrtArenaCfg* default_memory_arena_cfg;
+  OrtArenaCfg *default_memory_arena_cfg;
 
   int enable_hip_graph;
 
@@ -794,24 +794,24 @@ typedef struct OrtROCMProviderOptions {
  * \see OrtApi::SessionOptionsAppendExecutionProvider_TensorRT
  */
 typedef struct OrtTensorRTProviderOptions {
-  int device_id;                                ///< CUDA device id (0 = default device)
-  int has_user_compute_stream;                  // indicator of user specified CUDA compute stream.
-  void* user_compute_stream;                    // user specified CUDA compute stream.
-  int trt_max_partition_iterations;             // maximum iterations for TensorRT parser to get capability
-  int trt_min_subgraph_size;                    // minimum size of TensorRT subgraphs
-  size_t trt_max_workspace_size;                // maximum workspace size for TensorRT.
-  int trt_fp16_enable;                          // enable TensorRT FP16 precision. Default 0 = false, nonzero = true
-  int trt_int8_enable;                          // enable TensorRT INT8 precision. Default 0 = false, nonzero = true
-  const char* trt_int8_calibration_table_name;  // TensorRT INT8 calibration table name.
-  int trt_int8_use_native_calibration_table;    // use native TensorRT generated calibration table. Default 0 = false, nonzero = true
-  int trt_dla_enable;                           // enable DLA. Default 0 = false, nonzero = true
-  int trt_dla_core;                             // DLA core number. Default 0
-  int trt_dump_subgraphs;                       // dump TRT subgraph. Default 0 = false, nonzero = true
-  int trt_engine_cache_enable;                  // enable engine caching. Default 0 = false, nonzero = true
-  const char* trt_engine_cache_path;            // specify engine cache path
-  int trt_engine_decryption_enable;             // enable engine decryption. Default 0 = false, nonzero = true
-  const char* trt_engine_decryption_lib_path;   // specify engine decryption library path
-  int trt_force_sequential_engine_build;        // force building TensorRT engine sequentially. Default 0 = false, nonzero = true
+  int device_id;                               ///< CUDA device id (0 = default device)
+  int has_user_compute_stream;                 // indicator of user specified CUDA compute stream.
+  void *user_compute_stream;                   // user specified CUDA compute stream.
+  int trt_max_partition_iterations;            // maximum iterations for TensorRT parser to get capability
+  int trt_min_subgraph_size;                   // minimum size of TensorRT subgraphs
+  size_t trt_max_workspace_size;               // maximum workspace size for TensorRT.
+  int trt_fp16_enable;                         // enable TensorRT FP16 precision. Default 0 = false, nonzero = true
+  int trt_int8_enable;                         // enable TensorRT INT8 precision. Default 0 = false, nonzero = true
+  const char *trt_int8_calibration_table_name; // TensorRT INT8 calibration table name.
+  int trt_int8_use_native_calibration_table;   // use native TensorRT generated calibration table. Default 0 = false, nonzero = true
+  int trt_dla_enable;                          // enable DLA. Default 0 = false, nonzero = true
+  int trt_dla_core;                            // DLA core number. Default 0
+  int trt_dump_subgraphs;                      // dump TRT subgraph. Default 0 = false, nonzero = true
+  int trt_engine_cache_enable;                 // enable engine caching. Default 0 = false, nonzero = true
+  const char *trt_engine_cache_path;           // specify engine cache path
+  int trt_engine_decryption_enable;            // enable engine decryption. Default 0 = false, nonzero = true
+  const char *trt_engine_decryption_lib_path;  // specify engine decryption library path
+  int trt_force_sequential_engine_build;       // force building TensorRT engine sequentially. Default 0 = false, nonzero = true
   // This is the legacy struct and don't add new fields here.
   // For new field that can be represented by string, please add it in include/onnxruntime/core/providers/tensorrt/tensorrt_provider_options.h
   // For non-string field, need to create a new separate api to handle it.
@@ -822,17 +822,17 @@ typedef struct OrtTensorRTProviderOptions {
  * \see OrtApi::SessionOptionsAppendExecutionProvider_MIGraphX
  */
 typedef struct OrtMIGraphXProviderOptions {
-  int device_id;                                     // hip device id.
-  int migraphx_fp16_enable;                          // MIGraphX FP16 precision. Default 0 = false, nonzero = true
-  int migraphx_fp8_enable;                           // MIGraphX FP8 precision. Default 0 = false, nonzero = true
-  int migraphx_int8_enable;                          // MIGraphX INT8 precision. Default 0 = false, nonzero = true
-  int migraphx_use_native_calibration_table;         // MIGraphx INT8 cal table. Default 0 = false, nonzero = true
-  const char* migraphx_int8_calibration_table_name;  // MIGraphx INT8 calibration table name
-  int migraphx_save_compiled_model;                  // migraphx save compiled model. Default 0 = false, nonzero = true
-  const char* migraphx_save_model_path;              // migraphx model path name
-  int migraphx_load_compiled_model;                  // migraphx int8 cal table. Default 0 = false, nonzero = true
-  const char* migraphx_load_model_path;              // migraphx model path name
-  bool migraphx_exhaustive_tune;                     // MIGraphX tuned compile. Default = false, nonzero = true
+  int device_id;                                    // hip device id.
+  int migraphx_fp16_enable;                         // MIGraphX FP16 precision. Default 0 = false, nonzero = true
+  int migraphx_fp8_enable;                          // MIGraphX FP8 precision. Default 0 = false, nonzero = true
+  int migraphx_int8_enable;                         // MIGraphX INT8 precision. Default 0 = false, nonzero = true
+  int migraphx_use_native_calibration_table;        // MIGraphx INT8 cal table. Default 0 = false, nonzero = true
+  const char *migraphx_int8_calibration_table_name; // MIGraphx INT8 calibration table name
+  int migraphx_save_compiled_model;                 // migraphx save compiled model. Default 0 = false, nonzero = true
+  const char *migraphx_save_model_path;             // migraphx model path name
+  int migraphx_load_compiled_model;                 // migraphx int8 cal table. Default 0 = false, nonzero = true
+  const char *migraphx_load_model_path;             // migraphx model path name
+  bool migraphx_exhaustive_tune;                    // MIGraphX tuned compile. Default = false, nonzero = true
 
   /** \brief MIGraphX memory limit (To use all possible memory pass in maximum size_t)
    *   Defaults to SIZE_MAX.
@@ -875,14 +875,14 @@ typedef struct OrtOpenVINOProviderOptions {
    *
    * Valid settings are one of: "CPU_FP32", "CPU_FP16", "GPU_FP32", "GPU_FP16"
    */
-  const char* device_type;
-  unsigned char enable_npu_fast_compile;  ///< 0 = disabled, nonzero = enabled
-  const char* device_id;
-  size_t num_of_threads;  ///< 0 = Use default number of threads
-  const char* cache_dir;  // path is set to empty by default
-  void* context;
-  unsigned char enable_opencl_throttling;  ///< 0 = disabled, nonzero = enabled
-  unsigned char enable_dynamic_shapes;     ///< 0 = disabled, nonzero = enabled
+  const char *device_type;
+  unsigned char enable_npu_fast_compile; ///< 0 = disabled, nonzero = enabled
+  const char *device_id;
+  size_t num_of_threads; ///< 0 = Use default number of threads
+  const char *cache_dir; // path is set to empty by default
+  void *context;
+  unsigned char enable_opencl_throttling; ///< 0 = disabled, nonzero = enabled
+  unsigned char enable_dynamic_shapes;    ///< 0 = disabled, nonzero = enabled
 } OrtOpenVINOProviderOptions;
 
 struct OrtApi;
@@ -917,13 +917,13 @@ struct OrtApiBase {
    * One can call GetVersionString() to get the version of the Onnxruntime library for logging
    * and error reporting purposes.
    */
-  const OrtApi*(ORT_API_CALL* GetApi)(uint32_t version)NO_EXCEPTION;
+  const OrtApi *(ORT_API_CALL *GetApi)(uint32_t version)NO_EXCEPTION;
 
   /** \brief Returns a null terminated string of the version of the Onnxruntime library (eg: "1.8.1")
    *
    *  \return UTF-8 encoded version string. Do not deallocate the returned buffer.
    */
-  const char*(ORT_API_CALL* GetVersionString)(void)NO_EXCEPTION;
+  const char *(ORT_API_CALL *GetVersionString)(void)NO_EXCEPTION;
 };
 
 typedef struct OrtApiBase OrtApiBase;
@@ -932,25 +932,25 @@ typedef struct OrtApiBase OrtApiBase;
  *
  * Call this to get the a pointer to an ::OrtApiBase
  */
-ORT_EXPORT const OrtApiBase* ORT_API_CALL OrtGetApiBase(void) NO_EXCEPTION;
+ORT_EXPORT const OrtApiBase *ORT_API_CALL OrtGetApiBase(void) NO_EXCEPTION;
 
 /** \brief Thread work loop function
  *
  * Onnxruntime will provide the working loop on custom thread creation
  * Argument is an onnxruntime built-in type which will be provided when thread pool calls OrtCustomCreateThreadFn
  */
-typedef void (*OrtThreadWorkerFn)(void* ort_worker_fn_param);
+typedef void (*OrtThreadWorkerFn)(void *ort_worker_fn_param);
 
 typedef const struct OrtCustomHandleType {
   char __place_holder;
-}* OrtCustomThreadHandle;
+} *OrtCustomThreadHandle;
 
 /** \brief Ort custom thread creation function
  *
  * The function should return a thread handle to be used in onnxruntime thread pools
  * Onnxruntime will throw exception on return value of nullptr or 0, indicating that the function failed to create a thread
  */
-typedef OrtCustomThreadHandle (*OrtCustomCreateThreadFn)(void* ort_custom_thread_creation_options, OrtThreadWorkerFn ort_thread_worker_fn, void* ort_worker_fn_param);
+typedef OrtCustomThreadHandle (*OrtCustomCreateThreadFn)(void *ort_custom_thread_creation_options, OrtThreadWorkerFn ort_thread_worker_fn, void *ort_worker_fn_param);
 
 /** \brief Custom thread join function
  *
@@ -959,7 +959,7 @@ typedef OrtCustomThreadHandle (*OrtCustomCreateThreadFn)(void* ort_custom_thread
  */
 typedef void (*OrtCustomJoinThreadFn)(OrtCustomThreadHandle ort_custom_thread_handle);
 
-typedef OrtStatus*(ORT_API_CALL* RegisterCustomOpsFn)(OrtSessionOptions* options, const OrtApiBase* api);
+typedef OrtStatus *(ORT_API_CALL *RegisterCustomOpsFn)(OrtSessionOptions *options, const OrtApiBase *api);
 
 /** \brief Callback function for RunAsync
  *
@@ -968,7 +968,7 @@ typedef OrtStatus*(ORT_API_CALL* RegisterCustomOpsFn)(OrtSessionOptions* options
  * \param[out] num_outputs Number of outputs, on error, the value will be zero
  * \param[out] status On error, status will provide details
  */
-typedef void (*RunAsyncCallbackFn)(void* user_data, OrtValue** outputs, size_t num_outputs, OrtStatusPtr status);
+typedef void (*RunAsyncCallbackFn)(void *user_data, OrtValue **outputs, size_t num_outputs, OrtStatusPtr status);
 
 /** \brief External memory handle type for importing GPU resources.
  *
@@ -993,7 +993,7 @@ typedef enum OrtExternalMemoryHandleType {
 typedef struct OrtExternalMemoryDescriptor {
   uint32_t version;                        /**< Must be ORT_API_VERSION */
   OrtExternalMemoryHandleType handle_type; /**< Type of the external memory handle */
-  void* native_handle;                     /**< Platform-specific handle (e.g., Windows HANDLE) */
+  void *native_handle;                     /**< Platform-specific handle (e.g., Windows HANDLE) */
   size_t size_bytes;                       /**< Total size in bytes of the external allocation */
   size_t offset_bytes;                     /**< Offset in bytes into the allocation (default 0).
                                                 Base offset for the imported memory region. */
@@ -1017,7 +1017,7 @@ typedef enum OrtExternalSemaphoreType {
 typedef struct OrtExternalSemaphoreDescriptor {
   uint32_t version;              /**< Must be ORT_API_VERSION */
   OrtExternalSemaphoreType type; /**< Type of the external semaphore */
-  void* native_handle;           /**< Platform-specific handle (e.g., Windows HANDLE) */
+  void *native_handle;           /**< Platform-specific handle (e.g., Windows HANDLE) */
 } OrtExternalSemaphoreDescriptor;
 
 /** \brief Descriptor for creating a tensor from imported external memory.
@@ -1030,7 +1030,7 @@ typedef struct OrtExternalSemaphoreDescriptor {
 typedef struct OrtExternalTensorDescriptor {
   uint32_t version;                       /**< Must be ORT_API_VERSION */
   ONNXTensorElementDataType element_type; /**< Data type of tensor elements */
-  const int64_t* shape;                   /**< Array of dimension sizes */
+  const int64_t *shape;                   /**< Array of dimension sizes */
   size_t rank;                            /**< Number of dimensions */
   size_t offset_bytes;                    /**< Additional offset within imported memory (default 0).
                                                Applied relative to OrtExternalMemoryDescriptor::offset_bytes.
@@ -1055,7 +1055,7 @@ typedef enum OrtCompiledModelCompatibility {
  * \since Version 1.24.
  */
 typedef struct OrtEnvCreationOptions {
-  uint32_t version;  ///< Must be set to ORT_API_VERSION
+  uint32_t version; ///< Must be set to ORT_API_VERSION
 
   /** \brief The logging severity level for the environment. Must be set to a value from OrtLoggingLevel.
    *
@@ -1075,7 +1075,7 @@ typedef struct OrtEnvCreationOptions {
    *
    * \since Version 1.24.
    */
-  const char* log_id;
+  const char *log_id;
 
   /** \brief Optional custom logging function. May be set to NULL.
    *
@@ -1093,7 +1093,7 @@ typedef struct OrtEnvCreationOptions {
    *
    * \since Version 1.24.
    */
-  void* custom_logging_param;
+  void *custom_logging_param;
 
   /** \brief Optional threading options for creating an environment with global thread pools shared across sessions.
    *         May be set to NULL.
@@ -1107,7 +1107,7 @@ typedef struct OrtEnvCreationOptions {
    *
    * \since Version 1.24.
    */
-  const OrtThreadingOptions* threading_options;
+  const OrtThreadingOptions *threading_options;
 
   /** \brief Optional environment configuration entries represented as string key-value pairs. May be set to NULL.
    *
@@ -1127,7 +1127,7 @@ typedef struct OrtEnvCreationOptions {
    *
    * \since Version 1.24.
    */
-  const OrtKeyValuePairs* config_entries;
+  const OrtKeyValuePairs *config_entries;
 
   //
   // End of fields available in ORT 1.24
@@ -1153,21 +1153,21 @@ struct OrtApi {
    * \param[in] msg A null-terminated string. Its contents will be copied.
    * \return A new OrtStatus object, must be destroyed with OrtApi::ReleaseStatus
    */
-  OrtStatus*(ORT_API_CALL* CreateStatus)(OrtErrorCode code, _In_ const char* msg)NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
+  OrtStatus *(ORT_API_CALL *CreateStatus)(OrtErrorCode code, _In_ const char *msg)NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
 
   /** \brief Get OrtErrorCode from OrtStatus
    *
    * \param[in] status
    * \return OrtErrorCode that \p status was created with
    */
-  OrtErrorCode(ORT_API_CALL* GetErrorCode)(_In_ const OrtStatus* status) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
+  OrtErrorCode(ORT_API_CALL *GetErrorCode)(_In_ const OrtStatus *status) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
 
   /** \brief Get error string from OrtStatus
    *
    * \param[in] status
    * \return The error message inside the `status`. Do not free the returned value.
    */
-  const char*(ORT_API_CALL* GetErrorMessage)(_In_ const OrtStatus* status)NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
+  const char *(ORT_API_CALL *GetErrorMessage)(_In_ const OrtStatus *status)NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
 
   /// @}
   /// \name OrtEnv
@@ -1183,7 +1183,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateEnv, OrtLoggingLevel log_severity_level, _In_ const char* logid, _Outptr_ OrtEnv** out);
+  ORT_API2_STATUS(CreateEnv, OrtLoggingLevel log_severity_level, _In_ const char *logid, _Outptr_ OrtEnv **out);
 
   /** \brief Create an OrtEnv
    *
@@ -1199,8 +1199,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateEnvWithCustomLogger, _In_ OrtLoggingFunction logging_function, _In_opt_ void* logger_param,
-                  _In_ OrtLoggingLevel log_severity_level, _In_ const char* logid, _Outptr_ OrtEnv** out);
+  ORT_API2_STATUS(CreateEnvWithCustomLogger, _In_ OrtLoggingFunction logging_function, _In_opt_ void *logger_param,
+                  _In_ OrtLoggingLevel log_severity_level, _In_ const char *logid, _Outptr_ OrtEnv **out);
 
   /** \brief Enable Telemetry
    *
@@ -1209,7 +1209,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(EnableTelemetryEvents, _In_ const OrtEnv* env);
+  ORT_API2_STATUS(EnableTelemetryEvents, _In_ const OrtEnv *env);
   /** \brief Disable Telemetry
    *
    * \see OrtApi::EnableTelemetryEvents
@@ -1217,7 +1217,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(DisableTelemetryEvents, _In_ const OrtEnv* env);
+  ORT_API2_STATUS(DisableTelemetryEvents, _In_ const OrtEnv *env);
 
   /// @}
   /// \name OrtSession
@@ -1237,8 +1237,8 @@ struct OrtApi {
   // execution of CreateSession, or does the OrtSession retain a handle to the file/directory
   // and continue to access throughout the OrtSession lifetime?
   //  What sort of access is needed to model_path : read or read/write?
-  ORT_API2_STATUS(CreateSession, _In_ const OrtEnv* env, _In_ const ORTCHAR_T* model_path,
-                  _In_ const OrtSessionOptions* options, _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateSession, _In_ const OrtEnv *env, _In_ const ORTCHAR_T *model_path,
+                  _In_ const OrtSessionOptions *options, _Outptr_ OrtSession **out);
 
   /** \brief Create an OrtSession from memory
    *
@@ -1250,9 +1250,9 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSessionFromArray, _In_ const OrtEnv* env,
-                  _In_ const void* model_data, size_t model_data_length,
-                  _In_ const OrtSessionOptions* options, _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateSessionFromArray, _In_ const OrtEnv *env,
+                  _In_ const void *model_data, size_t model_data_length,
+                  _In_ const OrtSessionOptions *options, _Outptr_ OrtSession **out);
 
   /** \brief Run the model in an ::OrtSession
    *
@@ -1272,11 +1272,11 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(Run, _Inout_ OrtSession* session, _In_opt_ const OrtRunOptions* run_options,
-                  _In_reads_(input_len) const char* const* input_names,
-                  _In_reads_(input_len) const OrtValue* const* inputs, size_t input_len,
-                  _In_reads_(output_names_len) const char* const* output_names, size_t output_names_len,
-                  _Inout_updates_all_(output_names_len) OrtValue** outputs);
+  ORT_API2_STATUS(Run, _Inout_ OrtSession *session, _In_opt_ const OrtRunOptions *run_options,
+                  _In_reads_(input_len) const char *const *input_names,
+                  _In_reads_(input_len) const OrtValue *const *inputs, size_t input_len,
+                  _In_reads_(output_names_len) const char *const *output_names, size_t output_names_len,
+                  _Inout_updates_all_(output_names_len) OrtValue **outputs);
 
   /// @}
   /// \name OrtSessionOptions
@@ -1297,7 +1297,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSessionOptions, _Outptr_ OrtSessionOptions** options);
+  ORT_API2_STATUS(CreateSessionOptions, _Outptr_ OrtSessionOptions **options);
 
   /** \brief Set filepath to save optimized model after graph level transformations
    *
@@ -1306,8 +1306,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetOptimizedModelFilePath, _Inout_ OrtSessionOptions* options,
-                  _In_ const ORTCHAR_T* optimized_model_filepath);
+  ORT_API2_STATUS(SetOptimizedModelFilePath, _Inout_ OrtSessionOptions *options,
+                  _In_ const ORTCHAR_T *optimized_model_filepath);
 
   /** \brief Create a copy of an existing ::OrtSessionOptions
    *
@@ -1316,8 +1316,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CloneSessionOptions, _In_ const OrtSessionOptions* in_options,
-                  _Outptr_ OrtSessionOptions** out_options);
+  ORT_API2_STATUS(CloneSessionOptions, _In_ const OrtSessionOptions *in_options,
+                  _Outptr_ OrtSessionOptions **out_options);
 
   /** \brief Set execution mode
    *
@@ -1330,7 +1330,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetSessionExecutionMode, _Inout_ OrtSessionOptions* options, ExecutionMode execution_mode);
+  ORT_API2_STATUS(SetSessionExecutionMode, _Inout_ OrtSessionOptions *options, ExecutionMode execution_mode);
 
   /** \brief Enable profiling for a session
    *
@@ -1339,7 +1339,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(EnableProfiling, _Inout_ OrtSessionOptions* options, _In_ const ORTCHAR_T* profile_file_prefix);
+  ORT_API2_STATUS(EnableProfiling, _Inout_ OrtSessionOptions *options, _In_ const ORTCHAR_T *profile_file_prefix);
 
   /** \brief Disable profiling for a session
    *
@@ -1347,7 +1347,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(DisableProfiling, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(DisableProfiling, _Inout_ OrtSessionOptions *options);
 
   /** \brief Enable the memory pattern optimization
    *
@@ -1362,7 +1362,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(EnableMemPattern, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(EnableMemPattern, _Inout_ OrtSessionOptions *options);
 
   /** \brief Disable the memory pattern optimization
    *
@@ -1372,7 +1372,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(DisableMemPattern, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(DisableMemPattern, _Inout_ OrtSessionOptions *options);
 
   /** \brief Enable the memory arena on CPU
    *
@@ -1382,7 +1382,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(EnableCpuMemArena, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(EnableCpuMemArena, _Inout_ OrtSessionOptions *options);
 
   /** \brief Disable the memory arena on CPU
    *
@@ -1390,7 +1390,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(DisableCpuMemArena, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(DisableCpuMemArena, _Inout_ OrtSessionOptions *options);
 
   /** \brief Set session log id
    *
@@ -1399,7 +1399,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetSessionLogId, _Inout_ OrtSessionOptions* options, const char* logid);
+  ORT_API2_STATUS(SetSessionLogId, _Inout_ OrtSessionOptions *options, const char *logid);
 
   /** \brief Set session log verbosity level
    *
@@ -1410,7 +1410,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetSessionLogVerbosityLevel, _Inout_ OrtSessionOptions* options, int session_log_verbosity_level);
+  ORT_API2_STATUS(SetSessionLogVerbosityLevel, _Inout_ OrtSessionOptions *options, int session_log_verbosity_level);
 
   /** \brief Set session log severity level
    *
@@ -1419,7 +1419,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetSessionLogSeverityLevel, _Inout_ OrtSessionOptions* options, int session_log_severity_level);
+  ORT_API2_STATUS(SetSessionLogSeverityLevel, _Inout_ OrtSessionOptions *options, int session_log_severity_level);
 
   /** \brief Set the optimization level to apply when loading a graph
    *
@@ -1429,7 +1429,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetSessionGraphOptimizationLevel, _Inout_ OrtSessionOptions* options,
+  ORT_API2_STATUS(SetSessionGraphOptimizationLevel, _Inout_ OrtSessionOptions *options,
                   GraphOptimizationLevel graph_optimization_level);
 
   /** \brief Sets the number of threads used to parallelize the execution within nodes
@@ -1445,7 +1445,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetIntraOpNumThreads, _Inout_ OrtSessionOptions* options, int intra_op_num_threads);
+  ORT_API2_STATUS(SetIntraOpNumThreads, _Inout_ OrtSessionOptions *options, int intra_op_num_threads);
 
   /** \brief Sets the number of threads used to parallelize the execution of the graph
    *
@@ -1459,7 +1459,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetInterOpNumThreads, _Inout_ OrtSessionOptions* options, int inter_op_num_threads);
+  ORT_API2_STATUS(SetInterOpNumThreads, _Inout_ OrtSessionOptions *options, int inter_op_num_threads);
 
   /// @}
   /// \name OrtCustomOpDomain
@@ -1472,7 +1472,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateCustomOpDomain, _In_ const char* domain, _Outptr_ OrtCustomOpDomain** out);
+  ORT_API2_STATUS(CreateCustomOpDomain, _In_ const char *domain, _Outptr_ OrtCustomOpDomain **out);
 
   /** \brief Add a custom op to a custom op domain
    *
@@ -1483,7 +1483,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CustomOpDomain_Add, _Inout_ OrtCustomOpDomain* custom_op_domain, _In_ const OrtCustomOp* op);
+  ORT_API2_STATUS(CustomOpDomain_Add, _Inout_ OrtCustomOpDomain *custom_op_domain, _In_ const OrtCustomOp *op);
 
   /// @}
   /// \name OrtSessionOptions
@@ -1498,7 +1498,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(AddCustomOpDomain, _Inout_ OrtSessionOptions* options, _In_ OrtCustomOpDomain* custom_op_domain);
+  ORT_API2_STATUS(AddCustomOpDomain, _Inout_ OrtSessionOptions *options, _In_ OrtCustomOpDomain *custom_op_domain);
 
   /** \deprecated Use OrtApi::RegisterCustomOpsLibrary_V2.
    *
@@ -1516,7 +1516,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RegisterCustomOpsLibrary, _Inout_ OrtSessionOptions* options, _In_ const char* library_path, _Outptr_ void** library_handle);
+  ORT_API2_STATUS(RegisterCustomOpsLibrary, _Inout_ OrtSessionOptions *options, _In_ const char *library_path, _Outptr_ void **library_handle);
 
   /// @}
   /// \name OrtSession
@@ -1533,7 +1533,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetInputCount, _In_ const OrtSession* session, _Out_ size_t* out);
+  ORT_API2_STATUS(SessionGetInputCount, _In_ const OrtSession *session, _Out_ size_t *out);
 
   /** \brief Get output count for a session
    *
@@ -1546,7 +1546,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOutputCount, _In_ const OrtSession* session, _Out_ size_t* out);
+  ORT_API2_STATUS(SessionGetOutputCount, _In_ const OrtSession *session, _Out_ size_t *out);
 
   /** \brief Get overridable initializer count
    *
@@ -1557,7 +1557,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOverridableInitializerCount, _In_ const OrtSession* session, _Out_ size_t* out);
+  ORT_API2_STATUS(SessionGetOverridableInitializerCount, _In_ const OrtSession *session, _Out_ size_t *out);
 
   /** \brief Get input type information
    *
@@ -1567,7 +1567,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetInputTypeInfo, _In_ const OrtSession* session, size_t index, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(SessionGetInputTypeInfo, _In_ const OrtSession *session, size_t index, _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Get output type information
    *
@@ -1577,7 +1577,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOutputTypeInfo, _In_ const OrtSession* session, size_t index, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(SessionGetOutputTypeInfo, _In_ const OrtSession *session, size_t index, _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Get overridable initializer type information
    *
@@ -1587,7 +1587,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOverridableInitializerTypeInfo, _In_ const OrtSession* session, size_t index, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(SessionGetOverridableInitializerTypeInfo, _In_ const OrtSession *session, size_t index, _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Get input name
    *
@@ -1598,7 +1598,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetInputName, _In_ const OrtSession* session, size_t index, _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(SessionGetInputName, _In_ const OrtSession *session, size_t index, _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /** \brief Get output name
    *
@@ -1609,7 +1609,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOutputName, _In_ const OrtSession* session, size_t index, _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(SessionGetOutputName, _In_ const OrtSession *session, size_t index, _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /** \brief Get overridable initializer name
    *
@@ -1620,8 +1620,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetOverridableInitializerName, _In_ const OrtSession* session, size_t index,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(SessionGetOverridableInitializerName, _In_ const OrtSession *session, size_t index,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /// @}
   /// \name OrtRunOptions
@@ -1633,7 +1633,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateRunOptions, _Outptr_ OrtRunOptions** out);
+  ORT_API2_STATUS(CreateRunOptions, _Outptr_ OrtRunOptions **out);
 
   /** \brief Set per-run log verbosity level
    *
@@ -1644,7 +1644,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RunOptionsSetRunLogVerbosityLevel, _Inout_ OrtRunOptions* options, int log_verbosity_level);
+  ORT_API2_STATUS(RunOptionsSetRunLogVerbosityLevel, _Inout_ OrtRunOptions *options, int log_verbosity_level);
 
   /** \brief Set per-run log severity level
    *
@@ -1653,7 +1653,7 @@ struct OrtApi {
    * \param[in] options
    * \param[in] log_severity_level The log severity level (refer to ::OrtLoggingLevel for possible values).
    */
-  ORT_API2_STATUS(RunOptionsSetRunLogSeverityLevel, _Inout_ OrtRunOptions* options, int log_severity_level);
+  ORT_API2_STATUS(RunOptionsSetRunLogSeverityLevel, _Inout_ OrtRunOptions *options, int log_severity_level);
 
   /** \brief Set per-run tag
    *
@@ -1664,7 +1664,7 @@ struct OrtApi {
    * \param[in] options
    * \param[in] run_tag The run tag.
    */
-  ORT_API2_STATUS(RunOptionsSetRunTag, _Inout_ OrtRunOptions* options, _In_ const char* run_tag);
+  ORT_API2_STATUS(RunOptionsSetRunTag, _Inout_ OrtRunOptions *options, _In_ const char *run_tag);
 
   /** \brief Get per-run log verbosity level
    *
@@ -1675,8 +1675,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RunOptionsGetRunLogVerbosityLevel, _In_ const OrtRunOptions* options,
-                  _Out_ int* log_verbosity_level);
+  ORT_API2_STATUS(RunOptionsGetRunLogVerbosityLevel, _In_ const OrtRunOptions *options,
+                  _Out_ int *log_verbosity_level);
 
   /** \brief Get per-run log severity level
    *
@@ -1685,7 +1685,7 @@ struct OrtApi {
    * \param[in] options
    * \param[out] log_severity_level The log severity level (refer to ::OrtLoggingLevel for possible values).
    */
-  ORT_API2_STATUS(RunOptionsGetRunLogSeverityLevel, _In_ const OrtRunOptions* options, _Out_ int* log_severity_level);
+  ORT_API2_STATUS(RunOptionsGetRunLogSeverityLevel, _In_ const OrtRunOptions *options, _Out_ int *log_severity_level);
 
   /** \brief Get per-run tag
    *
@@ -1698,7 +1698,7 @@ struct OrtApi {
    *                     Do not free this value, it is owned by `options`. It will be invalidated if the run tag
    *                     changes (i.e., with OrtApi::RunOptionsSetRunTag) or `options` is freed.
    */
-  ORT_API2_STATUS(RunOptionsGetRunTag, _In_ const OrtRunOptions* options, _Out_ const char** run_tag);
+  ORT_API2_STATUS(RunOptionsGetRunTag, _In_ const OrtRunOptions *options, _Out_ const char **run_tag);
 
   /** \brief Set terminate flag
    *
@@ -1708,7 +1708,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RunOptionsSetTerminate, _Inout_ OrtRunOptions* options);
+  ORT_API2_STATUS(RunOptionsSetTerminate, _Inout_ OrtRunOptions *options);
 
   /** \brief Clears the terminate flag
    *
@@ -1718,7 +1718,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RunOptionsUnsetTerminate, _Inout_ OrtRunOptions* options);
+  ORT_API2_STATUS(RunOptionsUnsetTerminate, _Inout_ OrtRunOptions *options);
 
   /// @}
   /// \name OrtValue
@@ -1736,8 +1736,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateTensorAsOrtValue, _Inout_ OrtAllocator* allocator, _In_ const int64_t* shape, size_t shape_len,
-                  ONNXTensorElementDataType type, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateTensorAsOrtValue, _Inout_ OrtAllocator *allocator, _In_ const int64_t *shape, size_t shape_len,
+                  ONNXTensorElementDataType type, _Outptr_ OrtValue **out);
 
   /** \brief Create a tensor backed by a user supplied buffer
    *
@@ -1756,9 +1756,9 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateTensorWithDataAsOrtValue, _In_ const OrtMemoryInfo* info, _Inout_ void* p_data,
-                  size_t p_data_len, _In_ const int64_t* shape, size_t shape_len, ONNXTensorElementDataType type,
-                  _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateTensorWithDataAsOrtValue, _In_ const OrtMemoryInfo *info, _Inout_ void *p_data,
+                  size_t p_data_len, _In_ const int64_t *shape, size_t shape_len, ONNXTensorElementDataType type,
+                  _Outptr_ OrtValue **out);
 
   /** \brief Return if an ::OrtValue is a tensor type
    *
@@ -1767,7 +1767,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(IsTensor, _In_ const OrtValue* value, _Out_ int* out);
+  ORT_API2_STATUS(IsTensor, _In_ const OrtValue *value, _Out_ int *out);
 
   /** \brief Get a pointer to the raw data inside a tensor
    *
@@ -1779,7 +1779,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorMutableData, _In_ OrtValue* value, _Outptr_ void** out);
+  ORT_API2_STATUS(GetTensorMutableData, _In_ OrtValue *value, _Outptr_ void **out);
 
   /** \brief Set all strings at once in a string tensor
    *
@@ -1789,7 +1789,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(FillStringTensor, _Inout_ OrtValue* value, _In_ const char* const* s, size_t s_len);
+  ORT_API2_STATUS(FillStringTensor, _Inout_ OrtValue *value, _In_ const char *const *s, size_t s_len);
 
   /** \brief Get total byte length for all strings in a string tensor
    *
@@ -1800,7 +1800,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetStringTensorDataLength, _In_ const OrtValue* value, _Out_ size_t* len);
+  ORT_API2_STATUS(GetStringTensorDataLength, _In_ const OrtValue *value, _Out_ size_t *len);
 
   /** \brief Get all strings from a string tensor
    *
@@ -1821,8 +1821,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetStringTensorContent, _In_ const OrtValue* value, _Out_writes_bytes_all_(s_len) void* s,
-                  size_t s_len, _Out_writes_all_(offsets_len) size_t* offsets, size_t offsets_len);
+  ORT_API2_STATUS(GetStringTensorContent, _In_ const OrtValue *value, _Out_writes_bytes_all_(s_len) void *s,
+                  size_t s_len, _Out_writes_all_(offsets_len) size_t *offsets, size_t offsets_len);
 
   /// @}
   /// \name OrtTypeInfo
@@ -1836,8 +1836,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CastTypeInfoToTensorInfo, _In_ const OrtTypeInfo* type_info,
-                  _Outptr_result_maybenull_ const OrtTensorTypeAndShapeInfo** out);
+  ORT_API2_STATUS(CastTypeInfoToTensorInfo, _In_ const OrtTypeInfo *type_info,
+                  _Outptr_result_maybenull_ const OrtTensorTypeAndShapeInfo **out);
 
   /** \brief Get ::ONNXType from ::OrtTypeInfo
    *
@@ -1846,7 +1846,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetOnnxTypeFromTypeInfo, _In_ const OrtTypeInfo* type_info, _Out_ enum ONNXType* out);
+  ORT_API2_STATUS(GetOnnxTypeFromTypeInfo, _In_ const OrtTypeInfo *type_info, _Out_ enum ONNXType *out);
 
   /// @}
   /// \name OrtTensorTypeAndShapeInfo
@@ -1858,7 +1858,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateTensorTypeAndShapeInfo, _Outptr_ OrtTensorTypeAndShapeInfo** out);
+  ORT_API2_STATUS(CreateTensorTypeAndShapeInfo, _Outptr_ OrtTensorTypeAndShapeInfo **out);
 
   /** \brief Set element type in ::OrtTensorTypeAndShapeInfo
    *
@@ -1867,7 +1867,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetTensorElementType, _Inout_ OrtTensorTypeAndShapeInfo* info, enum ONNXTensorElementDataType type);
+  ORT_API2_STATUS(SetTensorElementType, _Inout_ OrtTensorTypeAndShapeInfo *info, enum ONNXTensorElementDataType type);
 
   /** \brief Set shape information in ::OrtTensorTypeAndShapeInfo
    *
@@ -1877,7 +1877,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetDimensions, OrtTensorTypeAndShapeInfo* info, _In_ const int64_t* dim_values, size_t dim_count);
+  ORT_API2_STATUS(SetDimensions, OrtTensorTypeAndShapeInfo *info, _In_ const int64_t *dim_values, size_t dim_count);
 
   /** \brief Get element type in ::OrtTensorTypeAndShapeInfo
    *
@@ -1888,8 +1888,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorElementType, _In_ const OrtTensorTypeAndShapeInfo* info,
-                  _Out_ enum ONNXTensorElementDataType* out);
+  ORT_API2_STATUS(GetTensorElementType, _In_ const OrtTensorTypeAndShapeInfo *info,
+                  _Out_ enum ONNXTensorElementDataType *out);
 
   /** \brief Get dimension count in ::OrtTensorTypeAndShapeInfo
    *
@@ -1900,7 +1900,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetDimensionsCount, _In_ const OrtTensorTypeAndShapeInfo* info, _Out_ size_t* out);
+  ORT_API2_STATUS(GetDimensionsCount, _In_ const OrtTensorTypeAndShapeInfo *info, _Out_ size_t *out);
 
   /** \brief Get dimensions in ::OrtTensorTypeAndShapeInfo
    *
@@ -1910,7 +1910,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetDimensions, _In_ const OrtTensorTypeAndShapeInfo* info, _Out_ int64_t* dim_values,
+  ORT_API2_STATUS(GetDimensions, _In_ const OrtTensorTypeAndShapeInfo *info, _Out_ int64_t *dim_values,
                   size_t dim_values_length);
 
   /** \brief Get symbolic dimension names in ::OrtTensorTypeAndShapeInfo
@@ -1921,8 +1921,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSymbolicDimensions, _In_ const OrtTensorTypeAndShapeInfo* info,
-                  _Out_writes_all_(dim_params_length) const char* dim_params[], size_t dim_params_length);
+  ORT_API2_STATUS(GetSymbolicDimensions, _In_ const OrtTensorTypeAndShapeInfo *info,
+                  _Out_writes_all_(dim_params_length) const char *dim_params[], size_t dim_params_length);
 
   /** \brief Get total number of elements in a tensor shape from an ::OrtTensorTypeAndShapeInfo
    *
@@ -1940,7 +1940,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorShapeElementCount, _In_ const OrtTensorTypeAndShapeInfo* info, _Out_ size_t* out);
+  ORT_API2_STATUS(GetTensorShapeElementCount, _In_ const OrtTensorTypeAndShapeInfo *info, _Out_ size_t *out);
 
   /// @}
   /// \name OrtValue
@@ -1953,7 +1953,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorTypeAndShape, _In_ const OrtValue* value, _Outptr_ OrtTensorTypeAndShapeInfo** out);
+  ORT_API2_STATUS(GetTensorTypeAndShape, _In_ const OrtValue *value, _Outptr_ OrtTensorTypeAndShapeInfo **out);
 
   /** \brief Get type information of an OrtValue
    *
@@ -1962,7 +1962,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTypeInfo, _In_ const OrtValue* value, _Outptr_result_maybenull_ OrtTypeInfo** out);
+  ORT_API2_STATUS(GetTypeInfo, _In_ const OrtValue *value, _Outptr_result_maybenull_ OrtTypeInfo **out);
 
   /** \brief Get ONNXType of an ::OrtValue
    *
@@ -1971,7 +1971,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetValueType, _In_ const OrtValue* value, _Out_ enum ONNXType* out);
+  ORT_API2_STATUS(GetValueType, _In_ const OrtValue *value, _Out_ enum ONNXType *out);
 
   /// @}
   /// \name OrtMemoryInfo
@@ -1987,8 +1987,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateMemoryInfo, _In_ const char* name, enum OrtAllocatorType type, int id,
-                  enum OrtMemType mem_type, _Outptr_ OrtMemoryInfo** out);
+  ORT_API2_STATUS(CreateMemoryInfo, _In_ const char *name, enum OrtAllocatorType type, int id,
+                  enum OrtMemType mem_type, _Outptr_ OrtMemoryInfo **out);
 
   /** \brief Create an ::OrtMemoryInfo for CPU memory
    *
@@ -2001,7 +2001,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(CreateCpuMemoryInfo, enum OrtAllocatorType type, enum OrtMemType mem_type,
-                  _Outptr_ OrtMemoryInfo** out);
+                  _Outptr_ OrtMemoryInfo **out);
 
   /** \brief Compare ::OrtMemoryInfo objects for equality
    *
@@ -2013,7 +2013,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CompareMemoryInfo, _In_ const OrtMemoryInfo* info1, _In_ const OrtMemoryInfo* info2, _Out_ int* out);
+  ORT_API2_STATUS(CompareMemoryInfo, _In_ const OrtMemoryInfo *info1, _In_ const OrtMemoryInfo *info2, _Out_ int *out);
 
   /** \brief Get name from ::OrtMemoryInfo
    *
@@ -2022,30 +2022,30 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(MemoryInfoGetName, _In_ const OrtMemoryInfo* ptr, _Out_ const char** out);
+  ORT_API2_STATUS(MemoryInfoGetName, _In_ const OrtMemoryInfo *ptr, _Out_ const char **out);
 
   /** \brief Get the device id from ::OrtMemoryInfo
    */
-  ORT_API2_STATUS(MemoryInfoGetId, _In_ const OrtMemoryInfo* ptr, _Out_ int* out);
+  ORT_API2_STATUS(MemoryInfoGetId, _In_ const OrtMemoryInfo *ptr, _Out_ int *out);
 
   /** \brief Get the ::OrtMemType from ::OrtMemoryInfo
    */
-  ORT_API2_STATUS(MemoryInfoGetMemType, _In_ const OrtMemoryInfo* ptr, _Out_ OrtMemType* out);
+  ORT_API2_STATUS(MemoryInfoGetMemType, _In_ const OrtMemoryInfo *ptr, _Out_ OrtMemType *out);
 
   /** \brief Get the ::OrtAllocatorType from ::OrtMemoryInfo
    */
-  ORT_API2_STATUS(MemoryInfoGetType, _In_ const OrtMemoryInfo* ptr, _Out_ OrtAllocatorType* out);
+  ORT_API2_STATUS(MemoryInfoGetType, _In_ const OrtMemoryInfo *ptr, _Out_ OrtAllocatorType *out);
 
   /// @}
   /// \name OrtAllocator
   /// @{
 
   /// \brief Calls OrtAllocator::Alloc function
-  ORT_API2_STATUS(AllocatorAlloc, _Inout_ OrtAllocator* ort_allocator, size_t size, _Outptr_ void** out);
+  ORT_API2_STATUS(AllocatorAlloc, _Inout_ OrtAllocator *ort_allocator, size_t size, _Outptr_ void **out);
   /// \brief Calls OrtAllocator::Free function
-  ORT_API2_STATUS(AllocatorFree, _Inout_ OrtAllocator* ort_allocator, void* p);
+  ORT_API2_STATUS(AllocatorFree, _Inout_ OrtAllocator *ort_allocator, void *p);
   /// \brief Calls OrtAllocator::Info function
-  ORT_API2_STATUS(AllocatorGetInfo, _In_ const OrtAllocator* ort_allocator, _Outptr_ const struct OrtMemoryInfo** out);
+  ORT_API2_STATUS(AllocatorGetInfo, _In_ const OrtAllocator *ort_allocator, _Outptr_ const struct OrtMemoryInfo **out);
 
   /** \brief Get the default allocator
    *
@@ -2055,7 +2055,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetAllocatorWithDefaultOptions, _Outptr_ OrtAllocator** out);
+  ORT_API2_STATUS(GetAllocatorWithDefaultOptions, _Outptr_ OrtAllocator **out);
 
   /// @}
   /// \name OrtSessionOptions
@@ -2072,7 +2072,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(AddFreeDimensionOverride, _Inout_ OrtSessionOptions* options, _In_ const char* dim_denotation,
+  ORT_API2_STATUS(AddFreeDimensionOverride, _Inout_ OrtSessionOptions *options, _In_ const char *dim_denotation,
                   _In_ int64_t dim_value);
 
   /// @}
@@ -2119,8 +2119,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetValue, _In_ const OrtValue* value, int index, _Inout_ OrtAllocator* allocator,
-                  _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(GetValue, _In_ const OrtValue *value, int index, _Inout_ OrtAllocator *allocator,
+                  _Outptr_ OrtValue **out);
 
   /** \brief Get non tensor value count from an ::OrtValue
    *
@@ -2132,7 +2132,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetValueCount, _In_ const OrtValue* value, _Out_ size_t* out);
+  ORT_API2_STATUS(GetValueCount, _In_ const OrtValue *value, _Out_ size_t *out);
 
   /** \brief Create a map or sequence ::OrtValue
    *
@@ -2149,8 +2149,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateValue, _In_reads_(num_values) const OrtValue* const* in, size_t num_values,
-                  enum ONNXType value_type, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateValue, _In_reads_(num_values) const OrtValue *const *in, size_t num_values,
+                  enum ONNXType value_type, _Outptr_ OrtValue **out);
 
   /** \brief Create an opaque (custom user defined type) ::OrtValue
    *
@@ -2174,8 +2174,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateOpaqueValue, _In_z_ const char* domain_name, _In_z_ const char* type_name,
-                  _In_ const void* data_container, size_t data_container_size, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateOpaqueValue, _In_z_ const char *domain_name, _In_z_ const char *type_name,
+                  _In_ const void *data_container, size_t data_container_size, _Outptr_ OrtValue **out);
 
   /** \brief Get internal data from an opaque (custom user defined type) ::OrtValue
    *
@@ -2191,8 +2191,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetOpaqueValue, _In_ const char* domain_name, _In_ const char* type_name, _In_ const OrtValue* in,
-                  _Out_ void* data_container, size_t data_container_size);
+  ORT_API2_STATUS(GetOpaqueValue, _In_ const char *domain_name, _In_ const char *type_name, _In_ const OrtValue *in,
+                  _Out_ void *data_container, size_t data_container_size);
 
   /// @}
   /// \name OrtKernelInfo
@@ -2207,8 +2207,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttribute_float, _In_ const OrtKernelInfo* info, _In_ const char* name,
-                  _Out_ float* out);
+  ORT_API2_STATUS(KernelInfoGetAttribute_float, _In_ const OrtKernelInfo *info, _In_ const char *name,
+                  _Out_ float *out);
 
   /** \brief Fetch a 64-bit int stored as an attribute in the graph node
    *
@@ -2218,8 +2218,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttribute_int64, _In_ const OrtKernelInfo* info, _In_ const char* name,
-                  _Out_ int64_t* out);
+  ORT_API2_STATUS(KernelInfoGetAttribute_int64, _In_ const OrtKernelInfo *info, _In_ const char *name,
+                  _Out_ int64_t *out);
 
   /** \brief Fetch a string stored as an attribute in the graph node
    *
@@ -2241,8 +2241,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttribute_string, _In_ const OrtKernelInfo* info, _In_ const char* name, _Out_ char* out,
-                  _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfoGetAttribute_string, _In_ const OrtKernelInfo *info, _In_ const char *name, _Out_ char *out,
+                  _Inout_ size_t *size);
 
   /// @}
   /// \name OrtKernelContext
@@ -2253,13 +2253,13 @@ struct OrtApi {
    *
    * \see ::OrtCustomOp
    */
-  ORT_API2_STATUS(KernelContext_GetInputCount, _In_ const OrtKernelContext* context, _Out_ size_t* out);
+  ORT_API2_STATUS(KernelContext_GetInputCount, _In_ const OrtKernelContext *context, _Out_ size_t *out);
 
   /** \brief Used for custom operators, get the output count of a kernel
    *
    * \see ::OrtCustomOp
    */
-  ORT_API2_STATUS(KernelContext_GetOutputCount, _In_ const OrtKernelContext* context, _Out_ size_t* out);
+  ORT_API2_STATUS(KernelContext_GetOutputCount, _In_ const OrtKernelContext *context, _Out_ size_t *out);
 
   /** \brief Used for custom operators, get an input of a kernel
    *
@@ -2272,8 +2272,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelContext_GetInput, _In_ const OrtKernelContext* context, _In_ size_t index,
-                  _Out_ const OrtValue** out);
+  ORT_API2_STATUS(KernelContext_GetInput, _In_ const OrtKernelContext *context, _In_ size_t index,
+                  _Out_ const OrtValue **out);
 
   /** \brief Used for custom operators, get an output of a kernel
    *
@@ -2288,8 +2288,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelContext_GetOutput, _Inout_ OrtKernelContext* context, _In_ size_t index,
-                  _In_ const int64_t* dim_values, size_t dim_count, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(KernelContext_GetOutput, _Inout_ OrtKernelContext *context, _In_ size_t index,
+                  _In_ const int64_t *dim_values, size_t dim_count, _Outptr_ OrtValue **out);
 
   /// @}
   /// \name OrtEnv
@@ -2306,7 +2306,7 @@ struct OrtApi {
   /// @}
   /// \name OrtSession
   /// @{
-  ORT_CLASS_RELEASE(Session);  // Don't call ReleaseSession from Dllmain (because session owns a thread pool)
+  ORT_CLASS_RELEASE(Session); // Don't call ReleaseSession from Dllmain (because session owns a thread pool)
   /// @}
   /// \name OrtValue
   /// @{
@@ -2348,8 +2348,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetDenotationFromTypeInfo, _In_ const OrtTypeInfo* type_info, _Out_ const char** const denotation,
-                  _Out_ size_t* len);
+  ORT_API2_STATUS(GetDenotationFromTypeInfo, _In_ const OrtTypeInfo *type_info, _Out_ const char **const denotation,
+                  _Out_ size_t *len);
 
   /** \brief Get detailed map information from an ::OrtTypeInfo
    *
@@ -2364,8 +2364,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CastTypeInfoToMapTypeInfo, _In_ const OrtTypeInfo* type_info,
-                  _Outptr_result_maybenull_ const OrtMapTypeInfo** out);
+  ORT_API2_STATUS(CastTypeInfoToMapTypeInfo, _In_ const OrtTypeInfo *type_info,
+                  _Outptr_result_maybenull_ const OrtMapTypeInfo **out);
 
   /** \brief Cast ::OrtTypeInfo to an ::OrtSequenceTypeInfo
    *
@@ -2380,8 +2380,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CastTypeInfoToSequenceTypeInfo, _In_ const OrtTypeInfo* type_info,
-                  _Outptr_result_maybenull_ const OrtSequenceTypeInfo** out);
+  ORT_API2_STATUS(CastTypeInfoToSequenceTypeInfo, _In_ const OrtTypeInfo *type_info,
+                  _Outptr_result_maybenull_ const OrtSequenceTypeInfo **out);
 
   /// @}
   /// \name OrtMapTypeInfo
@@ -2398,7 +2398,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetMapKeyType, _In_ const OrtMapTypeInfo* map_type_info, _Out_ enum ONNXTensorElementDataType* out);
+  ORT_API2_STATUS(GetMapKeyType, _In_ const OrtMapTypeInfo *map_type_info, _Out_ enum ONNXTensorElementDataType *out);
 
   /** \brief Get the value type from an ::OrtMapTypeInfo
    *
@@ -2408,7 +2408,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetMapValueType, _In_ const OrtMapTypeInfo* map_type_info, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(GetMapValueType, _In_ const OrtMapTypeInfo *map_type_info, _Outptr_ OrtTypeInfo **type_info);
 
   /// @}
   /// \name OrtSequenceTypeInfo
@@ -2424,8 +2424,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSequenceElementType, _In_ const OrtSequenceTypeInfo* sequence_type_info,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(GetSequenceElementType, _In_ const OrtSequenceTypeInfo *sequence_type_info,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /// @}
   /// \name OrtMapTypeInfo
@@ -2450,7 +2450,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionEndProfiling, _In_ OrtSession* session, _Inout_ OrtAllocator* allocator, _Outptr_ char** out);
+  ORT_API2_STATUS(SessionEndProfiling, _In_ OrtSession *session, _Inout_ OrtAllocator *allocator, _Outptr_ char **out);
 
   /** \brief Get ::OrtModelMetadata from an ::OrtSession
    *
@@ -2459,7 +2459,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetModelMetadata, _In_ const OrtSession* session, _Outptr_ OrtModelMetadata** out);
+  ORT_API2_STATUS(SessionGetModelMetadata, _In_ const OrtSession *session, _Outptr_ OrtModelMetadata **out);
 
   /// @}
   /// \name OrtModelMetadata
@@ -2473,8 +2473,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetProducerName, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(ModelMetadataGetProducerName, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /** \brief Get `graph name` from an ::OrtModelMetadata
    *
@@ -2484,8 +2484,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetGraphName, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(ModelMetadataGetGraphName, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /** \brief Get `domain` from an ::OrtModelMetadata
    *
@@ -2495,8 +2495,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetDomain, _In_ const OrtModelMetadata* model_metadata, _Inout_ OrtAllocator* allocator,
-                  _Outptr_ char** value);
+  ORT_API2_STATUS(ModelMetadataGetDomain, _In_ const OrtModelMetadata *model_metadata, _Inout_ OrtAllocator *allocator,
+                  _Outptr_ char **value);
 
   /** \brief Get `description` from an ::OrtModelMetadata
    *
@@ -2506,8 +2506,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetDescription, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(ModelMetadataGetDescription, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /** \brief Return data for a key in the custom metadata map in an ::OrtModelMetadata
    *
@@ -2519,8 +2519,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataLookupCustomMetadataMap, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _In_ const char* key, _Outptr_result_maybenull_ char** value);
+  ORT_API2_STATUS(ModelMetadataLookupCustomMetadataMap, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _In_ const char *key, _Outptr_result_maybenull_ char **value);
 
   /** \brief Get version number from an ::OrtModelMetadata
    *
@@ -2529,7 +2529,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetVersion, _In_ const OrtModelMetadata* model_metadata, _Out_ int64_t* value);
+  ORT_API2_STATUS(ModelMetadataGetVersion, _In_ const OrtModelMetadata *model_metadata, _Out_ int64_t *value);
 
   ORT_CLASS_RELEASE(ModelMetadata);
 
@@ -2550,8 +2550,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateEnvWithGlobalThreadPools, OrtLoggingLevel log_severity_level, _In_ const char* logid,
-                  _In_ const OrtThreadingOptions* tp_options, _Outptr_ OrtEnv** out);
+  ORT_API2_STATUS(CreateEnvWithGlobalThreadPools, OrtLoggingLevel log_severity_level, _In_ const char *logid,
+                  _In_ const OrtThreadingOptions *tp_options, _Outptr_ OrtEnv **out);
 
   /// @}
   /// \name OrtSessionOptions
@@ -2566,7 +2566,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(DisablePerSessionThreads, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(DisablePerSessionThreads, _Inout_ OrtSessionOptions *options);
 
   /// @}
   /// \name OrtThreadingOptions
@@ -2577,7 +2577,7 @@ struct OrtApi {
    * \param[out] out Newly created ::OrtThreadingOptions. Must be freed with OrtApi::ReleaseThreadingOptions
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateThreadingOptions, _Outptr_ OrtThreadingOptions** out);
+  ORT_API2_STATUS(CreateThreadingOptions, _Outptr_ OrtThreadingOptions **out);
 
   ORT_CLASS_RELEASE(ThreadingOptions);
 
@@ -2596,8 +2596,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetCustomMetadataMapKeys, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _Outptr_result_buffer_maybenull_(*num_keys) char*** keys, _Out_ int64_t* num_keys);
+  ORT_API2_STATUS(ModelMetadataGetCustomMetadataMapKeys, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _Outptr_result_buffer_maybenull_(*num_keys) char ***keys, _Out_ int64_t *num_keys);
 
   /// @}
   /// \name OrtSessionOptions
@@ -2611,7 +2611,7 @@ struct OrtApi {
    *
    */
   ORT_API2_STATUS(AddFreeDimensionOverrideByName,
-                  _Inout_ OrtSessionOptions* options, _In_ const char* dim_name,
+                  _Inout_ OrtSessionOptions *options, _In_ const char *dim_name,
                   _In_ int64_t dim_value);
 
   /// @}
@@ -2629,7 +2629,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetAvailableProviders, _Outptr_ char*** out_ptr, _Out_ int* provider_length);
+  ORT_API2_STATUS(GetAvailableProviders, _Outptr_ char ***out_ptr, _Out_ int *provider_length);
 
   /** \brief Release data from OrtApi::GetAvailableProviders. This API will never fail
    * so you can rely on it in a noexcept code.
@@ -2639,7 +2639,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ReleaseAvailableProviders, _In_ char** ptr,
+  ORT_API2_STATUS(ReleaseAvailableProviders, _In_ char **ptr,
                   _In_ int providers_length);
 
   /// @}
@@ -2654,7 +2654,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetStringTensorElementLength, _In_ const OrtValue* value, size_t index, _Out_ size_t* out);
+  ORT_API2_STATUS(GetStringTensorElementLength, _In_ const OrtValue *value, size_t index, _Out_ size_t *out);
 
   /** \brief Get a single string from a string tensor
    *
@@ -2665,7 +2665,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetStringTensorElement, _In_ const OrtValue* value, size_t s_len, size_t index, _Out_writes_bytes_all_(s_len) void* s);
+  ORT_API2_STATUS(GetStringTensorElement, _In_ const OrtValue *value, size_t s_len, size_t index, _Out_writes_bytes_all_(s_len) void *s);
 
   /** \brief Set a single string in a string tensor
    *
@@ -2675,7 +2675,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(FillStringTensorElement, _Inout_ OrtValue* value, _In_ const char* s, size_t index);
+  ORT_API2_STATUS(FillStringTensorElement, _Inout_ OrtValue *value, _In_ const char *s, size_t index);
 
   /// @}
   /// \name OrtSessionOptions
@@ -2693,8 +2693,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(AddSessionConfigEntry, _Inout_ OrtSessionOptions* options,
-                  _In_z_ const char* config_key, _In_z_ const char* config_value);
+  ORT_API2_STATUS(AddSessionConfigEntry, _Inout_ OrtSessionOptions *options,
+                  _In_z_ const char *config_key, _In_z_ const char *config_value);
 
   /// @}
   /// \name OrtAllocator
@@ -2710,8 +2710,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateAllocator, _In_ const OrtSession* session, _In_ const OrtMemoryInfo* mem_info,
-                  _Outptr_ OrtAllocator** out);
+  ORT_API2_STATUS(CreateAllocator, _In_ const OrtSession *session, _In_ const OrtMemoryInfo *mem_info,
+                  _Outptr_ OrtAllocator **out);
 
   /** \brief Release an ::OrtAllocator obtained from OrtApi::CreateAllocator
    */
@@ -2731,7 +2731,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RunWithBinding, _Inout_ OrtSession* session, _In_ const OrtRunOptions* run_options, _In_ const OrtIoBinding* binding_ptr);
+  ORT_API2_STATUS(RunWithBinding, _Inout_ OrtSession *session, _In_ const OrtRunOptions *run_options, _In_ const OrtIoBinding *binding_ptr);
 
   /** \brief Create an ::OrtIoBinding instance
    *
@@ -2744,7 +2744,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateIoBinding, _Inout_ OrtSession* session, _Outptr_ OrtIoBinding** out);
+  ORT_API2_STATUS(CreateIoBinding, _Inout_ OrtSession *session, _Outptr_ OrtIoBinding **out);
 
   /// @}
   /// \name OrtIoBinding
@@ -2764,7 +2764,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(BindInput, _Inout_ OrtIoBinding* binding_ptr, _In_ const char* name, _In_ const OrtValue* val_ptr);
+  ORT_API2_STATUS(BindInput, _Inout_ OrtIoBinding *binding_ptr, _In_ const char *name, _In_ const OrtValue *val_ptr);
 
   /** \brief Bind an ::OrtValue to an ::OrtIoBinding output
    *
@@ -2776,7 +2776,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(BindOutput, _Inout_ OrtIoBinding* binding_ptr, _In_ const char* name, _In_ const OrtValue* val_ptr);
+  ORT_API2_STATUS(BindOutput, _Inout_ OrtIoBinding *binding_ptr, _In_ const char *name, _In_ const OrtValue *val_ptr);
 
   /** \brief Bind an ::OrtIoBinding output to a device
    *
@@ -2793,7 +2793,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(BindOutputToDevice, _Inout_ OrtIoBinding* binding_ptr, _In_ const char* name, _In_ const OrtMemoryInfo* mem_info_ptr);
+  ORT_API2_STATUS(BindOutputToDevice, _Inout_ OrtIoBinding *binding_ptr, _In_ const char *name, _In_ const OrtMemoryInfo *mem_info_ptr);
 
   /** \brief Get the names of an ::OrtIoBinding's outputs
    *
@@ -2812,8 +2812,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetBoundOutputNames, _In_ const OrtIoBinding* binding_ptr, _In_ OrtAllocator* allocator,
-                  _Out_ char** buffer, _Out_writes_all_(count) size_t** lengths, _Out_ size_t* count);
+  ORT_API2_STATUS(GetBoundOutputNames, _In_ const OrtIoBinding *binding_ptr, _In_ OrtAllocator *allocator,
+                  _Out_ char **buffer, _Out_writes_all_(count) size_t **lengths, _Out_ size_t *count);
 
   /** \brief Get the output ::OrtValue objects from an ::OrtIoBinding
    *
@@ -2832,16 +2832,16 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetBoundOutputValues, _In_ const OrtIoBinding* binding_ptr, _In_ OrtAllocator* allocator,
-                  _Out_writes_all_(output_count) OrtValue*** output, _Out_ size_t* output_count);
+  ORT_API2_STATUS(GetBoundOutputValues, _In_ const OrtIoBinding *binding_ptr, _In_ OrtAllocator *allocator,
+                  _Out_writes_all_(output_count) OrtValue ***output, _Out_ size_t *output_count);
 
   /** \brief Clears any previously set Inputs for an ::OrtIoBinding
    */
-  void(ORT_API_CALL* ClearBoundInputs)(_Inout_ OrtIoBinding* binding_ptr) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
+  void(ORT_API_CALL *ClearBoundInputs)(_Inout_ OrtIoBinding *binding_ptr) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
 
   /** \brief Clears any previously set Outputs for an ::OrtIoBinding
    */
-  void(ORT_API_CALL* ClearBoundOutputs)(_Inout_ OrtIoBinding* binding_ptr) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
+  void(ORT_API_CALL *ClearBoundOutputs)(_Inout_ OrtIoBinding *binding_ptr) NO_EXCEPTION ORT_ALL_ARGS_NONNULL;
 
   /// @}
   /// \name OrtValue
@@ -2861,7 +2861,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(TensorAt, _Inout_ OrtValue* value, const int64_t* location_values, size_t location_values_count, _Outptr_ void** out);
+  ORT_API2_STATUS(TensorAt, _Inout_ OrtValue *value, const int64_t *location_values, size_t location_values_count, _Outptr_ void **out);
 
   /// @}
   /// \name OrtEnv
@@ -2881,8 +2881,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateAndRegisterAllocator, _Inout_ OrtEnv* env, _In_ const OrtMemoryInfo* mem_info,
-                  _In_ const OrtArenaCfg* arena_cfg);
+  ORT_API2_STATUS(CreateAndRegisterAllocator, _Inout_ OrtEnv *env, _In_ const OrtMemoryInfo *mem_info,
+                  _In_ const OrtArenaCfg *arena_cfg);
 
   /** \brief Set language projection
    *
@@ -2895,7 +2895,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetLanguageProjection, _In_ const OrtEnv* ort_env, _In_ OrtLanguageProjection projection);
+  ORT_API2_STATUS(SetLanguageProjection, _In_ const OrtEnv *ort_env, _In_ OrtLanguageProjection projection);
 
   /// @}
   /// \name OrtSession
@@ -2910,7 +2910,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionGetProfilingStartTimeNs, _In_ const OrtSession* session, _Outptr_ uint64_t* out);
+  ORT_API2_STATUS(SessionGetProfilingStartTimeNs, _In_ const OrtSession *session, _Outptr_ uint64_t *out);
 
   /// @}
   /// \name OrtThreadingOptions
@@ -2927,7 +2927,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalIntraOpNumThreads, _Inout_ OrtThreadingOptions* tp_options, int intra_op_num_threads);
+  ORT_API2_STATUS(SetGlobalIntraOpNumThreads, _Inout_ OrtThreadingOptions *tp_options, int intra_op_num_threads);
 
   /** \brief Set global inter-op thread count
    *
@@ -2940,7 +2940,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalInterOpNumThreads, _Inout_ OrtThreadingOptions* tp_options, int inter_op_num_threads);
+  ORT_API2_STATUS(SetGlobalInterOpNumThreads, _Inout_ OrtThreadingOptions *tp_options, int inter_op_num_threads);
 
   /** \brief Set global spin control options
    *
@@ -2955,7 +2955,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalSpinControl, _Inout_ OrtThreadingOptions* tp_options, int allow_spinning);
+  ORT_API2_STATUS(SetGlobalSpinControl, _Inout_ OrtThreadingOptions *tp_options, int allow_spinning);
 
   /// @}
   /// \name OrtSessionOptions
@@ -2975,8 +2975,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(AddInitializer, _Inout_ OrtSessionOptions* options, _In_z_ const char* name,
-                  _In_ const OrtValue* val);
+  ORT_API2_STATUS(AddInitializer, _Inout_ OrtSessionOptions *options, _In_z_ const char *name,
+                  _In_ const OrtValue *val);
 
   /// @}
   /// \name OrtEnv
@@ -2997,8 +2997,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateEnvWithCustomLoggerAndGlobalThreadPools, OrtLoggingFunction logging_function, _In_opt_ void* logger_param, OrtLoggingLevel log_severity_level,
-                  _In_ const char* logid, _In_ const struct OrtThreadingOptions* tp_options, _Outptr_ OrtEnv** out);
+  ORT_API2_STATUS(CreateEnvWithCustomLoggerAndGlobalThreadPools, OrtLoggingFunction logging_function, _In_opt_ void *logger_param, OrtLoggingLevel log_severity_level,
+                  _In_ const char *logid, _In_ const struct OrtThreadingOptions *tp_options, _Outptr_ OrtEnv **out);
 
   /// @}
   /// \name OrtSessionOptions
@@ -3014,7 +3014,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_CUDA,
-                  _In_ OrtSessionOptions* options, _In_ const OrtCUDAProviderOptions* cuda_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtCUDAProviderOptions *cuda_options);
 
   /** \brief Append ROCM execution provider to the session options
    *
@@ -3026,7 +3026,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_ROCM,
-                  _In_ OrtSessionOptions* options, _In_ const OrtROCMProviderOptions* rocm_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtROCMProviderOptions *rocm_options);
 
   /** \brief Append OpenVINO execution provider to the session options
    *
@@ -3038,7 +3038,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_OpenVINO,
-                  _In_ OrtSessionOptions* options, _In_ const OrtOpenVINOProviderOptions* provider_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtOpenVINOProviderOptions *provider_options);
 
   /// @}
   /// \name OrtThreadingOptions
@@ -3054,7 +3054,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalDenormalAsZero, _Inout_ OrtThreadingOptions* tp_options);
+  ORT_API2_STATUS(SetGlobalDenormalAsZero, _Inout_ OrtThreadingOptions *tp_options);
 
   /// @}
   /// \name OrtArenaCfg
@@ -3073,7 +3073,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(CreateArenaCfg, _In_ size_t max_mem, int arena_extend_strategy, int initial_chunk_size_bytes,
-                  int max_dead_bytes_per_chunk, _Outptr_ OrtArenaCfg** out);
+                  int max_dead_bytes_per_chunk, _Outptr_ OrtArenaCfg **out);
 
   ORT_CLASS_RELEASE(ArenaCfg);
 
@@ -3092,8 +3092,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(ModelMetadataGetGraphDescription, _In_ const OrtModelMetadata* model_metadata,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** value);
+  ORT_API2_STATUS(ModelMetadataGetGraphDescription, _In_ const OrtModelMetadata *model_metadata,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **value);
 
   /// @}
   /// \name OrtSessionOptions
@@ -3109,7 +3109,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_TensorRT,
-                  _In_ OrtSessionOptions* options, _In_ const OrtTensorRTProviderOptions* tensorrt_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtTensorRTProviderOptions *tensorrt_options);
 
   /// @}
   /// \name Misc
@@ -3137,7 +3137,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetCurrentGpuDeviceId, _In_ int* device_id);
+  ORT_API2_STATUS(GetCurrentGpuDeviceId, _In_ int *device_id);
 
   /// @}
   /// \name OrtKernelInfo
@@ -3166,8 +3166,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttributeArray_float, _In_ const OrtKernelInfo* info, _In_ const char* name,
-                  _Out_ float* out, _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfoGetAttributeArray_float, _In_ const OrtKernelInfo *info, _In_ const char *name,
+                  _Out_ float *out, _Inout_ size_t *size);
 
   /** \brief Fetch an array of int64_t values stored as an attribute in the graph node
    *
@@ -3190,8 +3190,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttributeArray_int64, _In_ const OrtKernelInfo* info, _In_ const char* name,
-                  _Out_ int64_t* out, _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfoGetAttributeArray_int64, _In_ const OrtKernelInfo *info, _In_ const char *name,
+                  _Out_ int64_t *out, _Inout_ size_t *size);
 
   /// @}
   /// \name OrtArenaCfg
@@ -3228,9 +3228,9 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateArenaCfgV2, _In_reads_(num_keys) const char* const* arena_config_keys,
-                  _In_reads_(num_keys) const size_t* arena_config_values, _In_ size_t num_keys,
-                  _Outptr_ OrtArenaCfg** out);
+  ORT_API2_STATUS(CreateArenaCfgV2, _In_reads_(num_keys) const char *const *arena_config_keys,
+                  _In_reads_(num_keys) const size_t *arena_config_values, _In_ size_t num_keys,
+                  _Outptr_ OrtArenaCfg **out);
 
   /// @}
   /// \name OrtRunOptions
@@ -3248,8 +3248,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(AddRunConfigEntry, _Inout_ OrtRunOptions* options,
-                  _In_z_ const char* config_key, _In_z_ const char* config_value);
+  ORT_API2_STATUS(AddRunConfigEntry, _Inout_ OrtRunOptions *options,
+                  _In_z_ const char *config_key, _In_z_ const char *config_value);
 
   /// @}
   /// \name OrtPrepackedWeightsContainer
@@ -3267,7 +3267,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreatePrepackedWeightsContainer, _Outptr_ OrtPrepackedWeightsContainer** out);
+  ORT_API2_STATUS(CreatePrepackedWeightsContainer, _Outptr_ OrtPrepackedWeightsContainer **out);
 
   /** \brief Release OrtPrepackedWeightsContainer instance
    *
@@ -3296,10 +3296,10 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSessionWithPrepackedWeightsContainer, _In_ const OrtEnv* env, _In_ const ORTCHAR_T* model_path,
-                  _In_ const OrtSessionOptions* options,
-                  _Inout_ OrtPrepackedWeightsContainer* prepacked_weights_container,
-                  _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateSessionWithPrepackedWeightsContainer, _In_ const OrtEnv *env, _In_ const ORTCHAR_T *model_path,
+                  _In_ const OrtSessionOptions *options,
+                  _Inout_ OrtPrepackedWeightsContainer *prepacked_weights_container,
+                  _Outptr_ OrtSession **out);
 
   /** \brief Create session from memory with prepacked weights container
    *
@@ -3319,11 +3319,11 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSessionFromArrayWithPrepackedWeightsContainer, _In_ const OrtEnv* env,
-                  _In_ const void* model_data, size_t model_data_length,
-                  _In_ const OrtSessionOptions* options,
-                  _Inout_ OrtPrepackedWeightsContainer* prepacked_weights_container,
-                  _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateSessionFromArrayWithPrepackedWeightsContainer, _In_ const OrtEnv *env,
+                  _In_ const void *model_data, size_t model_data_length,
+                  _In_ const OrtSessionOptions *options,
+                  _Inout_ OrtPrepackedWeightsContainer *prepacked_weights_container,
+                  _Outptr_ OrtSession **out);
 
   /// @}
   /// \name OrtSessionOptions
@@ -3347,7 +3347,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_TensorRT_V2,
-                  _In_ OrtSessionOptions* options, _In_ const OrtTensorRTProviderOptionsV2* tensorrt_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtTensorRTProviderOptionsV2 *tensorrt_options);
 
   /// @}
   /// \name OrtTensorRTProviderOptionsV2
@@ -3359,7 +3359,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateTensorRTProviderOptions, _Outptr_ OrtTensorRTProviderOptionsV2** out);
+  ORT_API2_STATUS(CreateTensorRTProviderOptions, _Outptr_ OrtTensorRTProviderOptionsV2 **out);
 
   /** \brief Set options in a TensorRT Execution Provider.
    *
@@ -3376,9 +3376,9 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(UpdateTensorRTProviderOptions, _Inout_ OrtTensorRTProviderOptionsV2* tensorrt_options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(UpdateTensorRTProviderOptions, _Inout_ OrtTensorRTProviderOptionsV2 *tensorrt_options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /** \brief Get serialized TensorRT provider options string.
@@ -3392,13 +3392,13 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorRTProviderOptionsAsString, _In_ const OrtTensorRTProviderOptionsV2* tensorrt_options, _Inout_ OrtAllocator* allocator, _Outptr_ char** ptr);
+  ORT_API2_STATUS(GetTensorRTProviderOptionsAsString, _In_ const OrtTensorRTProviderOptionsV2 *tensorrt_options, _Inout_ OrtAllocator *allocator, _Outptr_ char **ptr);
 
   /** \brief Release an ::OrtTensorRTProviderOptionsV2
    *
    * \note This is an exception in the naming convention of other Release* functions, as the name of the method does not have the V2 suffix, but the type does
    */
-  void(ORT_API_CALL* ReleaseTensorRTProviderOptions)(_Frees_ptr_opt_ OrtTensorRTProviderOptionsV2* input);
+  void(ORT_API_CALL *ReleaseTensorRTProviderOptions)(_Frees_ptr_opt_ OrtTensorRTProviderOptionsV2 *input);
 
   /// @}
   /// \name OrtSessionOptions
@@ -3410,7 +3410,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(EnableOrtCustomOps, _Inout_ OrtSessionOptions* options);
+  ORT_API2_STATUS(EnableOrtCustomOps, _Inout_ OrtSessionOptions *options);
 
   /// @}
   /// \name OrtAllocator
@@ -3431,7 +3431,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(RegisterAllocator, _Inout_ OrtEnv* env, _In_ OrtAllocator* allocator);
+  ORT_API2_STATUS(RegisterAllocator, _Inout_ OrtEnv *env, _In_ OrtAllocator *allocator);
 
   /** \brief Unregister a custom allocator
    *
@@ -3443,8 +3443,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(UnregisterAllocator, _Inout_ OrtEnv* env,
-                  _In_ const OrtMemoryInfo* mem_info);
+  ORT_API2_STATUS(UnregisterAllocator, _Inout_ OrtEnv *env,
+                  _In_ const OrtMemoryInfo *mem_info);
 
   /// @}
   /// \name OrtValue
@@ -3458,7 +3458,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(IsSparseTensor, _In_ const OrtValue* value, _Out_ int* out);
+  ORT_API2_STATUS(IsSparseTensor, _In_ const OrtValue *value, _Out_ int *out);
 
   /** \brief Create an ::OrtValue with a sparse tensor that is empty.
    *
@@ -3476,8 +3476,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSparseTensorAsOrtValue, _Inout_ OrtAllocator* allocator, _In_ const int64_t* dense_shape,
-                  size_t dense_shape_len, ONNXTensorElementDataType type, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateSparseTensorAsOrtValue, _Inout_ OrtAllocator *allocator, _In_ const int64_t *dense_shape,
+                  size_t dense_shape_len, ONNXTensorElementDataType type, _Outptr_ OrtValue **out);
 
   /**
    * This fills populates an empty tensor that was created using OrtApi::CreateSparseTensorAsOrtValue.
@@ -3496,9 +3496,9 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(FillSparseTensorCoo, _Inout_ OrtValue* ort_value, _In_ const OrtMemoryInfo* data_mem_info,
-                  _In_ const int64_t* values_shape, size_t values_shape_len, _In_ const void* values,
-                  _In_ const int64_t* indices_data, size_t indices_num);
+  ORT_API2_STATUS(FillSparseTensorCoo, _Inout_ OrtValue *ort_value, _In_ const OrtMemoryInfo *data_mem_info,
+                  _In_ const int64_t *values_shape, size_t values_shape_len, _In_ const void *values,
+                  _In_ const int64_t *indices_data, size_t indices_num);
 
   /**
    * This fills populates an empty tensor that was created using OrtApi::CreateSparseTensorAsOrtValue.
@@ -3519,10 +3519,10 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(FillSparseTensorCsr, _Inout_ OrtValue* ort_value, _In_ const OrtMemoryInfo* data_mem_info,
-                  _In_ const int64_t* values_shape, size_t values_shape_len, _In_ const void* values,
-                  _In_ const int64_t* inner_indices_data, size_t inner_indices_num,
-                  _In_ const int64_t* outer_indices_data, size_t outer_indices_num);
+  ORT_API2_STATUS(FillSparseTensorCsr, _Inout_ OrtValue *ort_value, _In_ const OrtMemoryInfo *data_mem_info,
+                  _In_ const int64_t *values_shape, size_t values_shape_len, _In_ const void *values,
+                  _In_ const int64_t *inner_indices_data, size_t inner_indices_num,
+                  _In_ const int64_t *outer_indices_data, size_t outer_indices_num);
 
   /**
    * This fills populates an empty tensor that was created using OrtApi::CreateSparseTensorAsOrtValue.
@@ -3542,10 +3542,10 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(FillSparseTensorBlockSparse, _Inout_ OrtValue* ort_value, _In_ const OrtMemoryInfo* data_mem_info,
-                  _In_ const int64_t* values_shape, size_t values_shape_len, _In_ const void* values,
-                  _In_ const int64_t* indices_shape_data, size_t indices_shape_len,
-                  _In_ const int32_t* indices_data);
+  ORT_API2_STATUS(FillSparseTensorBlockSparse, _Inout_ OrtValue *ort_value, _In_ const OrtMemoryInfo *data_mem_info,
+                  _In_ const int64_t *values_shape, size_t values_shape_len, _In_ const void *values,
+                  _In_ const int64_t *indices_shape_data, size_t indices_shape_len,
+                  _In_ const int32_t *indices_data);
 
   /**
    * Create an ::OrtValue with a sparse tensor. This is the first step.
@@ -3571,10 +3571,10 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(CreateSparseTensorWithValuesAsOrtValue, _In_ const OrtMemoryInfo* info, _Inout_ void* p_data,
-                  _In_ const int64_t* dense_shape, size_t dense_shape_len,
-                  _In_ const int64_t* values_shape, size_t values_shape_len,
-                  ONNXTensorElementDataType type, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(CreateSparseTensorWithValuesAsOrtValue, _In_ const OrtMemoryInfo *info, _Inout_ void *p_data,
+                  _In_ const int64_t *dense_shape, size_t dense_shape_len,
+                  _In_ const int64_t *values_shape, size_t values_shape_len,
+                  ONNXTensorElementDataType type, _Outptr_ OrtValue **out);
 
   /**
    * This assigns Coo format indices to the SparseTensor that was created by
@@ -3590,7 +3590,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(UseCooIndices, _Inout_ OrtValue* ort_value, _Inout_ int64_t* indices_data, size_t indices_num);
+  ORT_API2_STATUS(UseCooIndices, _Inout_ OrtValue *ort_value, _Inout_ int64_t *indices_data, size_t indices_num);
 
   /**
    * The assigns CSR format indices to the SparseTensor that was created by
@@ -3608,8 +3608,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(UseCsrIndices, _Inout_ OrtValue* ort_value, _Inout_ int64_t* inner_data, size_t inner_num,
-                  _Inout_ int64_t* outer_data, size_t outer_num);
+  ORT_API2_STATUS(UseCsrIndices, _Inout_ OrtValue *ort_value, _Inout_ int64_t *inner_data, size_t inner_num,
+                  _Inout_ int64_t *outer_data, size_t outer_num);
 
   /**
    * The assigns BlockSparse format indices to the SparseTensor that was created by
@@ -3624,7 +3624,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(UseBlockSparseIndices, _Inout_ OrtValue* ort_value, const int64_t* indices_shape, size_t indices_shape_len, _Inout_ int32_t* indices_data);
+  ORT_API2_STATUS(UseBlockSparseIndices, _Inout_ OrtValue *ort_value, const int64_t *indices_shape, size_t indices_shape_len, _Inout_ int32_t *indices_data);
 
   /** \brief Returns sparse tensor format enum iff a given ort value contains an instance of sparse tensor.
    *
@@ -3633,7 +3633,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSparseTensorFormat, _In_ const OrtValue* ort_value, _Out_ enum OrtSparseFormat* out);
+  ORT_API2_STATUS(GetSparseTensorFormat, _In_ const OrtValue *ort_value, _Out_ enum OrtSparseFormat *out);
 
   /** \brief Returns data type and shape of sparse tensor values (nnz) iff ::OrtValue contains a SparseTensor.
    *
@@ -3642,7 +3642,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSparseTensorValuesTypeAndShape, _In_ const OrtValue* ort_value, _Outptr_ OrtTensorTypeAndShapeInfo** out);
+  ORT_API2_STATUS(GetSparseTensorValuesTypeAndShape, _In_ const OrtValue *ort_value, _Outptr_ OrtTensorTypeAndShapeInfo **out);
 
   /** \brief Returns numeric data for sparse tensor values (nnz). For string values use GetStringTensor*().
    *
@@ -3651,7 +3651,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSparseTensorValues, _In_ const OrtValue* ort_value, _Outptr_ const void** out);
+  ORT_API2_STATUS(GetSparseTensorValues, _In_ const OrtValue *ort_value, _Outptr_ const void **out);
 
   /** \brief Returns data type, shape for the type of indices specified by indices_format.
    *
@@ -3662,7 +3662,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSparseTensorIndicesTypeShape, _In_ const OrtValue* ort_value, enum OrtSparseIndicesFormat indices_format, _Outptr_ OrtTensorTypeAndShapeInfo** out);
+  ORT_API2_STATUS(GetSparseTensorIndicesTypeShape, _In_ const OrtValue *ort_value, enum OrtSparseIndicesFormat indices_format, _Outptr_ OrtTensorTypeAndShapeInfo **out);
 
   /** \brief Returns indices data for the type of the indices specified by indices_format
    *
@@ -3673,7 +3673,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetSparseTensorIndices, _In_ const OrtValue* ort_value, enum OrtSparseIndicesFormat indices_format, _Out_ size_t* num_indices, _Outptr_ const void** indices);
+  ORT_API2_STATUS(GetSparseTensorIndices, _In_ const OrtValue *ort_value, enum OrtSparseIndicesFormat indices_format, _Out_ size_t *num_indices, _Outptr_ const void **indices);
   /// @}
   /// \name OrtSessionOptions
   /// @{
@@ -3690,7 +3690,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(HasValue, _In_ const OrtValue* value, _Out_ int* out);
+  ORT_API2_STATUS(HasValue, _In_ const OrtValue *value, _Out_ int *out);
 
   /// @}
   /// \name OrtKernelContext
@@ -3708,7 +3708,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelContext_GetGPUComputeStream, _In_ const OrtKernelContext* context, _Outptr_ void** out);
+  ORT_API2_STATUS(KernelContext_GetGPUComputeStream, _In_ const OrtKernelContext *context, _Outptr_ void **out);
 
   /// @}
   /// \name GetTensorMemoryInfo
@@ -3719,7 +3719,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetTensorMemoryInfo, _In_ const OrtValue* value, _Out_ const OrtMemoryInfo** mem_info);
+  ORT_API2_STATUS(GetTensorMemoryInfo, _In_ const OrtValue *value, _Out_ const OrtMemoryInfo **mem_info);
 
   /// @}
   /// \name GetExecutionProviderApi
@@ -3734,7 +3734,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetExecutionProviderApi, _In_ const char* provider_name, _In_ uint32_t version, _Outptr_ const void** provider_api);
+  ORT_API2_STATUS(GetExecutionProviderApi, _In_ const char *provider_name, _In_ uint32_t version, _Outptr_ const void **provider_api);
 
   /// @}
 
@@ -3747,7 +3747,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionOptionsSetCustomCreateThreadFn, _Inout_ OrtSessionOptions* options, _In_ OrtCustomCreateThreadFn ort_custom_create_thread_fn);
+  ORT_API2_STATUS(SessionOptionsSetCustomCreateThreadFn, _Inout_ OrtSessionOptions *options, _In_ OrtCustomCreateThreadFn ort_custom_create_thread_fn);
 
   /** \brief Set creation options for custom thread
    *
@@ -3756,7 +3756,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionOptionsSetCustomThreadCreationOptions, _Inout_ OrtSessionOptions* options, _In_ void* ort_custom_thread_creation_options);
+  ORT_API2_STATUS(SessionOptionsSetCustomThreadCreationOptions, _Inout_ OrtSessionOptions *options, _In_ void *ort_custom_thread_creation_options);
 
   /** \brief Set custom thread join function
    *
@@ -3765,7 +3765,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SessionOptionsSetCustomJoinThreadFn, _Inout_ OrtSessionOptions* options, _In_ OrtCustomJoinThreadFn ort_custom_join_thread_fn);
+  ORT_API2_STATUS(SessionOptionsSetCustomJoinThreadFn, _Inout_ OrtSessionOptions *options, _In_ OrtCustomJoinThreadFn ort_custom_join_thread_fn);
   /// @}
 
   /// \name OrtThreadingOptions
@@ -3777,7 +3777,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalCustomCreateThreadFn, _Inout_ OrtThreadingOptions* tp_options, _In_ OrtCustomCreateThreadFn ort_custom_create_thread_fn);
+  ORT_API2_STATUS(SetGlobalCustomCreateThreadFn, _Inout_ OrtThreadingOptions *tp_options, _In_ OrtCustomCreateThreadFn ort_custom_create_thread_fn);
 
   /** \brief Set custom thread creation options for global thread pools
    *
@@ -3786,7 +3786,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalCustomThreadCreationOptions, _Inout_ OrtThreadingOptions* tp_options, _In_ void* ort_custom_thread_creation_options);
+  ORT_API2_STATUS(SetGlobalCustomThreadCreationOptions, _Inout_ OrtThreadingOptions *tp_options, _In_ void *ort_custom_thread_creation_options);
 
   /** \brief Set custom thread join function for global thread pools
    *
@@ -3795,7 +3795,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SetGlobalCustomJoinThreadFn, _Inout_ OrtThreadingOptions* tp_options, _In_ OrtCustomJoinThreadFn ort_custom_join_thread_fn);
+  ORT_API2_STATUS(SetGlobalCustomJoinThreadFn, _Inout_ OrtThreadingOptions *tp_options, _In_ OrtCustomJoinThreadFn ort_custom_join_thread_fn);
   /// @}
 
   /** \brief Synchronize bound inputs. The call may be necessary for some providers, such as cuda,
@@ -3806,7 +3806,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SynchronizeBoundInputs, _Inout_ OrtIoBinding* binding_ptr);
+  ORT_API2_STATUS(SynchronizeBoundInputs, _Inout_ OrtIoBinding *binding_ptr);
 
   /** \brief Synchronize bound outputs. The call may be necessary for some providers, such as cuda,
    *   in case the system that allocated bound memory operated on a different stream. However, the
@@ -3816,7 +3816,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(SynchronizeBoundOutputs, _Inout_ OrtIoBinding* binding_ptr);
+  ORT_API2_STATUS(SynchronizeBoundOutputs, _Inout_ OrtIoBinding *binding_ptr);
 
   /// \name OrtSessionOptions
   /// @{
@@ -3841,7 +3841,7 @@ struct OrtApi {
    * \since Version 1.11.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_CUDA_V2,
-                  _In_ OrtSessionOptions* options, _In_ const OrtCUDAProviderOptionsV2* cuda_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtCUDAProviderOptionsV2 *cuda_options);
 
   /// @}
   /// \name OrtCUDAProviderOptionsV2
@@ -3855,7 +3855,7 @@ struct OrtApi {
    *
    * \since Version 1.11.
    */
-  ORT_API2_STATUS(CreateCUDAProviderOptions, _Outptr_ OrtCUDAProviderOptionsV2** out);
+  ORT_API2_STATUS(CreateCUDAProviderOptions, _Outptr_ OrtCUDAProviderOptionsV2 **out);
 
   /** \brief Set options in a CUDA Execution Provider.
    *
@@ -3874,9 +3874,9 @@ struct OrtApi {
    *
    * \since Version 1.11.
    */
-  ORT_API2_STATUS(UpdateCUDAProviderOptions, _Inout_ OrtCUDAProviderOptionsV2* cuda_options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(UpdateCUDAProviderOptions, _Inout_ OrtCUDAProviderOptionsV2 *cuda_options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /**
@@ -3893,7 +3893,7 @@ struct OrtApi {
    *
    * \since Version 1.11.
    */
-  ORT_API2_STATUS(GetCUDAProviderOptionsAsString, _In_ const OrtCUDAProviderOptionsV2* cuda_options, _Inout_ OrtAllocator* allocator, _Outptr_ char** ptr);
+  ORT_API2_STATUS(GetCUDAProviderOptionsAsString, _In_ const OrtCUDAProviderOptionsV2 *cuda_options, _Inout_ OrtAllocator *allocator, _Outptr_ char **ptr);
 
   /** \brief Release an ::OrtCUDAProviderOptionsV2
    *
@@ -3901,7 +3901,7 @@ struct OrtApi {
    *
    * \since Version 1.11.
    */
-  void(ORT_API_CALL* ReleaseCUDAProviderOptions)(_Frees_ptr_opt_ OrtCUDAProviderOptionsV2* input);
+  void(ORT_API_CALL *ReleaseCUDAProviderOptions)(_Frees_ptr_opt_ OrtCUDAProviderOptionsV2 *input);
 
   /// @}
 
@@ -3917,7 +3917,7 @@ struct OrtApi {
    * \since Version 1.11.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_MIGraphX,
-                  _In_ OrtSessionOptions* options, _In_ const OrtMIGraphXProviderOptions* migraphx_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtMIGraphXProviderOptions *migraphx_options);
 
   /** \brief Replace initialized Tensors with external data with the data provided in initializers.
    *
@@ -3940,9 +3940,9 @@ struct OrtApi {
    *
    * \since Version 1.12.
    */
-  ORT_API2_STATUS(AddExternalInitializers, _In_ OrtSessionOptions* options,
-                  _In_reads_(num_initializers) const char* const* initializer_names,
-                  _In_reads_(num_initializers) const OrtValue* const* initializers, size_t num_initializers);
+  ORT_API2_STATUS(AddExternalInitializers, _In_ OrtSessionOptions *options,
+                  _In_reads_(num_initializers) const char *const *initializer_names,
+                  _In_reads_(num_initializers) const OrtValue *const *initializers, size_t num_initializers);
 
   /** \brief: Create attribute of onnxruntime operator
    *
@@ -3956,11 +3956,11 @@ struct OrtApi {
    * \since Version 1.12.
    */
   ORT_API2_STATUS(CreateOpAttr,
-                  _In_ const char* name,
-                  _In_ const void* data,
+                  _In_ const char *name,
+                  _In_ const void *data,
                   _In_ int len,
                   _In_ OrtOpAttrType type,
-                  _Outptr_ OrtOpAttr** op_attr);
+                  _Outptr_ OrtOpAttr **op_attr);
 
   /* \brief: Release op attribute
    *
@@ -3988,18 +3988,18 @@ struct OrtApi {
    * \since Version 1.12.
    */
   ORT_API2_STATUS(CreateOp,
-                  _In_ const OrtKernelInfo* info,
-                  _In_z_ const char* op_name,
-                  _In_z_ const char* domain,
+                  _In_ const OrtKernelInfo *info,
+                  _In_z_ const char *op_name,
+                  _In_z_ const char *domain,
                   int version,
-                  _In_reads_(type_constraint_count) const char** type_constraint_names,
-                  _In_reads_(type_constraint_count) const ONNXTensorElementDataType* type_constraint_values,
+                  _In_reads_(type_constraint_count) const char **type_constraint_names,
+                  _In_reads_(type_constraint_count) const ONNXTensorElementDataType *type_constraint_values,
                   int type_constraint_count,
-                  _In_reads_(attr_count) const OrtOpAttr* const* attr_values,
+                  _In_reads_(attr_count) const OrtOpAttr *const *attr_values,
                   int attr_count,
                   int input_count,
                   int output_count,
-                  _Outptr_ OrtOp** ort_op);
+                  _Outptr_ OrtOp **ort_op);
 
   /** \brief: Invoke the operator created by OrtApi::CreateOp
    * The inputs must follow the order as specified in onnx specification
@@ -4014,11 +4014,11 @@ struct OrtApi {
    * \since Version 1.12.
    */
   ORT_API2_STATUS(InvokeOp,
-                  _In_ const OrtKernelContext* context,
-                  _In_ const OrtOp* ort_op,
-                  _In_ const OrtValue* const* input_values,
+                  _In_ const OrtKernelContext *context,
+                  _In_ const OrtOp *ort_op,
+                  _In_ const OrtValue *const *input_values,
                   _In_ int input_count,
-                  _Inout_ OrtValue* const* output_values,
+                  _Inout_ OrtValue *const *output_values,
                   _In_ int output_count);
 
   /* \brief: Release an onnxruntime operator
@@ -4151,10 +4151,10 @@ struct OrtApi {
    *
    * \since Version 1.12.
    */
-  ORT_API2_STATUS(SessionOptionsAppendExecutionProvider, _In_ OrtSessionOptions* options,
-                  _In_ const char* provider_name,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(SessionOptionsAppendExecutionProvider, _In_ OrtSessionOptions *options,
+                  _In_ const char *provider_name,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /* \brief: Get a copy of kernel info
@@ -4165,8 +4165,8 @@ struct OrtApi {
    * \since Version 1.12.
    */
   ORT_API2_STATUS(CopyKernelInfo,
-                  _In_ const OrtKernelInfo* info,
-                  _Outptr_ OrtKernelInfo** info_copy);
+                  _In_ const OrtKernelInfo *info,
+                  _Outptr_ OrtKernelInfo **info_copy);
 
   /* \brief: Release kernel info
    *
@@ -4192,7 +4192,7 @@ struct OrtApi {
    *
    * \since Version 1.13
    */
-  const OrtTrainingApi*(ORT_API_CALL* GetTrainingApi)(uint32_t version)NO_EXCEPTION;
+  const OrtTrainingApi *(ORT_API_CALL *GetTrainingApi)(uint32_t version)NO_EXCEPTION;
 
   /// @}
 
@@ -4208,7 +4208,7 @@ struct OrtApi {
    * \since Version 1.13.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_CANN,
-                  _In_ OrtSessionOptions* options, _In_ const OrtCANNProviderOptions* cann_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtCANNProviderOptions *cann_options);
 
   /** \brief Create an OrtCANNProviderOptions
    *
@@ -4218,7 +4218,7 @@ struct OrtApi {
    *
    * \since Version 1.13.
    */
-  ORT_API2_STATUS(CreateCANNProviderOptions, _Outptr_ OrtCANNProviderOptions** out);
+  ORT_API2_STATUS(CreateCANNProviderOptions, _Outptr_ OrtCANNProviderOptions **out);
 
   /** \brief Set options in a CANN Execution Provider.
    *
@@ -4231,9 +4231,9 @@ struct OrtApi {
    *
    * \since Version 1.13.
    */
-  ORT_API2_STATUS(UpdateCANNProviderOptions, _Inout_ OrtCANNProviderOptions* cann_options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(UpdateCANNProviderOptions, _Inout_ OrtCANNProviderOptions *cann_options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /** \brief Get serialized CANN provider options string.
@@ -4249,8 +4249,8 @@ struct OrtApi {
    *
    * \since Version 1.13.
    */
-  ORT_API2_STATUS(GetCANNProviderOptionsAsString, _In_ const OrtCANNProviderOptions* cann_options,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ char** ptr);
+  ORT_API2_STATUS(GetCANNProviderOptionsAsString, _In_ const OrtCANNProviderOptions *cann_options,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ char **ptr);
 
   /** \brief Release an OrtCANNProviderOptions
    *
@@ -4258,13 +4258,13 @@ struct OrtApi {
    *
    * \since Version 1.13.
    */
-  void(ORT_API_CALL* ReleaseCANNProviderOptions)(_Frees_ptr_opt_ OrtCANNProviderOptions* input);
+  void(ORT_API_CALL *ReleaseCANNProviderOptions)(_Frees_ptr_opt_ OrtCANNProviderOptions *input);
 
   /*  \brief Get OrtDevice type from MemoryInfo
    *
    *  \since Version 1.14
    */
-  void(ORT_API_CALL* MemoryInfoGetDeviceType)(_In_ const OrtMemoryInfo* ptr, _Out_ OrtMemoryInfoDeviceType* out);
+  void(ORT_API_CALL *MemoryInfoGetDeviceType)(_In_ const OrtMemoryInfo *ptr, _Out_ OrtMemoryInfoDeviceType *out);
 
   /* \brief Update the OrtEnv instance with custom log severity level
    *
@@ -4273,7 +4273,7 @@ struct OrtApi {
    *
    * \since Version 1.14.
    */
-  ORT_API2_STATUS(UpdateEnvWithCustomLogLevel, _In_ OrtEnv* ort_env, OrtLoggingLevel log_severity_level);
+  ORT_API2_STATUS(UpdateEnvWithCustomLogLevel, _In_ OrtEnv *ort_env, OrtLoggingLevel log_severity_level);
 
   /*  \brief Set affinities for intra op threads
    *
@@ -4294,7 +4294,7 @@ struct OrtApi {
    *
    *  \since Version 1.14
    */
-  ORT_API2_STATUS(SetGlobalIntraOpThreadAffinity, _Inout_ OrtThreadingOptions* tp_options, const char* affinity_string);
+  ORT_API2_STATUS(SetGlobalIntraOpThreadAffinity, _Inout_ OrtThreadingOptions *tp_options, const char *affinity_string);
 
   /** \brief Register custom ops from a shared library.
    *
@@ -4314,7 +4314,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(RegisterCustomOpsLibrary_V2, _Inout_ OrtSessionOptions* options, _In_ const ORTCHAR_T* library_name);
+  ORT_API2_STATUS(RegisterCustomOpsLibrary_V2, _Inout_ OrtSessionOptions *options, _In_ const ORTCHAR_T *library_name);
 
   /** \brief Register custom ops by calling a RegisterCustomOpsFn function.
    *
@@ -4340,8 +4340,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(RegisterCustomOpsUsingFunction, _Inout_ OrtSessionOptions* options,
-                  _In_ const char* registration_func_name);
+  ORT_API2_STATUS(RegisterCustomOpsUsingFunction, _Inout_ OrtSessionOptions *options,
+                  _In_ const char *registration_func_name);
 
   /// \name OrtKernelInfo
   /// Custom operator APIs.
@@ -4358,7 +4358,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetInputCount, _In_ const OrtKernelInfo* info, _Out_ size_t* out);
+  ORT_API2_STATUS(KernelInfo_GetInputCount, _In_ const OrtKernelInfo *info, _Out_ size_t *out);
 
   /** \brief Get the number of outputs from ::OrtKernelInfo.
    *
@@ -4371,7 +4371,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetOutputCount, _In_ const OrtKernelInfo* info, _Out_ size_t* out);
+  ORT_API2_STATUS(KernelInfo_GetOutputCount, _In_ const OrtKernelInfo *info, _Out_ size_t *out);
 
   /** \brief Get the name of a ::OrtKernelInfo's input.
    *
@@ -4397,8 +4397,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetInputName, _In_ const OrtKernelInfo* info, size_t index, _Out_opt_ char* out,
-                  _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfo_GetInputName, _In_ const OrtKernelInfo *info, size_t index, _Out_opt_ char *out,
+                  _Inout_ size_t *size);
 
   /** \brief Get the name of a ::OrtKernelInfo's output.
    *
@@ -4425,8 +4425,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetOutputName, _In_ const OrtKernelInfo* info, size_t index, _Out_opt_ char* out,
-                  _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfo_GetOutputName, _In_ const OrtKernelInfo *info, size_t index, _Out_opt_ char *out,
+                  _Inout_ size_t *size);
 
   /** \brief Get the type information for a ::OrtKernelInfo's input.
    *
@@ -4440,8 +4440,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetInputTypeInfo, _In_ const OrtKernelInfo* info, size_t index,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(KernelInfo_GetInputTypeInfo, _In_ const OrtKernelInfo *info, size_t index,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Get the type information for a ::OrtKernelInfo's output.
    *
@@ -4455,8 +4455,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(KernelInfo_GetOutputTypeInfo, _In_ const OrtKernelInfo* info, size_t index,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(KernelInfo_GetOutputTypeInfo, _In_ const OrtKernelInfo *info, size_t index,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Get a ::OrtValue tensor stored as an attribute in the graph node.
    *
@@ -4470,8 +4470,8 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(KernelInfoGetAttribute_tensor, _In_ const OrtKernelInfo* info, _In_z_ const char* name,
-                  _Inout_ OrtAllocator* allocator, _Outptr_ OrtValue** out);
+  ORT_API2_STATUS(KernelInfoGetAttribute_tensor, _In_ const OrtKernelInfo *info, _In_z_ const char *name,
+                  _Inout_ OrtAllocator *allocator, _Outptr_ OrtValue **out);
 
   /// @}
   /// \name OrtSessionOptions
@@ -4493,8 +4493,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(HasSessionConfigEntry, _In_ const OrtSessionOptions* options,
-                  _In_z_ const char* config_key, _Out_ int* out);
+  ORT_API2_STATUS(HasSessionConfigEntry, _In_ const OrtSessionOptions *options,
+                  _In_z_ const char *config_key, _Out_ int *out);
 
   /** \brief Get a session configuration value.
    *
@@ -4524,8 +4524,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.14
    */
-  ORT_API2_STATUS(GetSessionConfigEntry, _In_ const OrtSessionOptions* options,
-                  _In_z_ const char* config_key, _Out_ char* config_value, _Inout_ size_t* size);
+  ORT_API2_STATUS(GetSessionConfigEntry, _In_ const OrtSessionOptions *options,
+                  _In_z_ const char *config_key, _Out_ char *config_value, _Inout_ size_t *size);
 
   /// @}
 
@@ -4541,7 +4541,7 @@ struct OrtApi {
    * \since Version 1.15.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_Dnnl,
-                  _In_ OrtSessionOptions* options, _In_ const OrtDnnlProviderOptions* dnnl_options);
+                  _In_ OrtSessionOptions *options, _In_ const OrtDnnlProviderOptions *dnnl_options);
 
   /** \brief Create an OrtDnnlProviderOptions
    *
@@ -4551,7 +4551,7 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(CreateDnnlProviderOptions, _Outptr_ OrtDnnlProviderOptions** out);
+  ORT_API2_STATUS(CreateDnnlProviderOptions, _Outptr_ OrtDnnlProviderOptions **out);
 
   /** \brief Set options in a oneDNN Execution Provider.
    *
@@ -4569,9 +4569,9 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(UpdateDnnlProviderOptions, _Inout_ OrtDnnlProviderOptions* dnnl_options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(UpdateDnnlProviderOptions, _Inout_ OrtDnnlProviderOptions *dnnl_options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /**
@@ -4588,13 +4588,13 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(GetDnnlProviderOptionsAsString, _In_ const OrtDnnlProviderOptions* dnnl_options, _Inout_ OrtAllocator* allocator, _Outptr_ char** ptr);
+  ORT_API2_STATUS(GetDnnlProviderOptionsAsString, _In_ const OrtDnnlProviderOptions *dnnl_options, _Inout_ OrtAllocator *allocator, _Outptr_ char **ptr);
 
   /** \brief Release an ::OrtDnnlProviderOptions
    *
    * \since Version 1.15.
    */
-  void(ORT_API_CALL* ReleaseDnnlProviderOptions)(_Frees_ptr_opt_ OrtDnnlProviderOptions* input);
+  void(ORT_API_CALL *ReleaseDnnlProviderOptions)(_Frees_ptr_opt_ OrtDnnlProviderOptions *input);
 
   /// \name OrtKernelInfo
   /// Custom operator APIs.
@@ -4622,7 +4622,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
    */
-  ORT_API2_STATUS(KernelInfo_GetNodeName, _In_ const OrtKernelInfo* info, _Out_opt_ char* out, _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfo_GetNodeName, _In_ const OrtKernelInfo *info, _Out_opt_ char *out, _Inout_ size_t *size);
 
   /** \brief Get the session logger from ::OrtKernelInfo.
    *
@@ -4635,7 +4635,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
    */
-  ORT_API2_STATUS(KernelInfo_GetLogger, _In_ const OrtKernelInfo* info, _Outptr_ const OrtLogger** logger);
+  ORT_API2_STATUS(KernelInfo_GetLogger, _In_ const OrtKernelInfo *info, _Outptr_ const OrtLogger **logger);
 
   /// @}
   /// \name OrtKernelContext
@@ -4653,7 +4653,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
    */
-  ORT_API2_STATUS(KernelContext_GetLogger, _In_ const OrtKernelContext* context, _Outptr_ const OrtLogger** logger);
+  ORT_API2_STATUS(KernelContext_GetLogger, _In_ const OrtKernelContext *context, _Outptr_ const OrtLogger **logger);
 
   /// @}
   /// \name OrtLogger
@@ -4678,9 +4678,9 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
    */
-  ORT_API2_STATUS(Logger_LogMessage, _In_ const OrtLogger* logger, OrtLoggingLevel log_severity_level,
-                  _In_z_ const char* message, _In_z_ const ORTCHAR_T* file_path, int line_number,
-                  _In_z_ const char* func_name);
+  ORT_API2_STATUS(Logger_LogMessage, _In_ const OrtLogger *logger, OrtLoggingLevel log_severity_level,
+                  _In_z_ const char *message, _In_z_ const ORTCHAR_T *file_path, int line_number,
+                  _In_z_ const char *func_name);
 
   /** \brief Get the logging severity level of the ::OrtLogger.
    *
@@ -4693,7 +4693,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.15
    */
-  ORT_API2_STATUS(Logger_GetLoggingSeverityLevel, _In_ const OrtLogger* logger, _Out_ OrtLoggingLevel* out);
+  ORT_API2_STATUS(Logger_GetLoggingSeverityLevel, _In_ const OrtLogger *logger, _Out_ OrtLoggingLevel *out);
 
   /// @}
 
@@ -4710,7 +4710,7 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(KernelInfoGetConstantInput_tensor, _In_ const OrtKernelInfo* info, size_t index, _Out_ int* is_constant, _Outptr_ const OrtValue** out);
+  ORT_API2_STATUS(KernelInfoGetConstantInput_tensor, _In_ const OrtKernelInfo *info, size_t index, _Out_ int *is_constant, _Outptr_ const OrtValue **out);
 
   /** \brief Get Optional Type information from an ::OrtTypeInfo
    *
@@ -4732,8 +4732,8 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(CastTypeInfoToOptionalTypeInfo, _In_ const OrtTypeInfo* type_info,
-                  _Outptr_result_maybenull_ const OrtOptionalTypeInfo** out);
+  ORT_API2_STATUS(CastTypeInfoToOptionalTypeInfo, _In_ const OrtTypeInfo *type_info,
+                  _Outptr_result_maybenull_ const OrtOptionalTypeInfo **out);
 
   /** \brief Get OrtTypeInfo for the allowed contained type from an ::OrtOptionalTypeInfo.
    *
@@ -4751,8 +4751,8 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(GetOptionalContainedTypeInfo, _In_ const OrtOptionalTypeInfo* optional_type_info,
-                  _Outptr_ OrtTypeInfo** out);
+  ORT_API2_STATUS(GetOptionalContainedTypeInfo, _In_ const OrtOptionalTypeInfo *optional_type_info,
+                  _Outptr_ OrtTypeInfo **out);
 
   /** \brief Set a single string in a string tensor
    *  Do not zero terminate the string data.
@@ -4764,7 +4764,7 @@ struct OrtApi {
    *
    * \snippet{doc} snippets.dox OrtStatus Return Value
    */
-  ORT_API2_STATUS(GetResizedStringTensorElementBuffer, _Inout_ OrtValue* value, _In_ size_t index, _In_ size_t length_in_bytes, _Inout_ char** buffer);
+  ORT_API2_STATUS(GetResizedStringTensorElementBuffer, _Inout_ OrtValue *value, _In_ size_t index, _In_ size_t length_in_bytes, _Inout_ char **buffer);
 
   /** \brief Get Allocator from KernelContext for a specific memoryInfo. Please use C API ReleaseAllocator to release out object
    *
@@ -4776,7 +4776,7 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  ORT_API2_STATUS(KernelContext_GetAllocator, _In_ const OrtKernelContext* context, _In_ const OrtMemoryInfo* mem_info, _Outptr_ OrtAllocator** out);
+  ORT_API2_STATUS(KernelContext_GetAllocator, _In_ const OrtKernelContext *context, _In_ const OrtMemoryInfo *mem_info, _Outptr_ OrtAllocator **out);
 
   /** \brief Returns a null terminated string of the build info including git info and cxx flags
    *
@@ -4784,7 +4784,7 @@ struct OrtApi {
    *
    * \since Version 1.15.
    */
-  const char*(ORT_API_CALL* GetBuildInfoString)(void);
+  const char *(ORT_API_CALL *GetBuildInfoString)(void);
 
   /// \name OrtROCMProviderOptions
   /// @{
@@ -4797,7 +4797,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(CreateROCMProviderOptions, _Outptr_ OrtROCMProviderOptions** out);
+  ORT_API2_STATUS(CreateROCMProviderOptions, _Outptr_ OrtROCMProviderOptions **out);
 
   /** \brief Set options in a ROCm Execution Provider.
    *
@@ -4816,9 +4816,9 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(UpdateROCMProviderOptions, _Inout_ OrtROCMProviderOptions* rocm_options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+  ORT_API2_STATUS(UpdateROCMProviderOptions, _Inout_ OrtROCMProviderOptions *rocm_options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /**
@@ -4835,7 +4835,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(GetROCMProviderOptionsAsString, _In_ const OrtROCMProviderOptions* rocm_options, _Inout_ OrtAllocator* allocator, _Outptr_ char** ptr);
+  ORT_API2_STATUS(GetROCMProviderOptionsAsString, _In_ const OrtROCMProviderOptions *rocm_options, _Inout_ OrtAllocator *allocator, _Outptr_ char **ptr);
 
   /** \brief Release an ::OrtROCMProviderOptions
    *
@@ -4843,7 +4843,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  void(ORT_API_CALL* ReleaseROCMProviderOptions)(_Frees_ptr_opt_ OrtROCMProviderOptions* input);
+  void(ORT_API_CALL *ReleaseROCMProviderOptions)(_Frees_ptr_opt_ OrtROCMProviderOptions *input);
 
   /** \brief Create an allocator with specific type and register it with the ::OrtEnv
    *  This API enhance CreateAndRegisterAllocator that it can create an allocator with specific type, not just CPU allocator
@@ -4858,9 +4858,9 @@ struct OrtApi {
    *  \param[in] provider_options_values value of the provider options map
    *  \param[in] num_keys Length of the provider options map
    */
-  ORT_API2_STATUS(CreateAndRegisterAllocatorV2, _Inout_ OrtEnv* env, _In_ const char* provider_type,
-                  _In_ const OrtMemoryInfo* mem_info, _In_ const OrtArenaCfg* arena_cfg,
-                  _In_reads_(num_keys) const char* const* provider_options_keys, _In_reads_(num_keys) const char* const* provider_options_values, _In_ size_t num_keys);
+  ORT_API2_STATUS(CreateAndRegisterAllocatorV2, _Inout_ OrtEnv *env, _In_ const char *provider_type,
+                  _In_ const OrtMemoryInfo *mem_info, _In_ const OrtArenaCfg *arena_cfg,
+                  _In_reads_(num_keys) const char *const *provider_options_keys, _In_reads_(num_keys) const char *const *provider_options_values, _In_ size_t num_keys);
 
   /** \brief Run the model asynchronously in a thread owned by intra op thread pool
    *
@@ -4880,12 +4880,12 @@ struct OrtApi {
    * \param[in] run_async_callback Callback function on model run completion
    * \param[in] user_data User data that pass back to run_async_callback
    */
-  ORT_API2_STATUS(RunAsync, _Inout_ OrtSession* session, _In_opt_ const OrtRunOptions* run_options,
-                  _In_reads_(input_len) const char* const* input_names,
-                  _In_reads_(input_len) const OrtValue* const* input, size_t input_len,
-                  _In_reads_(output_names_len) const char* const* output_names, size_t output_names_len,
-                  _Inout_updates_all_(output_names_len) OrtValue** output,
-                  _In_ RunAsyncCallbackFn run_async_callback, _In_opt_ void* user_data);
+  ORT_API2_STATUS(RunAsync, _Inout_ OrtSession *session, _In_opt_ const OrtRunOptions *run_options,
+                  _In_reads_(input_len) const char *const *input_names,
+                  _In_reads_(input_len) const OrtValue *const *input, size_t input_len,
+                  _In_reads_(output_names_len) const char *const *output_names, size_t output_names_len,
+                  _Inout_updates_all_(output_names_len) OrtValue **output,
+                  _In_ RunAsyncCallbackFn run_async_callback, _In_opt_ void *user_data);
 
   /**
    * Update TensorRT EP provider option where its data type is pointer, for example 'user_compute_stream'.
@@ -4899,7 +4899,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(UpdateTensorRTProviderOptionsWithValue, _Inout_ OrtTensorRTProviderOptionsV2* tensorrt_options, _In_ const char* key, _In_ void* value);
+  ORT_API2_STATUS(UpdateTensorRTProviderOptionsWithValue, _Inout_ OrtTensorRTProviderOptionsV2 *tensorrt_options, _In_ const char *key, _In_ void *value);
 
   /**
    * Get TensorRT EP provider option where its data type is pointer.
@@ -4911,7 +4911,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(GetTensorRTProviderOptionsByName, _In_ const OrtTensorRTProviderOptionsV2* tensorrt_options, _In_ const char* key, _Outptr_ void** ptr);
+  ORT_API2_STATUS(GetTensorRTProviderOptionsByName, _In_ const OrtTensorRTProviderOptionsV2 *tensorrt_options, _In_ const char *key, _Outptr_ void **ptr);
 
   /**
    * Update CUDA EP provider option where its data type is pointer, for example 'user_compute_stream'.
@@ -4925,7 +4925,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(UpdateCUDAProviderOptionsWithValue, _Inout_ OrtCUDAProviderOptionsV2* cuda_options, _In_ const char* key, _In_ void* value);
+  ORT_API2_STATUS(UpdateCUDAProviderOptionsWithValue, _Inout_ OrtCUDAProviderOptionsV2 *cuda_options, _In_ const char *key, _In_ void *value);
 
   /**
    * Get CUDA EP provider option where its data type is pointer.
@@ -4937,7 +4937,7 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(GetCUDAProviderOptionsByName, _In_ const OrtCUDAProviderOptionsV2* cuda_options, _In_ const char* key, _Outptr_ void** ptr);
+  ORT_API2_STATUS(GetCUDAProviderOptionsByName, _In_ const OrtCUDAProviderOptionsV2 *cuda_options, _In_ const char *key, _Outptr_ void **ptr);
 
   /**
    * Get a EP resource.
@@ -4950,8 +4950,8 @@ struct OrtApi {
    *
    * \since Version 1.16.
    */
-  ORT_API2_STATUS(KernelContext_GetResource, _In_ const OrtKernelContext* context, _In_ int resource_version,
-                  _In_ int resource_id, _Outptr_ void** resource);
+  ORT_API2_STATUS(KernelContext_GetResource, _In_ const OrtKernelContext *context, _In_ int resource_version,
+                  _In_ int resource_id, _Outptr_ void **resource);
 
   /** \brief Set user logging function
    *
@@ -4970,8 +4970,8 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(SetUserLoggingFunction, _Inout_ OrtSessionOptions* options,
-                  _In_ OrtLoggingFunction user_logging_function, _In_opt_ void* user_logging_param);
+  ORT_API2_STATUS(SetUserLoggingFunction, _Inout_ OrtSessionOptions *options,
+                  _In_ OrtLoggingFunction user_logging_function, _In_opt_ void *user_logging_param);
 
   /**
    * Get number of input from OrtShapeInferContext
@@ -4981,7 +4981,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(ShapeInferContext_GetInputCount, _In_ const OrtShapeInferContext* context, _Out_ size_t* out);
+  ORT_API2_STATUS(ShapeInferContext_GetInputCount, _In_ const OrtShapeInferContext *context, _Out_ size_t *out);
 
   /**
    * Get type and shape info of an input
@@ -4992,7 +4992,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(ShapeInferContext_GetInputTypeShape, _In_ const OrtShapeInferContext* context, _In_ size_t index, _Outptr_ OrtTensorTypeAndShapeInfo** info);
+  ORT_API2_STATUS(ShapeInferContext_GetInputTypeShape, _In_ const OrtShapeInferContext *context, _In_ size_t index, _Outptr_ OrtTensorTypeAndShapeInfo **info);
 
   /**
    * Get attribute from OrtShapeInferContext. Note that OrtShapeInferContext is a per-node context, one could only read attribute from current node.
@@ -5003,7 +5003,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(ShapeInferContext_GetAttribute, _In_ const OrtShapeInferContext* context, _In_ const char* attr_name, _Outptr_ const OrtOpAttr** attr);
+  ORT_API2_STATUS(ShapeInferContext_GetAttribute, _In_ const OrtShapeInferContext *context, _In_ const char *attr_name, _Outptr_ const OrtOpAttr **attr);
 
   /**
    * Set type and shape info of an output
@@ -5014,7 +5014,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(ShapeInferContext_SetOutputTypeShape, _In_ const OrtShapeInferContext* context, _In_ size_t index, _In_ const OrtTensorTypeAndShapeInfo* info);
+  ORT_API2_STATUS(ShapeInferContext_SetOutputTypeShape, _In_ const OrtShapeInferContext *context, _In_ size_t index, _In_ const OrtTensorTypeAndShapeInfo *info);
 
   /**
    * Set symbolic shape to type shape info
@@ -5025,7 +5025,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(SetSymbolicDimensions, _In_ OrtTensorTypeAndShapeInfo* info, _In_ const char* dim_params[], _In_ size_t dim_params_length);
+  ORT_API2_STATUS(SetSymbolicDimensions, _In_ OrtTensorTypeAndShapeInfo *info, _In_ const char *dim_params[], _In_ size_t dim_params_length);
 
   /**
    * Read contents of an attribute to data
@@ -5040,7 +5040,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(ReadOpAttr, _In_ const OrtOpAttr* op_attr, _In_ OrtOpAttrType type, _Inout_ void* data, _In_ size_t len, _Out_ size_t* out);
+  ORT_API2_STATUS(ReadOpAttr, _In_ const OrtOpAttr *op_attr, _In_ OrtOpAttrType type, _Inout_ void *data, _In_ size_t len, _Out_ size_t *out);
 
   /** \brief Set whether to use deterministic compute.
    *
@@ -5052,7 +5052,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(SetDeterministicCompute, _Inout_ OrtSessionOptions* options, bool value);
+  ORT_API2_STATUS(SetDeterministicCompute, _Inout_ OrtSessionOptions *options, bool value);
 
   /**
    * Run fn in parallel
@@ -5065,7 +5065,7 @@ struct OrtApi {
    *
    * \since Version 1.17.
    */
-  ORT_API2_STATUS(KernelContext_ParallelFor, _In_ const OrtKernelContext* context, _In_ void (*fn)(void*, size_t), _In_ size_t total, _In_ size_t num_batch, _In_ void* usr_data);
+  ORT_API2_STATUS(KernelContext_ParallelFor, _In_ const OrtKernelContext *context, _In_ void (*fn)(void *, size_t), _In_ size_t total, _In_ size_t num_batch, _In_ void *usr_data);
 
   /** \brief Append OpenVINO execution provider to the session options
    *
@@ -5081,9 +5081,9 @@ struct OrtApi {
    * \since Version 1.17.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_OpenVINO_V2,
-                  _In_ OrtSessionOptions* options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+                  _In_ OrtSessionOptions *options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /** \brief Append VitisAI provider to session options
@@ -5100,9 +5100,9 @@ struct OrtApi {
    * \since Version 1.18.
    */
   ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_VitisAI,
-                  _In_ OrtSessionOptions* options,
-                  _In_reads_(num_keys) const char* const* provider_options_keys,
-                  _In_reads_(num_keys) const char* const* provider_options_values,
+                  _In_ OrtSessionOptions *options,
+                  _In_reads_(num_keys) const char *const *provider_options_keys,
+                  _In_reads_(num_keys) const char *const *provider_options_values,
                   _In_ size_t num_keys);
 
   /** \brief Get scratch buffer from the corresponding allocator under the specific OrtMemoryInfo object.
@@ -5116,7 +5116,7 @@ struct OrtApi {
    *
    * \since Version 1.18.
    */
-  ORT_API2_STATUS(KernelContext_GetScratchBuffer, _In_ const OrtKernelContext* context, _In_ const OrtMemoryInfo* mem_info, _In_ size_t count_or_bytes, _Outptr_ void** out);
+  ORT_API2_STATUS(KernelContext_GetScratchBuffer, _In_ const OrtKernelContext *context, _In_ const OrtMemoryInfo *mem_info, _In_ size_t count_or_bytes, _Outptr_ void **out);
 
   /** \brief Get allocator from KernelInfo for a specific memory type. Please use C API ReleaseAllocator to release out object
    *
@@ -5128,7 +5128,7 @@ struct OrtApi {
    *
    * \since Version 1.18.
    */
-  ORT_API2_STATUS(KernelInfoGetAllocator, _In_ const OrtKernelInfo* info, _In_ OrtMemType mem_type, _Outptr_ OrtAllocator** out);
+  ORT_API2_STATUS(KernelInfoGetAllocator, _In_ const OrtKernelInfo *info, _In_ OrtMemType mem_type, _Outptr_ OrtAllocator **out);
 
   /** \brief Replace initialized Tensors with external data with the provided files in memory
    *
@@ -5151,10 +5151,10 @@ struct OrtApi {
    *
    * \since Version 1.18.
    */
-  ORT_API2_STATUS(AddExternalInitializersFromFilesInMemory, _In_ OrtSessionOptions* options,
-                  _In_reads_(num_external_initializer_files) const ORTCHAR_T* const* external_initializer_file_names,
-                  _In_reads_(num_external_initializer_files) char* const* external_initializer_file_buffer_array,
-                  _In_reads_(num_external_initializer_files) const size_t* external_initializer_file_lengths,
+  ORT_API2_STATUS(AddExternalInitializersFromFilesInMemory, _In_ OrtSessionOptions *options,
+                  _In_reads_(num_external_initializer_files) const ORTCHAR_T *const *external_initializer_file_names,
+                  _In_reads_(num_external_initializer_files) char *const *external_initializer_file_buffer_array,
+                  _In_reads_(num_external_initializer_files) const size_t *external_initializer_file_lengths,
                   size_t num_external_initializer_files);
 
   /** \brief Create an OrtLoraAdapter
@@ -5175,8 +5175,8 @@ struct OrtApi {
    *
    * \since Version 1.20.
    */
-  ORT_API2_STATUS(CreateLoraAdapter, const ORTCHAR_T* adapter_file_path, _In_ OrtAllocator* allocator,
-                  _Outptr_ OrtLoraAdapter** out);
+  ORT_API2_STATUS(CreateLoraAdapter, const ORTCHAR_T *adapter_file_path, _In_ OrtAllocator *allocator,
+                  _Outptr_ OrtLoraAdapter **out);
 
   /** \brief Create an OrtLoraAdapter
    *
@@ -5195,8 +5195,8 @@ struct OrtApi {
    *
    * \since Version 1.20.
    */
-  ORT_API2_STATUS(CreateLoraAdapterFromArray, _In_ const void* bytes, size_t num_bytes, _In_ OrtAllocator* allocator,
-                  _Outptr_ OrtLoraAdapter** out);
+  ORT_API2_STATUS(CreateLoraAdapterFromArray, _In_ const void *bytes, size_t num_bytes, _In_ OrtAllocator *allocator,
+                  _Outptr_ OrtLoraAdapter **out);
 
   /** \brief Release an ::OrtLoraAdapter obtained from OrtApi::CreateLoraAdapter
    */
@@ -5218,7 +5218,7 @@ struct OrtApi {
    *
    * \since Version 1.20.
    */
-  ORT_API2_STATUS(RunOptionsAddActiveLoraAdapter, _Inout_ OrtRunOptions* options, _In_ const OrtLoraAdapter* adapter);
+  ORT_API2_STATUS(RunOptionsAddActiveLoraAdapter, _Inout_ OrtRunOptions *options, _In_ const OrtLoraAdapter *adapter);
 
   /// @}
   /// \name OrtEpDynamicOptions
@@ -5238,8 +5238,8 @@ struct OrtApi {
    *
    * \since Version 1.20.
    */
-  ORT_API2_STATUS(SetEpDynamicOptions, _Inout_ OrtSession* sess, _In_reads_(kv_len) const char* const* keys,
-                  _In_reads_(kv_len) const char* const* values, _In_ size_t kv_len);
+  ORT_API2_STATUS(SetEpDynamicOptions, _Inout_ OrtSession *sess, _In_reads_(kv_len) const char *const *keys,
+                  _In_reads_(kv_len) const char *const *values, _In_ size_t kv_len);
 
   /// @}
 
@@ -5271,7 +5271,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(GetValueInfoName, _In_ const OrtValueInfo* value_info, _Out_ const char** name);
+  ORT_API2_STATUS(GetValueInfoName, _In_ const OrtValueInfo *value_info, _Out_ const char **name);
 
   /** \brief Get the type information from an OrtValueInfo instance.
    * \param[in] value_info The OrtValueInfo instance.
@@ -5279,7 +5279,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(GetValueInfoTypeInfo, _In_ const OrtValueInfo* value_info, _Outptr_ const OrtTypeInfo** type_info);
+  ORT_API2_STATUS(GetValueInfoTypeInfo, _In_ const OrtValueInfo *value_info, _Outptr_ const OrtTypeInfo **type_info);
 
   /** \brief Get the Model Editor API instance
    *
@@ -5289,7 +5289,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtModelEditorApi*(ORT_API_CALL* GetModelEditorApi)(void);
+  const OrtModelEditorApi *(ORT_API_CALL *GetModelEditorApi)(void);
 
   /** \brief Create an OrtValue for a Tensor that uses pre-existing memory.
    *
@@ -5309,11 +5309,11 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateTensorWithDataAndDeleterAsOrtValue, _In_ OrtAllocator* deleter,
-                  _In_ void* p_data, size_t p_data_len,
-                  _In_ const int64_t* shape, size_t shape_len,
+  ORT_API2_STATUS(CreateTensorWithDataAndDeleterAsOrtValue, _In_ OrtAllocator *deleter,
+                  _In_ void *p_data, size_t p_data_len,
+                  _In_ const int64_t *shape, size_t shape_len,
                   ONNXTensorElementDataType type,
-                  _Outptr_ OrtValue** out);
+                  _Outptr_ OrtValue **out);
 
   /** \brief sets load cancellation flag to abort session loading process.
    *
@@ -5331,7 +5331,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(SessionOptionsSetLoadCancellationFlag, _Inout_ OrtSessionOptions* options,
+  ORT_API2_STATUS(SessionOptionsSetLoadCancellationFlag, _Inout_ OrtSessionOptions *options,
                   _In_ bool cancel);
 
   /** \brief Get the Compile API instance.
@@ -5347,7 +5347,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtCompileApi*(ORT_API_CALL* GetCompileApi)(void);
+  const OrtCompileApi *(ORT_API_CALL *GetCompileApi)(void);
 
   //
   // OrtKeyValuePairs
@@ -5361,7 +5361,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  void(ORT_API_CALL* CreateKeyValuePairs)(_Outptr_ OrtKeyValuePairs** out);
+  void(ORT_API_CALL *CreateKeyValuePairs)(_Outptr_ OrtKeyValuePairs **out);
 
   /** \brief Add a key-value pair to the OrtKeyValuePairs instance.
    *
@@ -5376,7 +5376,7 @@ struct OrtApi {
    * \since Version 1.22.
    */
 
-  void(ORT_API_CALL* AddKeyValuePair)(_In_ OrtKeyValuePairs* kvps, _In_ const char* key, _In_ const char* value);
+  void(ORT_API_CALL *AddKeyValuePair)(_In_ OrtKeyValuePairs *kvps, _In_ const char *key, _In_ const char *value);
 
   /** \brief Get the value associated with a key in the OrtKeyValuePairs instance.
    *
@@ -5387,7 +5387,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const char*(ORT_API_CALL* GetKeyValue)(_In_ const OrtKeyValuePairs* kvps, _In_ const char* key);
+  const char *(ORT_API_CALL *GetKeyValue)(_In_ const OrtKeyValuePairs *kvps, _In_ const char *key);
 
   /** \brief Get all the key-value pairs from the OrtKeyValuePairs instance.
    *
@@ -5398,9 +5398,9 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  void(ORT_API_CALL* GetKeyValuePairs)(_In_ const OrtKeyValuePairs* kvps,
-                                       _Outptr_ const char* const** keys, _Outptr_ const char* const** values,
-                                       _Out_ size_t* num_entries);
+  void(ORT_API_CALL *GetKeyValuePairs)(_In_ const OrtKeyValuePairs *kvps,
+                                       _Outptr_ const char *const **keys, _Outptr_ const char *const **values,
+                                       _Out_ size_t *num_entries);
 
   /** \brief Remove a key-value pair from the OrtKeyValuePairs instance.
    *
@@ -5409,7 +5409,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  void(ORT_API_CALL* RemoveKeyValuePair)(_In_ OrtKeyValuePairs* kvps, _In_ const char* key);
+  void(ORT_API_CALL *RemoveKeyValuePair)(_In_ OrtKeyValuePairs *kvps, _In_ const char *key);
 
   /** \brief Release an OrtKeyValuePairs instance.
    *
@@ -5432,8 +5432,8 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(RegisterExecutionProviderLibrary, _In_ OrtEnv* env, _In_ const char* registration_name,
-                  _In_ const ORTCHAR_T* path);
+  ORT_API2_STATUS(RegisterExecutionProviderLibrary, _In_ OrtEnv *env, _In_ const char *registration_name,
+                  _In_ const ORTCHAR_T *path);
 
   /** \brief Unregister an execution provider library with ORT.
    *
@@ -5449,7 +5449,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(UnregisterExecutionProviderLibrary, _In_ OrtEnv* env, _In_ const char* registration_name);
+  ORT_API2_STATUS(UnregisterExecutionProviderLibrary, _In_ OrtEnv *env, _In_ const char *registration_name);
 
   /** \brief Get the list of available OrtEpDevice instances.
    *
@@ -5463,8 +5463,8 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(GetEpDevices, _In_ const OrtEnv* env,
-                  _Outptr_ const OrtEpDevice* const** ep_devices, _Out_ size_t* num_ep_devices);
+  ORT_API2_STATUS(GetEpDevices, _In_ const OrtEnv *env,
+                  _Outptr_ const OrtEpDevice *const **ep_devices, _Out_ size_t *num_ep_devices);
 
   /** \brief Append the execution provider that is responsible for the selected OrtEpDevice instances
    *         to the session options.
@@ -5485,11 +5485,11 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_V2, _In_ OrtSessionOptions* session_options,
-                  _In_ OrtEnv* env,
-                  _In_reads_(num_ep_devices) const OrtEpDevice* const* ep_devices, _In_ size_t num_ep_devices,
-                  _In_reads_(num_op_options) const char* const* ep_option_keys,
-                  _In_reads_(num_op_options) const char* const* ep_option_vals,
+  ORT_API2_STATUS(SessionOptionsAppendExecutionProvider_V2, _In_ OrtSessionOptions *session_options,
+                  _In_ OrtEnv *env,
+                  _In_reads_(num_ep_devices) const OrtEpDevice *const *ep_devices, _In_ size_t num_ep_devices,
+                  _In_reads_(num_op_options) const char *const *ep_option_keys,
+                  _In_reads_(num_op_options) const char *const *ep_option_vals,
                   size_t num_ep_options);
 
   /** \brief Set the execution provider selection policy for the session.
@@ -5502,7 +5502,7 @@ struct OrtApi {
    *
    * \since Version 1.22
    */
-  ORT_API2_STATUS(SessionOptionsSetEpSelectionPolicy, _In_ OrtSessionOptions* session_options,
+  ORT_API2_STATUS(SessionOptionsSetEpSelectionPolicy, _In_ OrtSessionOptions *session_options,
                   _In_ OrtExecutionProviderDevicePolicy policy);
 
   /** \brief Set the execution provider selection policy delegate for the session.
@@ -5515,9 +5515,9 @@ struct OrtApi {
    *
    * \since Version 1.22
    */
-  ORT_API2_STATUS(SessionOptionsSetEpSelectionPolicyDelegate, _In_ OrtSessionOptions* session_options,
+  ORT_API2_STATUS(SessionOptionsSetEpSelectionPolicyDelegate, _In_ OrtSessionOptions *session_options,
                   _In_ EpSelectionDelegate delegate,
-                  _In_opt_ void* delegate_state);
+                  _In_opt_ void *delegate_state);
 
   /** \brief Get the hardware device type.
    *
@@ -5526,7 +5526,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  OrtHardwareDeviceType(ORT_API_CALL* HardwareDevice_Type)(_In_ const OrtHardwareDevice* device);
+  OrtHardwareDeviceType(ORT_API_CALL *HardwareDevice_Type)(_In_ const OrtHardwareDevice *device);
 
   /** \brief Get the hardware device's vendor identifier.
    *
@@ -5535,7 +5535,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  uint32_t(ORT_API_CALL* HardwareDevice_VendorId)(_In_ const OrtHardwareDevice* device);
+  uint32_t(ORT_API_CALL *HardwareDevice_VendorId)(_In_ const OrtHardwareDevice *device);
 
   /** \brief Get the hardware device's vendor name.
    *
@@ -5544,7 +5544,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const char*(ORT_API_CALL* HardwareDevice_Vendor)(_In_ const OrtHardwareDevice* device);
+  const char *(ORT_API_CALL *HardwareDevice_Vendor)(_In_ const OrtHardwareDevice *device);
 
   /** \brief Get the hardware device's unique identifier.
    *
@@ -5554,7 +5554,7 @@ struct OrtApi {
    * \note This is not a unique identifier. It identifies the hardware type when combined with vendor id.
    * \since Version 1.22.
    */
-  uint32_t(ORT_API_CALL* HardwareDevice_DeviceId)(_In_ const OrtHardwareDevice* device);
+  uint32_t(ORT_API_CALL *HardwareDevice_DeviceId)(_In_ const OrtHardwareDevice *device);
 
   /** \brief Get hardware device metadata.
    *
@@ -5564,7 +5564,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtKeyValuePairs*(ORT_API_CALL* HardwareDevice_Metadata)(_In_ const OrtHardwareDevice* device);
+  const OrtKeyValuePairs *(ORT_API_CALL *HardwareDevice_Metadata)(_In_ const OrtHardwareDevice *device);
 
   /** \brief Get the execution provider name.
    *
@@ -5573,7 +5573,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const char*(ORT_API_CALL* EpDevice_EpName)(_In_ const OrtEpDevice* ep_device);
+  const char *(ORT_API_CALL *EpDevice_EpName)(_In_ const OrtEpDevice *ep_device);
 
   /** \brief Get the execution provider's vendor name.
    *
@@ -5582,7 +5582,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const char*(ORT_API_CALL* EpDevice_EpVendor)(_In_ const OrtEpDevice* ep_device);
+  const char *(ORT_API_CALL *EpDevice_EpVendor)(_In_ const OrtEpDevice *ep_device);
 
   /** \brief Get the metadata for the OrtEpDevice.
    *
@@ -5591,7 +5591,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtKeyValuePairs*(ORT_API_CALL* EpDevice_EpMetadata)(_In_ const OrtEpDevice* ep_device);
+  const OrtKeyValuePairs *(ORT_API_CALL *EpDevice_EpMetadata)(_In_ const OrtEpDevice *ep_device);
 
   /** \brief Get the execution provider options for the OrtEpDevice.
    *
@@ -5600,7 +5600,7 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtKeyValuePairs*(ORT_API_CALL* EpDevice_EpOptions)(_In_ const OrtEpDevice* ep_device);
+  const OrtKeyValuePairs *(ORT_API_CALL *EpDevice_EpOptions)(_In_ const OrtEpDevice *ep_device);
 
   /** \brief Get the OrtHardwareDevice instance for the OrtEpDevice.
    *
@@ -5609,13 +5609,13 @@ struct OrtApi {
    *
    * \since Version 1.22.
    */
-  const OrtHardwareDevice*(ORT_API_CALL* EpDevice_Device)(_In_ const OrtEpDevice* ep_device);
+  const OrtHardwareDevice *(ORT_API_CALL *EpDevice_Device)(_In_ const OrtEpDevice *ep_device);
 
   /** \brief Get the OrtEpApi instance for implementing an execution provider.
    *
    * \since Version 1.22.
    */
-  const OrtEpApi*(ORT_API_CALL* GetEpApi)(void);
+  const OrtEpApi *(ORT_API_CALL *GetEpApi)(void);
 
   /** \brief Compute total size in bytes of the tensor data contained in an OrtValue.
    *
@@ -5630,7 +5630,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(GetTensorSizeInBytes, _In_ const OrtValue* ort_value, _Out_ size_t* size);
+  ORT_API2_STATUS(GetTensorSizeInBytes, _In_ const OrtValue *ort_value, _Out_ size_t *size);
 
   /** \brief Calls OrtAllocator::GetStats function
    *
@@ -5646,7 +5646,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(AllocatorGetStats, _In_ const OrtAllocator* ort_allocator, _Outptr_ OrtKeyValuePairs** out);
+  ORT_API2_STATUS(AllocatorGetStats, _In_ const OrtAllocator *ort_allocator, _Outptr_ OrtKeyValuePairs **out);
 
   /** \brief Create an ::OrtMemoryInfo
    *
@@ -5668,10 +5668,10 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(CreateMemoryInfo_V2, _In_ const char* name, _In_ enum OrtMemoryInfoDeviceType device_type,
+  ORT_API2_STATUS(CreateMemoryInfo_V2, _In_ const char *name, _In_ enum OrtMemoryInfoDeviceType device_type,
                   _In_ uint32_t vendor_id, _In_ int32_t device_id, _In_ enum OrtDeviceMemoryType mem_type,
                   _In_ size_t alignment, enum OrtAllocatorType allocator_type,
-                  _Outptr_ OrtMemoryInfo** out);
+                  _Outptr_ OrtMemoryInfo **out);
 
   /** \brief Get the device memory type from ::OrtMemoryInfo
    *
@@ -5680,7 +5680,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API_T(OrtDeviceMemoryType, MemoryInfoGetDeviceMemType, _In_ const OrtMemoryInfo* ptr);
+  ORT_API_T(OrtDeviceMemoryType, MemoryInfoGetDeviceMemType, _In_ const OrtMemoryInfo *ptr);
 
   /** \brief Get the vendor id from ::OrtMemoryInfo
    *
@@ -5689,7 +5689,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API_T(uint32_t, MemoryInfoGetVendorId, _In_ const OrtMemoryInfo* ptr);
+  ORT_API_T(uint32_t, MemoryInfoGetVendorId, _In_ const OrtMemoryInfo *ptr);
 
   /// \name OrtValueInfo
   /// @{
@@ -5704,8 +5704,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_GetValueProducer, _In_ const OrtValueInfo* value_info,
-                  _Outptr_ const OrtNode** producer_node, _Out_opt_ size_t* producer_output_index);
+  ORT_API2_STATUS(ValueInfo_GetValueProducer, _In_ const OrtValueInfo *value_info,
+                  _Outptr_ const OrtNode **producer_node, _Out_opt_ size_t *producer_output_index);
 
   /** \brief Get the number of consumers of a value as a node input.
    *
@@ -5722,7 +5722,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_GetValueNumConsumers, _In_ const OrtValueInfo* value_info, _Out_ size_t* num_consumers);
+  ORT_API2_STATUS(ValueInfo_GetValueNumConsumers, _In_ const OrtValueInfo *value_info, _Out_ size_t *num_consumers);
 
   /** \brief Returns information (OrtNode and input index) for all consumer nodes that use the value as an input.
    *
@@ -5750,9 +5750,9 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_GetValueConsumers, _In_ const OrtValueInfo* value_info,
-                  _Out_writes_all_(num_consumers) const OrtNode** nodes,
-                  _Out_writes_all_(num_consumers) int64_t* input_indices,
+  ORT_API2_STATUS(ValueInfo_GetValueConsumers, _In_ const OrtValueInfo *value_info,
+                  _Out_writes_all_(num_consumers) const OrtNode **nodes,
+                  _Out_writes_all_(num_consumers) int64_t *input_indices,
                   _In_ size_t num_consumers);
 
   /** \brief Get the underlying initializer value, as an OrtValue, from the given OrtValueInfo.
@@ -5774,8 +5774,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_GetInitializerValue, _In_ const OrtValueInfo* value_info,
-                  _Outptr_ const OrtValue** initializer_value);
+  ORT_API2_STATUS(ValueInfo_GetInitializerValue, _In_ const OrtValueInfo *value_info,
+                  _Outptr_ const OrtValue **initializer_value);
 
   /** \brief Get information about an external initializer (e.g., filepath, file offset, byte size).
    *
@@ -5792,8 +5792,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_GetExternalInitializerInfo, _In_ const OrtValueInfo* value_info,
-                  _Outptr_result_maybenull_ OrtExternalInitializerInfo** info);
+  ORT_API2_STATUS(ValueInfo_GetExternalInitializerInfo, _In_ const OrtValueInfo *value_info,
+                  _Outptr_result_maybenull_ OrtExternalInitializerInfo **info);
 
   /** \brief Returns a boolean indicating if the given value is a required graph input.
    *
@@ -5809,8 +5809,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_IsRequiredGraphInput, _In_ const OrtValueInfo* value_info,
-                  _Out_ bool* is_required_graph_input);
+  ORT_API2_STATUS(ValueInfo_IsRequiredGraphInput, _In_ const OrtValueInfo *value_info,
+                  _Out_ bool *is_required_graph_input);
 
   /** \brief Returns a boolean indicating if the given value is an optional graph input.
    *
@@ -5825,8 +5825,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_IsOptionalGraphInput, _In_ const OrtValueInfo* value_info,
-                  _Out_ bool* is_optional_graph_input);
+  ORT_API2_STATUS(ValueInfo_IsOptionalGraphInput, _In_ const OrtValueInfo *value_info,
+                  _Out_ bool *is_optional_graph_input);
 
   /** \brief Returns a boolean indicating if the given value is a graph output.
    *
@@ -5837,7 +5837,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_IsGraphOutput, _In_ const OrtValueInfo* value_info, _Out_ bool* is_graph_output);
+  ORT_API2_STATUS(ValueInfo_IsGraphOutput, _In_ const OrtValueInfo *value_info, _Out_ bool *is_graph_output);
 
   /** \brief Returns a boolean indicating if the given value is a constant initializer.
    *
@@ -5853,8 +5853,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_IsConstantInitializer, _In_ const OrtValueInfo* value_info,
-                  _Out_ bool* is_constant_initializer);
+  ORT_API2_STATUS(ValueInfo_IsConstantInitializer, _In_ const OrtValueInfo *value_info,
+                  _Out_ bool *is_constant_initializer);
 
   /** \brief Returns a boolean indicating if the given value is defined in an outer scope.
    *
@@ -5869,8 +5869,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ValueInfo_IsFromOuterScope, _In_ const OrtValueInfo* value_info,
-                  _Out_ bool* is_from_outer_scope);
+  ORT_API2_STATUS(ValueInfo_IsFromOuterScope, _In_ const OrtValueInfo *value_info,
+                  _Out_ bool *is_from_outer_scope);
 
   /// @}
 
@@ -5886,7 +5886,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetName, _In_ const OrtGraph* graph, _Outptr_ const char** graph_name);
+  ORT_API2_STATUS(Graph_GetName, _In_ const OrtGraph *graph, _Outptr_ const char **graph_name);
 
   /** \brief Get the filepath to the model from which an OrtGraph is constructed.
    *
@@ -5901,7 +5901,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetModelPath, _In_ const OrtGraph* graph, _Outptr_ const ORTCHAR_T** model_path);
+  ORT_API2_STATUS(Graph_GetModelPath, _In_ const OrtGraph *graph, _Outptr_ const ORTCHAR_T **model_path);
 
   /** \brief Returns the ONNX IR version.
    *
@@ -5912,7 +5912,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetOnnxIRVersion, _In_ const OrtGraph* graph, _Out_ int64_t* onnx_ir_version);
+  ORT_API2_STATUS(Graph_GetOnnxIRVersion, _In_ const OrtGraph *graph, _Out_ int64_t *onnx_ir_version);
 
   /** \brief Returns the number of operator sets that the graph's model uses.
    *
@@ -5927,7 +5927,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNumOperatorSets, _In_ const OrtGraph* graph, _Out_ size_t* num_operator_sets);
+  ORT_API2_STATUS(Graph_GetNumOperatorSets, _In_ const OrtGraph *graph, _Out_ size_t *num_operator_sets);
 
   /** \brief Returns the operator sets that the graph's model uses.
    *
@@ -5949,9 +5949,9 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetOperatorSets, _In_ const OrtGraph* graph,
-                  _Out_writes_(num_operator_sets) const char** domains,
-                  _Out_writes_(num_operator_sets) int64_t* opset_versions, _In_ size_t num_operator_sets);
+  ORT_API2_STATUS(Graph_GetOperatorSets, _In_ const OrtGraph *graph,
+                  _Out_writes_(num_operator_sets) const char **domains,
+                  _Out_writes_(num_operator_sets) int64_t *opset_versions, _In_ size_t num_operator_sets);
 
   /** \brief Returns the number of graph inputs.
    *
@@ -5964,7 +5964,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNumInputs, _In_ const OrtGraph* graph, _Out_ size_t* num_inputs);
+  ORT_API2_STATUS(Graph_GetNumInputs, _In_ const OrtGraph *graph, _Out_ size_t *num_inputs);
 
   /** \brief Returns the graph's inputs as OrtValueInfo instances.
    *
@@ -5980,8 +5980,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetInputs, _In_ const OrtGraph* graph,
-                  _Out_writes_(num_inputs) const OrtValueInfo** inputs, _In_ size_t num_inputs);
+  ORT_API2_STATUS(Graph_GetInputs, _In_ const OrtGraph *graph,
+                  _Out_writes_(num_inputs) const OrtValueInfo **inputs, _In_ size_t num_inputs);
 
   /** \brief Returns the number of graph outputs.
    *
@@ -5992,7 +5992,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNumOutputs, _In_ const OrtGraph* graph, _Out_ size_t* num_outputs);
+  ORT_API2_STATUS(Graph_GetNumOutputs, _In_ const OrtGraph *graph, _Out_ size_t *num_outputs);
 
   /** \brief Returns the graph's outputs as OrtValueInfo instances.
    *
@@ -6006,8 +6006,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetOutputs, _In_ const OrtGraph* graph,
-                  _Out_writes_(num_outputs) const OrtValueInfo** outputs, _In_ size_t num_outputs);
+  ORT_API2_STATUS(Graph_GetOutputs, _In_ const OrtGraph *graph,
+                  _Out_writes_(num_outputs) const OrtValueInfo **outputs, _In_ size_t num_outputs);
 
   /** \brief Returns the number of graph initializers.
    *
@@ -6020,7 +6020,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNumInitializers, _In_ const OrtGraph* graph, _Out_ size_t* num_initializers);
+  ORT_API2_STATUS(Graph_GetNumInitializers, _In_ const OrtGraph *graph, _Out_ size_t *num_initializers);
 
   /** \brief Returns the graph's initializers as OrtValueInfo instances.
    *
@@ -6043,8 +6043,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetInitializers, _In_ const OrtGraph* graph,
-                  _Out_writes_(num_initializers) const OrtValueInfo** initializers,
+  ORT_API2_STATUS(Graph_GetInitializers, _In_ const OrtGraph *graph,
+                  _Out_writes_(num_initializers) const OrtValueInfo **initializers,
                   _In_ size_t num_initializers);
 
   /** \brief Returns the number of graph nodes.
@@ -6056,7 +6056,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNumNodes, _In_ const OrtGraph* graph, _Out_ size_t* num_nodes);
+  ORT_API2_STATUS(Graph_GetNumNodes, _In_ const OrtGraph *graph, _Out_ size_t *num_nodes);
 
   /** \brief Returns the graph's nodes as OrtNode instances.
    *
@@ -6073,8 +6073,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetNodes, _In_ const OrtGraph* graph,
-                  _Out_writes_(num_nodes) const OrtNode** nodes, _In_ size_t num_nodes);
+  ORT_API2_STATUS(Graph_GetNodes, _In_ const OrtGraph *graph,
+                  _Out_writes_(num_nodes) const OrtNode **nodes, _In_ size_t num_nodes);
 
   /** \brief Get the parent node for the given graph, if any exists.
    *
@@ -6089,7 +6089,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetParentNode, _In_ const OrtGraph* graph, _Outptr_result_maybenull_ const OrtNode** node);
+  ORT_API2_STATUS(Graph_GetParentNode, _In_ const OrtGraph *graph, _Outptr_result_maybenull_ const OrtNode **node);
 
   /** \brief Returns an OrtGraph that contains a subset of nodes in the source OrtGraph.
    *
@@ -6106,8 +6106,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetGraphView, _In_ const OrtGraph* src_graph, _In_ const OrtNode** nodes,
-                  _In_ size_t num_nodes, _Outptr_ OrtGraph** dst_graph);
+  ORT_API2_STATUS(Graph_GetGraphView, _In_ const OrtGraph *src_graph, _In_ const OrtNode **nodes,
+                  _In_ size_t num_nodes, _Outptr_ OrtGraph **dst_graph);
 
   /// @}
 
@@ -6126,7 +6126,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetId, _In_ const OrtNode* node, _Out_ size_t* node_id);
+  ORT_API2_STATUS(Node_GetId, _In_ const OrtNode *node, _Out_ size_t *node_id);
 
   /** \brief Returns a node's name. Can be an empty string.
    *
@@ -6137,7 +6137,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetName, _In_ const OrtNode* node, _Outptr_ const char** node_name);
+  ORT_API2_STATUS(Node_GetName, _In_ const OrtNode *node, _Outptr_ const char **node_name);
 
   /** \brief Returns a node's operator type (e.g., "Conv").
    *
@@ -6148,7 +6148,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetOperatorType, _In_ const OrtNode* node, _Outptr_ const char** operator_type);
+  ORT_API2_STATUS(Node_GetOperatorType, _In_ const OrtNode *node, _Outptr_ const char **operator_type);
 
   /** \brief Returns a node's domain name.
    *
@@ -6159,7 +6159,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetDomain, _In_ const OrtNode* node, _Outptr_ const char** domain_name);
+  ORT_API2_STATUS(Node_GetDomain, _In_ const OrtNode *node, _Outptr_ const char **domain_name);
 
   /** \brief Get the opset version in which the given node's operator type was first defined.
    *
@@ -6170,7 +6170,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetSinceVersion, _In_ const OrtNode* node, _Out_ int* since_version);
+  ORT_API2_STATUS(Node_GetSinceVersion, _In_ const OrtNode *node, _Out_ int *since_version);
 
   /** \brief Returns the number of node inputs.
    *
@@ -6181,7 +6181,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetNumInputs, _In_ const OrtNode* node, _Out_ size_t* num_inputs);
+  ORT_API2_STATUS(Node_GetNumInputs, _In_ const OrtNode *node, _Out_ size_t *num_inputs);
 
   /** \brief Returns the node's inputs as OrtValueInfo instances.
    *
@@ -6195,8 +6195,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetInputs, _In_ const OrtNode* node,
-                  _Out_writes_(num_inputs) const OrtValueInfo** inputs, _In_ size_t num_inputs);
+  ORT_API2_STATUS(Node_GetInputs, _In_ const OrtNode *node,
+                  _Out_writes_(num_inputs) const OrtValueInfo **inputs, _In_ size_t num_inputs);
 
   /** \brief Returns the number of node outputs.
    *
@@ -6207,7 +6207,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetNumOutputs, _In_ const OrtNode* node, _Out_ size_t* num_outputs);
+  ORT_API2_STATUS(Node_GetNumOutputs, _In_ const OrtNode *node, _Out_ size_t *num_outputs);
 
   /** \brief Returns the node's outputs as OrtValueInfo instances.
    *
@@ -6221,8 +6221,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetOutputs, _In_ const OrtNode* node,
-                  _Out_writes_(num_outputs) const OrtValueInfo** outputs, _In_ size_t num_outputs);
+  ORT_API2_STATUS(Node_GetOutputs, _In_ const OrtNode *node,
+                  _Out_writes_(num_outputs) const OrtValueInfo **outputs, _In_ size_t num_outputs);
 
   /** \brief Returns the number of node implicit inputs.
    *
@@ -6237,7 +6237,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetNumImplicitInputs, _In_ const OrtNode* node, _Out_ size_t* num_implicit_inputs);
+  ORT_API2_STATUS(Node_GetNumImplicitInputs, _In_ const OrtNode *node, _Out_ size_t *num_implicit_inputs);
 
   /** \brief Get the implicit inputs, as OrtValueInfo instances, that are used within the given node's subgraphs.
    *
@@ -6256,8 +6256,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetImplicitInputs, _In_ const OrtNode* node,
-                  _Out_writes_(num_implicit_inputs) const OrtValueInfo** implicit_inputs,
+  ORT_API2_STATUS(Node_GetImplicitInputs, _In_ const OrtNode *node,
+                  _Out_writes_(num_implicit_inputs) const OrtValueInfo **implicit_inputs,
                   _In_ size_t num_implicit_inputs);
 
   /** \brief Returns the number of node attributes.
@@ -6269,7 +6269,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetNumAttributes, _In_ const OrtNode* node, _Out_ size_t* num_attributes);
+  ORT_API2_STATUS(Node_GetNumAttributes, _In_ const OrtNode *node, _Out_ size_t *num_attributes);
 
   /** \brief Returns a node's attributes as OrtOpAttr instances.
    *
@@ -6288,8 +6288,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetAttributes, _In_ const OrtNode* node,
-                  _Out_writes_(num_attributes) const OrtOpAttr** attributes, _In_ size_t num_attributes);
+  ORT_API2_STATUS(Node_GetAttributes, _In_ const OrtNode *node,
+                  _Out_writes_(num_attributes) const OrtOpAttr **attributes, _In_ size_t num_attributes);
 
   /** \brief Gets the OrtNode's attribute as OrtOpAttr by name.
    *
@@ -6309,8 +6309,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetAttributeByName, _In_ const OrtNode* node, _In_ const char* attribute_name,
-                  _Outptr_result_maybenull_ const OrtOpAttr** attribute);
+  ORT_API2_STATUS(Node_GetAttributeByName, _In_ const OrtNode *node, _In_ const char *attribute_name,
+                  _Outptr_result_maybenull_ const OrtOpAttr **attribute);
 
   /** \brief Get the OrtNode's 'TENSOR' attribute as an OrtValue.
    *
@@ -6322,8 +6322,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OpAttr_GetTensorAttributeAsOrtValue, _In_ const OrtOpAttr* attribute,
-                  _Outptr_result_maybenull_ OrtValue** attr_tensor);
+  ORT_API2_STATUS(OpAttr_GetTensorAttributeAsOrtValue, _In_ const OrtOpAttr *attribute,
+                  _Outptr_result_maybenull_ OrtValue **attr_tensor);
 
   /** \brief Get the attribute type as OrtOpAttrType from an OrtOpAttr.
    *
@@ -6334,7 +6334,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OpAttr_GetType, _In_ const OrtOpAttr* attribute, _Out_ OrtOpAttrType* type);
+  ORT_API2_STATUS(OpAttr_GetType, _In_ const OrtOpAttr *attribute, _Out_ OrtOpAttrType *type);
 
   /** \brief Get the attribute name from an OrtOpAttr.
    *
@@ -6345,7 +6345,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(OpAttr_GetName, _In_ const OrtOpAttr* attribute, _Outptr_ const char** name);
+  ORT_API2_STATUS(OpAttr_GetName, _In_ const OrtOpAttr *attribute, _Outptr_ const char **name);
 
   /** \brief Returns the number of subgraphs contained by the given node.
    *
@@ -6358,7 +6358,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetNumSubgraphs, _In_ const OrtNode* node, _Out_ size_t* num_subgraphs);
+  ORT_API2_STATUS(Node_GetNumSubgraphs, _In_ const OrtNode *node, _Out_ size_t *num_subgraphs);
 
   /** \brief Get the subgraphs, as OrtGraph instances, contained by the given node.
    *
@@ -6377,9 +6377,9 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetSubgraphs, _In_ const OrtNode* node,
-                  _Out_writes_(num_subgraphs) const OrtGraph** subgraphs, _In_ size_t num_subgraphs,
-                  _Out_writes_opt_(num_subgraphs) const char** attribute_names);
+  ORT_API2_STATUS(Node_GetSubgraphs, _In_ const OrtNode *node,
+                  _Out_writes_(num_subgraphs) const OrtGraph **subgraphs, _In_ size_t num_subgraphs,
+                  _Out_writes_opt_(num_subgraphs) const char **attribute_names);
 
   /** \brief Get the node's parent OrtGraph instance.
    *
@@ -6396,7 +6396,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetGraph, _In_ const OrtNode* node, _Outptr_result_maybenull_ const OrtGraph** graph);
+  ORT_API2_STATUS(Node_GetGraph, _In_ const OrtNode *node, _Outptr_result_maybenull_ const OrtGraph **graph);
 
   /** \brief Returns the execution provider name that this node is assigned to run on.
    *         Returns NULL if the node has not been assigned to any execution provider yet.
@@ -6409,7 +6409,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Node_GetEpName, _In_ const OrtNode* node, _Outptr_result_maybenull_ const char** out);
+  ORT_API2_STATUS(Node_GetEpName, _In_ const OrtNode *node, _Outptr_result_maybenull_ const char **out);
 
   /// @}
 
@@ -6435,7 +6435,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(const ORTCHAR_T*, ExternalInitializerInfo_GetFilePath, _In_ const OrtExternalInitializerInfo* info);
+  ORT_API_T(const ORTCHAR_T *, ExternalInitializerInfo_GetFilePath, _In_ const OrtExternalInitializerInfo *info);
 
   /** \brief Get the byte offset within the file where the initializer's data is stored.
    *
@@ -6444,7 +6444,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(int64_t, ExternalInitializerInfo_GetFileOffset, _In_ const OrtExternalInitializerInfo* info);
+  ORT_API_T(int64_t, ExternalInitializerInfo_GetFileOffset, _In_ const OrtExternalInitializerInfo *info);
 
   /** \brief Get the size in bytes of the initializer's data within the file.
    *
@@ -6453,7 +6453,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API_T(size_t, ExternalInitializerInfo_GetByteSize, _In_ const OrtExternalInitializerInfo* info);
+  ORT_API_T(size_t, ExternalInitializerInfo_GetByteSize, _In_ const OrtExternalInitializerInfo *info);
 
   /// @}
 
@@ -6474,8 +6474,8 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API_T(const char*, GetRunConfigEntry, _In_ const OrtRunOptions* options,
-            _In_z_ const char* config_key);
+  ORT_API_T(const char *, GetRunConfigEntry, _In_ const OrtRunOptions *options,
+            _In_z_ const char *config_key);
 
   /// @}
 
@@ -6488,7 +6488,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API_T(const OrtMemoryInfo*, EpDevice_MemoryInfo, _In_ const OrtEpDevice* ep_device,
+  ORT_API_T(const OrtMemoryInfo *, EpDevice_MemoryInfo, _In_ const OrtEpDevice *ep_device,
             _In_ OrtDeviceMemoryType memory_type);
 
   /** \brief Create/replace a shared allocator for the OrtEpDevice in the OrtEnv.
@@ -6514,10 +6514,10 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(CreateSharedAllocator, _In_ OrtEnv* env, _In_ const OrtEpDevice* ep_device,
+  ORT_API2_STATUS(CreateSharedAllocator, _In_ OrtEnv *env, _In_ const OrtEpDevice *ep_device,
                   _In_ OrtDeviceMemoryType mem_type, _In_ OrtAllocatorType allocator_type,
-                  _In_opt_ const OrtKeyValuePairs* allocator_options,
-                  _Outptr_opt_ OrtAllocator** allocator);
+                  _In_opt_ const OrtKeyValuePairs *allocator_options,
+                  _Outptr_opt_ OrtAllocator **allocator);
 
   /** \brief Get a shared allocator from the OrtEnv.
    *
@@ -6537,8 +6537,8 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(GetSharedAllocator, _In_ OrtEnv* env, _In_ const OrtMemoryInfo* mem_info,
-                  _Outptr_result_maybenull_ OrtAllocator** allocator);
+  ORT_API2_STATUS(GetSharedAllocator, _In_ OrtEnv *env, _In_ const OrtMemoryInfo *mem_info,
+                  _Outptr_result_maybenull_ OrtAllocator **allocator);
 
   /** \brief Release a shared allocator from the OrtEnv for the OrtEpDevice and memory type.
    *
@@ -6553,7 +6553,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(ReleaseSharedAllocator, _In_ OrtEnv* env, _In_ const OrtEpDevice* ep_device,
+  ORT_API2_STATUS(ReleaseSharedAllocator, _In_ OrtEnv *env, _In_ const OrtEpDevice *ep_device,
                   _In_ OrtDeviceMemoryType mem_type);
 
   /** \brief Get a const pointer to the raw data inside a tensor
@@ -6568,7 +6568,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(GetTensorData, _In_ const OrtValue* value, _Outptr_ const void** out);
+  ORT_API2_STATUS(GetTensorData, _In_ const OrtValue *value, _Outptr_ const void **out);
 
   /** \brief Get Session configuration entries.
    *
@@ -6580,7 +6580,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(GetSessionOptionsConfigEntries, _In_ const OrtSessionOptions* options, _Outptr_ OrtKeyValuePairs** out);
+  ORT_API2_STATUS(GetSessionOptionsConfigEntries, _In_ const OrtSessionOptions *options, _Outptr_ OrtKeyValuePairs **out);
 
   /** \brief Get the OrtMemoryInfo for each input of the session.
    *
@@ -6599,8 +6599,8 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(SessionGetMemoryInfoForInputs, _In_ const OrtSession* session,
-                  _Out_writes_(num_inputs) const OrtMemoryInfo** inputs_memory_info,
+  ORT_API2_STATUS(SessionGetMemoryInfoForInputs, _In_ const OrtSession *session,
+                  _Out_writes_(num_inputs) const OrtMemoryInfo **inputs_memory_info,
                   _In_ size_t num_inputs);
 
   /** \brief Get the OrtMemoryInfo for each output of the session.
@@ -6622,8 +6622,8 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(SessionGetMemoryInfoForOutputs, _In_ const OrtSession* session,
-                  _Out_writes_(num_outputs) const OrtMemoryInfo** outputs_memory_info,
+  ORT_API2_STATUS(SessionGetMemoryInfoForOutputs, _In_ const OrtSession *session,
+                  _Out_writes_(num_outputs) const OrtMemoryInfo **outputs_memory_info,
                   _In_ size_t num_outputs);
 
   /** \brief Get the OrtEpDevice (if available) for each input of the session.
@@ -6650,8 +6650,8 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(SessionGetEpDeviceForInputs, _In_ const OrtSession* session,
-                  _Out_writes_(num_inputs) const OrtEpDevice** inputs_ep_devices,
+  ORT_API2_STATUS(SessionGetEpDeviceForInputs, _In_ const OrtSession *session,
+                  _Out_writes_(num_inputs) const OrtEpDevice **inputs_ep_devices,
                   _In_ size_t num_inputs);
 
   /** \brief Create an OrtSyncStream for the given OrtEpDevice.
@@ -6669,9 +6669,9 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(CreateSyncStreamForEpDevice, _In_ const OrtEpDevice* ep_device,
-                  _In_opt_ const OrtKeyValuePairs* stream_options,
-                  _Outptr_ OrtSyncStream** stream);
+  ORT_API2_STATUS(CreateSyncStreamForEpDevice, _In_ const OrtEpDevice *ep_device,
+                  _In_opt_ const OrtKeyValuePairs *stream_options,
+                  _Outptr_ OrtSyncStream **stream);
 
   /** \brief Get the native handle of the sync stream.
    *
@@ -6683,7 +6683,7 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API_T(void*, SyncStream_GetHandle, _In_ OrtSyncStream* stream);
+  ORT_API_T(void *, SyncStream_GetHandle, _In_ OrtSyncStream *stream);
 
   ORT_CLASS_RELEASE(SyncStream);
 
@@ -6711,10 +6711,10 @@ struct OrtApi {
    *
    * \since Version 1.23
    */
-  ORT_API2_STATUS(CopyTensors, _In_ const OrtEnv* env,
-                  _In_reads_(num_tensors) const OrtValue* const* src_tensors,
-                  _In_reads_(num_tensors) OrtValue* const* dst_tensors,
-                  _In_opt_ OrtSyncStream* stream,
+  ORT_API2_STATUS(CopyTensors, _In_ const OrtEnv *env,
+                  _In_reads_(num_tensors) const OrtValue *const *src_tensors,
+                  _In_reads_(num_tensors) OrtValue *const *dst_tensors,
+                  _In_opt_ OrtSyncStream *stream,
                   _In_ size_t num_tensors);
 
   /** \brief Get ::OrtModelMetadata from an ::OrtGraph
@@ -6726,7 +6726,7 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(Graph_GetModelMetadata, _In_ const OrtGraph* graph, _Outptr_ OrtModelMetadata** out);
+  ORT_API2_STATUS(Graph_GetModelMetadata, _In_ const OrtGraph *graph, _Outptr_ OrtModelMetadata **out);
 
   /** \brief Validate a compiled model's compatibility information for one or more EP devices.
    *
@@ -6741,10 +6741,10 @@ struct OrtApi {
    * \since Version 1.23.
    */
   ORT_API2_STATUS(GetModelCompatibilityForEpDevices,
-                  _In_reads_(num_ep_devices) const OrtEpDevice* const* ep_devices,
+                  _In_reads_(num_ep_devices) const OrtEpDevice *const *ep_devices,
                   _In_ size_t num_ep_devices,
-                  _In_ const char* compatibility_info,
-                  _Out_ OrtCompiledModelCompatibility* out_status);
+                  _In_ const char *compatibility_info,
+                  _Out_ OrtCompiledModelCompatibility *out_status);
 
   /// \name OrtExternalInitializerInfo
   /// @{
@@ -6761,8 +6761,8 @@ struct OrtApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(CreateExternalInitializerInfo, _In_ const ORTCHAR_T* filepath, _In_ int64_t file_offset,
-                  _In_ size_t byte_size, _Outptr_ OrtExternalInitializerInfo** out);
+  ORT_API2_STATUS(CreateExternalInitializerInfo, _In_ const ORTCHAR_T *filepath, _In_ int64_t file_offset,
+                  _In_ size_t byte_size, _Outptr_ OrtExternalInitializerInfo **out);
 
   /// @}
   /** \brief Fetch whether the tensor has shape information.
@@ -6771,7 +6771,7 @@ struct OrtApi {
    *
    * \since Version 1.24
    */
-  ORT_API_T(bool, TensorTypeAndShape_HasShape, _In_ const OrtTensorTypeAndShapeInfo* info);
+  ORT_API_T(bool, TensorTypeAndShape_HasShape, _In_ const OrtTensorTypeAndShapeInfo *info);
 
   /** \brief Get all config entries from ::OrtKernelInfo.
    *
@@ -6788,7 +6788,7 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(KernelInfo_GetConfigEntries, _In_ const OrtKernelInfo* info, _Outptr_ OrtKeyValuePairs** out);
+  ORT_API2_STATUS(KernelInfo_GetConfigEntries, _In_ const OrtKernelInfo *info, _Outptr_ OrtKeyValuePairs **out);
 
   /** \brief Get the graph node's operator domain from ::OrtKernelInfo.
    *
@@ -6811,8 +6811,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(KernelInfo_GetOperatorDomain, _In_ const OrtKernelInfo* info, _Out_opt_ char* out,
-                  _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfo_GetOperatorDomain, _In_ const OrtKernelInfo *info, _Out_opt_ char *out,
+                  _Inout_ size_t *size);
 
   /** \brief Get the graph node's operator type from ::OrtKernelInfo.
    *
@@ -6835,8 +6835,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(KernelInfo_GetOperatorType, _In_ const OrtKernelInfo* info, _Out_opt_ char* out,
-                  _Inout_ size_t* size);
+  ORT_API2_STATUS(KernelInfo_GetOperatorType, _In_ const OrtKernelInfo *info, _Out_opt_ char *out,
+                  _Inout_ size_t *size);
 
   /** \brief Get the opset version in which the given node's operator type was first defined from ::OrtKernelInfo.
    *
@@ -6846,8 +6846,8 @@ struct OrtApi {
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.24
    */
-  ORT_API2_STATUS(KernelInfo_GetOperatorSinceVersion, _In_ const OrtKernelInfo* info,
-                  _Out_ int* since_version);
+  ORT_API2_STATUS(KernelInfo_GetOperatorSinceVersion, _In_ const OrtKernelInfo *info,
+                  _Out_ int *since_version);
 
   /** \brief Get the EP Interop API instance.
    *
@@ -6859,7 +6859,7 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  const OrtInteropApi*(ORT_API_CALL* GetInteropApi)(void);
+  const OrtInteropApi *(ORT_API_CALL *GetInteropApi)(void);
 
   /** \brief Get the EP device assigned to each session output.
    *
@@ -6882,8 +6882,8 @@ struct OrtApi {
    *
    * \since Version 1.24
    */
-  ORT_API2_STATUS(SessionGetEpDeviceForOutputs, _In_ const OrtSession* session,
-                  _Out_writes_(num_outputs) const OrtEpDevice** outputs_ep_devices,
+  ORT_API2_STATUS(SessionGetEpDeviceForOutputs, _In_ const OrtSession *session,
+                  _Out_writes_(num_outputs) const OrtEpDevice **outputs_ep_devices,
                   _In_ size_t num_outputs);
   /** \brief Get the number of available hardware devices.
    *
@@ -6897,7 +6897,7 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetNumHardwareDevices, _In_ const OrtEnv* env, _Out_ size_t* num_devices);
+  ORT_API2_STATUS(GetNumHardwareDevices, _In_ const OrtEnv *env, _Out_ size_t *num_devices);
 
   /** \brief Get the list of available hardware devices.
    *
@@ -6918,8 +6918,8 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetHardwareDevices, _In_ const OrtEnv* env,
-                  _Out_writes_(num_devices) const OrtHardwareDevice** devices,
+  ORT_API2_STATUS(GetHardwareDevices, _In_ const OrtEnv *env,
+                  _Out_writes_(num_devices) const OrtHardwareDevice **devices,
                   _In_ size_t num_devices);
 
   /** \brief Check for known incompatibility issues between hardware device and a specific execution provider.
@@ -6943,10 +6943,10 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetHardwareDeviceEpIncompatibilityDetails, _In_ const OrtEnv* env,
-                  _In_ const char* ep_name,
-                  _In_ const OrtHardwareDevice* hw,
-                  _Outptr_ OrtDeviceEpIncompatibilityDetails** details);
+  ORT_API2_STATUS(GetHardwareDeviceEpIncompatibilityDetails, _In_ const OrtEnv *env,
+                  _In_ const char *ep_name,
+                  _In_ const OrtHardwareDevice *hw,
+                  _Outptr_ OrtDeviceEpIncompatibilityDetails **details);
 
   /// \name OrtDeviceEpIncompatibilityDetails
   /// Accessor functions for device incompatibility details
@@ -6962,8 +6962,8 @@ struct OrtApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(DeviceEpIncompatibilityDetails_GetReasonsBitmask,
-                  _In_ const OrtDeviceEpIncompatibilityDetails* details,
-                  _Out_ uint32_t* reasons_bitmask);
+                  _In_ const OrtDeviceEpIncompatibilityDetails *details,
+                  _Out_ uint32_t *reasons_bitmask);
 
   /** \brief Get the notes from OrtDeviceEpIncompatibilityDetails.
    *
@@ -6976,8 +6976,8 @@ struct OrtApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(DeviceEpIncompatibilityDetails_GetNotes,
-                  _In_ const OrtDeviceEpIncompatibilityDetails* details,
-                  _Outptr_result_maybenull_ const char** notes);
+                  _In_ const OrtDeviceEpIncompatibilityDetails *details,
+                  _Outptr_result_maybenull_ const char **notes);
 
   /** \brief Get the execution provider error code from OrtDeviceEpIncompatibilityDetails.
    *
@@ -6992,8 +6992,8 @@ struct OrtApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(DeviceEpIncompatibilityDetails_GetErrorCode,
-                  _In_ const OrtDeviceEpIncompatibilityDetails* details,
-                  _Out_ int32_t* error_code);
+                  _In_ const OrtDeviceEpIncompatibilityDetails *details,
+                  _Out_ int32_t *error_code);
 
   /** \brief Release an OrtDeviceEpIncompatibilityDetails instance.
    *
@@ -7038,10 +7038,10 @@ struct OrtApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(GetCompatibilityInfoFromModel,
-                  _In_ const ORTCHAR_T* model_path,
-                  _In_ const char* ep_type,
-                  _Inout_ OrtAllocator* allocator,
-                  _Outptr_result_maybenull_ char** compatibility_info);
+                  _In_ const ORTCHAR_T *model_path,
+                  _In_ const char *ep_type,
+                  _Inout_ OrtAllocator *allocator,
+                  _Outptr_result_maybenull_ char **compatibility_info);
 
   /** \brief Extract EP compatibility info from precompiled model bytes in memory.
    *
@@ -7066,11 +7066,11 @@ struct OrtApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(GetCompatibilityInfoFromModelBytes,
-                  _In_reads_(model_data_length) const void* model_data,
+                  _In_reads_(model_data_length) const void *model_data,
                   _In_ size_t model_data_length,
-                  _In_ const char* ep_type,
-                  _Inout_ OrtAllocator* allocator,
-                  _Outptr_result_maybenull_ char** compatibility_info);
+                  _In_ const char *ep_type,
+                  _Inout_ OrtAllocator *allocator,
+                  _Outptr_result_maybenull_ char **compatibility_info);
 
   /// @}
 
@@ -7086,7 +7086,7 @@ struct OrtApi {
    *
    * \since Version 1.24
    */
-  ORT_API2_STATUS(CreateEnvWithOptions, _In_ const OrtEnvCreationOptions* options, _Outptr_ OrtEnv** out);
+  ORT_API2_STATUS(CreateEnvWithOptions, _In_ const OrtEnvCreationOptions *options, _Outptr_ OrtEnv **out);
 
   /** \brief Get information about the subgraphs assigned to each execution provider (EP) and the nodes within.
    *
@@ -7117,9 +7117,9 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(Session_GetEpGraphAssignmentInfo, _In_ const OrtSession* session,
-                  _Outptr_ const OrtEpAssignedSubgraph* const** ep_subgraphs,
-                  _Out_ size_t* num_ep_subgraphs);
+  ORT_API2_STATUS(Session_GetEpGraphAssignmentInfo, _In_ const OrtSession *session,
+                  _Outptr_ const OrtEpAssignedSubgraph *const **ep_subgraphs,
+                  _Out_ size_t *num_ep_subgraphs);
 
   /** \brief Get the name of the execution provider to which the subgraph was assigned.
    *
@@ -7131,8 +7131,8 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpAssignedSubgraph_GetEpName, _In_ const OrtEpAssignedSubgraph* ep_subgraph,
-                  _Outptr_ const char** out);
+  ORT_API2_STATUS(EpAssignedSubgraph_GetEpName, _In_ const OrtEpAssignedSubgraph *ep_subgraph,
+                  _Outptr_ const char **out);
 
   /** \brief Get the nodes in a subgraph assigned to a specific execution provider.
    *
@@ -7144,8 +7144,8 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpAssignedSubgraph_GetNodes, _In_ const OrtEpAssignedSubgraph* ep_subgraph,
-                  _Outptr_ const OrtEpAssignedNode* const** ep_nodes, _Out_ size_t* num_ep_nodes);
+  ORT_API2_STATUS(EpAssignedSubgraph_GetNodes, _In_ const OrtEpAssignedSubgraph *ep_subgraph,
+                  _Outptr_ const OrtEpAssignedNode *const **ep_nodes, _Out_ size_t *num_ep_nodes);
 
   /** \brief Get the name of the node assigned to an execution provider.
    *
@@ -7157,7 +7157,7 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpAssignedNode_GetName, _In_ const OrtEpAssignedNode* ep_node, _Outptr_ const char** out);
+  ORT_API2_STATUS(EpAssignedNode_GetName, _In_ const OrtEpAssignedNode *ep_node, _Outptr_ const char **out);
 
   /** \brief Get the domain of the node assigned to an execution provider.
    *
@@ -7169,7 +7169,7 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpAssignedNode_GetDomain, _In_ const OrtEpAssignedNode* ep_node, _Outptr_ const char** out);
+  ORT_API2_STATUS(EpAssignedNode_GetDomain, _In_ const OrtEpAssignedNode *ep_node, _Outptr_ const char **out);
 
   /** \brief Get the operator type of the node assigned to an execution provider.
    *
@@ -7181,7 +7181,7 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(EpAssignedNode_GetOperatorType, _In_ const OrtEpAssignedNode* ep_node, _Outptr_ const char** out);
+  ORT_API2_STATUS(EpAssignedNode_GetOperatorType, _In_ const OrtEpAssignedNode *ep_node, _Outptr_ const char **out);
 
   /** \brief Sets OrtSyncStream for the run options
    *
@@ -7194,7 +7194,7 @@ struct OrtApi {
    *
    * \since 1.24
    */
-  ORT_API_T(void, RunOptionsSetSyncStream, _Inout_ OrtRunOptions* options, _In_ OrtSyncStream* sync_stream);
+  ORT_API_T(void, RunOptionsSetSyncStream, _Inout_ OrtRunOptions *options, _In_ OrtSyncStream *sync_stream);
 
   /** \brief Get the element data type and shape for an OrtValue that represents a Tensor (scalar, dense, or sparse).
    *
@@ -7216,10 +7216,10 @@ struct OrtApi {
    *
    * \since Version 1.24.
    */
-  ORT_API2_STATUS(GetTensorElementTypeAndShapeDataReference, _In_ const OrtValue* value,
-                  _Out_ ONNXTensorElementDataType* elem_type,
-                  _Outptr_result_maybenull_ const int64_t** shape_data,
-                  _Out_ size_t* shape_data_count);
+  ORT_API2_STATUS(GetTensorElementTypeAndShapeDataReference, _In_ const OrtValue *value,
+                  _Out_ ONNXTensorElementDataType *elem_type,
+                  _Outptr_result_maybenull_ const int64_t **shape_data,
+                  _Out_ size_t *shape_data_count);
 };
 
 /*
@@ -7248,90 +7248,90 @@ typedef enum OrtCustomOpInputOutputCharacteristic {
  * the implementor of the custom op.
  */
 struct OrtCustomOp {
-  uint32_t version;  // Must be initialized to ORT_API_VERSION
+  uint32_t version; // Must be initialized to ORT_API_VERSION
 
   // This callback creates the kernel, which is a user defined
   // parameter that is passed to the Kernel* callbacks below. It is
   // recommended to use CreateKernelV2 which allows for a safe error
   // propagation by returning an OrtStatusPtr.
-  void*(ORT_API_CALL* CreateKernel)(_In_ const struct OrtCustomOp* op, _In_ const OrtApi* api,
-                                    _In_ const OrtKernelInfo* info);
+  void *(ORT_API_CALL *CreateKernel)(_In_ const struct OrtCustomOp *op, _In_ const OrtApi *api,
+                                     _In_ const OrtKernelInfo *info);
 
   // Returns the name of the op
-  const char*(ORT_API_CALL* GetName)(_In_ const struct OrtCustomOp* op);
+  const char *(ORT_API_CALL *GetName)(_In_ const struct OrtCustomOp *op);
 
   // Returns the type of the execution provider, return nullptr to use CPU execution provider
-  const char*(ORT_API_CALL* GetExecutionProviderType)(_In_ const struct OrtCustomOp* op);
+  const char *(ORT_API_CALL *GetExecutionProviderType)(_In_ const struct OrtCustomOp *op);
 
   // Returns the count and types of the input & output tensors
-  ONNXTensorElementDataType(ORT_API_CALL* GetInputType)(_In_ const struct OrtCustomOp* op, _In_ size_t index);
-  size_t(ORT_API_CALL* GetInputTypeCount)(_In_ const struct OrtCustomOp* op);
-  ONNXTensorElementDataType(ORT_API_CALL* GetOutputType)(_In_ const struct OrtCustomOp* op, _In_ size_t index);
-  size_t(ORT_API_CALL* GetOutputTypeCount)(_In_ const struct OrtCustomOp* op);
+  ONNXTensorElementDataType(ORT_API_CALL *GetInputType)(_In_ const struct OrtCustomOp *op, _In_ size_t index);
+  size_t(ORT_API_CALL *GetInputTypeCount)(_In_ const struct OrtCustomOp *op);
+  ONNXTensorElementDataType(ORT_API_CALL *GetOutputType)(_In_ const struct OrtCustomOp *op, _In_ size_t index);
+  size_t(ORT_API_CALL *GetOutputTypeCount)(_In_ const struct OrtCustomOp *op);
 
   // Perform a computation step.  It is recommended to use
   // KernelComputeV2 which allows for a safe error propagation by
   // returning an OrtStatusPtr.
-  void(ORT_API_CALL* KernelCompute)(_In_ void* op_kernel, _In_ OrtKernelContext* context);
-  void(ORT_API_CALL* KernelDestroy)(_In_ void* op_kernel);
+  void(ORT_API_CALL *KernelCompute)(_In_ void *op_kernel, _In_ OrtKernelContext *context);
+  void(ORT_API_CALL *KernelDestroy)(_In_ void *op_kernel);
 
   // Returns the characteristics of the input & output tensors
-  OrtCustomOpInputOutputCharacteristic(ORT_API_CALL* GetInputCharacteristic)(_In_ const struct OrtCustomOp* op, _In_ size_t index);
-  OrtCustomOpInputOutputCharacteristic(ORT_API_CALL* GetOutputCharacteristic)(_In_ const struct OrtCustomOp* op, _In_ size_t index);
+  OrtCustomOpInputOutputCharacteristic(ORT_API_CALL *GetInputCharacteristic)(_In_ const struct OrtCustomOp *op, _In_ size_t index);
+  OrtCustomOpInputOutputCharacteristic(ORT_API_CALL *GetOutputCharacteristic)(_In_ const struct OrtCustomOp *op, _In_ size_t index);
 
   // Returns the memory type of the input tensors. This API allows the custom op
   // to place the inputs on specific devices. By default, it returns
   // OrtMemTypeDefault, which means the input is placed on the default device for
   // the execution provider. If the inputs need to be with different memory types,
   // this function can be overridden to return the specific memory types.
-  OrtMemType(ORT_API_CALL* GetInputMemoryType)(_In_ const struct OrtCustomOp* op, _In_ size_t index);
+  OrtMemType(ORT_API_CALL *GetInputMemoryType)(_In_ const struct OrtCustomOp *op, _In_ size_t index);
 
   // Returns the minimum number of input arguments expected for the variadic input.
   // Applicable only for custom ops that have a variadic input.
-  int(ORT_API_CALL* GetVariadicInputMinArity)(_In_ const struct OrtCustomOp* op);
+  int(ORT_API_CALL *GetVariadicInputMinArity)(_In_ const struct OrtCustomOp *op);
 
   // Returns true (non-zero) if all arguments of a variadic input have to be of the same type (homogeneous),
   // and false (zero) otherwise.
   // Applicable only for custom ops that have a variadic input.
-  int(ORT_API_CALL* GetVariadicInputHomogeneity)(_In_ const struct OrtCustomOp* op);
+  int(ORT_API_CALL *GetVariadicInputHomogeneity)(_In_ const struct OrtCustomOp *op);
 
   // Returns the minimum number of output values expected for the variadic output.
   // Applicable only for custom ops that have a variadic output.
-  int(ORT_API_CALL* GetVariadicOutputMinArity)(_In_ const struct OrtCustomOp* op);
+  int(ORT_API_CALL *GetVariadicOutputMinArity)(_In_ const struct OrtCustomOp *op);
 
   // Returns true (non-zero) if all outputs values of a variadic output have to be of the same type (homogeneous),
   // and false (zero) otherwise.
   // Applicable only for custom ops that have a variadic output.
-  int(ORT_API_CALL* GetVariadicOutputHomogeneity)(_In_ const struct OrtCustomOp* op);
+  int(ORT_API_CALL *GetVariadicOutputHomogeneity)(_In_ const struct OrtCustomOp *op);
 
   // Create the kernel state which is passed to each compute call.
-  OrtStatusPtr(ORT_API_CALL* CreateKernelV2)(_In_ const struct OrtCustomOp* op, _In_ const OrtApi* api,
-                                             _In_ const OrtKernelInfo* info,
-                                             _Out_ void** kernel);
+  OrtStatusPtr(ORT_API_CALL *CreateKernelV2)(_In_ const struct OrtCustomOp *op, _In_ const OrtApi *api,
+                                             _In_ const OrtKernelInfo *info,
+                                             _Out_ void **kernel);
 
   // Perform the computation step.
-  OrtStatusPtr(ORT_API_CALL* KernelComputeV2)(_In_ void* op_kernel, _In_ OrtKernelContext* context);
+  OrtStatusPtr(ORT_API_CALL *KernelComputeV2)(_In_ void *op_kernel, _In_ OrtKernelContext *context);
 
-  OrtStatusPtr(ORT_API_CALL* InferOutputShapeFn)(_In_ const struct OrtCustomOp* op, _In_ OrtShapeInferContext*);
+  OrtStatusPtr(ORT_API_CALL *InferOutputShapeFn)(_In_ const struct OrtCustomOp *op, _In_ OrtShapeInferContext *);
 
   // Get start range
-  int(ORT_API_CALL* GetStartVersion)(_In_ const struct OrtCustomOp* op);
-  int(ORT_API_CALL* GetEndVersion)(_In_ const struct OrtCustomOp* op);
+  int(ORT_API_CALL *GetStartVersion)(_In_ const struct OrtCustomOp *op);
+  int(ORT_API_CALL *GetEndVersion)(_In_ const struct OrtCustomOp *op);
 
   // Get the inplace_map that defines which output can reuse which input
   // Callers will provide 2 raw int* and pass in their address, this function will fill these 2 arrays
   // when return, output (*output_index)[i] may reuse the input (*input_index[i]).
   // The return value is the size of these 2 arrays.
   // Callers are responsible to delete these 2 arrays after use by calling OrtCustomOp::ReleaseMayInplace().
-  size_t(ORT_API_CALL* GetMayInplace)(_Out_ int** input_index, _Out_ int** output_index);
+  size_t(ORT_API_CALL *GetMayInplace)(_Out_ int **input_index, _Out_ int **output_index);
 
   // Release the pointer input_index and output_index allocated from GetMayInplace() function.
   // If GetMayInplace() is defined, this function MUST be defined as well.
-  void(ORT_API_CALL* ReleaseMayInplace)(_Frees_ptr_opt_ int* input_index, _Frees_ptr_opt_ int* output_index);
+  void(ORT_API_CALL *ReleaseMayInplace)(_Frees_ptr_opt_ int *input_index, _Frees_ptr_opt_ int *output_index);
 
   // Same as GetMayInplace() and ReleaseMayInplace()
-  size_t(ORT_API_CALL* GetAliasMap)(_Out_ int** input_index, _Out_ int** output_index);
-  void(ORT_API_CALL* ReleaseAliasMap)(_Frees_ptr_opt_ int* input_index, _Frees_ptr_opt_ int* output_index);
+  size_t(ORT_API_CALL *GetAliasMap)(_Out_ int **input_index, _Out_ int **output_index);
+  void(ORT_API_CALL *ReleaseAliasMap)(_Frees_ptr_opt_ int *input_index, _Frees_ptr_opt_ int *output_index);
 };
 
 /**
@@ -7365,8 +7365,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateTensorTypeInfo, _In_ const OrtTensorTypeAndShapeInfo* tensor_info,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(CreateTensorTypeInfo, _In_ const OrtTensorTypeAndShapeInfo *tensor_info,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Create an OrtTypeInfo instance for a SparseTensor.
    *
@@ -7381,8 +7381,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateSparseTensorTypeInfo, _In_ const OrtTensorTypeAndShapeInfo* tensor_info,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(CreateSparseTensorTypeInfo, _In_ const OrtTensorTypeAndShapeInfo *tensor_info,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Create an OrtTypeInfo instance for a Map.
    *
@@ -7398,8 +7398,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateMapTypeInfo, ONNXTensorElementDataType map_key_type, _In_ const OrtTypeInfo* map_value_type,
-                  _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(CreateMapTypeInfo, ONNXTensorElementDataType map_key_type, _In_ const OrtTypeInfo *map_value_type,
+                  _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Create an OrtTypeInfo instance for a Sequence.
    *
@@ -7414,7 +7414,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateSequenceTypeInfo, _In_ const OrtTypeInfo* sequence_type, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(CreateSequenceTypeInfo, _In_ const OrtTypeInfo *sequence_type, _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Create an OrtTypeInfo instance for an Optional.
    *
@@ -7429,7 +7429,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateOptionalTypeInfo, _In_ const OrtTypeInfo* contained_type, _Outptr_ OrtTypeInfo** type_info);
+  ORT_API2_STATUS(CreateOptionalTypeInfo, _In_ const OrtTypeInfo *contained_type, _Outptr_ OrtTypeInfo **type_info);
 
   /** \brief Create an OrtValueInfo for use as an OrtGraph input or output.
    *
@@ -7441,8 +7441,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateValueInfo, _In_ const char* name, _In_ const OrtTypeInfo* type_info,
-                  _Outptr_ OrtValueInfo** value_info);
+  ORT_API2_STATUS(CreateValueInfo, _In_ const char *name, _In_ const OrtTypeInfo *type_info,
+                  _Outptr_ OrtValueInfo **value_info);
 
   /** \brief Create an OrtNode to add to an OrtGraph.
    *
@@ -7465,17 +7465,17 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateNode, _In_ const char* operator_name, _In_ const char* domain_name, _In_ const char* node_name,
-                  _In_reads_(input_names_len) const char* const* input_names, size_t input_names_len,
-                  _In_reads_(output_names_len) const char* const* output_names, size_t output_names_len,
-                  _In_reads_(attribs_len) _In_opt_ OrtOpAttr** attributes, _In_ size_t attribs_len,
-                  _Outptr_ OrtNode** node);
+  ORT_API2_STATUS(CreateNode, _In_ const char *operator_name, _In_ const char *domain_name, _In_ const char *node_name,
+                  _In_reads_(input_names_len) const char *const *input_names, size_t input_names_len,
+                  _In_reads_(output_names_len) const char *const *output_names, size_t output_names_len,
+                  _In_reads_(attribs_len) _In_opt_ OrtOpAttr **attributes, _In_ size_t attribs_len,
+                  _Outptr_ OrtNode **node);
 
   /** \brief Create an OrtGraph
    * \snippet{doc} snippets.dox OrtStatus Return Value
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateGraph, _Outptr_ OrtGraph** graph);
+  ORT_API2_STATUS(CreateGraph, _Outptr_ OrtGraph **graph);
 
   /** \brief Set the inputs for the OrtGraph.
    *
@@ -7490,8 +7490,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(SetGraphInputs, _Inout_ OrtGraph* graph,
-                  _In_reads_(inputs_len) _In_ OrtValueInfo** inputs, _In_ size_t inputs_len);
+  ORT_API2_STATUS(SetGraphInputs, _Inout_ OrtGraph *graph,
+                  _In_reads_(inputs_len) _In_ OrtValueInfo **inputs, _In_ size_t inputs_len);
 
   /** \brief Set the outputs for the OrtGraph.
    *
@@ -7506,8 +7506,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(SetGraphOutputs, _Inout_ OrtGraph* graph,
-                  _In_reads_(outputs_len) _In_ OrtValueInfo** outputs, _In_ size_t outputs_len);
+  ORT_API2_STATUS(SetGraphOutputs, _Inout_ OrtGraph *graph,
+                  _In_reads_(outputs_len) _In_ OrtValueInfo **outputs, _In_ size_t outputs_len);
 
   /** \brief Add an initializer to the OrtGraph
    *
@@ -7547,7 +7547,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(AddInitializerToGraph, _Inout_ OrtGraph* graph, _In_ const char* name, _In_ OrtValue* tensor,
+  ORT_API2_STATUS(AddInitializerToGraph, _Inout_ OrtGraph *graph, _In_ const char *name, _In_ OrtValue *tensor,
                   bool data_is_external);
 
   /** \brief Add an OrtNode to an OrtGraph
@@ -7561,7 +7561,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(AddNodeToGraph, _Inout_ OrtGraph* graph, _In_ OrtNode* node);
+  ORT_API2_STATUS(AddNodeToGraph, _Inout_ OrtGraph *graph, _In_ OrtNode *node);
 
   /** \brief Create an OrtModel.
    *
@@ -7582,10 +7582,10 @@ struct OrtModelEditorApi {
    * \since Version 1.22.
    */
   ORT_API2_STATUS(CreateModel,
-                  _In_reads_(opset_entries_len) const char* const* domain_names,
-                  _In_reads_(opset_entries_len) const int* opset_versions,
+                  _In_reads_(opset_entries_len) const char *const *domain_names,
+                  _In_reads_(opset_entries_len) const int *opset_versions,
                   size_t opset_entries_len,
-                  _Outptr_ OrtModel** model);
+                  _Outptr_ OrtModel **model);
 
   /** \brief Add an OrtGraph to an OrtModel.
    *
@@ -7600,7 +7600,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(AddGraphToModel, _Inout_ OrtModel* model, _In_ OrtGraph* graph);
+  ORT_API2_STATUS(AddGraphToModel, _Inout_ OrtModel *model, _In_ OrtGraph *graph);
 
   /** \brief Create an OrtSession using the OrtModel.
    *
@@ -7620,8 +7620,8 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateSessionFromModel, _In_ const OrtEnv* env, _In_ const OrtModel* model,
-                  _In_ const OrtSessionOptions* options, _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateSessionFromModel, _In_ const OrtEnv *env, _In_ const OrtModel *model,
+                  _In_ const OrtSessionOptions *options, _Outptr_ OrtSession **out);
 
   /** \brief Create an OrtSession to augment an existing model.
    *
@@ -7645,9 +7645,9 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateModelEditorSession, _In_ const OrtEnv* env, _In_ const ORTCHAR_T* model_path,
-                  _In_ const OrtSessionOptions* options,
-                  _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateModelEditorSession, _In_ const OrtEnv *env, _In_ const ORTCHAR_T *model_path,
+                  _In_ const OrtSessionOptions *options,
+                  _Outptr_ OrtSession **out);
 
   /** \brief Create an OrtSession to augment an existing model.
    *
@@ -7673,10 +7673,10 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateModelEditorSessionFromArray, _In_ const OrtEnv* env,
-                  _In_ const void* model_data, size_t model_data_length,
-                  _In_ const OrtSessionOptions* options,
-                  _Outptr_ OrtSession** out);
+  ORT_API2_STATUS(CreateModelEditorSessionFromArray, _In_ const OrtEnv *env,
+                  _In_ const void *model_data, size_t model_data_length,
+                  _In_ const OrtSessionOptions *options,
+                  _Outptr_ OrtSession **out);
 
   /** \brief Query the session for the opset version of a domain.
    *
@@ -7692,7 +7692,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(SessionGetOpsetForDomain, _In_ const OrtSession* session, _In_ const char* domain, _Out_ int* opset);
+  ORT_API2_STATUS(SessionGetOpsetForDomain, _In_ const OrtSession *session, _In_ const char *domain, _Out_ int *opset);
 
   /** \brief Apply changes to augment the ONNX model in a session created using CreateModelEditorSession[FromArray]
    *
@@ -7712,7 +7712,7 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(ApplyModelToModelEditorSession, _Inout_ OrtSession* session, _In_ OrtModel* model);
+  ORT_API2_STATUS(ApplyModelToModelEditorSession, _Inout_ OrtSession *session, _In_ OrtModel *model);
 
   /** \brief Finalize the Model Editor session that was created using CreateModelEditorSession[FromArray].
    *
@@ -7727,9 +7727,9 @@ struct OrtModelEditorApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(FinalizeModelEditorSession, _Inout_ OrtSession* session, _In_ const OrtSessionOptions* options,
-                  _In_opt_ OrtPrepackedWeightsContainer* prepacked_weights_container);
-#endif  // !defined(ORT_MINIMAL_BUILD)
+  ORT_API2_STATUS(FinalizeModelEditorSession, _Inout_ OrtSession *session, _In_ const OrtSessionOptions *options,
+                  _In_opt_ OrtPrepackedWeightsContainer *prepacked_weights_container);
+#endif // !defined(ORT_MINIMAL_BUILD)
 };
 
 /**
@@ -7797,8 +7797,8 @@ struct OrtCompileApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CreateModelCompilationOptionsFromSessionOptions, _In_ const OrtEnv* env,
-                  _In_ const OrtSessionOptions* session_options, _Outptr_ OrtModelCompilationOptions** out);
+  ORT_API2_STATUS(CreateModelCompilationOptionsFromSessionOptions, _In_ const OrtEnv *env,
+                  _In_ const OrtSessionOptions *session_options, _Outptr_ OrtModelCompilationOptions **out);
 
   /** \brief Sets the file path to the input ONNX model to compile.
    *
@@ -7812,8 +7812,8 @@ struct OrtCompileApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(ModelCompilationOptions_SetInputModelPath, _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ const ORTCHAR_T* input_model_path);
+  ORT_API2_STATUS(ModelCompilationOptions_SetInputModelPath, _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ const ORTCHAR_T *input_model_path);
 
   /** \brief Sets the buffer that stores the bytes of the loaded ONNX model to compile.
    *
@@ -7829,8 +7829,8 @@ struct OrtCompileApi {
    * \since Version 1.22.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetInputModelFromBuffer,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ const void* input_model_data,
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ const void *input_model_data,
                   size_t input_model_data_size);
 
   /** \brief Sets the file path for the output ONNX model generated by CompileModel.
@@ -7850,8 +7850,8 @@ struct OrtCompileApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelPath, _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ const ORTCHAR_T* output_model_path);
+  ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelPath, _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ const ORTCHAR_T *output_model_path);
 
   /** \brief Optionally sets the file that should store external initializers for the compiled ONNX model.
    * If not set, initializers are stored within the model.
@@ -7869,8 +7869,8 @@ struct OrtCompileApi {
    * \since Version 1.22.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelExternalInitializersFile,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ const ORTCHAR_T* external_initializers_file_path,
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ const ORTCHAR_T *external_initializers_file_path,
                   size_t external_initializers_size_threshold);
 
   /** \brief Configures model compilation to store the output compiled ONNX model in a buffer.
@@ -7895,10 +7895,10 @@ struct OrtCompileApi {
    * \since Version 1.22.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelBuffer,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _Inout_ OrtAllocator* allocator,
-                  _Outptr_ void** output_model_buffer_ptr,
-                  _Out_ size_t* output_model_buffer_size_ptr);
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _Inout_ OrtAllocator *allocator,
+                  _Outptr_ void **output_model_buffer_ptr,
+                  _Out_ size_t *output_model_buffer_size_ptr);
 
   /** \brief Enables or disables the embedding of EPContext binary data into the `ep_cache_context` attribute
    * of EPContext nodes. Defaults to false.
@@ -7922,7 +7922,7 @@ struct OrtCompileApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(ModelCompilationOptions_SetEpContextEmbedMode, _In_ OrtModelCompilationOptions* model_compile_options,
+  ORT_API2_STATUS(ModelCompilationOptions_SetEpContextEmbedMode, _In_ OrtModelCompilationOptions *model_compile_options,
                   bool embed_ep_context_in_model);
 
   /** \brief Compiles an input ONNX model with the given compilation options.
@@ -7934,7 +7934,7 @@ struct OrtCompileApi {
    *
    * \since Version 1.22.
    */
-  ORT_API2_STATUS(CompileModel, _In_ const OrtEnv* env, _In_ const OrtModelCompilationOptions* model_options);
+  ORT_API2_STATUS(CompileModel, _In_ const OrtEnv *env, _In_ const OrtModelCompilationOptions *model_options);
 
   /** \brief Sets flags from OrtCompileApiFlags that represent one or more boolean options to enable.
    *
@@ -7945,7 +7945,7 @@ struct OrtCompileApi {
    *
    * \since Version 1.23.
    */
-  ORT_API2_STATUS(ModelCompilationOptions_SetFlags, _In_ OrtModelCompilationOptions* model_compile_options,
+  ORT_API2_STATUS(ModelCompilationOptions_SetFlags, _In_ OrtModelCompilationOptions *model_compile_options,
                   uint32_t flags);
 
   /** Sets information related to EP context binary file.
@@ -7962,9 +7962,9 @@ struct OrtCompileApi {
    * \since Version 1.23.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetEpContextBinaryInformation,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ const ORTCHAR_T* output_directory,
-                  _In_ const ORTCHAR_T* model_name);
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ const ORTCHAR_T *output_directory,
+                  _In_ const ORTCHAR_T *model_name);
 
   /** Set the graph optimization level.
    *
@@ -7976,7 +7976,7 @@ struct OrtCompileApi {
    * \since Version 1.23.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetGraphOptimizationLevel,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
+                  _In_ OrtModelCompilationOptions *model_compile_options,
                   _In_ GraphOptimizationLevel graph_optimization_level);
 
   /** \brief Sets a OrtWriteBufferFunc function that is called by ORT to write out the output model's serialized
@@ -7997,8 +7997,8 @@ struct OrtCompileApi {
    * \since Version 1.23.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelWriteFunc,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ OrtWriteBufferFunc write_func, _In_ void* state);
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ OrtWriteBufferFunc write_func, _In_ void *state);
 
   /** \brief Sets a OrtGetInitializerLocationFunc function that is called by ORT for every initializer in the generated
    * model. Allows implementer to specify whether initializers should be stored within the model or externally.
@@ -8013,8 +8013,8 @@ struct OrtCompileApi {
    * \since Version 1.23.
    */
   ORT_API2_STATUS(ModelCompilationOptions_SetOutputModelGetInitializerLocationFunc,
-                  _In_ OrtModelCompilationOptions* model_compile_options,
-                  _In_ OrtGetInitializerLocationFunc get_initializer_location_func, _In_ void* state);
+                  _In_ OrtModelCompilationOptions *model_compile_options,
+                  _In_ OrtGetInitializerLocationFunc get_initializer_location_func, _In_ void *state);
 };
 
 /**
@@ -8070,8 +8070,8 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(CreateExternalResourceImporterForDevice,
-                  _In_ const OrtEpDevice* ep_device,
-                  _Outptr_result_maybenull_ OrtExternalResourceImporter** out_importer);
+                  _In_ const OrtEpDevice *ep_device,
+                  _Outptr_result_maybenull_ OrtExternalResourceImporter **out_importer);
 
   /** \brief Release an OrtExternalResourceImporter instance.
    *
@@ -8096,9 +8096,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(CanImportMemory,
-                  _In_ const OrtExternalResourceImporter* importer,
+                  _In_ const OrtExternalResourceImporter *importer,
                   _In_ OrtExternalMemoryHandleType handle_type,
-                  _Out_ bool* out_supported);
+                  _Out_ bool *out_supported);
 
   /** \brief Import external memory into the execution provider.
    *
@@ -8112,9 +8112,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(ImportMemory,
-                  _In_ OrtExternalResourceImporter* importer,
-                  _In_ const OrtExternalMemoryDescriptor* desc,
-                  _Outptr_ OrtExternalMemoryHandle** out_handle);
+                  _In_ OrtExternalResourceImporter *importer,
+                  _In_ const OrtExternalMemoryDescriptor *desc,
+                  _Outptr_ OrtExternalMemoryHandle **out_handle);
 
   /** \brief Release an OrtExternalMemoryHandle instance.
    *
@@ -8140,10 +8140,10 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(CreateTensorFromMemory,
-                  _In_ OrtExternalResourceImporter* importer,
-                  _In_ const OrtExternalMemoryHandle* mem_handle,
-                  _In_ const OrtExternalTensorDescriptor* tensor_desc,
-                  _Outptr_ OrtValue** out_tensor);
+                  _In_ OrtExternalResourceImporter *importer,
+                  _In_ const OrtExternalMemoryHandle *mem_handle,
+                  _In_ const OrtExternalTensorDescriptor *tensor_desc,
+                  _Outptr_ OrtValue **out_tensor);
 
   /// @}
   /// \name Semaphore Import
@@ -8160,9 +8160,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(CanImportSemaphore,
-                  _In_ const OrtExternalResourceImporter* importer,
+                  _In_ const OrtExternalResourceImporter *importer,
                   _In_ OrtExternalSemaphoreType type,
-                  _Out_ bool* out_supported);
+                  _Out_ bool *out_supported);
 
   /** \brief Import an external semaphore into the execution provider.
    *
@@ -8178,9 +8178,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(ImportSemaphore,
-                  _In_ OrtExternalResourceImporter* importer,
-                  _In_ const OrtExternalSemaphoreDescriptor* desc,
-                  _Outptr_ OrtExternalSemaphoreHandle** out_handle);
+                  _In_ OrtExternalResourceImporter *importer,
+                  _In_ const OrtExternalSemaphoreDescriptor *desc,
+                  _Outptr_ OrtExternalSemaphoreHandle **out_handle);
 
   /** \brief Release an OrtExternalSemaphoreHandle instance.
    *
@@ -8206,9 +8206,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(WaitSemaphore,
-                  _In_ OrtExternalResourceImporter* importer,
-                  _In_ OrtExternalSemaphoreHandle* semaphore_handle,
-                  _In_ OrtSyncStream* stream,
+                  _In_ OrtExternalResourceImporter *importer,
+                  _In_ OrtExternalSemaphoreHandle *semaphore_handle,
+                  _In_ OrtSyncStream *stream,
                   _In_ uint64_t value);
 
   /** \brief Signal an external semaphore from the EP's stream.
@@ -8227,9 +8227,9 @@ struct OrtInteropApi {
    * \since Version 1.24.
    */
   ORT_API2_STATUS(SignalSemaphore,
-                  _In_ OrtExternalResourceImporter* importer,
-                  _In_ OrtExternalSemaphoreHandle* semaphore_handle,
-                  _In_ OrtSyncStream* stream,
+                  _In_ OrtExternalResourceImporter *importer,
+                  _In_ OrtExternalSemaphoreHandle *semaphore_handle,
+                  _In_ OrtSyncStream *stream,
                   _In_ uint64_t value);
 
   /// @}
@@ -8241,7 +8241,7 @@ struct OrtInteropApi {
  *
  * \param device_id CUDA device id, starts from zero.
  */
-ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_CUDA, _In_ OrtSessionOptions* options, int device_id);
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_CUDA, _In_ OrtSessionOptions *options, int device_id);
 
 /*
  * This is the old way to add the ROCm provider to the session, please use
@@ -8251,7 +8251,7 @@ ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_CUDA, _In_ OrtSessionOpt
  *
  * \param device_id HIP device id, starts from zero.
  */
-ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_ROCM, _In_ OrtSessionOptions* options, int device_id);
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_ROCM, _In_ OrtSessionOptions *options, int device_id);
 
 /*
  * This is the old way to add the MIGraphX provider to the session, please use
@@ -8261,7 +8261,7 @@ ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_ROCM, _In_ OrtSessionOpt
  *
  * \param device_id HIP device id, starts from zero.
  */
-ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_MIGraphX, _In_ OrtSessionOptions* options, int device_id);
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_MIGraphX, _In_ OrtSessionOptions *options, int device_id);
 
 /*
  * This is the old way to add the oneDNN provider to the session, please use
@@ -8271,7 +8271,7 @@ ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_MIGraphX, _In_ OrtSessio
  *
  * \param use_arena zero: false. non-zero: true.
  */
-ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_Dnnl, _In_ OrtSessionOptions* options, int use_arena);
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_Dnnl, _In_ OrtSessionOptions *options, int use_arena);
 
 /*
  * This is the old way to add the TensorRT provider to the session, please use SessionOptionsAppendExecutionProvider_TensorRT_V2 above to access the latest functionality
@@ -8279,7 +8279,7 @@ ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_Dnnl, _In_ OrtSessionOpt
  *
  * \param device_id CUDA device id, starts from zero.
  */
-ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_Tensorrt, _In_ OrtSessionOptions* options, int device_id);
+ORT_API_STATUS(OrtSessionOptionsAppendExecutionProvider_Tensorrt, _In_ OrtSessionOptions *options, int device_id);
 
 #ifdef __cplusplus
 }

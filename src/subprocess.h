@@ -17,13 +17,13 @@
  * ────────────────────────────────────────────────────────────────── */
 
 /* Flags for subprocess_run() */
-#define SUBPROCESS_PIPE_STDERR  (1 << 0)  /* pipe stderr too (default: /dev/null) */
+#define SUBPROCESS_PIPE_STDERR (1 << 0) /* pipe stderr too (default: /dev/null) */
 
 typedef struct {
-    int   exit_code;     /* >=0 from WEXITSTATUS, -1 on error, -2 on timeout */
-    int   timed_out;     /* 1 if killed by timeout */
-    int   output_capped; /* 1 if hit max_bytes or max_lines */
-    int   line_count;    /* number of newlines in output */
+  int exit_code;     /* >=0 from WEXITSTATUS, -1 on error, -2 on timeout */
+  int timed_out;     /* 1 if killed by timeout */
+  int output_capped; /* 1 if hit max_bytes or max_lines */
+  int line_count;    /* number of newlines in output */
 } subprocess_result_t;
 
 /* Run a command, capture output into *out.

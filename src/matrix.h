@@ -24,45 +24,45 @@
 /* Room-to-workspace mapping entry (from [matrix.rooms] config) */
 #define MX_MAX_ROOM_MAP 32
 typedef struct {
-    char *room_id;               /* Matrix room ID (e.g. !xxx:localhost) */
-    char *workspace;             /* workspace name */
+  char *room_id;   /* Matrix room ID (e.g. !xxx:localhost) */
+  char *workspace; /* workspace name */
 } mx_room_map_entry_t;
 
 /* Route map: maps task_id -> source room_id for reply routing */
 #define MX_MAX_ROUTE_MAP 64
 typedef struct {
-    char task_id[64];            /* task ID (e.g. "mx684abc12") */
-    char room_id[256];           /* source room_id */
+  char task_id[64];  /* task ID (e.g. "mx684abc12") */
+  char room_id[256]; /* source room_id */
 } mx_route_entry_t;
 
 typedef struct {
-    char     *homeserver;        /* Matrix homeserver URL (e.g. http://100.118.224.104:8008) */
-    char     *access_token;      /* Matrix access token */
-    char     *user_id;           /* Bot's user ID (e.g. @nash:localhost) */
-    char     *room_id;           /* Default room to bridge (e.g. !xxx:localhost) */
-    char     *since_token;       /* /sync pagination token */
-    char     *mailbox_dir;       /* path to ~/.nash/mailbox */
-    char     *config_path;       /* path to config.toml (for saving setup) */
-    volatile sig_atomic_t *shutdown;  /* pointer to shutdown_requested flag */
-    long long txn_counter;       /* incrementing txn ID for idempotent sends */
-    char     *nash_dir;          /* path to ~/.nash (for workspace scanning) */
-    char     *invite_user;       /* user to invite to new rooms (e.g. @jnovy:localhost) */
-    char     *allowed_users;    /* comma-separated allowlist of Matrix user IDs (e.g. "@alice:server,@bob:server"); NULL = allow all */
+  char *homeserver;                /* Matrix homeserver URL (e.g. http://100.118.224.104:8008) */
+  char *access_token;              /* Matrix access token */
+  char *user_id;                   /* Bot's user ID (e.g. @nash:localhost) */
+  char *room_id;                   /* Default room to bridge (e.g. !xxx:localhost) */
+  char *since_token;               /* /sync pagination token */
+  char *mailbox_dir;               /* path to ~/.nash/mailbox */
+  char *config_path;               /* path to config.toml (for saving setup) */
+  volatile sig_atomic_t *shutdown; /* pointer to shutdown_requested flag */
+  long long txn_counter;           /* incrementing txn ID for idempotent sends */
+  char *nash_dir;                  /* path to ~/.nash (for workspace scanning) */
+  char *invite_user;               /* user to invite to new rooms (e.g. @jnovy:localhost) */
+  char *allowed_users;             /* comma-separated allowlist of Matrix user IDs (e.g. "@alice:server,@bob:server"); NULL = allow all */
 
-    /* Room-to-workspace mapping (from [matrix.rooms] in config.toml) */
-    mx_room_map_entry_t room_map[MX_MAX_ROOM_MAP];
-    int       room_map_count;
+  /* Room-to-workspace mapping (from [matrix.rooms] in config.toml) */
+  mx_room_map_entry_t room_map[MX_MAX_ROOM_MAP];
+  int room_map_count;
 
-    /* Reply routing: task_id -> source room_id (circular buffer) */
-    mx_route_entry_t route_map[MX_MAX_ROUTE_MAP];
-    int       route_map_next;    /* next write index (circular) */
+  /* Reply routing: task_id -> source room_id (circular buffer) */
+  mx_route_entry_t route_map[MX_MAX_ROUTE_MAP];
+  int route_map_next; /* next write index (circular) */
 
-    /* Session threading: tracks thread root event_id per room */
-    struct {
-        char room_id[256];
-        char thread_event_id[256];  /* event_id of the thread root message */
-    } session_threads[MX_MAX_ROOM_MAP];
-    int       session_thread_count;
+  /* Session threading: tracks thread root event_id per room */
+  struct {
+    char room_id[256];
+    char thread_event_id[256]; /* event_id of the thread root message */
+  } session_threads[MX_MAX_ROOM_MAP];
+  int session_thread_count;
 } matrix_ctx_t;
 
 /* Initialize matrix context from config.

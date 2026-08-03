@@ -28,296 +28,295 @@
 /* ── YAML → Playbook parsing ────────────────────────── */
 
 static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t *ro) {
-    if (!react_node) return;
+  if (!react_node) return;
 
-    yaml_node_t *n;
-    if ((n = yaml_get(react_node, "max_steps")))
-        ro->max_steps = yaml_int(n, 0);
-    if ((n = yaml_get(react_node, "inject_memory")))
-        ro->inject_memory = yaml_bool(n, -1);
-    if ((n = yaml_get(react_node, "inject_prev_result")))
-        ro->inject_prev_result = yaml_bool(n, -1);
-    if ((n = yaml_get(react_node, "inject_repomap")))
-        ro->inject_repomap = yaml_bool(n, -1);
-    /* standalone: convenience flag -- sets inject_memory/prev_result/repomap
+  yaml_node_t *n;
+  if ((n = yaml_get(react_node, "max_steps")))
+    ro->max_steps = yaml_int(n, 0);
+  if ((n = yaml_get(react_node, "inject_memory")))
+    ro->inject_memory = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "inject_prev_result")))
+    ro->inject_prev_result = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "inject_repomap")))
+    ro->inject_repomap = yaml_bool(n, -1);
+  /* standalone: convenience flag -- sets inject_memory/prev_result/repomap
      * to 0 unless explicitly overridden.  Makes the YAML self-contained:
      * no host-local memories, repo map, or prior results are injected. */
-    if ((n = yaml_get(react_node, "standalone"))) {
-        int val = yaml_bool(n, 0);
-        if (val) {
-            if (ro->inject_memory == -1)      ro->inject_memory = 0;
-            if (ro->inject_prev_result == -1) ro->inject_prev_result = 0;
-            if (ro->inject_repomap == -1)     ro->inject_repomap = 0;
-        }
+  if ((n = yaml_get(react_node, "standalone"))) {
+    int val = yaml_bool(n, 0);
+    if (val) {
+      if (ro->inject_memory == -1) ro->inject_memory = 0;
+      if (ro->inject_prev_result == -1) ro->inject_prev_result = 0;
+      if (ro->inject_repomap == -1) ro->inject_repomap = 0;
     }
-    if ((n = yaml_get(react_node, "enable_reflection")))
-        ro->enable_reflection = yaml_bool(n, -1);
-    if ((n = yaml_get(react_node, "enable_pruning")))
-        ro->enable_pruning = yaml_bool(n, -1);
-    if ((n = yaml_get(react_node, "enable_compaction")))
-        ro->enable_compaction = yaml_bool(n, -1);
-    if ((n = yaml_get(react_node, "enable_scoring")))
-        ro->enable_scoring = yaml_bool(n, -1);
+  }
+  if ((n = yaml_get(react_node, "enable_reflection")))
+    ro->enable_reflection = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "enable_pruning")))
+    ro->enable_pruning = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "enable_compaction")))
+    ro->enable_compaction = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "enable_scoring")))
+    ro->enable_scoring = yaml_bool(n, -1);
 
-    /* Tool filter */
-    yaml_node_t *tools = yaml_get(react_node, "tools");
-    if (tools) {
-        yaml_node_t *allow = yaml_get(tools, "allow");
-        if (allow && allow->type == YAML_SEQUENCE) {
-            ro->n_tools_allow = yaml_len(allow);
-            ro->tools_allow = xcalloc(ro->n_tools_allow, sizeof(char *));
-            for (int i = 0; i < ro->n_tools_allow; i++) {
-                const char *s = yaml_str(yaml_item(allow, i));
-                ro->tools_allow[i] = s ? xstrdup(s) : xstrdup("");
-            }
-        }
-        yaml_node_t *block = yaml_get(tools, "block");
-        if (block && block->type == YAML_SEQUENCE) {
-            ro->n_tools_block = yaml_len(block);
-            ro->tools_block = xcalloc(ro->n_tools_block, sizeof(char *));
-            for (int i = 0; i < ro->n_tools_block; i++) {
-                const char *s = yaml_str(yaml_item(block, i));
-                ro->tools_block[i] = s ? xstrdup(s) : xstrdup("");
-            }
-        }
+  /* Tool filter */
+  yaml_node_t *tools = yaml_get(react_node, "tools");
+  if (tools) {
+    yaml_node_t *allow = yaml_get(tools, "allow");
+    if (allow && allow->type == YAML_SEQUENCE) {
+      ro->n_tools_allow = yaml_len(allow);
+      ro->tools_allow = xcalloc(ro->n_tools_allow, sizeof(char *));
+      for (int i = 0; i < ro->n_tools_allow; i++) {
+        const char *s = yaml_str(yaml_item(allow, i));
+        ro->tools_allow[i] = s ? xstrdup(s) : xstrdup("");
+      }
     }
+    yaml_node_t *block = yaml_get(tools, "block");
+    if (block && block->type == YAML_SEQUENCE) {
+      ro->n_tools_block = yaml_len(block);
+      ro->tools_block = xcalloc(ro->n_tools_block, sizeof(char *));
+      for (int i = 0; i < ro->n_tools_block; i++) {
+        const char *s = yaml_str(yaml_item(block, i));
+        ro->tools_block[i] = s ? xstrdup(s) : xstrdup("");
+      }
+    }
+  }
 }
 
 playbook_t *playbook_load(const char *path) {
-    yaml_node_t *root = yaml_parse_file(path);
-    if (!root) return NULL;
+  yaml_node_t *root = yaml_parse_file(path);
+  if (!root) return NULL;
 
-    playbook_t *pb = xcalloc(1, sizeof(playbook_t));
+  playbook_t *pb = xcalloc(1, sizeof(playbook_t));
 
-    pb->filepath = xstrdup(path);
+  pb->filepath = xstrdup(path);
 
-    /* Initialize react defaults to inherit */
-    pb->react_defaults = (pb_react_overrides_t)PB_REACT_INHERIT;
+  /* Initialize react defaults to inherit */
+  pb->react_defaults = (pb_react_overrides_t)PB_REACT_INHERIT;
 
-    /* Top-level fields */
-    const char *s;
-    if ((s = yaml_str(yaml_get(root, "name"))))
-        pb->name = xstrdup(s);
-    else
-        pb->name = xstrdup("unnamed");
+  /* Top-level fields */
+  const char *s;
+  if ((s = yaml_str(yaml_get(root, "name"))))
+    pb->name = xstrdup(s);
+  else
+    pb->name = xstrdup("unnamed");
 
-    if ((s = yaml_str(yaml_get(root, "description"))))
-        pb->description = xstrdup(s);
+  if ((s = yaml_str(yaml_get(root, "description"))))
+    pb->description = xstrdup(s);
 
-    /* Session mode */
-    s = yaml_str(yaml_get(root, "session_mode"));
-    if (s && strcmp(s, "shared") == 0)
-        pb->session_mode = PB_SESSION_SHARED;
-    else
-        pb->session_mode = PB_SESSION_PER_PASS;
+  /* Session mode */
+  s = yaml_str(yaml_get(root, "session_mode"));
+  if (s && strcmp(s, "shared") == 0)
+    pb->session_mode = PB_SESSION_SHARED;
+  else
+    pb->session_mode = PB_SESSION_PER_PASS;
 
-    /* Scratchpad mode -- accept both "scratchpad_mode" and "scratch_mode" */
-    s = yaml_str(yaml_get(root, "scratchpad_mode"));
-    if (!s) s = yaml_str(yaml_get(root, "scratch_mode"));
-    if (s && strcmp(s, "isolated") == 0)
-        pb->scratch_mode = PB_SCRATCH_ISOLATED;
-    else
-        pb->scratch_mode = PB_SCRATCH_SHARED;
+  /* Scratchpad mode -- accept both "scratchpad_mode" and "scratch_mode" */
+  s = yaml_str(yaml_get(root, "scratchpad_mode"));
+  if (!s) s = yaml_str(yaml_get(root, "scratch_mode"));
+  if (s && strcmp(s, "isolated") == 0)
+    pb->scratch_mode = PB_SCRATCH_ISOLATED;
+  else
+    pb->scratch_mode = PB_SCRATCH_SHARED;
 
-    /* Pause between */
-    pb->pause_between = yaml_bool(yaml_get(root, "pause_between"), 0);
+  /* Pause between */
+  pb->pause_between = yaml_bool(yaml_get(root, "pause_between"), 0);
 
-    /* Template variables */
-    yaml_node_t *vars = yaml_get(root, "vars");
-    if (vars && vars->type == YAML_MAPPING) {
-        pb->n_vars = vars->n_children;
-        pb->var_keys = xcalloc(pb->n_vars, sizeof(char *));
-        pb->var_values = xcalloc(pb->n_vars, sizeof(char *));
-        for (int i = 0; i < pb->n_vars; i++) {
-            pb->var_keys[i] = xstrdup(vars->keys[i]);
-            const char *v = yaml_str(vars->values[i]);
-            pb->var_values[i] = v ? xstrdup(v) : xstrdup("");
+  /* Template variables */
+  yaml_node_t *vars = yaml_get(root, "vars");
+  if (vars && vars->type == YAML_MAPPING) {
+    pb->n_vars = vars->n_children;
+    pb->var_keys = xcalloc(pb->n_vars, sizeof(char *));
+    pb->var_values = xcalloc(pb->n_vars, sizeof(char *));
+    for (int i = 0; i < pb->n_vars; i++) {
+      pb->var_keys[i] = xstrdup(vars->keys[i]);
+      const char *v = yaml_str(vars->values[i]);
+      pb->var_values[i] = v ? xstrdup(v) : xstrdup("");
+    }
+  }
+
+  /* Post hooks */
+  yaml_node_t *post = yaml_get(root, "post");
+  if (post) {
+    pb->post_prune = yaml_bool(yaml_get(post, "prune_memory"), 0);
+    pb->post_commit = yaml_bool(yaml_get(post, "commit"), 0);
+  }
+
+  /* React defaults */
+  parse_react_overrides(yaml_get(root, "react"), &pb->react_defaults);
+
+  /* Top-level system prompt (inherited by all passes unless overridden) */
+  if ((s = yaml_str(yaml_get(root, "system_prompt"))))
+    pb->system_prompt = xstrdup(s);
+  s = yaml_str(yaml_get(root, "system_prompt_mode"));
+  pb->system_prompt_replace = (s && strcmp(s, "replace") == 0) ? 1 : 0;
+
+  /* Passes */
+  yaml_node_t *passes = yaml_get(root, "passes");
+  if (passes && passes->type == YAML_SEQUENCE) {
+    pb->n_passes = yaml_len(passes);
+    pb->passes = xcalloc(pb->n_passes, sizeof(pb_pass_t));
+    for (int i = 0; i < pb->n_passes; i++) {
+      yaml_node_t *pass = yaml_item(passes, i);
+      if (!pass) continue;
+
+      pb->passes[i].react = (pb_react_overrides_t)PB_REACT_INHERIT;
+
+      const char *label = yaml_str(yaml_get(pass, "label"));
+      pb->passes[i].label = label ? xstrdup(label) : xstrdup("(unnamed)");
+
+      /* Accept both "prompt" and "prompt_template" keys */
+      const char *prompt = yaml_str(yaml_get(pass, "prompt"));
+      if (!prompt) prompt = yaml_str(yaml_get(pass, "prompt_template"));
+      pb->passes[i].prompt_template = prompt ? xstrdup(prompt) : xstrdup("");
+
+      /* Pass type: "script" runs a shell command, default is react */
+      const char *type_s = yaml_str(yaml_get(pass, "type"));
+      if (type_s && strcmp(type_s, "script") == 0)
+        pb->passes[i].type = PB_PASS_SCRIPT;
+      else
+        pb->passes[i].type = PB_PASS_REACT;
+
+      /* Shell command for script-type passes */
+      const char *cmd = yaml_str(yaml_get(pass, "command"));
+      pb->passes[i].command = cmd ? xstrdup(cmd) : NULL;
+
+      /* Custom system prompt (append or replace base prompt) */
+      const char *sysp = yaml_str(yaml_get(pass, "system_prompt"));
+      pb->passes[i].system_prompt = sysp ? xstrdup(sysp) : NULL;
+      const char *spm = yaml_str(yaml_get(pass, "system_prompt_mode"));
+      pb->passes[i].system_prompt_replace = (spm && strcmp(spm, "replace") == 0) ? 1 : 0;
+
+      /* Per-pass error policy: abort (default), continue, retry */
+      const char *onerr = yaml_str(yaml_get(pass, "on_error"));
+      if (onerr && strcmp(onerr, "continue") == 0)
+        pb->passes[i].on_error = PB_ON_ERROR_CONTINUE;
+      else if (onerr && strcmp(onerr, "retry") == 0)
+        pb->passes[i].on_error = PB_ON_ERROR_RETRY;
+      else
+        pb->passes[i].on_error = PB_ON_ERROR_ABORT;
+
+      /* Mandatory tool verification (SIGIL, arxiv 2607.27309) */
+      yaml_node_t *req_tools = yaml_get(pass, "required_tools");
+      if (req_tools && req_tools->type == YAML_SEQUENCE) {
+        pb->passes[i].n_required_tools = yaml_len(req_tools);
+        pb->passes[i].required_tools = xcalloc(pb->passes[i].n_required_tools, sizeof(char *));
+        for (int r = 0; r < pb->passes[i].n_required_tools; r++) {
+          const char *rt = yaml_str(yaml_item(req_tools, r));
+          pb->passes[i].required_tools[r] = rt ? xstrdup(rt) : xstrdup("");
         }
+      }
+
+      /* Per-pass react overrides */
+      parse_react_overrides(yaml_get(pass, "react"), &pb->passes[i].react);
     }
+  }
 
-    /* Post hooks */
-    yaml_node_t *post = yaml_get(root, "post");
-    if (post) {
-        pb->post_prune = yaml_bool(yaml_get(post, "prune_memory"), 0);
-        pb->post_commit = yaml_bool(yaml_get(post, "commit"), 0);
-    }
-
-    /* React defaults */
-    parse_react_overrides(yaml_get(root, "react"), &pb->react_defaults);
-
-    /* Top-level system prompt (inherited by all passes unless overridden) */
-    if ((s = yaml_str(yaml_get(root, "system_prompt"))))
-        pb->system_prompt = xstrdup(s);
-    s = yaml_str(yaml_get(root, "system_prompt_mode"));
-    pb->system_prompt_replace = (s && strcmp(s, "replace") == 0) ? 1 : 0;
-
-    /* Passes */
-    yaml_node_t *passes = yaml_get(root, "passes");
-    if (passes && passes->type == YAML_SEQUENCE) {
-        pb->n_passes = yaml_len(passes);
-        pb->passes = xcalloc(pb->n_passes, sizeof(pb_pass_t));
-        for (int i = 0; i < pb->n_passes; i++) {
-            yaml_node_t *pass = yaml_item(passes, i);
-            if (!pass) continue;
-
-            pb->passes[i].react = (pb_react_overrides_t)PB_REACT_INHERIT;
-
-            const char *label = yaml_str(yaml_get(pass, "label"));
-            pb->passes[i].label = label ? xstrdup(label) : xstrdup("(unnamed)");
-
-            /* Accept both "prompt" and "prompt_template" keys */
-            const char *prompt = yaml_str(yaml_get(pass, "prompt"));
-            if (!prompt) prompt = yaml_str(yaml_get(pass, "prompt_template"));
-            pb->passes[i].prompt_template = prompt ? xstrdup(prompt) : xstrdup("");
-
-            /* Pass type: "script" runs a shell command, default is react */
-            const char *type_s = yaml_str(yaml_get(pass, "type"));
-            if (type_s && strcmp(type_s, "script") == 0)
-                pb->passes[i].type = PB_PASS_SCRIPT;
-            else
-                pb->passes[i].type = PB_PASS_REACT;
-
-            /* Shell command for script-type passes */
-            const char *cmd = yaml_str(yaml_get(pass, "command"));
-            pb->passes[i].command = cmd ? xstrdup(cmd) : NULL;
-
-            /* Custom system prompt (append or replace base prompt) */
-            const char *sysp = yaml_str(yaml_get(pass, "system_prompt"));
-            pb->passes[i].system_prompt = sysp ? xstrdup(sysp) : NULL;
-            const char *spm = yaml_str(yaml_get(pass, "system_prompt_mode"));
-            pb->passes[i].system_prompt_replace = (spm && strcmp(spm, "replace") == 0) ? 1 : 0;
-
-            /* Per-pass error policy: abort (default), continue, retry */
-            const char *onerr = yaml_str(yaml_get(pass, "on_error"));
-            if (onerr && strcmp(onerr, "continue") == 0)
-                pb->passes[i].on_error = PB_ON_ERROR_CONTINUE;
-            else if (onerr && strcmp(onerr, "retry") == 0)
-                pb->passes[i].on_error = PB_ON_ERROR_RETRY;
-            else
-                pb->passes[i].on_error = PB_ON_ERROR_ABORT;
-
-            /* Mandatory tool verification (SIGIL, arxiv 2607.27309) */
-            yaml_node_t *req_tools = yaml_get(pass, "required_tools");
-            if (req_tools && req_tools->type == YAML_SEQUENCE) {
-                pb->passes[i].n_required_tools = yaml_len(req_tools);
-                pb->passes[i].required_tools = xcalloc(pb->passes[i].n_required_tools, sizeof(char *));
-                for (int r = 0; r < pb->passes[i].n_required_tools; r++) {
-                    const char *rt = yaml_str(yaml_item(req_tools, r));
-                    pb->passes[i].required_tools[r] = rt ? xstrdup(rt) : xstrdup("");
-                }
-            }
-
-            /* Per-pass react overrides */
-            parse_react_overrides(yaml_get(pass, "react"), &pb->passes[i].react);
-        }
-    }
-
-    yaml_free(root);
-    return pb;
+  yaml_free(root);
+  return pb;
 }
 
 static void free_react_overrides(pb_react_overrides_t *ro) {
-    free_string_array(ro->tools_allow, ro->n_tools_allow);
-    free_string_array(ro->tools_block, ro->n_tools_block);
+  free_string_array(ro->tools_allow, ro->n_tools_allow);
+  free_string_array(ro->tools_block, ro->n_tools_block);
 }
 
 void playbook_free(playbook_t *pb) {
-    if (!pb) return;
-    free(pb->name);
-    free(pb->description);
-    free(pb->filepath);
-    for (int i = 0; i < pb->n_vars; i++) {
-        free(pb->var_keys[i]);
-        free(pb->var_values[i]);
-    }
-    free(pb->var_keys);
-    free(pb->var_values);
-    free_react_overrides(&pb->react_defaults);
-    free(pb->system_prompt);
-    for (int i = 0; i < pb->n_passes; i++) {
-        free(pb->passes[i].label);
-        free(pb->passes[i].prompt_template);
-        free(pb->passes[i].command);
-        free(pb->passes[i].system_prompt);
-        free_string_array(pb->passes[i].required_tools, pb->passes[i].n_required_tools);
-        free_react_overrides(&pb->passes[i].react);
-    }
-    free(pb->passes);
-    free(pb);
+  if (!pb) return;
+  free(pb->name);
+  free(pb->description);
+  free(pb->filepath);
+  for (int i = 0; i < pb->n_vars; i++) {
+    free(pb->var_keys[i]);
+    free(pb->var_values[i]);
+  }
+  free(pb->var_keys);
+  free(pb->var_values);
+  free_react_overrides(&pb->react_defaults);
+  free(pb->system_prompt);
+  for (int i = 0; i < pb->n_passes; i++) {
+    free(pb->passes[i].label);
+    free(pb->passes[i].prompt_template);
+    free(pb->passes[i].command);
+    free(pb->passes[i].system_prompt);
+    free_string_array(pb->passes[i].required_tools, pb->passes[i].n_required_tools);
+    free_react_overrides(&pb->passes[i].react);
+  }
+  free(pb->passes);
+  free(pb);
 }
 
 /* ── Flag resolution (3-level cascade) ───────────────── */
 
 react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
-                                      const config_t *cfg) {
-    const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
-    const pb_react_overrides_t *def = &pb->react_defaults;
+                                     const config_t *cfg) {
+  const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
+  const pb_react_overrides_t *def = &pb->react_defaults;
 
-    /* 3-level cascade: pass override → playbook default → profile/global.
+/* 3-level cascade: pass override → playbook default → profile/global.
      * Profile values of -1 mean "not set" (inherit compile-time default of 1).
      * cfg may be NULL in test contexts — fall back to 1. */
-    #define PROFILE_OR_1(field) \
-        (cfg && cfg->field >= 0 ? cfg->field : 1)
+#define PROFILE_OR_1(field) \
+  (cfg && cfg->field >= 0 ? cfg->field : 1)
 
-    #define RESOLVE(field, global_default) \
-        (pass->field != -1 ? pass->field : \
-         (def->field != -1 ? def->field : global_default))
+#define RESOLVE(field, global_default) \
+  (pass->field != -1 ? pass->field : (def->field != -1 ? def->field : global_default))
 
-    react_flags_t f;
-    f.inject_memory       = RESOLVE(inject_memory, PROFILE_OR_1(profile_inject_memory));
-    f.inject_prev_result  = RESOLVE(inject_prev_result, PROFILE_OR_1(profile_inject_prev_result));
-    f.inject_repomap      = RESOLVE(inject_repomap,
-                                cfg && cfg->repo_map >= 0 ? cfg->repo_map : 1);
-    f.enable_reflection   = RESOLVE(enable_reflection, PROFILE_OR_1(profile_enable_reflection));
-    f.enable_pruning      = RESOLVE(enable_pruning, PROFILE_OR_1(profile_enable_pruning));
-    f.enable_compaction   = RESOLVE(enable_compaction, PROFILE_OR_1(profile_enable_compaction));
-    f.enable_scoring      = RESOLVE(enable_scoring, PROFILE_OR_1(profile_enable_scoring));
+  react_flags_t f;
+  f.inject_memory = RESOLVE(inject_memory, PROFILE_OR_1(profile_inject_memory));
+  f.inject_prev_result = RESOLVE(inject_prev_result, PROFILE_OR_1(profile_inject_prev_result));
+  f.inject_repomap = RESOLVE(inject_repomap,
+                             cfg && cfg->repo_map >= 0 ? cfg->repo_map : 1);
+  f.enable_reflection = RESOLVE(enable_reflection, PROFILE_OR_1(profile_enable_reflection));
+  f.enable_pruning = RESOLVE(enable_pruning, PROFILE_OR_1(profile_enable_pruning));
+  f.enable_compaction = RESOLVE(enable_compaction, PROFILE_OR_1(profile_enable_compaction));
+  f.enable_scoring = RESOLVE(enable_scoring, PROFILE_OR_1(profile_enable_scoring));
 
-    #undef RESOLVE
-    #undef PROFILE_OR_1
-    return f;
+#undef RESOLVE
+#undef PROFILE_OR_1
+  return f;
 }
 
 tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
-                                      const config_t *cfg) {
-    tool_filter_t tf = {0};
-    const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
-    const pb_react_overrides_t *def = &pb->react_defaults;
+                                     const config_t *cfg) {
+  tool_filter_t tf = {0};
+  const pb_react_overrides_t *pass = &pb->passes[pass_idx].react;
+  const pb_react_overrides_t *def = &pb->react_defaults;
 
-    /* 3-level cascade: pass → playbook default → profile.
+  /* 3-level cascade: pass → playbook default → profile.
      * Pass-level overrides take highest precedence. */
-    if (pass->tools_allow) {
-        tf.allowed = (const char **)pass->tools_allow;
-        tf.n_allowed = pass->n_tools_allow;
-    } else if (def->tools_allow) {
-        tf.allowed = (const char **)def->tools_allow;
-        tf.n_allowed = def->n_tools_allow;
-    } else if (cfg && cfg->n_profile_tools_allow > 0) {
-        tf.allowed = (const char **)cfg->profile_tools_allow;
-        tf.n_allowed = cfg->n_profile_tools_allow;
-    }
+  if (pass->tools_allow) {
+    tf.allowed = (const char **)pass->tools_allow;
+    tf.n_allowed = pass->n_tools_allow;
+  } else if (def->tools_allow) {
+    tf.allowed = (const char **)def->tools_allow;
+    tf.n_allowed = def->n_tools_allow;
+  } else if (cfg && cfg->n_profile_tools_allow > 0) {
+    tf.allowed = (const char **)cfg->profile_tools_allow;
+    tf.n_allowed = cfg->n_profile_tools_allow;
+  }
 
-    if (pass->tools_block) {
-        tf.blocked = (const char **)pass->tools_block;
-        tf.n_blocked = pass->n_tools_block;
-    } else if (def->tools_block) {
-        tf.blocked = (const char **)def->tools_block;
-        tf.n_blocked = def->n_tools_block;
-    } else if (cfg && cfg->n_profile_tools_block > 0) {
-        tf.blocked = (const char **)cfg->profile_tools_block;
-        tf.n_blocked = cfg->n_profile_tools_block;
-    }
+  if (pass->tools_block) {
+    tf.blocked = (const char **)pass->tools_block;
+    tf.n_blocked = pass->n_tools_block;
+  } else if (def->tools_block) {
+    tf.blocked = (const char **)def->tools_block;
+    tf.n_blocked = def->n_tools_block;
+  } else if (cfg && cfg->n_profile_tools_block > 0) {
+    tf.blocked = (const char **)cfg->profile_tools_block;
+    tf.n_blocked = cfg->n_profile_tools_block;
+  }
 
-    /* Inherit profile description overrides (Gap #7).
+  /* Inherit profile description overrides (Gap #7).
      * Playbook passes don't define their own desc overrides,
      * so always inherit from profile if available. */
-    if (cfg && cfg->n_profile_tool_descs > 0) {
-        tf.desc_names = cfg->profile_tool_desc_names;
-        tf.desc_values = cfg->profile_tool_desc_values;
-        tf.n_descs = cfg->n_profile_tool_descs;
-    }
+  if (cfg && cfg->n_profile_tool_descs > 0) {
+    tf.desc_names = cfg->profile_tool_desc_names;
+    tf.desc_values = cfg->profile_tool_desc_values;
+    tf.n_descs = cfg->n_profile_tool_descs;
+  }
 
-    return tf;
+  return tf;
 }
 
 /* ── Template expansion ──────────────────────────────── */
@@ -326,223 +325,233 @@ tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
  * Used to sanitize LLM output before embedding in shell commands.
  * Returns a malloc'd string: 'value' with internal ' replaced by '\'' */
 static char *shell_escape_value(const char *val) {
-    if (!val || !val[0]) return xstrdup("''");
-    /* Count single quotes to determine output size */
-    size_t n_sq = 0;
-    for (const char *p = val; *p; p++)
-        if (*p == '\'') n_sq++;
-    /* output: ' + (len + n_sq*3) + ' + NUL
+  if (!val || !val[0]) return xstrdup("''");
+  /* Count single quotes to determine output size */
+  size_t n_sq = 0;
+  for (const char *p = val; *p; p++)
+    if (*p == '\'') n_sq++;
+  /* output: ' + (len + n_sq*3) + ' + NUL
      * each ' in input becomes: '\'' (close, escaped, reopen) = 4 chars vs 1 */
-    size_t vlen = strlen(val);
-    size_t out_len = vlen + n_sq * 3 + 2;
-    char *out = xmalloc(out_len + 1);
-    char *d = out;
-    *d++ = '\'';
-    for (const char *p = val; *p; p++) {
-        if (*p == '\'') {
-            *d++ = '\''; *d++ = '\\'; *d++ = '\''; *d++ = '\'';
-        } else {
-            *d++ = *p;
-        }
+  size_t vlen = strlen(val);
+  size_t out_len = vlen + n_sq * 3 + 2;
+  char *out = xmalloc(out_len + 1);
+  char *d = out;
+  *d++ = '\'';
+  for (const char *p = val; *p; p++) {
+    if (*p == '\'') {
+      *d++ = '\'';
+      *d++ = '\\';
+      *d++ = '\'';
+      *d++ = '\'';
+    } else {
+      *d++ = *p;
     }
-    *d++ = '\'';
-    *d = '\0';
-    return out;
+  }
+  *d++ = '\'';
+  *d = '\0';
+  return out;
 }
 
 /* Replace all occurrences of {{key}} with value in a string */
 static char *str_replace_all(const char *src, const char *key, const char *val) {
-    if (!src || !key || !val) return src ? xstrdup(src) : NULL;
+  if (!src || !key || !val) return src ? xstrdup(src) : NULL;
 
-    char pattern[256];
-    snprintf(pattern, sizeof(pattern), "{{%s}}", key);
-    size_t plen = strlen(pattern);
-    size_t vlen = strlen(val);
+  char pattern[256];
+  snprintf(pattern, sizeof(pattern), "{{%s}}", key);
+  size_t plen = strlen(pattern);
+  size_t vlen = strlen(val);
 
-    /* Count occurrences */
-    size_t count = 0;
-    const char *p = src;
-    while ((p = strstr(p, pattern)) != NULL) { count++; p += plen; }
+  /* Count occurrences */
+  size_t count = 0;
+  const char *p = src;
+  while ((p = strstr(p, pattern)) != NULL) {
+    count++;
+    p += plen;
+  }
 
-    if (count == 0) return xstrdup(src);
+  if (count == 0) return xstrdup(src);
 
-    size_t slen = strlen(src);
-    /* Overflow-safe size calculation */
-    size_t new_len;
-    if (vlen >= plen) {
-        size_t growth = vlen - plen;
-        if (growth > 0 && count > (SIZE_MAX - slen - 1) / growth)
-            return xstrdup(src);  /* overflow — return unmodified copy */
-        new_len = slen + count * growth;
+  size_t slen = strlen(src);
+  /* Overflow-safe size calculation */
+  size_t new_len;
+  if (vlen >= plen) {
+    size_t growth = vlen - plen;
+    if (growth > 0 && count > (SIZE_MAX - slen - 1) / growth)
+      return xstrdup(src); /* overflow — return unmodified copy */
+    new_len = slen + count * growth;
+  } else {
+    size_t shrink = plen - vlen;
+    new_len = slen - count * shrink; /* always safe: shrinking */
+  }
+  char *result = xmalloc(new_len + 1);
+  char *dst = result;
+  p = src;
+  while (*p) {
+    if (strncmp(p, pattern, plen) == 0) {
+      memcpy(dst, val, vlen);
+      dst += vlen;
+      p += plen;
     } else {
-        size_t shrink = plen - vlen;
-        new_len = slen - count * shrink;  /* always safe: shrinking */
+      *dst++ = *p++;
     }
-    char *result = xmalloc(new_len + 1);
-    char *dst = result;
-    p = src;
-    while (*p) {
-        if (strncmp(p, pattern, plen) == 0) {
-            memcpy(dst, val, vlen);
-            dst += vlen;
-            p += plen;
-        } else {
-            *dst++ = *p++;
-        }
-    }
-    *dst = '\0';
-    return result;
+  }
+  *dst = '\0';
+  return result;
 }
 
 char *playbook_expand(const playbook_t *pb, const char *tmpl,
                       int pass_idx, const char *prev_result,
                       const char *memory_dir, const char *model,
                       const char *session_dir, const char *nash_dir) {
-    if (!tmpl) return xstrdup("");
+  if (!tmpl) return xstrdup("");
 
-    char *result = xstrdup(tmpl);
+  char *result = xstrdup(tmpl);
 
-    /* Built-in variables */
-    char pass_num[16], total_passes[16];
-    snprintf(pass_num, sizeof(pass_num), "%d", pass_idx + 1);
-    snprintf(total_passes, sizeof(total_passes), "%d", pb->n_passes);
+  /* Built-in variables */
+  char pass_num[16], total_passes[16];
+  snprintf(pass_num, sizeof(pass_num), "%d", pass_idx + 1);
+  snprintf(total_passes, sizeof(total_passes), "%d", pb->n_passes);
 
-        char datebuf[32];
-    time_t now = time(NULL);
-    struct tm utc;
-    gmtime_r(&now, &utc);
-    strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &utc);
+  char datebuf[32];
+  time_t now = time(NULL);
+  struct tm utc;
+  gmtime_r(&now, &utc);
+  strftime(datebuf, sizeof(datebuf), "%Y-%m-%d", &utc);
 
-    char cwdbuf[NASH_PATH_MAX];
-    if (!getcwd(cwdbuf, sizeof(cwdbuf)))
-        snprintf(cwdbuf, sizeof(cwdbuf), ".");
+  char cwdbuf[NASH_PATH_MAX];
+  if (!getcwd(cwdbuf, sizeof(cwdbuf)))
+    snprintf(cwdbuf, sizeof(cwdbuf), ".");
 
-    /* Change 6: Load previous scratchpad from state dir */
-    char *prev_scratch_text = NULL;
-    if (nash_dir && pb->name) {
-        char sp_path[NASH_PATH_MAX];
-        snprintf(sp_path, sizeof(sp_path), "%s/playbooks/.state/%s/scratchpad.md",
-                 nash_dir, pb->name);
-        prev_scratch_text = slurp_file(sp_path, NULL);
-    }
+  /* Change 6: Load previous scratchpad from state dir */
+  char *prev_scratch_text = NULL;
+  if (nash_dir && pb->name) {
+    char sp_path[NASH_PATH_MAX];
+    snprintf(sp_path, sizeof(sp_path), "%s/playbooks/.state/%s/scratchpad.md",
+             nash_dir, pb->name);
+    prev_scratch_text = slurp_file(sp_path, NULL);
+  }
 
-    struct { const char *key; const char *val; } builtins[] = {
-        {"memory_dir",      memory_dir ? memory_dir : ""},
-        {"model",           model ? model : "unknown"},
-        {"session_dir",     session_dir ? session_dir : ""},
-        {"nash_dir",        nash_dir ? nash_dir : ""},
-        {"cwd",             cwdbuf},
-        {"date",            datebuf},
-        {"pass_number",     pass_num},
-        {"total_passes",    total_passes},
-        {NULL, NULL},
-    };
+  struct {
+    const char *key;
+    const char *val;
+  } builtins[] = {
+    {"memory_dir", memory_dir ? memory_dir : ""},
+    {"model", model ? model : "unknown"},
+    {"session_dir", session_dir ? session_dir : ""},
+    {"nash_dir", nash_dir ? nash_dir : ""},
+    {"cwd", cwdbuf},
+    {"date", datebuf},
+    {"pass_number", pass_num},
+    {"total_passes", total_passes},
+    {NULL, NULL},
+  };
 
-    for (int i = 0; builtins[i].key; i++) {
-        char *next = str_replace_all(result, builtins[i].key, builtins[i].val);
-        free(result);
-        result = next;
-    }
+  for (int i = 0; builtins[i].key; i++) {
+    char *next = str_replace_all(result, builtins[i].key, builtins[i].val);
+    free(result);
+    result = next;
+  }
 
-    /* User-defined variables */
-    for (int i = 0; i < pb->n_vars; i++) {
-        char *next = str_replace_all(result, pb->var_keys[i], pb->var_values[i]);
-        free(result);
-        result = next;
-    }
+  /* User-defined variables */
+  for (int i = 0; i < pb->n_vars; i++) {
+    char *next = str_replace_all(result, pb->var_keys[i], pb->var_values[i]);
+    free(result);
+    result = next;
+  }
 
-    /* Expand LLM-sourced variables LAST so their content cannot inject
+  /* Expand LLM-sourced variables LAST so their content cannot inject
      * builtin or user-defined variable references (Bug #8 fix).
      * str_replace_all is non-recursive, so {{...}} patterns inside
      * prev_result/prev_scratchpad remain literal after this point. */
-    {
-        char *next = str_replace_all(result, "prev_result",
-                                     prev_result ? prev_result : "");
-        free(result);
-        result = next;
-        next = str_replace_all(result, "prev_scratchpad",
-                               prev_scratch_text ? prev_scratch_text : "");
-        free(result);
-        result = next;
-    }
+  {
+    char *next = str_replace_all(result, "prev_result",
+                                 prev_result ? prev_result : "");
+    free(result);
+    result = next;
+    next = str_replace_all(result, "prev_scratchpad",
+                           prev_scratch_text ? prev_scratch_text : "");
+    free(result);
+    result = next;
+  }
 
-    /* Detect unreplaced {{argN}} references -- the playbook needs more
+  /* Detect unreplaced {{argN}} references -- the playbook needs more
      * CLI arguments than were provided.  Fail early with a clear message
      * instead of sending literal "{{arg3}}" to the LLM. */
-    {
-        const char *p = result;
-        int n_missing = 0;
-        char missing_list[256] = {0};
-        int mpos = 0;
-        while ((p = strstr(p, "{{arg")) != NULL) {
-            p += 5;                          /* skip "{{arg" */
-            if (*p >= '1' && *p <= '9') {    /* argN with N >= 1 */
-                const char *d = p;
-                while (*d >= '0' && *d <= '9') d++;
-                if (d[0] == '}' && d[1] == '}') {
-                    int nlen = (int)(d - (p - 1));  /* "N" digits */
-                    if (n_missing < 8 && mpos + nlen + 10 < (int)sizeof(missing_list)) {
-                        if (n_missing > 0) missing_list[mpos++] = ',';
-                        mpos += snprintf(missing_list + mpos,
-                                         sizeof(missing_list) - (size_t)mpos,
-                                         " {{arg%.*s}}", (int)(d - p), p);
-                    }
-                    n_missing++;
-                    p = d + 2;
-                    continue;
-                }
-            }
+  {
+    const char *p = result;
+    int n_missing = 0;
+    char missing_list[256] = {0};
+    int mpos = 0;
+    while ((p = strstr(p, "{{arg")) != NULL) {
+      p += 5;                       /* skip "{{arg" */
+      if (*p >= '1' && *p <= '9') { /* argN with N >= 1 */
+        const char *d = p;
+        while (*d >= '0' && *d <= '9')
+          d++;
+        if (d[0] == '}' && d[1] == '}') {
+          int nlen = (int)(d - (p - 1)); /* "N" digits */
+          if (n_missing < 8 && mpos + nlen + 10 < (int)sizeof(missing_list)) {
+            if (n_missing > 0) missing_list[mpos++] = ',';
+            mpos += snprintf(missing_list + mpos,
+                             sizeof(missing_list) - (size_t)mpos,
+                             " {{arg%.*s}}", (int)(d - p), p);
+          }
+          n_missing++;
+          p = d + 2;
+          continue;
         }
-        if (n_missing > 0) {
-            fprintf(stderr,
-                "[play] ERROR: prompt references %d unresolved argument(s):%s\n"
-                "[play] Provide arguments: /agent run <id> arg1 arg2 ...\n",
-                n_missing, missing_list);
-            free(result);
-            free(prev_scratch_text);
-            return NULL;
-        }
+      }
     }
+    if (n_missing > 0) {
+      fprintf(stderr,
+              "[play] ERROR: prompt references %d unresolved argument(s):%s\n"
+              "[play] Provide arguments: /agent run <id> arg1 arg2 ...\n",
+              n_missing, missing_list);
+      free(result);
+      free(prev_scratch_text);
+      return NULL;
+    }
+  }
 
-    free(prev_scratch_text);
-    return result;
+  free(prev_scratch_text);
+  return result;
 }
 
 /* ── Playbook listing ────────────────────────────────── */
 
 playbook_t **playbook_list(const char *nash_dir, int *count) {
-    *count = 0;
-    char pb_dir[NASH_PATH_MAX];
-    snprintf(pb_dir, sizeof(pb_dir), "%s/playbooks", nash_dir);
+  *count = 0;
+  char pb_dir[NASH_PATH_MAX];
+  snprintf(pb_dir, sizeof(pb_dir), "%s/playbooks", nash_dir);
 
-    DIR *d = opendir(pb_dir);
-    if (!d) return NULL;
+  DIR *d = opendir(pb_dir);
+  if (!d) return NULL;
 
-    playbook_t **list = NULL;
-    int cap = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        int nlen = (int)strlen(ent->d_name);
-        if (nlen < 5 || strcmp(ent->d_name + nlen - 5, ".yaml") != 0)
-            continue;
+  playbook_t **list = NULL;
+  int cap = 0;
+  struct dirent *ent;
+  while ((ent = readdir(d)) != NULL) {
+    int nlen = (int)strlen(ent->d_name);
+    if (nlen < 5 || strcmp(ent->d_name + nlen - 5, ".yaml") != 0)
+      continue;
 
-        char path[NASH_PATH_MAX + 256];
-        path_join(path, sizeof(path), pb_dir, ent->d_name);
-        playbook_t *pb = playbook_load(path);
-        if (!pb) continue;
+    char path[NASH_PATH_MAX + 256];
+    path_join(path, sizeof(path), pb_dir, ent->d_name);
+    playbook_t *pb = playbook_load(path);
+    if (!pb) continue;
 
-        if (*count >= cap) {
-            int new_cap = cap ? cap * 2 : 8;
-            if (safe_realloc((void **)&list, (size_t)new_cap * sizeof(playbook_t *))) {
-                playbook_free(pb);
-                continue;
-            }
-            cap = new_cap;
-        }
-        list[(*count)++] = pb;
+    if (*count >= cap) {
+      int new_cap = cap ? cap * 2 : 8;
+      if (safe_realloc((void **)&list, (size_t)new_cap * sizeof(playbook_t *))) {
+        playbook_free(pb);
+        continue;
+      }
+      cap = new_cap;
     }
-    closedir(d);
-    return list;
+    list[(*count)++] = pb;
+  }
+  closedir(d);
+  return list;
 }
 
 /* ── Playbook path resolution ──────────────────────────── */
@@ -553,276 +562,285 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
 
 const char *playbook_resolve(const char *name, const char *nash_dir,
                              char *buf, size_t buflen) {
-    /* 1. User dir: ~/.nash/playbooks/name.yaml */
-    snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
-    if (access(buf, R_OK) == 0) return buf;
+  /* 1. User dir: ~/.nash/playbooks/name.yaml */
+  snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
+  if (access(buf, R_OK) == 0) return buf;
 
-    /* 2. System dir: NASH_DATADIR/playbooks/name.yaml */
-    snprintf(buf, buflen, "%s/playbooks/%s.yaml", NASH_DATADIR, name);
-    if (access(buf, R_OK) == 0) return buf;
+  /* 2. System dir: NASH_DATADIR/playbooks/name.yaml */
+  snprintf(buf, buflen, "%s/playbooks/%s.yaml", NASH_DATADIR, name);
+  if (access(buf, R_OK) == 0) return buf;
 
-    /* 3. Fall back to user path (for error reporting) */
-    snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
-    return buf;
+  /* 3. Fall back to user path (for error reporting) */
+  snprintf(buf, buflen, "%s/playbooks/%s.yaml", nash_dir, name);
+  return buf;
 }
 
 /* ── Playbook validation ─────────────────────────────── */
 
 /* Check if a tool name exists in the plugin registry */
 static int tool_name_exists(const char *name) {
-    return tool_plugin_find(name) != NULL;
+  return tool_plugin_find(name) != NULL;
 }
 
 /* Append a diagnostic message to errbuf, respecting errlen */
 static int validate_append(char *errbuf, size_t errlen, int *pos, const char *fmt, ...) {
-    if (!errbuf || *pos >= (int)errlen - 1) return 0;
-    va_list ap;
-    va_start(ap, fmt);
-    int n = vsnprintf(errbuf + *pos, errlen - (size_t)*pos, fmt, ap);
-    va_end(ap);
-    if (n > 0) *pos += n;
-    return 1;
+  if (!errbuf || *pos >= (int)errlen - 1) return 0;
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(errbuf + *pos, errlen - (size_t)*pos, fmt, ap);
+  va_end(ap);
+  if (n > 0) *pos += n;
+  return 1;
 }
 
 int playbook_validate(const playbook_t *pb, char *errbuf, size_t errlen) {
-    if (!pb) {
-        if (errbuf && errlen > 0)
-            snprintf(errbuf, errlen, "ERROR: playbook is NULL\n");
-        return -1;
-    }
+  if (!pb) {
+    if (errbuf && errlen > 0)
+      snprintf(errbuf, errlen, "ERROR: playbook is NULL\n");
+    return -1;
+  }
 
-    int errors = 0;
-    int warnings = 0;
-    int pos = 0;
+  int errors = 0;
+  int warnings = 0;
+  int pos = 0;
 
-    /* Check: passes non-empty */
-    if (pb->n_passes == 0) {
-        validate_append(errbuf, errlen, &pos,
-            "ERROR: playbook '%s' has no passes\n", pb->name);
-        errors++;
-    }
-
-    /* Known built-in template variables (playbook + agent-injected) */
-    static const char *builtins[] = {
-        "memory_dir", "model", "session_dir", "nash_dir", "cwd", "date",
-        "pass_number", "total_passes", "prev_result", "prev_scratchpad",
-        "workspace_name", "workspace_dir", "agent_id", "arguments",
-        NULL
-    };
-
-    for (int i = 0; i < pb->n_passes; i++) {
-        const pb_pass_t *p = &pb->passes[i];
-
-        /* Check: react passes must have a prompt, script passes must have a command */
-        if (p->type == PB_PASS_SCRIPT) {
-            if (!p->command || !p->command[0]) {
-                validate_append(errbuf, errlen, &pos,
-                    "ERROR: pass %d ('%s'): script type requires 'command'\n",
-                    i + 1, p->label);
-                errors++;
-            }
-            /* Warn if script pass has react overrides */
-            if (p->react.max_steps > 0 || p->react.inject_memory != -1 ||
-                p->react.enable_reflection != -1) {
-                validate_append(errbuf, errlen, &pos,
-                    "WARNING: pass %d ('%s'): react overrides ignored for script type\n",
-                    i + 1, p->label);
-                warnings++;
-            }
-        } else {
-            if (!p->prompt_template || !p->prompt_template[0]) {
-                validate_append(errbuf, errlen, &pos,
-                    "ERROR: pass %d ('%s'): react type requires 'prompt'\n",
-                    i + 1, p->label);
-                errors++;
-            }
-        }
-
-        /* Check {{var}} references in prompt and command templates */
-        const char *templates[2] = { p->prompt_template, p->command };
-        for (int t = 0; t < 2; t++) {
-            const char *tmpl = templates[t];
-            if (!tmpl) continue;
-            const char *scan = tmpl;
-            while ((scan = strstr(scan, "{{")) != NULL) {
-                scan += 2;
-                const char *end = strstr(scan, "}}");
-                if (!end) break;
-                int vlen = (int)(end - scan);
-                if (vlen <= 0 || vlen >= 128) { scan = end + 2; continue; }
-
-                char var[128];
-                snprintf(var, sizeof(var), "%.*s", vlen, scan);
-
-                /* Skip argN references (handled specially by playbook_expand) */
-                if (strncmp(var, "arg", 3) == 0 && var[3] >= '1' && var[3] <= '9') {
-                    scan = end + 2;
-                    continue;
-                }
-
-                /* Check against builtins */
-                int found = 0;
-                for (int b = 0; builtins[b]; b++) {
-                    if (strcmp(var, builtins[b]) == 0) { found = 1; break; }
-                }
-                /* Check against user-defined vars */
-                if (!found) {
-                    for (int v = 0; v < pb->n_vars; v++) {
-                        if (strcmp(var, pb->var_keys[v]) == 0) { found = 1; break; }
-                    }
-                }
-                if (!found) {
-                    validate_append(errbuf, errlen, &pos,
-                        "ERROR: pass %d ('%s'): unknown template variable '{{%s}}'\n",
-                        i + 1, p->label, var);
-                    errors++;
-                }
-                scan = end + 2;
-            }
-        }
-
-        /* Check tools_allow and tools_block reference valid tool names */
-        for (int j = 0; j < p->react.n_tools_allow; j++) {
-            if (!tool_name_exists(p->react.tools_allow[j])) {
-                validate_append(errbuf, errlen, &pos,
-                    "ERROR: pass %d ('%s'): tools.allow references unknown tool '%s'\n",
-                    i + 1, p->label, p->react.tools_allow[j]);
-                errors++;
-            }
-        }
-        for (int j = 0; j < p->react.n_tools_block; j++) {
-            if (!tool_name_exists(p->react.tools_block[j])) {
-                validate_append(errbuf, errlen, &pos,
-                    "ERROR: pass %d ('%s'): tools.block references unknown tool '%s'\n",
-                    i + 1, p->label, p->react.tools_block[j]);
-                errors++;
-            }
-        }
-
-        /* Warn if both allow and block are set on same pass */
-        if (p->react.n_tools_allow > 0 && p->react.n_tools_block > 0) {
-            validate_append(errbuf, errlen, &pos,
-                "WARNING: pass %d ('%s'): both tools.allow and tools.block set "
-                "(allow takes precedence)\n", i + 1, p->label);
-            warnings++;
-        }
-
-        /* Validate required_tools references (SIGIL gate) */
-        for (int j = 0; j < p->n_required_tools; j++) {
-            if (!tool_name_exists(p->required_tools[j])) {
-                validate_append(errbuf, errlen, &pos,
-                    "ERROR: pass %d ('%s'): required_tools references unknown tool '%s'\n",
-                    i + 1, p->label, p->required_tools[j]);
-                errors++;
-            }
-        }
-        /* Warn if required_tools set on a script pass (tools aren't used) */
-        if (p->n_required_tools > 0 && p->type == PB_PASS_SCRIPT) {
-            validate_append(errbuf, errlen, &pos,
-                "WARNING: pass %d ('%s'): required_tools ignored for script type\n",
-                i + 1, p->label);
-            warnings++;
-        }
-    }
-
-    /* Also check playbook-level react defaults for tool names */
-    for (int j = 0; j < pb->react_defaults.n_tools_allow; j++) {
-        if (!tool_name_exists(pb->react_defaults.tools_allow[j])) {
-            validate_append(errbuf, errlen, &pos,
-                "ERROR: react_defaults: tools.allow references unknown tool '%s'\n",
-                pb->react_defaults.tools_allow[j]);
-            errors++;
-        }
-    }
-    for (int j = 0; j < pb->react_defaults.n_tools_block; j++) {
-        if (!tool_name_exists(pb->react_defaults.tools_block[j])) {
-            validate_append(errbuf, errlen, &pos,
-                "ERROR: react_defaults: tools.block references unknown tool '%s'\n",
-                pb->react_defaults.tools_block[j]);
-            errors++;
-        }
-    }
-
-    /* Summary */
+  /* Check: passes non-empty */
+  if (pb->n_passes == 0) {
     validate_append(errbuf, errlen, &pos,
-        "\nValidation: %d error(s), %d warning(s)\n", errors, warnings);
+                    "ERROR: playbook '%s' has no passes\n", pb->name);
+    errors++;
+  }
 
-    return errors > 0 ? -1 : 0;
+  /* Known built-in template variables (playbook + agent-injected) */
+  static const char *builtins[] = {
+    "memory_dir", "model", "session_dir", "nash_dir", "cwd", "date",
+    "pass_number", "total_passes", "prev_result", "prev_scratchpad",
+    "workspace_name", "workspace_dir", "agent_id", "arguments",
+    NULL};
+
+  for (int i = 0; i < pb->n_passes; i++) {
+    const pb_pass_t *p = &pb->passes[i];
+
+    /* Check: react passes must have a prompt, script passes must have a command */
+    if (p->type == PB_PASS_SCRIPT) {
+      if (!p->command || !p->command[0]) {
+        validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): script type requires 'command'\n",
+                        i + 1, p->label);
+        errors++;
+      }
+      /* Warn if script pass has react overrides */
+      if (p->react.max_steps > 0 || p->react.inject_memory != -1 ||
+          p->react.enable_reflection != -1) {
+        validate_append(errbuf, errlen, &pos,
+                        "WARNING: pass %d ('%s'): react overrides ignored for script type\n",
+                        i + 1, p->label);
+        warnings++;
+      }
+    } else {
+      if (!p->prompt_template || !p->prompt_template[0]) {
+        validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): react type requires 'prompt'\n",
+                        i + 1, p->label);
+        errors++;
+      }
+    }
+
+    /* Check {{var}} references in prompt and command templates */
+    const char *templates[2] = {p->prompt_template, p->command};
+    for (int t = 0; t < 2; t++) {
+      const char *tmpl = templates[t];
+      if (!tmpl) continue;
+      const char *scan = tmpl;
+      while ((scan = strstr(scan, "{{")) != NULL) {
+        scan += 2;
+        const char *end = strstr(scan, "}}");
+        if (!end) break;
+        int vlen = (int)(end - scan);
+        if (vlen <= 0 || vlen >= 128) {
+          scan = end + 2;
+          continue;
+        }
+
+        char var[128];
+        snprintf(var, sizeof(var), "%.*s", vlen, scan);
+
+        /* Skip argN references (handled specially by playbook_expand) */
+        if (strncmp(var, "arg", 3) == 0 && var[3] >= '1' && var[3] <= '9') {
+          scan = end + 2;
+          continue;
+        }
+
+        /* Check against builtins */
+        int found = 0;
+        for (int b = 0; builtins[b]; b++) {
+          if (strcmp(var, builtins[b]) == 0) {
+            found = 1;
+            break;
+          }
+        }
+        /* Check against user-defined vars */
+        if (!found) {
+          for (int v = 0; v < pb->n_vars; v++) {
+            if (strcmp(var, pb->var_keys[v]) == 0) {
+              found = 1;
+              break;
+            }
+          }
+        }
+        if (!found) {
+          validate_append(errbuf, errlen, &pos,
+                          "ERROR: pass %d ('%s'): unknown template variable '{{%s}}'\n",
+                          i + 1, p->label, var);
+          errors++;
+        }
+        scan = end + 2;
+      }
+    }
+
+    /* Check tools_allow and tools_block reference valid tool names */
+    for (int j = 0; j < p->react.n_tools_allow; j++) {
+      if (!tool_name_exists(p->react.tools_allow[j])) {
+        validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): tools.allow references unknown tool '%s'\n",
+                        i + 1, p->label, p->react.tools_allow[j]);
+        errors++;
+      }
+    }
+    for (int j = 0; j < p->react.n_tools_block; j++) {
+      if (!tool_name_exists(p->react.tools_block[j])) {
+        validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): tools.block references unknown tool '%s'\n",
+                        i + 1, p->label, p->react.tools_block[j]);
+        errors++;
+      }
+    }
+
+    /* Warn if both allow and block are set on same pass */
+    if (p->react.n_tools_allow > 0 && p->react.n_tools_block > 0) {
+      validate_append(errbuf, errlen, &pos,
+                      "WARNING: pass %d ('%s'): both tools.allow and tools.block set "
+                      "(allow takes precedence)\n",
+                      i + 1, p->label);
+      warnings++;
+    }
+
+    /* Validate required_tools references (SIGIL gate) */
+    for (int j = 0; j < p->n_required_tools; j++) {
+      if (!tool_name_exists(p->required_tools[j])) {
+        validate_append(errbuf, errlen, &pos,
+                        "ERROR: pass %d ('%s'): required_tools references unknown tool '%s'\n",
+                        i + 1, p->label, p->required_tools[j]);
+        errors++;
+      }
+    }
+    /* Warn if required_tools set on a script pass (tools aren't used) */
+    if (p->n_required_tools > 0 && p->type == PB_PASS_SCRIPT) {
+      validate_append(errbuf, errlen, &pos,
+                      "WARNING: pass %d ('%s'): required_tools ignored for script type\n",
+                      i + 1, p->label);
+      warnings++;
+    }
+  }
+
+  /* Also check playbook-level react defaults for tool names */
+  for (int j = 0; j < pb->react_defaults.n_tools_allow; j++) {
+    if (!tool_name_exists(pb->react_defaults.tools_allow[j])) {
+      validate_append(errbuf, errlen, &pos,
+                      "ERROR: react_defaults: tools.allow references unknown tool '%s'\n",
+                      pb->react_defaults.tools_allow[j]);
+      errors++;
+    }
+  }
+  for (int j = 0; j < pb->react_defaults.n_tools_block; j++) {
+    if (!tool_name_exists(pb->react_defaults.tools_block[j])) {
+      validate_append(errbuf, errlen, &pos,
+                      "ERROR: react_defaults: tools.block references unknown tool '%s'\n",
+                      pb->react_defaults.tools_block[j]);
+      errors++;
+    }
+  }
+
+  /* Summary */
+  validate_append(errbuf, errlen, &pos,
+                  "\nValidation: %d error(s), %d warning(s)\n", errors, warnings);
+
+  return errors > 0 ? -1 : 0;
 }
 
 /* ── Worker thread ───────────────────────────────────── */
 
 /* Event callback for playbook passes — routes to TUI */
 typedef struct {
-    ui_state_t  *ui;
-    const char  *pass_dir;    /* session directory for this pass */
-    int          react_loop;  /* react loop number within the pass session */
-    int          pass_index;  /* 0-based pass index */
-    int          pass_total;  /* total passes in playbook */
-    const char  *pass_label;  /* pass label string */
+  ui_state_t *ui;
+  const char *pass_dir;   /* session directory for this pass */
+  int react_loop;         /* react loop number within the pass session */
+  int pass_index;         /* 0-based pass index */
+  int pass_total;         /* total passes in playbook */
+  const char *pass_label; /* pass label string */
 } pb_event_ctx_t;
 
 static void pb_event_cb(const react_event_t *ev, void *userdata) {
-    pb_event_ctx_t *ctx = (pb_event_ctx_t *)userdata;
-    if (!ctx || !ctx->ui) {
-        /* Headless mode: print events to stderr */
-        tui_on_event(ev, NULL);
-        return;
-    }
-    /* Shallow-copy and enrich with provenance */
-    react_event_t enriched = *ev;
-    enriched.session_dir = ctx->pass_dir;
-    enriched.react_loop  = ctx->react_loop;
-    enriched.pass_index  = ctx->pass_index;
-    enriched.pass_total  = ctx->pass_total;
-    enriched.pass_label  = ctx->pass_label;
-    pthread_mutex_lock(&ctx->ui->mtx);
-    ui_state_on_event(&enriched, (void *)ctx->ui);
-    pthread_mutex_unlock(&ctx->ui->mtx);
+  pb_event_ctx_t *ctx = (pb_event_ctx_t *)userdata;
+  if (!ctx || !ctx->ui) {
+    /* Headless mode: print events to stderr */
+    tui_on_event(ev, NULL);
+    return;
+  }
+  /* Shallow-copy and enrich with provenance */
+  react_event_t enriched = *ev;
+  enriched.session_dir = ctx->pass_dir;
+  enriched.react_loop = ctx->react_loop;
+  enriched.pass_index = ctx->pass_index;
+  enriched.pass_total = ctx->pass_total;
+  enriched.pass_label = ctx->pass_label;
+  pthread_mutex_lock(&ctx->ui->mtx);
+  ui_state_on_event(&enriched, (void *)ctx->ui);
+  pthread_mutex_unlock(&ctx->ui->mtx);
 }
 
 void *playbook_worker(void *arg) {
-    playbook_args_t *pa = arg;
-    playbook_t *pb = pa->playbook;
-    pb_event_ctx_t ev_ctx = {
-        .ui = pa->ui,
-        .pass_dir = NULL,
-        .react_loop = 0,
-        .pass_index = 0,
-        .pass_total = pb->n_passes,
-        .pass_label = NULL,
-    };
+  playbook_args_t *pa = arg;
+  playbook_t *pb = pa->playbook;
+  pb_event_ctx_t ev_ctx = {
+    .ui = pa->ui,
+    .pass_dir = NULL,
+    .react_loop = 0,
+    .pass_index = 0,
+    .pass_total = pb->n_passes,
+    .pass_label = NULL,
+  };
 
-    /* Clear any previous playbook pass tracking on the UI */
-    if (pa->ui) {
-        pthread_mutex_lock(&pa->ui->mtx);
-        for (int i = 0; i < pa->ui->pb_pass_count; i++) {
-            free(pa->ui->pb_passes[i].session_dir);
-            free(pa->ui->pb_passes[i].pass_label);
-        }
-        pa->ui->pb_pass_count = 0;
-        pthread_mutex_unlock(&pa->ui->mtx);
+  /* Clear any previous playbook pass tracking on the UI */
+  if (pa->ui) {
+    pthread_mutex_lock(&pa->ui->mtx);
+    for (int i = 0; i < pa->ui->pb_pass_count; i++) {
+      free(pa->ui->pb_passes[i].session_dir);
+      free(pa->ui->pb_passes[i].pass_label);
     }
+    pa->ui->pb_pass_count = 0;
+    pthread_mutex_unlock(&pa->ui->mtx);
+  }
 
-    scratchpad_t shared_scratch;
-    scratchpad_init(&shared_scratch);
+  scratchpad_t shared_scratch;
+  scratchpad_init(&shared_scratch);
 
-    /* Change 5: Load persisted scratchpad from previous runs */
-    char state_dir[NASH_PATH_MAX];
-    snprintf(state_dir, sizeof(state_dir), "%s/playbooks/.state/%s",
-             pa->nash_dir, pb->name);
-    scratchpad_load(&shared_scratch, state_dir);
+  /* Change 5: Load persisted scratchpad from previous runs */
+  char state_dir[NASH_PATH_MAX];
+  snprintf(state_dir, sizeof(state_dir), "%s/playbooks/.state/%s",
+           pa->nash_dir, pb->name);
+  scratchpad_load(&shared_scratch, state_dir);
 
-    char *prev_result = NULL;
-    char *shared_session_dir = NULL;
+  char *prev_result = NULL;
+  char *shared_session_dir = NULL;
 
-    if (pb->session_mode == PB_SESSION_SHARED) {
-        shared_session_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
-    }
+  if (pb->session_mode == PB_SESSION_SHARED) {
+    shared_session_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
+  }
 
-    int playbook_ok = 1;
+  int playbook_ok = 1;
 
-    /* Suppress inline consolidation and defer embeddings during dream.
+  /* Suppress inline consolidation and defer embeddings during dream.
      * Dream IS the consolidation — triggering inline consolidation on
      * each memory_store during dream passes would:
      *   (a) fire redundant LLM calls for entries being merged in the same pass
@@ -831,443 +849,445 @@ void *playbook_worker(void *arg) {
      * memory_try_consolidate) and memory_store() (skips memory_embed_entry).
      * Embeddings are regenerated in bulk via memory_embed_all() after
      * all passes complete (below). */
-    int suppress_consolidation = (pa->memory && pb->name &&
-                                   strcmp(pb->name, "dream") == 0);
-    if (suppress_consolidation) {
-        atomic_store(&pa->memory->consolidating, 1);
-        if (pa->ws_memory)
-            atomic_store(&pa->ws_memory->consolidating, 1);
-    }
+  int suppress_consolidation = (pa->memory && pb->name &&
+                                strcmp(pb->name, "dream") == 0);
+  if (suppress_consolidation) {
+    atomic_store(&pa->memory->consolidating, 1);
+    if (pa->ws_memory)
+      atomic_store(&pa->ws_memory->consolidating, 1);
+  }
 
-    /* Dream consolidates both global and workspace memory (if active).
+  /* Dream consolidates both global and workspace memory (if active).
      * Non-dream playbooks only operate on pa->memory. */
-    int n_mem_phases = (suppress_consolidation && pa->ws_memory &&
-                        memory_count(pa->ws_memory) > 0) ? 2 : 1;
-    memory_t *phase_mems[2] = { pa->memory, pa->ws_memory };
-    const char *phase_labels[2] = { "global", "workspace" };
+  int n_mem_phases = (suppress_consolidation && pa->ws_memory &&
+                      memory_count(pa->ws_memory) > 0)
+                       ? 2
+                       : 1;
+  memory_t *phase_mems[2] = {pa->memory, pa->ws_memory};
+  const char *phase_labels[2] = {"global", "workspace"};
 
-    /* ── Run log: append-only JSONL tracking orchestration ── */
-    char runs_dir[NASH_PATH_MAX];
-    snprintf(runs_dir, sizeof(runs_dir), "%s/runs", pa->nash_dir);
-    mkdir(runs_dir, 0755);
+  /* ── Run log: append-only JSONL tracking orchestration ── */
+  char runs_dir[NASH_PATH_MAX];
+  snprintf(runs_dir, sizeof(runs_dir), "%s/runs", pa->nash_dir);
+  mkdir(runs_dir, 0755);
 
-    struct timespec run_tp;
-    clock_gettime(CLOCK_REALTIME, &run_tp);
-    char run_path[NASH_PATH_MAX + 64];
-    snprintf(run_path, sizeof(run_path), "%s/%ld.%05ld.jsonl",
-             runs_dir, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000);
+  struct timespec run_tp;
+  clock_gettime(CLOCK_REALTIME, &run_tp);
+  char run_path[NASH_PATH_MAX + 64];
+  snprintf(run_path, sizeof(run_path), "%s/%ld.%05ld.jsonl",
+           runs_dir, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000);
 
-    FILE *run_log = fopen(run_path, "a");
-    if (run_log) {
-        fprintf(run_log,
+  FILE *run_log = fopen(run_path, "a");
+  if (run_log) {
+    fprintf(run_log,
             "{\"e\":\"start\",\"pb\":\"%s\",\"ts\":%ld.%05ld,\"n\":%d}\n",
             pb->name, (long)run_tp.tv_sec, run_tp.tv_nsec / 10000,
             pb->n_passes);
-        fflush(run_log);
-    }
+    fflush(run_log);
+  }
 
-    for (int mi = 0; mi < n_mem_phases; mi++) {
+  for (int mi = 0; mi < n_mem_phases; mi++) {
     memory_t *cur_mem = phase_mems[mi];
     if (!cur_mem) continue;
 
     /* Reset scratchpad between memory phases so workspace dream
      * starts with a clean inventory (not stale global results). */
     if (mi > 0) {
-        scratchpad_free(&shared_scratch);
-        scratchpad_init(&shared_scratch);
-        free(prev_result);
-        prev_result = NULL;
+      scratchpad_free(&shared_scratch);
+      scratchpad_init(&shared_scratch);
+      free(prev_result);
+      prev_result = NULL;
     }
 
     for (int pass = 0; pass < pb->n_passes; pass++) {
-        pa->current_pass = pass;
+      pa->current_pass = pass;
 
-        /* Check agent deadline */
-        if (pa->deadline > 0 && time(NULL) >= pa->deadline) {
-            fprintf(stderr, "[play] agent deadline exceeded, aborting\n");
-            playbook_ok = 0;
-            break;
-        }
+      /* Check agent deadline */
+      if (pa->deadline > 0 && time(NULL) >= pa->deadline) {
+        fprintf(stderr, "[play] agent deadline exceeded, aborting\n");
+        playbook_ok = 0;
+        break;
+      }
 
-        /* Update TUI status */
-        char status[256];
-        if (n_mem_phases > 1)
-            snprintf(status, sizeof(status), "%s (%s) %d/%d: %s",
-                     pb->name, phase_labels[mi], pass + 1, pb->n_passes,
-                     pb->passes[pass].label);
-        else
-            snprintf(status, sizeof(status), "%s %d/%d: %s",
-                     pb->name, pass + 1, pb->n_passes,
-                     pb->passes[pass].label);
+      /* Update TUI status */
+      char status[256];
+      if (n_mem_phases > 1)
+        snprintf(status, sizeof(status), "%s (%s) %d/%d: %s",
+                 pb->name, phase_labels[mi], pass + 1, pb->n_passes,
+                 pb->passes[pass].label);
+      else
+        snprintf(status, sizeof(status), "%s %d/%d: %s",
+                 pb->name, pass + 1, pb->n_passes,
+                 pb->passes[pass].label);
+      if (pa->ui) {
+        ui_locked_set_status(pa->ui, STATUS_RUNNING, status);
+      } else {
+        fprintf(stderr, "[play] %s\n", status);
+      }
+
+      /* Inter-pass pause (skip in headless mode -- no one to press Enter) */
+      if (pass > 0 && pb->pause_between) {
         if (pa->ui) {
-            ui_locked_set_status(pa->ui, STATUS_RUNNING, status);
+          pa->waiting_for_user = 1;
+          pa->inter_pass_message = pb->passes[pass].label;
+          while (pa->waiting_for_user) {
+            struct timespec ts = {0, 50000000};
+            nanosleep(&ts, NULL);
+          }
         } else {
-            fprintf(stderr, "[play] %s\n", status);
+          fprintf(stderr, "[play] auto-continuing pass %d/%d (%s)\n",
+                  pass + 1, pb->n_passes,
+                  pb->passes[pass].label ? pb->passes[pass].label : "");
         }
+      }
 
-        /* Inter-pass pause (skip in headless mode -- no one to press Enter) */
-        if (pass > 0 && pb->pause_between) {
-            if (pa->ui) {
-                pa->waiting_for_user = 1;
-                pa->inter_pass_message = pb->passes[pass].label;
-                while (pa->waiting_for_user) {
-                    struct timespec ts = {0, 50000000};
-                    nanosleep(&ts, NULL);
-                }
-            } else {
-                fprintf(stderr, "[play] auto-continuing pass %d/%d (%s)\n",
-                        pass + 1, pb->n_passes,
-                        pb->passes[pass].label ? pb->passes[pass].label : "");
-            }
-        }
+      /* Expand template */
+      const char *mdir = cur_mem ? memory_dir(cur_mem) : "";
+      const char *model = pa->server_model ? pa->server_model : "unknown";
+      char *prompt = playbook_expand(pb, pb->passes[pass].prompt_template,
+                                     pass, prev_result,
+                                     mdir, model,
+                                     NULL, pa->nash_dir);
 
-        /* Expand template */
-        const char *mdir = cur_mem ? memory_dir(cur_mem) : "";
-        const char *model = pa->server_model ? pa->server_model : "unknown";
-        char *prompt = playbook_expand(pb, pb->passes[pass].prompt_template,
-                                       pass, prev_result,
-                                       mdir, model,
-                                       NULL, pa->nash_dir);
-
-        /* playbook_expand returns NULL when required {{argN}} variables
+      /* playbook_expand returns NULL when required {{argN}} variables
          * are missing — abort the playbook with a clear error. */
-        if (!prompt) {
-            if (run_log) {
-                struct timespec done_tp;
-                clock_gettime(CLOCK_REALTIME, &done_tp);
-                fprintf(run_log,
-                    "{\"e\":\"done\",\"i\":%d,\"st\":\"missing_args\",\"ts\":%ld.%05ld}\n",
-                    pass, (long)done_tp.tv_sec, done_tp.tv_nsec / 10000);
-                fflush(run_log);
-            }
-            playbook_ok = 0;
-            break;
-        }
-
-        /* Create session */
-        char *pass_dir;
-        if (pb->session_mode == PB_SESSION_PER_PASS) {
-            pass_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
-        } else {
-            pass_dir = xstrdup(shared_session_dir);
-        }
-
-        /* Run log: emit pass start */
+      if (!prompt) {
         if (run_log) {
-            const char *sid = strrchr(pass_dir, '/');
-            sid = sid ? sid + 1 : pass_dir;
-            struct timespec pass_tp;
-            clock_gettime(CLOCK_REALTIME, &pass_tp);
-            fprintf(run_log,
+          struct timespec done_tp;
+          clock_gettime(CLOCK_REALTIME, &done_tp);
+          fprintf(run_log,
+                  "{\"e\":\"done\",\"i\":%d,\"st\":\"missing_args\",\"ts\":%ld.%05ld}\n",
+                  pass, (long)done_tp.tv_sec, done_tp.tv_nsec / 10000);
+          fflush(run_log);
+        }
+        playbook_ok = 0;
+        break;
+      }
+
+      /* Create session */
+      char *pass_dir;
+      if (pb->session_mode == PB_SESSION_PER_PASS) {
+        pass_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
+      } else {
+        pass_dir = xstrdup(shared_session_dir);
+      }
+
+      /* Run log: emit pass start */
+      if (run_log) {
+        const char *sid = strrchr(pass_dir, '/');
+        sid = sid ? sid + 1 : pass_dir;
+        struct timespec pass_tp;
+        clock_gettime(CLOCK_REALTIME, &pass_tp);
+        fprintf(run_log,
                 "{\"e\":\"pass\",\"i\":%d,\"l\":\"%s\",\"sid\":\"%s\",\"ts\":%ld.%05ld}\n",
                 pass, pb->passes[pass].label, sid,
                 (long)pass_tp.tv_sec, pass_tp.tv_nsec / 10000);
-            fflush(run_log);
-        }
+        fflush(run_log);
+      }
 
-        /* Setup per-pass tool_ctx */
-        journal_t *pass_journal = journal_new(pass_dir);
-        tool_filter_t tf = playbook_resolve_tools(pb, pass, pa->cfg);
-        /* Change 4: correct react_loop numbering for shared sessions */
-        int pass_react_loop = 0;
-        if (pb->session_mode == PB_SESSION_SHARED) {
-            int max_rl = journal_max_react_loop(pass_journal);
-            pass_react_loop = (max_rl >= 0) ? max_rl + 1 : 0;
-        }
+      /* Setup per-pass tool_ctx */
+      journal_t *pass_journal = journal_new(pass_dir);
+      tool_filter_t tf = playbook_resolve_tools(pb, pass, pa->cfg);
+      /* Change 4: correct react_loop numbering for shared sessions */
+      int pass_react_loop = 0;
+      if (pb->session_mode == PB_SESSION_SHARED) {
+        int max_rl = journal_max_react_loop(pass_journal);
+        pass_react_loop = (max_rl >= 0) ? max_rl + 1 : 0;
+      }
 
-        tool_ctx_t pass_tools = {
-            .store = pa->store,
-            .journal = pass_journal,
-            .memory = cur_mem,
-            .ws = pa->agent_ws,
-            .session_dir = pass_dir,
-            .session_lock_fd = session_lock_acquire(pass_dir),
-            .cfg = pa->cfg,
-            .provider = pa->provider,
-            .react_loop = pass_react_loop,
-            .aliases = alias_map_new(),
-            .tool_filter = tf,
-            .last_notes_step = -1,
-        };
+      tool_ctx_t pass_tools = {
+        .store = pa->store,
+        .journal = pass_journal,
+        .memory = cur_mem,
+        .ws = pa->agent_ws,
+        .session_dir = pass_dir,
+        .session_lock_fd = session_lock_acquire(pass_dir),
+        .cfg = pa->cfg,
+        .provider = pa->provider,
+        .react_loop = pass_react_loop,
+        .aliases = alias_map_new(),
+        .tool_filter = tf,
+        .last_notes_step = -1,
+      };
 
-        /* Transfer shared scratchpad */
-        if (pb->scratch_mode == PB_SCRATCH_SHARED) {
-            scratchpad_move(&pass_tools.scratch, &shared_scratch);
-        } else {
-            scratchpad_init(&pass_tools.scratch);
-        }
+      /* Transfer shared scratchpad */
+      if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+        scratchpad_move(&pass_tools.scratch, &shared_scratch);
+      } else {
+        scratchpad_init(&pass_tools.scratch);
+      }
 
-        /* Resolve react flags for this pass */
-        react_flags_t flags = playbook_resolve_flags(pb, pass, pa->cfg);
-        int max_steps = pb->passes[pass].react.max_steps > 0
+      /* Resolve react flags for this pass */
+      react_flags_t flags = playbook_resolve_flags(pb, pass, pa->cfg);
+      int max_steps = pb->passes[pass].react.max_steps > 0
                         ? pb->passes[pass].react.max_steps
                         : (pb->react_defaults.max_steps > 0
-                           ? pb->react_defaults.max_steps
-                           : pa->cfg->max_react_steps);
+                             ? pb->react_defaults.max_steps
+                             : pa->cfg->max_react_steps);
 
-        /* Use consolidation provider for dream playbooks if configured */
-        provider_t *pass_provider = pa->provider;
-        if (pa->consolidation_provider && pb->name && strcmp(pb->name, "dream") == 0)
-            pass_provider = pa->consolidation_provider;
+      /* Use consolidation provider for dream playbooks if configured */
+      provider_t *pass_provider = pa->provider;
+      if (pa->consolidation_provider && pb->name && strcmp(pb->name, "dream") == 0)
+        pass_provider = pa->consolidation_provider;
 
-        react_ctx_t pass_react = {
-            .provider = pass_provider,
-            .tools = &pass_tools,
-            .max_steps = max_steps,
-            .verbose = 1,
-            .flags = flags,
-            .custom_system_prompt = pb->passes[pass].system_prompt
-                                    ? pb->passes[pass].system_prompt
-                                    : pb->system_prompt,
-            .system_prompt_replace = pb->passes[pass].system_prompt
-                                    ? pb->passes[pass].system_prompt_replace
-                                    : pb->system_prompt_replace,
-            .headless = (pa->ui == NULL) ? 1 : 0,
-            .deadline = pa->deadline,
-        };
+      react_ctx_t pass_react = {
+        .provider = pass_provider,
+        .tools = &pass_tools,
+        .max_steps = max_steps,
+        .verbose = 1,
+        .flags = flags,
+        .custom_system_prompt = pb->passes[pass].system_prompt
+                                  ? pb->passes[pass].system_prompt
+                                  : pb->system_prompt,
+        .system_prompt_replace = pb->passes[pass].system_prompt
+                                   ? pb->passes[pass].system_prompt_replace
+                                   : pb->system_prompt_replace,
+        .headless = (pa->ui == NULL) ? 1 : 0,
+        .deadline = pa->deadline,
+      };
 
-        /* Change 2: Update event context with pass provenance */
-        ev_ctx.pass_dir   = pass_dir;
-        ev_ctx.react_loop = pass_react_loop;
-        ev_ctx.pass_index = pass;
-        ev_ctx.pass_label = pb->passes[pass].label;
+      /* Change 2: Update event context with pass provenance */
+      ev_ctx.pass_dir = pass_dir;
+      ev_ctx.react_loop = pass_react_loop;
+      ev_ctx.pass_index = pass;
+      ev_ctx.pass_label = pb->passes[pass].label;
 
-        /* Run the pass -- either LLM react loop or shell script */
-        char *result = NULL;
-        int script_exit_status = 0;
-        if (pb->passes[pass].type == PB_PASS_SCRIPT) {
-            /* Script pass: run shell command, no LLM call.
+      /* Run the pass -- either LLM react loop or shell script */
+      char *result = NULL;
+      int script_exit_status = 0;
+      if (pb->passes[pass].type == PB_PASS_SCRIPT) {
+        /* Script pass: run shell command, no LLM call.
              * Expand {{var}} placeholders in the command string.
              * Shell-escape LLM output (prev_result) to prevent
              * command injection via crafted model responses. */
-            char *safe_prev = shell_escape_value(prev_result);
-            char *expanded_cmd = playbook_expand(pb,
-                pb->passes[pass].command ? pb->passes[pass].command : "",
-                pass, safe_prev, mdir, model, NULL, pa->nash_dir);
-            free(safe_prev);
-            if (expanded_cmd && expanded_cmd[0]) {
-                if (pa->ui) {
-                    ui_locked_set_status_fmt(pa->ui, STATUS_RUNNING,
-                        "%s %d/%d: [script] %s", pb->name,
-                        pass + 1, pb->n_passes, pb->passes[pass].label);
-                } else {
-                    fprintf(stderr, "[play] script: %s\n", expanded_cmd);
-                }
-                /* Capture stdout+stderr via popen */
-                char popen_cmd[NASH_PATH_MAX * 2 + 8];
-                snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
-                FILE *fp = popen(popen_cmd, "r");
-                if (fp) {
-                    char *buf = NULL;
-                    size_t buf_len = 0, buf_cap = 0;
-                    char line[1024];
-                    while (fgets(line, sizeof(line), fp)) {
-                        size_t ll = strlen(line);
-                        if (buf_len + ll + 1 > buf_cap) {
-                            size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
-                            if (new_cap < buf_len + ll + 1)
-                                new_cap = buf_len + ll + 1;
-                            if (safe_realloc((void **)&buf, new_cap))
-                                break;
-                            buf_cap = new_cap;
-                        }
-                        memcpy(buf + buf_len, line, ll);
-                        buf_len += ll;
-                    }
-                    int status = pclose(fp);
-                    script_exit_status = status;
-                    if (buf) {
-                        buf[buf_len] = '\0';
-                        result = buf;
-                    } else {
-                        result = xstrdup("");
-                    }
-                    if (status != 0) {
-                        fprintf(stderr, "[play] script exited with status %d\n",
-                                WEXITSTATUS(status));
-                        /* Non-zero exit is a failure, but we still have output */
-                        if (!result) result = xstrdup("(script failed)");
-                    }
-                } else {
-                    fprintf(stderr, "[play] popen failed: %s\n", strerror(errno));
-                }
+        char *safe_prev = shell_escape_value(prev_result);
+        char *expanded_cmd = playbook_expand(pb,
+                                             pb->passes[pass].command ? pb->passes[pass].command : "",
+                                             pass, safe_prev, mdir, model, NULL, pa->nash_dir);
+        free(safe_prev);
+        if (expanded_cmd && expanded_cmd[0]) {
+          if (pa->ui) {
+            ui_locked_set_status_fmt(pa->ui, STATUS_RUNNING,
+                                     "%s %d/%d: [script] %s", pb->name,
+                                     pass + 1, pb->n_passes, pb->passes[pass].label);
+          } else {
+            fprintf(stderr, "[play] script: %s\n", expanded_cmd);
+          }
+          /* Capture stdout+stderr via popen */
+          char popen_cmd[NASH_PATH_MAX * 2 + 8];
+          snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
+          FILE *fp = popen(popen_cmd, "r");
+          if (fp) {
+            char *buf = NULL;
+            size_t buf_len = 0, buf_cap = 0;
+            char line[1024];
+            while (fgets(line, sizeof(line), fp)) {
+              size_t ll = strlen(line);
+              if (buf_len + ll + 1 > buf_cap) {
+                size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
+                if (new_cap < buf_len + ll + 1)
+                  new_cap = buf_len + ll + 1;
+                if (safe_realloc((void **)&buf, new_cap))
+                  break;
+                buf_cap = new_cap;
+              }
+              memcpy(buf + buf_len, line, ll);
+              buf_len += ll;
             }
-            free(expanded_cmd);
-        } else {
-            /* Normal react pass */
-            result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
+            int status = pclose(fp);
+            script_exit_status = status;
+            if (buf) {
+              buf[buf_len] = '\0';
+              result = buf;
+            } else {
+              result = xstrdup("");
+            }
+            if (status != 0) {
+              fprintf(stderr, "[play] script exited with status %d\n",
+                      WEXITSTATUS(status));
+              /* Non-zero exit is a failure, but we still have output */
+              if (!result) result = xstrdup("(script failed)");
+            }
+          } else {
+            fprintf(stderr, "[play] popen failed: %s\n", strerror(errno));
+          }
         }
+        free(expanded_cmd);
+      } else {
+        /* Normal react pass */
+        result = react_run(&pass_react, prompt, pb_event_cb, &ev_ctx);
+      }
 
-        /* Harvest scratchpad */
-        if (pb->scratch_mode == PB_SCRATCH_SHARED) {
-            scratchpad_move(&shared_scratch, &pass_tools.scratch);
-        }
+      /* Harvest scratchpad */
+      if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+        scratchpad_move(&shared_scratch, &pass_tools.scratch);
+      }
 
-        int pass_failed = (result == NULL || script_exit_status != 0);
+      int pass_failed = (result == NULL || script_exit_status != 0);
 
-        /* SIGIL-inspired mandatory tool verification (arxiv 2607.27309).
+      /* SIGIL-inspired mandatory tool verification (arxiv 2607.27309).
          * After a react pass completes, verify that every tool listed in
          * required_tools was actually invoked.  This is a post-pass gate
          * that catches the "call narrated, not made" failure mode where
          * the model describes tool usage without executing it.
          * Only checked for react passes that otherwise succeeded.
          * missing_tools is kept alive for the retry prompt below. */
-        char *missing_tools = NULL;
-        if (!pass_failed && pb->passes[pass].type == PB_PASS_REACT
-            && pb->passes[pass].n_required_tools > 0) {
-            int n_missing = journal_check_required_tools(
-                pass_journal, pass_react_loop,
-                pb->passes[pass].required_tools,
-                pb->passes[pass].n_required_tools,
-                &missing_tools);
-            if (n_missing > 0) {
-                fprintf(stderr,
-                    "[play] pass %d/%d ('%s'): required_tools gate failed "
-                    "- %d tool(s) never called: %s\n",
-                    pass + 1, pb->n_passes, pb->passes[pass].label,
-                    n_missing, missing_tools ? missing_tools : "(unknown)");
-                pass_failed = 1;
-            }
+      char *missing_tools = NULL;
+      if (!pass_failed && pb->passes[pass].type == PB_PASS_REACT && pb->passes[pass].n_required_tools > 0) {
+        int n_missing = journal_check_required_tools(
+          pass_journal, pass_react_loop,
+          pb->passes[pass].required_tools,
+          pb->passes[pass].n_required_tools,
+          &missing_tools);
+        if (n_missing > 0) {
+          fprintf(stderr,
+                  "[play] pass %d/%d ('%s'): required_tools gate failed "
+                  "- %d tool(s) never called: %s\n",
+                  pass + 1, pb->n_passes, pb->passes[pass].label,
+                  n_missing, missing_tools ? missing_tools : "(unknown)");
+          pass_failed = 1;
         }
+      }
 
-        /* Per-pass error policy handling */
-        if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_CONTINUE) {
-            fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
-                    pass + 1, pb->n_passes, pb->passes[pass].label);
-            free(result);
-            result = xstrdup("");  /* provide empty result for next pass */
-            pass_failed = 0;
-        } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
-            fprintf(stderr, "[play] pass %d/%d ('%s') failed, retrying once (on_error: retry)\n",
-                    pass + 1, pb->n_passes, pb->passes[pass].label);
-            /* Retry with failure context prefix.
+      /* Per-pass error policy handling */
+      if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_CONTINUE) {
+        fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
+                pass + 1, pb->n_passes, pb->passes[pass].label);
+        free(result);
+        result = xstrdup(""); /* provide empty result for next pass */
+        pass_failed = 0;
+      } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
+        fprintf(stderr, "[play] pass %d/%d ('%s') failed, retrying once (on_error: retry)\n",
+                pass + 1, pb->n_passes, pb->passes[pass].label);
+        /* Retry with failure context prefix.
              * When the failure was a required_tools gate violation, tell
              * the model exactly which tools it forgot to call so the
              * retry has a chance to fix the specific omission. */
-            if (pb->passes[pass].type == PB_PASS_REACT) {
-                char *retry_prompt = NULL;
-                size_t rplen = strlen(prompt) + 256 +
-                    (missing_tools ? strlen(missing_tools) : 0);
-                retry_prompt = xmalloc(rplen);
-                if (missing_tools) {
-                    snprintf(retry_prompt, rplen,
-                        "[RETRY: Your previous attempt completed but FAILED "
-                        "the required_tools gate. You must actually call "
-                        "these tools (not just describe them): %s]\n\n%s",
-                        missing_tools, prompt);
-                } else {
-                    snprintf(retry_prompt, rplen,
-                        "[RETRY: Your previous attempt at this pass failed. "
-                        "Try a different approach.]\n\n%s", prompt);
-                }
-                result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
-                free(retry_prompt);
-                pass_failed = (result == NULL);
-                /* Re-check required_tools after retry */
-                if (!pass_failed && pb->passes[pass].n_required_tools > 0) {
-                    free(missing_tools);
-                    missing_tools = NULL;
-                    int n_missing2 = journal_check_required_tools(
-                        pass_journal, pass_react_loop,
-                        pb->passes[pass].required_tools,
-                        pb->passes[pass].n_required_tools,
-                        &missing_tools);
-                    if (n_missing2 > 0) {
-                        fprintf(stderr,
-                            "[play] pass %d/%d ('%s'): required_tools gate "
-                            "still failed after retry - missing: %s\n",
-                            pass + 1, pb->n_passes, pb->passes[pass].label,
-                            missing_tools ? missing_tools : "(unknown)");
-                        pass_failed = 1;
-                    }
-                }
-            } else {
-                /* Script retries just re-run the same command */
-                free(result);
-                result = NULL;
-                script_exit_status = 0;
-                char *safe_prev = shell_escape_value(prev_result);
-                char *expanded_cmd = playbook_expand(pb,
-                    pb->passes[pass].command ? pb->passes[pass].command : "",
-                    pass, safe_prev, mdir, model, NULL, pa->nash_dir);
-                free(safe_prev);
-                if (expanded_cmd && expanded_cmd[0]) {
-                    char popen_cmd[NASH_PATH_MAX * 2 + 8];
-                    snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
-                    FILE *fp = popen(popen_cmd, "r");
-                    if (fp) {
-                        char *buf = NULL;
-                        size_t buf_len = 0, buf_cap = 0;
-                        char line[1024];
-                        while (fgets(line, sizeof(line), fp)) {
-                            size_t ll = strlen(line);
-                            if (buf_len + ll + 1 > buf_cap) {
-                                size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
-                                if (new_cap < buf_len + ll + 1)
-                                    new_cap = buf_len + ll + 1;
-                                if (safe_realloc((void **)&buf, new_cap))
-                                    break;
-                                buf_cap = new_cap;
-                            }
-                            memcpy(buf + buf_len, line, ll);
-                            buf_len += ll;
-                        }
-                        int status = pclose(fp);
-                        script_exit_status = status;
-                        if (buf) {
-                            buf[buf_len] = '\0';
-                            result = buf;
-                        } else {
-                            result = xstrdup("");
-                        }
-                        if (status != 0) {
-                            fprintf(stderr, "[play] script retry exited with status %d\n",
-                                    WEXITSTATUS(status));
-                            if (!result) result = xstrdup("(script failed)");
-                        }
-                    } else {
-                        fprintf(stderr, "[play] popen failed on retry: %s\n", strerror(errno));
-                    }
-                }
-                free(expanded_cmd);
-                pass_failed = (result == NULL || script_exit_status != 0);
+        if (pb->passes[pass].type == PB_PASS_REACT) {
+          char *retry_prompt = NULL;
+          size_t rplen = strlen(prompt) + 256 +
+                         (missing_tools ? strlen(missing_tools) : 0);
+          retry_prompt = xmalloc(rplen);
+          if (missing_tools) {
+            snprintf(retry_prompt, rplen,
+                     "[RETRY: Your previous attempt completed but FAILED "
+                     "the required_tools gate. You must actually call "
+                     "these tools (not just describe them): %s]\n\n%s",
+                     missing_tools, prompt);
+          } else {
+            snprintf(retry_prompt, rplen,
+                     "[RETRY: Your previous attempt at this pass failed. "
+                     "Try a different approach.]\n\n%s",
+                     prompt);
+          }
+          result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
+          free(retry_prompt);
+          pass_failed = (result == NULL);
+          /* Re-check required_tools after retry */
+          if (!pass_failed && pb->passes[pass].n_required_tools > 0) {
+            free(missing_tools);
+            missing_tools = NULL;
+            int n_missing2 = journal_check_required_tools(
+              pass_journal, pass_react_loop,
+              pb->passes[pass].required_tools,
+              pb->passes[pass].n_required_tools,
+              &missing_tools);
+            if (n_missing2 > 0) {
+              fprintf(stderr,
+                      "[play] pass %d/%d ('%s'): required_tools gate "
+                      "still failed after retry - missing: %s\n",
+                      pass + 1, pb->n_passes, pb->passes[pass].label,
+                      missing_tools ? missing_tools : "(unknown)");
+              pass_failed = 1;
             }
+          }
+        } else {
+          /* Script retries just re-run the same command */
+          free(result);
+          result = NULL;
+          script_exit_status = 0;
+          char *safe_prev = shell_escape_value(prev_result);
+          char *expanded_cmd = playbook_expand(pb,
+                                               pb->passes[pass].command ? pb->passes[pass].command : "",
+                                               pass, safe_prev, mdir, model, NULL, pa->nash_dir);
+          free(safe_prev);
+          if (expanded_cmd && expanded_cmd[0]) {
+            char popen_cmd[NASH_PATH_MAX * 2 + 8];
+            snprintf(popen_cmd, sizeof(popen_cmd), "%s 2>&1", expanded_cmd);
+            FILE *fp = popen(popen_cmd, "r");
+            if (fp) {
+              char *buf = NULL;
+              size_t buf_len = 0, buf_cap = 0;
+              char line[1024];
+              while (fgets(line, sizeof(line), fp)) {
+                size_t ll = strlen(line);
+                if (buf_len + ll + 1 > buf_cap) {
+                  size_t new_cap = (buf_cap ? buf_cap * 2 : 4096);
+                  if (new_cap < buf_len + ll + 1)
+                    new_cap = buf_len + ll + 1;
+                  if (safe_realloc((void **)&buf, new_cap))
+                    break;
+                  buf_cap = new_cap;
+                }
+                memcpy(buf + buf_len, line, ll);
+                buf_len += ll;
+              }
+              int status = pclose(fp);
+              script_exit_status = status;
+              if (buf) {
+                buf[buf_len] = '\0';
+                result = buf;
+              } else {
+                result = xstrdup("");
+              }
+              if (status != 0) {
+                fprintf(stderr, "[play] script retry exited with status %d\n",
+                        WEXITSTATUS(status));
+                if (!result) result = xstrdup("(script failed)");
+              }
+            } else {
+              fprintf(stderr, "[play] popen failed on retry: %s\n", strerror(errno));
+            }
+          }
+          free(expanded_cmd);
+          pass_failed = (result == NULL || script_exit_status != 0);
         }
-        free(missing_tools);
+      }
+      free(missing_tools);
 
-        /* Run log: emit pass done */
-        if (run_log) {
-            struct timespec done_tp;
-            clock_gettime(CLOCK_REALTIME, &done_tp);
-            fprintf(run_log,
+      /* Run log: emit pass done */
+      if (run_log) {
+        struct timespec done_tp;
+        clock_gettime(CLOCK_REALTIME, &done_tp);
+        fprintf(run_log,
                 "{\"e\":\"done\",\"i\":%d,\"st\":\"%s\",\"ts\":%ld.%05ld}\n",
                 pass, pass_failed ? "fail" : "ok",
                 (long)done_tp.tv_sec, done_tp.tv_nsec / 10000);
-            fflush(run_log);
-        }
+        fflush(run_log);
+      }
 
-        /* Cleanup */
-        free(prev_result);
-        prev_result = result;
-        free(prompt);
+      /* Cleanup */
+      free(prev_result);
+      prev_result = result;
+      free(prompt);
 
-        /* Track last successful pass's session dir (for agent result lookup) */
-        free(pa->last_session_dir);
-        pa->last_session_dir = pass_dir;  /* take ownership */
+      /* Track last successful pass's session dir (for agent result lookup) */
+      free(pa->last_session_dir);
+      pa->last_session_dir = pass_dir; /* take ownership */
 
-        /* Free section-based scratchpad.
+      /* Free section-based scratchpad.
          * For PB_SCRATCH_SHARED: already moved back to shared_scratch
          * (struct zeroed by scratchpad_move), so this is a no-op.
          * For PB_SCRATCH_ISOLATED: sections must be freed here. */
-        scratchpad_free(&pass_tools.scratch);
-        alias_map_free(pass_tools.aliases);
-        session_lock_release(pass_tools.session_lock_fd);
-        journal_free(pass_journal);
+      scratchpad_free(&pass_tools.scratch);
+      alias_map_free(pass_tools.aliases);
+      session_lock_release(pass_tools.session_lock_fd);
+      journal_free(pass_journal);
 
-        if (pass_failed) {
-            playbook_ok = 0;
-            break;
-        }
+      if (pass_failed) {
+        playbook_ok = 0;
+        break;
+      }
     }
 
     /* Restore consolidation guard and regenerate embeddings for this phase.
@@ -1277,14 +1297,14 @@ void *playbook_worker(void *arg) {
      * were stored without them (memory_embed_all is idempotent -- skips
      * entries that already have up-to-date .emb files). */
     if (suppress_consolidation) {
-        atomic_store(&cur_mem->consolidating, 0);
-        memory_embed_all(cur_mem);
+      atomic_store(&cur_mem->consolidating, 0);
+      memory_embed_all(cur_mem);
     }
 
     /* Post-playbook hooks */
     if (pb->post_prune && cur_mem) {
-        memory_prune(cur_mem, pa->cfg->prune_min_score,
-                     pa->cfg->prune_min_evidence);
+      memory_prune(cur_mem, pa->cfg->prune_min_score,
+                   pa->cfg->prune_min_evidence);
     }
 
     /* Clean up ephemeral fact: entries created during playbook execution.
@@ -1293,78 +1313,80 @@ void *playbook_worker(void *arg) {
      * intermediate artifacts, not reusable knowledge, and pollute the
      * memory store. Delete any fact: entries created after the run started. */
     if (cur_mem && memory_dir(cur_mem)) {
-        double run_ts = (double)run_tp.tv_sec +
-                        (double)run_tp.tv_nsec / 1e9;
-        DIR *mdir = opendir(memory_dir(cur_mem));
-        if (mdir) {
-            /* Phase 1: collect keys to delete (can't delete while iterating) */
-            char **del_keys = NULL;
-            int n_del = 0, del_cap = 0;
-            struct dirent *de;
-            while ((de = readdir(mdir)) != NULL) {
-                /* Match fact_*.json files */
-                if (strncmp(de->d_name, "fact_", 5) != 0) continue;
-                size_t nlen = strlen(de->d_name);
-                if (nlen < 6 || strcmp(de->d_name + nlen - 5, ".json") != 0)
-                    continue;
+      double run_ts = (double)run_tp.tv_sec +
+                      (double)run_tp.tv_nsec / 1e9;
+      DIR *mdir = opendir(memory_dir(cur_mem));
+      if (mdir) {
+        /* Phase 1: collect keys to delete (can't delete while iterating) */
+        char **del_keys = NULL;
+        int n_del = 0, del_cap = 0;
+        struct dirent *de;
+        while ((de = readdir(mdir)) != NULL) {
+          /* Match fact_*.json files */
+          if (strncmp(de->d_name, "fact_", 5) != 0) continue;
+          size_t nlen = strlen(de->d_name);
+          if (nlen < 6 || strcmp(de->d_name + nlen - 5, ".json") != 0)
+            continue;
 
-                /* Read created_at from the JSON file */
-                char fpath[NASH_PATH_MAX];
-                path_join(fpath, sizeof(fpath),
-                         memory_dir(cur_mem), de->d_name);
-                FILE *fp = fopen(fpath, "r");
-                if (!fp) continue;
-                char buf[8192];
-                size_t rd = fread(buf, 1, sizeof(buf) - 1, fp);
-                fclose(fp);
-                buf[rd] = '\0';
+          /* Read created_at from the JSON file */
+          char fpath[NASH_PATH_MAX];
+          path_join(fpath, sizeof(fpath),
+                    memory_dir(cur_mem), de->d_name);
+          FILE *fp = fopen(fpath, "r");
+          if (!fp) continue;
+          char buf[8192];
+          size_t rd = fread(buf, 1, sizeof(buf) - 1, fp);
+          fclose(fp);
+          buf[rd] = '\0';
 
-                /* Quick parse: find "key" and "created_at" values.
+          /* Quick parse: find "key" and "created_at" values.
                  * Read key from JSON directly (avoids filename->key mapping bugs). */
-                const char *ca = strstr(buf, "\"created_at\"");
-                if (!ca) continue;
-                ca = strchr(ca + 12, ':');
-                if (!ca) continue;
-                ca++;
-                while (*ca == ' ' || *ca == '"') ca++;
-                double entry_ts = strtod(ca, NULL);
-                if (entry_ts < run_ts) continue;
+          const char *ca = strstr(buf, "\"created_at\"");
+          if (!ca) continue;
+          ca = strchr(ca + 12, ':');
+          if (!ca) continue;
+          ca++;
+          while (*ca == ' ' || *ca == '"')
+            ca++;
+          double entry_ts = strtod(ca, NULL);
+          if (entry_ts < run_ts) continue;
 
-                /* Extract key from the "key" field in JSON */
-                const char *kp = strstr(buf, "\"key\"");
-                if (!kp) continue;
-                kp = strchr(kp + 4, ':');
-                if (!kp) continue;
-                kp++;
-                while (*kp == ' ') kp++;
-                if (*kp != '"') continue;
-                kp++;  /* skip opening quote */
-                const char *ke = strchr(kp, '"');
-                if (!ke || ke - kp >= 256) continue;
-                char key[256];
-                snprintf(key, sizeof(key), "%.*s", (int)(ke - kp), kp);
-                /* Verify it starts with "fact:" */
-                if (strncmp(key, "fact:", 5) != 0) continue;
+          /* Extract key from the "key" field in JSON */
+          const char *kp = strstr(buf, "\"key\"");
+          if (!kp) continue;
+          kp = strchr(kp + 4, ':');
+          if (!kp) continue;
+          kp++;
+          while (*kp == ' ')
+            kp++;
+          if (*kp != '"') continue;
+          kp++; /* skip opening quote */
+          const char *ke = strchr(kp, '"');
+          if (!ke || ke - kp >= 256) continue;
+          char key[256];
+          snprintf(key, sizeof(key), "%.*s", (int)(ke - kp), kp);
+          /* Verify it starts with "fact:" */
+          if (strncmp(key, "fact:", 5) != 0) continue;
 
-                if (n_del >= del_cap) {
-                    int new_cap = del_cap ? del_cap * 2 : 8;
-                    if (safe_realloc((void **)&del_keys, sizeof(char *) * (size_t)new_cap))
-                        continue;
-                    del_cap = new_cap;
-                }
-                del_keys[n_del++] = xstrdup(key);
-            }
-            closedir(mdir);
+          if (n_del >= del_cap) {
+            int new_cap = del_cap ? del_cap * 2 : 8;
+            if (safe_realloc((void **)&del_keys, sizeof(char *) * (size_t)new_cap))
+              continue;
+            del_cap = new_cap;
+          }
+          del_keys[n_del++] = xstrdup(key);
+        }
+        closedir(mdir);
 
-            /* Phase 2: batch delete collected keys.
+        /* Phase 2: batch delete collected keys.
              * Uses memory_delete_batch() for a single gc_refs pass
              * and single git commit instead of N individual deletes. */
-            if (n_del > 0) {
-                memory_delete_batch(cur_mem,
-                                    (const char **)del_keys, n_del);
-            }
-            free_string_array(del_keys, n_del);
+        if (n_del > 0) {
+          memory_delete_batch(cur_mem,
+                              (const char **)del_keys, n_del);
         }
+        free_string_array(del_keys, n_del);
+      }
     }
 
     /* Touch .last_dream timestamp file after successful dream run.
@@ -1372,51 +1394,51 @@ void *playbook_worker(void *arg) {
      * mtime.  Without this touch, the reminder counter never resets. */
     if (playbook_ok && cur_mem && memory_dir(cur_mem) &&
         pb->name && strcmp(pb->name, "dream") == 0) {
-        char dream_ts[NASH_PATH_MAX];
-        snprintf(dream_ts, sizeof(dream_ts), "%s/.last_dream",
-                 memory_dir(cur_mem));
-        FILE *fp = fopen(dream_ts, "w");
-        if (fp) fclose(fp);  /* creates or updates mtime */
+      char dream_ts[NASH_PATH_MAX];
+      snprintf(dream_ts, sizeof(dream_ts), "%s/.last_dream",
+               memory_dir(cur_mem));
+      FILE *fp = fopen(dream_ts, "w");
+      if (fp) fclose(fp); /* creates or updates mtime */
     }
 
-    } /* end memory phase loop (mi) */
+  } /* end memory phase loop (mi) */
 
-    /* Run log: emit end */
-    if (run_log) {
-        struct timespec end_tp;
-        clock_gettime(CLOCK_REALTIME, &end_tp);
-        fprintf(run_log,
+  /* Run log: emit end */
+  if (run_log) {
+    struct timespec end_tp;
+    clock_gettime(CLOCK_REALTIME, &end_tp);
+    fprintf(run_log,
             "{\"e\":\"end\",\"st\":\"%s\",\"ts\":%ld.%05ld}\n",
             playbook_ok ? "ok" : "fail",
             (long)end_tp.tv_sec, end_tp.tv_nsec / 10000);
-        fclose(run_log);
-    }
+    fclose(run_log);
+  }
 
-    /* Change 5: Persist scratchpad for next run */
-    if (pb->scratch_mode == PB_SCRATCH_SHARED) {
-        /* Create state directory (mkdir -p equivalent) */
-        char state_parent[NASH_PATH_MAX];
-        snprintf(state_parent, sizeof(state_parent), "%s/playbooks/.state",
-                 pa->nash_dir);
-        mkdir(state_parent, 0755);
-        mkdir(state_dir, 0755);
-        scratchpad_save(&shared_scratch, state_dir);
-    }
+  /* Change 5: Persist scratchpad for next run */
+  if (pb->scratch_mode == PB_SCRATCH_SHARED) {
+    /* Create state directory (mkdir -p equivalent) */
+    char state_parent[NASH_PATH_MAX];
+    snprintf(state_parent, sizeof(state_parent), "%s/playbooks/.state",
+             pa->nash_dir);
+    mkdir(state_parent, 0755);
+    mkdir(state_dir, 0755);
+    scratchpad_save(&shared_scratch, state_dir);
+  }
 
-    /* Clear playbook session dir on UI when done.
+  /* Clear playbook session dir on UI when done.
      * session.md regeneration is handled by main.c after pthread_join,
      * where agent_view is also cleared. */
-    if (pa->ui) {
-        pthread_mutex_lock(&pa->ui->mtx);
-        free(pa->ui->playbook_session_dir);
-        pa->ui->playbook_session_dir = NULL;
-        pthread_mutex_unlock(&pa->ui->mtx);
-    }
+  if (pa->ui) {
+    pthread_mutex_lock(&pa->ui->mtx);
+    free(pa->ui->playbook_session_dir);
+    pa->ui->playbook_session_dir = NULL;
+    pthread_mutex_unlock(&pa->ui->mtx);
+  }
 
-    pa->result_text = prev_result;  /* caller frees (NULL on failure) */
-    free(shared_session_dir);
-    scratchpad_free(&shared_scratch);
-    pa->playbook_ok = playbook_ok;
-    atomic_store(&pa->done, 1);
-    return NULL;
+  pa->result_text = prev_result; /* caller frees (NULL on failure) */
+  free(shared_session_dir);
+  scratchpad_free(&shared_scratch);
+  pa->playbook_ok = playbook_ok;
+  atomic_store(&pa->done, 1);
+  return NULL;
 }

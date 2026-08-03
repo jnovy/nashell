@@ -8,7 +8,7 @@
  * ignoring tools beyond this index. */
 #define MAX_TOOL_TRACKED 64
 #include "cJSON.h"
-#include "tool_plugin.h"   /* tool_result_t, tool_plugin_t, tool_param_t */
+#include "tool_plugin.h" /* tool_result_t, tool_plugin_t, tool_param_t */
 #include "store.h"
 #include "journal.h"
 #include "memory.h"
@@ -24,25 +24,25 @@ typedef struct session_index_t session_index_t;
 /* Dynamic hash map for step aliases (R1S0 → store hash).
  * Grows automatically — no artificial limit. */
 typedef struct alias_node {
-    char        *alias;      /* "R1S0", "R1S1", etc. */
-    char        *hash;       /* content hash in shared store */
-    struct alias_node *next; /* chain for collisions */
+  char *alias;             /* "R1S0", "R1S1", etc. */
+  char *hash;              /* content hash in shared store */
+  struct alias_node *next; /* chain for collisions */
 } alias_node_t;
 
 typedef struct {
-    alias_node_t **buckets;
-    int            capacity;
-    int            count;
-    int            next_seq;  /* next step sequence number for alias generation */
+  alias_node_t **buckets;
+  int capacity;
+  int count;
+  int next_seq; /* next step sequence number for alias generation */
 } alias_map_t;
 
 /* Hash map lifecycle */
 alias_map_t *alias_map_new(void);
-void         alias_map_free(alias_map_t *map);
-void         alias_map_clear(alias_map_t *map);  /* keep allocated buckets */
-void        *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
-const char  *alias_map_lookup(alias_map_t *map, const char *alias);
-const char  *alias_map_reverse_lookup(alias_map_t *map, const char *hash);
+void alias_map_free(alias_map_t *map);
+void alias_map_clear(alias_map_t *map); /* keep allocated buckets */
+void *alias_map_insert(alias_map_t *map, const char *alias, const char *hash);
+const char *alias_map_lookup(alias_map_t *map, const char *alias);
+const char *alias_map_reverse_lookup(alias_map_t *map, const char *hash);
 
 #include "scratchpad.h"
 
@@ -52,88 +52,88 @@ const char  *alias_map_reverse_lookup(alias_map_t *map, const char *hash);
  * Both NULL = all tools available (default).
  * desc_names/desc_values: per-tool description overrides (Unified Spec). */
 typedef struct tool_filter_t {
-    const char **allowed;    /* NULL = all allowed; non-NULL = whitelist */
-    int          n_allowed;
-    const char **blocked;    /* NULL = none blocked; non-NULL = blacklist */
-    int          n_blocked;
-    int          blocked_owned; /* 1 if blocked[] is heap-owned (deep-copied) */
-    /* Per-tool description overrides (parallel arrays, NULL = no overrides) */
-    char       **desc_names;   /* tool names with overridden descriptions */
-    char       **desc_values;  /* replacement description strings */
-    int          n_descs;
+  const char **allowed; /* NULL = all allowed; non-NULL = whitelist */
+  int n_allowed;
+  const char **blocked; /* NULL = none blocked; non-NULL = blacklist */
+  int n_blocked;
+  int blocked_owned; /* 1 if blocked[] is heap-owned (deep-copied) */
+  /* Per-tool description overrides (parallel arrays, NULL = no overrides) */
+  char **desc_names;  /* tool names with overridden descriptions */
+  char **desc_values; /* replacement description strings */
+  int n_descs;
 } tool_filter_t;
 
 /* Session context passed to all tools */
 typedef struct {
-    store_t       *store;
-    journal_t     *journal;
-    memory_t      *memory;        /* long-term memory store (.memory/) — points to active layer */
-    workspace_t   *ws;            /* workspace: two-layer memory (global + workspace) */
-    config_t      *cfg;           /* configuration (tool limits, etc.) */
-    char          *session_dir;   /* .sessions/<id>/ */
-    int            session_lock_fd; /* flock fd for exclusive session access (-1 = none) */
-    scratchpad_t   scratch;       /* section-based scratchpad */
-    provider_t    *provider;     /* provider abstraction (FIX #3: for consolidation) */
-    int            step;          /* current step number (within react loop) */
-    int            react_loop;    /* react loop counter (0-based, increments per query) */
-    /* Step alias tracking — dynamic hash map, no size limit */
-    alias_map_t   *aliases;
-    /* Validation scoring: track which memory keys were recalled this task */
-    char         **recalled_keys;
-    int            n_recalled_keys;
-    int            recalled_keys_cap;
-    /* Fire ledger: tracks which memory keys have been injected in the
+  store_t *store;
+  journal_t *journal;
+  memory_t *memory;     /* long-term memory store (.memory/) — points to active layer */
+  workspace_t *ws;      /* workspace: two-layer memory (global + workspace) */
+  config_t *cfg;        /* configuration (tool limits, etc.) */
+  char *session_dir;    /* .sessions/<id>/ */
+  int session_lock_fd;  /* flock fd for exclusive session access (-1 = none) */
+  scratchpad_t scratch; /* section-based scratchpad */
+  provider_t *provider; /* provider abstraction (FIX #3: for consolidation) */
+  int step;             /* current step number (within react loop) */
+  int react_loop;       /* react loop counter (0-based, increments per query) */
+  /* Step alias tracking — dynamic hash map, no size limit */
+  alias_map_t *aliases;
+  /* Validation scoring: track which memory keys were recalled this task */
+  char **recalled_keys;
+  int n_recalled_keys;
+  int recalled_keys_cap;
+  /* Fire ledger: tracks which memory keys have been injected in the
      * current context window. Prevents redundant injection within a window
      * but resets on compaction so facts re-arm. (arXiv 2607.20972) */
-    char         **fire_ledger;
-    int            n_fire_ledger;
-    int            fire_ledger_cap;
-    /* Current step's thought (set by react.c before tool_execute, cleared after) */
-    const char    *thought;
-    /* Per-pass tool access control (playbooks/dream) */
-    tool_filter_t  tool_filter;
-    /* Spec journal tracking: last spec hash for change detection */
-    char          *last_spec_hash;
-    /* FIX CRIT1: Deferred consolidation queue — populated during react loop,
+  char **fire_ledger;
+  int n_fire_ledger;
+  int fire_ledger_cap;
+  /* Current step's thought (set by react.c before tool_execute, cleared after) */
+  const char *thought;
+  /* Per-pass tool access control (playbooks/dream) */
+  tool_filter_t tool_filter;
+  /* Spec journal tracking: last spec hash for change detection */
+  char *last_spec_hash;
+  /* FIX CRIT1: Deferred consolidation queue — populated during react loop,
      * flushed after task completion to avoid blocking LLM calls mid-task. */
-    struct {
-        char *key;
-        char *value;
-        int   is_workspace; /* FIX #4: flag instead of raw memory_t* to avoid
+  struct {
+    char *key;
+    char *value;
+    int is_workspace; /* FIX #4: flag instead of raw memory_t* to avoid
                              * dangling pointer after session reset. Resolved
                              * to the live memory_t at flush time. */
-    }             *deferred_consol;
-    int            n_deferred_consol;
-    int            cap_deferred_consol;
-    /* Harness-1 §3.3: Context-level deduplication — CRC32 hashes of recent
+  } *deferred_consol;
+  int n_deferred_consol;
+  int cap_deferred_consol;
+  /* Harness-1 §3.3: Context-level deduplication — CRC32 hashes of recent
      * tool result content to detect near-duplicate injections.
      * FIX MED#7: Added dedup_lens as secondary collision guard — CRC32's
      * 32-bit hash space has high collision rates for structured JSON data.
      * Requiring both hash AND length match reduces false positives. */
-    uint32_t       dedup_hashes[64]; /* rolling buffer of content hashes */
-    uint32_t       dedup_lens[64];   /* content length for each hash (collision guard) */
-    int            dedup_steps[64];  /* step number for each hash */
-    int            dedup_count;      /* entries in dedup buffer */
-    /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
-    int            tool_use_counts[MAX_TOOL_TRACKED]; /* indexed by tool_registry order */
-    int            n_tool_uses;     /* total tool invocations this loop */
-    /* Incremental notes tracking: detect deferred synthesis anti-pattern.
+  uint32_t dedup_hashes[64]; /* rolling buffer of content hashes */
+  uint32_t dedup_lens[64];   /* content length for each hash (collision guard) */
+  int dedup_steps[64];       /* step number for each hash */
+  int dedup_count;           /* entries in dedup buffer */
+  /* Harness-1 §4.2: Tool usage tracking for diversity nudging */
+  int tool_use_counts[MAX_TOOL_TRACKED]; /* indexed by tool_registry order */
+  int n_tool_uses;                       /* total tool invocations this loop */
+  /* Incremental notes tracking: detect deferred synthesis anti-pattern.
      * When the model reads many files without saving findings, compaction
      * evicts the raw content and the model confabulates from degraded memory. */
-    int            last_notes_step;          /* step when notes() last used (-1 = never) */
-    int            file_reads_since_notes;   /* file_read calls since last notes() */
-    int            pre_compact_warned;       /* 1 = pre-compaction warning already fired */
-    /* v4 unified memory: session index for L3 search via memory_query */
-    session_index_t *session_idx;
-    /* Journal enforcement: set by tool_journal(), checked by tool_execute().
+  int last_notes_step;        /* step when notes() last used (-1 = never) */
+  int file_reads_since_notes; /* file_read calls since last notes() */
+  int pre_compact_warned;     /* 1 = pre-compaction warning already fired */
+  /* v4 unified memory: session index for L3 search via memory_query */
+  session_index_t *session_idx;
+  /* Journal enforcement: set by tool_journal(), checked by tool_execute().
      * If a handler returns without setting this, tool_execute() adds a
      * fallback journal entry — so no tool call is ever invisible. */
-    int            journal_done;
-    double         start_ts;       /* tool start time (epoch), set by react.c before tool_execute */
-    /* Event callback from parent react loop — threaded through so that
+  int journal_done;
+  double start_ts; /* tool start time (epoch), set by react.c before tool_execute */
+  /* Event callback from parent react loop — threaded through so that
      * child react loops (subtask) can forward events to the TUI. */
-    react_event_fn on_event;       /* parent's event callback (NULL = headless) */
-    void          *on_event_data;  /* parent's event userdata */
+  react_event_fn on_event; /* parent's event callback (NULL = headless) */
+  void *on_event_data;     /* parent's event userdata */
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */
@@ -141,7 +141,7 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
 
 /* Fire ledger: dedup memory injection within a context window.
  * Resets on compaction so that memories re-arm for the new window. */
-int  tool_fire_ledger_contains(tool_ctx_t *ctx, const char *key);
+int tool_fire_ledger_contains(tool_ctx_t *ctx, const char *key);
 void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key);
 void tool_fire_ledger_reset(tool_ctx_t *ctx);
 void tool_fire_ledger_free(tool_ctx_t *ctx);
@@ -171,7 +171,7 @@ void tool_result_free(tool_result_t *r);
  * workspace:   workspace name (may contain '/', e.g. "rh/container-tools"), or NULL.
  * headless:    1 = agent/headless mode (suppresses user_ask rules, adjusts identity).
  * A session-scoped temp directory instruction is included in the prompt. */
-char *tools_system_prompt(const char *session_dir, const char *workspace, int headless);  /* caller must free() */
+char *tools_system_prompt(const char *session_dir, const char *workspace, int headless); /* caller must free() */
 
 /* FIX CRIT1: Process deferred memory consolidations after task completion.
  * Runs the LLM-based consolidation that was queued during memory_store calls,

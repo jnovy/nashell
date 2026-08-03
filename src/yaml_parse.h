@@ -11,25 +11,25 @@
  */
 
 typedef enum {
-    YAML_SCALAR,    /* string value */
-    YAML_MAPPING,   /* key-value pairs */
-    YAML_SEQUENCE,  /* ordered list */
+  YAML_SCALAR,   /* string value */
+  YAML_MAPPING,  /* key-value pairs */
+  YAML_SEQUENCE, /* ordered list */
 } yaml_type_t;
 
 typedef struct yaml_node {
-    yaml_type_t type;
-    char *scalar;          /* for YAML_SCALAR: the string value */
+  yaml_type_t type;
+  char *scalar; /* for YAML_SCALAR: the string value */
 
-    /* For YAML_MAPPING: parallel arrays of keys and values */
-    char **keys;
-    struct yaml_node **values;
-    int n_children;
-    int cap_children;
+  /* For YAML_MAPPING: parallel arrays of keys and values */
+  char **keys;
+  struct yaml_node **values;
+  int n_children;
+  int cap_children;
 
-    /* For YAML_SEQUENCE: array of items */
-    struct yaml_node **items;
-    int n_items;
-    int cap_items;
+  /* For YAML_SEQUENCE: array of items */
+  struct yaml_node **items;
+  int n_items;
+  int cap_items;
 } yaml_node_t;
 
 /* Parse a YAML string into a tree. Returns root node (caller frees with yaml_free).

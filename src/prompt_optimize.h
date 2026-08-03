@@ -35,85 +35,85 @@
 /* ── Budget presets ─────────────────────────────────── */
 
 typedef enum {
-    OPTIMIZE_LIGHT  = 3,   /* ~3 rounds, ~4 regression runs */
-    OPTIMIZE_MEDIUM = 6,   /* ~6 rounds, ~7 regression runs */
-    OPTIMIZE_HEAVY  = 10,  /* ~10 rounds, ~11 regression runs */
+  OPTIMIZE_LIGHT = 3,  /* ~3 rounds, ~4 regression runs */
+  OPTIMIZE_MEDIUM = 6, /* ~6 rounds, ~7 regression runs */
+  OPTIMIZE_HEAVY = 10, /* ~10 rounds, ~11 regression runs */
 } optimize_budget_t;
 
 /* ── Self-Harness failure signature [§3.2] ──────────── */
 
 typedef enum {
-    SH_CAUSE_NO_DONE,        /* agent did not call done */
-    SH_CAUSE_WRONG_RESULT,   /* done called but result incorrect */
-    SH_CAUSE_WRONG_TOOL,     /* used wrong tool / didn't use required tool */
-    SH_CAUSE_TOO_MANY_STEPS, /* exceeded step budget */
-    SH_CAUSE_ERRORS,         /* tool errors in execution */
-    SH_CAUSE_OTHER,          /* unclassifiable */
+  SH_CAUSE_NO_DONE,        /* agent did not call done */
+  SH_CAUSE_WRONG_RESULT,   /* done called but result incorrect */
+  SH_CAUSE_WRONG_TOOL,     /* used wrong tool / didn't use required tool */
+  SH_CAUSE_TOO_MANY_STEPS, /* exceeded step budget */
+  SH_CAUSE_ERRORS,         /* tool errors in execution */
+  SH_CAUSE_OTHER,          /* unclassifiable */
 } sh_cause_t;
 
 typedef enum {
-    SH_STATUS_CAUSAL,        /* agent behavior directly caused failure */
-    SH_STATUS_CONTRIBUTING,  /* agent behavior contributed to failure */
-    SH_STATUS_UNKNOWN,       /* causality unclear */
+  SH_STATUS_CAUSAL,       /* agent behavior directly caused failure */
+  SH_STATUS_CONTRIBUTING, /* agent behavior contributed to failure */
+  SH_STATUS_UNKNOWN,      /* causality unclear */
 } sh_status_t;
 
 typedef enum {
-    SH_MECH_TOOL_CHOICE,     /* wrong tool selection */
-    SH_MECH_TASK_ABANDON,    /* stopped without completing task */
-    SH_MECH_LOOP,            /* repeated unproductive actions */
-    SH_MECH_INCOMPLETE,      /* partial result missing required content */
-    SH_MECH_ERROR_CASCADE,   /* unrecovered errors */
-    SH_MECH_OVER_EXPLORE,    /* excessive exploration without action */
-    SH_MECH_OTHER,           /* unclassifiable */
+  SH_MECH_TOOL_CHOICE,   /* wrong tool selection */
+  SH_MECH_TASK_ABANDON,  /* stopped without completing task */
+  SH_MECH_LOOP,          /* repeated unproductive actions */
+  SH_MECH_INCOMPLETE,    /* partial result missing required content */
+  SH_MECH_ERROR_CASCADE, /* unrecovered errors */
+  SH_MECH_OVER_EXPLORE,  /* excessive exploration without action */
+  SH_MECH_OTHER,         /* unclassifiable */
 } sh_mechanism_t;
 
 /* Failure signature φ(r_i) = (cause, status, mechanism) */
 typedef struct {
-    sh_cause_t     cause;
-    sh_status_t    status;
-    sh_mechanism_t mechanism;
+  sh_cause_t cause;
+  sh_status_t status;
+  sh_mechanism_t mechanism;
 } sh_signature_t;
 
 /* A cluster of failures sharing the same signature */
 typedef struct {
-    sh_signature_t  sig;
-    int             count;          /* number of failures in this cluster */
-    char          **query_ids;      /* query IDs in this cluster */
-    char          **trace_excerpts; /* truncated trace per failure (for evidence) */
-    char          **crit_details;   /* criterion failure descriptions */
-    int             n_entries;
+  sh_signature_t sig;
+  int count;             /* number of failures in this cluster */
+  char **query_ids;      /* query IDs in this cluster */
+  char **trace_excerpts; /* truncated trace per failure (for evidence) */
+  char **crit_details;   /* criterion failure descriptions */
+  int n_entries;
 } sh_cluster_t;
 
 /* Evidence bundle B_t — structured output of weakness mining */
 typedef struct {
-    sh_cluster_t *clusters;
-    int           n_clusters;
-    int           total_failures;
-    int           total_passes;
-    char         *passing_summary;  /* brief summary of what works */
+  sh_cluster_t *clusters;
+  int n_clusters;
+  int total_failures;
+  int total_passes;
+  char *passing_summary; /* brief summary of what works */
 } sh_evidence_t;
 
 /* ── Candidate prompt ───────────────────────────────── */
 
 typedef struct {
-    char  *prompt_text;    /* the candidate prompt text */
-    double score;          /* overall regression score [0,1] */
-    double held_in_score;  /* held-in split score (-1 if N/A) */
-    double held_out_score; /* held-out split score (-1 if N/A) */
-    int    total_passed;   /* number of queries passed */
-    int    total_queries;  /* total queries */
-    int    round;          /* which round produced this */
-    char  *audit;          /* Self-Harness: targeted failure pattern + rationale */
+  char *prompt_text;     /* the candidate prompt text */
+  double score;          /* overall regression score [0,1] */
+  double held_in_score;  /* held-in split score (-1 if N/A) */
+  double held_out_score; /* held-out split score (-1 if N/A) */
+  int total_passed;      /* number of queries passed */
+  int total_queries;     /* total queries */
+  int round;             /* which round produced this */
+  char *audit;           /* Self-Harness: targeted failure pattern + rationale */
 } prompt_candidate_t;
 
 /* ── Rejected proposal (for cross-round memory) ─────── */
 
 typedef struct {
-    char *prompt_text;       /* the rejected prompt text */
-    char *audit;             /* what it targeted and why it was rejected */
-    int   round;
-    double delta_in;
-    double delta_out;
+  char *prompt_text; /* the rejected prompt text */
+  char *audit;       /* what it targeted and why it was rejected */
+  int round;
+  double delta_in;
+  double delta_out;
 } rejected_proposal_t;
 
 /* ── Decision manifest [AHE §3.3 Decision Observability] ────── */
@@ -122,36 +122,36 @@ typedef struct {
  * falsifiable prediction, verified against the next round's results.
  * Based on AHE paper's decision observability pillar. */
 typedef struct {
-    char **expect_fix;     /* query IDs the proposer expects to fix */
-    int    n_expect_fix;
-    char **at_risk;        /* query IDs the proposer thinks might regress */
-    int    n_at_risk;
-    /* Verification (filled in after next round's evaluation) */
-    int    verified;       /* 1 if predictions have been verified */
-    int    correct_fixes;  /* predicted fixes that actually fixed */
-    int    missed_fixes;   /* actual fixes that weren't predicted */
-    int    correct_risks;  /* predicted at-risk that actually regressed */
-    int    missed_risks;   /* actual regressions that weren't predicted */
+  char **expect_fix; /* query IDs the proposer expects to fix */
+  int n_expect_fix;
+  char **at_risk; /* query IDs the proposer thinks might regress */
+  int n_at_risk;
+  /* Verification (filled in after next round's evaluation) */
+  int verified;      /* 1 if predictions have been verified */
+  int correct_fixes; /* predicted fixes that actually fixed */
+  int missed_fixes;  /* actual fixes that weren't predicted */
+  int correct_risks; /* predicted at-risk that actually regressed */
+  int missed_risks;  /* actual regressions that weren't predicted */
 } manifest_entry_t;
 
 /* ── Optimization configuration ─────────────────────── */
 
 typedef struct {
-    int         max_rounds;       /* budget: number of reflection rounds per epoch (T) */
-    int         proposal_width;   /* candidates per round (K), default 2 */
-    provider_t *student;          /* model being optimized */
-    provider_t *reflection;       /* model doing the reflecting (can be same) */
-    const char *profile_path;     /* model profile .toml to update (NULL = don't write) */
-    int         split_filter;     /* -1=all, SPLIT_HELD_IN, SPLIT_HELD_OUT */
-    int         verbose;          /* print detailed progress */
-    /* SkillOpt extensions [arXiv:2605.23904v2] */
-    int         n_epochs;         /* training epochs (0/1 = GEPA mode, >1 = SkillOpt) */
-    int         edit_budget_init; /* L_0: max edits per step (0 = unlimited, default 4) */
-    int         edit_budget_floor;/* L_min: min edits at end of epoch (default 2) */
-    int         minibatch_size;   /* failures per reflection minibatch (0 = all-at-once) */
-    /* AHE-inspired extensions */
-    int         optimize_tool_descs; /* also optimize tool descriptions (default 0) */
-    int         generate_lessons;    /* generate memory lessons from failures (default 0) */
+  int max_rounds;           /* budget: number of reflection rounds per epoch (T) */
+  int proposal_width;       /* candidates per round (K), default 2 */
+  provider_t *student;      /* model being optimized */
+  provider_t *reflection;   /* model doing the reflecting (can be same) */
+  const char *profile_path; /* model profile .toml to update (NULL = don't write) */
+  int split_filter;         /* -1=all, SPLIT_HELD_IN, SPLIT_HELD_OUT */
+  int verbose;              /* print detailed progress */
+  /* SkillOpt extensions [arXiv:2605.23904v2] */
+  int n_epochs;          /* training epochs (0/1 = GEPA mode, >1 = SkillOpt) */
+  int edit_budget_init;  /* L_0: max edits per step (0 = unlimited, default 4) */
+  int edit_budget_floor; /* L_min: min edits at end of epoch (default 2) */
+  int minibatch_size;    /* failures per reflection minibatch (0 = all-at-once) */
+  /* AHE-inspired extensions */
+  int optimize_tool_descs; /* also optimize tool descriptions (default 0) */
+  int generate_lessons;    /* generate memory lessons from failures (default 0) */
 } optimize_config_t;
 
 /* ── API ─────────────────────────────────────────────── */
@@ -210,18 +210,18 @@ void optimize_free_evidence_bundle(sh_evidence_t *b);
 
 /* A pass/fail flip between baseline and candidate reports */
 typedef struct {
-    const char *query_id;
-    int         was_pass;    /* baseline pass/fail */
-    int         now_pass;    /* candidate pass/fail */
-    double      delta_score; /* candidate score - baseline score */
+  const char *query_id;
+  int was_pass;       /* baseline pass/fail */
+  int now_pass;       /* candidate pass/fail */
+  double delta_score; /* candidate score - baseline score */
 } query_flip_t;
 
 /* Compare two reports per-query. Returns flips array (caller frees).
  * Sets *out_n_flips, *out_n_fixes, *out_n_regressions. */
 query_flip_t *optimize_compare_reports_per_query(
-        const regression_report_t *baseline,
-        const regression_report_t *candidate,
-        int *out_n_flips, int *out_n_fixes, int *out_n_regressions);
+  const regression_report_t *baseline,
+  const regression_report_t *candidate,
+  int *out_n_flips, int *out_n_fixes, int *out_n_regressions);
 
 /* ── Rec #1: Memory lesson generation [AHE ablation: +5.6pp] ── */
 
@@ -247,9 +247,9 @@ char *optimize_parse_proposal(const char *raw_text,
 /* Write tool description overrides to a model profile .toml file.
  * Returns 0 on success. */
 int optimize_write_tool_descs_to_profile(const char *profile_path,
-                                          char **tool_names,
-                                          char **tool_descs,
-                                          int n_tool_descs);
+                                         char **tool_names,
+                                         char **tool_descs,
+                                         int n_tool_descs);
 
 /* ── Rec #7: Decision manifest [AHE Decision Observability] ── */
 

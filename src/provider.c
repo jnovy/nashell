@@ -15,28 +15,28 @@
 #include <stdarg.h>
 #include <time.h>
 
-#define PROVIDER_DEFAULT_MAX_RETRIES    10
+#define PROVIDER_DEFAULT_MAX_RETRIES 10
 #define PROVIDER_DEFAULT_RETRY_BASE_SEC 10
-#define PROVIDER_DEFAULT_TIMEOUT        600  /* 10 min default if not configured */
+#define PROVIDER_DEFAULT_TIMEOUT 600 /* 10 min default if not configured */
 
 /* Resolve retry config: use provider_config_t values if set, else defaults */
-#define PROVIDER_MAX_RETRIES(p)    ((p)->cfg.max_retries > 0 ? (p)->cfg.max_retries : PROVIDER_DEFAULT_MAX_RETRIES)
+#define PROVIDER_MAX_RETRIES(p) ((p)->cfg.max_retries > 0 ? (p)->cfg.max_retries : PROVIDER_DEFAULT_MAX_RETRIES)
 #define PROVIDER_RETRY_BASE_SEC(p) ((p)->cfg.retry_base_sec > 0 ? (p)->cfg.retry_base_sec : PROVIDER_DEFAULT_RETRY_BASE_SEC)
 
 /* Interruptible sleep: sleeps up to `seconds` but wakes early if
  * p->abort_retry is set or TUI has shut down.
  * Returns 1 if aborted, 0 if full sleep. */
 static int provider_sleep(provider_t *p, int seconds) {
-    for (int i = 0; i < seconds; i++) {
-        if (p->abort_retry) return 1;
-        /* Only abort on TUI shutdown if TUI was actually started.
+  for (int i = 0; i < seconds; i++) {
+    if (p->abort_retry) return 1;
+    /* Only abort on TUI shutdown if TUI was actually started.
          * In daemon/headless mode, g_tui_active==0 is the normal state
          * — not a signal to abort.  See g_tui_was_started in tui.h. */
-        if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
-            return 1;
-        sleep(1);
-    }
-    return p->abort_retry ? 1 : 0;
+    if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
+      return 1;
+    sleep(1);
+  }
+  return p->abort_retry ? 1 : 0;
 }
 
 /* FIX: Curl progress callback for aborting streaming LLM calls.
@@ -52,14 +52,17 @@ static int provider_sleep(provider_t *p, int seconds) {
  * stays 0 — which previously caused every LLM request to be aborted
  * immediately with CURLE_ABORTED_BY_CALLBACK (curl error 42). */
 static int provider_curl_progress_cb(void *clientp,
-                                      curl_off_t dltotal, curl_off_t dlnow,
-                                      curl_off_t ultotal, curl_off_t ulnow) {
-    (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
-    provider_t *p = (provider_t *)clientp;
-    if (p->abort_retry) return 1;          /* user requested abort */
-    if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
-        return 1;  /* TUI was running but shut down — abort */
-    return 0;  /* continue */
+                                     curl_off_t dltotal, curl_off_t dlnow,
+                                     curl_off_t ultotal, curl_off_t ulnow) {
+  (void)dltotal;
+  (void)dlnow;
+  (void)ultotal;
+  (void)ulnow;
+  provider_t *p = (provider_t *)clientp;
+  if (p->abort_retry) return 1; /* user requested abort */
+  if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
+    return 1; /* TUI was running but shut down — abort */
+  return 0;   /* continue */
 }
 
 /* ── Shared model context size table ────────────────────────────── */
@@ -68,47 +71,47 @@ static int provider_curl_progress_cb(void *clientp,
  * Replaces separate openai_lookup_context_size() and anthropic_lookup_context_size()
  * functions. Linear search over prefix → size mappings. */
 static const struct {
-    const char *prefix;
-    int        size;
+  const char *prefix;
+  int size;
 } MODEL_CONTEXT_SIZES[] = {
-    /* OpenAI o-series */
-    { "o4-mini",     200000 },
-    { "o3-mini",     200000 },
-    { "o3",          200000 },
-    { "o1-pro",      200000 },
-    { "o1-mini",     128000 },
-    { "o1",          200000 },
-    /* OpenAI GPT-4.1 */
-    { "gpt-4.1",    1048576 },  /* FIX BUG#7: was 1047576 (off by 1000) */
-    /* OpenAI GPT-4o */
-    { "gpt-4o",      128000 },
-    /* OpenAI GPT-4 turbo */
-    { "gpt-4-turbo", 128000 },
-    /* OpenAI GPT-4 */
-    { "gpt-4-32k",    32768 },
-    { "gpt-4",         8192 },
-    /* OpenAI GPT-3.5 */
-    { "gpt-3.5-turbo-16k", 16384 },
-    { "gpt-3.5",        16384 },
-    /* Anthropic Claude 4.6+ (1M context) */
-    { "claude-opus-4-6", 1000000 },
-    { "claude-sonnet-4-6", 1000000 },
-    { "claude-4-6",      1000000 },
-    /* Anthropic Claude 4 */
-    { "claude-opus-4", 200000 },
-    { "claude-sonnet-4", 200000 },
-    { "claude-4",      200000 },
-    /* Anthropic Claude 3.7 */
-    { "claude-3-7",    200000 },
-    { "claude-3.7",    200000 },
-    /* Anthropic Claude 3.5 */
-    { "claude-3-5",    200000 },
-    { "claude-3.5",    200000 },
-    /* Anthropic Claude 3 */
-    { "claude-3",      200000 },
-    /* Anthropic Claude 2.x */
-    { "claude-2",     100000 },
-    { NULL, 0 }  /* sentinel */
+  /* OpenAI o-series */
+  {"o4-mini", 200000},
+  {"o3-mini", 200000},
+  {"o3", 200000},
+  {"o1-pro", 200000},
+  {"o1-mini", 128000},
+  {"o1", 200000},
+  /* OpenAI GPT-4.1 */
+  {"gpt-4.1", 1048576}, /* FIX BUG#7: was 1047576 (off by 1000) */
+  /* OpenAI GPT-4o */
+  {"gpt-4o", 128000},
+  /* OpenAI GPT-4 turbo */
+  {"gpt-4-turbo", 128000},
+  /* OpenAI GPT-4 */
+  {"gpt-4-32k", 32768},
+  {"gpt-4", 8192},
+  /* OpenAI GPT-3.5 */
+  {"gpt-3.5-turbo-16k", 16384},
+  {"gpt-3.5", 16384},
+  /* Anthropic Claude 4.6+ (1M context) */
+  {"claude-opus-4-6", 1000000},
+  {"claude-sonnet-4-6", 1000000},
+  {"claude-4-6", 1000000},
+  /* Anthropic Claude 4 */
+  {"claude-opus-4", 200000},
+  {"claude-sonnet-4", 200000},
+  {"claude-4", 200000},
+  /* Anthropic Claude 3.7 */
+  {"claude-3-7", 200000},
+  {"claude-3.7", 200000},
+  /* Anthropic Claude 3.5 */
+  {"claude-3-5", 200000},
+  {"claude-3.5", 200000},
+  /* Anthropic Claude 3 */
+  {"claude-3", 200000},
+  /* Anthropic Claude 2.x */
+  {"claude-2", 100000},
+  {NULL, 0} /* sentinel */
 };
 
 /* Look up context window size by model ID prefix.
@@ -118,13 +121,13 @@ static const struct {
  * anywhere (e.g. "model-fo1low-up").
  * Returns 0 if no match found. */
 int provider_lookup_context_size(const char *model_id) {
-    if (!model_id) return 0;
-    for (int i = 0; MODEL_CONTEXT_SIZES[i].prefix; i++) {
-        if (strncmp(model_id, MODEL_CONTEXT_SIZES[i].prefix,
-                    strlen(MODEL_CONTEXT_SIZES[i].prefix)) == 0)
-            return MODEL_CONTEXT_SIZES[i].size;
-    }
-    return 0;
+  if (!model_id) return 0;
+  for (int i = 0; MODEL_CONTEXT_SIZES[i].prefix; i++) {
+    if (strncmp(model_id, MODEL_CONTEXT_SIZES[i].prefix,
+                strlen(MODEL_CONTEXT_SIZES[i].prefix)) == 0)
+      return MODEL_CONTEXT_SIZES[i].size;
+  }
+  return 0;
 }
 
 /* Shared fetch_model_info for API providers (OpenAI, Anthropic, Vertex).
@@ -133,19 +136,19 @@ int provider_lookup_context_size(const char *model_id) {
  * props_json = NULL. */
 int provider_api_fetch_model_info(provider_t *p, int *context_size,
                                   char **model_name, char **props_json) {
-    if (props_json) *props_json = NULL;
+  if (props_json) *props_json = NULL;
 
-    if (model_name && p->cfg.model_id)
-        *model_name = xstrdup(p->cfg.model_id);
+  if (model_name && p->cfg.model_id)
+    *model_name = xstrdup(p->cfg.model_id);
 
-    if (context_size) {
-        if (p->cfg.context_size > 0)
-            *context_size = p->cfg.context_size;
-        else
-            *context_size = provider_lookup_context_size(p->cfg.model_id);
-    }
+  if (context_size) {
+    if (p->cfg.context_size > 0)
+      *context_size = p->cfg.context_size;
+    else
+      *context_size = provider_lookup_context_size(p->cfg.model_id);
+  }
 
-    return 0;
+  return 0;
 }
 
 /* ── Shared endpoint caching helper ─────────────────────────────── */
@@ -153,14 +156,14 @@ int provider_api_fetch_model_info(provider_t *p, int *context_size,
 /* Cache an endpoint URL in provider->_cached_endpoint.
  * Returns the cached string (do NOT free). */
 const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...) {
-    if (p->_cached_endpoint) return p->_cached_endpoint;
-    char url[1024];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(url, sizeof(url), fmt, ap);
-    va_end(ap);
-    p->_cached_endpoint = xstrdup(url);
-    return p->_cached_endpoint;
+  if (p->_cached_endpoint) return p->_cached_endpoint;
+  char url[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(url, sizeof(url), fmt, ap);
+  va_end(ap);
+  p->_cached_endpoint = xstrdup(url);
+  return p->_cached_endpoint;
 }
 
 /* ── Forward declarations for provider constructors ─────────────── */
@@ -172,205 +175,212 @@ extern void provider_anthropic_init(provider_t *p);
 /* ── Provider type string conversion ────────────────────────────── */
 
 provider_type_t provider_type_from_str(const char *s) {
-    if (!s) return PROVIDER_LOCAL;
-    if (strcmp(s, "local") == 0 || strcmp(s, "llama") == 0)
-        return PROVIDER_LOCAL;
-    if (strcmp(s, "openai") == 0 || strcmp(s, "gpt") == 0)
-        return PROVIDER_OPENAI;
-    if (strcmp(s, "anthropic") == 0 || strcmp(s, "claude") == 0)
-        return PROVIDER_ANTHROPIC;
-    if (strcmp(s, "vertex") == 0)
-        return PROVIDER_VERTEX;
-    nash_log("[provider] unknown type '%s', defaulting to local", s);
+  if (!s) return PROVIDER_LOCAL;
+  if (strcmp(s, "local") == 0 || strcmp(s, "llama") == 0)
     return PROVIDER_LOCAL;
+  if (strcmp(s, "openai") == 0 || strcmp(s, "gpt") == 0)
+    return PROVIDER_OPENAI;
+  if (strcmp(s, "anthropic") == 0 || strcmp(s, "claude") == 0)
+    return PROVIDER_ANTHROPIC;
+  if (strcmp(s, "vertex") == 0)
+    return PROVIDER_VERTEX;
+  nash_log("[provider] unknown type '%s', defaulting to local", s);
+  return PROVIDER_LOCAL;
 }
 
 const char *provider_type_to_str(provider_type_t t) {
-    switch (t) {
-        case PROVIDER_LOCAL:     return "local";
-        case PROVIDER_OPENAI:    return "openai";
-        case PROVIDER_ANTHROPIC: return "anthropic";
-        case PROVIDER_VERTEX:    return "vertex";
-    }
-    return "local";
+  switch (t) {
+    case PROVIDER_LOCAL:
+      return "local";
+    case PROVIDER_OPENAI:
+      return "openai";
+    case PROVIDER_ANTHROPIC:
+      return "anthropic";
+    case PROVIDER_VERTEX:
+      return "vertex";
+  }
+  return "local";
 }
 
 /* ── Provider lifecycle ─────────────────────────────────────────── */
 
 provider_t *provider_create(const provider_config_t *cfg) {
-    provider_t *p = xcalloc(1, sizeof(*p));
+  provider_t *p = xcalloc(1, sizeof(*p));
 
-    p->type = cfg->type;
-    /* FIX 5a: Zero the struct first, then copy scalar fields explicitly,
+  p->type = cfg->type;
+  /* FIX 5a: Zero the struct first, then copy scalar fields explicitly,
      * then deep-copy ALL pointer fields.  Previously used shallow struct copy
      * which aliases any new pointer field that isn't explicitly deep-copied. */
-    memset(&p->cfg, 0, sizeof(p->cfg));
-    p->cfg.type            = cfg->type;
-    p->cfg.context_size    = cfg->context_size;
-    p->cfg.chars_per_token = cfg->chars_per_token;
-    p->cfg.caching         = cfg->caching;
-    p->cfg.max_tokens      = cfg->max_tokens;
-    p->cfg.temperature     = cfg->temperature;
-    p->cfg.top_p           = cfg->top_p;
-    p->cfg.top_k           = cfg->top_k;
-    p->cfg.enable_thinking = cfg->enable_thinking;
-    p->cfg.thinking_budget = cfg->thinking_budget;
-    p->cfg.llm_timeout     = cfg->llm_timeout;
-    p->cfg.max_retries     = cfg->max_retries;
-    p->cfg.retry_base_sec  = cfg->retry_base_sec;
-    /* Deep-copy all string fields so provider owns its own strings. */
-    p->cfg.model_id    = cfg->model_id    ? xstrdup(cfg->model_id)    : NULL;
-    p->cfg.api_base    = cfg->api_base    ? xstrdup(cfg->api_base)    : NULL;
-    p->cfg.api_key_env = cfg->api_key_env ? xstrdup(cfg->api_key_env) : NULL;
-    p->cfg.project_id  = cfg->project_id  ? xstrdup(cfg->project_id)  : NULL;
-    p->cfg.region      = cfg->region      ? xstrdup(cfg->region)      : NULL;
+  memset(&p->cfg, 0, sizeof(p->cfg));
+  p->cfg.type = cfg->type;
+  p->cfg.context_size = cfg->context_size;
+  p->cfg.chars_per_token = cfg->chars_per_token;
+  p->cfg.caching = cfg->caching;
+  p->cfg.max_tokens = cfg->max_tokens;
+  p->cfg.temperature = cfg->temperature;
+  p->cfg.top_p = cfg->top_p;
+  p->cfg.top_k = cfg->top_k;
+  p->cfg.enable_thinking = cfg->enable_thinking;
+  p->cfg.thinking_budget = cfg->thinking_budget;
+  p->cfg.llm_timeout = cfg->llm_timeout;
+  p->cfg.max_retries = cfg->max_retries;
+  p->cfg.retry_base_sec = cfg->retry_base_sec;
+  /* Deep-copy all string fields so provider owns its own strings. */
+  p->cfg.model_id = cfg->model_id ? xstrdup(cfg->model_id) : NULL;
+  p->cfg.api_base = cfg->api_base ? xstrdup(cfg->api_base) : NULL;
+  p->cfg.api_key_env = cfg->api_key_env ? xstrdup(cfg->api_key_env) : NULL;
+  p->cfg.project_id = cfg->project_id ? xstrdup(cfg->project_id) : NULL;
+  p->cfg.region = cfg->region ? xstrdup(cfg->region) : NULL;
 
-    /* Set defaults */
-    if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
-    if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 16384;
-    if (p->cfg.temperature < 0) p->cfg.temperature = 0.7f;
-    if (p->cfg.top_p < 0) p->cfg.top_p = 1.0f;
-    if (p->cfg.top_k < 0) p->cfg.top_k = 0;
+  /* Set defaults */
+  if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
+  if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 16384;
+  if (p->cfg.temperature < 0) p->cfg.temperature = 0.7f;
+  if (p->cfg.top_p < 0) p->cfg.top_p = 1.0f;
+  if (p->cfg.top_k < 0) p->cfg.top_k = 0;
 
-    /* Initialize provider-specific vtable */
-    switch (cfg->type) {
-        case PROVIDER_LOCAL:
-            provider_local_init(p);
-            break;
-        case PROVIDER_OPENAI:
-            provider_openai_init(p);
-            break;
-        case PROVIDER_ANTHROPIC:
-        case PROVIDER_VERTEX:
-            provider_anthropic_init(p);
-            break;
-        default:
-            fprintf(stderr, "[provider] unknown provider type %d\n", (int)cfg->type);
-            provider_free(p);
-            return NULL;
-    }
+  /* Initialize provider-specific vtable */
+  switch (cfg->type) {
+    case PROVIDER_LOCAL:
+      provider_local_init(p);
+      break;
+    case PROVIDER_OPENAI:
+      provider_openai_init(p);
+      break;
+    case PROVIDER_ANTHROPIC:
+    case PROVIDER_VERTEX:
+      provider_anthropic_init(p);
+      break;
+    default:
+      fprintf(stderr, "[provider] unknown provider type %d\n", (int)cfg->type);
+      provider_free(p);
+      return NULL;
+  }
 
-    return p;
+  return p;
 }
 
 void provider_free(provider_t *p) {
-    if (!p) return;
-    if (p->destroy) p->destroy(p);
-    free(p->_cached_endpoint);
-    free(p->_cached_endpoint_ns);
-    free(p->_cached_auth_token);
-    /* Free error diagnostic strings (heap-allocated on provider errors) */
-    free(p->last_error);
-    free(p->last_error_request);
-    free(p->last_error_response);
-    /* Free all deep-copied string fields from provider_create */
-    free((char *)p->cfg.model_id);
-    free((char *)p->cfg.api_base);
-    free((char *)p->cfg.api_key_env);
-    free((char *)p->cfg.project_id);
-    free((char *)p->cfg.region);
-    free(p);
+  if (!p) return;
+  if (p->destroy) p->destroy(p);
+  free(p->_cached_endpoint);
+  free(p->_cached_endpoint_ns);
+  free(p->_cached_auth_token);
+  /* Free error diagnostic strings (heap-allocated on provider errors) */
+  free(p->last_error);
+  free(p->last_error_request);
+  free(p->last_error_response);
+  /* Free all deep-copied string fields from provider_create */
+  free((char *)p->cfg.model_id);
+  free((char *)p->cfg.api_base);
+  free((char *)p->cfg.api_key_env);
+  free((char *)p->cfg.project_id);
+  free((char *)p->cfg.region);
+  free(p);
 }
 
 /* ── Shared tool registry -> provider-specific JSON ──────────────── */
 
 /* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */
 static void strict_object(cJSON *schema) {
-    if (!schema || !cJSON_IsObject(schema)) return;
-    const char *type = json_str(schema, "type");
-    if (type && strcmp(type, "object") == 0) {
-        cJSON *props = cJSON_GetObjectItem(schema, "properties");
-        if (props) {
-            cJSON *child = props->child;
-            while (child) {
-                strict_object(child);
-                child = child->next;
-            }
-            if (!cJSON_GetObjectItem(schema, "additionalProperties"))
-                cJSON_AddBoolToObject(schema, "additionalProperties", 0);
-        }
+  if (!schema || !cJSON_IsObject(schema)) return;
+  const char *type = json_str(schema, "type");
+  if (type && strcmp(type, "object") == 0) {
+    cJSON *props = cJSON_GetObjectItem(schema, "properties");
+    if (props) {
+      cJSON *child = props->child;
+      while (child) {
+        strict_object(child);
+        child = child->next;
+      }
+      if (!cJSON_GetObjectItem(schema, "additionalProperties"))
+        cJSON_AddBoolToObject(schema, "additionalProperties", 0);
     }
+  }
 }
 
 cJSON *build_tools_from_registry(provider_type_t type) {
-    return build_tools_from_registry_filtered(type, NULL);
+  return build_tools_from_registry_filtered(type, NULL);
 }
 
 /* Add a single tool definition to the tools JSON array, formatted per provider.
  * Shared by both plugin and static registry iteration paths. */
 static void add_tool_def_to_array(cJSON *tools, provider_type_t type,
-                                   const char *name, const char *desc,
-                                   const tool_param_t *params_def) {
-    cJSON *params = tool_params_to_cjson(params_def);
+                                  const char *name, const char *desc,
+                                  const tool_param_t *params_def) {
+  cJSON *params = tool_params_to_cjson(params_def);
 
-    if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
-        cJSON *t = cJSON_CreateObject();
-        cJSON_AddStringToObject(t, "name", name);
-        cJSON_AddStringToObject(t, "description", desc);
-        if (params) cJSON_AddItemToObject(t, "input_schema", params);
-        cJSON_AddItemToArray(tools, t);
-    } else {
-        cJSON *t = cJSON_CreateObject();
-        cJSON_AddStringToObject(t, "type", "function");
-        cJSON *fn = cJSON_CreateObject();
-        cJSON_AddStringToObject(fn, "name", name);
-        cJSON_AddStringToObject(fn, "description", desc);
-        if (params) {
-            if (type == PROVIDER_OPENAI) strict_object(params);
-            cJSON_AddItemToObject(fn, "parameters", params);
-        }
-        if (type == PROVIDER_OPENAI)
-            cJSON_AddBoolToObject(fn, "strict", 1);
-        cJSON_AddItemToObject(t, "function", fn);
-        cJSON_AddItemToArray(tools, t);
+  if (type == PROVIDER_ANTHROPIC || type == PROVIDER_VERTEX) {
+    cJSON *t = cJSON_CreateObject();
+    cJSON_AddStringToObject(t, "name", name);
+    cJSON_AddStringToObject(t, "description", desc);
+    if (params) cJSON_AddItemToObject(t, "input_schema", params);
+    cJSON_AddItemToArray(tools, t);
+  } else {
+    cJSON *t = cJSON_CreateObject();
+    cJSON_AddStringToObject(t, "type", "function");
+    cJSON *fn = cJSON_CreateObject();
+    cJSON_AddStringToObject(fn, "name", name);
+    cJSON_AddStringToObject(fn, "description", desc);
+    if (params) {
+      if (type == PROVIDER_OPENAI) strict_object(params);
+      cJSON_AddItemToObject(fn, "parameters", params);
     }
+    if (type == PROVIDER_OPENAI)
+      cJSON_AddBoolToObject(fn, "strict", 1);
+    cJSON_AddItemToObject(t, "function", fn);
+    cJSON_AddItemToArray(tools, t);
+  }
 }
 
 /* Check if a tool name passes the filter (allowed/blocked lists).
  * Returns 1 if the tool should be included, 0 if filtered out. */
 static int tool_passes_filter(const struct tool_filter_t *filter,
-                               const char *name) {
-    if (!filter) return 1;
-    if (filter->allowed) {
-        int found = 0;
-        for (int j = 0; j < filter->n_allowed; j++)
-            if (strcmp(name, filter->allowed[j]) == 0) { found = 1; break; }
-        if (!found) return 0;
-    }
-    if (filter->blocked) {
-        for (int j = 0; j < filter->n_blocked; j++)
-            if (strcmp(name, filter->blocked[j]) == 0) return 0;
-    }
-    return 1;
+                              const char *name) {
+  if (!filter) return 1;
+  if (filter->allowed) {
+    int found = 0;
+    for (int j = 0; j < filter->n_allowed; j++)
+      if (strcmp(name, filter->allowed[j]) == 0) {
+        found = 1;
+        break;
+      }
+    if (!found) return 0;
+  }
+  if (filter->blocked) {
+    for (int j = 0; j < filter->n_blocked; j++)
+      if (strcmp(name, filter->blocked[j]) == 0) return 0;
+  }
+  return 1;
 }
 
 /* Get description override from filter, or return the default. */
 static const char *tool_desc_override(const struct tool_filter_t *filter,
-                                       const char *name,
-                                       const char *default_desc) {
-    if (filter && filter->n_descs > 0) {
-        for (int j = 0; j < filter->n_descs; j++) {
-            if (strcmp(name, filter->desc_names[j]) == 0)
-                return filter->desc_values[j];
-        }
+                                      const char *name,
+                                      const char *default_desc) {
+  if (filter && filter->n_descs > 0) {
+    for (int j = 0; j < filter->n_descs; j++) {
+      if (strcmp(name, filter->desc_names[j]) == 0)
+        return filter->desc_values[j];
     }
-    return default_desc;
+  }
+  return default_desc;
 }
 
 cJSON *build_tools_from_registry_filtered(provider_type_t type,
-                                           const struct tool_filter_t *filter) {
-    cJSON *tools = cJSON_CreateArray();
+                                          const struct tool_filter_t *filter) {
+  cJSON *tools = cJSON_CreateArray();
 
-    /* Phase 1: Emit plugin-registered tools first */
-    for (int i = 0; i < tool_plugin_count(); i++) {
-        const tool_plugin_t *p = tool_plugin_get(i);
-        if (!p) continue;
-        if (!tool_passes_filter(filter, p->name)) continue;
-        const char *desc = tool_desc_override(filter, p->name, p->description);
-        add_tool_def_to_array(tools, type, p->name, desc, p->params);
-    }
+  /* Phase 1: Emit plugin-registered tools first */
+  for (int i = 0; i < tool_plugin_count(); i++) {
+    const tool_plugin_t *p = tool_plugin_get(i);
+    if (!p) continue;
+    if (!tool_passes_filter(filter, p->name)) continue;
+    const char *desc = tool_desc_override(filter, p->name, p->description);
+    add_tool_def_to_array(tools, type, p->name, desc, p->params);
+  }
 
-    return tools;
+  return tools;
 }
 
 /* ── Shared: build OpenAI-compatible base request ───────────────── */
@@ -393,40 +403,40 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
                                  int stream, const char *model_id,
                                  const char *max_token_field,
                                  provider_type_t provider_type) {
-    cJSON *req = cJSON_CreateObject();
-    cJSON_AddStringToObject(req, "model", model_id ? model_id : "gpt-4o");
-    cJSON_AddNumberToObject(req, max_token_field, p->cfg.max_tokens);
-    cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
-    if (p->cfg.top_p < 1.0f)
-        cJSON_AddNumberToObject(req, "top_p", p->cfg.top_p);
-    /* top_k: supported by llama.cpp but not by OpenAI API */
-    if (p->cfg.top_k > 0 && provider_type == PROVIDER_LOCAL)
-        cJSON_AddNumberToObject(req, "top_k", p->cfg.top_k);
-    cJSON_AddBoolToObject(req, "stream", stream);
+  cJSON *req = cJSON_CreateObject();
+  cJSON_AddStringToObject(req, "model", model_id ? model_id : "gpt-4o");
+  cJSON_AddNumberToObject(req, max_token_field, p->cfg.max_tokens);
+  cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
+  if (p->cfg.top_p < 1.0f)
+    cJSON_AddNumberToObject(req, "top_p", p->cfg.top_p);
+  /* top_k: supported by llama.cpp but not by OpenAI API */
+  if (p->cfg.top_k > 0 && provider_type == PROVIDER_LOCAL)
+    cJSON_AddNumberToObject(req, "top_k", p->cfg.top_k);
+  cJSON_AddBoolToObject(req, "stream", stream);
 
-    if (stream) {
-        cJSON *so = cJSON_CreateObject();
-        cJSON_AddBoolToObject(so, "include_usage", 1);
-        cJSON_AddItemToObject(req, "stream_options", so);
-        /* Request prompt processing progress from llama.cpp server */
-        cJSON_AddBoolToObject(req, "return_progress", 1);
-    }
+  if (stream) {
+    cJSON *so = cJSON_CreateObject();
+    cJSON_AddBoolToObject(so, "include_usage", 1);
+    cJSON_AddItemToObject(req, "stream_options", so);
+    /* Request prompt processing progress from llama.cpp server */
+    cJSON_AddBoolToObject(req, "return_progress", 1);
+  }
 
-    /* Tools — use filter if set on provider (allows model profile tool restrictions).
+  /* Tools — use filter if set on provider (allows model profile tool restrictions).
      * When filter produces zero tools (e.g. structural thinking Call 1),
      * omit the tools array entirely — some APIs reject empty tools. */
-    cJSON *tools = build_tools_from_registry_filtered(provider_type, p->tool_filter);
-    if (cJSON_GetArraySize(tools) > 0) {
-        cJSON_AddItemToObject(req, "tools", tools);
-    } else {
-        cJSON_Delete(tools);
-    }
+  cJSON *tools = build_tools_from_registry_filtered(provider_type, p->tool_filter);
+  if (cJSON_GetArraySize(tools) > 0) {
+    cJSON_AddItemToObject(req, "tools", tools);
+  } else {
+    cJSON_Delete(tools);
+  }
 
-    /* Messages — use shared helper */
-    cJSON *msgs = build_messages_json(chat);
-    cJSON_AddItemToObject(req, "messages", msgs);
+  /* Messages — use shared helper */
+  cJSON *msgs = build_messages_json(chat);
+  cJSON_AddItemToObject(req, "messages", msgs);
 
-    return req;
+  return req;
 }
 
 /* ── Shared: extract stats from OpenAI-format response ──────────── */
@@ -434,11 +444,11 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
 /* Extract prompt_tokens/completion_tokens from OpenAI-compatible usage JSON.
  * Shared by local and openai providers (identical wire format). */
 void extract_openai_stats(cJSON *resp, llm_stats_t *stats) {
-    if (!resp || !stats) return;
-    cJSON *usage = cJSON_GetObjectItem(resp, "usage");
-    if (!usage) return;
-    stats->prompt_tokens = json_int(usage, "prompt_tokens", stats->prompt_tokens);
-    stats->completion_tokens = json_int(usage, "completion_tokens", stats->completion_tokens);
+  if (!resp || !stats) return;
+  cJSON *usage = cJSON_GetObjectItem(resp, "usage");
+  if (!usage) return;
+  stats->prompt_tokens = json_int(usage, "prompt_tokens", stats->prompt_tokens);
+  stats->completion_tokens = json_int(usage, "completion_tokens", stats->completion_tokens);
 }
 
 /* ── Shared: build messages array from llm_chat_t ───────────────── */
@@ -447,28 +457,28 @@ void extract_openai_stats(cJSON *resp, llm_stats_t *stats) {
  * Handles tool_calls, tool_call_id, and content fields correctly.
  * Caller must cJSON_AddItemToObject(req, "messages", result). */
 cJSON *build_messages_json(llm_chat_t *chat) {
-    cJSON *msgs = cJSON_CreateArray();
-    for (int i = 0; i < chat->n_msgs; i++) {
-        cJSON *m = cJSON_CreateObject();
-        cJSON_AddStringToObject(m, "role", chat->msgs[i].role);
+  cJSON *msgs = cJSON_CreateArray();
+  for (int i = 0; i < chat->n_msgs; i++) {
+    cJSON *m = cJSON_CreateObject();
+    cJSON_AddStringToObject(m, "role", chat->msgs[i].role);
 
-        if (strcmp(chat->msgs[i].role, "tool") == 0 && chat->msgs[i].tool_call_id) {
-            cJSON_AddStringToObject(m, "tool_call_id", chat->msgs[i].tool_call_id);
-        }
-
-        if (strcmp(chat->msgs[i].role, "assistant") == 0 && chat->msgs[i].tool_calls_json) {
-            cJSON *tc = cJSON_Parse(chat->msgs[i].tool_calls_json);
-            if (tc) cJSON_AddItemToObject(m, "tool_calls", tc);
-            if (chat->msgs[i].content && chat->msgs[i].content[0])
-                cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
-        } else {
-            cJSON_AddStringToObject(m, "content",
-                                    chat->msgs[i].content ? chat->msgs[i].content : "");
-        }
-
-        cJSON_AddItemToArray(msgs, m);
+    if (strcmp(chat->msgs[i].role, "tool") == 0 && chat->msgs[i].tool_call_id) {
+      cJSON_AddStringToObject(m, "tool_call_id", chat->msgs[i].tool_call_id);
     }
-    return msgs;
+
+    if (strcmp(chat->msgs[i].role, "assistant") == 0 && chat->msgs[i].tool_calls_json) {
+      cJSON *tc = cJSON_Parse(chat->msgs[i].tool_calls_json);
+      if (tc) cJSON_AddItemToObject(m, "tool_calls", tc);
+      if (chat->msgs[i].content && chat->msgs[i].content[0])
+        cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
+    } else {
+      cJSON_AddStringToObject(m, "content",
+                              chat->msgs[i].content ? chat->msgs[i].content : "");
+    }
+
+    cJSON_AddItemToArray(msgs, m);
+  }
+  return msgs;
 }
 
 /* ── Shared: parse OpenAI-format response ───────────────────────── */
@@ -482,636 +492,637 @@ cJSON *build_messages_json(llm_chat_t *chat) {
  * Shared by local and openai providers (identical wire format). */
 char *parse_openai_response(provider_t *p, const char *response_json,
                             llm_chat_t *chat, llm_stats_t *stats) {
-    (void)p;
-    cJSON *resp = cJSON_Parse(response_json);
-    if (!resp) return NULL;
+  (void)p;
+  cJSON *resp = cJSON_Parse(response_json);
+  if (!resp) return NULL;
 
-    /* Extract stats */
-    if (stats) {
-        extract_openai_stats(resp, stats);
-    }
+  /* Extract stats */
+  if (stats) {
+    extract_openai_stats(resp, stats);
+  }
 
-    cJSON *choices = cJSON_GetObjectItem(resp, "choices");
-    if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
-        cJSON_Delete(resp);
-        return NULL;
-    }
+  cJSON *choices = cJSON_GetObjectItem(resp, "choices");
+  if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
+    cJSON_Delete(resp);
+    return NULL;
+  }
 
-    cJSON *choice = cJSON_GetArrayItem(choices, 0);
-    cJSON *message = cJSON_GetObjectItem(choice, "message");
-    if (!message) { cJSON_Delete(resp); return NULL; }
+  cJSON *choice = cJSON_GetArrayItem(choices, 0);
+  cJSON *message = cJSON_GetObjectItem(choice, "message");
+  if (!message) {
+    cJSON_Delete(resp);
+    return NULL;
+  }
 
-    /* Check for tool_calls */
-    cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
-    if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
-        /* Detect multiple tool calls (common with gemma4/qwen3.6 models).
+  /* Check for tool_calls */
+  cJSON *tool_calls = cJSON_GetObjectItem(message, "tool_calls");
+  if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
+    /* Detect multiple tool calls (common with gemma4/qwen3.6 models).
          * Only the first tool call is executed — store the count so react.c
          * can inject a corrective hint. */
-        int tc_count = cJSON_GetArraySize(tool_calls);
-        if (chat && tc_count > 1) {
-            chat->multi_tool_count = tc_count;
-            nash_log("[provider] model emitted %d native tool_calls "
-                     "(only first executed)", tc_count);
-        }
-        cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
-        cJSON *fn = cJSON_GetObjectItem(tc, "function");
-        if (fn) {
-            /* Build unified response */
-            cJSON *unified = cJSON_CreateObject();
-            cJSON_AddStringToObject(unified, "thought",
-                                    json_str_or(message, "content", ""));
-            cJSON_AddStringToObject(unified, "action",
-                                    json_str_or(fn, "name", ""));
-
-            const char *args_s = json_str(fn, "arguments");
-            if (args_s) {
-                cJSON *args = cJSON_Parse(args_s);
-                if (args) {
-                    cJSON *child = args->child;
-                    while (child) {
-                        cJSON *next = child->next;
-                        cJSON_DetachItemViaPointer(args, child);
-                        cJSON_AddItemToObject(unified, child->string, child);
-                        child = next;
-                    }
-                    cJSON_Delete(args);
-                }
-            }
-
-            char *result = cJSON_PrintUnformatted(unified);
-            cJSON_Delete(unified);
-
-            /* Store tool call info */
-            if (chat) {
-                free(chat->last_tool_call_id);
-                const char *tid = json_str(tc, "id");
-                chat->last_tool_call_id = tid ? xstrdup(tid) : NULL;
-                free(chat->last_tool_calls_json);
-                chat->last_tool_calls_json = cJSON_PrintUnformatted(tool_calls);
-            }
-
-            cJSON_Delete(resp);
-            return result;
-        }
+    int tc_count = cJSON_GetArraySize(tool_calls);
+    if (chat && tc_count > 1) {
+      chat->multi_tool_count = tc_count;
+      nash_log("[provider] model emitted %d native tool_calls "
+               "(only first executed)",
+               tc_count);
     }
+    cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
+    cJSON *fn = cJSON_GetObjectItem(tc, "function");
+    if (fn) {
+      /* Build unified response */
+      cJSON *unified = cJSON_CreateObject();
+      cJSON_AddStringToObject(unified, "thought",
+                              json_str_or(message, "content", ""));
+      cJSON_AddStringToObject(unified, "action",
+                              json_str_or(fn, "name", ""));
 
-    /* Plain text response */
-    const char *ct_str = json_str(message, "content");
-    char *result = ct_str ? xstrdup(ct_str) : NULL;
+      const char *args_s = json_str(fn, "arguments");
+      if (args_s) {
+        cJSON *args = cJSON_Parse(args_s);
+        if (args) {
+          cJSON *child = args->child;
+          while (child) {
+            cJSON *next = child->next;
+            cJSON_DetachItemViaPointer(args, child);
+            cJSON_AddItemToObject(unified, child->string, child);
+            child = next;
+          }
+          cJSON_Delete(args);
+        }
+      }
 
-    if (chat) {
+      char *result = cJSON_PrintUnformatted(unified);
+      cJSON_Delete(unified);
+
+      /* Store tool call info */
+      if (chat) {
         free(chat->last_tool_call_id);
-        chat->last_tool_call_id = NULL;
+        const char *tid = json_str(tc, "id");
+        chat->last_tool_call_id = tid ? xstrdup(tid) : NULL;
         free(chat->last_tool_calls_json);
-        chat->last_tool_calls_json = NULL;
-    }
+        chat->last_tool_calls_json = cJSON_PrintUnformatted(tool_calls);
+      }
 
-    cJSON_Delete(resp);
-    return result;
+      cJSON_Delete(resp);
+      return result;
+    }
+  }
+
+  /* Plain text response */
+  const char *ct_str = json_str(message, "content");
+  char *result = ct_str ? xstrdup(ct_str) : NULL;
+
+  if (chat) {
+    free(chat->last_tool_call_id);
+    chat->last_tool_call_id = NULL;
+    free(chat->last_tool_calls_json);
+    chat->last_tool_calls_json = NULL;
+  }
+
+  cJSON_Delete(resp);
+  return result;
 }
 
 /* ── SSE streaming state (shared across providers) ──────────────── */
 
 typedef struct {
-    str_t          line_buf;
-    str_t          full_content;
-    provider_token_fn on_token;
-    void          *userdata;
-    llm_stats_t   *stats;
-    size_t         max_response;
-    int            repeat_threshold;
-    int            repeat_count;
-    int            stopped;
-    str_t          tool_call_name;
-    str_t          tool_call_args;
-    char          *tool_call_id;
-    int            has_tool_call;
-    int            multi_tool_count; /* >1 if model streamed multiple tool_calls indices */
-    int            last_token_idx;
-    /* Anthropic-specific SSE state */
-    int            in_tool_use;       /* currently inside a tool_use block */
-    str_t          thinking_content;  /* accumulated thinking text */
-    provider_t    *provider;          /* back-pointer for vtable dispatch */
-    str_t          raw_body;           /* raw HTTP response body for error diagnostics */
-    /* Wall-clock streaming timing (fallback when server doesn't report gen t/s) */
-    struct timespec first_token_time;   /* timestamp of first content token */
-    int            first_token_seen;    /* 1 = first_token_time is valid */
-    int            streaming_token_count; /* number of content tokens received */
-    /* Prompt processing progress callback (llama.cpp return_progress) */
-    provider_progress_fn on_progress;
-    void          *progress_userdata;
+  str_t line_buf;
+  str_t full_content;
+  provider_token_fn on_token;
+  void *userdata;
+  llm_stats_t *stats;
+  size_t max_response;
+  int repeat_threshold;
+  int repeat_count;
+  int stopped;
+  str_t tool_call_name;
+  str_t tool_call_args;
+  char *tool_call_id;
+  int has_tool_call;
+  int multi_tool_count; /* >1 if model streamed multiple tool_calls indices */
+  int last_token_idx;
+  /* Anthropic-specific SSE state */
+  int in_tool_use;        /* currently inside a tool_use block */
+  str_t thinking_content; /* accumulated thinking text */
+  provider_t *provider;   /* back-pointer for vtable dispatch */
+  str_t raw_body;         /* raw HTTP response body for error diagnostics */
+  /* Wall-clock streaming timing (fallback when server doesn't report gen t/s) */
+  struct timespec first_token_time; /* timestamp of first content token */
+  int first_token_seen;             /* 1 = first_token_time is valid */
+  int streaming_token_count;        /* number of content tokens received */
+  /* Prompt processing progress callback (llama.cpp return_progress) */
+  provider_progress_fn on_progress;
+  void *progress_userdata;
 } provider_sse_state_t;
 
 /* ── SSE line processing (OpenAI-compatible format) ─────────────── */
 
 static void sse_process_line_openai(provider_sse_state_t *st, const char *line) {
-    if (strncmp(line, "data: ", 6) != 0) return;
-    const char *json_data = line + 6;
-    if (strcmp(json_data, "[DONE]") == 0) return;
+  if (strncmp(line, "data: ", 6) != 0) return;
+  const char *json_data = line + 6;
+  if (strcmp(json_data, "[DONE]") == 0) return;
 
-    cJSON *data = cJSON_Parse(json_data);
-    if (!data) return;
+  cJSON *data = cJSON_Parse(json_data);
+  if (!data) return;
 
-    /* Check for prompt processing progress (llama.cpp return_progress) */
-    cJSON *pp = cJSON_GetObjectItem(data, "prompt_progress");
-    if (pp && cJSON_IsObject(pp) && st->on_progress) {
-        int total = json_int(pp, "total", 0);
-        int processed = json_int(pp, "processed", 0);
-        st->on_progress(processed, total, st->progress_userdata);
+  /* Check for prompt processing progress (llama.cpp return_progress) */
+  cJSON *pp = cJSON_GetObjectItem(data, "prompt_progress");
+  if (pp && cJSON_IsObject(pp) && st->on_progress) {
+    int total = json_int(pp, "total", 0);
+    int processed = json_int(pp, "processed", 0);
+    st->on_progress(processed, total, st->progress_userdata);
+  }
+
+  cJSON *choices = cJSON_GetObjectItem(data, "choices");
+  if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
+    /* Check for usage in final chunk */
+    cJSON *usage = cJSON_GetObjectItem(data, "usage");
+    if (usage && st->stats) {
+      st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
+      st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
     }
-
-    cJSON *choices = cJSON_GetObjectItem(data, "choices");
-    if (!choices || !cJSON_IsArray(choices) || cJSON_GetArraySize(choices) == 0) {
-        /* Check for usage in final chunk */
-        cJSON *usage = cJSON_GetObjectItem(data, "usage");
-        if (usage && st->stats) {
-            st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
-            st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
-        }
-        /* llama.cpp includes timings alongside usage in the final chunk */
-        cJSON *timings = cJSON_GetObjectItem(data, "timings");
-        if (timings && st->stats) {
-            double pps = json_num(timings, "prompt_per_second", 0);
-            double tps = json_num(timings, "predicted_per_second", 0);
-            if (pps > 0) st->stats->prompt_per_second = pps;
-            if (tps > 0) st->stats->predicted_per_second = tps;
-        }
-        cJSON_Delete(data);
-        return;
+    /* llama.cpp includes timings alongside usage in the final chunk */
+    cJSON *timings = cJSON_GetObjectItem(data, "timings");
+    if (timings && st->stats) {
+      double pps = json_num(timings, "prompt_per_second", 0);
+      double tps = json_num(timings, "predicted_per_second", 0);
+      if (pps > 0) st->stats->prompt_per_second = pps;
+      if (tps > 0) st->stats->predicted_per_second = tps;
     }
+    cJSON_Delete(data);
+    return;
+  }
 
-    cJSON *choice = cJSON_GetArrayItem(choices, 0);
-    cJSON *delta = cJSON_GetObjectItem(choice, "delta");
-    if (!delta) { cJSON_Delete(data); return; }
+  cJSON *choice = cJSON_GetArrayItem(choices, 0);
+  cJSON *delta = cJSON_GetObjectItem(choice, "delta");
+  if (!delta) {
+    cJSON_Delete(data);
+    return;
+  }
 
-    /* Tool call chunks */
-    cJSON *tool_calls = cJSON_GetObjectItem(delta, "tool_calls");
-    if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
-        st->has_tool_call = 1;
-        cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
+  /* Tool call chunks */
+  cJSON *tool_calls = cJSON_GetObjectItem(delta, "tool_calls");
+  if (tool_calls && cJSON_IsArray(tool_calls) && cJSON_GetArraySize(tool_calls) > 0) {
+    st->has_tool_call = 1;
+    cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
 
-        /* Detect multiple tool calls via index field.
+    /* Detect multiple tool calls via index field.
          * In OpenAI streaming, each tool call has an "index" field.
          * When a model emits N tool calls, chunks arrive with index 0..N-1.
          * We only process index 0; track the max index for the corrective hint. */
-        int tc_idx = json_int(tc, "index", 0);
+    int tc_idx = json_int(tc, "index", 0);
 
-        /* Also detect multiple entries in a single chunk's array */
-        int arr_size = cJSON_GetArraySize(tool_calls);
-        if (arr_size > 1 && arr_size > st->multi_tool_count)
-            st->multi_tool_count = arr_size;
+    /* Also detect multiple entries in a single chunk's array */
+    int arr_size = cJSON_GetArraySize(tool_calls);
+    if (arr_size > 1 && arr_size > st->multi_tool_count)
+      st->multi_tool_count = arr_size;
 
-        if (tc_idx > 0) {
-            /* This chunk is for a 2nd/3rd/... tool call — skip it but record */
-            if (tc_idx + 1 > st->multi_tool_count)
-                st->multi_tool_count = tc_idx + 1;
-            /* Still count for timing but don't accumulate name/args */
-            st->streaming_token_count++;
-            cJSON_Delete(data);
-            return;
-        }
+    if (tc_idx > 0) {
+      /* This chunk is for a 2nd/3rd/... tool call — skip it but record */
+      if (tc_idx + 1 > st->multi_tool_count)
+        st->multi_tool_count = tc_idx + 1;
+      /* Still count for timing but don't accumulate name/args */
+      st->streaming_token_count++;
+      cJSON_Delete(data);
+      return;
+    }
 
-        /* Tool call ID (first chunk only) */
-        const char *id_s = json_str(tc, "id");
-        if (id_s && !st->tool_call_id) {
-            st->tool_call_id = xstrdup(id_s);
-        }
+    /* Tool call ID (first chunk only) */
+    const char *id_s = json_str(tc, "id");
+    if (id_s && !st->tool_call_id) {
+      st->tool_call_id = xstrdup(id_s);
+    }
 
-        cJSON *fn = cJSON_GetObjectItem(tc, "function");
-        if (fn) {
-            const char *fn_name = json_str(fn, "name");
-            if (fn_name)
-                str_append_cstr(&st->tool_call_name, fn_name);
-            const char *fn_args = json_str(fn, "arguments");
-            if (fn_args)
-                str_append_cstr(&st->tool_call_args, fn_args);
-        }
+    cJSON *fn = cJSON_GetObjectItem(tc, "function");
+    if (fn) {
+      const char *fn_name = json_str(fn, "name");
+      if (fn_name)
+        str_append_cstr(&st->tool_call_name, fn_name);
+      const char *fn_args = json_str(fn, "arguments");
+      if (fn_args)
+        str_append_cstr(&st->tool_call_args, fn_args);
+    }
 
-        /* Count tool call chunks for wall-clock t/s timing
+    /* Count tool call chunks for wall-clock t/s timing
          * (matches Anthropic handler which counts input_json_delta) */
-        st->streaming_token_count++;
-        if (!st->first_token_seen) {
-            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-            st->first_token_seen = 1;
-        }
+    st->streaming_token_count++;
+    if (!st->first_token_seen) {
+      clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+      st->first_token_seen = 1;
+    }
+  }
+
+  /* Content delta */
+  const char *text = json_str(delta, "content");
+  if (text) {
+    size_t tlen = strlen(text);
+
+    if (st->max_response > 0 &&
+        st->full_content.len + tlen > st->max_response) {
+      st->stopped = 1;
+      cJSON_Delete(data);
+      return;
     }
 
-    /* Content delta */
-    const char *text = json_str(delta, "content");
-    if (text) {
-        size_t tlen = strlen(text);
+    str_append_cstr(&st->full_content, text);
 
-        if (st->max_response > 0 &&
-            st->full_content.len + tlen > st->max_response) {
-            st->stopped = 1;
-            cJSON_Delete(data);
-            return;
-        }
-
-        str_append_cstr(&st->full_content, text);
-
-        /* Wall-clock streaming timing for t/s computation */
-        st->streaming_token_count++;
-        if (!st->first_token_seen) {
-            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-            st->first_token_seen = 1;
-        }
-
-        /* Repeat detection */
-        if (st->repeat_threshold > 0 && tlen > 0) {
-            /* Simple: count consecutive identical single-char tokens */
-            if (tlen == 1 && st->full_content.len >= 2 &&
-                st->full_content.data[st->full_content.len - 1] ==
-                st->full_content.data[st->full_content.len - 2]) {
-                st->repeat_count++;
-                if (st->repeat_count >= st->repeat_threshold) {
-                    st->stopped = 1;
-                    cJSON_Delete(data);
-                    return;
-                }
-            } else {
-                st->repeat_count = 0;
-            }
-        }
-
-        /* Token callback */
-        if (st->on_token && !st->has_tool_call) {
-            st->last_token_idx++;
-            st->on_token(text, st->userdata);
-        }
+    /* Wall-clock streaming timing for t/s computation */
+    st->streaming_token_count++;
+    if (!st->first_token_seen) {
+      clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+      st->first_token_seen = 1;
     }
 
-    /* Reasoning/thinking content (llama.cpp, Qwen, DeepSeek via OpenAI-compat) */
-    const char *reasoning = json_str(delta, "reasoning_content");
-    if (reasoning) {
-        str_append_cstr(&st->thinking_content, reasoning);
-        st->streaming_token_count++;
-        if (!st->first_token_seen) {
-            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-            st->first_token_seen = 1;
+    /* Repeat detection */
+    if (st->repeat_threshold > 0 && tlen > 0) {
+      /* Simple: count consecutive identical single-char tokens */
+      if (tlen == 1 && st->full_content.len >= 2 &&
+          st->full_content.data[st->full_content.len - 1] ==
+            st->full_content.data[st->full_content.len - 2]) {
+        st->repeat_count++;
+        if (st->repeat_count >= st->repeat_threshold) {
+          st->stopped = 1;
+          cJSON_Delete(data);
+          return;
         }
+      } else {
+        st->repeat_count = 0;
+      }
     }
 
-    /* Usage stats from streaming response */
-    cJSON *usage = cJSON_GetObjectItem(data, "usage");
-    if (usage && st->stats) {
-        st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
-        st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
-        st->stats->prompt_per_second = json_num(usage, "prompt_per_second", st->stats->prompt_per_second);
-        st->stats->predicted_per_second = json_num(usage, "predicted_per_second", st->stats->predicted_per_second);
+    /* Token callback */
+    if (st->on_token && !st->has_tool_call) {
+      st->last_token_idx++;
+      st->on_token(text, st->userdata);
     }
+  }
 
-    /* llama.cpp server reports speed in a top-level "timings" object
+  /* Reasoning/thinking content (llama.cpp, Qwen, DeepSeek via OpenAI-compat) */
+  const char *reasoning = json_str(delta, "reasoning_content");
+  if (reasoning) {
+    str_append_cstr(&st->thinking_content, reasoning);
+    st->streaming_token_count++;
+    if (!st->first_token_seen) {
+      clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+      st->first_token_seen = 1;
+    }
+  }
+
+  /* Usage stats from streaming response */
+  cJSON *usage = cJSON_GetObjectItem(data, "usage");
+  if (usage && st->stats) {
+    st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
+    st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
+    st->stats->prompt_per_second = json_num(usage, "prompt_per_second", st->stats->prompt_per_second);
+    st->stats->predicted_per_second = json_num(usage, "predicted_per_second", st->stats->predicted_per_second);
+  }
+
+  /* llama.cpp server reports speed in a top-level "timings" object
      * (separate from "usage") in the final streaming chunk.
      * Fields: predicted_per_second, prompt_per_second, etc. */
-    cJSON *timings = cJSON_GetObjectItem(data, "timings");
-    if (timings && st->stats) {
-        double pps = json_num(timings, "prompt_per_second", 0);
-        double tps = json_num(timings, "predicted_per_second", 0);
-        if (pps > 0) st->stats->prompt_per_second = pps;
-        if (tps > 0) st->stats->predicted_per_second = tps;
-    }
+  cJSON *timings = cJSON_GetObjectItem(data, "timings");
+  if (timings && st->stats) {
+    double pps = json_num(timings, "prompt_per_second", 0);
+    double tps = json_num(timings, "predicted_per_second", 0);
+    if (pps > 0) st->stats->prompt_per_second = pps;
+    if (tps > 0) st->stats->predicted_per_second = tps;
+  }
 
-    cJSON_Delete(data);
+  cJSON_Delete(data);
 }
 
 /* ── Anthropic SSE line processing ──────────────────────────────── */
 
 static void sse_process_line_anthropic(provider_sse_state_t *st, const char *line) {
-    /* Anthropic SSE format:
+  /* Anthropic SSE format:
      * event: message_start / content_block_start / content_block_delta /
      *        content_block_stop / message_delta / message_stop
      * data: {...}
      *
      * We track state: are we in a text block or tool_use block?
      */
-    if (strncmp(line, "data: ", 6) != 0) return;
-    const char *json_data = line + 6;
+  if (strncmp(line, "data: ", 6) != 0) return;
+  const char *json_data = line + 6;
 
-    cJSON *data = cJSON_Parse(json_data);
-    if (!data) return;
+  cJSON *data = cJSON_Parse(json_data);
+  if (!data) return;
 
-    const char *event_type = json_str(data, "type");
-    if (!event_type) { cJSON_Delete(data); return; }
+  const char *event_type = json_str(data, "type");
+  if (!event_type) {
+    cJSON_Delete(data);
+    return;
+  }
 
-    if (strcmp(event_type, "message_start") == 0) {
-        /* Extract usage from message_start */
-        cJSON *message = cJSON_GetObjectItem(data, "message");
-        if (message && st->stats) {
-            cJSON *usage = cJSON_GetObjectItem(message, "usage");
-            if (usage) {
-                cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
-                if (it) {
-                    /* Anthropic prompt caching: input_tokens only counts uncached tokens.
+  if (strcmp(event_type, "message_start") == 0) {
+    /* Extract usage from message_start */
+    cJSON *message = cJSON_GetObjectItem(data, "message");
+    if (message && st->stats) {
+      cJSON *usage = cJSON_GetObjectItem(message, "usage");
+      if (usage) {
+        cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
+        if (it) {
+          /* Anthropic prompt caching: input_tokens only counts uncached tokens.
                      * cache_read_input_tokens = tokens served from cache,
                      * cache_creation_input_tokens = tokens written to new cache entry.
                      * Store the breakdown, then set prompt_tokens = total so all
                      * consumers (TUI, react calibration, context %) see the real count. */
-                    int uncached = it->valueint;
-                    st->stats->cache_read_tokens = json_int(usage, "cache_read_input_tokens", 0);
-                    st->stats->cache_creation_tokens = json_int(usage, "cache_creation_input_tokens", 0);
-                    st->stats->prompt_tokens = uncached
-                                             + st->stats->cache_read_tokens
-                                             + st->stats->cache_creation_tokens;
-                    nash_log("[provider/sse] message_start: input_tokens=%d "
-                             "(uncached=%d cache_read=%d cache_create=%d)",
-                             st->stats->prompt_tokens, uncached,
-                             st->stats->cache_read_tokens,
-                             st->stats->cache_creation_tokens);
-                } else {
-                    char *usage_str = cJSON_PrintUnformatted(usage);
-                    nash_log("[provider/sse] message_start: no input_tokens in usage! usage=%s",
-                             usage_str ? usage_str : "(null)");
-                    free(usage_str);
-                }
-            } else {
-                nash_log("[provider/sse] message_start: no usage in message!");
+          int uncached = it->valueint;
+          st->stats->cache_read_tokens = json_int(usage, "cache_read_input_tokens", 0);
+          st->stats->cache_creation_tokens = json_int(usage, "cache_creation_input_tokens", 0);
+          st->stats->prompt_tokens = uncached + st->stats->cache_read_tokens + st->stats->cache_creation_tokens;
+          nash_log("[provider/sse] message_start: input_tokens=%d "
+                   "(uncached=%d cache_read=%d cache_create=%d)",
+                   st->stats->prompt_tokens, uncached,
+                   st->stats->cache_read_tokens,
+                   st->stats->cache_creation_tokens);
+        } else {
+          char *usage_str = cJSON_PrintUnformatted(usage);
+          nash_log("[provider/sse] message_start: no input_tokens in usage! usage=%s",
+                   usage_str ? usage_str : "(null)");
+          free(usage_str);
+        }
+      } else {
+        nash_log("[provider/sse] message_start: no usage in message!");
+      }
+    }
+  } else if (strcmp(event_type, "content_block_start") == 0) {
+    cJSON *cb = cJSON_GetObjectItem(data, "content_block");
+    if (cb) {
+      const char *cb_type = json_str(cb, "type");
+      if (cb_type) {
+        if (strcmp(cb_type, "tool_use") == 0) {
+          st->multi_tool_count++;
+          if (st->multi_tool_count == 1) {
+            /* First tool_use block — process normally */
+            st->in_tool_use = 1;
+            st->has_tool_call = 1;
+            const char *cb_id = json_str(cb, "id");
+            if (cb_id) {
+              str_replace(&st->tool_call_id, cb_id);
             }
-        }
-    }
-    else if (strcmp(event_type, "content_block_start") == 0) {
-        cJSON *cb = cJSON_GetObjectItem(data, "content_block");
-        if (cb) {
-            const char *cb_type = json_str(cb, "type");
-            if (cb_type) {
-                if (strcmp(cb_type, "tool_use") == 0) {
-                    st->multi_tool_count++;
-                    if (st->multi_tool_count == 1) {
-                        /* First tool_use block — process normally */
-                        st->in_tool_use = 1;
-                        st->has_tool_call = 1;
-                        const char *cb_id = json_str(cb, "id");
-                        if (cb_id) {
-                            str_replace(&st->tool_call_id, cb_id);
-                        }
-                        const char *cb_name = json_str(cb, "name");
-                        if (cb_name) {
-                            str_clear(&st->tool_call_name);
-                            str_append_cstr(&st->tool_call_name, cb_name);
-                        }
-                    } else {
-                        /* 2nd+ tool_use block — skip it, don't overwrite first */
-                        st->in_tool_use = 0;
-                    }
-                } else {
-                    st->in_tool_use = 0;
-                }
+            const char *cb_name = json_str(cb, "name");
+            if (cb_name) {
+              str_clear(&st->tool_call_name);
+              str_append_cstr(&st->tool_call_name, cb_name);
             }
+          } else {
+            /* 2nd+ tool_use block — skip it, don't overwrite first */
+            st->in_tool_use = 0;
+          }
+        } else {
+          st->in_tool_use = 0;
         }
+      }
     }
-    else if (strcmp(event_type, "content_block_delta") == 0) {
-        cJSON *delta = cJSON_GetObjectItem(data, "delta");
-        if (delta) {
-            const char *delta_type = json_str(delta, "type");
-            if (delta_type) {
-                if (strcmp(delta_type, "text_delta") == 0) {
-                    const char *t = json_str(delta, "text");
-                    if (t) {
-                        size_t tlen = strlen(t);
+  } else if (strcmp(event_type, "content_block_delta") == 0) {
+    cJSON *delta = cJSON_GetObjectItem(data, "delta");
+    if (delta) {
+      const char *delta_type = json_str(delta, "type");
+      if (delta_type) {
+        if (strcmp(delta_type, "text_delta") == 0) {
+          const char *t = json_str(delta, "text");
+          if (t) {
+            size_t tlen = strlen(t);
 
-                        /* Max response size cap (matches OpenAI handler) */
-                        if (st->max_response > 0 &&
-                            st->full_content.len + tlen > st->max_response) {
-                            st->stopped = 1;
-                            cJSON_Delete(data);
-                            return;
-                        }
-
-                        str_append_cstr(&st->full_content, t);
-                        /* Wall-clock streaming timing for t/s computation */
-                        st->streaming_token_count++;
-                        if (!st->first_token_seen) {
-                            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-                            st->first_token_seen = 1;
-                        }
-
-                        /* Repeat detection (matches OpenAI handler) */
-                        if (st->repeat_threshold > 0 && tlen > 0) {
-                            if (tlen == 1 && st->full_content.len >= 2 &&
-                                st->full_content.data[st->full_content.len - 1] ==
-                                st->full_content.data[st->full_content.len - 2]) {
-                                st->repeat_count++;
-                                if (st->repeat_count >= st->repeat_threshold) {
-                                    st->stopped = 1;
-                                    cJSON_Delete(data);
-                                    return;
-                                }
-                            } else {
-                                st->repeat_count = 0;
-                            }
-                        }
-
-                        if (st->on_token && !st->in_tool_use) {
-                            st->last_token_idx++;
-                            st->on_token(t, st->userdata);
-                        }
-                    }
-                }
-                else if (strcmp(delta_type, "input_json_delta") == 0) {
-                    const char *partial = json_str(delta, "partial_json");
-                    if (partial) {
-                        str_append_cstr(&st->tool_call_args, partial);
-                    }
-                    /* Count tool input deltas for wall-clock t/s timing */
-                    st->streaming_token_count++;
-                    if (!st->first_token_seen) {
-                        clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-                        st->first_token_seen = 1;
-                    }
-                }
-                else if (strcmp(delta_type, "thinking") == 0) {
-                    const char *thinking = json_str(delta, "thinking");
-                    if (thinking) {
-                        str_append_cstr(&st->thinking_content, thinking);
-                    }
-                    /* Count thinking deltas for wall-clock t/s timing */
-                    st->streaming_token_count++;
-                    if (!st->first_token_seen) {
-                        clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
-                        st->first_token_seen = 1;
-                    }
-                }
+            /* Max response size cap (matches OpenAI handler) */
+            if (st->max_response > 0 &&
+                st->full_content.len + tlen > st->max_response) {
+              st->stopped = 1;
+              cJSON_Delete(data);
+              return;
             }
-        }
-    }
-    else if (strcmp(event_type, "content_block_stop") == 0) {
-        st->in_tool_use = 0;
-    }
-    else if (strcmp(event_type, "message_delta") == 0) {
-        cJSON *delta = cJSON_GetObjectItem(data, "delta");
-        if (delta && st->stats) {
-            /* stop_reason is in message_delta */
-        }
-        cJSON *usage = cJSON_GetObjectItem(data, "usage");
-        if (usage && st->stats) {
-            st->stats->completion_tokens = json_int(usage, "output_tokens", st->stats->completion_tokens);
-        }
-    }
 
-    cJSON_Delete(data);
+            str_append_cstr(&st->full_content, t);
+            /* Wall-clock streaming timing for t/s computation */
+            st->streaming_token_count++;
+            if (!st->first_token_seen) {
+              clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+              st->first_token_seen = 1;
+            }
+
+            /* Repeat detection (matches OpenAI handler) */
+            if (st->repeat_threshold > 0 && tlen > 0) {
+              if (tlen == 1 && st->full_content.len >= 2 &&
+                  st->full_content.data[st->full_content.len - 1] ==
+                    st->full_content.data[st->full_content.len - 2]) {
+                st->repeat_count++;
+                if (st->repeat_count >= st->repeat_threshold) {
+                  st->stopped = 1;
+                  cJSON_Delete(data);
+                  return;
+                }
+              } else {
+                st->repeat_count = 0;
+              }
+            }
+
+            if (st->on_token && !st->in_tool_use) {
+              st->last_token_idx++;
+              st->on_token(t, st->userdata);
+            }
+          }
+        } else if (strcmp(delta_type, "input_json_delta") == 0) {
+          const char *partial = json_str(delta, "partial_json");
+          if (partial) {
+            str_append_cstr(&st->tool_call_args, partial);
+          }
+          /* Count tool input deltas for wall-clock t/s timing */
+          st->streaming_token_count++;
+          if (!st->first_token_seen) {
+            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+            st->first_token_seen = 1;
+          }
+        } else if (strcmp(delta_type, "thinking") == 0) {
+          const char *thinking = json_str(delta, "thinking");
+          if (thinking) {
+            str_append_cstr(&st->thinking_content, thinking);
+          }
+          /* Count thinking deltas for wall-clock t/s timing */
+          st->streaming_token_count++;
+          if (!st->first_token_seen) {
+            clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
+            st->first_token_seen = 1;
+          }
+        }
+      }
+    }
+  } else if (strcmp(event_type, "content_block_stop") == 0) {
+    st->in_tool_use = 0;
+  } else if (strcmp(event_type, "message_delta") == 0) {
+    cJSON *delta = cJSON_GetObjectItem(data, "delta");
+    if (delta && st->stats) {
+      /* stop_reason is in message_delta */
+    }
+    cJSON *usage = cJSON_GetObjectItem(data, "usage");
+    if (usage && st->stats) {
+      st->stats->completion_tokens = json_int(usage, "output_tokens", st->stats->completion_tokens);
+    }
+  }
+
+  cJSON_Delete(data);
 }
 
 /* ── Shared SSE write callback ──────────────────────────────────── */
 
 static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    provider_sse_state_t *st = userdata;
-    size_t total = size * nmemb;
-    const char *data = ptr;
+  provider_sse_state_t *st = userdata;
+  size_t total = size * nmemb;
+  const char *data = ptr;
 
-    if (st->stopped) return 0;  /* abort transfer */
+  if (st->stopped) return 0; /* abort transfer */
 
-    /* Capture raw HTTP body for error diagnostics (max 8KB) */
-    if (st->raw_body.len < 8192)
-        str_append(&st->raw_body, data, total < 8192 - st->raw_body.len ? total : 8192 - st->raw_body.len);
+  /* Capture raw HTTP body for error diagnostics (max 8KB) */
+  if (st->raw_body.len < 8192)
+    str_append(&st->raw_body, data, total < 8192 - st->raw_body.len ? total : 8192 - st->raw_body.len);
 
-    for (size_t i = 0; i < total; i++) {
-        if (data[i] == '\n') {
-            const char *line = str_cstr(&st->line_buf);
-            if (st->provider->type == PROVIDER_ANTHROPIC ||
-                st->provider->type == PROVIDER_VERTEX) {
-                sse_process_line_anthropic(st, line);
-            } else {
-                sse_process_line_openai(st, line);
-            }
-            str_clear(&st->line_buf);
-        } else {
-            str_append(&st->line_buf, &data[i], 1);
-        }
+  for (size_t i = 0; i < total; i++) {
+    if (data[i] == '\n') {
+      const char *line = str_cstr(&st->line_buf);
+      if (st->provider->type == PROVIDER_ANTHROPIC ||
+          st->provider->type == PROVIDER_VERTEX) {
+        sse_process_line_anthropic(st, line);
+      } else {
+        sse_process_line_openai(st, line);
+      }
+      str_clear(&st->line_buf);
+    } else {
+      str_append(&st->line_buf, &data[i], 1);
     }
+  }
 
-    return total;
+  return total;
 }
 
 /* ── Build unified result from SSE state ────────────────────────── */
 
 static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
-    char *result = NULL;
+  char *result = NULL;
 
-    if (st->has_tool_call && st->tool_call_name.len > 0) {
-        /* Build unified JSON: {"thought":"...", "action":"tool_name", ...params} */
-        cJSON *unified = cJSON_CreateObject();
-        /* Skip whitespace-only text content (e.g. "\n\n" before tool_use) —
+  if (st->has_tool_call && st->tool_call_name.len > 0) {
+    /* Build unified JSON: {"thought":"...", "action":"tool_name", ...params} */
+    cJSON *unified = cJSON_CreateObject();
+    /* Skip whitespace-only text content (e.g. "\n\n" before tool_use) —
          * treating it as thought would cause misaligned display in reactRX.md */
-        const char *thought_text = "";
-        if (st->full_content.len > 0 &&
-            !is_whitespace_only(str_cstr(&st->full_content)))
-            thought_text = str_cstr(&st->full_content);
-        else if (st->thinking_content.len > 0) {
-            /* No visible text, but thinking content exists — use it as thought.
+    const char *thought_text = "";
+    if (st->full_content.len > 0 &&
+        !is_whitespace_only(str_cstr(&st->full_content)))
+      thought_text = str_cstr(&st->full_content);
+    else if (st->thinking_content.len > 0) {
+      /* No visible text, but thinking content exists — use it as thought.
              * This preserves the model's reasoning when it produced a tool call
              * but put all its visible reasoning into the thinking stream. */
-            thought_text = str_cstr(&st->thinking_content);
+      thought_text = str_cstr(&st->thinking_content);
+    }
+    cJSON_AddStringToObject(unified, "thought", thought_text);
+    cJSON_AddStringToObject(unified, "action",
+                            str_cstr(&st->tool_call_name));
+
+    /* Parse and merge tool arguments */
+    if (st->tool_call_args.len > 0) {
+      cJSON *args = cJSON_Parse(str_cstr(&st->tool_call_args));
+      if (args) {
+        cJSON *child = args->child;
+        while (child) {
+          cJSON *next = child->next;
+          cJSON_DetachItemViaPointer(args, child);
+          cJSON_AddItemToObject(unified, child->string, child);
+          child = next;
         }
-        cJSON_AddStringToObject(unified, "thought", thought_text);
-        cJSON_AddStringToObject(unified, "action",
-                                str_cstr(&st->tool_call_name));
+        cJSON_Delete(args);
+      }
+    }
 
-        /* Parse and merge tool arguments */
-        if (st->tool_call_args.len > 0) {
-            cJSON *args = cJSON_Parse(str_cstr(&st->tool_call_args));
-            if (args) {
-                cJSON *child = args->child;
-                while (child) {
-                    cJSON *next = child->next;
-                    cJSON_DetachItemViaPointer(args, child);
-                    cJSON_AddItemToObject(unified, child->string, child);
-                    child = next;
-                }
-                cJSON_Delete(args);
-            }
-        }
+    result = cJSON_PrintUnformatted(unified);
+    cJSON_Delete(unified);
 
-        result = cJSON_PrintUnformatted(unified);
-        cJSON_Delete(unified);
+    /* Store tool call info for conversation threading */
+    if (chat) {
+      free(chat->last_tool_call_id);
+      chat->last_tool_call_id = st->tool_call_id ? xstrdup(st->tool_call_id) : NULL;
 
-        /* Store tool call info for conversation threading */
-        if (chat) {
-            free(chat->last_tool_call_id);
-            chat->last_tool_call_id = st->tool_call_id ?
-                                      xstrdup(st->tool_call_id) : NULL;
+      /* Build tool_calls JSON array for history */
+      cJSON *tc_arr = cJSON_CreateArray();
+      cJSON *tc = cJSON_CreateObject();
+      cJSON_AddStringToObject(tc, "id",
+                              st->tool_call_id ? st->tool_call_id : "call_0");
+      cJSON_AddStringToObject(tc, "type", "function");
+      cJSON *fn = cJSON_CreateObject();
+      cJSON_AddStringToObject(fn, "name", str_cstr(&st->tool_call_name));
+      cJSON_AddStringToObject(fn, "arguments",
+                              st->tool_call_args.len > 0 ? str_cstr(&st->tool_call_args) : "{}");
+      cJSON_AddItemToObject(tc, "function", fn);
+      cJSON_AddItemToArray(tc_arr, tc);
 
-            /* Build tool_calls JSON array for history */
-            cJSON *tc_arr = cJSON_CreateArray();
-            cJSON *tc = cJSON_CreateObject();
-            cJSON_AddStringToObject(tc, "id",
-                                    st->tool_call_id ? st->tool_call_id : "call_0");
-            cJSON_AddStringToObject(tc, "type", "function");
-            cJSON *fn = cJSON_CreateObject();
-            cJSON_AddStringToObject(fn, "name", str_cstr(&st->tool_call_name));
-            cJSON_AddStringToObject(fn, "arguments",
-                                    st->tool_call_args.len > 0 ?
-                                    str_cstr(&st->tool_call_args) : "{}");
-            cJSON_AddItemToObject(tc, "function", fn);
-            cJSON_AddItemToArray(tc_arr, tc);
+      free(chat->last_tool_calls_json);
+      chat->last_tool_calls_json = cJSON_PrintUnformatted(tc_arr);
+      cJSON_Delete(tc_arr);
 
-            free(chat->last_tool_calls_json);
-            chat->last_tool_calls_json = cJSON_PrintUnformatted(tc_arr);
-            cJSON_Delete(tc_arr);
-
-            /* Propagate multi-tool detection from SSE state to chat */
-            if (st->multi_tool_count > 1) {
-                chat->multi_tool_count = st->multi_tool_count;
-                nash_log("[provider] model streamed %d tool_calls via SSE "
-                         "(only first executed)", st->multi_tool_count);
-            }
-        }
-    } else if (st->full_content.len > 0) {
-        result = xstrdup(str_cstr(&st->full_content));
-        if (chat) {
-            free(chat->last_tool_call_id);
-            chat->last_tool_call_id = NULL;
-            free(chat->last_tool_calls_json);
-            chat->last_tool_calls_json = NULL;
-        }
-    } else if (st->thinking_content.len > 0) {
-        /* Qwen3/3.5/3.6 bug: the model sometimes emits tool call XML inside
+      /* Propagate multi-tool detection from SSE state to chat */
+      if (st->multi_tool_count > 1) {
+        chat->multi_tool_count = st->multi_tool_count;
+        nash_log("[provider] model streamed %d tool_calls via SSE "
+                 "(only first executed)",
+                 st->multi_tool_count);
+      }
+    }
+  } else if (st->full_content.len > 0) {
+    result = xstrdup(str_cstr(&st->full_content));
+    if (chat) {
+      free(chat->last_tool_call_id);
+      chat->last_tool_call_id = NULL;
+      free(chat->last_tool_calls_json);
+      chat->last_tool_calls_json = NULL;
+    }
+  } else if (st->thinking_content.len > 0) {
+    /* Qwen3/3.5/3.6 bug: the model sometimes emits tool call XML inside
          * its reasoning/thinking block instead of as proper structured
          * tool_calls.  llama.cpp surfaces this as delta.reasoning_content,
          * which we accumulated into st->thinking_content.  Before treating
          * this as a thought-only response, scan for leaked <tool_call> XML
          * and extract it using the same parser as llm_parse_action().
          * See: llama.cpp #20837, #22684; QwenLM/Qwen3 #1817. */
-        const char *tc = str_cstr(&st->thinking_content);
-        int extracted_tool = 0;
-        if (strstr(tc, "<tool_call>")) {
-            cJSON *extracted = parse_xml_tool_call(tc, NULL);
-            if (extracted) {
-                nash_log("[provider] extracted leaked tool call from "
-                         "reasoning_content (Qwen thinking bug workaround)");
+    const char *tc = str_cstr(&st->thinking_content);
+    int extracted_tool = 0;
+    if (strstr(tc, "<tool_call>")) {
+      cJSON *extracted = parse_xml_tool_call(tc, NULL);
+      if (extracted) {
+        nash_log("[provider] extracted leaked tool call from "
+                 "reasoning_content (Qwen thinking bug workaround)");
 
-                /* Get tool name from parsed result before serializing */
-                const char *name = json_str_or(extracted, "action", "unknown");
+        /* Get tool name from parsed result before serializing */
+        const char *name = json_str_or(extracted, "action", "unknown");
 
-                if (chat) {
-                    /* No server-assigned tool_call_id since this was in
+        if (chat) {
+          /* No server-assigned tool_call_id since this was in
                      * reasoning — generate a synthetic one */
-                    str_replace(&chat->last_tool_call_id, "call_extracted_0");
+          str_replace(&chat->last_tool_call_id, "call_extracted_0");
 
-                    /* Build minimal tool_calls JSON for history threading */
-                    cJSON *tc_arr = cJSON_CreateArray();
-                    cJSON *tc_obj = cJSON_CreateObject();
-                    cJSON_AddStringToObject(tc_obj, "id",
-                                            "call_extracted_0");
-                    cJSON_AddStringToObject(tc_obj, "type", "function");
-                    cJSON *fn = cJSON_CreateObject();
-                    cJSON_AddStringToObject(fn, "name", name);
-                    cJSON_AddStringToObject(fn, "arguments", "{}");
-                    cJSON_AddItemToObject(tc_obj, "function", fn);
-                    cJSON_AddItemToArray(tc_arr, tc_obj);
-                    free(chat->last_tool_calls_json);
-                    chat->last_tool_calls_json =
-                        cJSON_PrintUnformatted(tc_arr);
-                    cJSON_Delete(tc_arr);
-                }
-
-                result = cJSON_PrintUnformatted(extracted);
-                cJSON_Delete(extracted);
-                extracted_tool = 1;
-            }
+          /* Build minimal tool_calls JSON for history threading */
+          cJSON *tc_arr = cJSON_CreateArray();
+          cJSON *tc_obj = cJSON_CreateObject();
+          cJSON_AddStringToObject(tc_obj, "id",
+                                  "call_extracted_0");
+          cJSON_AddStringToObject(tc_obj, "type", "function");
+          cJSON *fn = cJSON_CreateObject();
+          cJSON_AddStringToObject(fn, "name", name);
+          cJSON_AddStringToObject(fn, "arguments", "{}");
+          cJSON_AddItemToObject(tc_obj, "function", fn);
+          cJSON_AddItemToArray(tc_arr, tc_obj);
+          free(chat->last_tool_calls_json);
+          chat->last_tool_calls_json =
+            cJSON_PrintUnformatted(tc_arr);
+          cJSON_Delete(tc_arr);
         }
 
-        if (!extracted_tool) {
-        /* Thinking-only response: the model spent all its tokens on extended
+        result = cJSON_PrintUnformatted(extracted);
+        cJSON_Delete(extracted);
+        extracted_tool = 1;
+      }
+    }
+
+    if (!extracted_tool) {
+      /* Thinking-only response: the model spent all its tokens on extended
          * thinking (reasoning) without producing any text or tool calls.
          * This happens when max_tokens is hit during the thinking phase.
          *
@@ -1125,284 +1136,304 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
          * Truncate to the TAIL 8000 chars — the end of thinking is usually
          * the most actionable (conclusions/plans), and we don't want to
          * flood context with a full 16K-token reasoning dump. */
-        cJSON *obj = cJSON_CreateObject();
-        size_t tc_len = st->thinking_content.len;
-        const size_t MAX_THINKING_CHARS = 8000;
-        if (tc_len > MAX_THINKING_CHARS) {
-            /* Skip to tail, preserving the most recent reasoning */
-            tc = tc + (tc_len - MAX_THINKING_CHARS);
-        }
-        cJSON_AddStringToObject(obj, "thought", tc);
-        result = cJSON_PrintUnformatted(obj);
-        cJSON_Delete(obj);
-        if (chat) {
-            free(chat->last_tool_call_id);
-            chat->last_tool_call_id = NULL;
-            free(chat->last_tool_calls_json);
-            chat->last_tool_calls_json = NULL;
-        }
-        } /* !extracted_tool */
-    }
+      cJSON *obj = cJSON_CreateObject();
+      size_t tc_len = st->thinking_content.len;
+      const size_t MAX_THINKING_CHARS = 8000;
+      if (tc_len > MAX_THINKING_CHARS) {
+        /* Skip to tail, preserving the most recent reasoning */
+        tc = tc + (tc_len - MAX_THINKING_CHARS);
+      }
+      cJSON_AddStringToObject(obj, "thought", tc);
+      result = cJSON_PrintUnformatted(obj);
+      cJSON_Delete(obj);
+      if (chat) {
+        free(chat->last_tool_call_id);
+        chat->last_tool_call_id = NULL;
+        free(chat->last_tool_calls_json);
+        chat->last_tool_calls_json = NULL;
+      }
+    } /* !extracted_tool */
+  }
 
-    return result;
+  return result;
 }
 
 /* ── High-level: non-streaming completion ───────────────────────── */
 
 char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
-    if (stats) memset(stats, 0, sizeof(*stats));
+  if (stats) memset(stats, 0, sizeof(*stats));
 
-    char *endpoint = NULL;
-    if (p->get_endpoint) {
-        p->_requesting_stream = 0;
-        const char *ep = p->get_endpoint(p);
-        if (ep) endpoint = xstrdup(ep);
+  char *endpoint = NULL;
+  if (p->get_endpoint) {
+    p->_requesting_stream = 0;
+    const char *ep = p->get_endpoint(p);
+    if (ep) endpoint = xstrdup(ep);
+  }
+  if (!endpoint) {
+    free(p->last_error);
+    p->last_error = xstrdup("get_endpoint returned NULL "
+                            "(missing API base URL or project config)");
+    return NULL;
+  }
+
+  char *req_body = p->build_request(p, chat, 0);
+  if (!req_body) {
+    free(p->last_error);
+    p->last_error = xstrdup("build_request returned NULL "
+                            "(message conversion failed)");
+    free(endpoint);
+    return NULL;
+  }
+
+  str_t response = str_new(4096);
+  cJSON *resp = NULL;
+  int auth_refreshed = 0;
+
+  for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
+    str_clear(&response);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+      free(req_body);
+      free(endpoint);
+      str_free(&response);
+      return NULL;
     }
-    if (!endpoint) {
-        free(p->last_error);
-        p->last_error = xstrdup("get_endpoint returned NULL "
-                               "(missing API base URL or project config)");
-        return NULL;
+
+    struct curl_slist *headers = p->build_headers(p);
+    if (!headers) {
+      nash_log("[provider] build_headers failed (missing credentials?)");
+      str_replace(&p->last_error, "Authentication credentials not available");
+      curl_easy_cleanup(curl);
+      free(req_body);
+      free(endpoint);
+      str_free(&response);
+      return NULL;
     }
 
-    char *req_body = p->build_request(p, chat, 0);
-    if (!req_body) {
-        free(p->last_error);
-        p->last_error = xstrdup("build_request returned NULL "
-                               "(message conversion failed)");
-        free(endpoint);
-        return NULL;
-    }
-
-    str_t response = str_new(4096);
-    cJSON *resp = NULL;
-    int auth_refreshed = 0;
-
-    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
-        str_clear(&response);
-
-        CURL *curl = curl_easy_init();
-        if (!curl) { free(req_body); free(endpoint); str_free(&response); return NULL; }
-
-        struct curl_slist *headers = p->build_headers(p);
-        if (!headers) {
-            nash_log("[provider] build_headers failed (missing credentials?)");
-            str_replace(&p->last_error, "Authentication credentials not available");
-            curl_easy_cleanup(curl);
-            free(req_body); free(endpoint); str_free(&response);
-            return NULL;
-        }
-
-        curl_easy_setopt(curl, CURLOPT_URL, endpoint);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
          * Also enable progress callback for abort-on-demand. */
-        {
-            long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
-                                                  : PROVIDER_DEFAULT_TIMEOUT;
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    {
+      long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
+                                            : PROVIDER_DEFAULT_TIMEOUT;
+      curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    }
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    /* If aborted by progress callback, don't retry */
+    if (res == CURLE_ABORTED_BY_CALLBACK) {
+      free(req_body);
+      free(endpoint);
+      str_free(&response);
+      return NULL;
+    }
+
+    if (res != CURLE_OK) {
+      int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+      nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+               curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
+      if (attempt < PROVIDER_MAX_RETRIES(p)) {
+        if (provider_sleep(p, delay)) {
+          free(req_body);
+          free(endpoint);
+          str_free(&response);
+          return NULL; /* aborted during retry sleep */
         }
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
+        continue;
+      }
+      /* Populate error diagnostics for react.c journal entry */
+      free(p->last_error);
+      {
+        char ebuf[512];
+        snprintf(ebuf, sizeof(ebuf), "curl error: %s",
+                 curl_easy_strerror(res));
+        p->last_error = xstrdup(ebuf);
+      }
+      free(p->last_error_request);
+      p->last_error_request = req_body;
+      req_body = NULL;
+      free(p->last_error_response);
+      p->last_error_response = response.len > 0
+                                 ? xstrdup(str_cstr(&response))
+                                 : NULL;
+      str_free(&response);
+      free(endpoint);
+      return NULL;
+    }
 
-        CURLcode res = curl_easy_perform(curl);
-
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
-
-        /* If aborted by progress callback, don't retry */
-        if (res == CURLE_ABORTED_BY_CALLBACK) {
-            free(req_body); free(endpoint); str_free(&response);
-            return NULL;
-        }
-
-        if (res != CURLE_OK) {
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-            nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
-            if (attempt < PROVIDER_MAX_RETRIES(p)) {
-                if (provider_sleep(p, delay)) {
-                    free(req_body); free(endpoint); str_free(&response);
-                    return NULL;  /* aborted during retry sleep */
-                }
-                continue;
-            }
-            /* Populate error diagnostics for react.c journal entry */
-            free(p->last_error);
-            {
-                char ebuf[512];
-                snprintf(ebuf, sizeof(ebuf), "curl error: %s",
-                         curl_easy_strerror(res));
-                p->last_error = xstrdup(ebuf);
-            }
-            free(p->last_error_request);
-            p->last_error_request = req_body; req_body = NULL;
-            free(p->last_error_response);
-            p->last_error_response = response.len > 0
-                ? xstrdup(str_cstr(&response)) : NULL;
-            str_free(&response);
-            free(endpoint);
-            return NULL;
-        }
-
-        /* HTTP 401/403: auth failure — invalidate cached token and
+    /* HTTP 401/403: auth failure — invalidate cached token and
          * retry with a fresh token (Vertex AI OAuth2).
          * Only do this once to avoid infinite refresh loops. */
-        if ((http_code == 401 || http_code == 403) &&
-            p->type == PROVIDER_VERTEX && !auth_refreshed) {
-            p->_auth_token_expiry = 0;  /* force token refresh */
-            auth_refreshed = 1;
-            nash_log("[provider] auth error %ld — refreshing token and retrying",
-                     http_code);
-            str_clear(&response);
-            continue;
-        }
+    if ((http_code == 401 || http_code == 403) &&
+        p->type == PROVIDER_VERTEX && !auth_refreshed) {
+      p->_auth_token_expiry = 0; /* force token refresh */
+      auth_refreshed = 1;
+      nash_log("[provider] auth error %ld — refreshing token and retrying",
+               http_code);
+      str_clear(&response);
+      continue;
+    }
 
-        /* Retry retryable HTTP errors with backoff.
+    /* Retry retryable HTTP errors with backoff.
          * 429 (rate limit) and 5xx (server errors) are transient.
          * 4xx (except 401/403 handled above, and 429) are client errors
          * that won't self-fix — retrying wastes time and delays error
          * reporting (e.g., HTTP 400 from malformed JSON). */
-        if (http_code >= 400) {
-            nash_log("[provider] HTTP %ld error: %.2000s",
-                     http_code,
-                     response.len > 0 ? str_cstr(&response) : "(empty)");
-            int retryable = (http_code == 429 || http_code >= 500);
-            if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
-                int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-                nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
-                         http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
-                str_clear(&response);
-                if (provider_sleep(p, delay)) {
-                    str_free(&response);
-                    free(req_body); free(endpoint);
-                    return NULL;  /* aborted */
-                }
-                continue;
-            }
-            /* Non-retryable 4xx or retries exhausted — fail immediately */
-            /* Populate error diagnostics for react.c journal entry */
-            free(p->last_error);
-            {
-                char ebuf[512];
-                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code,
-                         response.len > 0 ? str_cstr(&response) : "(empty)");
-                p->last_error = xstrdup(ebuf);
-            }
-            free(p->last_error_request);
-            p->last_error_request = req_body; req_body = NULL;
-            free(p->last_error_response);
-            p->last_error_response = response.len > 0
-                ? xstrdup(str_cstr(&response)) : NULL;
-            str_free(&response);
-            free(endpoint);
-            return NULL;
+    if (http_code >= 400) {
+      nash_log("[provider] HTTP %ld error: %.2000s",
+               http_code,
+               response.len > 0 ? str_cstr(&response) : "(empty)");
+      int retryable = (http_code == 429 || http_code >= 500);
+      if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
+        int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+        nash_log("[provider] HTTP %ld error (attempt %d/%d, retry in %ds)",
+                 http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
+        str_clear(&response);
+        if (provider_sleep(p, delay)) {
+          str_free(&response);
+          free(req_body);
+          free(endpoint);
+          return NULL; /* aborted */
         }
+        continue;
+      }
+      /* Non-retryable 4xx or retries exhausted — fail immediately */
+      /* Populate error diagnostics for react.c journal entry */
+      free(p->last_error);
+      {
+        char ebuf[512];
+        snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code,
+                 response.len > 0 ? str_cstr(&response) : "(empty)");
+        p->last_error = xstrdup(ebuf);
+      }
+      free(p->last_error_request);
+      p->last_error_request = req_body;
+      req_body = NULL;
+      free(p->last_error_response);
+      p->last_error_response = response.len > 0
+                                 ? xstrdup(str_cstr(&response))
+                                 : NULL;
+      str_free(&response);
+      free(endpoint);
+      return NULL;
+    }
 
-        resp = cJSON_Parse(response.data);
-        str_free(&response);
-        if (!resp) {
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-            nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
-                     attempt, PROVIDER_MAX_RETRIES(p), delay);
-            if (attempt < PROVIDER_MAX_RETRIES(p)) {
-                if (provider_sleep(p, delay)) {
-                    free(req_body); free(endpoint);
-                    return NULL;  /* aborted */
-                }
-                continue;
-            }
-            /* Populate error diagnostics for react.c journal entry */
-            str_replace(&p->last_error, "JSON parse failed on provider response");
-            free(p->last_error_request);
-            p->last_error_request = req_body; req_body = NULL;
-            free(p->last_error_response);
-            p->last_error_response = NULL; /* response already freed */
-            free(endpoint);
-            return NULL;
+    resp = cJSON_Parse(response.data);
+    str_free(&response);
+    if (!resp) {
+      int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+      nash_log("[provider] JSON parse failed (attempt %d/%d, retry in %ds)",
+               attempt, PROVIDER_MAX_RETRIES(p), delay);
+      if (attempt < PROVIDER_MAX_RETRIES(p)) {
+        if (provider_sleep(p, delay)) {
+          free(req_body);
+          free(endpoint);
+          return NULL; /* aborted */
         }
+        continue;
+      }
+      /* Populate error diagnostics for react.c journal entry */
+      str_replace(&p->last_error, "JSON parse failed on provider response");
+      free(p->last_error_request);
+      p->last_error_request = req_body;
+      req_body = NULL;
+      free(p->last_error_response);
+      p->last_error_response = NULL; /* response already freed */
+      free(endpoint);
+      return NULL;
+    }
 
-        /* Check for API errors (all providers return {"error": ...}) */
-        cJSON *error = cJSON_GetObjectItem(resp, "error");
-        if (error) {
-            const char *msg = "";
-            const char *etype = NULL;
-            if (cJSON_IsString(error)) msg = error->valuestring;
-            else {
-                const char *em = json_str(error, "message");
-                if (em) msg = em;
-                etype = json_str(error, "type");
-                if (!etype)
-                    etype = json_str(error, "code");
-            }
-            /* Non-retryable errors: bail immediately */
-            static const char *non_retryable[] = {
-                "invalid_api_key", "authentication_error",
-                "model_not_found", "invalid_request_error",
-                "permission_denied", "permission_error",
-                "not_found_error", "invalid_model",
-                NULL
-            };
-            int is_fatal = 0;
-            for (const char **nr = non_retryable; *nr; nr++) {
-                if ((etype && strcasecmp(etype, *nr) == 0) ||
-                    (msg[0] && strstr(msg, *nr))) {
-                    is_fatal = 1;
-                    break;
-                }
-            }
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-            nash_log("[provider] API error: %s (type=%s, attempt %d/%d%s)",
-                     msg, etype ? etype : "unknown", attempt,
-                     PROVIDER_MAX_RETRIES(p),
-                     is_fatal ? ", non-retryable" : "");
-            if (is_fatal || attempt >= PROVIDER_MAX_RETRIES(p)) {
-                /* Populate error diagnostics before freeing resp
+    /* Check for API errors (all providers return {"error": ...}) */
+    cJSON *error = cJSON_GetObjectItem(resp, "error");
+    if (error) {
+      const char *msg = "";
+      const char *etype = NULL;
+      if (cJSON_IsString(error))
+        msg = error->valuestring;
+      else {
+        const char *em = json_str(error, "message");
+        if (em) msg = em;
+        etype = json_str(error, "type");
+        if (!etype)
+          etype = json_str(error, "code");
+      }
+      /* Non-retryable errors: bail immediately */
+      static const char *non_retryable[] = {
+        "invalid_api_key", "authentication_error",
+        "model_not_found", "invalid_request_error",
+        "permission_denied", "permission_error",
+        "not_found_error", "invalid_model",
+        NULL};
+      int is_fatal = 0;
+      for (const char **nr = non_retryable; *nr; nr++) {
+        if ((etype && strcasecmp(etype, *nr) == 0) ||
+            (msg[0] && strstr(msg, *nr))) {
+          is_fatal = 1;
+          break;
+        }
+      }
+      int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+      nash_log("[provider] API error: %s (type=%s, attempt %d/%d%s)",
+               msg, etype ? etype : "unknown", attempt,
+               PROVIDER_MAX_RETRIES(p),
+               is_fatal ? ", non-retryable" : "");
+      if (is_fatal || attempt >= PROVIDER_MAX_RETRIES(p)) {
+        /* Populate error diagnostics before freeing resp
                  * (msg points into the cJSON tree) */
-                free(p->last_error);
-                {
-                    char ebuf[512];
-                    snprintf(ebuf, sizeof(ebuf), "API error: %.480s", msg);
-                    p->last_error = xstrdup(ebuf);
-                }
-                free(p->last_error_request);
-                p->last_error_request = req_body; req_body = NULL;
-                free(p->last_error_response);
-                p->last_error_response = NULL;
-                cJSON_Delete(resp);
-                free(endpoint);
-                return NULL;
-            }
-            cJSON_Delete(resp);
-            if (provider_sleep(p, delay)) {
-                free(req_body); free(endpoint);
-                return NULL;  /* aborted */
-            }
-            continue;
+        free(p->last_error);
+        {
+          char ebuf[512];
+          snprintf(ebuf, sizeof(ebuf), "API error: %.480s", msg);
+          p->last_error = xstrdup(ebuf);
         }
-
-        break;  /* success */
+        free(p->last_error_request);
+        p->last_error_request = req_body;
+        req_body = NULL;
+        free(p->last_error_response);
+        p->last_error_response = NULL;
+        cJSON_Delete(resp);
+        free(endpoint);
+        return NULL;
+      }
+      cJSON_Delete(resp);
+      if (provider_sleep(p, delay)) {
+        free(req_body);
+        free(endpoint);
+        return NULL; /* aborted */
+      }
+      continue;
     }
 
-    free(req_body);
-    free(endpoint);
+    break; /* success */
+  }
 
-    /* Dispatch to provider-specific response parser */
-    char *result = NULL;
-    if (p->parse_response) {
-        char *resp_str = cJSON_PrintUnformatted(resp);
-        result = p->parse_response(p, resp_str, chat, stats);
-        free(resp_str);
-    }
+  free(req_body);
+  free(endpoint);
 
-    cJSON_Delete(resp);
-    return result;
+  /* Dispatch to provider-specific response parser */
+  char *result = NULL;
+  if (p->parse_response) {
+    char *resp_str = cJSON_PrintUnformatted(resp);
+    result = p->parse_response(p, resp_str, chat, stats);
+    free(resp_str);
+  }
+
+  cJSON_Delete(resp);
+  return result;
 }
 
 /* ── High-level: streaming completion ───────────────────────────── */
@@ -1413,240 +1444,244 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                                int repeat_threshold,
                                provider_progress_fn on_progress,
                                void *progress_userdata) {
+  if (stats) memset(stats, 0, sizeof(*stats));
+
+  if (p->get_endpoint) p->_requesting_stream = 1;
+  const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
+  if (!endpoint) {
+    nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
+             (void *)p->get_endpoint);
+    free(p->last_error);
+    p->last_error = xstrdup("get_endpoint returned NULL "
+                            "(missing API base URL or project config)");
+    return NULL;
+  }
+
+  char *req_body = p->build_request(p, chat, 1);
+  if (!req_body) {
+    nash_log("[provider] build_request returned NULL for endpoint=%s",
+             endpoint);
+    free(p->last_error);
+    p->last_error = xstrdup("build_request returned NULL "
+                            "(message conversion failed)");
+    return NULL;
+  }
+
+  /* Set up SSE state */
+  provider_sse_state_t st = {
+    .line_buf = str_new(256),
+    .full_content = str_new(4096),
+    .on_token = on_token,
+    .userdata = userdata,
+    .stats = stats,
+    .max_response = (size_t)max_response_bytes,
+    .repeat_threshold = repeat_threshold,
+    .repeat_count = 0,
+    .stopped = 0,
+    .tool_call_name = str_new(64),
+    .tool_call_args = str_new(1024),
+    .tool_call_id = NULL,
+    .has_tool_call = 0,
+    .last_token_idx = 0,
+    .in_tool_use = 0,
+    .thinking_content = str_new(256),
+    .raw_body = str_new(1024),
+    .provider = p,
+    .first_token_time = {0, 0},
+    .first_token_seen = 0,
+    .streaming_token_count = 0,
+    .on_progress = on_progress,
+    .progress_userdata = progress_userdata,
+  };
+
+  char *result = NULL;
+  int auth_refreshed = 0;
+  for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
+    str_clear(&st.line_buf);
+    str_clear(&st.full_content);
+    str_clear(&st.tool_call_name);
+    str_clear(&st.tool_call_args);
+    str_clear(&st.thinking_content);
+    str_clear(&st.raw_body);
+    free(st.tool_call_id);
+    st.tool_call_id = NULL;
+    st.has_tool_call = 0;
+    st.in_tool_use = 0;
+    st.stopped = 0;
+    st.repeat_count = 0;
+    st.last_token_idx = 0;
+    st.first_token_seen = 0;
+    st.streaming_token_count = 0;
+    st.multi_tool_count = 0;
     if (stats) memset(stats, 0, sizeof(*stats));
 
-    if (p->get_endpoint) p->_requesting_stream = 1;
-    const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
-    if (!endpoint) {
-        nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
-                 (void *)p->get_endpoint);
-        free(p->last_error);
-        p->last_error = xstrdup("get_endpoint returned NULL "
-                               "(missing API base URL or project config)");
-        return NULL;
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+      free(req_body);
+      goto cleanup;
     }
 
-    char *req_body = p->build_request(p, chat, 1);
-    if (!req_body) {
-        nash_log("[provider] build_request returned NULL for endpoint=%s",
-                 endpoint);
-        free(p->last_error);
-        p->last_error = xstrdup("build_request returned NULL "
-                               "(message conversion failed)");
-        return NULL;
+    struct curl_slist *headers = p->build_headers(p);
+    if (!headers) {
+      nash_log("[provider] build_headers failed (missing credentials?)");
+      str_replace(&p->last_error, "Authentication credentials not available");
+      curl_easy_cleanup(curl);
+      free(req_body);
+      goto cleanup;
     }
 
-    /* Set up SSE state */
-    provider_sse_state_t st = {
-        .line_buf         = str_new(256),
-        .full_content     = str_new(4096),
-        .on_token         = on_token,
-        .userdata         = userdata,
-        .stats            = stats,
-        .max_response     = (size_t)max_response_bytes,
-        .repeat_threshold = repeat_threshold,
-        .repeat_count     = 0,
-        .stopped          = 0,
-        .tool_call_name   = str_new(64),
-        .tool_call_args   = str_new(1024),
-        .tool_call_id     = NULL,
-        .has_tool_call    = 0,
-        .last_token_idx   = 0,
-        .in_tool_use      = 0,
-        .thinking_content = str_new(256),
-        .raw_body         = str_new(1024),
-        .provider         = p,
-        .first_token_time    = {0, 0},
-        .first_token_seen    = 0,
-        .streaming_token_count = 0,
-        .on_progress         = on_progress,
-        .progress_userdata   = progress_userdata,
-    };
-
-    char *result = NULL;
-    int auth_refreshed = 0;
-    for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
-        str_clear(&st.line_buf);
-        str_clear(&st.full_content);
-        str_clear(&st.tool_call_name);
-        str_clear(&st.tool_call_args);
-        str_clear(&st.thinking_content);
-        str_clear(&st.raw_body);
-        free(st.tool_call_id); st.tool_call_id = NULL;
-        st.has_tool_call = 0;
-        st.in_tool_use = 0;
-        st.stopped = 0;
-        st.repeat_count = 0;
-        st.last_token_idx = 0;
-        st.first_token_seen = 0;
-        st.streaming_token_count = 0;
-        st.multi_tool_count = 0;
-        if (stats) memset(stats, 0, sizeof(*stats));
-
-        CURL *curl = curl_easy_init();
-        if (!curl) {
-            free(req_body);
-            goto cleanup;
-        }
-
-        struct curl_slist *headers = p->build_headers(p);
-        if (!headers) {
-            nash_log("[provider] build_headers failed (missing credentials?)");
-            str_replace(&p->last_error, "Authentication credentials not available");
-            curl_easy_cleanup(curl);
-            free(req_body);
-            goto cleanup;
-        }
-
-        curl_easy_setopt(curl, CURLOPT_URL, endpoint);
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-        /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
+    /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
          * Also enable progress callback for abort-on-demand during streaming. */
-        long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
-                                              : PROVIDER_DEFAULT_TIMEOUT;
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
-        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
-        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
+    long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
+                                          : PROVIDER_DEFAULT_TIMEOUT;
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
 
-        CURLcode res = curl_easy_perform(curl);
+    CURLcode res = curl_easy_perform(curl);
 
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
 
-        /* If aborted by progress callback, don't retry */
-        if (res == CURLE_ABORTED_BY_CALLBACK) {
-            free(req_body);
-            goto cleanup;
-        }
+    /* If aborted by progress callback, don't retry */
+    if (res == CURLE_ABORTED_BY_CALLBACK) {
+      free(req_body);
+      goto cleanup;
+    }
 
-        /* Process any remaining data in line buffer */
-        if (st.line_buf.len > 0) {
-            if (p->type == PROVIDER_ANTHROPIC || p->type == PROVIDER_VERTEX) {
-                sse_process_line_anthropic(&st, str_cstr(&st.line_buf));
-            } else {
-                sse_process_line_openai(&st, str_cstr(&st.line_buf));
-            }
-        }
+    /* Process any remaining data in line buffer */
+    if (st.line_buf.len > 0) {
+      if (p->type == PROVIDER_ANTHROPIC || p->type == PROVIDER_VERTEX) {
+        sse_process_line_anthropic(&st, str_cstr(&st.line_buf));
+      } else {
+        sse_process_line_openai(&st, str_cstr(&st.line_buf));
+      }
+    }
 
-        /* Handle HTTP errors: retry ALL server errors with backoff.
+    /* Handle HTTP errors: retry ALL server errors with backoff.
          * HTTP 401/403 on Vertex AI gets a token refresh first.
          * After exhausting retries, return NULL for react.c to handle. */
-        if (http_code >= 400) {
-            /* Use raw_body for error diagnostics — full_content stays empty
+    if (http_code >= 400) {
+      /* Use raw_body for error diagnostics — full_content stays empty
              * when the server returns a non-SSE error body (e.g. JSON error
              * from llama.cpp like "ill-formed UTF-8"). */
-            const char *err_body = st.full_content.len > 0 ? str_cstr(&st.full_content)
-                                 : st.raw_body.len > 0    ? str_cstr(&st.raw_body)
-                                 : "(empty)";
-            nash_log("[provider] HTTP %ld error: %.2000s",
-                     http_code, err_body);
-            /* HTTP 401/403: auth failure — invalidate cached token and
+      const char *err_body = st.full_content.len > 0 ? str_cstr(&st.full_content)
+                             : st.raw_body.len > 0   ? str_cstr(&st.raw_body)
+                                                     : "(empty)";
+      nash_log("[provider] HTTP %ld error: %.2000s",
+               http_code, err_body);
+      /* HTTP 401/403: auth failure — invalidate cached token and
              * retry with a fresh token.  Only applies to Vertex AI
              * (OAuth2 tokens expire and can be refreshed via gcloud).
              * Only do this once to avoid infinite refresh loops. */
-            if ((http_code == 401 || http_code == 403) &&
-                p->type == PROVIDER_VERTEX && !auth_refreshed) {
-                p->_auth_token_expiry = 0;  /* force token refresh */
-                auth_refreshed = 1;
-                nash_log("[provider] auth error %ld — refreshing token and retrying",
-                         http_code);
-                continue;
-            }
-            int retryable = (http_code == 429 || http_code >= 500);
-            if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
-                int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-                nash_log("[provider] HTTP %ld error (attempt %d/%d, "
-                         "retry in %ds)",
-                         http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
-                if (provider_sleep(p, delay)) {
-                    free(req_body);
-                    goto cleanup;  /* aborted during retry sleep */
-                }
-                continue;
-            }
-            /* Non-retryable 4xx or retries exhausted: return NULL */
-            /* Populate error diagnostics for react.c journal entry.
+      if ((http_code == 401 || http_code == 403) &&
+          p->type == PROVIDER_VERTEX && !auth_refreshed) {
+        p->_auth_token_expiry = 0; /* force token refresh */
+        auth_refreshed = 1;
+        nash_log("[provider] auth error %ld — refreshing token and retrying",
+                 http_code);
+        continue;
+      }
+      int retryable = (http_code == 429 || http_code >= 500);
+      if (retryable && attempt < PROVIDER_MAX_RETRIES(p)) {
+        int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+        nash_log("[provider] HTTP %ld error (attempt %d/%d, "
+                 "retry in %ds)",
+                 http_code, attempt, PROVIDER_MAX_RETRIES(p), delay);
+        if (provider_sleep(p, delay)) {
+          free(req_body);
+          goto cleanup; /* aborted during retry sleep */
+        }
+        continue;
+      }
+      /* Non-retryable 4xx or retries exhausted: return NULL */
+      /* Populate error diagnostics for react.c journal entry.
              * Thread safety note (FIX #6): last_error/last_error_request/
              * last_error_response are written here (inference thread) and
              * read by main thread ONLY after pthread_join — the join
              * provides a happens-before guarantee per POSIX §4.12. Do NOT
              * read these from the main thread while inference is running. */
-            free(p->last_error);
-            {
-                char ebuf[512];
-                snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, err_body);
-                p->last_error = xstrdup(ebuf);
-            }
-            free(p->last_error_request);
-            p->last_error_request = req_body;  /* transfer ownership */
-            req_body = NULL;
-            free(p->last_error_response);
-            p->last_error_response = (st.full_content.len > 0)
-                ? xstrdup(str_cstr(&st.full_content))
-                : (st.raw_body.len > 0)
-                ? xstrdup(str_cstr(&st.raw_body))
-                : (st.thinking_content.len > 0)
-                ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
-            goto cleanup;
-        }
-
-        if (res != CURLE_OK && !st.stopped) {
-            /* Don't retry on timeout — it means the LLM response is too long
-             * (e.g., runaway thinking), not a transient network error.
-             * Retrying would just burn another 300s+ per attempt. */
-            if (res == CURLE_OPERATION_TIMEDOUT) {
-                nash_log("[provider] LLM call timed out after %lds "
-                         "(streaming_tokens=%d) — not retrying",
-                         timeout, st.streaming_token_count);
-                str_replace(&p->last_error, "LLM call timed out (response too long)");
-                free(p->last_error_request);
-                p->last_error_request = req_body;
-                req_body = NULL;
-                free(p->last_error_response);
-                p->last_error_response = (st.full_content.len > 0)
-                    ? xstrdup(str_cstr(&st.full_content))
-                    : (st.thinking_content.len > 0)
-                    ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
-                goto cleanup;
-            }
-            int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
-            nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
-                     curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
-            if (attempt < PROVIDER_MAX_RETRIES(p)) {
-                if (provider_sleep(p, delay)) {
-                    free(req_body);
-                    goto cleanup;  /* aborted during retry sleep */
-                }
-                continue;
-            }
-            /* Populate error diagnostics for react.c journal entry */
-            free(p->last_error);
-            {
-                char ebuf[512];
-                snprintf(ebuf, sizeof(ebuf), "curl error: %s", curl_easy_strerror(res));
-                p->last_error = xstrdup(ebuf);
-            }
-            free(p->last_error_request);
-            p->last_error_request = req_body;  /* transfer ownership */
-            req_body = NULL;
-            free(p->last_error_response);
-            p->last_error_response = (st.full_content.len > 0)
-                ? xstrdup(str_cstr(&st.full_content))
-                : (st.thinking_content.len > 0)
-                ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
-            goto cleanup;
-        }
-
-        break;  /* success */
+      free(p->last_error);
+      {
+        char ebuf[512];
+        snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, err_body);
+        p->last_error = xstrdup(ebuf);
+      }
+      free(p->last_error_request);
+      p->last_error_request = req_body; /* transfer ownership */
+      req_body = NULL;
+      free(p->last_error_response);
+      p->last_error_response = (st.full_content.len > 0)
+                                 ? xstrdup(str_cstr(&st.full_content))
+                               : (st.raw_body.len > 0)
+                                 ? xstrdup(str_cstr(&st.raw_body))
+                               : (st.thinking_content.len > 0)
+                                 ? xstrdup(str_cstr(&st.thinking_content))
+                                 : NULL;
+      goto cleanup;
     }
 
-    /* Compute wall-clock streaming gen t/s as fallback when server doesn't report it.
+    if (res != CURLE_OK && !st.stopped) {
+      /* Don't retry on timeout — it means the LLM response is too long
+             * (e.g., runaway thinking), not a transient network error.
+             * Retrying would just burn another 300s+ per attempt. */
+      if (res == CURLE_OPERATION_TIMEDOUT) {
+        nash_log("[provider] LLM call timed out after %lds "
+                 "(streaming_tokens=%d) — not retrying",
+                 timeout, st.streaming_token_count);
+        str_replace(&p->last_error, "LLM call timed out (response too long)");
+        free(p->last_error_request);
+        p->last_error_request = req_body;
+        req_body = NULL;
+        free(p->last_error_response);
+        p->last_error_response = (st.full_content.len > 0)
+                                   ? xstrdup(str_cstr(&st.full_content))
+                                 : (st.thinking_content.len > 0)
+                                   ? xstrdup(str_cstr(&st.thinking_content))
+                                   : NULL;
+        goto cleanup;
+      }
+      int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
+      nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
+               curl_easy_strerror(res), attempt, PROVIDER_MAX_RETRIES(p), delay);
+      if (attempt < PROVIDER_MAX_RETRIES(p)) {
+        if (provider_sleep(p, delay)) {
+          free(req_body);
+          goto cleanup; /* aborted during retry sleep */
+        }
+        continue;
+      }
+      /* Populate error diagnostics for react.c journal entry */
+      free(p->last_error);
+      {
+        char ebuf[512];
+        snprintf(ebuf, sizeof(ebuf), "curl error: %s", curl_easy_strerror(res));
+        p->last_error = xstrdup(ebuf);
+      }
+      free(p->last_error_request);
+      p->last_error_request = req_body; /* transfer ownership */
+      req_body = NULL;
+      free(p->last_error_response);
+      p->last_error_response = (st.full_content.len > 0)
+                                 ? xstrdup(str_cstr(&st.full_content))
+                               : (st.thinking_content.len > 0)
+                                 ? xstrdup(str_cstr(&st.thinking_content))
+                                 : NULL;
+      goto cleanup;
+    }
+
+    break; /* success */
+  }
+
+  /* Compute wall-clock streaming gen t/s as fallback when server doesn't report it.
      * This makes gen t/s available for providers that don't include
      * predicted_per_second fields in the response (Anthropic, Vertex, OpenAI).
      * Prompt processing speed (pp t/s) is NOT estimated from wall-clock time;
@@ -1656,80 +1691,79 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
      * content_block_delta events (text_delta + input_json_delta + thinking),
      * which are chunks, not actual tokens.  When completion_tokens is available
      * from the usage stats, use that instead for accurate t/s. */
-    if (stats && st.first_token_seen && st.streaming_token_count > 1) {
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
+  if (stats && st.first_token_seen && st.streaming_token_count > 1) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
 
-        /* Generation speed: completion_tokens / time_since_first_token.
+    /* Generation speed: completion_tokens / time_since_first_token.
          * Prefer completion_tokens from API usage stats (accurate token count).
          * Fall back to streaming_token_count (SSE chunk count) if unavailable. */
-        if (stats->predicted_per_second <= 0) {
-            double gen_elapsed = (now.tv_sec - st.first_token_time.tv_sec) +
-                                 (now.tv_nsec - st.first_token_time.tv_nsec) / 1e9;
-            if (gen_elapsed > 0.1) {
-                int gen_count = (stats->completion_tokens > 0)
-                    ? stats->completion_tokens
-                    : st.streaming_token_count - 1;
-                if (gen_count > 0)
-                    stats->predicted_per_second = (double)gen_count / gen_elapsed;
-            }
-        }
+    if (stats->predicted_per_second <= 0) {
+      double gen_elapsed = (now.tv_sec - st.first_token_time.tv_sec) +
+                           (now.tv_nsec - st.first_token_time.tv_nsec) / 1e9;
+      if (gen_elapsed > 0.1) {
+        int gen_count = (stats->completion_tokens > 0)
+                          ? stats->completion_tokens
+                          : st.streaming_token_count - 1;
+        if (gen_count > 0)
+          stats->predicted_per_second = (double)gen_count / gen_elapsed;
+      }
+    }
 
-        /* Prompt processing speed: use server-reported value only.
+    /* Prompt processing speed: use server-reported value only.
          * llama.cpp reports prompt_per_second in the timings object;
          * other providers may not report it, in which case it stays 0. */
-    }
+  }
 
-    if (stats) {
-        if (stats->cache_read_tokens || stats->cache_creation_tokens) {
-            /* prompt_tokens already includes cached tokens (set in SSE handler).
+  if (stats) {
+    if (stats->cache_read_tokens || stats->cache_creation_tokens) {
+      /* prompt_tokens already includes cached tokens (set in SSE handler).
              * Compute uncached = total - cache_read - cache_creation. */
-            int uncached = stats->prompt_tokens
-                         - stats->cache_read_tokens
-                         - stats->cache_creation_tokens;
-            nash_log("[provider/complete] final stats: prompt_tokens=%d "
-                     "(uncached=%d cache_read=%d cache_create=%d) "
-                     "completion_tokens=%d pp=%.1f gen=%.1f",
-                     stats->prompt_tokens, uncached,
-                     stats->cache_read_tokens, stats->cache_creation_tokens,
-                     stats->completion_tokens,
-                     stats->prompt_per_second, stats->predicted_per_second);
-        } else {
-            nash_log("[provider/complete] final stats: prompt_tokens=%d "
-                     "completion_tokens=%d pp=%.1f gen=%.1f",
-                     stats->prompt_tokens, stats->completion_tokens,
-                     stats->prompt_per_second, stats->predicted_per_second);
-        }
+      int uncached = stats->prompt_tokens - stats->cache_read_tokens - stats->cache_creation_tokens;
+      nash_log("[provider/complete] final stats: prompt_tokens=%d "
+               "(uncached=%d cache_read=%d cache_create=%d) "
+               "completion_tokens=%d pp=%.1f gen=%.1f",
+               stats->prompt_tokens, uncached,
+               stats->cache_read_tokens, stats->cache_creation_tokens,
+               stats->completion_tokens,
+               stats->prompt_per_second, stats->predicted_per_second);
+    } else {
+      nash_log("[provider/complete] final stats: prompt_tokens=%d "
+               "completion_tokens=%d pp=%.1f gen=%.1f",
+               stats->prompt_tokens, stats->completion_tokens,
+               stats->prompt_per_second, stats->predicted_per_second);
     }
+  }
 
-    free(req_body);
-    result = build_sse_result(&st, chat);
+  free(req_body);
+  result = build_sse_result(&st, chat);
 
-    /* Diagnostics: when build_sse_result returns NULL despite HTTP 200 + curl OK,
+  /* Diagnostics: when build_sse_result returns NULL despite HTTP 200 + curl OK,
      * the model streamed tokens that didn't parse into any recognized structure
      * (no tool call, no text, no thinking).  Log the raw SSE stream so we can
      * debug what the model actually produced instead of silently discarding it.
      * Also populate last_error so react.c reports something useful instead of
      * "(unknown error)". */
-    if (!result && st.raw_body.len > 0) {
-        nash_log("[provider] build_sse_result returned NULL — raw SSE body "
-                 "(%.4000s)", str_cstr(&st.raw_body));
-        free(p->last_error);
-        p->last_error = xstrdup("model produced unparseable response "
-                               "(no tool call, text, or thinking content)");
-        free(p->last_error_response);
-        p->last_error_response = (st.raw_body.len <= 8192)
-            ? xstrdup(str_cstr(&st.raw_body))
-            : strndup(str_cstr(&st.raw_body), 8192);
-    }
+  if (!result && st.raw_body.len > 0) {
+    nash_log("[provider] build_sse_result returned NULL — raw SSE body "
+             "(%.4000s)",
+             str_cstr(&st.raw_body));
+    free(p->last_error);
+    p->last_error = xstrdup("model produced unparseable response "
+                            "(no tool call, text, or thinking content)");
+    free(p->last_error_response);
+    p->last_error_response = (st.raw_body.len <= 8192)
+                               ? xstrdup(str_cstr(&st.raw_body))
+                               : strndup(str_cstr(&st.raw_body), 8192);
+  }
 
 cleanup:
-    str_free(&st.line_buf);
-    str_free(&st.full_content);
-    str_free(&st.tool_call_name);
-    str_free(&st.tool_call_args);
-    str_free(&st.thinking_content);
-    str_free(&st.raw_body);
-    free(st.tool_call_id);
-    return result;
+  str_free(&st.line_buf);
+  str_free(&st.full_content);
+  str_free(&st.tool_call_name);
+  str_free(&st.tool_call_args);
+  str_free(&st.thinking_content);
+  str_free(&st.raw_body);
+  free(st.tool_call_id);
+  return result;
 }

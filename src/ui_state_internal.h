@@ -39,10 +39,10 @@ const char *ui_ci_strstr(const char *haystack, const char *needle);
 /* Check if user is viewing session.md.
  * Used by ui_event.c and ui_state.c (set_banner, load_journal). */
 static inline int viewing_session(ui_state_t *ui) {
-    if (!ui->current_filepath) return 0;
-    const char *base = strrchr(ui->current_filepath, '/');
-    base = base ? base + 1 : ui->current_filepath;
-    return strcmp(base, "session.md") == 0;
+  if (!ui->current_filepath) return 0;
+  const char *base = strrchr(ui->current_filepath, '/');
+  base = base ? base + 1 : ui->current_filepath;
+  return strcmp(base, "session.md") == 0;
 }
 
 #endif /* UI_STATE_INTERNAL_H */

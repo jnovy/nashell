@@ -13,39 +13,39 @@
 #include <pthread.h>
 
 typedef struct {
-    char              *session_dir;   /* full path to sessions/<ts>/ */
-    char              *manifest;      /* journal_manifest() output (summary.txt) */
-    double             timestamp;     /* session timestamp from dir name */
-    /* Legacy single-vector embedding (summary.emb) */
-    embed_vec_t        emb;           /* embedding of manifest text */
-    int                has_emb;       /* 1 if emb is valid */
-    /* v4.1: Per-chunk multi-vector embedding (chunks.emb) */
-    embed_multi_vec_t  chunks_emb;    /* multi-vector: one per chunk */
-    char             **chunk_previews;/* preview text per chunk (from chunks.idx) */
-    int                n_chunk_previews;
-    int                has_chunks;    /* 1 if chunk data loaded */
+  char *session_dir; /* full path to sessions/<ts>/ */
+  char *manifest;    /* journal_manifest() output (summary.txt) */
+  double timestamp;  /* session timestamp from dir name */
+  /* Legacy single-vector embedding (summary.emb) */
+  embed_vec_t emb; /* embedding of manifest text */
+  int has_emb;     /* 1 if emb is valid */
+  /* v4.1: Per-chunk multi-vector embedding (chunks.emb) */
+  embed_multi_vec_t chunks_emb; /* multi-vector: one per chunk */
+  char **chunk_previews;        /* preview text per chunk (from chunks.idx) */
+  int n_chunk_previews;
+  int has_chunks; /* 1 if chunk data loaded */
 } session_index_entry_t;
 
 typedef struct session_index_t {
-    session_index_entry_t *entries;
-    int count;
-    int cap;
-    pthread_mutex_t mtx;              /* thread safety: /? vs react loop */
+  session_index_entry_t *entries;
+  int count;
+  int cap;
+  pthread_mutex_t mtx; /* thread safety: /? vs react loop */
 } session_index_t;
 
 /* Search result from session index */
 typedef struct {
-    char   *session_dir;
-    char   *manifest;      /* journal_manifest() output */
-    char   *chunk_preview; /* v4.1: best matching chunk text (NULL if legacy) */
-    double  timestamp;
-    double  score;         /* composite: semantic × recency */
-    int     best_chunk;    /* v4.1: index of best-matching chunk (-1 if legacy) */
+  char *session_dir;
+  char *manifest;      /* journal_manifest() output */
+  char *chunk_preview; /* v4.1: best matching chunk text (NULL if legacy) */
+  double timestamp;
+  double score;   /* composite: semantic × recency */
+  int best_chunk; /* v4.1: index of best-matching chunk (-1 if legacy) */
 } session_index_result_t;
 
 typedef struct {
-    session_index_result_t *results;
-    int count;
+  session_index_result_t *results;
+  int count;
 } session_index_results_t;
 
 /* ── Lifecycle ──────────────────────────────────────── */
@@ -83,9 +83,9 @@ void session_index_free(session_index_t *idx);
  * Returns results sorted by score (descending).
  * Caller must free with session_index_results_free(). */
 session_index_results_t session_index_search(
-    session_index_t *idx,
-    const embed_vec_t *query_emb,
-    int max_results);
+  session_index_t *idx,
+  const embed_vec_t *query_emb,
+  int max_results);
 
 /* Free search results. */
 void session_index_results_free(session_index_results_t *r);
