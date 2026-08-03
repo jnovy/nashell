@@ -17,7 +17,7 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 │  Plan → Tool Call → Observe → Reflect → Done            │
 ├──────────┬──────────┬───────────┬───────────────────────┤
 │ Provider │  Memory  │   Tools   │   Journal + Store     │
-│ local    │ semantic │ 18 tools  │ content-addressed     │
+│ local    │ semantic │ 20 tools  │ content-addressed     │
 │ openai   │ Bayesian │ registry  │ full audit trail      │
 │ anthropic│ event-   │ dispatch  │ checkpoint/resume     │
 │ vertex   │ driven   │ filtering │ episodic recall       │
@@ -48,11 +48,11 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 ├─────────────────────────────────────────────────────┤
 │  L2: Scratchpad (session-persistent)                │
 │  Append-only JSONL (scratchpad.jsonl)               │
-│  Survives compaction, dies at session end            │
+│  Survives compaction, dies at session end           │
 ├─────────────────────────────────────────────────────┤
 │  L3: Session History (searchable, evolving)         │
 │  sessions/<ts>/journal.jsonl + summary.txt + .emb   │
-│  Grows naturally, searchable via /? and memory_search│
+│  Grows, searchable via /? and memory_search         │
 ├─────────────────────────────────────────────────────┤
 │  L4: Curated Memory (persistent, small)             │
 │  .memory/ — only explicitly stored entries          │
@@ -127,9 +127,10 @@ User Query → [Plan] → Tool Call → Observe Result → [Reflect] → Next To
 ```
 
 - **Native OpenAI tool_calls API** — uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
-- **18 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete, image_analyze, user_ask
-- **Plugin-based tool registry** (`tool_plugin.h`) - tools self-register via `__attribute__((constructor))`, formatted per-provider (local/OpenAI/Anthropic)
-- **Dispatch table** - tool execution via plugin registry lookup, not strcmp chains
+- **20 built-in tools** — shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete, image_analyze, user_ask, subtask, todo
+- **Plugin-based tool registry** (`tool_plugin.h`) — tools self-register via `__attribute__((constructor))`, formatted per-provider (local/OpenAI/Anthropic), ABI v3 with lifecycle hooks (`init`/`cleanup`)
+- **External plugin override** — external `.so` plugins loaded via `dlopen` can override built-in tools in-place; `tool_plugin_load_dir()` loads all plugins from a directory
+- **Dispatch table** — tool execution via plugin registry lookup, not strcmp chains
 - **Tool filtering** — per-playbook-pass whitelist/blacklist restricts available tools
 - **Cycling detection** — detects repeated identical tool calls, injects corrective guidance, refuses after repeated failures
 - **Concatenated tool name recovery** — when the model emits garbled names (e.g., `shell_execshell_exec`), automatically extracts the longest matching prefix and dispatches correctly
@@ -212,6 +213,13 @@ When configured, nash uses dense vector embeddings for semantic similarity:
 
 Cosine similarity is clamped to [0, 1] (negative = no match) and scaled to [0, 4] before blending with substring scores. Without embeddings, pure substring matching is used and normalized to the same [0, 1] range.
 
+Embedding infrastructure optimizations:
+
+- **ONNX batch inference** — processes up to 32 texts at once via `onnx_embed_text_batch()` for 2-3x speedup over sequential embedding
+- **Auto-detect threads** — ONNX thread count auto-detected from CPU cores, clamped to [2, 8] (diminishing returns beyond 8 for small embedding models)
+- **Paragraph-aware chunking** — text is split hierarchically at paragraph boundaries (`\n\n`), then sentence boundaries (`. `), then word boundaries, producing semantically coherent chunks
+- **Background backfill** — session index embedding runs in a detached pthread at startup so the TUI is responsive immediately; uses a separate ONNX session for thread safety
+
 #### Memory Pruning — Bayesian Quality Control
 
 After every react loop, nash runs deterministic Bayesian pruning:
@@ -242,6 +250,18 @@ Inspired by:
 
 At startup, nash counts memory entries created since the last dream (using `created_at` timestamps vs `.last_dream` file mtime). If the count exceeds `dream_reminder_threshold`, a warning appears in the TUI status bar. This is usage-based, not calendar-based — adapts to burst vs. quiet periods.
 
+#### Cue-Anchored Content-Pattern Triggers
+
+Memories can declare substring patterns that cause automatic injection when matched in tool I/O. When storing a memory, pass a `triggers` array of up to 32 patterns:
+
+```json
+{"key": "lesson:cli-flag-ordering", "value": "...", "triggers": ["CLI flag", "argument parsing"]}
+```
+
+After each tool call, the harness scans all memories with triggers. If any pattern case-insensitively matches the tool output text (`strcasestr`), the memory is auto-injected as a `[CUE-ANCHORED MEMORY - triggered by: <pattern>]` message, capped at 2 injections per react step.
+
+A **fire ledger** provides per-session deduplication - once a memory has been trigger-injected, it is added to the ledger and skipped on subsequent tool calls within the same react loop. The ledger resets between react steps.
+
 #### Event-Driven Reactive Retrieval
 
 Nash implements **event-driven memory retrieval** — the harness automatically re-queries memory when runtime events signal that new knowledge is needed. This directly addresses the **retrieval-timing bottleneck** identified in [arXiv:2605.30621](https://arxiv.org/abs/2605.30621): a single retrieval at task start creates a timing mismatch because the agent's needs evolve as it discovers what the task requires.
@@ -253,6 +273,7 @@ Four event triggers fire independently, each using the event content as the retr
 | **Tool error** | Error text + action name | `[MEMORY HINT — relevant to this error]` | `error_recall_*` |
 | **Context eviction** | Breadcrumb summary of evicted messages | `[MEMORY RECOVERY — post-eviction]` | `eviction_recall_*` |
 | **Cycling detection** | Repeated action + path ("stuck cycling: ...") | `[MEMORY HINT — you may be stuck]` | `cycling_recall_*` |
+| **Content-pattern trigger** | Matching `triggers[]` substring in tool I/O | `[CUE-ANCHORED MEMORY - triggered by: <pattern>]` | per-memory `triggers` array |
 
 All triggers follow the same pattern: query memory → filter by relevance threshold → deduplicate against `recalled_keys[]` → inject as labeled user message → track for validation scoring. This is the **Memory-as-Cognition** principle from [MemCog](https://arxiv.org/abs/2605.28046) — the harness controls ALL retrieval timing; the LLM never decides when to recall.
 
@@ -717,6 +738,7 @@ Features:
 - **Inter-pass pause** — optionally wait for user confirmation between passes
 - **Custom system prompts** — per-pass `system_prompt` with append or replace modes
 - **Standalone mode** — suppress all host-local context for portable, self-contained agents
+- **Required tools gate** — per-pass `required_tools` list verifies that specified tools were actually invoked after a pass completes; catches the "call narrated, not made" failure mode where the model describes tool usage without executing it (inspired by [SIGIL, arXiv:2607.27309](https://arxiv.org/abs/2607.27309))
 
 Bundled playbooks: `dream`, `reflect`, `digest`, `health`, `prune`, `retrospect`, `self-harness`
 
@@ -1149,6 +1171,11 @@ When SearXNG is configured but not running, nash **automatically starts a SearXN
 
 The bundled `config/searxng/settings.yml` provides a minimal override that inherits SearXNG defaults while enabling JSON output format and configuring search engines for coding tasks.
 
+Rate limiting protection:
+
+- **Query throttle** — enforces a minimum 3-second gap between searches to avoid upstream engine rate limiting
+- **Nuclear recovery** — when a search returns 0 results (likely due to upstream bans or CAPTCHAs), automatically restarts the SearXNG container to reset all engine state, then retries the query
+
 ### Interactive user_ask Tool
 
 The `user_ask` tool allows the LLM to pause inference and ask the user a clarifying question:
@@ -1264,7 +1291,7 @@ Supported overlay sections: `[provider]`, `[client]`, `[thinking]`, `[react]` (f
 
 ## Configuration
 
-Nash uses TOML configuration at `~/.nash/config.toml`:
+Nash uses TOML configuration at `~/.nash/config.toml`. API keys are stored separately in `~/.nash/credentials.toml` (chmod 0600). Run `nash --setup` for an interactive wizard that configures providers, embedding, and credentials on first use:
 
 ```toml
 [server]
@@ -1383,8 +1410,13 @@ engine = "searxng"                        # SearXNG (auto-started via podman/doc
 
 ```bash
 cd nash
-make
+make                 # builds nash binary + libnash.so (soname-versioned)
+make dist            # creates source tarball (tar.zst)
+make test            # runs unit tests
+sudo make install    # installs to /usr/local (binary, library, headers, playbooks)
 ```
+
+The shared library uses standard soname versioning: `libnash.so` -> `libnash.so.0` -> `libnash.so.<version>`. A `nash-devel` RPM subpackage is available for plugin development, providing headers and the linker symlink.
 
 ### Run
 
@@ -1418,6 +1450,12 @@ make
 
 # Fully isolated workspace (no global memory recall)
 ./nash -w personal --isolated
+
+# List all available workspaces
+./nash -wl                             # or --workspace-list
+
+# Interactive setup wizard (first-time configuration)
+./nash --setup
 ```
 
 ### Self-Harness Commands
@@ -1452,6 +1490,7 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 ```
 ~/.nash/
 ├── config.toml              # Configuration
+├── credentials.toml         # API keys (chmod 0600, created by --setup)
 ├── memory/                  # Persistent memory — GLOBAL layer (git-backed)
 │   ├── lesson:*.json        # Lessons learned
 │   ├── strategy:*.json      # Reusable procedures
