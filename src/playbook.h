@@ -62,6 +62,13 @@ typedef struct {
     char *system_prompt;      /* custom system prompt text (NULL = use default) */
     int   system_prompt_replace; /* 0 = append to base (default), 1 = replace base entirely */
     pb_react_overrides_t react;  /* per-pass overrides */
+    /* SIGIL-inspired mandatory tool verification (arxiv 2607.27309).
+     * When set, the runtime verifies these tools were actually called
+     * during the pass before marking it complete.  Catches the "call
+     * narrated, not made" failure mode where the model describes tool
+     * use without executing it. */
+    char **required_tools;    /* NULL = no requirement */
+    int    n_required_tools;
 } pb_pass_t;
 
 typedef struct {

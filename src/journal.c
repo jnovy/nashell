@@ -682,3 +682,83 @@ int journal_max_react_loop(journal_t *j) {
     fclose(f);
     return max_loop;
 }
+
+/* ── SIGIL-inspired mandatory tool verification (arxiv 2607.27309) ──
+ *
+ * Post-pass gate that verifies mechanical steps were actually executed.
+ * Addresses the "call narrated, not made" failure mode: the model
+ * describes a tool invocation in its reasoning but never issues the
+ * tool_call, so the step appears complete while the work was skipped.
+ *
+ * Returns the count of missing tools (0 = pass). */
+int journal_check_required_tools(journal_t *j, int react_loop,
+                                  char **required, int n_required,
+                                  char **missing) {
+    if (missing) *missing = NULL;
+    if (!j || n_required <= 0 || !required) return 0;
+
+    /* Bit vector: seen[i] = 1 when required[i] found in journal */
+    int *seen = calloc((size_t)n_required, sizeof(int));
+    if (!seen) return n_required;
+
+    pthread_mutex_lock(&j->mtx);
+    if (!j->path) { pthread_mutex_unlock(&j->mtx); free(seen); return n_required; }
+    FILE *f = fopen(j->path, "r");
+    pthread_mutex_unlock(&j->mtx);
+    if (!f) { free(seen); return n_required; }
+    flock(fileno(f), LOCK_SH);
+
+    char line[NASH_LINE_MAX];
+    while (fgets(line, sizeof(line), f)) {
+        cJSON *entry = cJSON_Parse(line);
+        if (!entry) continue;
+
+        /* Only check entries from the target react_loop */
+        cJSON *rl = cJSON_GetObjectItem(entry, "react_loop");
+        if (!rl || (int)cJSON_GetNumberValue(rl) != react_loop) {
+            cJSON_Delete(entry);
+            continue;
+        }
+
+        const char *tool = json_str(entry, "tool");
+        if (tool) {
+            for (int i = 0; i < n_required; i++) {
+                if (!seen[i] && strcmp(tool, required[i]) == 0)
+                    seen[i] = 1;
+            }
+        }
+        cJSON_Delete(entry);
+    }
+    fclose(f);
+
+    /* Count and format missing tools */
+    int n_missing = 0;
+    for (int i = 0; i < n_required; i++) {
+        if (!seen[i]) n_missing++;
+    }
+
+    if (n_missing > 0 && missing) {
+        /* Build comma-separated list of missing tool names */
+        size_t len = 0;
+        for (int i = 0; i < n_required; i++) {
+            if (!seen[i])
+                len += strlen(required[i]) + 2;  /* ", " */
+        }
+        char *buf = malloc(len + 1);
+        if (buf) {
+            buf[0] = '\0';
+            int first = 1;
+            for (int i = 0; i < n_required; i++) {
+                if (!seen[i]) {
+                    if (!first) strcat(buf, ", ");
+                    strcat(buf, required[i]);
+                    first = 0;
+                }
+            }
+            *missing = buf;
+        }
+    }
+
+    free(seen);
+    return n_missing;
+}

@@ -112,4 +112,17 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 /* Free journal chunks returned by journal_extract_chunks(). */
 void journal_chunks_free(journal_chunks_t *jc);
 
+/* ── SIGIL-inspired mandatory tool verification (arxiv 2607.27309) ── */
+
+/* Check whether all required tools were called during a specific react_loop.
+ * required:  array of tool name strings to check for
+ * n_required: length of required array
+ * missing:   if non-NULL, receives a heap-allocated comma-separated string
+ *            listing the tool names that were NOT found in the journal.
+ *            Caller must free().  Set to NULL when all tools were called.
+ * Returns: number of missing tools (0 = all required tools were called). */
+int journal_check_required_tools(journal_t *j, int react_loop,
+                                  char **required, int n_required,
+                                  char **missing);
+
 #endif

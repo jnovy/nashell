@@ -196,6 +196,17 @@ playbook_t *playbook_load(const char *path) {
             else
                 pb->passes[i].on_error = PB_ON_ERROR_ABORT;
 
+            /* Mandatory tool verification (SIGIL, arxiv 2607.27309) */
+            yaml_node_t *req_tools = yaml_get(pass, "required_tools");
+            if (req_tools && req_tools->type == YAML_SEQUENCE) {
+                pb->passes[i].n_required_tools = yaml_len(req_tools);
+                pb->passes[i].required_tools = xcalloc(pb->passes[i].n_required_tools, sizeof(char *));
+                for (int r = 0; r < pb->passes[i].n_required_tools; r++) {
+                    const char *rt = yaml_str(yaml_item(req_tools, r));
+                    pb->passes[i].required_tools[r] = rt ? xstrdup(rt) : xstrdup("");
+                }
+            }
+
             /* Per-pass react overrides */
             parse_react_overrides(yaml_get(pass, "react"), &pb->passes[i].react);
         }
@@ -228,6 +239,7 @@ void playbook_free(playbook_t *pb) {
         free(pb->passes[i].prompt_template);
         free(pb->passes[i].command);
         free(pb->passes[i].system_prompt);
+        free_string_array(pb->passes[i].required_tools, pb->passes[i].n_required_tools);
         free_react_overrides(&pb->passes[i].react);
     }
     free(pb->passes);
@@ -694,6 +706,23 @@ int playbook_validate(const playbook_t *pb, char *errbuf, size_t errlen) {
                 "(allow takes precedence)\n", i + 1, p->label);
             warnings++;
         }
+
+        /* Validate required_tools references (SIGIL gate) */
+        for (int j = 0; j < p->n_required_tools; j++) {
+            if (!tool_name_exists(p->required_tools[j])) {
+                validate_append(errbuf, errlen, &pos,
+                    "ERROR: pass %d ('%s'): required_tools references unknown tool '%s'\n",
+                    i + 1, p->label, p->required_tools[j]);
+                errors++;
+            }
+        }
+        /* Warn if required_tools set on a script pass (tools aren't used) */
+        if (p->n_required_tools > 0 && p->type == PB_PASS_SCRIPT) {
+            validate_append(errbuf, errlen, &pos,
+                "WARNING: pass %d ('%s'): required_tools ignored for script type\n",
+                i + 1, p->label);
+            warnings++;
+        }
     }
 
     /* Also check playbook-level react defaults for tool names */
@@ -1076,6 +1105,31 @@ void *playbook_worker(void *arg) {
 
         int pass_failed = (result == NULL || script_exit_status != 0);
 
+        /* SIGIL-inspired mandatory tool verification (arxiv 2607.27309).
+         * After a react pass completes, verify that every tool listed in
+         * required_tools was actually invoked.  This is a post-pass gate
+         * that catches the "call narrated, not made" failure mode where
+         * the model describes tool usage without executing it.
+         * Only checked for react passes that otherwise succeeded.
+         * missing_tools is kept alive for the retry prompt below. */
+        char *missing_tools = NULL;
+        if (!pass_failed && pb->passes[pass].type == PB_PASS_REACT
+            && pb->passes[pass].n_required_tools > 0) {
+            int n_missing = journal_check_required_tools(
+                pass_journal, pass_react_loop,
+                pb->passes[pass].required_tools,
+                pb->passes[pass].n_required_tools,
+                &missing_tools);
+            if (n_missing > 0) {
+                fprintf(stderr,
+                    "[play] pass %d/%d ('%s'): required_tools gate failed "
+                    "- %d tool(s) never called: %s\n",
+                    pass + 1, pb->n_passes, pb->passes[pass].label,
+                    n_missing, missing_tools ? missing_tools : "(unknown)");
+                pass_failed = 1;
+            }
+        }
+
         /* Per-pass error policy handling */
         if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_CONTINUE) {
             fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
@@ -1086,17 +1140,47 @@ void *playbook_worker(void *arg) {
         } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
             fprintf(stderr, "[play] pass %d/%d ('%s') failed, retrying once (on_error: retry)\n",
                     pass + 1, pb->n_passes, pb->passes[pass].label);
-            /* Retry with failure context prefix */
+            /* Retry with failure context prefix.
+             * When the failure was a required_tools gate violation, tell
+             * the model exactly which tools it forgot to call so the
+             * retry has a chance to fix the specific omission. */
             if (pb->passes[pass].type == PB_PASS_REACT) {
                 char *retry_prompt = NULL;
-                size_t rplen = strlen(prompt) + 128;
+                size_t rplen = strlen(prompt) + 256 +
+                    (missing_tools ? strlen(missing_tools) : 0);
                 retry_prompt = xmalloc(rplen);
-                snprintf(retry_prompt, rplen,
-                    "[RETRY: Your previous attempt at this pass failed. "
-                    "Try a different approach.]\n\n%s", prompt);
+                if (missing_tools) {
+                    snprintf(retry_prompt, rplen,
+                        "[RETRY: Your previous attempt completed but FAILED "
+                        "the required_tools gate. You must actually call "
+                        "these tools (not just describe them): %s]\n\n%s",
+                        missing_tools, prompt);
+                } else {
+                    snprintf(retry_prompt, rplen,
+                        "[RETRY: Your previous attempt at this pass failed. "
+                        "Try a different approach.]\n\n%s", prompt);
+                }
                 result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
                 free(retry_prompt);
                 pass_failed = (result == NULL);
+                /* Re-check required_tools after retry */
+                if (!pass_failed && pb->passes[pass].n_required_tools > 0) {
+                    free(missing_tools);
+                    missing_tools = NULL;
+                    int n_missing2 = journal_check_required_tools(
+                        pass_journal, pass_react_loop,
+                        pb->passes[pass].required_tools,
+                        pb->passes[pass].n_required_tools,
+                        &missing_tools);
+                    if (n_missing2 > 0) {
+                        fprintf(stderr,
+                            "[play] pass %d/%d ('%s'): required_tools gate "
+                            "still failed after retry - missing: %s\n",
+                            pass + 1, pb->n_passes, pb->passes[pass].label,
+                            missing_tools ? missing_tools : "(unknown)");
+                        pass_failed = 1;
+                    }
+                }
             } else {
                 /* Script retries just re-run the same command */
                 free(result);
@@ -1149,6 +1233,7 @@ void *playbook_worker(void *arg) {
                 pass_failed = (result == NULL || script_exit_status != 0);
             }
         }
+        free(missing_tools);
 
         /* Run log: emit pass done */
         if (run_log) {
