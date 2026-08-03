@@ -17,6 +17,8 @@ react:
 
 passes:
   - label: "Collect activity data"
+    required_tools: [shell_exec]
+    on_error: retry
     react:
       max_steps: 30
     prompt: |
@@ -70,6 +72,8 @@ passes:
       Call done with session count and memory change count.
 
   - label: "Compose digest"
+    required_tools: [file_write]
+    on_error: retry
     react:
       max_steps: 15
     prompt: |

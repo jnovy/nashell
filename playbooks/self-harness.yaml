@@ -20,6 +20,8 @@ react_defaults:
 
 passes:
   - label: "1. Weakness Mining"
+    required_tools: [shell_exec]
+    on_error: retry
     prompt: |
       You are analyzing Nash's recent failure patterns to identify recurring weaknesses.
 
@@ -76,6 +78,8 @@ passes:
       inject_memory: true
 
   - label: "4. Retrieval Quality Diagnosis (EvolveMem)"
+    required_tools: [shell_exec]
+    on_error: retry
     prompt: |
       You are analyzing Nash's memory retrieval quality to identify tuning opportunities.
       Based on: EvolveMem [arXiv:2605.13941] — self-evolving memory architecture.

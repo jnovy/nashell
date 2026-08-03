@@ -59,6 +59,8 @@ passes:
       Call done with tier counts.
 
   - label: "Prune dead entries"
+    required_tools: [memory_delete, shell_exec]
+    on_error: retry
     react:
       max_steps: 60
     prompt: |

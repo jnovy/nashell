@@ -21,6 +21,8 @@ react:
 
 passes:
   - label: "Inventory & scan"
+    required_tools: [shell_exec, file_read]
+    on_error: continue
     react:
       tools_block: [memory_store, memory_delete, memory_pin, memory_unpin]
     prompt: |
@@ -102,6 +104,8 @@ passes:
       Call done with a list of contradictions resolved.
 
   - label: "Synthesize & cross-link"
+    required_tools: [shell_exec]
+    on_error: retry
     react:
       max_steps: 50
     prompt: |

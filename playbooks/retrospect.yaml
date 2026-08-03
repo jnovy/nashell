@@ -17,6 +17,8 @@ react:
 
 passes:
   - label: "Scan recent sessions"
+    required_tools: [shell_exec, file_read]
+    on_error: continue
     react:
       max_steps: 40
     prompt: |
@@ -81,6 +83,8 @@ passes:
       Call done with a summary of patterns found.
 
   - label: "Generate actionable lessons"
+    required_tools: [memory_search]
+    on_error: continue
     react:
       max_steps: 30
     prompt: |

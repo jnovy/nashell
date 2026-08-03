@@ -17,6 +17,8 @@ react:
 
 passes:
   - label: "File system integrity"
+    required_tools: [shell_exec]
+    on_error: retry
     react:
       max_steps: 25
     prompt: |
@@ -58,6 +60,8 @@ passes:
       Call done with a summary: OK count, WARNING count, ERROR count.
 
   - label: "Memory quality metrics"
+    required_tools: [shell_exec]
+    on_error: retry
     react:
       max_steps: 25
     prompt: |
@@ -107,6 +111,8 @@ passes:
       "15 dangling refs found", etc.).
 
   - label: "Generate health report"
+    required_tools: [file_write]
+    on_error: retry
     react:
       max_steps: 15
     prompt: |

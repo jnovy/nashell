@@ -17,6 +17,8 @@ react:
 
 passes:
   - label: "Find problematic sessions"
+    required_tools: [shell_exec, file_read]
+    on_error: continue
     react:
       max_steps: 25
     prompt: |
@@ -47,6 +49,8 @@ passes:
       Call done with count of problematic sessions found.
 
   - label: "Deep-dive analysis"
+    required_tools: [file_read]
+    on_error: continue
     react:
       max_steps: 40
     prompt: |
