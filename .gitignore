@@ -33,6 +33,8 @@ tests/test_breadcrumbs
 tests/test_optimizer
 tests/test_reflection
 tools/chunk_backfill
+scripts/perception*
+scripts/t
 
 # Test bench results
 tb-results/
