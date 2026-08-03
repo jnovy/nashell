@@ -30,7 +30,7 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 +-----------------------------------------------------+
 ```
 
-Data moves **up** (L1->L4) through explicit agent action or natural session lifecycle. Data moves **down** (L4/L3->L1) through recall and injection. There is no automatic promotion pipeline.
+Data moves **down** (L1->L4) through explicit agent action or natural session lifecycle. Data moves **up** (L4/L3->L1) through recall and injection. There is no automatic promotion pipeline.
 
 ### Data Flow
 
