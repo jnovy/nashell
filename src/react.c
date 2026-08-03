@@ -1403,7 +1403,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
         #undef SIG_HASH_FIELD
 
-        skip_cycling: ;
         int is_repeat = (last_sig && sig && strcmp(last_sig, sig) == 0);
 
         /* Exempt device_control from cycling detection entirely.
