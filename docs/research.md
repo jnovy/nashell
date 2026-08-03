@@ -18,6 +18,8 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [MemCog](https://arxiv.org/abs/2605.28046) | 2026 | Memory-as-Cognition: navigable memory store with associative link graphs and proactive reasoning protocol; SOTA on LoCoMo (92.98) and LongMemEval (95.8) | Memory-as-Cognition principle -- harness controls all retrieval timing; associative graph walk follows refs[] on recalled memories |
 | [MRAgent](https://arxiv.org/abs/2606.06036) | 2026 | Memory is reconstructed, not retrieved: associative Cue-Tag-Content graph with active reconstruction; +23% on LoCoMo/LongMemEval (ICML 2026) | Associative graph walk: depth-1 ref following injects referenced memories during recall |
 | [MemRefine](https://arxiv.org/abs/2606.13177) | 2026 | LLM-guided compression for budget-constrained long-term memory; similarity-based candidate pairs with delete/merge/preserve decisions | Informed design of memory pruning: aggressive dead-weight removal (73% never-recalled entries deleted) |
+| [Externalization in LLM Agents](https://arxiv.org/abs/2604.08224) | 2026 | Unified review of memory, skills, protocols and harness engineering; progressive disclosure (inject description only, load full content on demand) | Progressive skill disclosure: inject description (<=250 chars) instead of full value, saving 350-1100 tokens/turn; agent uses `memory_search(key=...)` for full content |
+| [AutoMEM](https://arxiv.org/abs/2606.04315) | 2026 | Agents perform best when they can browse memory descriptions before loading full content; self-managed memory with active control beats all passive retrieval pipelines | Description-first memory browsing; active self-managed memory over passive retrieval |
 
 ## Cognitive Architecture
 | Paper | Year | Key Insight | Nash Implementation |
@@ -27,12 +29,14 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | ["Language Models Need Sleep"](https://arxiv.org/abs/2605.26099) | 2026 | Dreaming/consolidation essential for memory health | Post-loop Bayesian pruning + dedup + consolidation |
 | [MMPO](https://arxiv.org/abs/2605.30159) | 2026 | Belief Entropy H_BE measures memory clarity | Belief Entropy monitoring for memory quality signal |
 | [Harness-1](https://arxiv.org/abs/2606.02373) | 2026 | Stateful cognitive offloading -- move bookkeeping from LLM to environment-side harness | Importance-tagged messages, multi-pass progressive eviction, sentence-BM25 compression, CRC32 context dedup, auto-seeding scratchpad, tool diversity nudge |
+| [LLM-as-Code](https://arxiv.org/abs/2606.15874) | 2026 | Agentic programming DAG pattern -- parent context grows by exactly 2 messages per sub-task regardless of child complexity | Subtask tool: isolated child `react_run()` calls where parent context grows by exactly 2 messages; max nesting depth = 3 |
 
 ## Skill Extraction
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
 | [CODESKILL](https://arxiv.org/abs/2605.25430) | 2026 | RL-trained skill extraction from completions | Post-task reflection extracts reusable lessons/strategies |
 | [MUSE-Autoskill](https://arxiv.org/abs/2605.27366) | 2026 | Self-evolving skill library | Skills recalled semantically per query, refined via validation |
+| [Bayesian-Agent](https://arxiv.org/abs/2606.08348) | 2026 | Posterior-guided skill evolution from experience | Post-task reflection: posterior-guided skill extraction from task trajectories |
 
 ## Self-Improvement & Spec Optimization
 | Paper | Year | Key Insight | Nash Implementation |
@@ -43,12 +47,17 @@ Nash's design is grounded in recent research on agentic memory systems, cognitiv
 | [SWE-Shepherd](https://arxiv.org/abs/2604.10493) | 2026 | Process Reward Models (PRMs) for step-level supervision in code agents | Step-level trajectory scoring in postmortem: productive/wasteful/harmful/spinning classification per tool call, causal step attribution for failures |
 | [EvolveMem](https://arxiv.org/abs/2605.13941) | 2026 | Self-evolving memory architecture -- expose retrieval config as structured action space optimized by LLM diagnosis | Memory quality telemetry (journal `memory_quality` entries), self-harness retrieval diagnosis pass, data-driven tuning of retrieval params |
 | [RHI](https://arxiv.org/abs/2607.15524) | 2026 | Recursive Harness Self-Improvement -- harnesses are data-generating components; pairwise feedback over revision history; gains from context management outweigh longer reasoning | `--optimize` as standard local-model onboarding step; validates prompt-level harness optimization yields disproportionate gains on low-reasoning-effort models |
+| [SIGIL](https://arxiv.org/abs/2607.27309) | 2026 | Skill Compilation -- prose skills execute only 56% of mandated steps; compiled typed harnesses achieve 86% (model-independent) with 0.58x tokens; AG-IR separates model-owned cognition from code-owned mechanism | Mandatory tool verification gate: playbook passes declare `required_tools`; post-pass journal scan verifies each was actually called, catching the "call narrated, not made" failure mode |
+| [AgentDevel](https://arxiv.org/abs/2601.04620) | 2026 | Reframing self-evolving agents as release engineering; implementation-blind critic (Table 3: seeing blueprint doubles regression rate 6.7% vs 3.1%) | Implementation-blind prompt optimization critic: sees only execution traces, rubric, and scores -- never the system prompt or internal configuration |
+| [SkillOpt](https://arxiv.org/abs/2605.23904) | 2026 | Executive strategy for self-evolving agent skills; bounded textual learning rate limits changes per round | Bounded textual learning rate: edit budget caps max edit operations per optimization round; multi-epoch optimization with cross-epoch longitudinal guidance |
 
 ## Context Management
 | Paper | Year | Key Insight | Nash Implementation |
 |-------|------|-------------|---------------------|
 | [CWL -- Context Window Lifecycle](https://arxiv.org/abs/2606.11213) | 2026 | Typed, dependency-linked episodes; deterministic LLM-free eviction based on recoverability | Recoverability-aware eviction: messages annotated with `RECOVER_NONE/SCRATCHPAD/STORE/FILE/MEMORY`, sorted by recoverability during Pass 3 eviction |
 | [LCM -- Lossless Context Management](https://arxiv.org/abs/2605.04050) | 2026 | Recursive context compression via hierarchical summary DAG with lossless pointers | LCM-Lite: breadcrumb index of evicted store refs injected at eviction point, making eviction lossless via `file_read` recovery |
+| [The Complexity Trap](https://arxiv.org/abs/2508.21433) | 2025 | Simple observation masking is as efficient as LLM summarization for agent context management | Type-aware pre-compression (step 4.5): structure-aware truncation of shell_exec/grep_search/glob_search outputs before BM25 compression -- no model calls needed |
+| [Demand Paging for LLM Context](https://arxiv.org/abs/2603.09023) | 2026 | The missing memory hierarchy -- demand paging for LLM context windows; lifecycle-aware eviction using tool provenance | Tool result lifecycle metadata: each message tracks producing tool (`tool_name`) and primary path (`tool_path`); enables stale-read detection and recoverability-class eviction (GC vs Paging) |
 
 ## Agentic Search & Retrieval
 | Paper | Year | Key Insight | Nash Implementation |
