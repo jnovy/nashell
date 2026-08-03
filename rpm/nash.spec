@@ -1,9 +1,8 @@
 Name:           nash
 Version:        0.1.0
-Release:        12%{?dist}
+Release:        13%{?dist}
 Summary:        Autonomous coding agent in C - New Agentic Shell
 
-# TODO: Set the correct license once a LICENSE file is added upstream
 License:        MIT
 URL:            https://github.com/jnovy/nash
 # Source0:      https://github.com/jnovy/nash/archive/v%%{version}/nash-%%{version}.tar.gz
@@ -125,6 +124,7 @@ make test CC=gcc \
 %ldconfig_scriptlets
 
 %files
+%license LICENSE
 %doc README.md
 %{_bindir}/nash
 %{_libdir}/libnash.so.%{version}
@@ -137,6 +137,9 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Mon Aug 03 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-13
+- Add MIT LICENSE file and remove license TODO from spec
+
 * Sun Aug 02 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-12
 - Add proper soname versioning to libnash.so. Build with
   -Wl,-soname,libnash.so.0, ship versioned libnash.so.0.1.0 and soname symlink
