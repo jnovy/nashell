@@ -1,0 +1,4 @@
+# Keep the recording scripts, ignore generated outputs
+*.cast
+*-opt.gif
+*.webm
