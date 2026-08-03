@@ -281,8 +281,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         ui->tool_executing = 1;
         ui->tool_timeout_secs = ev->tool_timeout;
         clock_gettime(CLOCK_MONOTONIC, &ui->tool_start_time);
+        ui->tool_start_wallclock = time(NULL);
         free(ui->tool_display);
         ui->tool_display = full;  /* transfer ownership */
+        free(ui->tool_ref);
+        ui->tool_ref = ev->store_ref ? xstrdup(ev->store_ref) : NULL;
         ui->needs_react_regen = 1;
         ui->needs_file_reload = 1;
         break;

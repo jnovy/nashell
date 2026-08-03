@@ -131,7 +131,9 @@ typedef struct {
     /* ── Tool execution state (for live elapsed-time display) ── */
     int            tool_executing;        /* 1 = tool is currently running */
     struct timespec tool_start_time;      /* CLOCK_MONOTONIC when tool started */
+    time_t         tool_start_wallclock;  /* wall-clock time when tool started */
     char          *tool_display;          /* "tool_name: command..." for display */
+    char          *tool_ref;             /* predicted ref alias (e.g. "R0S3") */
     int            tool_timeout_secs;     /* execution timeout in seconds (0=unknown) */
 
     /* ── Server-reported prompt processing progress ── */

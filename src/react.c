@@ -1534,6 +1534,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.max_steps = ctx->max_steps;
                 ev.action = action_name;
                 ev.description = desc ? desc : "";
+                /* Predict the ref alias this tool will get (R<loop>S<seq>).
+                 * The alias is formally registered during tool_execute(),
+                 * but we can predict it here so the UI can display it
+                 * while the tool is still running. */
+                char predicted_ref[32];
+                if (ctx->tools->aliases)
+                    snprintf(predicted_ref, sizeof(predicted_ref),
+                             "R%dS%d", ctx->tools->react_loop,
+                             ctx->tools->aliases->next_seq);
+                else
+                    snprintf(predicted_ref, sizeof(predicted_ref),
+                             "R%dS?", ctx->tools->react_loop);
+                ev.store_ref = predicted_ref;
                 /* Extract tool timeout so frontends can show elapsed/limit */
                 if (strcmp(action_name, "shell_exec") == 0) {
                     int to = json_int(action, "timeout", 0);

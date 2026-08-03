@@ -1267,37 +1267,79 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         clock_gettime(CLOCK_MONOTONIC, &now);
 
         if (ui->tool_executing) {
-            /* Tool is running -- show tool name and elapsed time so the
-             * user sees what is executing (e.g. "shell_exec: make -j8").
-             * When timeout is known, show "elapsed/limit" (e.g. "1m07s/5m00s"). */
+            /* Tool is running -- format to match completed step lines:
+             * "HH:MM ref_pad  tool_pad  `args` (elapsed)" */
             double tool_elapsed = (now.tv_sec - ui->tool_start_time.tv_sec) +
                                   (now.tv_nsec - ui->tool_start_time.tv_nsec) / 1e9;
-            /* Extract "action: desc" from tool_display which has the
-             * format "[step N] action: description" (full, untruncated) */
-            const char *tdisp = "";
+            /* Extract action and description separately from tool_display
+             * which has format "[step N] action: description" */
+            const char *tool_name = "";
+            const char *tool_args = "";
+            char *tool_name_buf = NULL;
             if (ui->tool_display) {
                 const char *br = strchr(ui->tool_display, ']');
-                tdisp = (br && br[1] == ' ') ? br + 2 : ui->tool_display;
+                const char *after = (br && br[1] == ' ') ? br + 2 : ui->tool_display;
+                /* after = "action: description" -- split on ": " */
+                const char *sep = strstr(after, ": ");
+                if (sep) {
+                    tool_name_buf = strndup(after, (size_t)(sep - after));
+                    tool_name = tool_name_buf ? tool_name_buf : after;
+                    tool_args = sep + 2;
+                } else {
+                    tool_name = after;
+                }
             }
+
+            /* Format HH:MM from wall-clock start time */
+            char time_col[8] = "     ";
+            if (ui->tool_start_wallclock > 0) {
+                struct tm *tm = localtime(&ui->tool_start_wallclock);
+                if (tm)
+                    snprintf(time_col, sizeof(time_col), "%02d:%02d",
+                             tm->tm_hour, tm->tm_min);
+            }
+
+            /* Ref alias column (predicted) */
+            char ref_pad[16] = "";
+            if (ui->tool_ref)
+                snprintf(ref_pad, sizeof(ref_pad), "%-10s", ui->tool_ref);
+            else
+                snprintf(ref_pad, sizeof(ref_pad), "%-10s", "");
+
+            /* Tool name padded to match completed step column width */
+            int tname_len = (int)strlen(tool_name);
+            int pad_len = max_tool_len > tname_len ? max_tool_len : tname_len;
+            char tool_pad[64];
+            snprintf(tool_pad, sizeof(tool_pad), "%-*s", pad_len, tool_name);
+
+            /* Elapsed time string */
             char elapsed_buf[32], timeout_buf[32];
             fmt_duration(tool_elapsed, elapsed_buf, sizeof(elapsed_buf));
+            char elapsed_str[80];
             if (ui->tool_timeout_secs > 0) {
                 fmt_duration((double)ui->tool_timeout_secs,
                              timeout_buf, sizeof(timeout_buf));
-                if (asprintf(&progress_dyn, "%s  (%s/%s)",
-                             tdisp, elapsed_buf, timeout_buf) >= 0)
-                    progress_ptr = progress_dyn;
-                else
-                    snprintf(progress, sizeof(progress),
-                             "%s  (%s/%s)", tdisp, elapsed_buf, timeout_buf);
+                snprintf(elapsed_str, sizeof(elapsed_str),
+                         " (%s/%s)", elapsed_buf, timeout_buf);
             } else {
-                if (asprintf(&progress_dyn, "%s  (%s)",
-                             tdisp, elapsed_buf) >= 0)
-                    progress_ptr = progress_dyn;
-                else
-                    snprintf(progress, sizeof(progress),
-                             "%s  (%s)", tdisp, elapsed_buf);
+                snprintf(elapsed_str, sizeof(elapsed_str),
+                         " (%s)", elapsed_buf);
             }
+
+            /* Emit line matching completed format:
+             * "HH:MM ref_pad  tool_pad  `args` (elapsed)" */
+            if (tool_args[0])
+                asprintf(&progress_dyn, "%s %s %s `%s`%s",
+                         time_col, ref_pad, tool_pad, tool_args, elapsed_str);
+            else
+                asprintf(&progress_dyn, "%s %s %s%s",
+                         time_col, ref_pad, tool_pad, elapsed_str);
+            if (progress_dyn)
+                progress_ptr = progress_dyn;
+            else
+                snprintf(progress, sizeof(progress), "%s %s %s%s",
+                         time_col, ref_pad, tool_pad, elapsed_str);
+            free(tool_name_buf);
         } else if (ui->stream_first_token_seen && ui->stream_token_count > 0) {
             /* Tokens are flowing — show generation progress */
             double gen_elapsed = (now.tv_sec - ui->stream_first_token.tv_sec) +
@@ -1381,12 +1423,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             }
         }
 
-        if (ui->max_steps > 0)
+        if (ui->tool_executing) {
+            /* Tool executing: progress_ptr already contains the full
+             * formatted line matching completed step format */
+            str_appendf(&md, "%s\n", progress_ptr);
+        } else if (ui->max_steps > 0) {
             str_appendf(&md, "  %c %3d/%-3d %s\n",
                         sc, ui->current_step, ui->max_steps, progress_ptr);
-        else
+        } else {
             str_appendf(&md, "  %c %3d     %s\n",
                         sc, ui->current_step, progress_ptr);
+        }
         free(progress_dyn);
         if (ui->stream_tokens && ui->stream_len > 0) {
             /* Suppress display of raw JSON action objects (e.g.
