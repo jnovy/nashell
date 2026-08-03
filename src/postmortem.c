@@ -114,6 +114,10 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
     int *failed = calloc((size_t)cap, sizeof(int));
     int *steps = calloc((size_t)cap, sizeof(int));
     char **params_str = calloc((size_t)cap, sizeof(char *));
+    if (!tools || !refs || !failed || !steps || !params_str) {
+        free(tools); free(refs); free(failed); free(steps); free(params_str);
+        free(data); return ts;
+    }
     int n = 0;
     int has_done = 0;
 
@@ -415,6 +419,7 @@ static void cluster_failures(failure_list_t *list,
     /* Group by (cause, mechanism) pair */
     int max_clusters = 64;
     failure_cluster_t *clusters = calloc(max_clusters, sizeof(failure_cluster_t));
+    if (!clusters) { *out_clusters = NULL; *out_n = 0; return; }
     int n_clusters = 0;
 
     /* Per-cluster session tracking — dynamic arrays freed after loop */
@@ -572,10 +577,12 @@ static void pm_collect_sessions(const char *sessions_dir,
 
 postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) {
     postmortem_report_t *report = calloc(1, sizeof(postmortem_report_t));
+    if (!report) return NULL;
 
     /* Collect session dirs from global + all workspaces */
     int dirs_cap = 64;
     char **dirs = calloc(dirs_cap, sizeof(char *));
+    if (!dirs) { free(report); return NULL; }
     int n_dirs = 0;
 
     char sessions_dir[NASH_PATH_MAX];
@@ -620,6 +627,7 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
     failure_list_t failures = {0};
     int traj_cap = scan_count > 0 ? scan_count : 16;
     report->trajectories = calloc((size_t)traj_cap, sizeof(trajectory_score_t));
+    if (!report->trajectories) traj_cap = 0;
     report->n_trajectories = 0;
     float sum_efficiency = 0.0f, sum_waste = 0.0f;
 

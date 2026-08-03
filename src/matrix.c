@@ -2720,6 +2720,8 @@ void *matrix_run(void *arg) {
                                     snprintf(pending_ask_room,
                                              sizeof(pending_ask_room),
                                              "%s", ask_rt);
+                                } else {
+                                    pending_ask_room[0] = '\0';
                                 }
                                 free(ask_rt);
                                 free(ask_data);

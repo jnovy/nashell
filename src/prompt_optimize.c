@@ -897,8 +897,11 @@ static int write_prompt_to_profile(const char *profile_path,
             char *closing = strstr(val_start + 3, "\"\"\"");
             if (closing) { val_start = closing + 3; if (*val_start == '\n') val_start++; }
         } else if (*val_start == '"') {
-            char *closing = strchr(val_start + 1, '"');
-            if (closing) { val_start = closing + 1; if (*val_start == '\n') val_start++; }
+            /* Skip escaped quotes (\"): walk forward to find the real closing quote */
+            char *closing = val_start + 1;
+            while (*closing && !(*closing == '"' && *(closing - 1) != '\\'))
+                closing++;
+            if (*closing == '"') { val_start = closing + 1; if (*val_start == '\n') val_start++; }
         }
         str_append_cstr(&out, val_start);
     } else {

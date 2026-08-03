@@ -305,7 +305,8 @@ static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
         }
 
         /* Look for ## header */
-        if (!pos || strncmp(pos, "## ", 3) != 0) {
+        if (!pos) break;
+        if (strncmp(pos, "## ", 3) != 0) {
             /* Skip to next line */
             pos = strchr(pos, '\n');
             if (pos) pos++;

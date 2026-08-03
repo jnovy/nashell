@@ -66,6 +66,12 @@ static const char *get_vertex_token(provider_t *p) {
         return NULL;
     }
 
+    if (r.exit_code != 0) {
+        nash_log("[provider/vertex] gcloud auth failed (exit %d)", r.exit_code);
+        str_free(&out);
+        return NULL;
+    }
+
     /* Strip trailing newline */
     while (out.len > 0 && (out.data[out.len-1] == '\n' || out.data[out.len-1] == '\r'))
         out.data[--out.len] = '\0';

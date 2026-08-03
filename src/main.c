@@ -797,12 +797,14 @@ int main(int argc, char **argv) {
                  * e.g. ~/.nash/workspaces/rh/container-tools → "rh/container-tools" */
                 free(cfg->workspace);
                 cfg->workspace = strdup(cwd_auto + pfx_len);
-                /* Strip trailing slash if any */
-                size_t wlen = strlen(cfg->workspace);
-                if (wlen > 0 && cfg->workspace[wlen - 1] == '/')
-                    cfg->workspace[wlen - 1] = '\0';
-                fprintf(stderr, "[info] auto-detected workspace from CWD: %s\n",
-                        cfg->workspace);
+                if (cfg->workspace) {
+                    /* Strip trailing slash if any */
+                    size_t wlen = strlen(cfg->workspace);
+                    if (wlen > 0 && cfg->workspace[wlen - 1] == '/')
+                        cfg->workspace[wlen - 1] = '\0';
+                    fprintf(stderr, "[info] auto-detected workspace from CWD: %s\n",
+                            cfg->workspace);
+                }
             }
         }
     }
@@ -872,8 +874,8 @@ int main(int argc, char **argv) {
         provider_type_t ptype = provider_type_from_str(resolved_prov.type);
         if (ptype != PROVIDER_LOCAL) {
             const char *key_env = resolved_prov.api_key_env;
-            if (key_env && key_env[0] &&
-                (!getenv(key_env) || !getenv(key_env)[0])) {
+            const char *key_val = key_env && key_env[0] ? getenv(key_env) : "";
+            if (key_env && key_env[0] && (!key_val || !key_val[0])) {
                 const char *pname = provider_name_arg
                                         ? provider_name_arg
                                         : cfg->routing.default_provider;
@@ -2491,6 +2493,7 @@ int main(int argc, char **argv) {
                     atomic_store(&inferring, INFER_REACT);
                 } else {
                     nash_log("[main] failed to create inference thread");
+                    free(final_query);
                     pthread_mutex_lock(&ui->mtx);
                     ui_state_set_status(ui, STATUS_READY, "Error: thread creation failed");
                     pthread_mutex_unlock(&ui->mtx);

@@ -60,6 +60,7 @@ static int parse_tags(yaml_node_t *node, char ***out_tags) {
     int n = yaml_len(node);
     if (n <= 0) return 0;
     *out_tags = calloc((size_t)n, sizeof(char *));
+    if (!*out_tags) return 0;
     for (int i = 0; i < n; i++) {
         const char *s = yaml_str(yaml_item(node, i));
         (*out_tags)[i] = strdup(s ? s : "");
@@ -529,6 +530,13 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
         snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces/%s", nash_dir, ws);
         a->workspace_dir = strdup(ws_dir);
 
+        if (!a->id || !a->workspace_name || !a->agent_file || !a->workspace_dir) {
+            free(a->id); free(a->workspace_name);
+            free(a->agent_file); free(a->workspace_dir);
+            memset(a, 0, sizeof(*a));
+            yaml_free(root); continue;
+        }
+
         if (has_schedule)
             a->schedule = parsed_sched;
         a->schedule_str = strdup(has_schedule ? sched_str : "manual");
@@ -884,15 +892,15 @@ void agent_queue_print(const agent_queue_t *q, FILE *out) {
         if (a->last_run == 0) {
             snprintf(last_run_str, sizeof(last_run_str), "never");
         } else {
-            int diff = (int)(now - a->last_run);
+            long diff = (long)(now - a->last_run);
             if (diff < 60)
-                snprintf(last_run_str, sizeof(last_run_str), "%ds ago", diff);
+                snprintf(last_run_str, sizeof(last_run_str), "%lds ago", diff);
             else if (diff < 3600)
-                snprintf(last_run_str, sizeof(last_run_str), "%dm ago", diff / 60);
+                snprintf(last_run_str, sizeof(last_run_str), "%ldm ago", diff / 60);
             else if (diff < 86400)
-                snprintf(last_run_str, sizeof(last_run_str), "%dh ago", diff / 3600);
+                snprintf(last_run_str, sizeof(last_run_str), "%ldh ago", diff / 3600);
             else
-                snprintf(last_run_str, sizeof(last_run_str), "%dd ago", diff / 86400);
+                snprintf(last_run_str, sizeof(last_run_str), "%ldd ago", diff / 86400);
         }
 
         /* Format status with duration */
@@ -1033,7 +1041,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
                     if (*p >= '1' && *p <= '9') {
                         int n = 0;
                         const char *d = p;
-                        while (*d >= '0' && *d <= '9') {
+                        while (*d >= '0' && *d <= '9' && n <= 9999) {
                             n = n * 10 + (*d - '0');
                             d++;
                         }

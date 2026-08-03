@@ -474,7 +474,8 @@ cJSON *build_messages_json(llm_chat_t *chat) {
             if (chat->msgs[i].content && chat->msgs[i].content[0])
                 cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
         } else {
-            cJSON_AddStringToObject(m, "content", chat->msgs[i].content);
+            cJSON_AddStringToObject(m, "content",
+                                    chat->msgs[i].content ? chat->msgs[i].content : "");
         }
 
         cJSON_AddItemToArray(msgs, m);

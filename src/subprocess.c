@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "subprocess.h"
 #include "nash_limits.h"
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -31,11 +32,27 @@ static void scrub_env(void) {
 /* ── close all FDs above stderr (except keep_fd if >= 0) ─────────── */
 
 static void close_extra_fds(int keep_fd) {
-    int maxfd = (int)sysconf(_SC_OPEN_MAX);
-    if (maxfd < 0) maxfd = 1024;
-    for (int fd = STDERR_FILENO + 1; fd < maxfd; fd++) {
-        if (fd != keep_fd)
-            close(fd);
+    /* Prefer iterating /proc/self/fd for O(open_fds) instead of
+     * O(sysconf(_SC_OPEN_MAX)) which can be up to 1M close() calls. */
+    DIR *dp = opendir("/proc/self/fd");
+    if (dp) {
+        int dir_fd = dirfd(dp);
+        struct dirent *de;
+        while ((de = readdir(dp)) != NULL) {
+            if (de->d_name[0] < '0' || de->d_name[0] > '9') continue;
+            int fd = atoi(de->d_name);
+            if (fd > STDERR_FILENO && fd != keep_fd && fd != dir_fd)
+                close(fd);
+        }
+        closedir(dp);
+    } else {
+        /* Fallback: cap at reasonable value */
+        int maxfd = (int)sysconf(_SC_OPEN_MAX);
+        if (maxfd < 0 || maxfd > 65536) maxfd = 65536;
+        for (int fd = STDERR_FILENO + 1; fd < maxfd; fd++) {
+            if (fd != keep_fd)
+                close(fd);
+        }
     }
 }
 

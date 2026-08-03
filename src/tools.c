@@ -549,7 +549,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "shell_exec", params, alias,
-                   out.len, count_lines(out.data), exit_code == 0 ? NULL : "non-zero exit", NULL);
+                   out.len, out.data ? count_lines(out.data) : 0, exit_code == 0 ? NULL : "non-zero exit", NULL);
 
     char *ref_copy = strdup(alias);
     free(alias);

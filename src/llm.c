@@ -746,7 +746,7 @@ static char *repair_json(const char *src) {
     int escape = 0;
     int bare_value = 0;  /* FIX BUG#10: track inserted opening quote for bare values */
 
-    for (size_t i = 0; src[i] && j < len * 2 - 1; i++) {
+    for (size_t i = 0; src[i] && len > 0 && j < len * 2 - 1; i++) {
         if (escape) { buf[j++] = src[i]; escape = 0; continue; }
         if (src[i] == '\\') { buf[j++] = src[i]; escape = 1; continue; }
         if (src[i] == '"') in_string = !in_string;

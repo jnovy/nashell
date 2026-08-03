@@ -51,7 +51,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->shell_max_output == -1)    cfg->shell_max_output = 512000;
     if (cfg->file_max_size == -1)       cfg->file_max_size = 52428800;
     if (cfg->grep_timeout == -1)        cfg->grep_timeout = 60;
-    if (cfg->grep_max_matches <= 0)     cfg->grep_max_matches = 50;
+    if (cfg->grep_max_matches == -1)    cfg->grep_max_matches = 50;
     if (cfg->web_timeout == -1)         cfg->web_timeout = 30;
     if (cfg->web_max_size <= 0)         cfg->web_max_size = 512000;
     if (cfg->llm_max_response <= 0)     cfg->llm_max_response = 10485760;
@@ -1569,6 +1569,7 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 free(cfg->profile_tools_allow);
                 cfg->profile_tools_allow = calloc(n, sizeof(char *));
                 cfg->n_profile_tools_allow = n;
+                cfg->profile_tools_allow_owned = 1;
                 for (int j = 0; j < n; j++) {
                     toml_datum_t d = toml_string_at(allow_arr, j);
                     cfg->profile_tools_allow[j] = d.ok ? d.u.s : strdup("");

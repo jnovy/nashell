@@ -498,6 +498,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
                     n_old_triggers = cJSON_GetArraySize(ot);
                     if (n_old_triggers > 0) {
                         old_triggers = calloc((size_t)n_old_triggers, sizeof(char *));
+                        if (!old_triggers) { n_old_triggers = 0; }
                         for (int i = 0; i < n_old_triggers; i++) {
                             cJSON *ti = cJSON_GetArrayItem(ot, i);
                             old_triggers[i] = (ti && ti->valuestring)
@@ -528,7 +529,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * AutoMEM [arXiv:2606.04315, Jun 2026]. */
     {
         char *desc = generate_description(value);
-        cJSON_AddStringToObject(entry, "description", desc);
+        cJSON_AddStringToObject(entry, "description", desc ? desc : "");
         free(desc);
     }
 
@@ -1221,7 +1222,7 @@ skip_ref_boost:
             e->refs = calloc((size_t)e->n_refs, sizeof(char *));
             if (!e->refs) { e->n_refs = 0; goto skip_refs; }
             for (int ri = 0; ri < e->n_refs; ri++)
-                e->refs[ri] = strdup(ie->refs[ri]);
+                e->refs[ri] = ie->refs[ri] ? strdup(ie->refs[ri]) : NULL;
             skip_refs:;
         }
 
@@ -1231,7 +1232,7 @@ skip_ref_boost:
             e->triggers = calloc((size_t)e->n_triggers, sizeof(char *));
             if (!e->triggers) { e->n_triggers = 0; goto skip_trigs; }
             for (int ti = 0; ti < e->n_triggers; ti++)
-                e->triggers[ti] = strdup(ie->triggers[ti]);
+                e->triggers[ti] = ie->triggers[ti] ? strdup(ie->triggers[ti]) : NULL;
             skip_trigs:;
         }
 
@@ -1587,6 +1588,10 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
     /* Phase 1: Remove files and index entries for each key.
      * Track which keys were actually found (for the commit message). */
     const char **found_keys = malloc(sizeof(const char *) * (size_t)n_keys);
+    if (!found_keys) {
+        pthread_mutex_unlock(&m->mtx);
+        return 0;
+    }
     int n_found = 0;
 
     for (int k = 0; k < n_keys; k++) {
@@ -1898,8 +1903,10 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     char *json = cJSON_Print(entry);
-    write_file(path, json, strlen(json));
-    free(json);
+    if (json) {
+        write_file(path, json, strlen(json));
+        free(json);
+    }
     cJSON_Delete(entry);
 
     /* Update in-memory index so supersedes/version are immediately visible */
@@ -1936,8 +1943,10 @@ int memory_set_belief_entropy(memory_t *m, const char *key, double h_be) {
     snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
 
     char *json = cJSON_Print(entry);
-    write_file(path, json, strlen(json));
-    free(json);
+    if (json) {
+        write_file(path, json, strlen(json));
+        free(json);
+    }
     cJSON_Delete(entry);
 
     /* FIX #7: Update in-memory index via O(1) hash map lookup
@@ -2295,8 +2304,11 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
     }
     memcpy(snap, m->idx.entries, snap_sz);
 
-    pthread_mutex_unlock(&m->mtx);
-
+    /* Keep the mutex held during iteration so that the string pointers
+     * inside each shallow-copied entry (key, value, description, etc.)
+     * remain valid.  The mutex is recursive, so callbacks that call
+     * memory_store()/memory_delete() can re-acquire it.  The snapshot
+     * array protects against structural changes (realloc, swap-remove). */
     int count = 0;
     for (int i = 0; i < snap_count; i++) {
         if (cb(&snap[i], user_data) != 0)
@@ -2304,6 +2316,7 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
         count++;
     }
     free(snap);
+    pthread_mutex_unlock(&m->mtx);
     return count;
 }
 
