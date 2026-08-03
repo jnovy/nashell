@@ -1,12 +1,12 @@
-# nash - Autonomous Coding Agent in C
+# nash - Autonomous Agentic Harness - New Agentic Shell
 
 <p align="center">
   <img src="demo/nash-demo.gif" alt="nash demo" width="800">
 </p>
 
-**nash** is a fully autonomous coding agent implemented in C. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+**nash** is a agentic harness implemented as a single compiled binary. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
 
-Unlike wrapper-based agents, nash is a single compiled binary with zero Python dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
+Unlike wrapper-based agents, nash has minimal runtime dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
 ---
 
@@ -18,11 +18,12 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 - **Persistent memory** - Bayesian-validated, git-backed, workspace-isolated
 - **ONNX embeddings** - local semantic search with no API calls
 - **Playbook system** - YAML-defined multi-pass workflows (dream, health, reflect, etc.)
+- **Agent scheduler** - cron-scheduled autonomous tasks with workspace binding, sensitivity gating, three-tier discovery
 - **Self-improvement** - postmortem analysis, regression testing, prompt optimization
 - **Session journaling** - checkpoint/resume, episodic search, full audit trail
 - **Context management** - importance-tagged eviction, BM25 compression, lossless breadcrumbs
 - **Plugin system** - `libnash.so` for independent tool development
-- **Research-grounded** - 36 papers inform the design (see [Research Foundations](docs/research.md))
+- **Research-grounded** - papers were driving the design (see [Research Foundations](docs/research.md))
 
 ---
 
@@ -42,7 +43,7 @@ Unlike wrapper-based agents, nash is a single compiled binary with zero Python d
 | anthropic| event-   | dispatch  | checkpoint/resume       |
 | vertex   | driven   | filtering | episodic recall         |
 +----------+----------+-----------+-------------------------+
-|         Playbooks - Self-Harness - Model Profiles         |
+|    Agents - Playbooks - Self-Harness - Model Profiles     |
 +-----------------------------------------------------------+
 |            LLM Server (llama.cpp / API)                   |
 +-----------------------------------------------------------+
@@ -86,6 +87,7 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 | [Context Management](docs/context-management.md) | Structural reasoning, Harness-1 eviction, scratchpad architecture |
 | [TUI](docs/tui.md) | Terminal interface, slash commands, tree branching, SearXNG search |
 | [Playbooks](docs/playbooks.md) | YAML multi-pass workflows, standalone mode, custom system prompts |
+| [Agents](docs/agents.md) | Cron-scheduled autonomous tasks, three-tier discovery, sensitivity gating, workspace binding |
 | [Self-Harness](docs/self-harness.md) | Postmortem analysis, regression testing, prompt optimization |
 | [Model Profiles & Spec](docs/model-profiles.md) | Per-model overrides, unified spec export/import |
 | [Configuration & Sessions](docs/configuration.md) | config.toml reference, session structure, checkpoint/resume |
@@ -117,14 +119,24 @@ See the [documentation](#documentation) for deep dives into each subsystem.
 Nash uses TOML configuration at `~/.nash/config.toml`. Run `nash --setup` for an interactive wizard:
 
 ```toml
-[server]
+# Switch providers by changing one line
+[routing]
+default = "my-local"
+#default = "vertex-opus"
+
+# Named providers (define once, reference by name)
+[providers.my-local]
+type = "local"
 api_base = "http://192.168.1.18:8080"    # llama.cpp server
 
-[provider]
-# type = "openai"                         # local | openai | anthropic | vertex
+[providers.vertex-opus]
+type = "vertex"
+model_id = "claude-opus-4-6"
+project_id = "my-gcp-project"
+region = "global"
 
 [thinking]
-mode = "on"                               # off | on | structural
+mode = "yes"                              # yes | no | edrm (adaptive)
 
 [embedding]
 type = "onnx"                             # onnx | ollama | openai | none
@@ -137,11 +149,11 @@ Per-model profiles in `~/.nash/models/*.toml` override any config field per mode
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact and self-contained.
+Nash is a project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact and self-contained.
 
 Key design principles:
 
-- **No Python dependencies** - single compiled binary
+- **Minimal runtime dependencies** - single compiled binary
 - **Local-first** - works with llama.cpp, no cloud required
 - **Research-grounded** - every major design decision cites its research basis
 - **Self-improving** - the agent learns from every task via persistent memory

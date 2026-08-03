@@ -71,7 +71,7 @@ record_asciinema() {
     asciinema rec \
         --cols 120 \
         --rows 36 \
-        --title "nash - Autonomous Coding Agent" \
+        --title "nash - Autonomous Agentic Harness" \
         "$CAST_FILE"
     echo "Recording saved to $CAST_FILE"
 }

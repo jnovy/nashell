@@ -5,22 +5,34 @@
 Nash uses TOML configuration at `~/.nash/config.toml`. API keys are stored separately in `~/.nash/credentials.toml` (chmod 0600). Run `nash --setup` for an interactive wizard that configures providers, embedding, and credentials on first use:
 
 ```toml
-[server]
+# Switch providers by changing one line
+[routing]
+default = "my-local"                      # name of provider to use
+#default = "vertex-opus"                  # uncomment to switch
+#worker = "local-worker"                  # separate provider for subtasks
+
+# Named providers (define once, reference by name)
+[providers.my-local]
+type = "local"
 api_base = "http://192.168.1.18:8080"    # llama.cpp server
 # api_base = "http://localhost:11434"     # Ollama
 
-[provider]
-# type = "openai"                         # local | openai | anthropic | vertex
-# model_id = "gpt-4o"
-# api_key_env = "OPENAI_API_KEY"
-# project_id = "my-gcp-project"          # Vertex AI project
-# region = "us-east5"                     # Vertex AI region
+[providers.vertex-opus]
+type = "vertex"
+model_id = "claude-opus-4-6"
+project_id = "my-gcp-project"            # Vertex AI project
+region = "global"                         # Vertex AI region
+caching = true                            # prompt caching
+
+[providers.openai-gpt4]
+type = "openai"
+model_id = "gpt-4o"
+# api_key_env = "OPENAI_API_KEY"          # or set in credentials.toml
 # context_size = 200000                   # context window (0 = auto)
 # chars_per_token = 3.5                   # chars per token ratio
-# caching = false                         # prompt caching (Anthropic)
 
 [thinking]
-mode = "on"                               # off | on | structural
+mode = "yes"                              # yes | no | edrm (adaptive)
 budget = -1                               # -1=unrestricted, 0=none, N>0=max tokens
 
 [embedding]

@@ -92,10 +92,10 @@ make test    # runs unit tests: test_memory, test_store, test_config, test_str, 
 
 ## Contributing
 
-Nash is a personal project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact and self-contained.
+Nash is a project focused on exploring what's possible with local LLMs as autonomous coding agents. The codebase is intentionally compact and self-contained.
 
 Key design principles:
-- **No Python dependencies** -- single compiled binary
+- **Minimal runtime dependencies** -- single compiled binary
 - **Local-first** -- works with llama.cpp, no cloud required
 - **Research-grounded** -- every major design decision cites its research basis
 - **Self-improving** -- the agent learns from every task via persistent memory

@@ -25,6 +25,12 @@ Nash provides a full ncurses-based TUI with:
 | `/cwd DIR` | Change working directory; creates the directory if it doesn't exist (`mkdir -p`) |
 | `/runs` | List all playbook run logs (from `~/.nash/runs/`) |
 | `/runs show ID` | Display details of a specific playbook run |
+| `/agent` | List all agents with schedule, status, and due state |
+| `/agent show ID` | Detailed view of a single agent (metadata, last run, next due) |
+| `/agent run ID [args]` | Execute an agent immediately, bypassing its schedule |
+| `/agent due` | Show which agents are due for execution now |
+| `/agent history [ID]` | Execution history (newest first); optionally filtered by agent |
+| `/agent result ID` | Display the latest output from an agent run |
 | `/memory_search QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
 | `/ms QUERY` | Full-parameter memory search (alias: `/memory_search`). Supports `-q` query, `-k` key, `-p` pattern, `-r` regex, `-n` max results, `-d` days. Searches both curated memory (L4) and session journals (L3) |
 | `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
