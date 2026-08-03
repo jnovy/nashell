@@ -65,19 +65,19 @@ static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t 
         yaml_node_t *allow = yaml_get(tools, "allow");
         if (allow && allow->type == YAML_SEQUENCE) {
             ro->n_tools_allow = yaml_len(allow);
-            ro->tools_allow = calloc(ro->n_tools_allow, sizeof(char *));
+            ro->tools_allow = xcalloc(ro->n_tools_allow, sizeof(char *));
             for (int i = 0; i < ro->n_tools_allow; i++) {
                 const char *s = yaml_str(yaml_item(allow, i));
-                ro->tools_allow[i] = s ? strdup(s) : strdup("");
+                ro->tools_allow[i] = s ? xstrdup(s) : xstrdup("");
             }
         }
         yaml_node_t *block = yaml_get(tools, "block");
         if (block && block->type == YAML_SEQUENCE) {
             ro->n_tools_block = yaml_len(block);
-            ro->tools_block = calloc(ro->n_tools_block, sizeof(char *));
+            ro->tools_block = xcalloc(ro->n_tools_block, sizeof(char *));
             for (int i = 0; i < ro->n_tools_block; i++) {
                 const char *s = yaml_str(yaml_item(block, i));
-                ro->tools_block[i] = s ? strdup(s) : strdup("");
+                ro->tools_block[i] = s ? xstrdup(s) : xstrdup("");
             }
         }
     }
@@ -87,10 +87,9 @@ playbook_t *playbook_load(const char *path) {
     yaml_node_t *root = yaml_parse_file(path);
     if (!root) return NULL;
 
-    playbook_t *pb = calloc(1, sizeof(playbook_t));
-    if (!pb) { yaml_free(root); return NULL; }
+    playbook_t *pb = xcalloc(1, sizeof(playbook_t));
 
-    pb->filepath = strdup(path);
+    pb->filepath = xstrdup(path);
 
     /* Initialize react defaults to inherit */
     pb->react_defaults = (pb_react_overrides_t)PB_REACT_INHERIT;
@@ -98,12 +97,12 @@ playbook_t *playbook_load(const char *path) {
     /* Top-level fields */
     const char *s;
     if ((s = yaml_str(yaml_get(root, "name"))))
-        pb->name = strdup(s);
+        pb->name = xstrdup(s);
     else
-        pb->name = strdup("unnamed");
+        pb->name = xstrdup("unnamed");
 
     if ((s = yaml_str(yaml_get(root, "description"))))
-        pb->description = strdup(s);
+        pb->description = xstrdup(s);
 
     /* Session mode */
     s = yaml_str(yaml_get(root, "session_mode"));
@@ -127,12 +126,12 @@ playbook_t *playbook_load(const char *path) {
     yaml_node_t *vars = yaml_get(root, "vars");
     if (vars && vars->type == YAML_MAPPING) {
         pb->n_vars = vars->n_children;
-        pb->var_keys = calloc(pb->n_vars, sizeof(char *));
-        pb->var_values = calloc(pb->n_vars, sizeof(char *));
+        pb->var_keys = xcalloc(pb->n_vars, sizeof(char *));
+        pb->var_values = xcalloc(pb->n_vars, sizeof(char *));
         for (int i = 0; i < pb->n_vars; i++) {
-            pb->var_keys[i] = strdup(vars->keys[i]);
+            pb->var_keys[i] = xstrdup(vars->keys[i]);
             const char *v = yaml_str(vars->values[i]);
-            pb->var_values[i] = v ? strdup(v) : strdup("");
+            pb->var_values[i] = v ? xstrdup(v) : xstrdup("");
         }
     }
 
@@ -148,7 +147,7 @@ playbook_t *playbook_load(const char *path) {
 
     /* Top-level system prompt (inherited by all passes unless overridden) */
     if ((s = yaml_str(yaml_get(root, "system_prompt"))))
-        pb->system_prompt = strdup(s);
+        pb->system_prompt = xstrdup(s);
     s = yaml_str(yaml_get(root, "system_prompt_mode"));
     pb->system_prompt_replace = (s && strcmp(s, "replace") == 0) ? 1 : 0;
 
@@ -156,7 +155,7 @@ playbook_t *playbook_load(const char *path) {
     yaml_node_t *passes = yaml_get(root, "passes");
     if (passes && passes->type == YAML_SEQUENCE) {
         pb->n_passes = yaml_len(passes);
-        pb->passes = calloc(pb->n_passes, sizeof(pb_pass_t));
+        pb->passes = xcalloc(pb->n_passes, sizeof(pb_pass_t));
         for (int i = 0; i < pb->n_passes; i++) {
             yaml_node_t *pass = yaml_item(passes, i);
             if (!pass) continue;
@@ -164,12 +163,12 @@ playbook_t *playbook_load(const char *path) {
             pb->passes[i].react = (pb_react_overrides_t)PB_REACT_INHERIT;
 
             const char *label = yaml_str(yaml_get(pass, "label"));
-            pb->passes[i].label = label ? strdup(label) : strdup("(unnamed)");
+            pb->passes[i].label = label ? xstrdup(label) : xstrdup("(unnamed)");
 
             /* Accept both "prompt" and "prompt_template" keys */
             const char *prompt = yaml_str(yaml_get(pass, "prompt"));
             if (!prompt) prompt = yaml_str(yaml_get(pass, "prompt_template"));
-            pb->passes[i].prompt_template = prompt ? strdup(prompt) : strdup("");
+            pb->passes[i].prompt_template = prompt ? xstrdup(prompt) : xstrdup("");
 
             /* Pass type: "script" runs a shell command, default is react */
             const char *type_s = yaml_str(yaml_get(pass, "type"));
@@ -180,11 +179,11 @@ playbook_t *playbook_load(const char *path) {
 
             /* Shell command for script-type passes */
             const char *cmd = yaml_str(yaml_get(pass, "command"));
-            pb->passes[i].command = cmd ? strdup(cmd) : NULL;
+            pb->passes[i].command = cmd ? xstrdup(cmd) : NULL;
 
             /* Custom system prompt (append or replace base prompt) */
             const char *sysp = yaml_str(yaml_get(pass, "system_prompt"));
-            pb->passes[i].system_prompt = sysp ? strdup(sysp) : NULL;
+            pb->passes[i].system_prompt = sysp ? xstrdup(sysp) : NULL;
             const char *spm = yaml_str(yaml_get(pass, "system_prompt_mode"));
             pb->passes[i].system_prompt_replace = (spm && strcmp(spm, "replace") == 0) ? 1 : 0;
 
@@ -315,7 +314,7 @@ tool_filter_t playbook_resolve_tools(const playbook_t *pb, int pass_idx,
  * Used to sanitize LLM output before embedding in shell commands.
  * Returns a malloc'd string: 'value' with internal ' replaced by '\'' */
 static char *shell_escape_value(const char *val) {
-    if (!val || !val[0]) return strdup("''");
+    if (!val || !val[0]) return xstrdup("''");
     /* Count single quotes to determine output size */
     size_t n_sq = 0;
     for (const char *p = val; *p; p++)
@@ -324,8 +323,7 @@ static char *shell_escape_value(const char *val) {
      * each ' in input becomes: '\'' (close, escaped, reopen) = 4 chars vs 1 */
     size_t vlen = strlen(val);
     size_t out_len = vlen + n_sq * 3 + 2;
-    char *out = malloc(out_len + 1);
-    if (!out) return strdup("''");
+    char *out = xmalloc(out_len + 1);
     char *d = out;
     *d++ = '\'';
     for (const char *p = val; *p; p++) {
@@ -342,7 +340,7 @@ static char *shell_escape_value(const char *val) {
 
 /* Replace all occurrences of {{key}} with value in a string */
 static char *str_replace_all(const char *src, const char *key, const char *val) {
-    if (!src || !key || !val) return src ? strdup(src) : NULL;
+    if (!src || !key || !val) return src ? xstrdup(src) : NULL;
 
     char pattern[256];
     snprintf(pattern, sizeof(pattern), "{{%s}}", key);
@@ -354,7 +352,7 @@ static char *str_replace_all(const char *src, const char *key, const char *val) 
     const char *p = src;
     while ((p = strstr(p, pattern)) != NULL) { count++; p += plen; }
 
-    if (count == 0) return strdup(src);
+    if (count == 0) return xstrdup(src);
 
     size_t slen = strlen(src);
     /* Overflow-safe size calculation */
@@ -362,14 +360,13 @@ static char *str_replace_all(const char *src, const char *key, const char *val) 
     if (vlen >= plen) {
         size_t growth = vlen - plen;
         if (growth > 0 && count > (SIZE_MAX - slen - 1) / growth)
-            return strdup(src);  /* overflow — return unmodified copy */
+            return xstrdup(src);  /* overflow — return unmodified copy */
         new_len = slen + count * growth;
     } else {
         size_t shrink = plen - vlen;
         new_len = slen - count * shrink;  /* always safe: shrinking */
     }
-    char *result = malloc(new_len + 1);
-    if (!result) return strdup(src);
+    char *result = xmalloc(new_len + 1);
     char *dst = result;
     p = src;
     while (*p) {
@@ -389,9 +386,9 @@ char *playbook_expand(const playbook_t *pb, const char *tmpl,
                       int pass_idx, const char *prev_result,
                       const char *memory_dir, const char *model,
                       const char *session_dir, const char *nash_dir) {
-    if (!tmpl) return strdup("");
+    if (!tmpl) return xstrdup("");
 
-    char *result = strdup(tmpl);
+    char *result = xstrdup(tmpl);
 
     /* Built-in variables */
     char pass_num[16], total_passes[16];
@@ -518,7 +515,7 @@ playbook_t **playbook_list(const char *nash_dir, int *count) {
             continue;
 
         char path[NASH_PATH_MAX + 256];
-        snprintf(path, sizeof(path), "%s/%s", pb_dir, ent->d_name);
+        path_join(path, sizeof(path), pb_dir, ent->d_name);
         playbook_t *pb = playbook_load(path);
         if (!pb) continue;
 
@@ -874,9 +871,7 @@ void *playbook_worker(void *arg) {
                      pb->name, pass + 1, pb->n_passes,
                      pb->passes[pass].label);
         if (pa->ui) {
-            pthread_mutex_lock(&pa->ui->mtx);
-            ui_state_set_status(pa->ui, STATUS_RUNNING, status);
-            pthread_mutex_unlock(&pa->ui->mtx);
+            ui_locked_set_status(pa->ui, STATUS_RUNNING, status);
         } else {
             fprintf(stderr, "[play] %s\n", status);
         }
@@ -925,7 +920,7 @@ void *playbook_worker(void *arg) {
         if (pb->session_mode == PB_SESSION_PER_PASS) {
             pass_dir = create_session_dir(pa->nash_dir, pa->workspace_override ? pa->workspace_override : pa->cfg->workspace);
         } else {
-            pass_dir = strdup(shared_session_dir);
+            pass_dir = xstrdup(shared_session_dir);
         }
 
         /* Run log: emit pass start */
@@ -1023,13 +1018,9 @@ void *playbook_worker(void *arg) {
             free(safe_prev);
             if (expanded_cmd && expanded_cmd[0]) {
                 if (pa->ui) {
-                    pthread_mutex_lock(&pa->ui->mtx);
-                    char script_status[256];
-                    snprintf(script_status, sizeof(script_status),
-                             "%s %d/%d: [script] %s", pb->name,
-                             pass + 1, pb->n_passes, pb->passes[pass].label);
-                    ui_state_set_status(pa->ui, STATUS_RUNNING, script_status);
-                    pthread_mutex_unlock(&pa->ui->mtx);
+                    ui_locked_set_status_fmt(pa->ui, STATUS_RUNNING,
+                        "%s %d/%d: [script] %s", pb->name,
+                        pass + 1, pb->n_passes, pb->passes[pass].label);
                 } else {
                     fprintf(stderr, "[play] script: %s\n", expanded_cmd);
                 }
@@ -1060,13 +1051,13 @@ void *playbook_worker(void *arg) {
                         buf[buf_len] = '\0';
                         result = buf;
                     } else {
-                        result = strdup("");
+                        result = xstrdup("");
                     }
                     if (status != 0) {
                         fprintf(stderr, "[play] script exited with status %d\n",
                                 WEXITSTATUS(status));
                         /* Non-zero exit is a failure, but we still have output */
-                        if (!result) result = strdup("(script failed)");
+                        if (!result) result = xstrdup("(script failed)");
                     }
                 } else {
                     fprintf(stderr, "[play] popen failed: %s\n", strerror(errno));
@@ -1090,7 +1081,7 @@ void *playbook_worker(void *arg) {
             fprintf(stderr, "[play] pass %d/%d ('%s') failed, continuing (on_error: continue)\n",
                     pass + 1, pb->n_passes, pb->passes[pass].label);
             free(result);
-            result = strdup("");  /* provide empty result for next pass */
+            result = xstrdup("");  /* provide empty result for next pass */
             pass_failed = 0;
         } else if (pass_failed && pb->passes[pass].on_error == PB_ON_ERROR_RETRY) {
             fprintf(stderr, "[play] pass %d/%d ('%s') failed, retrying once (on_error: retry)\n",
@@ -1099,7 +1090,7 @@ void *playbook_worker(void *arg) {
             if (pb->passes[pass].type == PB_PASS_REACT) {
                 char *retry_prompt = NULL;
                 size_t rplen = strlen(prompt) + 128;
-                retry_prompt = malloc(rplen);
+                retry_prompt = xmalloc(rplen);
                 snprintf(retry_prompt, rplen,
                     "[RETRY: Your previous attempt at this pass failed. "
                     "Try a different approach.]\n\n%s", prompt);
@@ -1143,12 +1134,12 @@ void *playbook_worker(void *arg) {
                             buf[buf_len] = '\0';
                             result = buf;
                         } else {
-                            result = strdup("");
+                            result = xstrdup("");
                         }
                         if (status != 0) {
                             fprintf(stderr, "[play] script retry exited with status %d\n",
                                     WEXITSTATUS(status));
-                            if (!result) result = strdup("(script failed)");
+                            if (!result) result = xstrdup("(script failed)");
                         }
                     } else {
                         fprintf(stderr, "[play] popen failed on retry: %s\n", strerror(errno));
@@ -1234,7 +1225,7 @@ void *playbook_worker(void *arg) {
 
                 /* Read created_at from the JSON file */
                 char fpath[NASH_PATH_MAX];
-                snprintf(fpath, sizeof(fpath), "%s/%s",
+                path_join(fpath, sizeof(fpath),
                          memory_dir(cur_mem), de->d_name);
                 FILE *fp = fopen(fpath, "r");
                 if (!fp) continue;
@@ -1276,7 +1267,7 @@ void *playbook_worker(void *arg) {
                         continue;
                     del_cap = new_cap;
                 }
-                del_keys[n_del++] = strdup(key);
+                del_keys[n_del++] = xstrdup(key);
             }
             closedir(mdir);
 

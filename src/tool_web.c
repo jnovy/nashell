@@ -204,7 +204,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     char *content_type = NULL;
     char *ct = NULL;
     curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
-    if (ct) content_type = strdup(ct);
+    if (ct) content_type = xstrdup(ct);
 
     curl_easy_cleanup(curl);
     curl_slist_free_all(resolve_list);
@@ -259,7 +259,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "web_fetch",
                    params, alias, store_len, count_lines(store_data), NULL, NULL);
 
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
     free(hash);
     free(extracted);
@@ -316,7 +316,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "web_search",
                    params, alias, strlen(results_text), result_count, NULL, NULL);
 
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
     free(hash);
     free(results_text);

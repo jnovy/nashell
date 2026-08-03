@@ -73,15 +73,14 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
 
         str_t response = str_new(4096);
         if (http_get(url, 5, &response) == 0 && response.len > 0) {
-            if (props_json) *props_json = strdup(response.data);
+            if (props_json) *props_json = xstrdup(response.data);
 
             if (context_size) {
                 cJSON *props = cJSON_Parse(response.data);
                 if (props) {
                     cJSON *dgs = cJSON_GetObjectItem(props, "default_generation_settings");
                     if (dgs) {
-                        cJSON *nctx = cJSON_GetObjectItem(dgs, "n_ctx");
-                        if (nctx) *context_size = nctx->valueint;
+                        *context_size = json_int(dgs, "n_ctx", *context_size);
                     }
                     cJSON_Delete(props);
                 }
@@ -102,9 +101,9 @@ static int local_fetch_model_info(provider_t *p, int *context_size,
                 cJSON *data = cJSON_GetObjectItem(models, "data");
                 if (data && cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
                     cJSON *first = cJSON_GetArrayItem(data, 0);
-                    cJSON *id = cJSON_GetObjectItem(first, "id");
-                    if (id && cJSON_IsString(id))
-                        *model_name = strdup(id->valuestring);
+                    const char *mid = json_str(first, "id");
+                    if (mid)
+                        *model_name = xstrdup(mid);
                 }
                 cJSON_Delete(models);
             }

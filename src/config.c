@@ -172,7 +172,7 @@ void config_set_defaults(config_t *cfg) {
     if (cfg->belief_entropy.alpha < 0)
         cfg->belief_entropy.alpha = 1.0;
     if (!cfg->belief_entropy.anchor_question)
-        cfg->belief_entropy.anchor_question = strdup(
+        cfg->belief_entropy.anchor_question = xstrdup(
             "Based on current memory, what is our task progress and what information is still needed?");
     if (cfg->belief_entropy.probe_tokens <= 0)
         cfg->belief_entropy.probe_tokens = 30;
@@ -194,8 +194,8 @@ void config_set_defaults(config_t *cfg) {
         cfg->thinking.mode = THINKING_ON;
     }
     if (cfg->thinking.budget == INT_MIN)       cfg->thinking.budget = -1; /* -1 = unrestricted */
-    if (!cfg->search_engine) cfg->search_engine = strdup("searxng");
-    if (!cfg->searxng_url)   cfg->searxng_url = strdup("http://localhost:8888/search");
+    if (!cfg->search_engine) cfg->search_engine = xstrdup("searxng");
+    if (!cfg->searxng_url)   cfg->searxng_url = xstrdup("http://localhost:8888/search");
 
     /* [workspace] defaults */
     if (cfg->workspace_global_weight <= 0)
@@ -217,33 +217,32 @@ void config_apply_provider_env_defaults(config_t *cfg) {
         const char *env;
         if (!cfg->provider.region) {
             env = getenv("CLOUD_ML_REGION");
-            if (env) cfg->provider.region = strdup(env);
+            if (env) cfg->provider.region = xstrdup(env);
         }
         if (!cfg->provider.project_id) {
             env = getenv("ANTHROPIC_VERTEX_PROJECT_ID");
-            if (env) cfg->provider.project_id = strdup(env);
+            if (env) cfg->provider.project_id = xstrdup(env);
         }
         if (!cfg->provider.model_id) {
             env = getenv("ANTHROPIC_MODEL");
-            if (env) cfg->provider.model_id = strdup(env);
+            if (env) cfg->provider.model_id = xstrdup(env);
         }
     }
 
     /* OpenAI: OPENAI_API_KEY -> api_key_env default, OPENAI_MODEL -> model_id */
     if (strcmp(cfg->provider.type, "openai") == 0) {
         if (!cfg->provider.api_key_env) {
-            cfg->provider.api_key_env = strdup("OPENAI_API_KEY");
+            cfg->provider.api_key_env = xstrdup("OPENAI_API_KEY");
         }
         if (!cfg->provider.model_id) {
             const char *env = getenv("OPENAI_MODEL");
-            if (env) cfg->provider.model_id = strdup(env);
+            if (env) cfg->provider.model_id = xstrdup(env);
         }
     }
 }
 
 config_t *config_load(const char *path) {
-    config_t *cfg = calloc(1, sizeof(*cfg));
-    if (!cfg) return NULL;
+    config_t *cfg = xcalloc(1, sizeof(*cfg));
     cfg->temperature = -1.0f;      /* sentinel: 0.0 is valid (deterministic sampling) */
     cfg->vscore_exponent = -1.0f;   /* sentinel: 0 is valid (disables vscore) */
     /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
@@ -253,6 +252,15 @@ config_t *config_load(const char *path) {
     cfg->profile_enable_pruning = -1;
     cfg->profile_enable_compaction = -1;
     cfg->profile_enable_scoring = -1;
+    /* Sentinel initialization for timeout/size fields where 0 is a valid
+     * user value (0 = "no limit").  config_set_defaults() checks == -1
+     * for these, so calloc's zero would skip default assignment. */
+    cfg->shell_timeout    = -1;
+    cfg->shell_max_output = -1;
+    cfg->file_max_size    = -1;
+    cfg->grep_timeout     = -1;
+    cfg->grep_max_matches = -1;
+    cfg->web_timeout      = -1;
     /* Thinking config sentinel: budget uses INT_MIN since 0 means
      * "no thinking tokens" (valid) and -1 means "unrestricted" (also valid). */
     cfg->thinking.budget = INT_MIN;
@@ -279,7 +287,7 @@ config_t *config_load(const char *path) {
     if (providers_tbl) {
         int ntab = toml_table_ntab(providers_tbl);
         if (ntab > 0) {
-            cfg->named_providers = calloc(ntab, sizeof(named_provider_t));
+            cfg->named_providers = xcalloc(ntab, sizeof(named_provider_t));
             if (!cfg->named_providers) {
                 toml_free(root);
                 config_set_defaults(cfg);
@@ -292,7 +300,7 @@ config_t *config_load(const char *path) {
                 toml_table_t *ptab = toml_table_in(providers_tbl, key);
                 if (!ptab) continue;  /* skip non-table entries */
                 named_provider_t *np = &cfg->named_providers[idx];
-                np->name                  = strdup(key);
+                np->name                  = xstrdup(key);
                 np->config.type           = toml_str(ptab, "type");
                 np->config.model_id       = toml_str(ptab, "model_id");
                 np->config.api_base       = toml_str(ptab, "api_base");
@@ -300,7 +308,7 @@ config_t *config_load(const char *path) {
                 if (np->config.api_base &&
                     strncmp(np->config.api_base, "http://", 7) != 0 &&
                     strncmp(np->config.api_base, "https://", 8) != 0) {
-                    char *fixed = malloc(7 + strlen(np->config.api_base) + 1);
+                    char *fixed = xmalloc(7 + strlen(np->config.api_base) + 1);
                     if (fixed) {
                         sprintf(fixed, "http://%s", np->config.api_base);
                         free(np->config.api_base);
@@ -567,7 +575,7 @@ config_t *config_load(const char *path) {
             if (safe_realloc((void **)&cfg->profile_tools_block,
                             (n + 1) * sizeof(char *)))
                 goto done_tools;
-            cfg->profile_tools_block[n] = strdup("memory_search");
+            cfg->profile_tools_block[n] = xstrdup("memory_search");
             cfg->n_profile_tools_block = n + 1;
             /* Also disable automatic memory injection */
             cfg->profile_inject_memory = 0;
@@ -748,8 +756,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
 
     struct dirent *ent;
     int cap = 8;
-    cfg->model_profiles = calloc(cap, sizeof(model_profile_t));
-    if (!cfg->model_profiles) { closedir(d); return -1; }
+    cfg->model_profiles = xcalloc(cap, sizeof(model_profile_t));
     cfg->n_model_profiles = 0;
 
     while ((ent = readdir(d)) != NULL) {
@@ -761,7 +768,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
 
         /* Build full path */
         char filepath[1024];
-        snprintf(filepath, sizeof(filepath), "%s/%s", models_dir, name);
+        path_join(filepath, sizeof(filepath), models_dir, name);
 
         FILE *f = fopen(filepath, "r");
         if (!f) continue;
@@ -799,7 +806,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
 
         p->match = match;
         p->match_len = (int)strlen(match);
-        p->source_file = strdup(name);
+        p->source_file = xstrdup(name);
 
         /* Optional fields */
         p->chars_per_token = (float)toml_dbl(root, "chars_per_token", 0);
@@ -891,11 +898,11 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
             if (allow_arr) {
                 int n = toml_array_nelem(allow_arr);
                 if (n > 0) {
-                    p->tools_allow = calloc(n, sizeof(char *));
+                    p->tools_allow = xcalloc(n, sizeof(char *));
                     p->n_tools_allow = n;
                     for (int j = 0; j < n; j++) {
                         toml_datum_t d = toml_string_at(allow_arr, j);
-                        p->tools_allow[j] = d.ok ? d.u.s : strdup("");
+                        p->tools_allow[j] = d.ok ? d.u.s : xstrdup("");
                     }
                 }
             }
@@ -903,11 +910,11 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
             if (block_arr) {
                 int n = toml_array_nelem(block_arr);
                 if (n > 0) {
-                    p->tools_block = calloc(n, sizeof(char *));
+                    p->tools_block = xcalloc(n, sizeof(char *));
                     p->n_tools_block = n;
                     for (int j = 0; j < n; j++) {
                         toml_datum_t d = toml_string_at(block_arr, j);
-                        p->tools_block[j] = d.ok ? d.u.s : strdup("");
+                        p->tools_block[j] = d.ok ? d.u.s : xstrdup("");
                     }
                 }
             }
@@ -919,8 +926,8 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         if (tools_tbl) {
             int ntabs = toml_table_ntab(tools_tbl);
             if (ntabs > 0) {
-                p->tool_desc_names = calloc(ntabs, sizeof(char *));
-                p->tool_desc_values = calloc(ntabs, sizeof(char *));
+                p->tool_desc_names = xcalloc(ntabs, sizeof(char *));
+                p->tool_desc_values = xcalloc(ntabs, sizeof(char *));
                 int nd = 0;
                 /* toml_key_in indexes over ALL keys (kval+arr+tab).
                  * Total = nkval + narr + ntab. We iterate all and
@@ -935,7 +942,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
                     if (!sub) continue;
                     char *desc = toml_str(sub, "description");
                     if (desc) {
-                        p->tool_desc_names[nd] = strdup(subkey);
+                        p->tool_desc_names[nd] = xstrdup(subkey);
                         p->tool_desc_values[nd] = desc;
                         nd++;
                     }
@@ -1013,8 +1020,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
 
     /* system_prompt_extra: store for react.c to use (owned copy) */
     if (p->system_prompt_extra) {
-        free(cfg->system_prompt_extra);
-        cfg->system_prompt_extra = strdup(p->system_prompt_extra);
+        str_replace(&cfg->system_prompt_extra, p->system_prompt_extra);
     }
 
     /* [client] overrides */
@@ -1071,12 +1077,12 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
             cfg->n_profile_tools_allow = 0;
         }
         /* Deep-copy so cfg owns the memory (consistent with block/desc). */
-        cfg->profile_tools_allow = calloc(p->n_tools_allow, sizeof(char *));
+        cfg->profile_tools_allow = xcalloc(p->n_tools_allow, sizeof(char *));
         if (cfg->profile_tools_allow) {
             cfg->n_profile_tools_allow = p->n_tools_allow;
             cfg->profile_tools_allow_owned = 1;
             for (int i = 0; i < p->n_tools_allow; i++)
-                cfg->profile_tools_allow[i] = strdup(p->tools_allow[i]);
+                cfg->profile_tools_allow[i] = xstrdup(p->tools_allow[i]);
         }
     }
     if (p->n_tools_block > 0) {
@@ -1090,11 +1096,11 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         }
         /* Deep-copy so cfg owns the memory (safe to free in config_free
          * and config_load_spec_overlay). Bug #41/#22 fix. */
-        cfg->profile_tools_block = calloc(p->n_tools_block, sizeof(char *));
+        cfg->profile_tools_block = xcalloc(p->n_tools_block, sizeof(char *));
         if (cfg->profile_tools_block) {
             cfg->n_profile_tools_block = p->n_tools_block;
             for (int i = 0; i < p->n_tools_block; i++)
-                cfg->profile_tools_block[i] = strdup(p->tools_block[i]);
+                cfg->profile_tools_block[i] = xstrdup(p->tools_block[i]);
         }
     }
 
@@ -1125,12 +1131,12 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
         }
         /* Allocate and copy — these are stack strings, so we need strdup.
          * Allocated on cfg lifetime (freed in config_free). */
-        cfg->profile_tools_allow = calloc(n, sizeof(char *));
+        cfg->profile_tools_allow = xcalloc(n, sizeof(char *));
         if (cfg->profile_tools_allow) {
             cfg->n_profile_tools_allow = n;
             cfg->profile_tools_allow_owned = 1; /* needs separate free */
             for (int i = 0; i < n; i++)
-                cfg->profile_tools_allow[i] = strdup(SMALL_MODEL_TOOLS[i]);
+                cfg->profile_tools_allow[i] = xstrdup(SMALL_MODEL_TOOLS[i]);
         }
     }
 
@@ -1149,13 +1155,13 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
             cfg->profile_tool_desc_values = NULL;
             cfg->n_profile_tool_descs = 0;
         }
-        cfg->profile_tool_desc_names = calloc(p->n_tool_descs, sizeof(char *));
-        cfg->profile_tool_desc_values = calloc(p->n_tool_descs, sizeof(char *));
+        cfg->profile_tool_desc_names = xcalloc(p->n_tool_descs, sizeof(char *));
+        cfg->profile_tool_desc_values = xcalloc(p->n_tool_descs, sizeof(char *));
         if (cfg->profile_tool_desc_names && cfg->profile_tool_desc_values) {
             cfg->n_profile_tool_descs = p->n_tool_descs;
             for (int i = 0; i < p->n_tool_descs; i++) {
-                cfg->profile_tool_desc_names[i] = strdup(p->tool_desc_names[i]);
-                cfg->profile_tool_desc_values[i] = strdup(p->tool_desc_values[i]);
+                cfg->profile_tool_desc_names[i] = xstrdup(p->tool_desc_names[i]);
+                cfg->profile_tool_desc_values[i] = xstrdup(p->tool_desc_values[i]);
             }
         }
     }
@@ -1567,12 +1573,12 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 for (int i = 0; i < cfg->n_profile_tools_allow; i++)
                     free(cfg->profile_tools_allow[i]);
                 free(cfg->profile_tools_allow);
-                cfg->profile_tools_allow = calloc(n, sizeof(char *));
+                cfg->profile_tools_allow = xcalloc(n, sizeof(char *));
                 cfg->n_profile_tools_allow = n;
                 cfg->profile_tools_allow_owned = 1;
                 for (int j = 0; j < n; j++) {
                     toml_datum_t d = toml_string_at(allow_arr, j);
-                    cfg->profile_tools_allow[j] = d.ok ? d.u.s : strdup("");
+                    cfg->profile_tools_allow[j] = d.ok ? d.u.s : xstrdup("");
                 }
             }
         }
@@ -1583,11 +1589,11 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 for (int i = 0; i < cfg->n_profile_tools_block; i++)
                     free(cfg->profile_tools_block[i]);
                 free(cfg->profile_tools_block);
-                cfg->profile_tools_block = calloc(n, sizeof(char *));
+                cfg->profile_tools_block = xcalloc(n, sizeof(char *));
                 cfg->n_profile_tools_block = n;
                 for (int j = 0; j < n; j++) {
                     toml_datum_t d = toml_string_at(block_arr, j);
-                    cfg->profile_tools_block[j] = d.ok ? d.u.s : strdup("");
+                    cfg->profile_tools_block[j] = d.ok ? d.u.s : xstrdup("");
                 }
             }
         }
@@ -1601,7 +1607,7 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
               int n = cfg->n_profile_tools_block;
               if (!safe_realloc((void **)&cfg->profile_tools_block,
                                (n + 1) * sizeof(char *))) {
-                  cfg->profile_tools_block[n] = strdup("memory_search");
+                  cfg->profile_tools_block[n] = xstrdup("memory_search");
                   cfg->n_profile_tools_block = n + 1;
                   /* Also disable automatic memory injection */
                   cfg->profile_inject_memory = 0;
@@ -1619,8 +1625,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
             }
             free(cfg->profile_tool_desc_names);
             free(cfg->profile_tool_desc_values);
-            cfg->profile_tool_desc_names = calloc(ntabs, sizeof(char *));
-            cfg->profile_tool_desc_values = calloc(ntabs, sizeof(char *));
+            cfg->profile_tool_desc_names = xcalloc(ntabs, sizeof(char *));
+            cfg->profile_tool_desc_values = xcalloc(ntabs, sizeof(char *));
             int nd = 0;
             int nkeys = toml_table_nkval(tools)
                       + toml_table_narr(tools)
@@ -1632,7 +1638,7 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
                 if (!sub) continue;
                 char *desc = toml_str(sub, "description");
                 if (desc) {
-                    cfg->profile_tool_desc_names[nd] = strdup(subkey);
+                    cfg->profile_tool_desc_names[nd] = xstrdup(subkey);
                     cfg->profile_tool_desc_values[nd] = desc;
                     nd++;
                 }
@@ -1818,7 +1824,7 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
                             for (char *p = env_name; *p; p++)
                                 if (*p >= 'a' && *p <= 'z') *p -= 32;
                             setenv(env_name, api_key.u.s, 0);  /* don't override existing */
-                            cfg->named_providers[j].config.api_key_env = strdup(env_name);
+                            cfg->named_providers[j].config.api_key_env = xstrdup(env_name);
                         } else {
                             /* api_key_env is set - populate env var if not already set.
                              * SECURITY: same exposure risk as above. */

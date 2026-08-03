@@ -76,12 +76,7 @@ int todo_load(const char *path, char ***lines_out) {
                 return -1;
             }
         }
-        char *dup = strdup(linebuf);
-        if (!dup) {
-            todo_free_lines(lines, count);
-            fclose(f);
-            return -1;
-        }
+        char *dup = xstrdup(linebuf);
         lines[count++] = dup;
     }
     fclose(f);
@@ -119,9 +114,7 @@ int todo_add(char ***lines_ptr, int count, const char *line) {
     char **lines = *lines_ptr;
     if (safe_realloc((void **)&lines, sizeof(char *) * (size_t)(count + 1))) return -1;
 
-    char *dup = strdup(line);
-    if (!dup) return -1;
-
+    char *dup = xstrdup(line);
     lines[count] = dup;
     *lines_ptr = lines;
     return count + 1;
@@ -152,7 +145,7 @@ int todo_remove(char **lines, int count, int index,
         return -1;
     }
     if (removed_out)
-        *removed_out = strdup(lines[index - 1]);
+        *removed_out = xstrdup(lines[index - 1]);
 
     free(lines[index - 1]);
     for (int i = index - 1; i < count - 1; i++)

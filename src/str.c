@@ -278,7 +278,7 @@ char *sessions_base_dir(const char *nash_dir, const char *workspace) {
         snprintf(buf, sizeof(buf), "%s/sessions", nash_dir);
     }
     mkdir(buf, 0755);
-    return strdup(buf);
+    return xstrdup(buf);
 }
 
 char *create_session_dir(const char *nash_dir, const char *workspace) {
@@ -292,7 +292,7 @@ char *create_session_dir(const char *nash_dir, const char *workspace) {
              (long)tp.tv_sec, tp.tv_nsec / 10000);
 
     char path[1088];
-    snprintf(path, sizeof(path), "%s/%s", base, epoch);
+    path_join(path, sizeof(path), base, epoch);
     free(base);
     mkdir(path, 0755);
 
@@ -304,7 +304,7 @@ char *create_session_dir(const char *nash_dir, const char *workspace) {
         snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
     mkdir_p(tmpdir, 0755);
 
-    return strdup(path);
+    return xstrdup(path);
 }
 
 /* ── Session locking ─────────────────────────────────────────────── */
@@ -391,7 +391,7 @@ void for_each_dir_entry(const char *dirpath, const char *suffix,
         }
 
         char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", dirpath, de->d_name);
+        path_join(path, sizeof(path), dirpath, de->d_name);
 
         int rc = cb(dirpath, de->d_name, path, user_data);
         if (rc) break;
@@ -694,7 +694,7 @@ static int list_dir_cb(const char *dirpath, const char *filename,
                        const char *fullpath, void *user_data) {
     (void)dirpath; (void)fullpath;
     list_dir_ctx_t *ld = user_data;
-    VEC_PUSH(ld->entries, ld->count, ld->cap, strdup(filename));
+    VEC_PUSH(ld->entries, ld->count, ld->cap, xstrdup(filename));
     return 0;
 }
 
@@ -711,4 +711,44 @@ cJSON *cjson_msg(const char *role, const char *content) {
     cJSON_AddStringToObject(msg, "role", role);
     cJSON_AddStringToObject(msg, "content", content);
     return msg;
+}
+
+/* ── cJSON extraction helpers ────────────────────────────────────────── */
+
+const char *json_str(cJSON *obj, const char *key) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item && cJSON_IsString(item)) return item->valuestring;
+    return NULL;
+}
+
+const char *json_str_or(cJSON *obj, const char *key, const char *dflt) {
+    const char *v = json_str(obj, key);
+    return v ? v : dflt;
+}
+
+int json_int(cJSON *obj, const char *key, int dflt) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item && cJSON_IsNumber(item)) return item->valueint;
+    return dflt;
+}
+
+double json_num(cJSON *obj, const char *key, double dflt) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item && cJSON_IsNumber(item)) return item->valuedouble;
+    return dflt;
+}
+
+int json_bool(cJSON *obj, const char *key, int dflt) {
+    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+    if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item) ? 1 : 0;
+    return dflt;
+}
+
+/* ── dump_json (mirror of slurp_json) ────────────────────────────────── */
+int dump_json(const char *path, cJSON *obj) {
+    char *text = cJSON_Print(obj);
+    if (!text) return -1;
+    int rc = write_file(path, text, strlen(text));
+    free(text);
+    return rc;
 }

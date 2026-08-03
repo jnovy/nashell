@@ -181,7 +181,7 @@ void ui_state_enter(ui_state_t *ui) {
             ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
-        entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+        entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
         entry->label = ui->current_label;  /* transfer ownership */
         ui->current_label = NULL;
         entry->scroll_y = ui->scroll_y;
@@ -212,15 +212,14 @@ void ui_state_enter(ui_state_t *ui) {
             } else {
                 snprintf(base_dir, sizeof(base_dir), "%s", ui->session_dir);
             }
-            snprintf(new_path, sizeof(new_path), "%s/%s", base_dir, uri);
+            path_join(new_path, sizeof(new_path), base_dir, uri);
         }
         /* Canonicalize to resolve ../  components */
         char resolved[NASH_PATH_MAX];
         if (realpath(new_path, resolved))
             snprintf(new_path, sizeof(new_path), "%s", resolved);
 
-        free(ui->current_filepath);
-        ui->current_filepath = strdup(new_path);
+        str_replace(&ui->current_filepath, new_path);
         ui->scroll_y = 0;
         ui->scroll_x = 0;
         ui->cursor_link = 0;
@@ -297,7 +296,7 @@ void ui_state_enter(ui_state_t *ui) {
         } else {
             snprintf(base_dir, sizeof(base_dir), "%s", ui->session_dir);
         }
-        snprintf(raw_path, sizeof(raw_path), "%s/%s", base_dir, uri_path);
+        path_join(raw_path, sizeof(raw_path), base_dir, uri_path);
     }
     /* Canonicalize to resolve ../ components */
     {
@@ -319,7 +318,7 @@ void ui_state_enter(ui_state_t *ui) {
         ui->nav_cap = new_cap;
     }
     nav_entry_t *raw_entry = &ui->nav_stack[ui->nav_depth];
-    raw_entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    raw_entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
     raw_entry->label = ui->current_label;  /* transfer ownership */
     ui->current_label = NULL;
     raw_entry->scroll_y = ui->scroll_y;
@@ -336,7 +335,7 @@ void ui_state_enter(ui_state_t *ui) {
 
     /* Read file content and wrap in MD */
     char *raw_content = slurp_file(raw_path, NULL);
-    if (!raw_content) raw_content = strdup("*Empty*\n");
+    if (!raw_content) raw_content = xstrdup("*Empty*\n");
 
     /* Determine rendering mode based on tool hint.
      * Default is markdown -- most tool outputs are natural language.
@@ -391,8 +390,7 @@ void ui_state_enter(ui_state_t *ui) {
     /* Clear search mode — we're now viewing a real file */
     ui->search_active = 0;
 
-    free(ui->current_filepath);
-    ui->current_filepath = strdup(raw_path);
+    str_replace(&ui->current_filepath, raw_path);
     ui->scroll_y = 0;
     ui->scroll_x = 0;
     ui->cursor_link = 0;
@@ -426,7 +424,7 @@ void ui_state_toggle_preview(ui_state_t *ui) {
                          (size_t)new_cap * sizeof(char *))) goto regen;
         ui->expanded_cap = new_cap;
     }
-    ui->expanded_uris[ui->expanded_count++] = strdup(uri);
+    ui->expanded_uris[ui->expanded_count++] = xstrdup(uri);
 
 regen:
     /* Regenerate the current file to reflect the change */
@@ -507,8 +505,7 @@ void ui_state_back(ui_state_t *ui) {
 static char *prettify_label(const char *name) {
     if (!name) return NULL;
     size_t len = strlen(name);
-    char *label = malloc(len + 1);
-    if (!label) return NULL;
+    char *label = xmalloc(len + 1);
     int capitalize = 1;
     size_t j = 0;
     for (size_t i = 0; i < len; i++) {
@@ -545,7 +542,7 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
         ui->nav_cap = new_cap;
     }
     nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
-    entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+    entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
     entry->label = ui->current_label;   /* transfer ownership */
     ui->current_label = NULL;
     entry->scroll_y = ui->scroll_y;
@@ -555,8 +552,7 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
     ui->nav_depth++;
 
     /* 3. Navigate to the new file */
-    free(ui->current_filepath);
-    ui->current_filepath = strdup(path);
+    str_replace(&ui->current_filepath, path);
     ui->current_label = prettify_label(name);
     ui->scroll_y = 0;
     ui->scroll_x = 0;
@@ -664,8 +660,8 @@ static void collect_session_dirs(const char *sessions_dir,
             *cap = new_cap;
         }
         char full[NASH_PATH_MAX];
-        snprintf(full, sizeof(full), "%s/%s", sessions_dir, ent->d_name);
-        (*names)[(*count)++] = strdup(full);
+        path_join(full, sizeof(full), sessions_dir, ent->d_name);
+        (*names)[(*count)++] = xstrdup(full);
     }
     closedir(dir);
 }
@@ -798,25 +794,22 @@ void ui_state_search(ui_state_t *ui, const char *query) {
                         if (!obj) continue;
 
                         /* Skip clear entries */
-                        cJSON *op = cJSON_GetObjectItem(obj, "op");
-                        if (op && cJSON_IsString(op) &&
-                            strcmp(op->valuestring, "clear") == 0) {
+                        const char *op = json_str(obj, "op");
+                        if (op && strcmp(op, "clear") == 0) {
                             cJSON_Delete(obj);
                             continue;
                         }
 
-                        cJSON *name = cJSON_GetObjectItem(obj, "name");
-                        cJSON *content = cJSON_GetObjectItem(obj, "content");
-                        if (!content || !cJSON_IsString(content)) {
+                        const char *content_s = json_str(obj, "content");
+                        if (!content_s) {
                             cJSON_Delete(obj);
                             continue;
                         }
 
-                        const char *sec_name = (name && cJSON_IsString(name))
-                                               ? name->valuestring : NULL;
+                        const char *sec_name = json_str(obj, "name");
 
                         /* Search within content line by line */
-                        char *text = strdup(content->valuestring);
+                        char *text = xstrdup(content_s);
                         char *saveptr = NULL;
                         char *cline = strtok_r(text, "\n", &saveptr);
                         while (cline && total_matches < max_matches) {
@@ -847,7 +840,7 @@ void ui_state_search(ui_state_t *ui, const char *query) {
                             char *p = line + 3;
                             char *nl = strchr(p, '\n');
                             if (nl) *nl = '\0';
-                            current_section = strdup(p);
+                            current_section = xstrdup(p);
                         }
 
                         if (ui_ci_strstr(line, query)) {
@@ -885,13 +878,12 @@ void ui_state_search(ui_state_t *ui, const char *query) {
                     cJSON *obj = cJSON_Parse(jline);
                     if (!obj) continue;
 
-                    cJSON *tool = cJSON_GetObjectItem(obj, "tool");
-                    if (!tool || !cJSON_IsString(tool)) {
+                    const char *tname = json_str(obj, "tool");
+                    if (!tname) {
                         cJSON_Delete(obj);
                         continue;
                     }
 
-                    const char *tname = tool->valuestring;
                     cJSON *params = cJSON_GetObjectItem(obj, "params");
                     if (!params) { cJSON_Delete(obj); continue; }
 
@@ -901,46 +893,33 @@ void ui_state_search(ui_state_t *ui, const char *query) {
                     const char *label = NULL;
 
                     if (strcmp(tname, "query") == 0) {
-                        cJSON *t = cJSON_GetObjectItem(params, "text");
-                        if (t && cJSON_IsString(t)) {
-                            search_text = t->valuestring;
-                            label = "query";
-                        }
+                        search_text = json_str(params, "text");
+                        if (search_text) label = "query";
                     } else if (strcmp(tname, "done") == 0) {
-                        cJSON *r = cJSON_GetObjectItem(params, "result");
-                        if (r && cJSON_IsString(r)) {
-                            search_text = r->valuestring;
-                            label = "result";
-                        }
+                        search_text = json_str(params, "result");
+                        if (search_text) label = "result";
                     } else if (strcmp(tname, "plan") == 0) {
-                        cJSON *r = cJSON_GetObjectItem(params, "result");
-                        if (r && cJSON_IsString(r)) {
-                            search_text = r->valuestring;
-                            label = "plan";
-                        }
+                        search_text = json_str(params, "result");
+                        if (search_text) label = "plan";
                     } else if (strcmp(tname, "memory_store") == 0) {
-                        cJSON *k = cJSON_GetObjectItem(params, "key");
-                        cJSON *v = cJSON_GetObjectItem(params, "value");
-                        if (k && cJSON_IsString(k) &&
-                            ui_ci_strstr(k->valuestring, query)) {
-                            search_text = k->valuestring;
+                        const char *k = json_str(params, "key");
+                        const char *v = json_str(params, "value");
+                        if (k && ui_ci_strstr(k, query)) {
+                            search_text = k;
                             label = "memory";
-                        } else if (v && cJSON_IsString(v)) {
-                            search_text = v->valuestring;
+                        } else if (v) {
+                            search_text = v;
                             label = "memory";
                         }
                     } else if (strcmp(tname, "user_ask") == 0) {
-                        cJSON *q = cJSON_GetObjectItem(params, "question");
-                        if (q && cJSON_IsString(q)) {
-                            search_text = q->valuestring;
-                            label = "ask";
-                        }
+                        search_text = json_str(params, "question");
+                        if (search_text) label = "ask";
                     }
 
                     if (!search_text) { cJSON_Delete(obj); continue; }
 
                     /* Search line by line within the extracted text */
-                    char *text = strdup(search_text);
+                    char *text = xstrdup(search_text);
                     char *saveptr = NULL;
                     char *cline = strtok_r(text, "\n", &saveptr);
                     while (cline && total_matches < max_matches) {
@@ -987,7 +966,7 @@ void ui_state_search(ui_state_t *ui, const char *query) {
             ui->nav_cap = new_cap;
         }
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
-        entry->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+        entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
         entry->label = ui->current_label;  /* transfer ownership */
         ui->current_label = NULL;
         entry->scroll_y = ui->scroll_y;
@@ -1005,8 +984,7 @@ void ui_state_search(ui_state_t *ui, const char *query) {
     free(md_str);
 
     /* Set a virtual filepath for breadcrumb display */
-    free(ui->current_filepath);
-    ui->current_filepath = strdup("/search-results.md");
+    str_replace(&ui->current_filepath, "/search-results.md");
 
     ui->scroll_y = 0;
     ui->scroll_x = 0;
@@ -1050,11 +1028,11 @@ static char *resolve_store_alias(const char *session_dir, const char *filepath) 
         if (ent->d_type != DT_LNK) continue;
 
         char link_path[NASH_PATH_MAX];
-        snprintf(link_path, sizeof(link_path), "%s/%s", session_dir, ent->d_name);
+        path_join(link_path, sizeof(link_path), session_dir, ent->d_name);
 
         char link_real[NASH_PATH_MAX];
         if (realpath(link_path, link_real) && strcmp(link_real, target_real) == 0) {
-            result = strdup(ent->d_name);
+            result = xstrdup(ent->d_name);
             break;
         }
     }
@@ -1091,7 +1069,7 @@ static void breadcrumb_append(str_t *s, const char *filepath,
 }
 
 char *ui_state_breadcrumb(ui_state_t *ui) {
-    if (!ui) return strdup("");
+    if (!ui) return xstrdup("");
 
     str_t s = str_new(256);
     for (int i = 0; i < ui->nav_depth; i++) {

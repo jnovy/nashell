@@ -55,7 +55,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     char new_emb_fname[512];
     key_to_path(new_key, ".emb", new_emb_fname, sizeof(new_emb_fname));
     char new_emb_path[NASH_PATH_MAX];
-    snprintf(new_emb_path, sizeof(new_emb_path), "%s/%s",
+    path_join(new_emb_path, sizeof(new_emb_path),
              memory_dir(target), new_emb_fname);
     embed_multi_vec_t new_emb = embed_multi_vec_load(new_emb_path);
     if (!new_emb.data) return NULL;
@@ -95,12 +95,12 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         pthread_mutex_lock(&m->mtx);
         snap_count = m->idx.count;
         if (snap_count > 0) {
-            snap = calloc((size_t)snap_count, sizeof(consol_snap_t));
+            snap = xcalloc((size_t)snap_count, sizeof(consol_snap_t));
             if (snap) {
                 for (int i = 0; i < snap_count; i++) {
                     mem_index_entry_t *e = &m->idx.entries[i];
-                    snap[i].key = e->key ? strdup(e->key) : NULL;
-                    snap[i].path = e->path ? strdup(e->path) : NULL;
+                    snap[i].key = e->key ? xstrdup(e->key) : NULL;
+                    snap[i].path = e->path ? xstrdup(e->path) : NULL;
                     /* Don't deep-copy embeddings under the mutex — the bulk
                      * mallocs block all concurrent memory operations.  Instead
                      * record whether an embedding exists and load from disk
@@ -177,30 +177,23 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     cJSON *old_entry = slurp_json(best_path);
     if (!old_entry) return NULL;
 
-    cJSON *old_key_j = cJSON_GetObjectItem(old_entry, "key");
-    cJSON *old_val_j = cJSON_GetObjectItem(old_entry, "value");
-    if (!old_key_j || !old_val_j ||
-        !old_key_j->valuestring || !old_val_j->valuestring) {
+    const char *old_key = json_str(old_entry, "key");
+    const char *old_value = json_str(old_entry, "value");
+    if (!old_key || !old_value) {
         cJSON_Delete(old_entry);
         return NULL;
     }
 
-    const char *old_key = old_key_j->valuestring;
-    const char *old_value = old_val_j->valuestring;
-
     /* Don't consolidate pinned memories */
-    cJSON *pinned_j = cJSON_GetObjectItem(old_entry, "pinned");
-    if (pinned_j && cJSON_IsTrue(pinned_j)) {
+    if (json_bool(old_entry, "pinned", 0)) {
         cJSON_Delete(old_entry);
         return NULL;
     }
 
     /* Extract old entry's validation scores BEFORE any branch deletes it.
      * These will be carried forward to the surviving entry. */
-    cJSON *old_rh = cJSON_GetObjectItem(old_entry, "recall_hits");
-    cJSON *old_rm = cJSON_GetObjectItem(old_entry, "recall_misses");
-    int old_hits = old_rh ? (int)cJSON_GetNumberValue(old_rh) : 0;
-    int old_misses = old_rm ? (int)cJSON_GetNumberValue(old_rm) : 0;
+    int old_hits = json_int(old_entry, "recall_hits", 0);
+    int old_misses = json_int(old_entry, "recall_misses", 0);
 
     /* Build classify-then-act prompt.
      * Instead of blindly merging, ask the LLM to classify the relationship:
@@ -215,8 +208,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * chars each. */
     size_t prompt_sz = strlen(new_value) + strlen(old_value) +
                      strlen(new_key) + strlen(old_key) + 2048;
-    char *prompt = malloc(prompt_sz);
-    if (!prompt) { cJSON_Delete(old_entry); return NULL; }
+    char *prompt = xmalloc(prompt_sz);
     snprintf(prompt, prompt_sz,
         "Two memory entries are semantically similar. Classify their relationship "
         "and act accordingly.\n\n"
@@ -258,11 +250,11 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * If you add a new pointer field to provider_config_t, add a strdup here
      * or the copy will share ownership with ctx->provider->cfg. */
     provider_config_t cons_cfg = ctx->provider->cfg;
-    cons_cfg.model_id    = cons_cfg.model_id    ? strdup(cons_cfg.model_id)    : NULL;
-    cons_cfg.api_base    = cons_cfg.api_base    ? strdup(cons_cfg.api_base)    : NULL;
-    cons_cfg.api_key_env = cons_cfg.api_key_env ? strdup(cons_cfg.api_key_env) : NULL;
-    cons_cfg.project_id  = cons_cfg.project_id  ? strdup(cons_cfg.project_id)  : NULL;
-    cons_cfg.region      = cons_cfg.region      ? strdup(cons_cfg.region)      : NULL;
+    cons_cfg.model_id    = cons_cfg.model_id    ? xstrdup(cons_cfg.model_id)    : NULL;
+    cons_cfg.api_base    = cons_cfg.api_base    ? xstrdup(cons_cfg.api_base)    : NULL;
+    cons_cfg.api_key_env = cons_cfg.api_key_env ? xstrdup(cons_cfg.api_key_env) : NULL;
+    cons_cfg.project_id  = cons_cfg.project_id  ? xstrdup(cons_cfg.project_id)  : NULL;
+    cons_cfg.region      = cons_cfg.region      ? xstrdup(cons_cfg.region)      : NULL;
     cons_cfg.max_tokens = 2048;
     cons_cfg.temperature = 0.1f;
     cons_cfg.enable_thinking = 0;
@@ -298,7 +290,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
     if (strncmp(response, "SUPERSEDES", 10) == 0) {
         /* New entry corrects/updates old — delete old, keep new as-is.
          * FIX D4: Return key for batch deletion instead of inline delete. */
-        char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;
+        char *del_key = (strcmp(old_key, new_key) != 0) ? xstrdup(old_key) : NULL;
         /* Carry forward old entry's validation evidence to the new entry.
          * The new insight earned the old one's credibility by replacing it. */
         consolidation_carry_scores(target, new_key,
@@ -326,7 +318,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
             while (*newline == '\n' || *newline == '\r' || *newline == ' ')
                 newline++;
             if (strlen(newline) >= 20) {
-                merged = strdup(newline);
+                merged = xstrdup(newline);
             }
         }
         if (!merged) {
@@ -342,14 +334,13 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         char new_fname[512];
         key_to_path(new_key, ".json", new_fname, sizeof(new_fname));
         char new_json_path[NASH_PATH_MAX];
-        snprintf(new_json_path, sizeof(new_json_path), "%s/%s",
+        path_join(new_json_path, sizeof(new_json_path),
                  memory_dir(target), new_fname);
 
         const char *new_jref = NULL;
         cJSON *new_entry_json = slurp_json(new_json_path);
         if (new_entry_json) {
-            cJSON *jr = cJSON_GetObjectItem(new_entry_json, "journal_ref");
-            if (jr && jr->valuestring) new_jref = jr->valuestring;
+            new_jref = json_str(new_entry_json, "journal_ref");
         }
 
         /* Store merged version under the new key */
@@ -367,7 +358,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
         }
 
         /* FIX D4: Return key for batch deletion instead of inline delete. */
-        char *del_key = (strcmp(old_key, new_key) != 0) ? strdup(old_key) : NULL;
+        char *del_key = (strcmp(old_key, new_key) != 0) ? xstrdup(old_key) : NULL;
 
         /* Carry forward old entry's validation evidence to the merged result.
          * memory_store() above preserved the new entry's counters (same key
@@ -391,9 +382,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     TOOL_REQ_STR(params, "key", key);
     TOOL_REQ_STR(params, "value", value);
 
-    int pinned = 0;
-    cJSON *pin_j = cJSON_GetObjectItem(params, "pinned");
-    if (pin_j && cJSON_IsTrue(pin_j)) pinned = 1;
+    int pinned = json_bool(params, "pinned", 0);
 
     /* Build journal provenance reference: "session_dir/journal.jsonl:R<loop>" */
     char jref[NASH_PATH_MAX];
@@ -422,7 +411,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
             }
         } else if (refs_j->valuestring) {
             /* Handle legacy comma-separated string format */
-            refs_copy = strdup(refs_j->valuestring);
+            refs_copy = xstrdup(refs_j->valuestring);
             char *saveptr = NULL;
             char *tok = strtok_r(refs_copy, ",", &saveptr);
             while (tok && n_refs < 32) {
@@ -448,9 +437,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     }
 
     /* Workspace routing: 'global' parameter forces store to global memory */
-    int force_global = 0;
-    cJSON *glob_j = cJSON_GetObjectItem(params, "global");
-    if (glob_j && cJSON_IsTrue(glob_j)) force_global = 1;
+    int force_global = json_bool(params, "global", 0);
 
     int rc;
     if (ctx->ws) {
@@ -527,8 +514,8 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
                 }
             }
             if (ctx->n_deferred_consol < ctx->cap_deferred_consol) {
-                ctx->deferred_consol[ctx->n_deferred_consol].key = strdup(key);
-                ctx->deferred_consol[ctx->n_deferred_consol].value = strdup(value);
+                ctx->deferred_consol[ctx->n_deferred_consol].key = xstrdup(key);
+                ctx->deferred_consol[ctx->n_deferred_consol].value = xstrdup(value);
                 /* FIX #4: Store flag instead of raw memory_t* pointer.
                  * The pointer could become dangling after session reset
                  * in daemon mode. Resolve to live pointer at flush time. */
@@ -551,7 +538,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "memory_store",
                    params, alias, strlen(value), 0, NULL, NULL);
 
-    res.store_ref = alias ? strdup(alias) : NULL;
+    res.store_ref = alias ? xstrdup(alias) : NULL;
     free(alias);
     free(hash);
     return res;
@@ -574,23 +561,16 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
             "memory_search requires at least one of: 'query' (semantic search), "
             "'key' (exact memory key), or 'pattern' (lexical/regex search).");
 
-    int use_regex = 0;
-    cJSON *regex_j = cJSON_GetObjectItem(params, "regex");
-    if (regex_j && cJSON_IsTrue(regex_j))
-        use_regex = 1;
+    int use_regex = json_bool(params, "regex", 0);
 
-    int max_results = 0;  /* 0 = use defaults per source */
-    cJSON *max_j = cJSON_GetObjectItem(params, "max_results");
-    if (max_j && cJSON_IsNumber(max_j)) {
-        max_results = max_j->valueint;
+    int max_results = json_int(params, "max_results", 0);
+    if (max_results > 0) {
         if (max_results < 1) max_results = 1;
         if (max_results > 100) max_results = 100;
     }
 
-    int days = 0;
-    cJSON *days_j = cJSON_GetObjectItem(params, "days");
-    if (days_j && cJSON_IsNumber(days_j))
-        days = days_j->valueint > 0 ? days_j->valueint : 0;
+    int days = json_int(params, "days", 0);
+    if (days < 0) days = 0;
 
     str_t out = str_new(4096);
     int mem_count = 0, ses_count = 0, total_lexical_matches = 0;
@@ -773,7 +753,7 @@ finish:;
 
     memory_results_free(&mem_results);
     if (ses_count > 0) ss_results_free(&ses_results);
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     free(hash);
     str_free(&out);

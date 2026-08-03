@@ -129,14 +129,14 @@ int provider_lookup_context_size(const char *model_id) {
 
 /* Shared fetch_model_info for API providers (OpenAI, Anthropic, Vertex).
  * These don't have /props endpoints — they use static lookup tables.
- * Sets model_name = strdup(cfg.model_id), context_size from config or lookup,
+ * Sets model_name = xstrdup(cfg.model_id), context_size from config or lookup,
  * props_json = NULL. */
 int provider_api_fetch_model_info(provider_t *p, int *context_size,
                                   char **model_name, char **props_json) {
     if (props_json) *props_json = NULL;
 
     if (model_name && p->cfg.model_id)
-        *model_name = strdup(p->cfg.model_id);
+        *model_name = xstrdup(p->cfg.model_id);
 
     if (context_size) {
         if (p->cfg.context_size > 0)
@@ -159,7 +159,7 @@ const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...) {
     va_start(ap, fmt);
     vsnprintf(url, sizeof(url), fmt, ap);
     va_end(ap);
-    p->_cached_endpoint = strdup(url);
+    p->_cached_endpoint = xstrdup(url);
     return p->_cached_endpoint;
 }
 
@@ -198,8 +198,7 @@ const char *provider_type_to_str(provider_type_t t) {
 /* ── Provider lifecycle ─────────────────────────────────────────── */
 
 provider_t *provider_create(const provider_config_t *cfg) {
-    provider_t *p = calloc(1, sizeof(*p));
-    if (!p) return NULL;
+    provider_t *p = xcalloc(1, sizeof(*p));
 
     p->type = cfg->type;
     /* FIX 5a: Zero the struct first, then copy scalar fields explicitly,
@@ -220,20 +219,11 @@ provider_t *provider_create(const provider_config_t *cfg) {
     p->cfg.max_retries     = cfg->max_retries;
     p->cfg.retry_base_sec  = cfg->retry_base_sec;
     /* Deep-copy all string fields so provider owns its own strings. */
-    p->cfg.model_id    = cfg->model_id    ? strdup(cfg->model_id)    : NULL;
-    p->cfg.api_base    = cfg->api_base    ? strdup(cfg->api_base)    : NULL;
-    p->cfg.api_key_env = cfg->api_key_env ? strdup(cfg->api_key_env) : NULL;
-    p->cfg.project_id  = cfg->project_id  ? strdup(cfg->project_id)  : NULL;
-    p->cfg.region      = cfg->region      ? strdup(cfg->region)      : NULL;
-    /* OOM check: if any source string was non-NULL but strdup returned NULL */
-    if ((cfg->model_id && !p->cfg.model_id) ||
-        (cfg->api_base && !p->cfg.api_base) ||
-        (cfg->api_key_env && !p->cfg.api_key_env) ||
-        (cfg->project_id && !p->cfg.project_id) ||
-        (cfg->region && !p->cfg.region)) {
-        provider_free(p);
-        return NULL;
-    }
+    p->cfg.model_id    = cfg->model_id    ? xstrdup(cfg->model_id)    : NULL;
+    p->cfg.api_base    = cfg->api_base    ? xstrdup(cfg->api_base)    : NULL;
+    p->cfg.api_key_env = cfg->api_key_env ? xstrdup(cfg->api_key_env) : NULL;
+    p->cfg.project_id  = cfg->project_id  ? xstrdup(cfg->project_id)  : NULL;
+    p->cfg.region      = cfg->region      ? xstrdup(cfg->region)      : NULL;
 
     /* Set defaults */
     if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
@@ -287,8 +277,8 @@ void provider_free(provider_t *p) {
 /* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */
 static void strict_object(cJSON *schema) {
     if (!schema || !cJSON_IsObject(schema)) return;
-    cJSON *type = cJSON_GetObjectItem(schema, "type");
-    if (type && cJSON_IsString(type) && strcmp(type->valuestring, "object") == 0) {
+    const char *type = json_str(schema, "type");
+    if (type && strcmp(type, "object") == 0) {
         cJSON *props = cJSON_GetObjectItem(schema, "properties");
         if (props) {
             cJSON *child = props->child;
@@ -447,10 +437,8 @@ void extract_openai_stats(cJSON *resp, llm_stats_t *stats) {
     if (!resp || !stats) return;
     cJSON *usage = cJSON_GetObjectItem(resp, "usage");
     if (!usage) return;
-    cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
-    cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
-    if (pt) stats->prompt_tokens = pt->valueint;
-    if (ct) stats->completion_tokens = ct->valueint;
+    stats->prompt_tokens = json_int(usage, "prompt_tokens", stats->prompt_tokens);
+    stats->completion_tokens = json_int(usage, "completion_tokens", stats->completion_tokens);
 }
 
 /* ── Shared: build messages array from llm_chat_t ───────────────── */
@@ -528,21 +516,16 @@ char *parse_openai_response(provider_t *p, const char *response_json,
         cJSON *tc = cJSON_GetArrayItem(tool_calls, 0);
         cJSON *fn = cJSON_GetObjectItem(tc, "function");
         if (fn) {
-            cJSON *name = cJSON_GetObjectItem(fn, "name");
-            cJSON *args_str = cJSON_GetObjectItem(fn, "arguments");
-            cJSON *id = cJSON_GetObjectItem(tc, "id");
-
             /* Build unified response */
             cJSON *unified = cJSON_CreateObject();
-            cJSON *content = cJSON_GetObjectItem(message, "content");
             cJSON_AddStringToObject(unified, "thought",
-                                    (content && cJSON_IsString(content)) ?
-                                    content->valuestring : "");
+                                    json_str_or(message, "content", ""));
             cJSON_AddStringToObject(unified, "action",
-                                    name ? name->valuestring : "");
+                                    json_str_or(fn, "name", ""));
 
-            if (args_str && cJSON_IsString(args_str)) {
-                cJSON *args = cJSON_Parse(args_str->valuestring);
+            const char *args_s = json_str(fn, "arguments");
+            if (args_s) {
+                cJSON *args = cJSON_Parse(args_s);
                 if (args) {
                     cJSON *child = args->child;
                     while (child) {
@@ -561,8 +544,8 @@ char *parse_openai_response(provider_t *p, const char *response_json,
             /* Store tool call info */
             if (chat) {
                 free(chat->last_tool_call_id);
-                chat->last_tool_call_id = (id && cJSON_IsString(id)) ?
-                                          strdup(id->valuestring) : NULL;
+                const char *tid = json_str(tc, "id");
+                chat->last_tool_call_id = tid ? xstrdup(tid) : NULL;
                 free(chat->last_tool_calls_json);
                 chat->last_tool_calls_json = cJSON_PrintUnformatted(tool_calls);
             }
@@ -573,11 +556,8 @@ char *parse_openai_response(provider_t *p, const char *response_json,
     }
 
     /* Plain text response */
-    cJSON *content = cJSON_GetObjectItem(message, "content");
-    char *result = NULL;
-    if (content && cJSON_IsString(content)) {
-        result = strdup(content->valuestring);
-    }
+    const char *ct_str = json_str(message, "content");
+    char *result = ct_str ? xstrdup(ct_str) : NULL;
 
     if (chat) {
         free(chat->last_tool_call_id);
@@ -626,19 +606,17 @@ typedef struct {
 
 static void sse_process_line_openai(provider_sse_state_t *st, const char *line) {
     if (strncmp(line, "data: ", 6) != 0) return;
-    const char *json_str = line + 6;
-    if (strcmp(json_str, "[DONE]") == 0) return;
+    const char *json_data = line + 6;
+    if (strcmp(json_data, "[DONE]") == 0) return;
 
-    cJSON *data = cJSON_Parse(json_str);
+    cJSON *data = cJSON_Parse(json_data);
     if (!data) return;
 
     /* Check for prompt processing progress (llama.cpp return_progress) */
     cJSON *pp = cJSON_GetObjectItem(data, "prompt_progress");
     if (pp && cJSON_IsObject(pp) && st->on_progress) {
-        cJSON *pp_total = cJSON_GetObjectItem(pp, "total");
-        cJSON *pp_processed = cJSON_GetObjectItem(pp, "processed");
-        int total = pp_total ? pp_total->valueint : 0;
-        int processed = pp_processed ? pp_processed->valueint : 0;
+        int total = json_int(pp, "total", 0);
+        int processed = json_int(pp, "processed", 0);
         st->on_progress(processed, total, st->progress_userdata);
     }
 
@@ -647,20 +625,16 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
         /* Check for usage in final chunk */
         cJSON *usage = cJSON_GetObjectItem(data, "usage");
         if (usage && st->stats) {
-            cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
-            cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
-            if (pt) st->stats->prompt_tokens = pt->valueint;
-            if (ct) st->stats->completion_tokens = ct->valueint;
+            st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
+            st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
         }
         /* llama.cpp includes timings alongside usage in the final chunk */
         cJSON *timings = cJSON_GetObjectItem(data, "timings");
         if (timings && st->stats) {
-            cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
-            cJSON *tps = cJSON_GetObjectItem(timings, "predicted_per_second");
-            if (pps && pps->valuedouble > 0)
-                st->stats->prompt_per_second = pps->valuedouble;
-            if (tps && tps->valuedouble > 0)
-                st->stats->predicted_per_second = tps->valuedouble;
+            double pps = json_num(timings, "prompt_per_second", 0);
+            double tps = json_num(timings, "predicted_per_second", 0);
+            if (pps > 0) st->stats->prompt_per_second = pps;
+            if (tps > 0) st->stats->predicted_per_second = tps;
         }
         cJSON_Delete(data);
         return;
@@ -680,8 +654,7 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
          * In OpenAI streaming, each tool call has an "index" field.
          * When a model emits N tool calls, chunks arrive with index 0..N-1.
          * We only process index 0; track the max index for the corrective hint. */
-        cJSON *idx = cJSON_GetObjectItem(tc, "index");
-        int tc_idx = (idx && cJSON_IsNumber(idx)) ? idx->valueint : 0;
+        int tc_idx = json_int(tc, "index", 0);
 
         /* Also detect multiple entries in a single chunk's array */
         int arr_size = cJSON_GetArraySize(tool_calls);
@@ -699,19 +672,19 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
         }
 
         /* Tool call ID (first chunk only) */
-        cJSON *id = cJSON_GetObjectItem(tc, "id");
-        if (id && cJSON_IsString(id) && !st->tool_call_id) {
-            st->tool_call_id = strdup(id->valuestring);
+        const char *id_s = json_str(tc, "id");
+        if (id_s && !st->tool_call_id) {
+            st->tool_call_id = xstrdup(id_s);
         }
 
         cJSON *fn = cJSON_GetObjectItem(tc, "function");
         if (fn) {
-            cJSON *name = cJSON_GetObjectItem(fn, "name");
-            if (name && cJSON_IsString(name))
-                str_append_cstr(&st->tool_call_name, name->valuestring);
-            cJSON *args = cJSON_GetObjectItem(fn, "arguments");
-            if (args && cJSON_IsString(args))
-                str_append_cstr(&st->tool_call_args, args->valuestring);
+            const char *fn_name = json_str(fn, "name");
+            if (fn_name)
+                str_append_cstr(&st->tool_call_name, fn_name);
+            const char *fn_args = json_str(fn, "arguments");
+            if (fn_args)
+                str_append_cstr(&st->tool_call_args, fn_args);
         }
 
         /* Count tool call chunks for wall-clock t/s timing
@@ -724,9 +697,8 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
     }
 
     /* Content delta */
-    cJSON *content = cJSON_GetObjectItem(delta, "content");
-    if (content && cJSON_IsString(content)) {
-        const char *text = content->valuestring;
+    const char *text = json_str(delta, "content");
+    if (text) {
         size_t tlen = strlen(text);
 
         if (st->max_response > 0 &&
@@ -770,9 +742,9 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
     }
 
     /* Reasoning/thinking content (llama.cpp, Qwen, DeepSeek via OpenAI-compat) */
-    cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
-    if (reasoning && cJSON_IsString(reasoning)) {
-        str_append_cstr(&st->thinking_content, reasoning->valuestring);
+    const char *reasoning = json_str(delta, "reasoning_content");
+    if (reasoning) {
+        str_append_cstr(&st->thinking_content, reasoning);
         st->streaming_token_count++;
         if (!st->first_token_seen) {
             clock_gettime(CLOCK_MONOTONIC, &st->first_token_time);
@@ -783,14 +755,10 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
     /* Usage stats from streaming response */
     cJSON *usage = cJSON_GetObjectItem(data, "usage");
     if (usage && st->stats) {
-        cJSON *pt = cJSON_GetObjectItem(usage, "prompt_tokens");
-        cJSON *ct = cJSON_GetObjectItem(usage, "completion_tokens");
-        cJSON *pps = cJSON_GetObjectItem(usage, "prompt_per_second");
-        cJSON *tps = cJSON_GetObjectItem(usage, "predicted_per_second");
-        if (pt) st->stats->prompt_tokens = pt->valueint;
-        if (ct) st->stats->completion_tokens = ct->valueint;
-        if (pps) st->stats->prompt_per_second = pps->valuedouble;
-        if (tps) st->stats->predicted_per_second = tps->valuedouble;
+        st->stats->prompt_tokens = json_int(usage, "prompt_tokens", st->stats->prompt_tokens);
+        st->stats->completion_tokens = json_int(usage, "completion_tokens", st->stats->completion_tokens);
+        st->stats->prompt_per_second = json_num(usage, "prompt_per_second", st->stats->prompt_per_second);
+        st->stats->predicted_per_second = json_num(usage, "predicted_per_second", st->stats->predicted_per_second);
     }
 
     /* llama.cpp server reports speed in a top-level "timings" object
@@ -798,12 +766,10 @@ static void sse_process_line_openai(provider_sse_state_t *st, const char *line) 
      * Fields: predicted_per_second, prompt_per_second, etc. */
     cJSON *timings = cJSON_GetObjectItem(data, "timings");
     if (timings && st->stats) {
-        cJSON *pps = cJSON_GetObjectItem(timings, "prompt_per_second");
-        cJSON *tps = cJSON_GetObjectItem(timings, "predicted_per_second");
-        if (pps && pps->valuedouble > 0)
-            st->stats->prompt_per_second = pps->valuedouble;
-        if (tps && tps->valuedouble > 0)
-            st->stats->predicted_per_second = tps->valuedouble;
+        double pps = json_num(timings, "prompt_per_second", 0);
+        double tps = json_num(timings, "predicted_per_second", 0);
+        if (pps > 0) st->stats->prompt_per_second = pps;
+        if (tps > 0) st->stats->predicted_per_second = tps;
     }
 
     cJSON_Delete(data);
@@ -820,15 +786,13 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
      * We track state: are we in a text block or tool_use block?
      */
     if (strncmp(line, "data: ", 6) != 0) return;
-    const char *json_str = line + 6;
+    const char *json_data = line + 6;
 
-    cJSON *data = cJSON_Parse(json_str);
+    cJSON *data = cJSON_Parse(json_data);
     if (!data) return;
 
-    cJSON *type = cJSON_GetObjectItem(data, "type");
-    if (!type || !cJSON_IsString(type)) { cJSON_Delete(data); return; }
-
-    const char *event_type = type->valuestring;
+    const char *event_type = json_str(data, "type");
+    if (!event_type) { cJSON_Delete(data); return; }
 
     if (strcmp(event_type, "message_start") == 0) {
         /* Extract usage from message_start */
@@ -843,16 +807,15 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                      * cache_creation_input_tokens = tokens written to new cache entry.
                      * Store the breakdown, then set prompt_tokens = total so all
                      * consumers (TUI, react calibration, context %) see the real count. */
-                    cJSON *cr = cJSON_GetObjectItem(usage, "cache_read_input_tokens");
-                    if (cr) st->stats->cache_read_tokens = cr->valueint;
-                    cJSON *cc = cJSON_GetObjectItem(usage, "cache_creation_input_tokens");
-                    if (cc) st->stats->cache_creation_tokens = cc->valueint;
-                    st->stats->prompt_tokens = it->valueint
+                    int uncached = it->valueint;
+                    st->stats->cache_read_tokens = json_int(usage, "cache_read_input_tokens", 0);
+                    st->stats->cache_creation_tokens = json_int(usage, "cache_creation_input_tokens", 0);
+                    st->stats->prompt_tokens = uncached
                                              + st->stats->cache_read_tokens
                                              + st->stats->cache_creation_tokens;
                     nash_log("[provider/sse] message_start: input_tokens=%d "
                              "(uncached=%d cache_read=%d cache_create=%d)",
-                             st->stats->prompt_tokens, it->valueint,
+                             st->stats->prompt_tokens, uncached,
                              st->stats->cache_read_tokens,
                              st->stats->cache_creation_tokens);
                 } else {
@@ -869,23 +832,22 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
     else if (strcmp(event_type, "content_block_start") == 0) {
         cJSON *cb = cJSON_GetObjectItem(data, "content_block");
         if (cb) {
-            cJSON *cb_type = cJSON_GetObjectItem(cb, "type");
-            if (cb_type && cJSON_IsString(cb_type)) {
-                if (strcmp(cb_type->valuestring, "tool_use") == 0) {
+            const char *cb_type = json_str(cb, "type");
+            if (cb_type) {
+                if (strcmp(cb_type, "tool_use") == 0) {
                     st->multi_tool_count++;
                     if (st->multi_tool_count == 1) {
                         /* First tool_use block — process normally */
                         st->in_tool_use = 1;
                         st->has_tool_call = 1;
-                        cJSON *id = cJSON_GetObjectItem(cb, "id");
-                        if (id && cJSON_IsString(id)) {
-                            free(st->tool_call_id);
-                            st->tool_call_id = strdup(id->valuestring);
+                        const char *cb_id = json_str(cb, "id");
+                        if (cb_id) {
+                            str_replace(&st->tool_call_id, cb_id);
                         }
-                        cJSON *name = cJSON_GetObjectItem(cb, "name");
-                        if (name && cJSON_IsString(name)) {
+                        const char *cb_name = json_str(cb, "name");
+                        if (cb_name) {
                             str_clear(&st->tool_call_name);
-                            str_append_cstr(&st->tool_call_name, name->valuestring);
+                            str_append_cstr(&st->tool_call_name, cb_name);
                         }
                     } else {
                         /* 2nd+ tool_use block — skip it, don't overwrite first */
@@ -900,12 +862,11 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
     else if (strcmp(event_type, "content_block_delta") == 0) {
         cJSON *delta = cJSON_GetObjectItem(data, "delta");
         if (delta) {
-            cJSON *delta_type = cJSON_GetObjectItem(delta, "type");
-            if (delta_type && cJSON_IsString(delta_type)) {
-                if (strcmp(delta_type->valuestring, "text_delta") == 0) {
-                    cJSON *text = cJSON_GetObjectItem(delta, "text");
-                    if (text && cJSON_IsString(text)) {
-                        const char *t = text->valuestring;
+            const char *delta_type = json_str(delta, "type");
+            if (delta_type) {
+                if (strcmp(delta_type, "text_delta") == 0) {
+                    const char *t = json_str(delta, "text");
+                    if (t) {
                         size_t tlen = strlen(t);
 
                         /* Max response size cap (matches OpenAI handler) */
@@ -946,10 +907,10 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                         }
                     }
                 }
-                else if (strcmp(delta_type->valuestring, "input_json_delta") == 0) {
-                    cJSON *partial = cJSON_GetObjectItem(delta, "partial_json");
-                    if (partial && cJSON_IsString(partial)) {
-                        str_append_cstr(&st->tool_call_args, partial->valuestring);
+                else if (strcmp(delta_type, "input_json_delta") == 0) {
+                    const char *partial = json_str(delta, "partial_json");
+                    if (partial) {
+                        str_append_cstr(&st->tool_call_args, partial);
                     }
                     /* Count tool input deltas for wall-clock t/s timing */
                     st->streaming_token_count++;
@@ -958,10 +919,10 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
                         st->first_token_seen = 1;
                     }
                 }
-                else if (strcmp(delta_type->valuestring, "thinking") == 0) {
-                    cJSON *thinking = cJSON_GetObjectItem(delta, "thinking");
-                    if (thinking && cJSON_IsString(thinking)) {
-                        str_append_cstr(&st->thinking_content, thinking->valuestring);
+                else if (strcmp(delta_type, "thinking") == 0) {
+                    const char *thinking = json_str(delta, "thinking");
+                    if (thinking) {
+                        str_append_cstr(&st->thinking_content, thinking);
                     }
                     /* Count thinking deltas for wall-clock t/s timing */
                     st->streaming_token_count++;
@@ -983,8 +944,7 @@ static void sse_process_line_anthropic(provider_sse_state_t *st, const char *lin
         }
         cJSON *usage = cJSON_GetObjectItem(data, "usage");
         if (usage && st->stats) {
-            cJSON *ot = cJSON_GetObjectItem(usage, "output_tokens");
-            if (ot) st->stats->completion_tokens = ot->valueint;
+            st->stats->completion_tokens = json_int(usage, "output_tokens", st->stats->completion_tokens);
         }
     }
 
@@ -1068,7 +1028,7 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
         if (chat) {
             free(chat->last_tool_call_id);
             chat->last_tool_call_id = st->tool_call_id ?
-                                      strdup(st->tool_call_id) : NULL;
+                                      xstrdup(st->tool_call_id) : NULL;
 
             /* Build tool_calls JSON array for history */
             cJSON *tc_arr = cJSON_CreateArray();
@@ -1096,7 +1056,7 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
             }
         }
     } else if (st->full_content.len > 0) {
-        result = strdup(str_cstr(&st->full_content));
+        result = xstrdup(str_cstr(&st->full_content));
         if (chat) {
             free(chat->last_tool_call_id);
             chat->last_tool_call_id = NULL;
@@ -1120,16 +1080,12 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
                          "reasoning_content (Qwen thinking bug workaround)");
 
                 /* Get tool name from parsed result before serializing */
-                const char *name = "unknown";
-                cJSON *action_item = cJSON_GetObjectItem(extracted, "action");
-                if (action_item && cJSON_IsString(action_item))
-                    name = action_item->valuestring;
+                const char *name = json_str_or(extracted, "action", "unknown");
 
                 if (chat) {
                     /* No server-assigned tool_call_id since this was in
                      * reasoning — generate a synthetic one */
-                    free(chat->last_tool_call_id);
-                    chat->last_tool_call_id = strdup("call_extracted_0");
+                    str_replace(&chat->last_tool_call_id, "call_extracted_0");
 
                     /* Build minimal tool_calls JSON for history threading */
                     cJSON *tc_arr = cJSON_CreateArray();
@@ -1199,11 +1155,12 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     char *endpoint = NULL;
     if (p->get_endpoint) {
         p->_requesting_stream = 0;
-        endpoint = strdup(p->get_endpoint(p));
+        const char *ep = p->get_endpoint(p);
+        if (ep) endpoint = xstrdup(ep);
     }
     if (!endpoint) {
         free(p->last_error);
-        p->last_error = strdup("get_endpoint returned NULL "
+        p->last_error = xstrdup("get_endpoint returned NULL "
                                "(missing API base URL or project config)");
         return NULL;
     }
@@ -1211,7 +1168,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     char *req_body = p->build_request(p, chat, 0);
     if (!req_body) {
         free(p->last_error);
-        p->last_error = strdup("build_request returned NULL "
+        p->last_error = xstrdup("build_request returned NULL "
                                "(message conversion failed)");
         free(endpoint);
         return NULL;
@@ -1230,8 +1187,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
         struct curl_slist *headers = p->build_headers(p);
         if (!headers) {
             nash_log("[provider] build_headers failed (missing credentials?)");
-            free(p->last_error);
-            p->last_error = strdup("Authentication credentials not available");
+            str_replace(&p->last_error, "Authentication credentials not available");
             curl_easy_cleanup(curl);
             free(req_body); free(endpoint); str_free(&response);
             return NULL;
@@ -1283,13 +1239,13 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 char ebuf[512];
                 snprintf(ebuf, sizeof(ebuf), "curl error: %s",
                          curl_easy_strerror(res));
-                p->last_error = strdup(ebuf);
+                p->last_error = xstrdup(ebuf);
             }
             free(p->last_error_request);
             p->last_error_request = req_body; req_body = NULL;
             free(p->last_error_response);
             p->last_error_response = response.len > 0
-                ? strdup(str_cstr(&response)) : NULL;
+                ? xstrdup(str_cstr(&response)) : NULL;
             str_free(&response);
             free(endpoint);
             return NULL;
@@ -1337,13 +1293,13 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 char ebuf[512];
                 snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code,
                          response.len > 0 ? str_cstr(&response) : "(empty)");
-                p->last_error = strdup(ebuf);
+                p->last_error = xstrdup(ebuf);
             }
             free(p->last_error_request);
             p->last_error_request = req_body; req_body = NULL;
             free(p->last_error_response);
             p->last_error_response = response.len > 0
-                ? strdup(str_cstr(&response)) : NULL;
+                ? xstrdup(str_cstr(&response)) : NULL;
             str_free(&response);
             free(endpoint);
             return NULL;
@@ -1363,8 +1319,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 continue;
             }
             /* Populate error diagnostics for react.c journal entry */
-            free(p->last_error);
-            p->last_error = strdup("JSON parse failed on provider response");
+            str_replace(&p->last_error, "JSON parse failed on provider response");
             free(p->last_error_request);
             p->last_error_request = req_body; req_body = NULL;
             free(p->last_error_response);
@@ -1380,14 +1335,11 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
             const char *etype = NULL;
             if (cJSON_IsString(error)) msg = error->valuestring;
             else {
-                cJSON *emsg = cJSON_GetObjectItem(error, "message");
-                if (emsg && cJSON_IsString(emsg)) msg = emsg->valuestring;
-                cJSON *et = cJSON_GetObjectItem(error, "type");
-                if (et && cJSON_IsString(et)) etype = et->valuestring;
-                if (!etype) {
-                    cJSON *ec = cJSON_GetObjectItem(error, "code");
-                    if (ec && cJSON_IsString(ec)) etype = ec->valuestring;
-                }
+                const char *em = json_str(error, "message");
+                if (em) msg = em;
+                etype = json_str(error, "type");
+                if (!etype)
+                    etype = json_str(error, "code");
             }
             /* Non-retryable errors: bail immediately */
             static const char *non_retryable[] = {
@@ -1417,7 +1369,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
                 {
                     char ebuf[512];
                     snprintf(ebuf, sizeof(ebuf), "API error: %.480s", msg);
-                    p->last_error = strdup(ebuf);
+                    p->last_error = xstrdup(ebuf);
                 }
                 free(p->last_error_request);
                 p->last_error_request = req_body; req_body = NULL;
@@ -1469,7 +1421,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         nash_log("[provider] get_endpoint returned NULL (get_endpoint=%p)",
                  (void *)p->get_endpoint);
         free(p->last_error);
-        p->last_error = strdup("get_endpoint returned NULL "
+        p->last_error = xstrdup("get_endpoint returned NULL "
                                "(missing API base URL or project config)");
         return NULL;
     }
@@ -1479,7 +1431,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         nash_log("[provider] build_request returned NULL for endpoint=%s",
                  endpoint);
         free(p->last_error);
-        p->last_error = strdup("build_request returned NULL "
+        p->last_error = xstrdup("build_request returned NULL "
                                "(message conversion failed)");
         return NULL;
     }
@@ -1540,8 +1492,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         struct curl_slist *headers = p->build_headers(p);
         if (!headers) {
             nash_log("[provider] build_headers failed (missing credentials?)");
-            free(p->last_error);
-            p->last_error = strdup("Authentication credentials not available");
+            str_replace(&p->last_error, "Authentication credentials not available");
             curl_easy_cleanup(curl);
             free(req_body);
             goto cleanup;
@@ -1630,18 +1581,18 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             {
                 char ebuf[512];
                 snprintf(ebuf, sizeof(ebuf), "HTTP %ld: %.400s", http_code, err_body);
-                p->last_error = strdup(ebuf);
+                p->last_error = xstrdup(ebuf);
             }
             free(p->last_error_request);
             p->last_error_request = req_body;  /* transfer ownership */
             req_body = NULL;
             free(p->last_error_response);
             p->last_error_response = (st.full_content.len > 0)
-                ? strdup(str_cstr(&st.full_content))
+                ? xstrdup(str_cstr(&st.full_content))
                 : (st.raw_body.len > 0)
-                ? strdup(str_cstr(&st.raw_body))
+                ? xstrdup(str_cstr(&st.raw_body))
                 : (st.thinking_content.len > 0)
-                ? strdup(str_cstr(&st.thinking_content)) : NULL;
+                ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
             goto cleanup;
         }
 
@@ -1653,16 +1604,15 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                 nash_log("[provider] LLM call timed out after %lds "
                          "(streaming_tokens=%d) — not retrying",
                          timeout, st.streaming_token_count);
-                free(p->last_error);
-                p->last_error = strdup("LLM call timed out (response too long)");
+                str_replace(&p->last_error, "LLM call timed out (response too long)");
                 free(p->last_error_request);
                 p->last_error_request = req_body;
                 req_body = NULL;
                 free(p->last_error_response);
                 p->last_error_response = (st.full_content.len > 0)
-                    ? strdup(str_cstr(&st.full_content))
+                    ? xstrdup(str_cstr(&st.full_content))
                     : (st.thinking_content.len > 0)
-                    ? strdup(str_cstr(&st.thinking_content)) : NULL;
+                    ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
                 goto cleanup;
             }
             int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
@@ -1680,16 +1630,16 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
             {
                 char ebuf[512];
                 snprintf(ebuf, sizeof(ebuf), "curl error: %s", curl_easy_strerror(res));
-                p->last_error = strdup(ebuf);
+                p->last_error = xstrdup(ebuf);
             }
             free(p->last_error_request);
             p->last_error_request = req_body;  /* transfer ownership */
             req_body = NULL;
             free(p->last_error_response);
             p->last_error_response = (st.full_content.len > 0)
-                ? strdup(str_cstr(&st.full_content))
+                ? xstrdup(str_cstr(&st.full_content))
                 : (st.thinking_content.len > 0)
-                ? strdup(str_cstr(&st.thinking_content)) : NULL;
+                ? xstrdup(str_cstr(&st.thinking_content)) : NULL;
             goto cleanup;
         }
 
@@ -1765,11 +1715,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
         nash_log("[provider] build_sse_result returned NULL — raw SSE body "
                  "(%.4000s)", str_cstr(&st.raw_body));
         free(p->last_error);
-        p->last_error = strdup("model produced unparseable response "
+        p->last_error = xstrdup("model produced unparseable response "
                                "(no tool call, text, or thinking content)");
         free(p->last_error_response);
         p->last_error_response = (st.raw_body.len <= 8192)
-            ? strdup(str_cstr(&st.raw_body))
+            ? xstrdup(str_cstr(&st.raw_body))
             : strndup(str_cstr(&st.raw_body), 8192);
     }
 

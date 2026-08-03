@@ -60,14 +60,14 @@ static double epoch_now(void) {
  *
  * Returns heap-allocated string. Caller must free. */
 static char *generate_description(const char *value) {
-    if (!value || !value[0]) return strdup("");
+    if (!value || !value[0]) return xstrdup("");
 
     /* Skip leading whitespace and markdown headers */
     const char *start = value;
     while (*start == ' ' || *start == '\t' || *start == '#' ||
            *start == '\n' || *start == '\r' || *start == '*')
         start++;
-    if (!*start) return strdup("");
+    if (!*start) return xstrdup("");
 
     /* If the first line is a short heading (< 30 chars, no period),
      * skip it and use the next content line.  This avoids all skills
@@ -79,7 +79,7 @@ static char *generate_description(const char *value) {
         while (*start == ' ' || *start == '\t' || *start == '#' ||
                *start == '\n' || *start == '\r' || *start == '*')
             start++;
-        if (!*start) return strdup("");
+        if (!*start) return xstrdup("");
     }
 
     /* Find first sentence end (.) or newline, whichever comes first */
@@ -99,10 +99,9 @@ static char *generate_description(const char *value) {
 
     int dlen = (int)(end - start);
     if (dlen > 250) dlen = 250;
-    if (dlen <= 0) return strdup("");
+    if (dlen <= 0) return xstrdup("");
 
-    char *desc = malloc((size_t)dlen + 1);
-    if (!desc) return NULL;
+    char *desc = xmalloc((size_t)dlen + 1);
     memcpy(desc, start, (size_t)dlen);
     desc[dlen] = '\0';
     return desc;
@@ -139,8 +138,7 @@ static void mem_index_map_rebuild(mem_index_t *idx) {
     int new_cap = 64;
     while (new_cap < idx->count * 2) new_cap *= 2;  /* ≤50% load factor */
     idx->map.cap = new_cap;
-    idx->map.slots = malloc((size_t)new_cap * sizeof(int));
-    if (!idx->map.slots) { idx->map.cap = 0; return; }
+    idx->map.slots = xmalloc((size_t)new_cap * sizeof(int));
     /* FIX #12: Explicit loop instead of memset(-1), which relies on
      * implementation-defined behavior (two's complement byte pattern). */
     for (int j = 0; j < new_cap; j++)
@@ -254,47 +252,35 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
                                        const char *filepath) {
     memset(ie, 0, sizeof(*ie));
 
-    cJSON *k = cJSON_GetObjectItem(entry, "key");
-    cJSON *v = cJSON_GetObjectItem(entry, "value");
-    cJSON *d = cJSON_GetObjectItem(entry, "description");
-    cJSON *p = cJSON_GetObjectItem(entry, "pinned");
-    cJSON *ac = cJSON_GetObjectItem(entry, "access_count");
-    cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
-    cJSON *rm = cJSON_GetObjectItem(entry, "recall_misses");
-    cJSON *be = cJSON_GetObjectItem(entry, "belief_entropy");
-    cJSON *ca = cJSON_GetObjectItem(entry, "created_at");
-
-    ie->key = (k && k->valuestring) ? strdup(k->valuestring) : strdup("");
-    ie->value = (v && v->valuestring) ? strdup(v->valuestring) : strdup("");
-    if (!ie->key || !ie->value) return;  /* OOM — entry stays zeroed */
-    ie->description = (d && d->valuestring) ? strdup(d->valuestring)
-                                             : generate_description(ie->value);
-    ie->pinned = p ? cJSON_IsTrue(p) : 0;
-    ie->access_count = ac ? (int)cJSON_GetNumberValue(ac) : 0;
-    ie->recall_hits = rh ? (int)cJSON_GetNumberValue(rh) : 0;
-    ie->recall_misses = rm ? (int)cJSON_GetNumberValue(rm) : 0;
-    ie->belief_entropy = be ? cJSON_GetNumberValue(be) : -1.0;
-    if (ca && ca->valuestring) ie->created_at = atof(ca->valuestring);
-    else if (ca) ie->created_at = cJSON_GetNumberValue(ca);
-    ie->path = strdup(filepath);
-    if (!ie->path) return;  /* OOM */
+    ie->key = xstrdup(json_str_or(entry, "key", ""));
+    ie->value = xstrdup(json_str_or(entry, "value", ""));
+    const char *desc = json_str(entry, "description");
+    ie->description = desc ? xstrdup(desc) : generate_description(ie->value);
+    ie->pinned = json_bool(entry, "pinned", 0);
+    ie->access_count = json_int(entry, "access_count", 0);
+    ie->recall_hits = json_int(entry, "recall_hits", 0);
+    ie->recall_misses = json_int(entry, "recall_misses", 0);
+    ie->belief_entropy = json_num(entry, "belief_entropy", -1.0);
+    /* created_at may be stored as string (legacy) or number */
+    const char *ca_s = json_str(entry, "created_at");
+    if (ca_s) ie->created_at = atof(ca_s);
+    else ie->created_at = json_num(entry, "created_at", 0);
+    ie->path = xstrdup(filepath);
 
     /* Lesson lineage fields */
-    cJSON *ss = cJSON_GetObjectItem(entry, "supersedes");
-    ie->supersedes = (ss && ss->valuestring) ? strdup(ss->valuestring) : NULL;
-    cJSON *vn = cJSON_GetObjectItem(entry, "version");
-    ie->version = vn ? (int)cJSON_GetNumberValue(vn) : 0;
+    const char *ss = json_str(entry, "supersedes");
+    ie->supersedes = ss ? xstrdup(ss) : NULL;
+    ie->version = json_int(entry, "version", 0);
 
     /* Copy refs */
     cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
     if (refs_arr && cJSON_IsArray(refs_arr)) {
         ie->n_refs = cJSON_GetArraySize(refs_arr);
         if (ie->n_refs > 0) {
-            ie->refs = calloc((size_t)ie->n_refs, sizeof(char *));
-            if (!ie->refs) { ie->n_refs = 0; return; }
+            ie->refs = xcalloc((size_t)ie->n_refs, sizeof(char *));
             for (int i = 0; i < ie->n_refs; i++) {
                 cJSON *ref = cJSON_GetArrayItem(refs_arr, i);
-                ie->refs[i] = (ref && ref->valuestring) ? strdup(ref->valuestring) : strdup("");
+                ie->refs[i] = (ref && ref->valuestring) ? xstrdup(ref->valuestring) : xstrdup("");
             }
         }
     }
@@ -304,11 +290,10 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
     if (trigs_arr && cJSON_IsArray(trigs_arr)) {
         ie->n_triggers = cJSON_GetArraySize(trigs_arr);
         if (ie->n_triggers > 0) {
-            ie->triggers = calloc((size_t)ie->n_triggers, sizeof(char *));
-            if (!ie->triggers) { ie->n_triggers = 0; return; }
+            ie->triggers = xcalloc((size_t)ie->n_triggers, sizeof(char *));
             for (int i = 0; i < ie->n_triggers; i++) {
                 cJSON *t = cJSON_GetArrayItem(trigs_arr, i);
-                ie->triggers[i] = (t && t->valuestring) ? strdup(t->valuestring) : strdup("");
+                ie->triggers[i] = (t && t->valuestring) ? xstrdup(t->valuestring) : xstrdup("");
             }
         }
     }
@@ -357,12 +342,11 @@ static void mem_index_load(memory_t *m) {
 /* ── create/free ─────────────────────────────────────── */
 
 memory_t *memory_new(const char *project_root) {
-    memory_t *m = calloc(1, sizeof(*m));
-    if (!m) return NULL;
+    memory_t *m = xcalloc(1, sizeof(*m));
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/memory", project_root);
     mkdir(path, 0755);
-    m->dir = strdup(path);
+    m->dir = xstrdup(path);
 
     /* Recursive mutex: memory_prune() → memory_delete_batch() nesting. */
     {
@@ -428,7 +412,7 @@ static cJSON *memory_load_entry_json(memory_t *m, const char *key) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
     return slurp_json(path);
 }
 
@@ -448,7 +432,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
     cJSON *entry = cJSON_CreateObject();
     cJSON_AddStringToObject(entry, "key", key);
@@ -475,34 +459,29 @@ int memory_store(memory_t *m, const char *key, const char *value,
     {
         cJSON *old = slurp_json(path);
         if (old) {
-            cJSON *ac = cJSON_GetObjectItem(old, "access_count");
-            if (ac) access_count = (int)cJSON_GetNumberValue(ac) + 1;  /* increment */
-            cJSON *ca = cJSON_GetObjectItem(old, "created_at");
-            if (ca && ca->valuestring) created_at = atof(ca->valuestring);
-            else if (ca) created_at = cJSON_GetNumberValue(ca);
-            cJSON *rh = cJSON_GetObjectItem(old, "recall_hits");
-            if (rh) recall_hits = (int)cJSON_GetNumberValue(rh);
-            cJSON *rm = cJSON_GetObjectItem(old, "recall_misses");
-            if (rm) recall_misses = (int)cJSON_GetNumberValue(rm);
-            cJSON *be = cJSON_GetObjectItem(old, "belief_entropy");
-            if (be) belief_entropy = cJSON_GetNumberValue(be);
+            access_count = json_int(old, "access_count", 0) + 1;  /* increment */
+            /* created_at may be stored as string (legacy) or number */
+            const char *ca_s2 = json_str(old, "created_at");
+            if (ca_s2) created_at = atof(ca_s2);
+            else created_at = json_num(old, "created_at", created_at);
+            recall_hits = json_int(old, "recall_hits", recall_hits);
+            recall_misses = json_int(old, "recall_misses", recall_misses);
+            belief_entropy = json_num(old, "belief_entropy", belief_entropy);
             /* P2: Preserve lineage fields */
-            cJSON *ss = cJSON_GetObjectItem(old, "supersedes");
-            if (ss && ss->valuestring) old_supersedes = strdup(ss->valuestring);
-            cJSON *vn = cJSON_GetObjectItem(old, "version");
-            if (vn) old_version = (int)cJSON_GetNumberValue(vn);
+            const char *ss2 = json_str(old, "supersedes");
+            if (ss2) old_supersedes = xstrdup(ss2);
+            old_version = json_int(old, "version", old_version);
             /* Preserve triggers if caller did not provide new ones */
             if (!triggers) {
                 cJSON *ot = cJSON_GetObjectItem(old, "triggers");
                 if (ot && cJSON_IsArray(ot)) {
                     n_old_triggers = cJSON_GetArraySize(ot);
                     if (n_old_triggers > 0) {
-                        old_triggers = calloc((size_t)n_old_triggers, sizeof(char *));
-                        if (!old_triggers) { n_old_triggers = 0; }
+                        old_triggers = xcalloc((size_t)n_old_triggers, sizeof(char *));
                         for (int i = 0; i < n_old_triggers; i++) {
                             cJSON *ti = cJSON_GetArrayItem(ot, i);
                             old_triggers[i] = (ti && ti->valuestring)
-                                ? strdup(ti->valuestring) : strdup("");
+                                ? xstrdup(ti->valuestring) : xstrdup("");
                         }
                     }
                 }
@@ -587,9 +566,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     else
         cJSON_AddNumberToObject(entry, "version", 1);
 
-    char *json = cJSON_Print(entry);
-    write_file(path, json, strlen(json));
-    free(json);
+    dump_json(path, entry);
 
     /* P1: Update in-memory index — either update existing entry or add new.
      * FIX #13: Populate index directly from the cJSON entry we already have
@@ -675,7 +652,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
             char emb_fname[512];
             key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
             char emb_orphan[NASH_PATH_MAX];
-            snprintf(emb_orphan, sizeof(emb_orphan), "%s/%s", m->dir, emb_fname);
+            path_join(emb_orphan, sizeof(emb_orphan), m->dir, emb_fname);
             unlink(emb_orphan);
         } else if (ie) {
             char emb_path[NASH_PATH_MAX];
@@ -690,7 +667,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
             char emb_fname[512];
             key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
             char emb_orphan[NASH_PATH_MAX];
-            snprintf(emb_orphan, sizeof(emb_orphan), "%s/%s", m->dir, emb_fname);
+            path_join(emb_orphan, sizeof(emb_orphan), m->dir, emb_fname);
             unlink(emb_orphan);  /* best-effort; ignore errors */
         }
         pthread_mutex_unlock(&m->mtx);
@@ -711,7 +688,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
     if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
@@ -726,9 +703,7 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
     }
 
     /* Write back */
-    char *json = cJSON_Print(entry);
-    write_file(path, json, strlen(json));
-    free(json);
+    dump_json(path, entry);
     cJSON_Delete(entry);
 
     /* P1: Update in-memory index */
@@ -776,8 +751,7 @@ static double score_entry_substring(const char *key, const char *value,
     /* Slow path: tokenize query on whitespace/hyphens/underscores,
      * score each token independently.  This handles queries like
      * "memory pruning" matching key "lesson:memory-pruning-strategy". */
-    char *qcopy = strdup(query);
-    if (!qcopy) return 0;
+    char *qcopy = xstrdup(query);
 
     int n_tokens = 0, key_hits = 0, val_hits = 0;
     char *saveptr = NULL;
@@ -1029,19 +1003,17 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                         }
                     }
                     if (valid_count > 0 && dim > 0) {
-                    query_mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
-                    if (query_mv.data) {
-                        query_mv.dim = dim;
-                        query_mv.n_chunks = valid_count;
-                        int vi = 0;
-                        for (int ci = 0; ci < out_count; ci++) {
-                            if (!vecs[ci].data || vecs[ci].dim != dim) continue;
-                            memcpy(query_mv.data + vi * dim,
-                                   vecs[ci].data, sizeof(float) * (size_t)dim);
-                            vi++;
-                        }
-                        has_semantic = 1;
+                    query_mv.data = xmalloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
+                    query_mv.dim = dim;
+                    query_mv.n_chunks = valid_count;
+                    int vi = 0;
+                    for (int ci = 0; ci < out_count; ci++) {
+                        if (!vecs[ci].data || vecs[ci].dim != dim) continue;
+                        memcpy(query_mv.data + vi * dim,
+                               vecs[ci].data, sizeof(float) * (size_t)dim);
+                        vi++;
                     }
+                    has_semantic = 1;
                     }
                     for (int ci = 0; ci < out_count; ci++)
                         embed_vec_free(&vecs[ci]);
@@ -1058,12 +1030,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
 
     /* P1: Score all entries from in-memory index — no filesystem I/O */
     int scored_cap = m->idx.count > 64 ? m->idx.count : 64;
-    scored_t *scored = calloc((size_t)scored_cap, sizeof(scored_t));
-    if (!scored) {
-        pthread_mutex_unlock(&m->mtx);
-        embed_multi_vec_free(&query_mv);
-        return results;
-    }
+    scored_t *scored = xcalloc((size_t)scored_cap, sizeof(scored_t));
     int n_scored = 0;
 
     for (int i = 0; i < m->idx.count; i++) {
@@ -1125,8 +1092,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
         int map_mask = map_cap - 1;
 
         struct ref_map_entry { const char *key; int idx; };
-        struct ref_map_entry *ref_map = calloc((size_t)map_cap, sizeof(*ref_map));
-        if (!ref_map) goto skip_ref_boost;
+        struct ref_map_entry *ref_map = xcalloc((size_t)map_cap, sizeof(*ref_map));
 
         for (int j = 0; j < n_scored; j++) {
             const char *k = m->idx.entries[scored[j].idx_pos].key;
@@ -1159,7 +1125,6 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                 }
             }
         }
-skip_ref_boost:
         free(ref_map);
     }
 
@@ -1191,49 +1156,40 @@ skip_ref_boost:
     /* Build results from top-k index entries */
     int n = n_scored < max_results ? n_scored : max_results;
     if (n <= 0) { free(scored); pthread_mutex_unlock(&m->mtx); return results; }
-    results.entries = calloc((size_t)n, sizeof(memory_entry_t));
-    if (!results.entries) {
-        free(scored);
-        pthread_mutex_unlock(&m->mtx);
-        return results;
-    }
+    results.entries = xcalloc((size_t)n, sizeof(memory_entry_t));
     results.count = 0;
 
     for (int i = 0; i < n; i++) {
         mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
         memory_entry_t *e = &results.entries[results.count];
 
-        e->key = strdup(ie->key);
-        e->value = strdup(ie->value);
-        e->description = ie->description ? strdup(ie->description) : NULL;
+        e->key = xstrdup(ie->key);
+        e->value = xstrdup(ie->value);
+        e->description = ie->description ? xstrdup(ie->description) : NULL;
         e->pinned = ie->pinned;
         e->created_at = ie->created_at; /* FIX: was missing — format_recency() needs this */
         e->access_count = ie->access_count;
         e->recall_hits = ie->recall_hits;
         e->recall_misses = ie->recall_misses;
         e->belief_entropy = ie->belief_entropy;
-        e->supersedes = ie->supersedes ? strdup(ie->supersedes) : NULL;
+        e->supersedes = ie->supersedes ? xstrdup(ie->supersedes) : NULL;
         e->version = ie->version;
         e->journal_ref = NULL;  /* loaded on demand if needed */
 
         /* Copy refs from index */
         if (ie->n_refs > 0) {
             e->n_refs = ie->n_refs;
-            e->refs = calloc((size_t)e->n_refs, sizeof(char *));
-            if (!e->refs) { e->n_refs = 0; goto skip_refs; }
+            e->refs = xcalloc((size_t)e->n_refs, sizeof(char *));
             for (int ri = 0; ri < e->n_refs; ri++)
-                e->refs[ri] = ie->refs[ri] ? strdup(ie->refs[ri]) : NULL;
-            skip_refs:;
+                e->refs[ri] = ie->refs[ri] ? xstrdup(ie->refs[ri]) : NULL;
         }
 
         /* Copy triggers from index */
         if (ie->n_triggers > 0) {
             e->n_triggers = ie->n_triggers;
-            e->triggers = calloc((size_t)e->n_triggers, sizeof(char *));
-            if (!e->triggers) { e->n_triggers = 0; goto skip_trigs; }
+            e->triggers = xcalloc((size_t)e->n_triggers, sizeof(char *));
             for (int ti = 0; ti < e->n_triggers; ti++)
-                e->triggers[ti] = ie->triggers[ti] ? strdup(ie->triggers[ti]) : NULL;
-            skip_trigs:;
+                e->triggers[ti] = ie->triggers[ti] ? xstrdup(ie->triggers[ti]) : NULL;
         }
 
         e->relevance = scored[i].score;
@@ -1460,11 +1416,7 @@ static void gc_refs_rewrite_multi(const char *filepath,
         }
     }
     if (modified) {
-        char *json = cJSON_Print(entry);
-        if (json) {
-            write_file(filepath, json, strlen(json));
-            free(json);
-        }
+        dump_json(filepath, entry);
     }
     cJSON_Delete(entry);
 }
@@ -1506,7 +1458,7 @@ static char **gc_refs_collect_modified_paths(memory_t *m, const char **deleted_k
                 paths = tmp;
                 paths_cap = new_cap;
             }
-            paths[n_paths++] = strdup(ie->path);
+            paths[n_paths++] = xstrdup(ie->path);
         }
     }
     *n_paths_out = n_paths;
@@ -1534,7 +1486,7 @@ int memory_delete(memory_t *m, const char *key) {
     key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
     /* Check if entry exists */
     struct stat st;
@@ -1547,7 +1499,7 @@ int memory_delete(memory_t *m, const char *key) {
     char emb_fname[512];
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
     char emb_path[NASH_PATH_MAX];
-    snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+    path_join(emb_path, sizeof(emb_path), m->dir, emb_fname);
     unlink(emb_path);  /* ignore error if not exists */
 
     /* P1: Remove from in-memory index */
@@ -1587,11 +1539,7 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
 
     /* Phase 1: Remove files and index entries for each key.
      * Track which keys were actually found (for the commit message). */
-    const char **found_keys = malloc(sizeof(const char *) * (size_t)n_keys);
-    if (!found_keys) {
-        pthread_mutex_unlock(&m->mtx);
-        return 0;
-    }
+    const char **found_keys = xmalloc(sizeof(const char *) * (size_t)n_keys);
     int n_found = 0;
 
     for (int k = 0; k < n_keys; k++) {
@@ -1600,7 +1548,7 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
         char fname[512];
         key_to_path(keys[k], ".json", fname, sizeof(fname));
         char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+        path_join(path, sizeof(path), m->dir, fname);
 
         struct stat st;
         if (stat(path, &st) != 0) continue;  /* not found — skip */
@@ -1611,7 +1559,7 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
         char emb_fname[512];
         key_to_path(keys[k], ".emb", emb_fname, sizeof(emb_fname));
         char emb_path[NASH_PATH_MAX];
-        snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+        path_join(emb_path, sizeof(emb_path), m->dir, emb_fname);
         unlink(emb_path);  /* ignore error if not exists */
 
         /* Remove from in-memory index (deferred rebuild) */
@@ -1705,7 +1653,7 @@ static int orphan_emb_cb(const char *dirpath, const char *filename,
              (int)(flen - 4), filename);  /* strip .emb, add .json */
 
     char json_path[NASH_PATH_MAX];
-    snprintf(json_path, sizeof(json_path), "%s/%s", dirpath, json_fname);
+    path_join(json_path, sizeof(json_path), dirpath, json_fname);
 
     struct stat st;
     if (stat(json_path, &st) != 0) {
@@ -1735,7 +1683,7 @@ int memory_prune(memory_t *m, double min_score, int min_evidence) {
         int evidence = hits + misses;
         double vscore = (hits + 1.0) / (hits + misses + 2.0);
         if (vscore < min_score && evidence >= min_evidence) {
-            VEC_PUSH(keys, count, cap, strdup(e->key));
+            VEC_PUSH(keys, count, cap, xstrdup(e->key));
         }
     }
 
@@ -1779,7 +1727,7 @@ static int memory_increment_field(memory_t *m, const char *key,
     key_to_path(key, ".json", fname, sizeof(fname));
 
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
     cJSON *entry = memory_load_entry_json(m, key);
     if (!entry) { pthread_mutex_unlock(&m->mtx); return -1; }
@@ -1793,9 +1741,7 @@ static int memory_increment_field(memory_t *m, const char *key,
     }
 
     /* Write back */
-    char *json = cJSON_Print(entry);
-    write_file(path, json, strlen(json));
-    free(json);
+    dump_json(path, entry);
     cJSON_Delete(entry);
 
     /* P1: Update in-memory index counter */
@@ -1851,9 +1797,8 @@ int memory_update_scores(memory_t *m, const char *key,
         char fname[512];
         key_to_path(key, ".json", fname, sizeof(fname));
         char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
-        char *json = cJSON_Print(entry);
-        if (json) { write_file(path, json, strlen(json)); free(json); }
+        path_join(path, sizeof(path), m->dir, fname);
+        dump_json(path, entry);
         cJSON_Delete(entry);
     }
 
@@ -1882,8 +1827,7 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     int old_version = 1;
     cJSON *old_entry = memory_load_entry_json(m, old_key);
     if (old_entry) {
-        cJSON *vn = cJSON_GetObjectItem(old_entry, "version");
-        if (vn) old_version = (int)cJSON_GetNumberValue(vn);
+        old_version = json_int(old_entry, "version", old_version);
         cJSON_Delete(old_entry);
     }
 
@@ -1900,21 +1844,16 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     char fname[512];
     key_to_path(new_key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
-    char *json = cJSON_Print(entry);
-    if (json) {
-        write_file(path, json, strlen(json));
-        free(json);
-    }
+    dump_json(path, entry);
     cJSON_Delete(entry);
 
     /* Update in-memory index so supersedes/version are immediately visible */
     {
         mem_index_entry_t *ie = mem_index_find(&m->idx, new_key);
         if (ie) {
-            free(ie->supersedes);
-            ie->supersedes = strdup(old_key);
+            str_replace(&ie->supersedes, old_key);
             ie->version = old_version + 1;
         }
     }
@@ -1940,13 +1879,9 @@ int memory_set_belief_entropy(memory_t *m, const char *key, double h_be) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
-    char *json = cJSON_Print(entry);
-    if (json) {
-        write_file(path, json, strlen(json));
-        free(json);
-    }
+    dump_json(path, entry);
     cJSON_Delete(entry);
 
     /* FIX #7: Update in-memory index via O(1) hash map lookup
@@ -2099,12 +2034,7 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
     embed_multi_vec_t mv;
     mv.dim = dim;
     mv.n_chunks = valid_count;
-    mv.data = malloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
-    if (!mv.data) {
-        for (int i = 0; i < out_count; i++) embed_vec_free(&vecs[i]);
-        free(vecs);
-        return -1;
-    }
+    mv.data = xmalloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
 
     int idx = 0;
     for (int i = 0; i < out_count; i++) {
@@ -2121,7 +2051,7 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
 
     char emb_path[NASH_PATH_MAX];
-    snprintf(emb_path, sizeof(emb_path), "%s/%s", m->dir, emb_fname);
+    path_join(emb_path, sizeof(emb_path), m->dir, emb_fname);
 
     int rc = embed_multi_vec_save(&mv, emb_path);
     embed_multi_vec_free(&mv);
@@ -2145,8 +2075,7 @@ int memory_embed_all(memory_t *m) {
 
     int pending_cap = 64;
     int pending_count = 0;
-    pending_embed_t *pending = malloc(sizeof(pending_embed_t) * (size_t)pending_cap);
-    if (!pending) { pthread_mutex_unlock(&m->mtx); return 0; }
+    pending_embed_t *pending = xmalloc(sizeof(pending_embed_t) * (size_t)pending_cap);
 
     for (int i = 0; i < m->idx.count; i++) {
         mem_index_entry_t *ie = &m->idx.entries[i];
@@ -2197,8 +2126,8 @@ int memory_embed_all(memory_t *m) {
                 break;
         }
 
-        pending[pending_count].key = strdup(ie->key);
-        pending[pending_count].value = strdup(ie->value);
+        pending[pending_count].key = xstrdup(ie->key);
+        pending[pending_count].value = xstrdup(ie->value);
         pending_count++;
     }
     pthread_mutex_unlock(&m->mtx);  /* release before expensive embedding */
@@ -2290,18 +2219,7 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
         return 0;
     }
     size_t snap_sz = sizeof(mem_index_entry_t) * (size_t)snap_count;
-    mem_index_entry_t *snap = malloc(snap_sz);
-    if (!snap) {
-        /* OOM fallback: iterate live array (old behavior, best effort) */
-        int count = 0;
-        for (int i = 0; i < m->idx.count; i++) {
-            if (cb(&m->idx.entries[i], user_data) != 0)
-                break;
-            count++;
-        }
-        pthread_mutex_unlock(&m->mtx);
-        return count;
-    }
+    mem_index_entry_t *snap = xmalloc(snap_sz);
     memcpy(snap, m->idx.entries, snap_sz);
 
     /* Keep the mutex held during iteration so that the string pointers
@@ -2333,39 +2251,31 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
         pthread_mutex_unlock(&m->mtx);
         return NULL;
     }
-    mem_index_entry_t *copy = calloc(1, sizeof(*copy));
-    if (!copy) {
-        pthread_mutex_unlock(&m->mtx);
-        return NULL;
-    }
-    copy->key = src->key ? strdup(src->key) : NULL;
-    copy->description = src->description ? strdup(src->description) : NULL;
-    copy->value = src->value ? strdup(src->value) : NULL;
-    copy->path = src->path ? strdup(src->path) : NULL;
+    mem_index_entry_t *copy = xcalloc(1, sizeof(*copy));
+    copy->key = src->key ? xstrdup(src->key) : NULL;
+    copy->description = src->description ? xstrdup(src->description) : NULL;
+    copy->value = src->value ? xstrdup(src->value) : NULL;
+    copy->path = src->path ? xstrdup(src->path) : NULL;
     copy->pinned = src->pinned;
     copy->access_count = src->access_count;
     copy->recall_hits = src->recall_hits;
     copy->recall_misses = src->recall_misses;
     copy->belief_entropy = src->belief_entropy;
     copy->created_at = src->created_at;
-    copy->supersedes = src->supersedes ? strdup(src->supersedes) : NULL;
+    copy->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
     copy->version = src->version;
     copy->n_refs = src->n_refs;
     if (src->refs && src->n_refs > 0) {
-        copy->refs = calloc((size_t)src->n_refs, sizeof(char *));
-        if (copy->refs) {
-            for (int i = 0; i < src->n_refs; i++)
-                copy->refs[i] = src->refs[i] ? strdup(src->refs[i]) : NULL;
-        }
+        copy->refs = xcalloc((size_t)src->n_refs, sizeof(char *));
+        for (int i = 0; i < src->n_refs; i++)
+            copy->refs[i] = src->refs[i] ? xstrdup(src->refs[i]) : NULL;
     }
     /* Copy triggers from index */
     copy->n_triggers = src->n_triggers;
     if (src->triggers && src->n_triggers > 0) {
-        copy->triggers = calloc((size_t)src->n_triggers, sizeof(char *));
-        if (copy->triggers) {
-            for (int i = 0; i < src->n_triggers; i++)
-                copy->triggers[i] = src->triggers[i] ? strdup(src->triggers[i]) : NULL;
-        }
+        copy->triggers = xcalloc((size_t)src->n_triggers, sizeof(char *));
+        for (int i = 0; i < src->n_triggers; i++)
+            copy->triggers[i] = src->triggers[i] ? xstrdup(src->triggers[i]) : NULL;
     }
     /* Don't copy embedding data — callers only need metadata */
     copy->has_emb = 0;
@@ -2407,7 +2317,7 @@ int memory_reindex_entry(memory_t *m, const char *key) {
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", m->dir, fname);
+    path_join(path, sizeof(path), m->dir, fname);
 
     cJSON *entry = slurp_json(path);
     if (!entry) {

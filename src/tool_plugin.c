@@ -8,6 +8,7 @@
  * TOOL_HANDLERS[]) with a single unified registry. */
 
 #include "tool_plugin.h"
+#include "str.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -213,7 +214,7 @@ int tool_plugin_load_dir(const char *dir_path) {
             continue;
 
         char path[4096];
-        snprintf(path, sizeof(path), "%s/%s", dir_path, name);
+        path_join(path, sizeof(path), dir_path, name);
 
         if (tool_plugin_load(path) == 0)
             loaded++;
@@ -230,6 +231,11 @@ int tool_plugin_unload(const char *name) {
             continue;
 
         void *handle = plugin_dlhandles[i];
+
+        /* Refuse to unload static/built-in plugins (no dlhandle).
+         * Their structs live in the .data segment and cannot be
+         * freed or invalidated. */
+        if (!handle) return -1;
 
         /* Remove from registry by shifting down */
         for (int j = i; j < n_plugins - 1; j++) {
@@ -357,8 +363,7 @@ char *tool_registry_names_csv(void) {
         const tool_plugin_t *p = tool_plugin_get(i);
         if (p) total += strlen(p->name) + 2; /* ", " */
     }
-    char *buf = malloc(total + 1);
-    if (!buf) return NULL;
+    char *buf = xmalloc(total + 1);
     buf[0] = '\0';
     int first = 1;
     for (int i = 0; i < count; i++) {

@@ -62,7 +62,7 @@ static int load_previews_cb(cJSON *entry, void *user_data) {
     struct { char **arr; int count; int cap; } *ctx = user_data;
     cJSON *preview_j = cJSON_GetObjectItem(entry, "preview");
     if (preview_j && preview_j->valuestring)
-        VEC_PUSH(ctx->arr, ctx->count, ctx->cap, strdup(preview_j->valuestring));
+        VEC_PUSH(ctx->arr, ctx->count, ctx->cap, xstrdup(preview_j->valuestring));
     return 0;
 }
 
@@ -106,7 +106,7 @@ static void free_chunk_previews(char **previews, int count) {
 
 /* Build preview text for a chunk (first ~200 chars, stripping prefix) */
 static char *make_chunk_preview(const char *chunk_text) {
-    if (!chunk_text) return strdup("");
+    if (!chunk_text) return xstrdup("");
     /* Skip "Session YYYY-MM-DD | Query: ..." prefix line */
     const char *body = strchr(chunk_text, '\n');
     if (body) body++; else body = chunk_text;
@@ -117,7 +117,7 @@ static char *make_chunk_preview(const char *chunk_text) {
     while (len > 0 && ((unsigned char)body[len] & 0xC0) == 0x80) len--;
     memcpy(buf, body, len);
     buf[len] = '\0';
-    return strdup(buf);
+    return xstrdup(buf);
 }
 
 /* ── Lifecycle ──────────────────────────────────────── */
@@ -137,7 +137,7 @@ int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
         if (ent->d_name[0] == '.') continue;
 
         char sess_dir[PATH_MAX];
-        snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
+        path_join(sess_dir, sizeof(sess_dir),
                  sessions_dir, ent->d_name);
 
         /* v4.1: Try chunks.emb first (preferred) */
@@ -158,7 +158,7 @@ int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
 
         session_index_entry_t *e = &idx->entries[idx->count];
         memset(e, 0, sizeof(*e));
-        e->session_dir = strdup(sess_dir);
+        e->session_dir = xstrdup(sess_dir);
         e->timestamp = parse_session_timestamp(ent->d_name);
 
         /* Load manifest text (summary.txt) */
@@ -206,8 +206,7 @@ int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
 session_index_t *session_index_load(const char *sessions_dir) {
     if (!sessions_dir) return NULL;
 
-    session_index_t *idx = calloc(1, sizeof(session_index_t));
-    if (!idx) return NULL;
+    session_index_t *idx = xcalloc(1, sizeof(session_index_t));
     pthread_mutex_init(&idx->mtx, NULL);
 
     session_index_load_dir(idx, sessions_dir);
@@ -269,16 +268,16 @@ int session_index_add(session_index_t *idx, const char *session_dir,
         }
         e = &idx->entries[idx->count];
         memset(e, 0, sizeof(*e));
-        e->session_dir = strdup(session_dir);
+        e->session_dir = xstrdup(session_dir);
     }
 
-    e->manifest = manifest ? strdup(manifest) : NULL;
+    e->manifest = manifest ? xstrdup(manifest) : NULL;
     e->timestamp = parse_session_timestamp(session_dir);
 
     /* Legacy summary embedding */
     if (emb && emb->data) {
         e->emb.dim = emb->dim;
-        e->emb.data = malloc((size_t)emb->dim * sizeof(float));
+        e->emb.data = xmalloc((size_t)emb->dim * sizeof(float));
         if (e->emb.data) {
             memcpy(e->emb.data, emb->data, (size_t)emb->dim * sizeof(float));
             e->has_emb = 1;
@@ -288,7 +287,7 @@ int session_index_add(session_index_t *idx, const char *session_dir,
     /* v4.1: Chunk embeddings */
     if (chunks && chunks->data && chunks->n_chunks > 0) {
         size_t data_sz = (size_t)chunks->dim * (size_t)chunks->n_chunks * sizeof(float);
-        e->chunks_emb.data = malloc(data_sz);
+        e->chunks_emb.data = xmalloc(data_sz);
         if (e->chunks_emb.data) {
             memcpy(e->chunks_emb.data, chunks->data, data_sz);
             e->chunks_emb.dim = chunks->dim;
@@ -297,11 +296,11 @@ int session_index_add(session_index_t *idx, const char *session_dir,
         }
         /* Copy chunk previews */
         if (chunk_previews && n_previews > 0) {
-            e->chunk_previews = calloc((size_t)n_previews, sizeof(char *));
+            e->chunk_previews = xcalloc((size_t)n_previews, sizeof(char *));
             if (e->chunk_previews) {
                 for (int i = 0; i < n_previews; i++)
                     e->chunk_previews[i] = chunk_previews[i]
-                        ? strdup(chunk_previews[i]) : NULL;
+                        ? xstrdup(chunk_previews[i]) : NULL;
                 e->n_chunk_previews = n_previews;
             }
         }
@@ -343,8 +342,7 @@ session_index_results_t session_index_search(
 
     /* Score all sessions */
     typedef struct { int idx; double score; int best_chunk; } scored_t;
-    scored_t *scored = calloc((size_t)idx->count, sizeof(scored_t));
-    if (!scored) { pthread_mutex_unlock(&idx->mtx); return out; }
+    scored_t *scored = xcalloc((size_t)idx->count, sizeof(scored_t));
 
     double now_ts = (double)time(NULL);
     int n_scored = 0;
@@ -404,12 +402,12 @@ session_index_results_t session_index_search(
     /* Take top-K */
     int n_results = n_scored < max_results ? n_scored : max_results;
     if (n_results > 0) {
-        out.results = calloc((size_t)n_results, sizeof(session_index_result_t));
+        out.results = xcalloc((size_t)n_results, sizeof(session_index_result_t));
         if (out.results) {
             for (int i = 0; i < n_results; i++) {
                 session_index_entry_t *e = &idx->entries[scored[i].idx];
-                out.results[i].session_dir = strdup(e->session_dir);
-                out.results[i].manifest = e->manifest ? strdup(e->manifest) : NULL;
+                out.results[i].session_dir = xstrdup(e->session_dir);
+                out.results[i].manifest = e->manifest ? xstrdup(e->manifest) : NULL;
                 out.results[i].timestamp = e->timestamp;
                 out.results[i].score = scored[i].score;
                 out.results[i].best_chunk = scored[i].best_chunk;
@@ -418,7 +416,7 @@ session_index_results_t session_index_search(
                 if (scored[i].best_chunk >= 0 && e->chunk_previews &&
                     scored[i].best_chunk < e->n_chunk_previews) {
                     out.results[i].chunk_preview = e->chunk_previews[scored[i].best_chunk]
-                        ? strdup(e->chunk_previews[scored[i].best_chunk]) : NULL;
+                        ? xstrdup(e->chunk_previews[scored[i].best_chunk]) : NULL;
                 }
             }
             out.count = n_results;
@@ -471,7 +469,7 @@ int session_index_backfill(const char *sessions_dir, embed_ctx_t *embed) {
 
         /* Generate manifest via journal_manifest() */
         char sess_dir[PATH_MAX];
-        snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
+        path_join(sess_dir, sizeof(sess_dir),
                  sessions_dir, ent->d_name);
 
         journal_t *j = journal_new(sess_dir);
@@ -530,7 +528,7 @@ int session_index_chunk_backfill(const char *sessions_dir, embed_ctx_t *embed,
         if (ent->d_name[0] == '.') continue;
 
         char sess_dir[PATH_MAX];
-        snprintf(sess_dir, sizeof(sess_dir), "%s/%s",
+        path_join(sess_dir, sizeof(sess_dir),
                  sessions_dir, ent->d_name);
 
         /* Skip sessions that already have chunks.emb */
@@ -574,10 +572,10 @@ int session_index_chunk_backfill(const char *sessions_dir, embed_ctx_t *embed,
             embed_multi_vec_t mv = {0};
             mv.dim = dim;
             mv.n_chunks = valid_count;
-            mv.data = malloc((size_t)dim * (size_t)valid_count * sizeof(float));
+            mv.data = xmalloc((size_t)dim * (size_t)valid_count * sizeof(float));
 
             /* Build previews */
-            char **previews = calloc((size_t)valid_count, sizeof(char *));
+            char **previews = xcalloc((size_t)valid_count, sizeof(char *));
             int vi = 0;
 
             if (mv.data && previews) {

@@ -63,13 +63,13 @@ static const char *criterion_type_str(criterion_type_t t) {
 
 static query_bank_t parse_bank(yaml_node_t *root, const char *filepath) {
     query_bank_t bank = {0};
-    bank.filepath = strdup(filepath);
+    bank.filepath = xstrdup(filepath);
 
     const char *s;
     if ((s = yaml_str(yaml_get(root, "name"))))
-        bank.name = strdup(s);
+        bank.name = xstrdup(s);
     else
-        bank.name = strdup("unnamed");
+        bank.name = xstrdup("unnamed");
 
     s = yaml_str(yaml_get(root, "split"));
     if (s && strcmp(s, "held-out") == 0)
@@ -81,7 +81,7 @@ static query_bank_t parse_bank(yaml_node_t *root, const char *filepath) {
     if (!queries || queries->type != YAML_SEQUENCE) return bank;
 
     bank.n_queries = yaml_len(queries);
-    bank.queries = calloc(bank.n_queries, sizeof(test_query_t));
+    bank.queries = xcalloc(bank.n_queries, sizeof(test_query_t));
 
     for (int i = 0; i < bank.n_queries; i++) {
         yaml_node_t *q = yaml_item(queries, i);
@@ -89,17 +89,17 @@ static query_bank_t parse_bank(yaml_node_t *root, const char *filepath) {
 
         test_query_t *tq = &bank.queries[i];
         s = yaml_str(yaml_get(q, "id"));
-        tq->id = strdup(s ? s : "unnamed");
+        tq->id = xstrdup(s ? s : "unnamed");
 
         s = yaml_str(yaml_get(q, "query"));
-        tq->query = strdup(s ? s : "");
+        tq->query = xstrdup(s ? s : "");
 
         tq->max_turns = yaml_int(yaml_get(q, "max_turns"), 0);
 
         yaml_node_t *criteria = yaml_get(q, "criteria");
         if (criteria && criteria->type == YAML_SEQUENCE) {
             tq->n_criteria = yaml_len(criteria);
-            tq->criteria = calloc(tq->n_criteria, sizeof(criterion_t));
+            tq->criteria = xcalloc(tq->n_criteria, sizeof(criterion_t));
 
             for (int j = 0; j < tq->n_criteria; j++) {
                 yaml_node_t *c = yaml_item(criteria, j);
@@ -108,7 +108,7 @@ static query_bank_t parse_bank(yaml_node_t *root, const char *filepath) {
                 criterion_t *cr = &tq->criteria[j];
                 cr->type = parse_criterion_type(yaml_str(yaml_get(c, "type")));
                 s = yaml_str(yaml_get(c, "expect"));
-                cr->expect = strdup(s ? s : "done");
+                cr->expect = xstrdup(s ? s : "done");
                 cr->weight = 1.0;
 
                 yaml_node_t *wn = yaml_get(c, "weight");
@@ -130,7 +130,7 @@ query_bank_t *regression_load_banks(const char *dir, int *count) {
 
     /* First pass: count YAML files */
     int cap = 8;
-    query_bank_t *banks = calloc(cap, sizeof(query_bank_t));
+    query_bank_t *banks = xcalloc(cap, sizeof(query_bank_t));
     int n = 0;
 
     struct dirent *ent;
@@ -142,7 +142,7 @@ query_bank_t *regression_load_banks(const char *dir, int *count) {
             strcmp(ent->d_name + len - 4, ".yml") != 0) continue;
 
         char path[NASH_PATH_MAX];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
+        path_join(path, sizeof(path), dir, ent->d_name);
 
         yaml_node_t *root = yaml_parse_file(path);
         if (!root) {
@@ -203,7 +203,7 @@ static void analyze_journal(const char *journal_path, int react_loop,
     if (!data) return;
 
     int tools_cap = 32;
-    out->tools_used = calloc(tools_cap, sizeof(char *));
+    out->tools_used = xcalloc(tools_cap, sizeof(char *));
 
     /* Parse line by line */
     char *line = data;
@@ -213,14 +213,11 @@ static void analyze_journal(const char *journal_path, int react_loop,
 
         cJSON *entry = cJSON_Parse(line);
         if (entry) {
-            int rl = cJSON_GetObjectItem(entry, "react_loop")
-                     ? cJSON_GetObjectItem(entry, "react_loop")->valueint : -1;
+            int rl = json_int(entry, "react_loop", -1);
 
             if (rl == react_loop) {
-                const char *tool = cJSON_GetStringValue(
-                    cJSON_GetObjectItem(entry, "tool"));
-                int step = cJSON_GetObjectItem(entry, "step")
-                           ? cJSON_GetObjectItem(entry, "step")->valueint : -1;
+                const char *tool = json_str(entry, "tool");
+                int step = json_int(entry, "step", -1);
 
                 if (tool && strcmp(tool, "system") != 0 &&
                     strcmp(tool, "query") != 0) {
@@ -228,10 +225,9 @@ static void analyze_journal(const char *journal_path, int react_loop,
                         out->total_steps = step + 1;
 
                     /* Check for errors (count at most once per step) */
-                    cJSON *failed = cJSON_GetObjectItem(entry, "failed");
-                    cJSON *err = cJSON_GetObjectItem(entry, "error");
-                    if ((failed && cJSON_IsTrue(failed)) ||
-                        (err && cJSON_IsString(err) && err->valuestring[0]))
+                    const char *err = json_str(entry, "error");
+                    if (json_bool(entry, "failed", 0) ||
+                        (err && err[0]))
                         out->error_count++;
 
                     /* Track unique tools */
@@ -248,7 +244,7 @@ static void analyze_journal(const char *journal_path, int react_loop,
                             if (safe_realloc((void **)&out->tools_used,
                                              tools_cap * sizeof(char *))) break;
                         }
-                        out->tools_used[out->n_tools_used++] = strdup(tool);
+                        out->tools_used[out->n_tools_used++] = xstrdup(tool);
                     }
                 }
             }
@@ -293,7 +289,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
     char desc[256];
     snprintf(desc, sizeof(desc), "%s(%s)", criterion_type_str(crit->type),
              crit->expect ? crit->expect : "");
-    cr.criterion_desc = strdup(desc);
+    cr.criterion_desc = xstrdup(desc);
 
     switch (crit->type) {
     case CRIT_STATUS:
@@ -302,7 +298,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
         else
             cr.passed = !have_result;
         if (!cr.passed)
-            cr.detail = strdup(have_result ? "got done, expected fail" :
+            cr.detail = xstrdup(have_result ? "got done, expected fail" :
                                              "got fail, expected done");
         break;
 
@@ -312,7 +308,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             char buf[512];
             snprintf(buf, sizeof(buf), "result does not contain '%s'",
                      crit->expect);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
 
@@ -322,7 +318,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             char buf[512];
             snprintf(buf, sizeof(buf), "result contains '%s' (should not)",
                      crit->expect);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
 
@@ -336,7 +332,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             cr.passed = 0;
         }
         if (!cr.passed)
-            cr.detail = strdup("regex did not match");
+            cr.detail = xstrdup("regex did not match");
         break;
     }
 
@@ -352,7 +348,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
         if (!cr.passed) {
             char buf[256];
             snprintf(buf, sizeof(buf), "tool '%s' was not used", crit->expect);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
     }
@@ -370,7 +366,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             char buf[256];
             snprintf(buf, sizeof(buf), "tool '%s' was used (should not be)",
                      crit->expect);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
     }
@@ -382,7 +378,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             char buf[128];
             snprintf(buf, sizeof(buf), "used %d steps (max %d)",
                      ja->total_steps, max);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
     }
@@ -392,7 +388,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
         if (!cr.passed) {
             char buf[128];
             snprintf(buf, sizeof(buf), "%d errors in journal", ja->error_count);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
 
@@ -404,7 +400,7 @@ static criterion_result_t evaluate_criterion(const criterion_t *crit,
             char buf[128];
             snprintf(buf, sizeof(buf), "exit code %d, expected %d",
                      actual, expected);
-            cr.detail = strdup(buf);
+            cr.detail = xstrdup(buf);
         }
         break;
     }
@@ -422,7 +418,7 @@ static query_result_t run_single_query(const test_query_t *tq,
                                         store_t *store,
                                         const char *nash_dir) {
     query_result_t qr = {0};
-    qr.query_id = strdup(tq->id);
+    qr.query_id = xstrdup(tq->id);
 
     fprintf(stderr, "  [regression] running: %s ... ", tq->id);
 
@@ -470,7 +466,7 @@ static query_result_t run_single_query(const test_query_t *tq,
     }
 
     qr.steps_used = ja.total_steps;
-    qr.result_text = result ? strdup(result) : NULL;
+    qr.result_text = result ? xstrdup(result) : NULL;
 
     /* Self-Harness [arXiv:2606.09498]: capture execution trace for weakness mining.
      * journal_manifest() builds a compact step-by-step summary of the agent's
@@ -480,7 +476,7 @@ static query_result_t run_single_query(const test_query_t *tq,
 
     /* Evaluate all criteria */
     qr.n_crit_results = tq->n_criteria;
-    qr.crit_results = calloc(tq->n_criteria, sizeof(criterion_result_t));
+    qr.crit_results = xcalloc(tq->n_criteria, sizeof(criterion_result_t));
 
     double total_weight = 0;
     double passed_weight = 0;
@@ -519,7 +515,7 @@ regression_report_t *regression_run(query_bank_t *banks, int n_banks,
                                      memory_t *memory,
                                      store_t *store,
                                      const char *nash_dir) {
-    regression_report_t *report = calloc(1, sizeof(regression_report_t));
+    regression_report_t *report = xcalloc(1, sizeof(regression_report_t));
     report->held_in_score = -1;
     report->held_out_score = -1;
 
@@ -530,7 +526,7 @@ regression_report_t *regression_run(query_bank_t *banks, int n_banks,
         active_banks++;
     }
 
-    report->bank_results = calloc(active_banks, sizeof(bank_result_t));
+    report->bank_results = xcalloc(active_banks, sizeof(bank_result_t));
     report->n_bank_results = 0;
 
     double hi_total = 0, hi_weight = 0;
@@ -542,10 +538,10 @@ regression_report_t *regression_run(query_bank_t *banks, int n_banks,
         query_bank_t *bank = &banks[i];
         bank_result_t *br = &report->bank_results[report->n_bank_results++];
 
-        br->bank_name = strdup(bank->name);
+        br->bank_name = xstrdup(bank->name);
         br->split = bank->split;
         br->total = bank->n_queries;
-        br->results = calloc(bank->n_queries, sizeof(query_result_t));
+        br->results = xcalloc(bank->n_queries, sizeof(query_result_t));
         br->n_results = bank->n_queries;
 
         fprintf(stderr, "\n[regression] bank: %s (split: %s, %d queries)\n",
@@ -670,9 +666,7 @@ int regression_save_report(const regression_report_t *report, const char *path) 
         cJSON_AddItemToArray(banks, b);
     }
 
-    char *json = cJSON_Print(root);
-    int rc = write_file(path, json, strlen(json));
-    free(json);
+    int rc = dump_json(path, root);
     cJSON_Delete(root);
     return rc;
 }
@@ -681,55 +675,43 @@ regression_report_t *regression_load_report(const char *path) {
     cJSON *root = slurp_json(path);
     if (!root) return NULL;
 
-    regression_report_t *report = calloc(1, sizeof(regression_report_t));
-    report->overall_score = cJSON_GetObjectItem(root, "overall_score")
-                            ? cJSON_GetObjectItem(root, "overall_score")->valuedouble : 0;
-    report->held_in_score = cJSON_GetObjectItem(root, "held_in_score")
-                            ? cJSON_GetObjectItem(root, "held_in_score")->valuedouble : -1;
-    report->held_out_score = cJSON_GetObjectItem(root, "held_out_score")
-                             ? cJSON_GetObjectItem(root, "held_out_score")->valuedouble : -1;
-    report->total_passed = cJSON_GetObjectItem(root, "total_passed")
-                           ? cJSON_GetObjectItem(root, "total_passed")->valueint : 0;
-    report->total_queries = cJSON_GetObjectItem(root, "total_queries")
-                            ? cJSON_GetObjectItem(root, "total_queries")->valueint : 0;
+    regression_report_t *report = xcalloc(1, sizeof(regression_report_t));
+    report->overall_score = json_num(root, "overall_score", 0);
+    report->held_in_score = json_num(root, "held_in_score", -1);
+    report->held_out_score = json_num(root, "held_out_score", -1);
+    report->total_passed = json_int(root, "total_passed", 0);
+    report->total_queries = json_int(root, "total_queries", 0);
 
     cJSON *banks = cJSON_GetObjectItem(root, "banks");
     if (banks && cJSON_IsArray(banks)) {
         report->n_bank_results = cJSON_GetArraySize(banks);
-        report->bank_results = calloc(report->n_bank_results, sizeof(bank_result_t));
+        report->bank_results = xcalloc(report->n_bank_results, sizeof(bank_result_t));
 
         for (int i = 0; i < report->n_bank_results; i++) {
             cJSON *b = cJSON_GetArrayItem(banks, i);
             bank_result_t *br = &report->bank_results[i];
 
-            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(b, "name"));
-            br->bank_name = strdup(name ? name : "");
+            br->bank_name = xstrdup(json_str_or(b, "name", ""));
 
-            const char *split = cJSON_GetStringValue(cJSON_GetObjectItem(b, "split"));
+            const char *split = json_str(b, "split");
             br->split = (split && strcmp(split, "held-out") == 0)
                         ? SPLIT_HELD_OUT : SPLIT_HELD_IN;
 
-            br->score = cJSON_GetObjectItem(b, "score")
-                        ? cJSON_GetObjectItem(b, "score")->valuedouble : 0;
-            br->passed = cJSON_GetObjectItem(b, "passed")
-                         ? cJSON_GetObjectItem(b, "passed")->valueint : 0;
-            br->total = cJSON_GetObjectItem(b, "total")
-                        ? cJSON_GetObjectItem(b, "total")->valueint : 0;
+            br->score = json_num(b, "score", 0);
+            br->passed = json_int(b, "passed", 0);
+            br->total = json_int(b, "total", 0);
 
             cJSON *queries = cJSON_GetObjectItem(b, "queries");
             if (queries && cJSON_IsArray(queries)) {
                 br->n_results = cJSON_GetArraySize(queries);
-                br->results = calloc(br->n_results, sizeof(query_result_t));
+                br->results = xcalloc(br->n_results, sizeof(query_result_t));
                 for (int j = 0; j < br->n_results; j++) {
                     cJSON *q = cJSON_GetArrayItem(queries, j);
                     query_result_t *qr = &br->results[j];
-                    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(q, "id"));
-                    qr->query_id = strdup(id ? id : "");
-                    qr->passed = cJSON_IsTrue(cJSON_GetObjectItem(q, "passed"));
-                    qr->score = cJSON_GetObjectItem(q, "score")
-                                ? cJSON_GetObjectItem(q, "score")->valuedouble : 0;
-                    qr->steps_used = cJSON_GetObjectItem(q, "steps")
-                                     ? cJSON_GetObjectItem(q, "steps")->valueint : 0;
+                    qr->query_id = xstrdup(json_str_or(q, "id", ""));
+                    qr->passed = json_bool(q, "passed", 0);
+                    qr->score = json_num(q, "score", 0);
+                    qr->steps_used = json_int(q, "steps", 0);
                 }
             }
         }

@@ -168,7 +168,7 @@ static const char *tg_topic_map_add(telegram_ctx_t *ctx,
     }
     int idx = ctx->topic_map_count++;
     ctx->topic_map[idx].thread_id = thread_id;
-    ctx->topic_map[idx].workspace = strdup(workspace);
+    ctx->topic_map[idx].workspace = xstrdup(workspace);
     fprintf(stderr, "[telegram] auto-discovered: thread %lld -> workspace '%s'\n",
             thread_id, workspace);
     return ctx->topic_map[idx].workspace;
@@ -200,8 +200,7 @@ static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
-            if (ok && cJSON_IsTrue(ok)) {
+            if (json_bool(rjson, "ok", 0)) {
                 cJSON *result = cJSON_GetObjectItem(rjson, "result");
                 if (result) {
                     cJSON *tid = cJSON_GetObjectItem(result,
@@ -210,9 +209,8 @@ static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
                         thread_id = tg_get_ll(tid);
                 }
             } else {
-                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
                 fprintf(stderr, "[telegram] createForumTopic '%s' failed: %s\n",
-                        name, desc ? desc->valuestring : "unknown");
+                        name, json_str_or(rjson, "description", "unknown"));
             }
             cJSON_Delete(rjson);
         }
@@ -244,7 +242,7 @@ static void tg_sync_workspaces(telegram_ctx_t *ctx) {
         /* For DT_UNKNOWN, stat to confirm directory */
         if (ent->d_type == DT_UNKNOWN) {
             char full[1024];
-            snprintf(full, sizeof(full), "%s/%s", ws_dir, ent->d_name);
+            path_join(full, sizeof(full), ws_dir, ent->d_name);
             struct stat st;
             if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         }
@@ -298,9 +296,9 @@ int telegram_init(telegram_ctx_t *ctx, const char *config_path,
                   const char *nash_dir, const char *mailbox_dir,
                   volatile sig_atomic_t *shutdown) {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->config_path = strdup(config_path);
-    ctx->nash_dir = strdup(nash_dir);
-    ctx->mailbox_dir = strdup(mailbox_dir);
+    ctx->config_path = xstrdup(config_path);
+    ctx->nash_dir = xstrdup(nash_dir);
+    ctx->mailbox_dir = xstrdup(mailbox_dir);
     ctx->shutdown = shutdown;
     ctx->update_offset = 0;
     ctx->rich_supported = 1;  /* optimistic; downgraded on first 404 */
@@ -534,7 +532,7 @@ int telegram_setup(telegram_ctx_t *ctx) {
         fprintf(stderr, "[telegram] empty token\n");
         return -1;
     }
-    ctx->bot_token = strdup(buf);
+    ctx->bot_token = xstrdup(buf);
 
     /* Step 2: Validate with getMe */
     char bot_name[128] = {0};
@@ -622,17 +620,16 @@ static int tg_api_get_me(telegram_ctx_t *ctx, char *bot_name, size_t name_sz) {
     str_free(&resp);
     if (!root) return -1;
 
-    cJSON *ok = cJSON_GetObjectItem(root, "ok");
-    if (!ok || !cJSON_IsTrue(ok)) {
+    if (!json_bool(root, "ok", 0)) {
         cJSON_Delete(root);
         return -1;
     }
 
     cJSON *result = cJSON_GetObjectItem(root, "result");
     if (result && bot_name) {
-        cJSON *uname = cJSON_GetObjectItem(result, "username");
-        if (uname && uname->valuestring)
-            snprintf(bot_name, name_sz, "%s", uname->valuestring);
+        const char *uname = json_str(result, "username");
+        if (uname)
+            snprintf(bot_name, name_sz, "%s", uname);
     }
 
     cJSON_Delete(root);
@@ -656,8 +653,7 @@ static int tg_api_get_updates(telegram_ctx_t *ctx, cJSON **out) {
     str_free(&resp);
     if (!root) return -1;
 
-    cJSON *ok = cJSON_GetObjectItem(root, "ok");
-    if (!ok || !cJSON_IsTrue(ok)) {
+    if (!json_bool(root, "ok", 0)) {
         cJSON_Delete(root);
         return -1;
     }
@@ -708,11 +704,9 @@ static long long tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
-            if (!ok || !cJSON_IsTrue(ok)) {
-                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
+            if (!json_bool(rjson, "ok", 0)) {
                 fprintf(stderr, "[telegram] sendMessage error: %s\n",
-                        desc ? desc->valuestring : "unknown");
+                        json_str_or(rjson, "description", "unknown"));
             } else {
                 /* Extract message_id from result */
                 cJSON *result = cJSON_GetObjectItem(rjson, "result");
@@ -814,8 +808,7 @@ static long long tg_send_long(telegram_ctx_t *ctx, const char *text,
         }
 
         /* Send this chunk */
-        char *chunk = malloc(chunk_len + 1);
-        if (!chunk) return -1;
+        char *chunk = xmalloc(chunk_len + 1);
         memcpy(chunk, pos, chunk_len);
         chunk[chunk_len] = '\0';
 
@@ -875,13 +868,10 @@ static int tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text,
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *ok = cJSON_GetObjectItem(rjson, "ok");
-            if (!ok || !cJSON_IsTrue(ok)) {
-                cJSON *desc = cJSON_GetObjectItem(rjson, "description");
-                cJSON *errcode = cJSON_GetObjectItem(rjson, "error_code");
-                int code = errcode ? (int)errcode->valuedouble : 0;
+            if (!json_bool(rjson, "ok", 0)) {
+                int code = json_int(rjson, "error_code", 0);
                 fprintf(stderr, "[telegram] sendRichMessage error %d: %s\n",
-                        code, desc ? desc->valuestring : "unknown");
+                        code, json_str_or(rjson, "description", "unknown"));
 
                 /* 404 = method not found → Bot API server doesn't support
                  * Rich Messages (pre-10.1). Disable permanently. */
@@ -958,8 +948,7 @@ static int tg_send_rich_long(telegram_ctx_t *ctx, const char *md_text,
         }
 
         /* Send this chunk */
-        char *chunk = malloc(chunk_len + 1);
-        if (!chunk) return -1;
+        char *chunk = xmalloc(chunk_len + 1);
         memcpy(chunk, pos, chunk_len);
         chunk[chunk_len] = '\0';
 
@@ -1048,8 +1037,7 @@ static int tg_is_reply_to_bot(cJSON *msg) {
     cJSON *from = cJSON_GetObjectItem(reply, "from");
     if (!from) return 0;
 
-    cJSON *is_bot = cJSON_GetObjectItem(from, "is_bot");
-    return (is_bot && cJSON_IsTrue(is_bot)) ? 1 : 0;
+    return json_bool(from, "is_bot", 0);
 }
 
 /* Read and remove a file from the outbox. Caller frees result. */
@@ -1095,24 +1083,20 @@ static int tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
         return -1;
     }
 
-    cJSON *ok = cJSON_GetObjectItem(root, "ok");
-    if (!ok || !cJSON_IsTrue(ok)) {
-        cJSON *desc = cJSON_GetObjectItem(root, "description");
+    if (!json_bool(root, "ok", 0)) {
         fprintf(stderr, "[telegram] getFile error: %s\n",
-                desc ? desc->valuestring : "unknown");
+                json_str_or(root, "description", "unknown"));
         cJSON_Delete(root);
         return -1;
     }
 
     cJSON *result = cJSON_GetObjectItem(root, "result");
-    cJSON *fp = result ? cJSON_GetObjectItem(result, "file_path") : NULL;
-    if (!fp || !fp->valuestring || !fp->valuestring[0]) {
+    const char *file_path = result ? json_str(result, "file_path") : NULL;
+    if (!file_path || !file_path[0]) {
         fprintf(stderr, "[telegram] getFile: no file_path in response\n");
         cJSON_Delete(root);
         return -1;
     }
-
-    const char *file_path = fp->valuestring;
 
     /* Step 2: Download the file */
     char file_url[TG_URL_MAX * 2];
@@ -1149,7 +1133,7 @@ static int tg_download_photo(telegram_ctx_t *ctx, const char *file_id,
     snprintf(local_name, sizeof(local_name), "%ld_%s", (long)time(NULL), basename);
 
     char local_path[768];
-    snprintf(local_path, sizeof(local_path), "%s/%s", images_dir, local_name);
+    path_join(local_path, sizeof(local_path), images_dir, local_name);
 
     /* Write file atomically */
     char tmp_path[776];
@@ -1206,21 +1190,20 @@ static const char *tg_extract_image_file_id(cJSON *msg) {
         if (n > 0) {
             /* Last element is the largest resolution */
             cJSON *largest = cJSON_GetArrayItem(photo, n - 1);
-            cJSON *fid = largest ? cJSON_GetObjectItem(largest, "file_id") : NULL;
-            if (fid && fid->valuestring)
-                return fid->valuestring;
+            const char *fid = largest ? json_str(largest, "file_id") : NULL;
+            if (fid)
+                return fid;
         }
     }
 
     /* Check for document with image mime type */
     cJSON *doc = cJSON_GetObjectItem(msg, "document");
     if (doc) {
-        cJSON *mime = cJSON_GetObjectItem(doc, "mime_type");
-        if (mime && mime->valuestring &&
-            strncmp(mime->valuestring, "image/", 6) == 0) {
-            cJSON *fid = cJSON_GetObjectItem(doc, "file_id");
-            if (fid && fid->valuestring)
-                return fid->valuestring;
+        const char *mime = json_str(doc, "mime_type");
+        if (mime && strncmp(mime, "image/", 6) == 0) {
+            const char *fid = json_str(doc, "file_id");
+            if (fid)
+                return fid;
         }
     }
 
@@ -1434,8 +1417,7 @@ void *telegram_run(void *arg) {
         if (rc == 0 && resp.len > 0) {
             cJSON *root = cJSON_Parse(resp.data);
             if (root) {
-                cJSON *ok = cJSON_GetObjectItem(root, "ok");
-                if (ok && cJSON_IsTrue(ok)) {
+                if (json_bool(root, "ok", 0)) {
                     updates = cJSON_DetachItemFromObject(root, "result");
                 }
                 cJSON_Delete(root);
@@ -1482,9 +1464,9 @@ void *telegram_run(void *arg) {
                 char *auto_ws = NULL;  /* freed at end if not cached */
                 cJSON *ftc = cJSON_GetObjectItem(msg, "forum_topic_created");
                 if (ftc && msg_thread_id != 0) {
-                    cJSON *ftc_name = cJSON_GetObjectItem(ftc, "name");
-                    if (ftc_name && ftc_name->valuestring) {
-                        auto_ws = sanitize_workspace_name(ftc_name->valuestring);
+                    const char *ftc_name = json_str(ftc, "name");
+                    if (ftc_name) {
+                        auto_ws = sanitize_workspace_name(ftc_name);
                         if (auto_ws) {
                             msg_workspace = tg_topic_map_add(ctx, msg_thread_id,
                                                              auto_ws);
@@ -1493,9 +1475,9 @@ void *telegram_run(void *arg) {
                 }
                 cJSON *fte = cJSON_GetObjectItem(msg, "forum_topic_edited");
                 if (fte && msg_thread_id != 0) {
-                    cJSON *fte_name = cJSON_GetObjectItem(fte, "name");
-                    if (fte_name && fte_name->valuestring) {
-                        char *edited_ws = sanitize_workspace_name(fte_name->valuestring);
+                    const char *fte_name = json_str(fte, "name");
+                    if (fte_name) {
+                        char *edited_ws = sanitize_workspace_name(fte_name);
                         if (edited_ws) {
                             /* Update existing mapping if present */
                             for (int ti = 0; ti < ctx->topic_map_count; ti++) {
@@ -1527,13 +1509,9 @@ void *telegram_run(void *arg) {
                 free(auto_ws);
 
                 /* Extract text content: from text field or caption (for photos) */
-                cJSON *text = cJSON_GetObjectItem(msg, "text");
-                cJSON *caption_j = cJSON_GetObjectItem(msg, "caption");
-                const char *msg_text = NULL;
-                if (text && text->valuestring)
-                    msg_text = text->valuestring;
-                else if (caption_j && caption_j->valuestring)
-                    msg_text = caption_j->valuestring;
+                const char *msg_text = json_str(msg, "text");
+                if (!msg_text)
+                    msg_text = json_str(msg, "caption");
 
                 /* Check for photo or image document */
                 const char *image_file_id = tg_extract_image_file_id(msg);

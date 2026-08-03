@@ -174,7 +174,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
             "[TASK]\n";
         size_t plen = sizeof(preamble) - 1;
         size_t qlen = strlen(query);
-        enriched_query = malloc(plen + qlen + 1);
+        enriched_query = xmalloc(plen + qlen + 1);
         if (enriched_query) {
             memcpy(enriched_query, preamble, plen);
             memcpy(enriched_query + plen, query, qlen + 1);
@@ -254,7 +254,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "subtask", params, alias,
                  strlen(result), 0, NULL, NULL);
 
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
     free(hash);
     free(result);

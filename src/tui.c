@@ -272,8 +272,7 @@ paste_done: ;
         /* Multi-line paste: store in clip_store, insert token */
         if (clip_count < MAX_CLIPS) {
             int idx = clip_count++;
-            clip_store[idx].data = malloc((size_t)paste_len + 1);
-            if (!clip_store[idx].data) { clip_count--; goto paste_done; }
+            clip_store[idx].data = xmalloc((size_t)paste_len + 1);
             memcpy(clip_store[idx].data, paste_buf, (size_t)paste_len);
             clip_store[idx].data[paste_len] = '\0';
             clip_store[idx].len = paste_len;
@@ -308,8 +307,7 @@ static char *expand_clipboard_tokens(const char *input, int input_len) {
         if (occurrences > 0 && clip_store[i].len > tlen)
             cap += (size_t)occurrences * ((size_t)clip_store[i].len - (size_t)tlen);
     }
-    char *out = malloc(cap);
-    if (!out) return NULL;
+    char *out = xmalloc(cap);
     int olen = 0;
     int pos = 0;
 
@@ -1118,7 +1116,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     /* Stash in-progress input when first entering history */
                     if (ui->history_idx == ui->history_count) {
                         free(ui->saved_input);
-                        ui->saved_input = malloc((size_t)(ui->input_len + 1));
+                        ui->saved_input = xmalloc((size_t)(ui->input_len + 1));
                         if (ui->saved_input) {
                             memcpy(ui->saved_input, ui->input_buffer, (size_t)ui->input_len);
                             ui->saved_input[ui->input_len] = '\0';
@@ -1294,9 +1292,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     }
                 }
                 if (ui->history_count < ui->history_cap) {
-                    char *dup = strdup(*out_query);
-                    if (dup)
-                        ui->history[ui->history_count++] = dup;
+                    ui->history[ui->history_count++] = xstrdup(*out_query);
                 }
                 ui->history_idx = ui->history_count;  /* past end = fresh input */
                 clip_store_clear();  /* discard expanded clipboard entries */
@@ -1382,7 +1378,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
                     if (cp) {
                         cJSON *q = cJSON_GetObjectItem(cp, "user_query");
                         if (q && q->valuestring && q->valuestring[0]) {
-                            *out_query = strdup(q->valuestring);
+                            *out_query = xstrdup(q->valuestring);
                             ui_state_set_status(ui, STATUS_READY,
                                 "Resuming (Space toggle — type query + Enter for new direction)");
                             ui->dirty = 1;
@@ -1592,8 +1588,7 @@ int tui_input(ui_state_t *ui, char **out_query) {
         if (ui->input_len >= 4) {
             /* Have at least 3 chars after "?": set page search term */
             ui->input_buffer[ui->input_len] = '\0';
-            free(ui->page_search_term);
-            ui->page_search_term = strdup(ui->input_buffer + 1);
+            str_replace(&ui->page_search_term, ui->input_buffer + 1);
             ui->dirty = 1;
         } else {
             /* Query too short — clear page search */

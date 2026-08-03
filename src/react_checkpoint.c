@@ -20,27 +20,25 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     cJSON *cp = slurp_json(path);
     if (!cp) return -1;  /* no checkpoint — start fresh */
 
-    int saved_step = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(cp, "step"));
-    int saved_loop = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(cp, "react_loop"));
+    int saved_step = json_int(cp, "step", 0);
+    int saved_loop = json_int(cp, "react_loop", 0);
 
     /* Restore scratchpad (section-based; handles legacy plain-text format too) */
     scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
     if (ctx->tools->scratch.count == 0) {
         /* Try checkpoint JSON as last resort (very old sessions) */
-        cJSON *sp = cJSON_GetObjectItem(cp, "scratchpad");
-        if (sp && sp->valuestring && sp->valuestring[0]) {
-            scratchpad_parse(&ctx->tools->scratch, sp->valuestring,
+        const char *sp = json_str(cp, "scratchpad");
+        if (sp && sp[0]) {
+            scratchpad_parse(&ctx->tools->scratch, sp,
                              "default", 5);
         }
     }
 
     /* Restore last_tc_id for tool_calls threading */
     char *restored_tc_id = NULL;
-    cJSON *tc_id_j = cJSON_GetObjectItem(cp, "last_tc_id");
-    if (tc_id_j && tc_id_j->valuestring)
-        restored_tc_id = strdup(tc_id_j->valuestring);
+    const char *tc_id_s = json_str(cp, "last_tc_id");
+    if (tc_id_s)
+        restored_tc_id = xstrdup(tc_id_s);
 
     cJSON_Delete(cp);
 
@@ -121,16 +119,11 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
 
-        int loop = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "react_loop"));
-        int step = (int)cJSON_GetNumberValue(
-            cJSON_GetObjectItem(entry, "step"));
-        const char *tool = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "tool"));
-        const char *ref = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "ref"));
-        const char *tc_id = cJSON_GetStringValue(
-            cJSON_GetObjectItem(entry, "tc_id"));
+        int loop = json_int(entry, "react_loop", 0);
+        int step = json_int(entry, "step", 0);
+        const char *tool = json_str(entry, "tool");
+        const char *ref = json_str(entry, "ref");
+        const char *tc_id = json_str(entry, "tc_id");
         cJSON *params = cJSON_GetObjectItem(entry, "params");
 
         /* Only replay entries from the current react loop */
@@ -165,7 +158,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         if (ref) {
             /* Extract hash from ref by resolving the symlink */
             char ref_path[NASH_PATH_MAX];
-            snprintf(ref_path, sizeof(ref_path), "%s/%s",
+            path_join(ref_path, sizeof(ref_path),
                      ctx->tools->session_dir, ref);
             char link_target[NASH_PATH_MAX];
             ssize_t llen = readlink(ref_path, link_target, sizeof(link_target) - 1);
@@ -193,11 +186,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
         /* Handle thinking steps */
         if (strcmp(tool, "thinking") == 0) {
-            const char *thought = NULL;
-            if (params) {
-                cJSON *t = cJSON_GetObjectItem(params, "thought");
-                if (t && t->valuestring) thought = t->valuestring;
-            }
+            const char *thought = params ? json_str(params, "thought") : NULL;
             if (thought) {
                 /* Read the stored response for the full thinking content */
                 if (ref && entry_hash) {
@@ -221,8 +210,8 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
         const char *thought = "";
         const char *action_name = tool;
         if (params) {
-            cJSON *t = cJSON_GetObjectItem(params, "thought");
-            if (t && t->valuestring) thought = t->valuestring;
+            const char *tv = json_str(params, "thought");
+            if (tv) thought = tv;
         }
 
         if (tc_id) {
@@ -265,8 +254,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
             /* Build tool result content */
             char result_content[1024];
-            int rsize = (int)cJSON_GetNumberValue(
-                cJSON_GetObjectItem(entry, "size"));
+            int rsize = json_int(entry, "size", 0);
             snprintf(result_content, sizeof(result_content),
                      "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
                      ref ? ref : "?", rsize, step);
@@ -295,8 +283,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
             llm_chat_add(chat, "assistant", resp ? resp : "{}");
 
             char result_content[1024];
-            int rsize = (int)cJSON_GetNumberValue(
-                cJSON_GetObjectItem(entry, "size"));
+            int rsize = json_int(entry, "size", 0);
             snprintf(result_content, sizeof(result_content),
                      "{\"ref\":\"%s\",\"chars\":%d}\n[step %d | restored]",
                      ref ? ref : "?", rsize, step);
@@ -375,9 +362,7 @@ void react_checkpoint_save(react_ctx_t *ctx, int step, const char *user_query,
     if (last_tc_id)
         cJSON_AddStringToObject(cp, "last_tc_id", last_tc_id);
 
-    char *json = cJSON_Print(cp);
-    write_file(path, json, strlen(json));
-    free(json);
+    dump_json(path, cp);
     cJSON_Delete(cp);
 }
 

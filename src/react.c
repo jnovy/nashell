@@ -59,7 +59,7 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
         ts.tv_sec += 2;
         pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
         if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
-            ctx->pause_query = strdup("quit");
+            ctx->pause_query = xstrdup("quit");
             break;
         }
     }
@@ -73,15 +73,13 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
     ctx->provider->abort_retry = 0;
 
     /* Inject the redirect query into the chat context */
-    char *inject_msg = malloc(strlen(redirect) + 64);
-    if (inject_msg) {
-        snprintf(inject_msg, strlen(redirect) + 64,
-                 "[User redirect]\n%s", redirect);
-        llm_chat_add(chat, "user", inject_msg);
-        if (chat->n_msgs > 0)
-            chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
-        free(inject_msg);
-    }
+    char *inject_msg = xmalloc(strlen(redirect) + 64);
+    snprintf(inject_msg, strlen(redirect) + 64,
+             "[User redirect]\n%s", redirect);
+    llm_chat_add(chat, "user", inject_msg);
+    if (chat->n_msgs > 0)
+        chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
+    free(inject_msg);
     free(redirect);
     react_checkpoint_remove(ctx);
 }
@@ -163,12 +161,6 @@ int react_compute_keep_tail(const llm_chat_t *chat) {
     return keep >= 2 ? keep : 2;
 }
 
-const char *react_json_get_str(cJSON *obj, const char *key) {
-    cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
-    if (item && cJSON_IsString(item)) return item->valuestring;
-    return NULL;
-}
-
 /* Build enriched BM25 query from user_query + recent thoughts + scratchpad.
  * Shared between eviction (react_maybe_evict) and context construction
  * (react_build_context) to avoid duplicated logic. */
@@ -247,9 +239,9 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
             if (tc_arr && cJSON_IsArray(tc_arr)) {
                 cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
                 if (first) {
-                    cJSON *id_item = cJSON_GetObjectItem(first, "id");
-                    if (id_item && cJSON_IsString(id_item))
-                        expected_id = id_item->valuestring;
+                    const char *id_val = json_str(first, "id");
+                    if (id_val)
+                        expected_id = id_val;
                 }
             }
         }
@@ -293,19 +285,17 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
              * substring false positives (e.g. "call_12" matching "call_123"). */
             {
                 size_t id_len = strlen(msg->tool_call_id);
-                char *quoted_id = malloc(id_len + 3);  /* '"' + id + '"' + NUL */
-                if (quoted_id) {
-                    quoted_id[0] = '"';
-                    memcpy(quoted_id + 1, msg->tool_call_id, id_len);
-                    quoted_id[id_len + 1] = '"';
-                    quoted_id[id_len + 2] = '\0';
-                    int found = strstr(chat->msgs[pi].tool_calls_json, quoted_id) != NULL;
-                    free(quoted_id);
-                    if (found) {
-                        if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
-                            return -1;
-                        return pi;
-                    }
+                char *quoted_id = xmalloc(id_len + 3);  /* '"' + id + '"' + NUL */
+                quoted_id[0] = '"';
+                memcpy(quoted_id + 1, msg->tool_call_id, id_len);
+                quoted_id[id_len + 1] = '"';
+                quoted_id[id_len + 2] = '\0';
+                int found = strstr(chat->msgs[pi].tool_calls_json, quoted_id) != NULL;
+                free(quoted_id);
+                if (found) {
+                    if (chat->msgs[pi].importance >= LLM_MSG_IMPORTANCE_HIGH)
+                        return -1;
+                    return pi;
                 }
             }
         }
@@ -324,12 +314,12 @@ void react_recover_tool_threading(llm_chat_t *chat) {
     chat->last_tool_calls_json = NULL;
     for (int i = chat->n_msgs - 1; i >= 0; i--) {
         if (chat->msgs[i].tool_calls_json) {
-            chat->last_tool_calls_json = strdup(chat->msgs[i].tool_calls_json);
+            chat->last_tool_calls_json = xstrdup(chat->msgs[i].tool_calls_json);
             /* Use scanning partner match instead of assuming i+1 adjacency.
              * Interleaved hints/errors can separate tool_call from result. */
             int partner = react_find_tool_partner(chat, i, 0, chat->n_msgs);
             if (partner >= 0 && chat->msgs[partner].tool_call_id)
-                chat->last_tool_call_id = strdup(chat->msgs[partner].tool_call_id);
+                chat->last_tool_call_id = xstrdup(chat->msgs[partner].tool_call_id);
             break;
         }
     }
@@ -348,18 +338,15 @@ char *react_build_system_prompt(const react_ctx_t *ctx) {
     if (ctx->custom_system_prompt && ctx->custom_system_prompt[0]) {
         if (ctx->system_prompt_replace) {
             /* Replace mode: discard base prompt entirely */
-            free(base);
-            base = strdup(ctx->custom_system_prompt);
-            if (!base) base = strdup("");
+            str_replace(&base, ctx->custom_system_prompt);
+            if (!base) base = xstrdup("");
         } else {
             /* Append mode (default): add custom prompt after base */
             size_t len = strlen(base) + strlen(ctx->custom_system_prompt) + 64;
-            char *merged = malloc(len);
-            if (merged) {
-                snprintf(merged, len, "%s\n\n[AGENT IDENTITY]\n%s", base, ctx->custom_system_prompt);
-                free(base);
-                base = merged;
-            }
+            char *merged = xmalloc(len);
+            snprintf(merged, len, "%s\n\n[AGENT IDENTITY]\n%s", base, ctx->custom_system_prompt);
+            free(base);
+            base = merged;
         }
     }
 
@@ -367,12 +354,10 @@ char *react_build_system_prompt(const react_ctx_t *ctx) {
     const char *extra = cfg ? cfg->system_prompt_extra : NULL;
     if (extra && extra[0]) {
         size_t len = strlen(base) + strlen(extra) + 64;
-        char *full = malloc(len);
-        if (full) {
-            snprintf(full, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base, extra);
-            free(base);
-            return full;
-        }
+        char *full = xmalloc(len);
+        snprintf(full, len, "%s\n\n[MODEL-SPECIFIC RULES]\n%s", base, extra);
+        free(base);
+        return full;
     }
     return base;
 }
@@ -516,8 +501,7 @@ void react_sanitize_thought(cJSON *action) {
         /* unwrap_thought returned NULL — the thought was a JSON object
          * with no extractable thought text (e.g. the model echoed the full
          * action JSON with thought="").  Clear it to empty. */
-        free(th->valuestring);
-        th->valuestring = strdup("");
+        str_replace(&th->valuestring, "");
     }
 }
 
@@ -566,7 +550,7 @@ const char *react_get_action_desc(cJSON *action, const char *action_name,
     if (p) {
         const char *req_name = tool_params_first_required(p->params);
         if (req_name) {
-            const char *val = react_json_get_str(action, req_name);
+            const char *val = json_str(action, req_name);
             return val ? val : thought;
         }
     }
@@ -582,10 +566,10 @@ char *checkpoint_read_query(const char *session_dir) {
     snprintf(path, sizeof(path), "%s/checkpoint.json", session_dir);
     cJSON *cp = slurp_json(path);
     if (!cp) return NULL;
-    cJSON *q = cJSON_GetObjectItem(cp, "user_query");
+    const char *q = json_str(cp, "user_query");
     char *result = NULL;
-    if (q && q->valuestring && q->valuestring[0])
-        result = strdup(q->valuestring);
+    if (q && q[0])
+        result = xstrdup(q);
     cJSON_Delete(cp);
     return result;
 }
@@ -608,9 +592,9 @@ char *react_extract_llm_text_output(const char *raw) {
     if (raw[0] == '{') {
         cJSON *j = cJSON_Parse(raw);
         if (j) {
-            cJSON *c = cJSON_GetObjectItem(j, "content");
-            if (c && cJSON_IsString(c) && c->valuestring && c->valuestring[0]) {
-                char *result = strdup(c->valuestring);
+            const char *c = json_str(j, "content");
+            if (c && c[0]) {
+                char *result = xstrdup(c);
                 cJSON_Delete(j);
                 return result;
             }
@@ -618,8 +602,8 @@ char *react_extract_llm_text_output(const char *raw) {
              * (e.g. {"action":"notes","op":"list"} — model trying to call a tool
              * instead of outputting text). Reject it — return NULL so the caller
              * knows the LLM didn't produce usable text. */
-            cJSON *action = cJSON_GetObjectItem(j, "action");
-            if (action && cJSON_IsString(action)) {
+            const char *action_str = json_str(j, "action");
+            if (action_str) {
                 cJSON_Delete(j);
                 return NULL;  /* tool call without content — reject */
             }
@@ -640,11 +624,11 @@ char *react_extract_llm_text_output(const char *raw) {
             return strndup(start, end - start);
         }
         /* No closing fence — return everything after opening */
-        return strdup(start);
+        return xstrdup(start);
     }
 
     /* Case 3: Plain text — return as-is */
-    return strdup(raw);
+    return xstrdup(raw);
 }
 
 /* ── Harness-1 helpers (arXiv 2606.02373) ─────────────── */
@@ -773,8 +757,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 if (!ctx->tools->last_spec_hash ||
                     strcmp(spec_hash, ctx->tools->last_spec_hash) != 0) {
                     changed = 1;
-                    free(ctx->tools->last_spec_hash);
-                    ctx->tools->last_spec_hash = strdup(spec_hash);
+                    str_replace(&ctx->tools->last_spec_hash, spec_hash);
                 }
             }
             if (changed && spec_hash) {
@@ -1010,17 +993,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              * (observed: 55s / 10518 tokens burned in session 1782390827). */
             #define PARSE_ERR_PREVIEW_LEN 500
             if (resp_len > PARSE_ERR_PREVIEW_LEN + 40) {
-                char *trunc = malloc(PARSE_ERR_PREVIEW_LEN + 64);
-                if (trunc) {
-                    snprintf(trunc, PARSE_ERR_PREVIEW_LEN + 64,
-                             "%.*s\n[...truncated %zu chars...]",
-                             (int)utf8_clamp(response, PARSE_ERR_PREVIEW_LEN),
-                             response, resp_len - PARSE_ERR_PREVIEW_LEN);
-                    llm_chat_add(chat, "assistant", trunc);
-                    free(trunc);
-                } else {
-                    llm_chat_add(chat, "assistant", response);
-                }
+                char *trunc = xmalloc(PARSE_ERR_PREVIEW_LEN + 64);
+                snprintf(trunc, PARSE_ERR_PREVIEW_LEN + 64,
+                         "%.*s\n[...truncated %zu chars...]",
+                         (int)utf8_clamp(response, PARSE_ERR_PREVIEW_LEN),
+                         response, resp_len - PARSE_ERR_PREVIEW_LEN);
+                llm_chat_add(chat, "assistant", trunc);
+                free(trunc);
             } else {
                 llm_chat_add(chat, "assistant", response);
             }
@@ -1041,8 +1020,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * back a full action object as its content/thought. */
         react_sanitize_thought(action);
 
-        const char *thought = react_json_get_str(action, "thought");
-        const char *action_name = react_json_get_str(action, "action");
+        const char *thought = json_str(action, "thought");
+        const char *action_name = json_str(action, "action");
 
         if (!action_name) {
             if (thought && thought[0]) {
@@ -1111,7 +1090,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
         /* Check for user_ask — pause react loop and wait for user input */
         if (strcmp(action_name, "user_ask") == 0) {
-            const char *question = react_json_get_str(action, "question");
+            const char *question = json_str(action, "question");
             if (!question || !question[0]) {
                 /* Model called user_ask without a question — nudge it to retry */
                 const char *errmsg =
@@ -1151,8 +1130,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             pthread_mutex_lock(&ctx->user_ask_mutex);
             /* Store question in shared state for TUI to read (under mutex
              * to avoid use-after-free race with TUI thread reads). */
-            free(ctx->user_ask_question);
-            ctx->user_ask_question = strdup(question);
+            str_replace(&ctx->user_ask_question, question);
             free(ctx->user_ask_answer);
             ctx->user_ask_answer = NULL;
             atomic_store(&ctx->user_ask_pending, 1);
@@ -1163,8 +1141,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 pthread_cond_timedwait(&ctx->user_ask_cond, &ctx->user_ask_mutex, &ts);
                 /* Escape hatch: TUI gone → unblock with synthetic answer */
                 if (atomic_load(&ctx->user_ask_pending) && !atomic_load(&g_tui_active)) {
-                    free(ctx->user_ask_answer);
-                    ctx->user_ask_answer = strdup("(quit)");
+                    str_replace(&ctx->user_ask_answer, "(quit)");
                     atomic_store(&ctx->user_ask_pending, 0);
                     break;
                 }
@@ -1180,20 +1157,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             cJSON_AddStringToObject(ua_params, "question", question);
             cJSON_AddStringToObject(ua_params, "answer", answer);
             size_t ua_md_len = strlen(question) + strlen(answer) + 64;
-            char *ua_md = malloc(ua_md_len);
+            char *ua_md = xmalloc(ua_md_len);
             char *ua_alias = NULL;
-            if (ua_md) {
-                snprintf(ua_md, ua_md_len,
-                         "## Question\n\n%s\n\n## Answer\n\n%s\n",
-                         question, answer);
-                char *ua_hash = store_save(ctx->tools->store, ua_md);
-                free(ua_md);
-                ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
-                journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                               step + 1, "user_ask", ua_params, ua_alias,
-                               strlen(answer), 0, NULL, NULL, 0);
-                free(ua_hash);
-            }
+            snprintf(ua_md, ua_md_len,
+                     "## Question\n\n%s\n\n## Answer\n\n%s\n",
+                     question, answer);
+            char *ua_hash = store_save(ctx->tools->store, ua_md);
+            free(ua_md);
+            ua_alias = ua_hash ? tool_register_alias(ctx->tools, ua_hash) : NULL;
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "user_ask", ua_params, ua_alias,
+                           strlen(answer), 0, NULL, NULL, 0);
+            free(ua_hash);
 
             /* Build result message for the model (JSON-escape the answer) */
             cJSON *ans_obj = cJSON_CreateObject();
@@ -1201,18 +1176,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             char *ans_json = cJSON_PrintUnformatted(ans_obj);
             cJSON_Delete(ans_obj);
             size_t ans_len = (ans_json ? strlen(ans_json) : 2) + 32;
-            int result_msg_static = 0;
-            char *result_msg = malloc(ans_len);
-            if (result_msg) {
-                snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
-                         ans_json ? ans_json : "{}", step + 1);
-            } else {
-                result_msg = strdup("{}");
-                if (!result_msg) {
-                    result_msg = (char *)"{}";  /* static fallback on double OOM */
-                    result_msg_static = 1;
-                }
-            }
+            char *result_msg = xmalloc(ans_len);
+            snprintf(result_msg, ans_len, "%s\n[step %d | user_ask]",
+                     ans_json ? ans_json : "{}", step + 1);
             free(ans_json);
 
             /* Add to chat as tool result */
@@ -1230,7 +1196,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
             }
 
-            if (!result_msg_static) free(result_msg);
+            free(result_msg);
             free(ua_alias);
             cJSON_Delete(ua_params);
             cJSON_Delete(action);
@@ -1273,14 +1239,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 continue;
             }
 
-            const char *result = react_json_get_str(action, "result");
+            const char *result = json_str(action, "result");
             /* Fallback: if result is empty but thought has content, use thought.
              * Local models sometimes put the summary in "thought" and leave
              * "result" empty — the thought IS the answer for done calls. */
             if ((!result || !result[0]) && thought && thought[0]) {
                 result = thought;
             }
-            final_result = result ? strdup(result) : strdup("(no result)");
+            final_result = result ? xstrdup(result) : xstrdup("(no result)");
             react_checkpoint_remove(ctx);
 
             /* Auto-save done result for cross-loop inheritance.
@@ -1343,38 +1309,34 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * previous step, the cached result is returned without re-execution.
          * Disable for tasks that legitimately require repeated operations. */
         int cycling_enabled = ctx->tools->cfg ? ctx->tools->cfg->cycling_detection : 1;
-        const char *cmd = react_json_get_str(action, "command");
-        const char *path = react_json_get_str(action, "path");
-        const char *pattern = react_json_get_str(action, "pattern");
-        const char *content = react_json_get_str(action, "content");
-        const char *old_text = react_json_get_str(action, "old_text");
-        const char *new_text = react_json_get_str(action, "new_text");
-        const char *query = react_json_get_str(action, "query");
-        const char *question = react_json_get_str(action, "question");
-        const char *url = react_json_get_str(action, "url");
+        const char *cmd = json_str(action, "command");
+        const char *path = json_str(action, "path");
+        const char *pattern = json_str(action, "pattern");
+        const char *content = json_str(action, "content");
+        const char *old_text = json_str(action, "old_text");
+        const char *new_text = json_str(action, "new_text");
+        const char *query = json_str(action, "query");
+        const char *question = json_str(action, "question");
+        const char *url = json_str(action, "url");
         /* Include key and value in signature so memory_store
          * calls with different keys aren't falsely detected as cycling. */
-        const char *key = react_json_get_str(action, "key");
-        const char *value = react_json_get_str(action, "value");
+        const char *key = json_str(action, "key");
+        const char *value = json_str(action, "value");
         /* Include op and section in signature so notes(op="write", section="A")
          * and notes(op="write", section="B") aren't falsely detected as cycling. */
-        const char *op = react_json_get_str(action, "op");
-        const char *section = react_json_get_str(action, "section");
+        const char *op = json_str(action, "op");
+        const char *section = json_str(action, "section");
         /* Include start_line/end_line in signature so that reading different
          * line ranges of the same file is NOT detected as cycling.
          * file_read("react.c", 1, 50) and file_read("react.c", 50, 100)
          * are different actions, not repetitions. */
-        cJSON *sl = cJSON_GetObjectItem(action, "start_line");
-        cJSON *el = cJSON_GetObjectItem(action, "end_line");
-        int start_line = sl ? (int)cJSON_GetNumberValue(sl) : 0;
-        int end_line = el ? (int)cJSON_GetNumberValue(el) : 0;
+        int start_line = json_int(action, "start_line", 0);
+        int end_line = json_int(action, "end_line", 0);
         /* Include priority, regex — without these,
          * notes(priority=1) vs notes(priority=5) and grep_search(regex=true)
          * vs grep_search(regex=false) would falsely trigger cycling. */
-        cJSON *pr = cJSON_GetObjectItem(action, "priority");
-        cJSON *rx = cJSON_GetObjectItem(action, "regex");
-        int priority = pr ? (int)cJSON_GetNumberValue(pr) : 0;
-        int regex = rx ? (cJSON_IsTrue(rx) ? 1 : 0) : -1;
+        int priority = json_int(action, "priority", 0);
+        int regex = json_bool(action, "regex", -1);
         /* Build action signature dynamically — no fixed buffer, no truncation.
          * Short fields (action_name, cmd, path, pattern) go verbatim for
          * debuggability.  Long fields get FNV-1a hashed to 8 hex chars each
@@ -1385,8 +1347,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         /* 99 bytes for 11 hashed fields (10 known + 1 catch-all) + colons + 40 for ints + 1 null */
         size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s)
                        + strlen(pattern_s) + 99 + 48 + 1;
-        char *sig = malloc(sig_cap);
-        if (!sig) goto skip_cycling;  /* OOM: skip cycling detection */
+        char *sig = xmalloc(sig_cap);
         #define SIG_HASH_FIELD(s) do { \
             unsigned _h = 2166136261u; \
             if (s) { for (const char *_p = (s); *_p; _p++) \
@@ -1575,9 +1536,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 ev.description = desc ? desc : "";
                 /* Extract tool timeout so frontends can show elapsed/limit */
                 if (strcmp(action_name, "shell_exec") == 0) {
-                    cJSON *to = cJSON_GetObjectItem(action, "timeout");
-                    if (to && cJSON_IsNumber(to))
-                        ev.tool_timeout = (int)to->valuedouble;
+                    int to = json_int(action, "timeout", 0);
+                    if (to)
+                        ev.tool_timeout = to;
                     else
                         ev.tool_timeout = ctx->tools->cfg
                             ? ctx->tools->cfg->shell_timeout : 30;
@@ -1627,9 +1588,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              * instead inject a corrective message and let the model retry.
              * This prevents the "garbled name → error → model confusion → 500" cascade. */
             if (!tr.success && tr.meta) {
-                cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
-                if (err_j && err_j->valuestring &&
-                    strstr(err_j->valuestring, "unknown tool")) {
+                const char *err_text = json_str(tr.meta, "error");
+                if (err_text &&
+                    strstr(err_text, "unknown tool")) {
                     /* Store garbled tool details in the store for debugging.
                      * This lets us investigate patterns: why did the model produce
                      * a garbled name? Which model? What context triggered it? */
@@ -1647,7 +1608,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     journal_append(ctx->tools->journal, ctx->tools->react_loop,
                                    step + 1, "unknown_tool", tr.meta, ut_alias,
                                    ut_json ? strlen(ut_json) : 0, 0,
-                                   err_j->valuestring, NULL, 0);
+                                   err_text, NULL, 0);
 
                     /* Inject corrective message into chat (with store ref for debugging) */
                     char *tool_names = tool_registry_names_csv();
@@ -1735,28 +1696,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             free(last_sig);
             last_sig = sig;
             sig = NULL;  /* ownership transferred — don't free below */
-            free(last_result_json);
-            last_result_json = strdup(meta_str);
+            str_replace(&last_result_json, meta_str);
             /* Cache the store alias for journal hyperlinks on cycling hits */
             free(last_ref);
             last_ref = NULL;
             if (tr.store_ref && ctx->tools->aliases) {
                 const char *alias = alias_map_reverse_lookup(
                     ctx->tools->aliases, tr.store_ref);
-                if (alias) last_ref = strdup(alias);
+                if (alias) last_ref = xstrdup(alias);
             }
             repeat_count = 0;
         }
         free(sig);  /* no-op if ownership was transferred above */
         size_t result_len = strlen(meta_str) + 128;
-        char *result_msg = malloc(result_len);
-        if (result_msg) {
-            char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
-            snprintf(result_msg, result_len, "%s\n[step %d | %s]",
-                     meta_str, step + 1, _dur);
-        } else {
-            result_msg = strdup(meta_str);  /* OOM fallback: use raw result */
-        }
+        char *result_msg = xmalloc(result_len);
+        char _dur[32]; fmt_duration(total_elapsed, _dur, sizeof(_dur));
+        snprintf(result_msg, result_len, "%s\n[step %d | %s]",
+                 meta_str, step + 1, _dur);
 
         /* Harness-1 §3.2: Assign importance to tool result messages */
         int tool_imp = react_tool_importance(action_name, tr.success);
@@ -1784,10 +1740,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 /* Replace with a short reference */
                 free(result_msg);
                 result_len = 128;
-                result_msg = malloc(result_len);
-                if (!result_msg) {
-                    result_msg = strdup("{\"note\":\"dedup\"}");
-                } else if (dedup_step >= 0)
+                result_msg = xmalloc(result_len);
+                if (dedup_step >= 0)
                     snprintf(result_msg, result_len,
                         "{\"note\":\"Same content as step %d — see earlier result\"}\n[step %d | dedup]",
                         dedup_step, step + 1);
@@ -1871,10 +1825,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
              * tool_path enables tracking which file_reads are stale
              * (file was subsequently edited) or superseded (re-read). */
             if (action_name) {
-                chat->msgs[chat->n_msgs - 1].tool_name = strdup(action_name);
-                const char *tp = react_json_get_str(action, "path");
+                chat->msgs[chat->n_msgs - 1].tool_name = xstrdup(action_name);
+                const char *tp = json_str(action, "path");
                 if (tp)
-                    chat->msgs[chat->n_msgs - 1].tool_path = strdup(tp);
+                    chat->msgs[chat->n_msgs - 1].tool_path = xstrdup(tp);
             }
 
             /* Look up existing alias — tool_execute() already registered it.
@@ -1883,7 +1837,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 const char *existing = alias_map_reverse_lookup(
                     ctx->tools->aliases, tr.store_ref);
                 if (existing)
-                    chat->msgs[chat->n_msgs - 1].store_alias = strdup(existing);
+                    chat->msgs[chat->n_msgs - 1].store_alias = xstrdup(existing);
             }
         }
 
@@ -1900,26 +1854,22 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             size_t surface_len = strlen(action_name) + 1
                 + (params_str ? strlen(params_str) : 0) + 1
                 + strlen(meta_str) + 1;
-            char *match_surface = malloc(surface_len);
-            if (match_surface) {
-                snprintf(match_surface, surface_len, "%s %s %s",
-                         action_name, params_str ? params_str : "", meta_str);
-                free(params_str);
+            char *match_surface = xmalloc(surface_len);
+            snprintf(match_surface, surface_len, "%s %s %s",
+                     action_name, params_str ? params_str : "", meta_str);
+            free(params_str);
 
-                /* Iterate memories and check triggers */
-                trig_ctx_t tctx = { match_surface, ctx->tools, chat, 0 };
+            /* Iterate memories and check triggers */
+            trig_ctx_t tctx = { match_surface, ctx->tools, chat, 0 };
 
-                if (ctx->tools->ws) {
-                    memory_iterate(ctx->tools->ws->global, trig_cb, &tctx);
-                    if (tctx.injected < 2 && ctx->tools->ws->workspace)
-                        memory_iterate(ctx->tools->ws->workspace, trig_cb, &tctx);
-                } else {
-                    memory_iterate(ctx->tools->memory, trig_cb, &tctx);
-                }
-                free(match_surface);
+            if (ctx->tools->ws) {
+                memory_iterate(ctx->tools->ws->global, trig_cb, &tctx);
+                if (tctx.injected < 2 && ctx->tools->ws->workspace)
+                    memory_iterate(ctx->tools->ws->workspace, trig_cb, &tctx);
             } else {
-                free(params_str);
+                memory_iterate(ctx->tools->memory, trig_cb, &tctx);
             }
+            free(match_surface);
         }
 
         /* Cycling escalation: after 3+ consecutive refusals, inject a forceful
@@ -1942,21 +1892,18 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * teaching the capture-then-analyze pattern (file_read/grep_search
          * on the stored ref instead of re-running the command). */
         if (action_name && strcmp(action_name, "shell_exec") == 0 && tr.meta) {
-            cJSON *ems = cJSON_GetObjectItem(tr.meta, "elapsed_ms");
-            if (ems && ems->valuedouble > 5000.0) {
-                cJSON *ref_j = cJSON_GetObjectItem(tr.meta, "ref");
-                cJSON *chars_j = cJSON_GetObjectItem(tr.meta, "chars");
-                cJSON *lines_j = cJSON_GetObjectItem(tr.meta, "lines");
+            double ems = json_num(tr.meta, "elapsed_ms", 0);
+            if (ems > 5000.0) {
                 char nudge[256];
                 snprintf(nudge, sizeof(nudge),
                     "[SLOW COMMAND] shell_exec took %ds. "
                     "Output stored at %s (%d chars, %d lines). "
                     "Do NOT re-run this command -- "
                     "analyze the stored output instead.",
-                    (int)(ems->valuedouble / 1000.0),
-                    (ref_j && ref_j->valuestring) ? ref_j->valuestring : "?",
-                    chars_j ? (int)chars_j->valuedouble : 0,
-                    lines_j ? (int)lines_j->valuedouble : 0);
+                    (int)(ems / 1000.0),
+                    json_str_or(tr.meta, "ref", "?"),
+                    json_int(tr.meta, "chars", 0),
+                    json_int(tr.meta, "lines", 0));
                 llm_chat_add_typed(chat, "user", nudge,
                                    LLM_MSG_EVICTION_SUMMARY);
             }
@@ -2029,15 +1976,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                     cJSON_Delete(seed_meta);
                     if (seed_json) {
                         int sj_len = (int)strlen(seed_json);
-                        char *seed = malloc((size_t)(sj_len + 64));
-                        if (seed) {
-                            snprintf(seed, (size_t)(sj_len + 64),
-                                "First result (%s): %s",
-                                action_name, seed_json);
-                            scratchpad_write(&ctx->tools->scratch,
-                                             "auto_seed", seed, 3);
-                            free(seed);
-                        }
+                        char *seed = xmalloc((size_t)(sj_len + 64));
+                        snprintf(seed, (size_t)(sj_len + 64),
+                            "First result (%s): %s",
+                            action_name, seed_json);
+                        scratchpad_write(&ctx->tools->scratch,
+                                         "auto_seed", seed, 3);
+                        free(seed);
                         free(seed_json);
                     }
                 }
@@ -2103,8 +2048,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          *   error_recall_max_inject    — max entries to inject (default 1)
          *   error_recall_min_relevance — relevance floor for injection (default 0.25) */
         if (!tr.success && (ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory) {
-            cJSON *err_j = cJSON_GetObjectItem(tr.meta, "error");
-            const char *err_text = err_j ? err_j->valuestring : NULL;
+            const char *err_text = json_str(tr.meta, "error");
             int err_min_len = ctx->tools->cfg
                 ? ctx->tools->cfg->error_recall_min_length : 10;
             if (err_text && (int)strlen(err_text) > err_min_len) {

@@ -15,7 +15,7 @@
 static void read_and_print_store_file(const char *session_dir, const char *ref) {
     if (!session_dir || !ref) return;
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", session_dir, ref);
+    path_join(path, sizeof(path), session_dir, ref);
     FILE *f = fopen(path, "r");
     if (!f) return;
     char buf[NASH_PATH_MAX];

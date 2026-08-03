@@ -24,8 +24,7 @@
 /* ── Node allocation ─────────────────────────────────── */
 
 static yaml_node_t *node_new(yaml_type_t type) {
-    yaml_node_t *n = calloc(1, sizeof(yaml_node_t));
-    if (!n) return NULL;
+    yaml_node_t *n = xcalloc(1, sizeof(yaml_node_t));
     n->type = type;
     return n;
 }
@@ -33,7 +32,7 @@ static yaml_node_t *node_new(yaml_type_t type) {
 static yaml_node_t *node_scalar(const char *val) {
     yaml_node_t *n = node_new(YAML_SCALAR);
     if (!n) return NULL;
-    n->scalar = val ? strdup(val) : strdup("");
+    n->scalar = val ? xstrdup(val) : xstrdup("");
     return n;
 }
 
@@ -45,7 +44,7 @@ static void mapping_add(yaml_node_t *map, const char *key, yaml_node_t *val) {
             safe_realloc((void **)&map->values, newcap * sizeof(yaml_node_t *))) return;
         map->cap_children = newcap;
     }
-    map->keys[map->n_children] = strdup(key);
+    map->keys[map->n_children] = xstrdup(key);
     map->values[map->n_children] = val;
     map->n_children++;
 }
@@ -156,20 +155,20 @@ static char *unquote(const char *s) {
     int len = (int)strlen(s);
     if (len >= 2) {
         if (s[0] == '"' && s[len-1] == '"') {
-            char *r = malloc(len - 1);
+            char *r = xmalloc(len - 1);
             memcpy(r, s + 1, len - 2);
             r[len - 2] = '\0';
             process_dq_escapes(r);
             return r;
         }
         if (s[0] == '\'' && s[len-1] == '\'') {
-            char *r = malloc(len - 1);
+            char *r = xmalloc(len - 1);
             memcpy(r, s + 1, len - 2);
             r[len - 2] = '\0';
             return r;
         }
     }
-    return strdup(s);
+    return xstrdup(s);
 }
 
 /* Split input into lines */
@@ -180,11 +179,11 @@ static parser_t parser_init(const char *input) {
     for (const char *c = input; *c; c++)
         if (*c == '\n') n++;
 
-    p.lines = malloc(n * sizeof(char *));
-    p.indents = malloc(n * sizeof(int));
+    p.lines = xmalloc(n * sizeof(char *));
+    p.indents = xmalloc(n * sizeof(int));
 
     /* Copy and split lines */
-    char *buf = strdup(input);
+    char *buf = xstrdup(input);
     char *line = buf;
     int idx = 0;
     for (char *c = buf; ; c++) {
@@ -192,7 +191,7 @@ static parser_t parser_init(const char *input) {
             int end = (*c == '\0');
             *c = '\0';
             /* Skip blank/comment lines for the parser, but keep them for block scalars */
-            char *trimmed = strdup(line);
+            char *trimmed = xstrdup(line);
             strip_trailing(trimmed);
             if (!is_blank_or_comment(trimmed) || idx == 0) {
                 if (safe_realloc((void **)&p.lines, (idx + 1) * sizeof(char *)) ||
@@ -251,11 +250,11 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
         break;
     }
 
-    if (content_indent < 0) return strdup("");
+    if (content_indent < 0) return xstrdup("");
 
     /* Collect lines */
     size_t cap = 1024, len = 0;
-    char *result = malloc(cap);
+    char *result = xmalloc(cap);
     result[0] = '\0';
 
     while (p->pos < p->n_lines) {
@@ -281,7 +280,7 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
         size_t clen = strlen(content);
         while (len + clen + 2 > cap) {
             cap *= 2;
-            if (safe_realloc((void **)&result, cap)) { free(result); return strdup(""); }
+            if (safe_realloc((void **)&result, cap)) { free(result); return xstrdup(""); }
         }
 
         if (literal) {
@@ -312,7 +311,7 @@ static char *read_block_scalar(parser_t *p, int base_indent, int literal) {
     /* Always ensure trailing newline for literal */
     if (literal && len > 0 && result[len-1] != '\n') {
         if (len + 1 >= cap) {
-            if (safe_realloc((void **)&result, cap + 2)) { free(result); return strdup(""); }
+            if (safe_realloc((void **)&result, cap + 2)) { free(result); return xstrdup(""); }
         }
         result[len++] = '\n';
         result[len] = '\0';
@@ -368,7 +367,7 @@ static yaml_node_t *parse_mapping(parser_t *p, int indent) {
 
         /* Extract key */
         int key_len = (int)(colon - trimmed);
-        char *key = malloc(key_len + 1);
+        char *key = xmalloc(key_len + 1);
         memcpy(key, trimmed, key_len);
         key[key_len] = '\0';
 
@@ -391,7 +390,7 @@ static yaml_node_t *parse_mapping(parser_t *p, int indent) {
             free(block);
         } else {
             /* Inline scalar value */
-            char *line_copy = strdup(val_start);
+            char *line_copy = xstrdup(val_start);
             strip_comment(line_copy);
             strip_trailing(line_copy);
             char *uq = unquote(line_copy);
@@ -438,7 +437,7 @@ static yaml_node_t *parse_sequence(parser_t *p, int indent) {
 
                 /* Parse first key-value from this line */
                 int klen = (int)(colon - item_start);
-                char *k = malloc(klen + 1);
+                char *k = xmalloc(klen + 1);
                 memcpy(k, item_start, klen);
                 k[klen] = '\0';
 
@@ -456,7 +455,7 @@ static yaml_node_t *parse_sequence(parser_t *p, int indent) {
                     v = node_scalar(block);
                     free(block);
                 } else {
-                    char *vc = strdup(vs);
+                    char *vc = xstrdup(vs);
                     strip_comment(vc);
                     strip_trailing(vc);
                     char *uq = unquote(vc);
@@ -485,7 +484,7 @@ static yaml_node_t *parse_sequence(parser_t *p, int indent) {
                                 c2[1] != '|' && c2[1] != '>')) break;
 
                     int k2len = (int)(c2 - tr);
-                    char *k2 = malloc(k2len + 1);
+                    char *k2 = xmalloc(k2len + 1);
                     memcpy(k2, tr, k2len);
                     k2[k2len] = '\0';
 
@@ -503,7 +502,7 @@ static yaml_node_t *parse_sequence(parser_t *p, int indent) {
                         v2 = node_scalar(block2);
                         free(block2);
                     } else {
-                        char *v2c = strdup(v2s);
+                        char *v2c = xstrdup(v2s);
                         strip_comment(v2c);
                         strip_trailing(v2c);
                         char *uq2 = unquote(v2c);
@@ -520,7 +519,7 @@ static yaml_node_t *parse_sequence(parser_t *p, int indent) {
                 sequence_add(seq, item_map);
             } else {
                 /* Plain scalar item */
-                char *ic = strdup(item_start);
+                char *ic = xstrdup(item_start);
                 strip_comment(ic);
                 strip_trailing(ic);
                 char *uq = unquote(ic);

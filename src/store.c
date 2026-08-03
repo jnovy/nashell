@@ -12,8 +12,7 @@
 #include <openssl/sha.h>
 
 store_t *store_new(const char *project_root) {
-    store_t *s = calloc(1, sizeof(*s));
-    if (!s) return NULL;
+    store_t *s = xcalloc(1, sizeof(*s));
     char *path = NULL;
     if (asprintf(&path, "%s/store", project_root) < 0) {
         free(s);
@@ -33,8 +32,7 @@ void store_free(store_t *s) {
 char *sha256_hex(const char *data, size_t len) {
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256((const unsigned char *)data, len, hash);
-    char *hex = malloc(65);
-    if (!hex) return NULL;
+    char *hex = xmalloc(65);
     for (int i = 0; i < SHA256_DIGEST_LENGTH; i++)
         snprintf(hex + i * 2, 3, "%02x", hash[i]);
     hex[64] = '\0';
@@ -50,7 +48,7 @@ char *store_save(store_t *s, const char *content) {
 
     /* Build full path: .store/<hash> (no extension) */
     char path[NASH_PATH_MAX];
-    snprintf(path, sizeof(path), "%s/%s", s->dir, hex);
+    path_join(path, sizeof(path), s->dir, hex);
 
     /* Content-addressed dedup: atomic create with O_CREAT|O_EXCL */
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
@@ -111,15 +109,14 @@ static unsigned int fnv1a(const char *s) {
 static void hashset_init(hashset_t *hs) {
     hs->cap = HASHSET_INIT_CAP;
     hs->count = 0;
-    hs->buckets = calloc((size_t)hs->cap, sizeof(char *));
-    if (!hs->buckets) { hs->cap = 0; }
+    hs->buckets = xcalloc((size_t)hs->cap, sizeof(char *));
 }
 
 static void hashset_grow(hashset_t *hs) {
     int old_cap = hs->cap;
     char **old = hs->buckets;
     int new_cap = hs->cap * 2;
-    char **nb = calloc((size_t)new_cap, sizeof(char *));
+    char **nb = xcalloc((size_t)new_cap, sizeof(char *));
     if (!nb) return;  /* keep existing table on OOM */
     hs->cap = new_cap;
     hs->buckets = nb;
@@ -150,7 +147,7 @@ static void hashset_add(hashset_t *hs, const char *key) {
         if (strcmp(hs->buckets[idx], key) == 0) return;  /* already present */
         idx = (idx + 1) & (unsigned)(hs->cap - 1);
     }
-    hs->buckets[idx] = strdup(key);
+    hs->buckets[idx] = xstrdup(key);
     hs->count++;
 }
 
@@ -268,7 +265,7 @@ int store_gc(store_t *s, const char *nash_dir) {
         if (de->d_name[0] == '.') continue;
         if (!hashset_contains(&refs, de->d_name)) {
             char path[NASH_PATH_MAX];
-            snprintf(path, sizeof(path), "%s/%s", s->dir, de->d_name);
+            path_join(path, sizeof(path), s->dir, de->d_name);
             struct stat st;
             if (stat(path, &st) == 0 && difftime(now, st.st_mtime) < 60)
                 continue;  /* too recent — may be referenced by an in-flight save */

@@ -47,16 +47,9 @@ static int is_runtime_blocked(const tool_filter_t *tf, const char *name) {
 static void ensure_filter_owned(tool_filter_t *tf) {
     if (tf->blocked_owned) return;
     if (tf->blocked && tf->n_blocked > 0) {
-        const char **copy = malloc((size_t)tf->n_blocked * sizeof(char *));
-        if (!copy) return;
-        for (int i = 0; i < tf->n_blocked; i++) {
-            copy[i] = strdup(tf->blocked[i]);
-            if (!copy[i]) {
-                for (int j = 0; j < i; j++) free((char *)copy[j]);
-                free(copy);
-                return;
-            }
-        }
+        const char **copy = xmalloc((size_t)tf->n_blocked * sizeof(char *));
+        for (int i = 0; i < tf->n_blocked; i++)
+            copy[i] = xstrdup(tf->blocked[i]);
         tf->blocked = copy;
     } else {
         tf->blocked = NULL;
@@ -71,8 +64,7 @@ static void runtime_block_add(tool_filter_t *tf, const char *name) {
     ensure_filter_owned(tf);
     if (safe_realloc((void **)&tf->blocked,
                      (size_t)(tf->n_blocked + 1) * sizeof(char *))) return;
-    tf->blocked[tf->n_blocked] = strdup(name);
-    if (!tf->blocked[tf->n_blocked]) return;
+    tf->blocked[tf->n_blocked] = xstrdup(name);
     tf->n_blocked++;
 }
 
@@ -205,21 +197,14 @@ static int cmd_tool_show(command_ctx_t *ctx, const char *name) {
     tool_filter_t *tf = &ctx->tools->tool_filter;
 
     if (!name || !name[0]) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool show: specify a tool name");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool show: specify a tool name");
         return CMD_CONTINUE;
     }
 
     const tool_plugin_t *tp = tool_plugin_find(name);
     if (!tp) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "/tool show: unknown tool '%s'", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
+             "/tool show: unknown tool '%s'", name);
         return CMD_CONTINUE;
     }
 
@@ -306,41 +291,26 @@ static int cmd_tool_on(command_ctx_t *ctx, const char *name) {
     tool_filter_t *tf = &ctx->tools->tool_filter;
 
     if (!name || !name[0]) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool on: specify a tool name");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool on: specify a tool name");
         return CMD_CONTINUE;
     }
 
     if (find_tool_index(name) < 0) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "/tool on: unknown tool '%s'", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
+             "/tool on: unknown tool '%s'", name);
         return CMD_CONTINUE;
     }
 
     if (!is_runtime_blocked(tf, name)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s is already enabled", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_READY,
+             "%s is already enabled", name);
         return CMD_CONTINUE;
     }
 
     runtime_block_remove(tf, name);
-    char msg[256];
-    snprintf(msg, sizeof(msg), "%s enabled (%d/%d tools active)",
+    ui_locked_set_status_fmt(ui, STATUS_READY,
+             "%s enabled (%d/%d tools active)",
              name, tool_plugin_count() - tf->n_blocked, tool_plugin_count());
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }
 
@@ -351,51 +321,32 @@ static int cmd_tool_off(command_ctx_t *ctx, const char *name) {
     tool_filter_t *tf = &ctx->tools->tool_filter;
 
     if (!name || !name[0]) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool off: specify a tool name");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool off: specify a tool name");
         return CMD_CONTINUE;
     }
 
     if (find_tool_index(name) < 0) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "/tool off: unknown tool '%s'", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
+             "/tool off: unknown tool '%s'", name);
         return CMD_CONTINUE;
     }
 
     if (is_protected_tool(name)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s cannot be disabled (protected)", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
+             "%s cannot be disabled (protected)", name);
         return CMD_CONTINUE;
     }
 
     if (is_runtime_blocked(tf, name)) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "%s is already disabled", name);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_READY,
+             "%s is already disabled", name);
         return CMD_CONTINUE;
     }
 
     runtime_block_add(tf, name);
-    char msg[256];
-    snprintf(msg, sizeof(msg), "%s disabled (%d/%d tools active)",
+    ui_locked_set_status_fmt(ui, STATUS_READY,
+             "%s disabled (%d/%d tools active)",
              name, tool_plugin_count() - tf->n_blocked, tool_plugin_count());
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }
 
@@ -408,13 +359,9 @@ static int cmd_tool_reset(command_ctx_t *ctx) {
     runtime_block_clear(tf);
     tool_apply_default_blocks(tf);
 
-    char msg[128];
-    snprintf(msg, sizeof(msg), "Tools reset to defaults (%d/%d active)",
+    ui_locked_set_status_fmt(ui, STATUS_READY,
+             "Tools reset to defaults (%d/%d active)",
              tool_plugin_count() - tf->n_blocked, tool_plugin_count());
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }
 
@@ -425,30 +372,21 @@ static int cmd_tool_save(command_ctx_t *ctx, const char *profile) {
     tool_filter_t *tf = &ctx->tools->tool_filter;
 
     if (!profile || !profile[0]) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool save: specify a profile name");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool save: specify a profile name");
         return CMD_CONTINUE;
     }
 
     /* Validate profile name: alphanumeric + dash + underscore only */
     for (const char *p = profile; *p; p++) {
         if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR,
+            ui_locked_set_status(ui, STATUS_ERROR,
                 "/tool save: profile name must be alphanumeric (a-z, 0-9, -, _)");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
     }
 
     if (!ensure_profiles_dir(ctx->nash_dir)) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool save: cannot create profiles directory");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool save: cannot create profiles directory");
         return CMD_CONTINUE;
     }
 
@@ -457,21 +395,13 @@ static int cmd_tool_save(command_ctx_t *ctx, const char *profile) {
     tool_profiles_dir(ctx->nash_dir, dir, sizeof(dir));
     if (snprintf(path, sizeof(path), "%s/%s", dir, profile)
             >= (int)sizeof(path)) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool save: path too long");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool save: path too long");
         return CMD_CONTINUE;
     }
 
     FILE *f = fopen(path, "w");
     if (!f) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "/tool save: %s", strerror(errno));
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR, "/tool save: %s", strerror(errno));
         return CMD_CONTINUE;
     }
 
@@ -483,13 +413,9 @@ static int cmd_tool_save(command_ctx_t *ctx, const char *profile) {
     }
     fclose(f);
 
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Profile '%s' saved (%d tool%s disabled)",
+    ui_locked_set_status_fmt(ui, STATUS_READY,
+             "Profile '%s' saved (%d tool%s disabled)",
              profile, n_disabled, n_disabled == 1 ? "" : "s");
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }
 
@@ -505,10 +431,7 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
         tool_profiles_dir(ctx->nash_dir, dir, sizeof(dir));
         DIR *d = opendir(dir);
         if (!d) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "No saved profiles");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "No saved profiles");
             return CMD_CONTINUE;
         }
 
@@ -543,11 +466,8 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
      * (mirrors cmd_tool_save validation, prevents path traversal) */
     for (const char *p = profile; *p; p++) {
         if (!isalnum((unsigned char)*p) && *p != '-' && *p != '_') {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR,
+            ui_locked_set_status(ui, STATUS_ERROR,
                 "/tool load: profile name must be alphanumeric (a-z, 0-9, -, _)");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
     }
@@ -557,21 +477,14 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
     char path[NASH_PATH_MAX];
     if (snprintf(path, sizeof(path), "%s/%s", dir, profile)
             >= (int)sizeof(path)) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/tool load: path too long");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/tool load: path too long");
         return CMD_CONTINUE;
     }
 
     FILE *f = fopen(path, "r");
     if (!f) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "/tool load: profile '%s' not found", profile);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, msg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
+            "/tool load: profile '%s' not found", profile);
         return CMD_CONTINUE;
     }
 
@@ -596,14 +509,10 @@ static int cmd_tool_load(command_ctx_t *ctx, const char *profile) {
     }
     fclose(f);
 
-    char msg[256];
-    snprintf(msg, sizeof(msg), "Profile '%s' loaded (%d tool%s disabled, %d active)",
+    ui_locked_set_status_fmt(ui, STATUS_READY,
+             "Profile '%s' loaded (%d tool%s disabled, %d active)",
              profile, loaded, loaded == 1 ? "" : "s",
              tool_plugin_count() - tf->n_blocked);
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }
 
@@ -670,13 +579,8 @@ int cmd_tool(command_ctx_t *ctx, const char *args) {
 
     /* Unknown subcommand */
     ui_state_t *ui = ctx->ui;
-    char msg[256];
-    snprintf(msg, sizeof(msg),
+    ui_locked_set_status_fmt(ui, STATUS_ERROR,
              "/tool: unknown subcommand '%s' -- try list, show, on, off, reset, save, load",
              args);
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_ERROR, msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }

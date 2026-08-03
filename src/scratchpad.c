@@ -11,7 +11,7 @@ void scratchpad_init(scratchpad_t *sp) {
     memset(sp, 0, sizeof(*sp));
     pthread_mutex_init(&sp->mtx, NULL);  /* FIX CRIT2: thread-safe scratchpad */
     sp->cap = SCRATCHPAD_INIT_CAP;
-    sp->sections = calloc((size_t)sp->cap, sizeof(scratchpad_section_t));
+    sp->sections = xcalloc((size_t)sp->cap, sizeof(scratchpad_section_t));
     if (!sp->sections) sp->cap = 0;
 }
 
@@ -81,8 +81,7 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
     int idx = scratchpad_find(sp, name);
     if (idx >= 0) {
         /* Overwrite existing section */
-        free(sp->sections[idx].content);
-        sp->sections[idx].content = strdup(content);
+        str_replace(&sp->sections[idx].content, content);
         sp->sections[idx].priority = priority;
         sp->sections[idx].dirty = 1;
         pthread_mutex_unlock(&sp->mtx);
@@ -93,8 +92,8 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
         return -1;  /* allocation failed */
     }
 
-    sp->sections[sp->count].name = strdup(name);
-    sp->sections[sp->count].content = strdup(content);
+    sp->sections[sp->count].name = xstrdup(name);
+    sp->sections[sp->count].content = xstrdup(content);
     sp->sections[sp->count].priority = priority;
     sp->sections[sp->count].dirty = 1;
     sp->count++;
@@ -109,8 +108,7 @@ int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, i
         /* Append to existing */
         size_t old_len = strlen(sp->sections[idx].content);
         size_t add_len = strlen(content);
-        char *combined = malloc(old_len + add_len + 2);  /* +newline+nul */
-        if (!combined) { pthread_mutex_unlock(&sp->mtx); return -1; }
+        char *combined = xmalloc(old_len + add_len + 2);  /* +newline+nul */
         memcpy(combined, sp->sections[idx].content, old_len);
         combined[old_len] = '\n';
         memcpy(combined + old_len + 1, content, add_len);
@@ -128,8 +126,8 @@ int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, i
         pthread_mutex_unlock(&sp->mtx);
         return -1;
     }
-    sp->sections[sp->count].name = strdup(name);
-    sp->sections[sp->count].content = strdup(content);
+    sp->sections[sp->count].name = xstrdup(name);
+    sp->sections[sp->count].content = xstrdup(content);
     sp->sections[sp->count].priority = priority;
     sp->sections[sp->count].dirty = 1;
     sp->count++;
@@ -150,7 +148,7 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
         }
     }
     if (sp->n_cleared < sp->cleared_cap) {
-        sp->cleared_names[sp->n_cleared++] = strdup(sp->sections[idx].name);
+        sp->cleared_names[sp->n_cleared++] = xstrdup(sp->sections[idx].name);
     }
 
     free(sp->sections[idx].name);
@@ -181,11 +179,10 @@ char *scratchpad_serialize(scratchpad_t *sp) {
     /* Deep-copy sections so we can safely unlock before serializing.
      * FIX BUG#1: shallow memcpy left dangling pointers after unlock. */
     int n = sp->count;
-    scratchpad_section_t *sorted = malloc((size_t)n * sizeof(scratchpad_section_t));
-    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
+    scratchpad_section_t *sorted = xmalloc((size_t)n * sizeof(scratchpad_section_t));
     for (int i = 0; i < n; i++) {
-        sorted[i].name = strdup(sp->sections[i].name);
-        sorted[i].content = strdup(sp->sections[i].content);
+        sorted[i].name = xstrdup(sp->sections[i].name);
+        sorted[i].content = xstrdup(sp->sections[i].content);
         sorted[i].priority = sp->sections[i].priority;
     }
     pthread_mutex_unlock(&sp->mtx);  /* safe — working on deep copies */
@@ -211,11 +208,10 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     /* Deep-copy sections so we can safely unlock before serializing.
      * FIX BUG#1: shallow memcpy left dangling pointers after unlock. */
     int n = sp->count;
-    scratchpad_section_t *sorted = malloc((size_t)n * sizeof(scratchpad_section_t));
-    if (!sorted) { pthread_mutex_unlock(&sp->mtx); return NULL; }
+    scratchpad_section_t *sorted = xmalloc((size_t)n * sizeof(scratchpad_section_t));
     for (int i = 0; i < n; i++) {
-        sorted[i].name = strdup(sp->sections[i].name);
-        sorted[i].content = strdup(sp->sections[i].content);
+        sorted[i].name = xstrdup(sp->sections[i].name);
+        sorted[i].content = xstrdup(sp->sections[i].content);
         sorted[i].priority = sp->sections[i].priority;
     }
     pthread_mutex_unlock(&sp->mtx);  /* safe — working on deep copies */
@@ -346,7 +342,7 @@ static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
             content_end--;
 
         size_t clen = (size_t)(content_end - content_start);
-        char *content = malloc(clen + 1);
+        char *content = xmalloc(clen + 1);
         if (content) {
             memcpy(content, content_start, clen);
             content[clen] = '\0';
@@ -444,8 +440,7 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
      * FIX BUG#12: heap-allocate the line buffer instead of 1MB on the stack,
      * which risks stack overflow especially in worker threads. */
     size_t line_cap = 1024 * 1024;  /* 1MB max per line */
-    char *line = malloc(line_cap);
-    if (!line) { fclose(f); return -1; }
+    char *line = xmalloc(line_cap);
     while (fgets(line, (int)line_cap, f)) {
         /* Strip trailing newline */
         size_t len = strlen(line);
@@ -456,24 +451,18 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
         cJSON *obj = cJSON_Parse(line);
         if (!obj) continue;
 
-        cJSON *name_j = cJSON_GetObjectItem(obj, "name");
-        if (!name_j || !cJSON_IsString(name_j)) {
+        const char *name = json_str(obj, "name");
+        if (!name) {
             cJSON_Delete(obj);
             continue;
         }
-        const char *name = name_j->valuestring;
 
-        cJSON *op_j = cJSON_GetObjectItem(obj, "op");
-        if (op_j && cJSON_IsString(op_j) &&
-            strcmp(op_j->valuestring, "clear") == 0) {
+        const char *op = json_str(obj, "op");
+        if (op && strcmp(op, "clear") == 0) {
             scratchpad_clear(sp, name);
         } else {
-            cJSON *pri_j = cJSON_GetObjectItem(obj, "priority");
-            cJSON *content_j = cJSON_GetObjectItem(obj, "content");
-            int pri = (pri_j && cJSON_IsNumber(pri_j))
-                      ? (int)cJSON_GetNumberValue(pri_j) : 5;
-            const char *content = (content_j && cJSON_IsString(content_j))
-                                  ? content_j->valuestring : "";
+            int pri = json_int(obj, "priority", 5);
+            const char *content = json_str_or(obj, "content", "");
             scratchpad_write(sp, name, content, pri);
         }
         cJSON_Delete(obj);
@@ -579,7 +568,7 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
             body_end--;
 
         size_t blen = (size_t)(body_end - body);
-        char *sec_content = malloc(blen + 1);
+        char *sec_content = xmalloc(blen + 1);
         if (sec_content) {
             memcpy(sec_content, body, blen);
             sec_content[blen] = '\0';

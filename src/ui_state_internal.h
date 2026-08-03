@@ -12,6 +12,7 @@
  */
 
 #include "ui_state.h"
+#include "tui.h"
 #include "nash_limits.h"
 #include "nash_log.h"
 #include "md_render.h"

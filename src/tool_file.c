@@ -116,10 +116,8 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
      * - end_line: 1-based inclusive (default: EOF).
      * - No params = full file (backward compatible).
      * Eliminates the need for shell_exec sed/head/tail hacks. */
-    cJSON *sl_j = cJSON_GetObjectItem(params, "start_line");
-    cJSON *el_j = cJSON_GetObjectItem(params, "end_line");
-    int start_line = sl_j ? (int)cJSON_GetNumberValue(sl_j) : 0;
-    int end_line = el_j ? (int)cJSON_GetNumberValue(el_j) : 0;
+    int start_line = json_int(params, "start_line", 0);
+    int end_line = json_int(params, "end_line", 0);
 
     char *display_content = NULL;  /* content to show (with line numbers if range) */
     int display_lines = total_lines;
@@ -207,7 +205,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     if ((int)display_len <= max_inline) {
         cJSON_AddStringToObject(meta, "content", store_content);
     } else {
-        char *trunc = malloc(max_inline + 1);
+        char *trunc = xmalloc(max_inline + 1);
         if (trunc) {
             utf8_truncate(trunc, store_content, max_inline);
             /* Truncate at line boundary so we don't cut mid-line */
@@ -246,7 +244,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
         if (ext && strcmp(ext, ".c") == 0) {
             /* Build companion .h path */
             size_t base_len = (size_t)(ext - orig_path);
-            char *h_path = malloc(base_len + 3);
+            char *h_path = xmalloc(base_len + 3);
             if (h_path) {
                 memcpy(h_path, orig_path, base_len);
                 strcpy(h_path + base_len, ".h");
@@ -296,7 +294,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "file_read", params, alias,
                    display_len, display_lines, NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     free(content);
     free(display_content);  /* NULL-safe: free line-range extracted content */
@@ -324,10 +322,9 @@ static int path_has_traversal(const char *path) {
 
 tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     TOOL_REQ_STR(params, "path", path);
-    cJSON *content_j = cJSON_GetObjectItem(params, "content");
-    if (!content_j || !content_j->valuestring)
+    const char *content = json_str(params, "content");
+    if (!content)
         return tools_make_error("file_write requires a 'content' parameter.");
-    const char *content = content_j->valuestring;
 
     /* Reject path traversal attempts */
     if (path_has_traversal(path))
@@ -381,7 +378,7 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "file_write", params, alias,
                    len, count_lines(content), NULL, NULL);
 
-    res.store_ref = strdup(alias);
+    res.store_ref = xstrdup(alias);
     free(alias);
     free(hash);
     return res;
@@ -392,10 +389,9 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
 tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     TOOL_REQ_STR(params, "path", path);
     TOOL_REQ_STR(params, "old_text", old_text);
-    cJSON *new_text_j = cJSON_GetObjectItem(params, "new_text");
-    if (!new_text_j || !new_text_j->valuestring)
+    const char *new_text = json_str(params, "new_text");
+    if (!new_text)
         return tools_make_error("file_edit requires a 'new_text' parameter.");
-    const char *new_text = new_text_j->valuestring;
 
     /* Reject path traversal attempts */
     if (path_has_traversal(path))
@@ -452,8 +448,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     /* Build new content */
     size_t new_len = strlen(new_text);
     size_t result_len = flen - old_len + new_len;
-    char *result = malloc(result_len + 1);
-    if (!result) { free(content); free(pre_hash); free(pre_alias); return tools_make_error("malloc failed"); }
+    char *result = xmalloc(result_len + 1);
 
     size_t prefix_len = (size_t)(pos - content);
     memcpy(result, content, prefix_len);
@@ -549,8 +544,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
 
         /* Build diff output — summary is prepended after computing actual diff. */
         size_t diff_cap = 4096;
-        char *diff = malloc(diff_cap);
-        if (!diff) { free(content); free(result); free(pre_hash); free(pre_alias); free(post_hash); free(post_alias); return tools_make_error("out of memory"); }
+        char *diff = xmalloc(diff_cap);
         int diff_len = 0;
         int actual_added = 0, actual_removed = 0;  /* filled by diff algorithm */
 
@@ -582,8 +576,8 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
             typedef struct { const char *s; int len; } dline_t;
             int old_cap = 64, new_cap = 64;
             int old_cnt = 0, new_cnt = 0;
-            dline_t *old_lines = malloc((size_t)old_cap * sizeof(dline_t));
-            dline_t *new_lines = malloc((size_t)new_cap * sizeof(dline_t));
+            dline_t *old_lines = xmalloc((size_t)old_cap * sizeof(dline_t));
+            dline_t *new_lines = xmalloc((size_t)new_cap * sizeof(dline_t));
             if (!old_lines || !new_lines) {
                 free(old_lines); free(new_lines); free(diff);
                 free(content); free(result);

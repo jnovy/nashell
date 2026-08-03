@@ -32,20 +32,19 @@ const char *ui_ci_strstr(const char *haystack, const char *needle) {
 /* ── Lifecycle ───────────────────────────────────────────── */
 
 ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
-    ui_state_t *ui = calloc(1, sizeof(*ui));
-    if (!ui) return NULL;
-    ui->session_dir = session_dir ? strdup(session_dir) : NULL;
+    ui_state_t *ui = xcalloc(1, sizeof(*ui));
+    ui->session_dir = session_dir ? xstrdup(session_dir) : NULL;
     ui->store = store;
     ui->focus = FOCUS_QUERY;
     ui->status = STATUS_READY;
-    ui->status_text = strdup("Ready");
+    ui->status_text = xstrdup("Ready");
     ui->input_cap = NASH_PATH_MAX;
-    ui->input_buffer = calloc(1, (size_t)ui->input_cap);
+    ui->input_buffer = xcalloc(1, (size_t)ui->input_cap);
     ui->stream_cap = 8192;
-    ui->stream_tokens = calloc(1, (size_t)ui->stream_cap);
+    ui->stream_tokens = xcalloc(1, (size_t)ui->stream_cap);
     ui->cursor_link = 0;
     ui->nav_cap = 16;
-    ui->nav_stack = calloc((size_t)ui->nav_cap, sizeof(nav_entry_t));
+    ui->nav_stack = xcalloc((size_t)ui->nav_cap, sizeof(nav_entry_t));
     ui->nav_depth = 0;
     ui->current_react_loop = -1;
 
@@ -53,7 +52,7 @@ ui_state_t *ui_state_new(const char *session_dir, store_t *store) {
     if (session_dir) {
         char path[NASH_PATH_MAX];
         snprintf(path, sizeof(path), "%s/session.md", session_dir);
-        ui->current_filepath = strdup(path);
+        ui->current_filepath = xstrdup(path);
     }
 
     pthread_mutex_init(&ui->mtx, NULL);
@@ -120,7 +119,7 @@ void ui_state_reload_file(ui_state_t *ui) {
         return;
 
     char *content = slurp_file(ui->current_filepath, NULL);
-    if (!content) content = strdup("*File not found*\n");
+    if (!content) content = xstrdup("*File not found*\n");
 
     md_doc_free(ui->doc);
     ui->doc = md_parse(content);
@@ -280,7 +279,7 @@ void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
     if (!ui) return;
     ui->status = status;
     free(ui->status_text);
-    ui->status_text = text ? strdup(text) : NULL;
+    ui->status_text = text ? xstrdup(text) : NULL;
     /* Clear user_ask question when leaving AWAITING_INPUT state */
     if (status != STATUS_AWAITING_INPUT) {
         free(ui->user_ask_question);
@@ -292,7 +291,7 @@ void ui_state_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
 void ui_state_set_banner(ui_state_t *ui, const char *banner) {
     if (!ui) return;
     free(ui->banner);
-    ui->banner = banner ? strdup(banner) : NULL;
+    ui->banner = banner ? xstrdup(banner) : NULL;
     ui_state_generate_session_md(ui);
     if (viewing_session(ui)) {
         ui_state_reload_file(ui);
@@ -303,8 +302,7 @@ void ui_state_set_banner(ui_state_t *ui, const char *banner) {
          * user expects to see immediately. */
         char spath[NASH_PATH_MAX];
         snprintf(spath, sizeof(spath), "%s/session.md", ui->session_dir);
-        free(ui->current_filepath);
-        ui->current_filepath = strdup(spath);
+        str_replace(&ui->current_filepath, spath);
         ui->scroll_y = 0;
         ui->cursor_link = 0;
         ui_state_reload_file(ui);
@@ -320,7 +318,7 @@ void ui_state_add_query(ui_state_t *ui, const char *query_text) {
             if (safe_realloc((void **)&ui->history,
                                 (size_t)ui->history_cap * sizeof(char *))) return;
         }
-        ui->history[ui->history_count++] = strdup(query_text);
+        ui->history[ui->history_count++] = xstrdup(query_text);
         ui->history_idx = ui->history_count;
     }
     /* Session.md will be regenerated when the journal entry is written */
@@ -332,4 +330,31 @@ void ui_state_load_journal(ui_state_t *ui, journal_t *journal) {
     ui->journal = journal;
     ui_state_generate_session_md(ui);
     ui_state_reload_file(ui);
+}
+
+/* ── Locking convenience wrappers ────────────────────────── */
+
+void ui_locked_set_status(ui_state_t *ui, ui_status_t status, const char *text) {
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_status(ui, status, text);
+    pthread_mutex_unlock(&ui->mtx);
+    tui_render(ui);
+}
+
+void ui_locked_set_status_fmt(ui_state_t *ui, ui_status_t status,
+                              const char *fmt, ...) {
+    char buf[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ui_locked_set_status(ui, status, buf);
+}
+
+void ui_locked_push_content(ui_state_t *ui, const char *name,
+                            const char *markdown) {
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_push_content(ui, name, markdown);
+    pthread_mutex_unlock(&ui->mtx);
+    tui_render(ui);
 }

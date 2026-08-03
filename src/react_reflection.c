@@ -337,7 +337,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         if (final_result) {
             size_t fr_len = strlen(final_result);
             size_t show_len = fr_len > 2000 ? utf8_clamp(final_result, 2000) : fr_len;
-            char *fr_msg = malloc(show_len + 64);
+            char *fr_msg = xmalloc(show_len + 64);
             if (fr_msg) {
                 snprintf(fr_msg, show_len + 64, "[TASK RESULT]\n%.*s%s",
                          (int)show_len, final_result,
@@ -354,7 +354,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
         if (user_query && user_query[0]) {
             size_t uq_len = strlen(user_query);
             size_t uq_show = uq_len > 2000 ? utf8_clamp(user_query, 2000) : uq_len;
-            char *uq_msg = malloc(uq_show + 64);
+            char *uq_msg = xmalloc(uq_show + 64);
             if (uq_msg) {
                 snprintf(uq_msg, uq_show + 64, "[USER QUERY]\n%.*s%s",
                          (int)uq_show, user_query,
@@ -527,7 +527,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
          * metadata, so we must reattach priorities after parsing its output. */
         typedef struct { char name[256]; int priority; } sec_pri_t;
         int n_orig = ctx->tools->scratch.count;
-        sec_pri_t *orig_priorities = calloc((size_t)(n_orig > 0 ? n_orig : 1), sizeof(sec_pri_t));
+        sec_pri_t *orig_priorities = xcalloc((size_t)(n_orig > 0 ? n_orig : 1), sizeof(sec_pri_t));
         for (int i = 0; i < n_orig; i++) {
             size_t nlen = strlen(ctx->tools->scratch.sections[i].name);
             if (nlen >= sizeof(orig_priorities[0].name))
@@ -540,7 +540,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
         for (int i = 0; i < ctx->tools->scratch.count; i++) {
             if (strcmp(ctx->tools->scratch.sections[i].name, result_sec_name) == 0) {
-                preserved_result = strdup(ctx->tools->scratch.sections[i].content);
+                preserved_result = xstrdup(ctx->tools->scratch.sections[i].content);
                 preserved_priority = ctx->tools->scratch.sections[i].priority;
                 break;
             }
@@ -645,7 +645,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                             size_t blen = sec_end
                                 ? (size_t)(sec_end - body)
                                 : strlen(body);
-                            char *restored = malloc(blen + 1);
+                            char *restored = xmalloc(blen + 1);
                             if (restored) {
                                 memcpy(restored, body, blen);
                                 restored[blen] = '\0';
@@ -729,8 +729,8 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                 embed_multi_vec_t mv = {0};
                                 mv.dim = dim;
                                 mv.n_chunks = valid;
-                                mv.data = malloc((size_t)dim * (size_t)valid * sizeof(float));
-                                char **previews = calloc((size_t)valid, sizeof(char *));
+                                mv.data = xmalloc((size_t)dim * (size_t)valid * sizeof(float));
+                                char **previews = xcalloc((size_t)valid, sizeof(char *));
 
                                 if (mv.data && previews) {
                                     int vi = 0;
@@ -746,7 +746,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
                                         if (plen > 200) plen = utf8_clamp(body, 200);
                                         memcpy(pbuf, body, plen);
                                         pbuf[plen] = '\0';
-                                        previews[vi] = strdup(pbuf);
+                                        previews[vi] = xstrdup(pbuf);
                                         vi++;
                                     }
 

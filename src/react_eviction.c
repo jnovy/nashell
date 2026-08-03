@@ -95,8 +95,7 @@ evict_partner_map_t evict_build_partner_map(const llm_chat_t *chat,
                                              int range_start, int range_end) {
     evict_partner_map_t map = {0};
     map.n_msgs = chat->n_msgs;
-    map.partner = malloc((size_t)chat->n_msgs * sizeof(int));
-    if (!map.partner) { map.n_msgs = 0; return map; }
+    map.partner = xmalloc((size_t)chat->n_msgs * sizeof(int));
 
     for (int i = 0; i < chat->n_msgs; i++)
         map.partner[i] = -1;
@@ -391,7 +390,7 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
         char *saved_evicted = NULL;
         int ec_idx = scratchpad_find(&ctx->tools->scratch, "evicted_context");
         if (ec_idx >= 0 && ctx->tools->scratch.sections[ec_idx].content)
-            saved_evicted = strdup(ctx->tools->scratch.sections[ec_idx].content);
+            saved_evicted = xstrdup(ctx->tools->scratch.sections[ec_idx].content);
         llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
         /* Restore evicted_context if it existed */
         if (saved_evicted) {
@@ -638,8 +637,7 @@ int evict_mark_candidates(const llm_chat_t *chat,
     if (n_evictable <= 0) return 0;
 
     /* Build scored candidate array (skip HIGH/CRITICAL) */
-    evict_candidate_t *cands = malloc((size_t)n_evictable * sizeof(evict_candidate_t));
-    if (!cands) return 0;
+    evict_candidate_t *cands = xmalloc((size_t)n_evictable * sizeof(evict_candidate_t));
 
     int n_cands = 0;
     for (int i = 0; i < n_evictable; i++) {
@@ -1016,7 +1014,7 @@ void evict_lifecycle_stale_reads(llm_chat_t *chat,
 
         /* Replace content — llm_chat_replace_content updates content_len
          * and total_chars incrementally. */
-        llm_chat_replace_content(chat, i, strdup(marker));
+        llm_chat_replace_content(chat, i, xstrdup(marker));
 
         /* Downgrade importance so mark phase evicts these first */
         chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;
@@ -1079,8 +1077,7 @@ int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
                 if (content[c] == '\n') truncated_lines++;
 
             size_t new_len = (size_t)head_keep + 60 + (size_t)(len - tail_start);
-            char *compressed = malloc(new_len + 1);
-            if (!compressed) continue;
+            char *compressed = xmalloc(new_len + 1);
 
             int written = snprintf(compressed, new_len + 1,
                 "%.*s\n...[ %d lines truncated ]...\n%s",
@@ -1126,8 +1123,7 @@ int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
 
             int omitted = n_lines - keep_first - keep_last;
             size_t new_len = (size_t)head_end + 80 + (size_t)(len - tail_begin);
-            char *compressed = malloc(new_len + 1);
-            if (!compressed) continue;
+            char *compressed = xmalloc(new_len + 1);
 
             int written = snprintf(compressed, new_len + 1,
                 "%.*s...[ %d more files omitted (%d total) ]...\n%s",
@@ -1162,8 +1158,7 @@ int evict_type_compress(llm_chat_t *chat, int keep_head, int keep_tail,
                 if (content[c] == '\n') omitted_lines++;
 
             size_t new_len = (size_t)head_keep + 60 + (size_t)(len - tail_start);
-            char *compressed = malloc(new_len + 1);
-            if (!compressed) continue;
+            char *compressed = xmalloc(new_len + 1);
 
             int written = snprintf(compressed, new_len + 1,
                 "%.*s\n...[ %d matches omitted ]...\n%s",
@@ -1297,11 +1292,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     evict_lifecycle_stale_reads(chat, evict_start, evict_end);
 
     /* ── Step 3: Mark phase — score and select messages for eviction ── */
-    int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
-    if (!evict_mark) {
-        evict_free_partner_map(&pmap);
-        goto finalize_no_evict;
-    }
+    int *evict_mark = xcalloc((size_t)n_evictable, sizeof(int));
 
     /* Use existing helpers instead of manual single-pass loop.
      * O(2n) vs O(n) is negligible since n_msgs is typically < 200. */
@@ -1399,57 +1390,49 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
             embed_vec_t task_vec = embed_text(emb, task_text.data);
             if (task_vec.data) {
                 /* Batch-embed all evictable messages (first 500 chars each) */
-                const char **texts = malloc((size_t)n_evictable * sizeof(char *));
-                char **trunc_bufs = calloc((size_t)n_evictable, sizeof(char *));
+                const char **texts = xmalloc((size_t)n_evictable * sizeof(char *));
+                char **trunc_bufs = xcalloc((size_t)n_evictable, sizeof(char *));
 
-                if (texts && trunc_bufs) {
+                for (int i = 0; i < n_evictable; i++) {
+                    int mi = evict_start + i;
+                    const char *c = chat->msgs[mi].content;
+                    int cl = (int)chat->msgs[mi].content_len;
+                    if (!c || cl < 50) {
+                        texts[i] = "";
+                        continue;
+                    }
+                    if (cl > REACT_EMBED_TRUNC_CHARS) {
+                        trunc_bufs[i] = xmalloc(REACT_EMBED_TRUNC_CHARS + 1);
+                        size_t safe = utf8_clamp(c, REACT_EMBED_TRUNC_CHARS);
+                        memcpy(trunc_bufs[i], c, safe);
+                        trunc_bufs[i][safe] = '\0';
+                        texts[i] = trunc_bufs[i];
+                    } else {
+                        texts[i] = c;
+                    }
+                }
+
+                int out_count = 0;
+                embed_vec_t *msg_vecs = embed_text_batch(emb, texts, n_evictable, &out_count);
+
+                if (msg_vecs && out_count == n_evictable) {
+                    score_ctx.similarities = xcalloc((size_t)chat->n_msgs, sizeof(float));
+                    score_ctx.n_msgs = chat->n_msgs;
                     for (int i = 0; i < n_evictable; i++) {
                         int mi = evict_start + i;
-                        const char *c = chat->msgs[mi].content;
-                        int cl = (int)chat->msgs[mi].content_len;
-                        if (!c || cl < 50) {
-                            texts[i] = "";
-                            continue;
-                        }
-                        if (cl > REACT_EMBED_TRUNC_CHARS) {
-                            trunc_bufs[i] = malloc(REACT_EMBED_TRUNC_CHARS + 1);
-                            if (trunc_bufs[i]) {
-                                size_t safe = utf8_clamp(c, REACT_EMBED_TRUNC_CHARS);
-                                memcpy(trunc_bufs[i], c, safe);
-                                trunc_bufs[i][safe] = '\0';
-                                texts[i] = trunc_bufs[i];
-                            } else {
-                                texts[i] = "";
-                            }
-                        } else {
-                            texts[i] = c;
-                        }
+                        score_ctx.similarities[mi] = embed_cosine_sim(
+                            &task_vec, &msg_vecs[i]);
                     }
-
-                    int out_count = 0;
-                    embed_vec_t *msg_vecs = embed_text_batch(emb, texts, n_evictable, &out_count);
-
-                    if (msg_vecs && out_count == n_evictable) {
-                        score_ctx.similarities = calloc((size_t)chat->n_msgs, sizeof(float));
-                        score_ctx.n_msgs = chat->n_msgs;
-                        if (score_ctx.similarities) {
-                            for (int i = 0; i < n_evictable; i++) {
-                                int mi = evict_start + i;
-                                score_ctx.similarities[mi] = embed_cosine_sim(
-                                    &task_vec, &msg_vecs[i]);
-                            }
-                        }
-                    }
-
-                    /* Cleanup batch results */
-                    if (msg_vecs) {
-                        for (int i = 0; i < out_count; i++)
-                            embed_vec_free(&msg_vecs[i]);
-                        free(msg_vecs);
-                    }
-                    for (int i = 0; i < n_evictable; i++)
-                        free(trunc_bufs[i]);
                 }
+
+                /* Cleanup batch results */
+                if (msg_vecs) {
+                    for (int i = 0; i < out_count; i++)
+                        embed_vec_free(&msg_vecs[i]);
+                    free(msg_vecs);
+                }
+                for (int i = 0; i < n_evictable; i++)
+                    free(trunc_bufs[i]);
                 free(trunc_bufs);
                 free(texts);
                 embed_vec_free(&task_vec);

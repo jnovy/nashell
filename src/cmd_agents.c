@@ -25,10 +25,7 @@ static int cmd_agents_list(command_ctx_t *ctx) {
 
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent: scan failed");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent: scan failed");
         return CMD_CONTINUE;
     }
     agent_queue_load(q, ctx->nash_dir);
@@ -114,10 +111,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent show: scan failed");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent show: scan failed");
         return CMD_CONTINUE;
     }
     agent_queue_load(q, ctx->nash_dir);
@@ -125,10 +119,7 @@ static int cmd_agents_show(command_ctx_t *ctx, const char *id) {
 
     const agent_entry_t *found = agent_find(q, id);
     if (!found) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent show: agent not found");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent show: agent not found");
         agent_queue_free(q);
         return CMD_CONTINUE;
     }
@@ -203,18 +194,15 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
     while (*id == ' ') id++;
 
     if (*ctx->inferring) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "Wait for inference to finish before running an agent");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
     /* Split "agent_id arg1 arg2 ..." into agent_id + arguments.
      * Numeric IDs are a single token; named IDs may contain slashes
      * but not spaces, so the first space after the ID starts arguments. */
-    char *id_buf = strdup(id);
+    char *id_buf = xstrdup(id);
     const char *agent_arguments = NULL;
     char *sp = strchr(id_buf, ' ');
     if (sp) {
@@ -226,10 +214,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
 
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent run: scan failed");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent run: scan failed");
         free(id_buf);
         return CMD_CONTINUE;
     }
@@ -238,10 +223,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
 
     const agent_entry_t *found = agent_find(q, id_buf);
     if (!found) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent run: agent not found");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent run: agent not found");
         agent_queue_free(q);
         free(id_buf);
         return CMD_CONTINUE;
@@ -264,12 +246,10 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
             ui_state_set_status(ui, STATUS_ERROR, errbuf);
             pthread_mutex_unlock(&ui->mtx);
             free(banner);
+            tui_render(ui);
         } else {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, errbuf);
-            pthread_mutex_unlock(&ui->mtx);
+            ui_locked_set_status(ui, STATUS_ERROR, errbuf);
         }
-        tui_render(ui);
         agent_queue_free(q);
         free(id_buf);
         return CMD_CONTINUE;
@@ -308,9 +288,9 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         .ui           = ui,
         .playbook_ok      = 0,
         .done             = 0,
-        .agent_id         = strdup(found->id),
+        .agent_id         = xstrdup(found->id),
         .agent_start_time = time(NULL),
-        .workspace_override = found->workspace_name ? strdup(found->workspace_name) : NULL,
+        .workspace_override = found->workspace_name ? xstrdup(found->workspace_name) : NULL,
         .agent_ws         = agent_ws,
     };
 
@@ -320,10 +300,7 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
         free(ctx->pargs->workspace_override);
         ctx->pargs->agent_id = NULL;
         ctx->pargs->workspace_override = NULL;
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "Error: thread creation failed");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "Error: thread creation failed");
         agent_queue_free(q);
         free(id_buf);
         return CMD_CONTINUE;
@@ -382,7 +359,7 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
         if (filter_id && *filter_id) {
             if (!strstr(line, filter_id)) continue;
         }
-        lines[n_lines++] = strdup(line);
+        lines[n_lines++] = xstrdup(line);
     }
     fclose(f);
 
@@ -392,14 +369,10 @@ static int cmd_agents_history(command_ctx_t *ctx, const char *filter_id) {
         cJSON *ev = cJSON_Parse(lines[i]);
         if (!ev) { free(lines[i]); continue; }
 
-        const char *aid = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "id"));
-        const char *st  = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
-        double ts_d = 0;
-        cJSON *ts_item = cJSON_GetObjectItem(ev, "ts");
-        if (ts_item) ts_d = cJSON_GetNumberValue(ts_item);
-        int dur = 0;
-        cJSON *dur_item = cJSON_GetObjectItem(ev, "dur");
-        if (dur_item) dur = (int)cJSON_GetNumberValue(dur_item);
+        const char *aid = json_str(ev, "id");
+        const char *st  = json_str(ev, "st");
+        double ts_d = json_num(ev, "ts", 0);
+        int dur = json_int(ev, "dur", 0);
 
         char timebuf[64];
         time_t t = (time_t)ts_d;
@@ -450,10 +423,7 @@ static int cmd_agents_due(command_ctx_t *ctx) {
 
     agent_queue_t *q = agent_scan(ctx->nash_dir);
     if (!q) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, "/agent due: scan failed");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_ERROR, "/agent due: scan failed");
         return CMD_CONTINUE;
     }
     agent_queue_load(q, ctx->nash_dir);
@@ -501,11 +471,8 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
 
     /* Reject path traversal in user-supplied ID */
     if (!is_safe_path_component(id)) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "/agent result: invalid agent ID");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -533,11 +500,8 @@ static int cmd_agents_result(command_ctx_t *ctx, const char *id) {
     }
 
     if (!content) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "/agent result: no result found (agent never run or ID wrong)");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -578,10 +542,7 @@ int cmd_agents(command_ctx_t *ctx, const char *args) {
     }
 
     ui_state_t *ui = ctx->ui;
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_ERROR,
+    ui_locked_set_status(ui, STATUS_ERROR,
         "/agent: unknown subcommand (list|show|run|history|due|result)");
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
     return CMD_CONTINUE;
 }

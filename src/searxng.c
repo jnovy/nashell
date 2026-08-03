@@ -56,12 +56,12 @@ static char *searxng_base_url(const char *url) {
     const char *slash = strchr(p, '/');
     if (slash) {
         size_t len = (size_t)(slash - url);
-        char *base = malloc(len + 1);
+        char *base = xmalloc(len + 1);
         memcpy(base, url, len);
         base[len] = '\0';
         return base;
     }
-    return strdup(url);
+    return xstrdup(url);
 }
 
 /* Ensure the persistent SearXNG config directory exists at ~/.nash/searxng/
@@ -329,13 +329,9 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
         cJSON *item = cJSON_GetArrayItem(results_arr, i);
         if (!item) continue;
 
-        cJSON *title_j   = cJSON_GetObjectItem(item, "title");
-        cJSON *url_j     = cJSON_GetObjectItem(item, "url");
-        cJSON *content_j = cJSON_GetObjectItem(item, "content");
-
-        const char *title   = (title_j && title_j->valuestring) ? title_j->valuestring : "";
-        const char *item_url = (url_j && url_j->valuestring) ? url_j->valuestring : "";
-        const char *content = (content_j && content_j->valuestring) ? content_j->valuestring : "";
+        const char *title    = json_str_or(item, "title", "");
+        const char *item_url = json_str_or(item, "url", "");
+        const char *content  = json_str_or(item, "content", "");
 
         if (!item_url[0]) continue;
 

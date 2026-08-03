@@ -57,7 +57,7 @@ const char *tools_resolve_path(tool_ctx_t *ctx, const char *path,
     if (*resolved_out) path = *resolved_out;
 
     if (strncmp(path, "store/", 6) == 0 && ctx->session_dir) {
-        snprintf(resolved_buf, NASH_PATH_MAX, "%s/%s", ctx->session_dir, path);
+        path_join(resolved_buf, NASH_PATH_MAX, ctx->session_dir, path);
         return resolved_buf;
     }
     return path;
@@ -69,20 +69,20 @@ tool_result_t tools_memory_key_op(tool_ctx_t *ctx, cJSON *params,
                                   const char *tool_name, const char *err_prefix,
                                   const char *status_str, const char *harness_note,
                                   ws_key_fn ws_fn, mem_key_fn mem_fn) {
-    cJSON *key_j = cJSON_GetObjectItem(params, "key");
-    if (!key_j || !key_j->valuestring || !key_j->valuestring[0]) {
+    const char *key = json_str(params, "key");
+    if (!key || !key[0]) {
         char msg[128];
         snprintf(msg, sizeof(msg), "%s requires a non-empty 'key' string.", err_prefix);
         return tools_make_error(msg);
     }
 
-    int rc = ctx->ws ? ws_fn(ctx->ws, key_j->valuestring)
-                      : mem_fn(ctx->memory, key_j->valuestring);
+    int rc = ctx->ws ? ws_fn(ctx->ws, key)
+                      : mem_fn(ctx->memory, key);
     if (rc != 0) return tools_make_error("memory entry not found");
 
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", status_str);
-    cJSON_AddStringToObject(meta, "key", key_j->valuestring);
+    cJSON_AddStringToObject(meta, "key", key);
     if (harness_note)
         cJSON_AddStringToObject(meta, "harness_note", harness_note);
 
@@ -117,7 +117,7 @@ static unsigned int alias_hash(const char *s) {
 static void alias_map_grow(alias_map_t *map) {
     int new_cap = map->capacity * 2;
     if (new_cap == 0) new_cap = 16;
-    alias_node_t **new_buckets = calloc((size_t)new_cap, sizeof(alias_node_t *));
+    alias_node_t **new_buckets = xcalloc((size_t)new_cap, sizeof(alias_node_t *));
     if (!new_buckets) return;  /* keep old table, just keep growing count */
 
     /* Rehash all entries */
@@ -137,11 +137,9 @@ static void alias_map_grow(alias_map_t *map) {
 }
 
 alias_map_t *alias_map_new(void) {
-    alias_map_t *map = calloc(1, sizeof(alias_map_t));
-    if (!map) return NULL;
+    alias_map_t *map = xcalloc(1, sizeof(alias_map_t));
     map->capacity = 16;
-    map->buckets = calloc((size_t)map->capacity, sizeof(alias_node_t *));
-    if (!map->buckets) { free(map); return NULL; }
+    map->buckets = xcalloc((size_t)map->capacity, sizeof(alias_node_t *));
     map->count = 0;
     map->next_seq = 0;
     return map;
@@ -189,23 +187,16 @@ void *alias_map_insert(alias_map_t *map, const char *alias, const char *hash) {
     while (node) {
         if (strcmp(node->alias, alias) == 0) {
             free(node->hash);
-            node->hash = hash ? strdup(hash) : strdup("");
+            node->hash = hash ? xstrdup(hash) : xstrdup("");
             return NULL;  /* updated, not inserted */
         }
         node = node->next;
     }
 
     /* Insert new node at head of chain */
-    alias_node_t *new_node = malloc(sizeof(alias_node_t));
-    if (!new_node) return NULL;
-    new_node->alias = strdup(alias);
-    new_node->hash = hash ? strdup(hash) : strdup("");
-    if (!new_node->alias || !new_node->hash) {
-        free(new_node->alias);
-        free(new_node->hash);
-        free(new_node);
-        return NULL;
-    }
+    alias_node_t *new_node = xmalloc(sizeof(alias_node_t));
+    new_node->alias = xstrdup(alias);
+    new_node->hash = hash ? xstrdup(hash) : xstrdup("");
     new_node->next = map->buckets[h];
     map->buckets[h] = new_node;
     map->count++;
@@ -282,7 +273,7 @@ int alias_scan_max_seq(const char *session_dir, int react_loop) {
 char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     if (!ctx || !ctx->aliases) {
         nash_log("[tools] CRITICAL: tool_register_alias called with NULL ctx/aliases");
-        return strdup("R?S?");
+        return xstrdup("R?S?");
     }
 
     char alias_buf[32];
@@ -297,8 +288,8 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
     if (ctx->session_dir && ctx->store && ctx->store->dir && hash && hash[0]) {
         char link_path[NASH_PATH_MAX];
         char target[NASH_PATH_MAX];
-        snprintf(link_path, sizeof(link_path), "%s/%s", ctx->session_dir, alias_buf);
-        snprintf(target, sizeof(target), "%s/%s", ctx->store->dir, hash);
+        path_join(link_path, sizeof(link_path), ctx->session_dir, alias_buf);
+        path_join(target, sizeof(target), ctx->store->dir, hash);
         /* Force-overwrite: remove stale symlink from previous query in
          * same session before creating the new one.  Without this, a
          * second react_run() in the same session reuses R0S0, R0S1, ...
@@ -310,7 +301,7 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
 
     /* Return a copy of the alias string. Caller must free.
      * Previously returned node->alias which dangled after alias_map_free/clear. */
-    return strdup(alias_buf);
+    return xstrdup(alias_buf);
 }
 
 /* Returns heap-allocated path string — caller MUST free.
@@ -350,9 +341,7 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
                          (size_t)new_cap * sizeof(char *))) return;
         ctx->recalled_keys_cap = new_cap;
     }
-    char *dup = strdup(key);
-    if (!dup) return;
-    ctx->recalled_keys[ctx->n_recalled_keys++] = dup;
+    ctx->recalled_keys[ctx->n_recalled_keys++] = xstrdup(key);
 }
 
 /* ── Fire ledger ────────────────────────────────────── */
@@ -380,9 +369,7 @@ void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key) {
                          (size_t)new_cap * sizeof(char *))) return;
         ctx->fire_ledger_cap = new_cap;
     }
-    char *dup = strdup(key);
-    if (!dup) return;
-    ctx->fire_ledger[ctx->n_fire_ledger++] = dup;
+    ctx->fire_ledger[ctx->n_fire_ledger++] = xstrdup(key);
 }
 
 void tool_fire_ledger_reset(tool_ctx_t *ctx) {
@@ -462,26 +449,19 @@ static char *shell_resolve_aliases(tool_ctx_t *ctx, const char *cmd) {
 }
 
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *cmd_j = cJSON_GetObjectItem(params, "command");
-    if (!cmd_j || !cmd_j->valuestring || !cmd_j->valuestring[0])
+    const char *command = json_str(params, "command");
+    if (!command || !command[0])
         return tools_make_error("shell_exec requires a non-empty 'command' string. "
                           "Provide the shell command to execute.");
-
-    const char *command = cmd_j->valuestring;
     char *resolved_cmd = shell_resolve_aliases(ctx, command);
     if (resolved_cmd) command = resolved_cmd;
 
     str_t out = str_new(4096);
     char *argv[] = { "sh", "-c", (char *)command, NULL };
     int cfg_timeout = ctx->cfg ? ctx->cfg->shell_timeout : 30;
-    int timeout = cfg_timeout;
-    cJSON *timeout_j = cJSON_GetObjectItem(params, "timeout");
-    if (timeout_j && cJSON_IsNumber(timeout_j)) {
-        int t = (int)timeout_j->valuedouble;
-        if (t < 1) t = 1;
-        if (t > cfg_timeout * 10) t = cfg_timeout * 10;
-        timeout = t;
-    }
+    int timeout = json_int(params, "timeout", cfg_timeout);
+    if (timeout < 1) timeout = 1;
+    if (timeout > cfg_timeout * 10) timeout = cfg_timeout * 10;
     int max_out = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
 
     struct timespec t_start, t_end;
@@ -551,7 +531,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "shell_exec", params, alias,
                    out.len, out.data ? count_lines(out.data) : 0, exit_code == 0 ? NULL : "non-zero exit", NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     str_free(&out);
     free(hash);
@@ -565,9 +545,7 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 /* ── done ────────────────────────────────────────────── */
 
 static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
-    cJSON *result_j = cJSON_GetObjectItem(params, "result");
-    const char *result = result_j && result_j->valuestring
-                         ? result_j->valuestring : "(no result)";
+    const char *result = json_str_or(params, "result", "(no result)");
 
     /* Store result for full audit */
     char *hash = store_save(ctx->store, result);
@@ -581,7 +559,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "done", params, alias,
                    strlen(result), 0, NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     free(hash);
     return tools_make_result(1, meta, ref_copy);
@@ -600,9 +578,7 @@ static tool_result_t tool_user_ask_stub(tool_ctx_t *ctx, cJSON *params) {
 /* ── plan ──────────────────────────────────────────────── */
 
 static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
-    const char *result = NULL;
-    cJSON *r = cJSON_GetObjectItem(params, "result");
-    if (r && r->valuestring) result = r->valuestring;
+    const char *result = json_str(params, "result");
     if (!result || !result[0])
         return tools_make_error("missing 'result' parameter with the plan text");
 
@@ -635,7 +611,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "plan",
                    params, alias, strlen(result), steps, NULL, NULL);
 
-    char *ref_copy = alias ? strdup(alias) : NULL;
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
     free(hash);
     return tools_make_result(1, meta, ref_copy);
@@ -719,8 +695,8 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
     /* Batch delete, grouped by target memory_t */
     if (n_del > 0 && del_entries) {
         /* FIX #9: dynamically size batch arrays instead of fixed 64 */
-        const char **gl_keys = malloc(sizeof(const char *) * (size_t)n_del);
-        const char **ws_keys = malloc(sizeof(const char *) * (size_t)n_del);
+        const char **gl_keys = xmalloc(sizeof(const char *) * (size_t)n_del);
+        const char **ws_keys = xmalloc(sizeof(const char *) * (size_t)n_del);
         int n_gl = 0;
         int n_ws = 0;
         if (gl_keys && ws_keys) {
@@ -859,8 +835,7 @@ static int dispatch_handler(tool_ctx_t *ctx, const char *action, cJSON *params,
     if (!ctx->journal_done) {
         const char *err = NULL;
         if (!out->success && out->meta) {
-            cJSON *ej = cJSON_GetObjectItem(out->meta, "error");
-            if (ej && ej->valuestring) err = ej->valuestring;
+            err = json_str(out->meta, "error");
         }
         const char *ref = out->store_ref;
         char *fb_hash = NULL, *fb_alias = NULL;

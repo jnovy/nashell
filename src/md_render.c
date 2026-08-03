@@ -570,9 +570,8 @@ static int render_inline_wrapped(WINDOW *win, int start_row, int col,
 /* ── Parse ── */
 
 md_doc_t *md_parse(const char *source) {
-    md_doc_t *doc = calloc(1, sizeof(*doc));
-    if (!doc) return NULL;
-    doc->source = strdup(source ? source : "");
+    md_doc_t *doc = xcalloc(1, sizeof(*doc));
+    doc->source = xstrdup(source ? source : "");
 
     /* Extract [text](uri) links — skip code fences (``` blocks) */
     const char *p = doc->source;

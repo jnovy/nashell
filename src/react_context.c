@@ -122,14 +122,12 @@ typedef struct { int *pmap; int pmap_cap; } pmap_ctx_t;
 static int build_pmap_cb(cJSON *entry, void *user_data) {
     pmap_ctx_t *ctx = user_data;
     if (!ctx->pmap) return 1;  /* allocation failed earlier, stop */
-    const char *jtool = cJSON_GetStringValue(
-        cJSON_GetObjectItem(entry, "tool"));
+    const char *jtool = json_str(entry, "tool");
     if (!jtool || strcmp(jtool, "query") != 0) return 0;
-    int rl = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(entry, "react_loop"));
-    cJSON *pp = cJSON_GetObjectItem(
-        cJSON_GetObjectItem(entry, "params"), "parent_loop");
-    if (!pp || !cJSON_IsNumber(pp) || rl < 0) return 0;
+    int rl = json_int(entry, "react_loop", -1);
+    cJSON *params_obj = cJSON_GetObjectItem(entry, "params");
+    int parent = json_int(params_obj, "parent_loop", -1);
+    if (parent < 0 || rl < 0) return 0;
     if (rl >= ctx->pmap_cap) {
         int new_cap = ctx->pmap_cap;
         while (new_cap <= rl) new_cap *= 2;
@@ -139,7 +137,7 @@ static int build_pmap_cb(cJSON *entry, void *user_data) {
                sizeof(int) * (size_t)(new_cap - ctx->pmap_cap));
         ctx->pmap_cap = new_cap;
     }
-    ctx->pmap[rl] = (int)pp->valuedouble;
+    ctx->pmap[rl] = parent;
     return 0;
 }
 
@@ -154,8 +152,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     /* Build ancestor set by walking parent chain in journal */
     /* Dynamic allocation replaces fixed ancestors[256] array */
     int anc_cap = 64;
-    int *ancestors = malloc(sizeof(int) * (size_t)anc_cap);
-    if (!ancestors) return scratchpad_serialize_budget(scratch, max_budget);
+    int *ancestors = xmalloc(sizeof(int) * (size_t)anc_cap);
     int n_ancestors = 0;
     ancestors[n_ancestors++] = parent_loop;
 
@@ -163,7 +160,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
         char jpath[NASH_PATH_MAX];
         snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir);
         pmap_ctx_t pm = { .pmap_cap = 1024 };
-        pm.pmap = malloc(sizeof(int) * (size_t)pm.pmap_cap);
+        pm.pmap = xmalloc(sizeof(int) * (size_t)pm.pmap_cap);
         if (pm.pmap)
             memset(pm.pmap, -1, sizeof(int) * (size_t)pm.pmap_cap);
         jsonl_iterate(jpath, build_pmap_cb, &pm);
@@ -235,8 +232,8 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
 
                 typedef struct { char *key; char *desc; double ts; } tcal_entry_t;
                 int tcal_cap = max_entries * 2 < 64 ? 64 : max_entries * 2;
-                tcal_entry_t *recent = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
-                tcal_entry_t *older = malloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
+                tcal_entry_t *recent = xmalloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
+                tcal_entry_t *older = xmalloc(sizeof(tcal_entry_t) * (size_t)tcal_cap);
                 int n_recent = 0, n_older = 0;
 
                 /* Use global memory when workspace is active,
@@ -249,9 +246,9 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                         const mem_index_entry_t *e = &mem->idx.entries[mi];
                         if (!e->key || !e->description) continue;
                         if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
-                            recent[n_recent++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
+                            recent[n_recent++] = (tcal_entry_t){ xstrdup(e->key), xstrdup(e->description), e->created_at };
                         } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
-                            older[n_older++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
+                            older[n_older++] = (tcal_entry_t){ xstrdup(e->key), xstrdup(e->description), e->created_at };
                         }
                     }
                     pthread_mutex_unlock(&mem->mtx);
@@ -265,9 +262,9 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                         const mem_index_entry_t *e = &ws_mem->idx.entries[mi];
                         if (!e->key || !e->description) continue;
                         if (e->created_at >= recent_cutoff && n_recent < tcal_cap) {
-                            recent[n_recent++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
+                            recent[n_recent++] = (tcal_entry_t){ xstrdup(e->key), xstrdup(e->description), e->created_at };
                         } else if (e->created_at >= older_cutoff && n_older < tcal_cap) {
-                            older[n_older++] = (tcal_entry_t){ strdup(e->key), strdup(e->description), e->created_at };
+                            older[n_older++] = (tcal_entry_t){ xstrdup(e->key), xstrdup(e->description), e->created_at };
                         }
                     }
                     pthread_mutex_unlock(&ws_mem->mtx);

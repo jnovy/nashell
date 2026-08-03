@@ -85,7 +85,7 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "grep_search", params, alias,
                    out.len, matches, NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     str_free(&out);
     free(hash);
@@ -187,7 +187,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
         if (exact_path[0] == '/')
             snprintf(full_path, sizeof(full_path), "%s", exact_path);
         else
-            snprintf(full_path, sizeof(full_path), "%s/%s", search_path, exact_path);
+            path_join(full_path, sizeof(full_path), search_path, exact_path);
         str_t out = str_new(256);
         struct stat st;
         if (stat(full_path, &st) == 0 && S_ISREG(st.st_mode)) {
@@ -210,7 +210,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
         tool_journal(ctx, "glob_search", params, alias,
                        out.len, matches, NULL, NULL);
 
-        char *ref_copy = strdup(alias);
+        char *ref_copy = xstrdup(alias);
         free(alias);
         str_free(&out);
         free(hash);
@@ -226,7 +226,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     } else if (root[0] == '/') {
         snprintf(full_path, sizeof(full_path), "%s", root);
     } else {
-        snprintf(full_path, sizeof(full_path), "%s/%s", search_path, root);
+        path_join(full_path, sizeof(full_path), search_path, root);
     }
 
     int glob_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
@@ -284,7 +284,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "glob_search", params, alias,
                    out.len, matches, NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     str_free(&out);
     free(hash);

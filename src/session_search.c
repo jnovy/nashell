@@ -79,8 +79,7 @@ static double compute_recency(double timestamp) {
 /* Extract a snippet around the match position */
 static char *extract_match_snippet(const char *line, const char *match_pos,
                                     size_t match_len) {
-    char *buf = malloc(SS_SNIPPET_MAX + 16);
-    if (!buf) return NULL;
+    char *buf = xmalloc(SS_SNIPPET_MAX + 16);
 
     size_t linelen = strlen(line);
     int before = SS_SNIPPET_MAX / 2;
@@ -234,7 +233,7 @@ static int phase_semantic(session_index_t *idx, const embed_vec_t *query_emb,
         /* Copy chunk preview */
         if (best_chunk >= 0 && e->chunk_previews &&
             best_chunk < e->n_chunk_previews && e->chunk_previews[best_chunk]) {
-            scored[n].chunk_preview = strdup(e->chunk_previews[best_chunk]);
+            scored[n].chunk_preview = xstrdup(e->chunk_previews[best_chunk]);
         }
 
         n++;
@@ -264,15 +263,14 @@ static int scan_journal_lexical(const char *session_dir,
     FILE *f = fopen(jpath, "r");
     if (!f) return 0;
 
-    char *line_buf = malloc(SS_JLINE_MAX);
-    if (!line_buf) { fclose(f); return 0; }
+    char *line_buf = xmalloc(SS_JLINE_MAX);
 
     int count = 0;
     int stored_count = 0;  /* actual entries stored (may be < count on realloc failure) */
 
     /* Pre-allocate match array */
     int match_cap = 16;
-    ss_match_t *matches = calloc((size_t)match_cap, sizeof(ss_match_t));
+    ss_match_t *matches = xcalloc((size_t)match_cap, sizeof(ss_match_t));
 
     while (fgets(line_buf, SS_JLINE_MAX, f)) {
         const char *match_pos = NULL;
@@ -364,8 +362,7 @@ static int scan_file_lexical(const char *filepath, const char *filename,
     FILE *f = fopen(filepath, "r");
     if (!f) return 0;
 
-    char *line_buf = malloc(SS_JLINE_MAX);
-    if (!line_buf) { fclose(f); return 0; }
+    char *line_buf = xmalloc(SS_JLINE_MAX);
 
     int count = 0;
     /* match_cap tracks the allocated capacity of scored->matches.
@@ -460,7 +457,7 @@ static int scan_session_files_lexical(const char *session_dir,
             if (strncmp(de->d_name, "reactR", 6) == 0 &&
                 strlen(de->d_name) > 3 &&
                 strcmp(de->d_name + strlen(de->d_name) - 3, ".md") == 0) {
-                snprintf(fpath, sizeof(fpath), "%s/%s", session_dir,
+                path_join(fpath, sizeof(fpath), session_dir,
                          de->d_name);
                 n = scan_file_lexical(fpath, de->d_name, pattern,
                                       use_regex, compiled_re, scored);
@@ -542,7 +539,7 @@ static int phase_lexical(session_index_t *idx,
             if (d) {
                 dir_entry_t *dirs = NULL;
                 int n_dirs = 0, cap_dirs = 256;
-                dirs = calloc((size_t)cap_dirs, sizeof(dir_entry_t));
+                dirs = xcalloc((size_t)cap_dirs, sizeof(dir_entry_t));
 
                 struct dirent *de;
                 while (dirs && (de = readdir(d)) != NULL) {
@@ -551,7 +548,7 @@ static int phase_lexical(session_index_t *idx,
                         cap_dirs *= 2;
                         if (safe_realloc((void **)&dirs, (size_t)cap_dirs * sizeof(dir_entry_t))) break;
                     }
-                    snprintf(dirs[n_dirs].dir, NASH_PATH_MAX, "%s/%s",
+                    path_join(dirs[n_dirs].dir, NASH_PATH_MAX,
                              sessions_dir, de->d_name);
                     dirs[n_dirs].timestamp = atof(de->d_name);
                     n_dirs++;
@@ -660,8 +657,7 @@ ss_results_t session_search(
 
     /* Allocate scored array — conservatively large */
     int cap = 2048;
-    scored_session_t *scored = calloc((size_t)cap, sizeof(scored_session_t));
-    if (!scored) return out;
+    scored_session_t *scored = xcalloc((size_t)cap, sizeof(scored_session_t));
 
     int n_scored = 0;
     int has_semantic = 0;
@@ -722,11 +718,11 @@ ss_results_t session_search(
     /* Take top-K */
     int n_results = n_valid < max_results ? n_valid : max_results;
     if (n_results > 0) {
-        out.results = calloc((size_t)n_results, sizeof(ss_result_t));
+        out.results = xcalloc((size_t)n_results, sizeof(ss_result_t));
         if (out.results) {
             for (int i = 0; i < n_results; i++) {
                 scored_session_t *s = &scored[i];
-                out.results[i].session_dir     = strdup(s->dir);
+                out.results[i].session_dir     = xstrdup(s->dir);
                 out.results[i].timestamp       = s->timestamp;
                 out.results[i].semantic_score   = s->semantic;
                 out.results[i].best_chunk       = s->best_chunk;

@@ -211,6 +211,37 @@ static inline int safe_realloc(void **ptr, size_t new_size) {
     return 0;
 }
 
+/* ── Abort-on-failure allocators ─────────────────────────────────────
+ * Like malloc/calloc/strdup but abort on failure instead of returning
+ * NULL.  Suitable for allocations where OOM is unrecoverable. */
+static inline void *xmalloc(size_t size) {
+    void *p = malloc(size);
+    if (!p && size) { fprintf(stderr, "xmalloc(%zu): out of memory\n", size); abort(); }
+    return p;
+}
+static inline void *xcalloc(size_t n, size_t size) {
+    void *p = calloc(n, size);
+    if (!p && n && size) { fprintf(stderr, "xcalloc(%zu,%zu): out of memory\n", n, size); abort(); }
+    return p;
+}
+static inline char *xstrdup(const char *s) {
+    char *p = strdup(s);
+    if (!p) { fprintf(stderr, "xstrdup: out of memory\n"); abort(); }
+    return p;
+}
+/* Like xstrdup but NULL input yields strdup("") instead of crash. */
+static inline char *xstrdupz(const char *s) {
+    return xstrdup(s ? s : "");
+}
+
+/* ── String replacement helper ───────────────────────────────────────
+ * Frees *dst, then sets *dst = strdup(src) (or NULL if src is NULL).
+ * Eliminates the common free(x); x = strdup(y); two-liner. */
+static inline void str_replace(char **dst, const char *src) {
+    free(*dst);
+    *dst = src ? strdup(src) : NULL;
+}
+
 /* ── Dynamic array push macro ────────────────────────────────────────
  * Appends an item to a dynamically-growing array with count/capacity
  * tracking.  Doubles capacity on overflow; uses safe_realloc.
@@ -260,6 +291,30 @@ char **list_dir(const char *dirpath, const char *suffix, int *out_count);
  * Create a {"role":"...","content":"..."} cJSON object.
  * Caller must cJSON_Delete() or add to an array (which takes ownership). */
 struct cJSON *cjson_msg(const char *role, const char *content);
+
+/* ── cJSON extraction helpers ────────────────────────────────────────
+ * Convenience accessors for pulling typed values out of cJSON objects.
+ * Eliminates the common GetObjectItem + type-check + valuestring pattern. */
+
+/* Return string value for key, or NULL if missing/wrong type. */
+const char *json_str(struct cJSON *obj, const char *key);
+
+/* Return string value for key, or dflt if missing/wrong type. */
+const char *json_str_or(struct cJSON *obj, const char *key, const char *dflt);
+
+/* Return int value for key, or dflt if missing/wrong type. */
+int json_int(struct cJSON *obj, const char *key, int dflt);
+
+/* Return double value for key, or dflt if missing/wrong type. */
+double json_num(struct cJSON *obj, const char *key, double dflt);
+
+/* Return boolean value for key, or dflt if missing/wrong type. */
+int json_bool(struct cJSON *obj, const char *key, int dflt);
+
+/* ── dump_json (mirror of slurp_json) ────────────────────────────────
+ * Pretty-print a cJSON object to a file.  Combines cJSON_Print +
+ * write_file + free.  Returns 0 on success, -1 on failure. */
+int dump_json(const char *path, struct cJSON *obj);
 
 /* ── Timestamp formatting helpers ────────────────────────────────────
  * Format a time_t into buf.  Returns buf for convenience.

@@ -48,8 +48,7 @@ static char *read_file(const char *path) {
 /* Atomic write with trailing newline, delegates to write_file() (str.h). */
 static int write_file_atomic(const char *path, const char *content) {
     size_t clen = strlen(content);
-    char *buf = malloc(clen + 2);
-    if (!buf) return -1;
+    char *buf = xmalloc(clen + 2);
     memcpy(buf, content, clen);
     buf[clen] = '\n';
     buf[clen + 1] = '\0';
@@ -282,7 +281,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
             char *query = read_file(path);
             if (query) {
                 /* Extract task ID from filename: task_{id} */
-                char *tid = strdup(de->d_name + 5);  /* skip "task_" */
+                char *tid = xstrdup(de->d_name + 5);  /* skip "task_" */
                 unlink(path);
                 closedir(dir);
                 if (task_id_out) *task_id_out = tid;
@@ -354,7 +353,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                         usleep(50000);
                         char *query = read_file(path);
                         if (query) {
-                            char *tid = strdup(iev->name + 5);
+                            char *tid = xstrdup(iev->name + 5);
                             unlink(path);
                             inotify_rm_watch(ifd, wd);
                             close(ifd);
@@ -398,7 +397,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                     continue;
                 char *query = read_file(path);
                 if (query) {
-                    char *tid = strdup(de->d_name + 5);
+                    char *tid = xstrdup(de->d_name + 5);
                     unlink(path);
                     closedir(dir);
                     inotify_rm_watch(ifd, wd);
@@ -437,7 +436,7 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
              * before the cond_wait, so setting pending=0 makes the
              * react loop skip the wait entirely. */
             free(mbox->react_ctx->user_ask_answer);
-            mbox->react_ctx->user_ask_answer = answer ? answer : strdup(
+            mbox->react_ctx->user_ask_answer = answer ? answer : xstrdup(
                 "(no answer — mailbox timeout)");
             mbox->react_ctx->user_ask_pending = 0;
         } else {
@@ -568,7 +567,7 @@ mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec) {
     char *raw_query = mailbox_wait_task(mailbox_dir, &task_id, timeout_sec);
     if (!raw_query) return NULL;
 
-    mailbox_task_t *task = calloc(1, sizeof(*task));
+    mailbox_task_t *task = xcalloc(1, sizeof(*task));
     if (!task) {
         free(raw_query);
         free(task_id);
@@ -583,7 +582,7 @@ mailbox_task_t *mailbox_wait_task_ex(const char *mailbox_dir, int timeout_sec) {
     task->route_token = rt;
 
     /* query_start points into raw_query — strdup for independent ownership */
-    task->query = strdup(query_start);
+    task->query = xstrdup(query_start);
     free(raw_query);
 
     return task;
@@ -632,7 +631,7 @@ void mailbox_write_result_routed(const char *mailbox_dir, const char *task_id,
     str_append_cstr(&hdr, "---\n");
 
     size_t total = hdr.len + strlen(res) + 2;
-    char *buf = malloc(total);
+    char *buf = xmalloc(total);
     if (!buf) {
         str_free(&hdr);
         mailbox_write_result(mailbox_dir, task_id, result);
@@ -746,7 +745,7 @@ void mailbox_write_query(const char *mailbox_dir, const char *query_id,
     str_append_cstr(&hdr, "---\n");
 
     size_t total = hdr.len + strlen(text) + 2;
-    char *buf = malloc(total);
+    char *buf = xmalloc(total);
     if (!buf) {
         str_free(&hdr);
         return;

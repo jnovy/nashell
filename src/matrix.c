@@ -98,15 +98,15 @@ static const char *mx_ensure_room(matrix_ctx_t *ctx, const char *room_id,
  * Uses libcurl for correct encoding. Returns heap-allocated string.
  * Caller frees with free(). */
 static char *url_encode(const char *s) {
-    if (!s) return strdup("");
+    if (!s) return xstrdup("");
     CURL *c = curl_easy_init();
-    if (!c) return strdup("");
+    if (!c) return xstrdup("");
     char *enc = curl_easy_escape(c, s, 0);
     curl_easy_cleanup(c);
-    if (!enc) return strdup("");
-    char *out = strdup(enc);
+    if (!enc) return xstrdup("");
+    char *out = xstrdup(enc);
     curl_free(enc);
-    return out ? out : strdup("");
+    return out ? out : xstrdup("");
 }
 
 
@@ -138,8 +138,8 @@ static const char *mx_room_map_add(matrix_ctx_t *ctx,
         return NULL;
     }
     int idx = ctx->room_map_count++;
-    ctx->room_map[idx].room_id = strdup(room_id);
-    ctx->room_map[idx].workspace = strdup(workspace);
+    ctx->room_map[idx].room_id = xstrdup(room_id);
+    ctx->room_map[idx].workspace = xstrdup(workspace);
     fprintf(stderr, "[matrix] auto-discovered: room %s -> workspace '%s'\n",
             room_id, workspace);
     return ctx->room_map[idx].workspace;
@@ -167,9 +167,9 @@ static char *mx_api_get_room_name(matrix_ctx_t *ctx, const char *room_id) {
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *name = cJSON_GetObjectItem(rjson, "name");
-            if (name && name->valuestring && name->valuestring[0]) {
-                result = sanitize_workspace_name(name->valuestring);
+            const char *name_s = json_str(rjson, "name");
+            if (name_s && name_s[0]) {
+                result = sanitize_workspace_name(name_s);
             }
             cJSON_Delete(rjson);
         }
@@ -211,13 +211,12 @@ static char *mx_create_workspace_room(matrix_ctx_t *ctx, const char *name) {
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *rid = cJSON_GetObjectItem(rjson, "room_id");
-            if (rid && rid->valuestring) {
-                result = strdup(rid->valuestring);
+            const char *rid = json_str(rjson, "room_id");
+            if (rid) {
+                result = xstrdup(rid);
             } else {
-                cJSON *err = cJSON_GetObjectItem(rjson, "error");
                 fprintf(stderr, "[matrix] createRoom '%s' failed: %s\n",
-                        name, err ? err->valuestring : "unknown");
+                        name, json_str_or(rjson, "error", "unknown"));
             }
             cJSON_Delete(rjson);
         }
@@ -250,7 +249,7 @@ static void mx_sync_workspaces(matrix_ctx_t *ctx) {
         /* For DT_UNKNOWN, stat to confirm directory */
         if (ent->d_type == DT_UNKNOWN) {
             char full[1024];
-            snprintf(full, sizeof(full), "%s/%s", ws_dir, ent->d_name);
+            path_join(full, sizeof(full), ws_dir, ent->d_name);
             struct stat st;
             if (stat(full, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
         }
@@ -316,9 +315,9 @@ int matrix_init(matrix_ctx_t *ctx, const char *config_path,
                 const char *nash_dir, const char *mailbox_dir,
                 volatile sig_atomic_t *shutdown) {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->config_path = strdup(config_path);
-    ctx->nash_dir = strdup(nash_dir);
-    ctx->mailbox_dir = strdup(mailbox_dir);
+    ctx->config_path = xstrdup(config_path);
+    ctx->nash_dir = xstrdup(nash_dir);
+    ctx->mailbox_dir = xstrdup(mailbox_dir);
     ctx->shutdown = shutdown;
     ctx->txn_counter = (long long)time(NULL) * 1000;  /* unique start */
 
@@ -428,7 +427,7 @@ static int mx_config_load(matrix_ctx_t *ctx) {
                 toml_datum_t rd = toml_string_in(rooms_tbl, key);
                 if (rd.ok) {
                     int idx = ctx->room_map_count++;
-                    ctx->room_map[idx].room_id = strdup(key);
+                    ctx->room_map[idx].room_id = xstrdup(key);
                     ctx->room_map[idx].workspace = rd.u.s;
                     fprintf(stderr, "[matrix] room %s -> workspace '%s'\n",
                             ctx->room_map[idx].room_id,
@@ -551,7 +550,7 @@ int matrix_setup(matrix_ctx_t *ctx) {
     /* Strip trailing slash */
     size_t blen = strlen(buf);
     if (blen > 0 && buf[blen-1] == '/') buf[blen-1] = 0;
-    ctx->homeserver = strdup(buf);
+    ctx->homeserver = xstrdup(buf);
 
     /* Step 2: Get credentials */
     fprintf(stderr, "Matrix username (e.g. nash): ");
@@ -642,10 +641,9 @@ int matrix_setup(matrix_ctx_t *ctx) {
 static char *mx_auth_header(matrix_ctx_t *ctx) {
     if (!ctx->access_token) {
         fprintf(stderr, "[matrix] warning: no access_token for auth header\n");
-        return strdup("");
+        return xstrdup("");
     }
-    char *hdr = malloc(strlen(ctx->access_token) + 32);
-    if (!hdr) return strdup("");
+    char *hdr = xmalloc(strlen(ctx->access_token) + 32);
     sprintf(hdr, "Authorization: Bearer %s", ctx->access_token);
     return hdr;
 }
@@ -675,17 +673,14 @@ static int mx_api_login(matrix_ctx_t *ctx, const char *user, const char *pass) {
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *token = cJSON_GetObjectItem(rjson, "access_token");
-            cJSON *uid = cJSON_GetObjectItem(rjson, "user_id");
-            if (token && token->valuestring && uid && uid->valuestring) {
-                free(ctx->access_token);
-                ctx->access_token = strdup(token->valuestring);
-                free(ctx->user_id);
-                ctx->user_id = strdup(uid->valuestring);
+            const char *tok = json_str(rjson, "access_token");
+            const char *uid = json_str(rjson, "user_id");
+            if (tok && uid) {
+                str_replace(&ctx->access_token, tok);
+                str_replace(&ctx->user_id, uid);
             } else {
-                cJSON *err = cJSON_GetObjectItem(rjson, "error");
                 fprintf(stderr, "[matrix] login error: %s\n",
-                        err ? err->valuestring : "unknown");
+                        json_str_or(rjson, "error", "unknown"));
                 rc = -1;
             }
             cJSON_Delete(rjson);
@@ -717,10 +712,9 @@ static int mx_api_whoami(matrix_ctx_t *ctx) {
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *uid = cJSON_GetObjectItem(rjson, "user_id");
-            if (uid && uid->valuestring) {
-                free(ctx->user_id);
-                ctx->user_id = strdup(uid->valuestring);
+            const char *uid = json_str(rjson, "user_id");
+            if (uid) {
+                str_replace(&ctx->user_id, uid);
             } else {
                 rc = -1;
             }
@@ -805,10 +799,9 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
     if (!root) return -1;
 
     /* Update since_token */
-    cJSON *next_batch = cJSON_GetObjectItem(root, "next_batch");
-    if (next_batch && next_batch->valuestring) {
-        free(ctx->since_token);
-        ctx->since_token = strdup(next_batch->valuestring);
+    const char *next_batch = json_str(root, "next_batch");
+    if (next_batch) {
+        str_replace(&ctx->since_token, next_batch);
     }
 
     /* Extract timeline events from ALL joined rooms.
@@ -939,17 +932,14 @@ static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
         if (resp.len > 0) {
             cJSON *rjson = cJSON_Parse(resp.data);
             if (rjson) {
-                cJSON *eid = cJSON_GetObjectItem(rjson, "event_id");
-                if (eid && eid->valuestring) {
-                    result_event_id = strdup(eid->valuestring);
+                const char *eid = json_str(rjson, "event_id");
+                if (eid) {
+                    result_event_id = xstrdup(eid);
                 } else {
-                    cJSON *err = cJSON_GetObjectItem(rjson, "error");
                     /* On 429 Too Many Requests -- retry after backoff */
                     if (http_code == 429 && retries_left > 0) {
-                        int wait_ms = 2000;  /* default 2s */
-                        cJSON *retry = cJSON_GetObjectItem(rjson, "retry_after_ms");
-                        if (retry && retry->valueint > 0)
-                            wait_ms = retry->valueint + 100;  /* plus margin */
+                        int wait_ms = json_int(rjson, "retry_after_ms", 0);
+                        wait_ms = (wait_ms > 0) ? wait_ms + 100 : 2000;
                         if (wait_ms > 60000) wait_ms = 60000;  /* cap at 1 min */
                         cJSON_Delete(rjson);
                         curl_easy_cleanup(curl);
@@ -967,7 +957,7 @@ static char *mx_api_send_message_inner(matrix_ctx_t *ctx, const char *room_id,
                                                         txn);
                     }
                     fprintf(stderr, "[matrix] send error: %s\n",
-                            err ? err->valuestring : "unknown");
+                            json_str_or(rjson, "error", "unknown"));
                 }
                 cJSON_Delete(rjson);
             }
@@ -1250,7 +1240,7 @@ static void mx_pre_table_to_html(str_t *out, const char *content, size_t content
  * Returns heap-allocated string.  Caller frees.
  */
 static char *mx_html_fixup(const char *html) {
-    if (!html) return strdup("");
+    if (!html) return xstrdup("");
     size_t len = strlen(html);
     str_t out = str_new(len + len / 4 + 64);
     int in_pre = 0;
@@ -1449,7 +1439,7 @@ static int mx_download_image(matrix_ctx_t *ctx, const char *mxc_url,
             char *ct = NULL;
             curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
             curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-            if (ct) ct_buf = strdup(ct);
+            if (ct) ct_buf = xstrdup(ct);
         }
 
         curl_easy_cleanup(curl);
@@ -1536,7 +1526,7 @@ static int mx_download_image(matrix_ctx_t *ctx, const char *mxc_url,
              (long)time(NULL), media_id, ext);
 
     char local_path[1040];
-    snprintf(local_path, sizeof(local_path), "%s/%s", images_dir, local_name);
+    path_join(local_path, sizeof(local_path), images_dir, local_name);
 
     /* Write atomically */
     char tmp_path[1048];
@@ -1602,8 +1592,7 @@ static int mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
         return -1;
     }
 
-    char *file_data = malloc((size_t)st.st_size);
-    if (!file_data) { fclose(f); return -1; }
+    char *file_data = xmalloc((size_t)st.st_size);
 
     size_t nread = fread(file_data, 1, (size_t)st.st_size, f);
     fclose(f);
@@ -1673,15 +1662,14 @@ static int mx_api_upload_media(matrix_ctx_t *ctx, const char *file_path,
     int rc = -1;
     cJSON *rjson = cJSON_Parse(resp.data);
     if (rjson) {
-        cJSON *uri = cJSON_GetObjectItem(rjson, "content_uri");
-        if (uri && uri->valuestring) {
-            snprintf(out_mxc, mxc_sz, "%s", uri->valuestring);
+        const char *uri = json_str(rjson, "content_uri");
+        if (uri) {
+            snprintf(out_mxc, mxc_sz, "%s", uri);
             fprintf(stderr, "[matrix] uploaded %s → %s\n", basename, out_mxc);
             rc = 0;
         } else {
-            cJSON *err = cJSON_GetObjectItem(rjson, "error");
             fprintf(stderr, "[matrix] upload error: %s\n",
-                    err ? err->valuestring : "no content_uri in response");
+                    json_str_or(rjson, "error", "no content_uri in response"));
         }
         cJSON_Delete(rjson);
     }
@@ -1761,11 +1749,9 @@ static int mx_api_send_image_to(matrix_ctx_t *ctx, const char *room_id,
     } else if (resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *event_id = cJSON_GetObjectItem(rjson, "event_id");
-            if (!event_id || !event_id->valuestring) {
-                cJSON *err = cJSON_GetObjectItem(rjson, "error");
+            if (!json_str(rjson, "event_id")) {
                 fprintf(stderr, "[matrix] send_image error: %s\n",
-                        err ? err->valuestring : "unknown");
+                        json_str_or(rjson, "error", "unknown"));
                 rc = -1;
             }
             cJSON_Delete(rjson);
@@ -1799,14 +1785,12 @@ static int mx_api_join_room(matrix_ctx_t *ctx, const char *room_id_or_alias) {
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *rid = cJSON_GetObjectItem(rjson, "room_id");
-            if (rid && rid->valuestring) {
-                free(ctx->room_id);
-                ctx->room_id = strdup(rid->valuestring);
+            const char *rid = json_str(rjson, "room_id");
+            if (rid) {
+                str_replace(&ctx->room_id, rid);
             } else {
-                cJSON *err = cJSON_GetObjectItem(rjson, "error");
                 fprintf(stderr, "[matrix] join error: %s\n",
-                        err ? err->valuestring : "unknown");
+                        json_str_or(rjson, "error", "unknown"));
                 rc = -1;
             }
             cJSON_Delete(rjson);
@@ -1855,14 +1839,12 @@ static int mx_api_create_room(matrix_ctx_t *ctx, const char *name,
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *rid = cJSON_GetObjectItem(rjson, "room_id");
-            if (rid && rid->valuestring) {
-                free(ctx->room_id);
-                ctx->room_id = strdup(rid->valuestring);
+            const char *rid = json_str(rjson, "room_id");
+            if (rid) {
+                str_replace(&ctx->room_id, rid);
             } else {
-                cJSON *err = cJSON_GetObjectItem(rjson, "error");
                 fprintf(stderr, "[matrix] createRoom error: %s\n",
-                        err ? err->valuestring : "unknown");
+                        json_str_or(rjson, "error", "unknown"));
                 rc = -1;
             }
             cJSON_Delete(rjson);
@@ -1958,10 +1940,10 @@ static int mx_api_invite_user(matrix_ctx_t *ctx, const char *room_id,
     if (rc == 0 && resp.len > 0) {
         cJSON *rjson = cJSON_Parse(resp.data);
         if (rjson) {
-            cJSON *err = cJSON_GetObjectItem(rjson, "errcode");
-            if (err && err->valuestring) {
+            const char *errcode = json_str(rjson, "errcode");
+            if (errcode) {
                 fprintf(stderr, "[matrix] invite %s to %s failed: %s\n",
-                        user_id, room_id, err->valuestring);
+                        user_id, room_id, errcode);
                 rc = -1;
             }
             cJSON_Delete(rjson);
@@ -2405,9 +2387,8 @@ void *matrix_run(void *arg) {
                 cJSON *ev = cJSON_GetArrayItem(events, i);
 
                 /* Extract source room_id (added by mx_api_sync) */
-                cJSON *ev_room_j = cJSON_GetObjectItem(ev, "_room_id");
-                const char *ev_room = (ev_room_j && ev_room_j->valuestring)
-                                      ? ev_room_j->valuestring : ctx->room_id;
+                const char *ev_room = json_str(ev, "_room_id");
+                if (!ev_room) ev_room = ctx->room_id;
                 const char *ev_workspace = mx_workspace_for_room(ctx, ev_room);
 
                 /* Auto-discover workspace for unknown rooms */
@@ -2433,23 +2414,22 @@ void *matrix_run(void *arg) {
                 }
 
                 /* Only process m.room.message events */
-                cJSON *type = cJSON_GetObjectItem(ev, "type");
-                if (!type || !type->valuestring ||
-                    strcmp(type->valuestring, "m.room.message") != 0)
+                const char *type = json_str(ev, "type");
+                if (!type || strcmp(type, "m.room.message") != 0)
                     continue;
 
                 /* Skip our own messages */
-                cJSON *sender = cJSON_GetObjectItem(ev, "sender");
-                if (!sender || !sender->valuestring) continue;
+                const char *sender = json_str(ev, "sender");
+                if (!sender) continue;
                 if (ctx->user_id &&
-                    strcmp(sender->valuestring, ctx->user_id) == 0)
+                    strcmp(sender, ctx->user_id) == 0)
                     continue;
 
                 /* Check user allowlist (if configured) */
-                if (!mx_user_allowed(ctx, sender->valuestring)) {
+                if (!mx_user_allowed(ctx, sender)) {
                     fprintf(stderr, "[matrix] ignoring message from "
                             "unauthorized user %s\n",
-                            sender->valuestring);
+                            sender);
                     continue;
                 }
 
@@ -2457,17 +2437,15 @@ void *matrix_run(void *arg) {
                 cJSON *content = cJSON_GetObjectItem(ev, "content");
                 if (!content) continue;
 
-                cJSON *msgtype = cJSON_GetObjectItem(content, "msgtype");
-                if (!msgtype || !msgtype->valuestring) continue;
+                const char *msgtype = json_str(content, "msgtype");
+                if (!msgtype) continue;
 
                 /* Handle text messages */
-                if (strcmp(msgtype->valuestring, "m.text") == 0) {
-                    cJSON *body_j = cJSON_GetObjectItem(content, "body");
-                    if (!body_j || !body_j->valuestring) continue;
-
-                    const char *msg_text = body_j->valuestring;
+                if (strcmp(msgtype, "m.text") == 0) {
+                    const char *msg_text = json_str(content, "body");
+                    if (!msg_text) continue;
                     fprintf(stderr, "[matrix] received from %s in %s: %.100s%s\n",
-                            sender->valuestring, ev_room, msg_text,
+                            sender, ev_room, msg_text,
                             strlen(msg_text) > 100 ? "..." : "");
 
                     /* Handle commands */
@@ -2570,27 +2548,26 @@ void *matrix_run(void *arg) {
                         free(ack_eid);
                     }
 
-                } else if (strcmp(msgtype->valuestring, "m.image") == 0) {
+                } else if (strcmp(msgtype, "m.image") == 0) {
                     /* Image message -> download and create image analysis task */
-                    cJSON *img_url = cJSON_GetObjectItem(content, "url");
-                    if (!img_url || !img_url->valuestring) {
+                    const char *img_url = json_str(content, "url");
+                    if (!img_url) {
                         mx_api_send_to_room(ctx, ev_room,
                             "\xe2\x9a\xa0\xef\xb8\x8f Image has no URL.", NULL);
                         continue;
                     }
 
                     /* Extract caption from body field (Matrix uses body for alt text) */
-                    cJSON *body_j = cJSON_GetObjectItem(content, "body");
-                    const char *caption = NULL;
-                    if (body_j && body_j->valuestring &&
-                        body_j->valuestring[0] &&
-                        strcmp(body_j->valuestring, "image") != 0 &&
-                        strncmp(body_j->valuestring, "image.", 6) != 0) {
-                        caption = body_j->valuestring;
+                    const char *caption = json_str(content, "body");
+                    if (caption &&
+                        (caption[0] == '\0' ||
+                         strcmp(caption, "image") == 0 ||
+                         strncmp(caption, "image.", 6) == 0)) {
+                        caption = NULL;
                     }
 
                     fprintf(stderr, "[matrix] received image from %s: %s\n",
-                            sender->valuestring, img_url->valuestring);
+                            sender, img_url);
 
                     /* Expire stale pending asks after 5 minutes */
                     if (pending_ask_id[0] && pending_ask_time > 0 &&
@@ -2630,7 +2607,7 @@ void *matrix_run(void *arg) {
 
                     /* Download the image */
                     char image_path[1040];
-                    if (mx_download_image(ctx, img_url->valuestring,
+                    if (mx_download_image(ctx, img_url,
                                           image_path,
                                           sizeof(image_path)) == 0) {
                         /* Build task text for image analysis */

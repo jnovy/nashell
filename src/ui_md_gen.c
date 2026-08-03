@@ -37,15 +37,14 @@ static char *read_last_lines(const char *path, int n_lines) {
     /* Read entire file (cap at 64KB for preview) */
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
-    if (sz <= 0) { fclose(f); return strdup(""); }
+    if (sz <= 0) { fclose(f); return xstrdup(""); }
     if (sz > NASH_LINE_MAX) {
         fseek(f, sz - NASH_LINE_MAX, SEEK_SET);
         sz = NASH_LINE_MAX;
     } else {
         fseek(f, 0, SEEK_SET);
     }
-    char *buf = malloc((size_t)sz + 1);
-    if (!buf) { fclose(f); return NULL; }
+    char *buf = xmalloc((size_t)sz + 1);
     size_t rd = fread(buf, 1, (size_t)sz, f);
     fclose(f);
     buf[rd] = '\0';
@@ -61,7 +60,7 @@ static char *read_last_lines(const char *path, int n_lines) {
     }
     if (*p == '\n') p++;
 
-    char *result = strdup(p);
+    char *result = xstrdup(p);
     free(buf);
     return result;
 }
@@ -77,55 +76,45 @@ static void write_md_file(const char *path, const char *content) {
 /* Extract tool description from journal params (for step display). */
 static const char *extract_desc(const char *tool, cJSON *params) {
     if (!params) return "";
-    cJSON *path = cJSON_GetObjectItem(params, "path");
-    cJSON *pat  = cJSON_GetObjectItem(params, "pattern");
-    cJSON *res  = cJSON_GetObjectItem(params, "result");
-    cJSON *url  = cJSON_GetObjectItem(params, "url");
+    const char *path_s = json_str(params, "path");
+    const char *pat_s  = json_str(params, "pattern");
+    const char *res_s  = json_str(params, "result");
+    const char *url_s  = json_str(params, "url");
 
-    if (strcmp(tool, "grep_search") == 0 && pat && pat->valuestring) {
+    if (strcmp(tool, "grep_search") == 0 && pat_s) {
         static char grep_desc[256];
-        if (path && path->valuestring && path->valuestring[0])
-            snprintf(grep_desc, sizeof(grep_desc), "%s %s",
-                     pat->valuestring, path->valuestring);
+        if (path_s && path_s[0])
+            snprintf(grep_desc, sizeof(grep_desc), "%s %s", pat_s, path_s);
         else
-            snprintf(grep_desc, sizeof(grep_desc), "%s", pat->valuestring);
+            snprintf(grep_desc, sizeof(grep_desc), "%s", pat_s);
         return grep_desc;
     }
-    if (strcmp(tool, "file_read") == 0 && path && path->valuestring) {
-        cJSON *sl = cJSON_GetObjectItem(params, "start_line");
-        cJSON *el = cJSON_GetObjectItem(params, "end_line");
-        if (sl || el) {
+    if (strcmp(tool, "file_read") == 0 && path_s) {
+        int s = json_int(params, "start_line", 0);
+        int e = json_int(params, "end_line", 0);
+        if (s || e) {
             static char fr_desc[256];
-            int s = sl ? (int)cJSON_GetNumberValue(sl) : 0;
-            int e = el ? (int)cJSON_GetNumberValue(el) : 0;
             if (s > 0 && e > 0)
-                snprintf(fr_desc, sizeof(fr_desc), "%s:%d-%d", path->valuestring, s, e);
+                snprintf(fr_desc, sizeof(fr_desc), "%s:%d-%d", path_s, s, e);
             else if (s > 0)
-                snprintf(fr_desc, sizeof(fr_desc), "%s:%d-EOF", path->valuestring, s);
+                snprintf(fr_desc, sizeof(fr_desc), "%s:%d-EOF", path_s, s);
             else
-                snprintf(fr_desc, sizeof(fr_desc), "%s", path->valuestring);
+                snprintf(fr_desc, sizeof(fr_desc), "%s", path_s);
             return fr_desc;
         }
-        return path->valuestring;
+        return path_s;
     }
-    if ((strcmp(tool, "file_edit") == 0 || strcmp(tool, "file_write") == 0) &&
-        path && path->valuestring)
-        return path->valuestring;
-    if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) &&
-        url && url->valuestring)
-        return url->valuestring;
-    if (strcmp(tool, "shell_exec") == 0) {
-        cJSON *cmd = cJSON_GetObjectItem(params, "command");
-        if (cmd && cmd->valuestring)
-            return cmd->valuestring;
-        return "";
-    }
+    if ((strcmp(tool, "file_edit") == 0 || strcmp(tool, "file_write") == 0) && path_s)
+        return path_s;
+    if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) && url_s)
+        return url_s;
+    if (strcmp(tool, "shell_exec") == 0)
+        return json_str_or(params, "command", "");
     /* Context injection sections: ctx:memory, ctx:temporal, etc.
      * Show human-readable size and section-specific labels. */
     if (strncmp(tool, "ctx:", 4) == 0) {
         static char ctx_desc[128];
-        cJSON *sz = cJSON_GetObjectItem(params, "size");
-        int size = sz ? (int)cJSON_GetNumberValue(sz) : 0;
+        int size = json_int(params, "size", 0);
         const char *section = tool + 4;
         if (size > 0) {
             const char *unit = "chars";
@@ -139,27 +128,24 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     }
     /* System prompt: show model name */
     if (strcmp(tool, "system") == 0) {
-        cJSON *model = cJSON_GetObjectItem(params, "model");
-        if (model && model->valuestring) return model->valuestring;
-        return "system prompt";
+        return json_str_or(params, "model", "system prompt");
     }
     /* Legacy context entry (pre-split) */
     if (strcmp(tool, "context") == 0) {
-        cJSON *nm = cJSON_GetObjectItem(params, "n_messages");
-        if (nm) {
+        int nm = json_int(params, "n_messages", -1);
+        if (nm >= 0) {
             static char ctx_desc_legacy[64];
-            snprintf(ctx_desc_legacy, sizeof(ctx_desc_legacy), "%d messages",
-                     (int)cJSON_GetNumberValue(nm));
+            snprintf(ctx_desc_legacy, sizeof(ctx_desc_legacy), "%d messages", nm);
             return ctx_desc_legacy;
         }
         return "full LLM context";
     }
     /* User query: show truncated first line */
     if (strcmp(tool, "query") == 0) {
-        cJSON *text = cJSON_GetObjectItem(params, "text");
-        if (text && text->valuestring) {
+        const char *text_s = json_str(params, "text");
+        if (text_s) {
             static char query_desc[128];
-            const char *s = text->valuestring;
+            const char *s = text_s;
             const char *nl = strchr(s, '\n');
             int len = nl ? (int)(nl - s) : (int)strlen(s);
             if (len > 80) len = 80;
@@ -188,25 +174,21 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     }
     /* System log entries: show the message */
     if (strcmp(tool, "log") == 0) {
-        cJSON *msg = cJSON_GetObjectItem(params, "message");
-        if (msg && msg->valuestring) return msg->valuestring;
-        return "(system log)";
+        return json_str_or(params, "message", "(system log)");
     }
     /* Server error entries: show the error message */
     if (strcmp(tool, "server_error") == 0) {
-        cJSON *err = cJSON_GetObjectItem(params, "error");
-        if (err && err->valuestring) return err->valuestring;
-        cJSON *sm = cJSON_GetObjectItem(params, "server_message");
-        if (sm && sm->valuestring) return sm->valuestring;
-        return "LLM server error";
+        const char *err_s = json_str(params, "error");
+        if (err_s) return err_s;
+        return json_str_or(params, "server_message", "LLM server error");
     }
     /* Plan: don't show inline text — the full plan is rendered below */
     if (strcmp(tool, "plan") == 0)
         return "";
     /* Truncate done result to first line, max 80 chars */
-    if (strcmp(tool, "done") == 0 && res && res->valuestring) {
+    if (strcmp(tool, "done") == 0 && res_s) {
         static char trunc_desc[128];
-        const char *s = res->valuestring;
+        const char *s = res_s;
         /* Find first newline */
         const char *nl = strchr(s, '\n');
         int len = nl ? (int)(nl - s) : (int)strlen(s);
@@ -221,11 +203,11 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if (strcmp(tool, "device_control") == 0) {
         static char dc_desc[512];
         int pos = 0;
-        cJSON *cmd = cJSON_GetObjectItem(params, "command");
-        if (cmd && cmd->valuestring) {
-            int clen = (int)strlen(cmd->valuestring);
+        const char *cmd_s = json_str(params, "command");
+        if (cmd_s) {
+            int clen = (int)strlen(cmd_s);
             if (clen > (int)sizeof(dc_desc) - 2) clen = (int)sizeof(dc_desc) - 2;
-            memcpy(dc_desc, cmd->valuestring, (size_t)clen);
+            memcpy(dc_desc, cmd_s, (size_t)clen);
             pos = clen;
         }
         cJSON *child = params->child;
@@ -374,19 +356,19 @@ static const char *extract_desc(const char *tool, cJSON *params) {
  * Delegates to the shared unwrap_thought() in journal.c. */
 static char *extract_thought(cJSON *params) {
     if (!params) return NULL;
-    cJSON *th = cJSON_GetObjectItem(params, "thought");
-    if (!th || !th->valuestring || !th->valuestring[0]) return NULL;
+    const char *th = json_str(params, "thought");
+    if (!th || !th[0]) return NULL;
 
     /* Skip whitespace-only thoughts (e.g. "\n\n" emitted before tool calls) */
-    if (is_whitespace_only(th->valuestring)) return NULL;
+    if (is_whitespace_only(th)) return NULL;
 
-    char *clean = unwrap_thought(th->valuestring);
+    char *clean = unwrap_thought(th);
     if (clean) return clean;
     /* unwrap_thought returned NULL — if the raw value is JSON (starts with
      * '{'), it's a garbled echo with no extractable thought; suppress it.
      * Otherwise it's plain text — use as-is. */
-    if (th->valuestring[0] == '{') return NULL;
-    return strdup(th->valuestring);
+    if (th[0] == '{') return NULL;
+    return xstrdup(th);
 }
 
 /* ── Session MD generation ───────────────────────────────── */
@@ -446,8 +428,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
 
-        const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
-        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
+        const char *tool = json_str(entry, "tool");
+        int loop = json_int(entry, "react_loop", 0);
 
         if (tool && strcmp(tool, "query") == 0) {
             /* Check if a placeholder was already created by memory_context */
@@ -465,15 +447,13 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 memset(qi, 0, sizeof(*qi));
             }
             cJSON *params = cJSON_GetObjectItem(entry, "params");
-            cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
             free(qi->text);  /* free any placeholder text from memory_context */
-            qi->text = (text && text->valuestring) ? strdup(text->valuestring) : strdup("?");
-            cJSON *ts = cJSON_GetObjectItem(entry, "ts");
-            qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+            qi->text = xstrdup(json_str_or(params, "text", "?"));
+            const char *ts_s = json_str(entry, "ts");
+            qi->ts = ts_s ? atof(ts_s) : 0;
             qi->react_loop = loop;
             /* Parse parent_loop from journal (backward compat: default -1 = root) */
-            cJSON *pl = params ? cJSON_GetObjectItem(params, "parent_loop") : NULL;
-            qi->parent_loop = (pl && cJSON_IsNumber(pl)) ? (int)pl->valuedouble : -1;
+            qi->parent_loop = json_int(params, "parent_loop", -1);
         } else if (tool && strcmp(tool, "memory_context") == 0) {
             /* Fallback: if a react loop was interrupted after memory_context
              * was logged but before the "query" entry was written, use the
@@ -491,10 +471,9 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                 qinfo_t *qi = &qinfos[qcount++];
                 memset(qi, 0, sizeof(*qi));
                 cJSON *params = cJSON_GetObjectItem(entry, "params");
-                cJSON *qtext = params ? cJSON_GetObjectItem(params, "query") : NULL;
-                qi->text = (qtext && qtext->valuestring) ? strdup(qtext->valuestring) : strdup("(interrupted)");
-                cJSON *ts = cJSON_GetObjectItem(entry, "ts");
-                qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+                qi->text = xstrdup(json_str_or(params, "query", "(interrupted)"));
+                const char *ts_s = json_str(entry, "ts");
+                qi->ts = ts_s ? atof(ts_s) : 0;
                 qi->react_loop = loop;
                 qi->parent_loop = -1;  /* unknown parent — treat as root */
             }
@@ -506,11 +485,9 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                     if (strcmp(tool, "done") == 0) {
                         qinfos[i].done = 1;
                         cJSON *params = cJSON_GetObjectItem(entry, "params");
-                        cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
-                        if (res && res->valuestring) {
-                            free(qinfos[i].result);
-                            qinfos[i].result = strdup(res->valuestring);
-                        }
+                        const char *res_done = json_str(params, "result");
+                        if (res_done)
+                            str_replace(&qinfos[i].result, res_done);
                     }
                     break;
                 }
@@ -535,8 +512,8 @@ void ui_state_generate_session_md(ui_state_t *ui) {
             cJSON *entry = cJSON_Parse(line);
             if (!entry) continue;
 
-            const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
-            int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
+            const char *tool = json_str(entry, "tool");
+            int loop = json_int(entry, "react_loop", 0);
 
             if (tool && strcmp(tool, "query") == 0) {
                 /* Check if already known (shared session mode: same journal) */
@@ -558,17 +535,15 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                     memset(qi, 0, sizeof(*qi));
                 }
                 cJSON *params = cJSON_GetObjectItem(entry, "params");
-                cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
                 free(qi->text);
-                qi->text = (text && text->valuestring) ? strdup(text->valuestring) : strdup("?");
-                cJSON *ts = cJSON_GetObjectItem(entry, "ts");
-                qi->ts = ts && ts->valuestring ? atof(ts->valuestring) : 0;
+                qi->text = xstrdup(json_str_or(params, "text", "?"));
+                const char *ts_s = json_str(entry, "ts");
+                qi->ts = ts_s ? atof(ts_s) : 0;
                 qi->react_loop = loop;
                 qi->parent_loop = -1;  /* playbook passes are always roots */
-                free(qi->session_dir);
-                qi->session_dir = strdup(pbi->session_dir);
+                str_replace(&qi->session_dir, pbi->session_dir);
                 free(qi->pass_label);
-                qi->pass_label = pbi->pass_label ? strdup(pbi->pass_label) : NULL;
+                qi->pass_label = pbi->pass_label ? xstrdup(pbi->pass_label) : NULL;
             } else if (tool && strcmp(tool, "query") != 0 && strcmp(tool, "system") != 0
                             && strncmp(tool, "ctx:", 4) != 0) {
                 /* Count steps and detect done — match by session_dir + loop */
@@ -580,11 +555,9 @@ void ui_state_generate_session_md(ui_state_t *ui) {
                         if (strcmp(tool, "done") == 0) {
                             qinfos[i].done = 1;
                             cJSON *params = cJSON_GetObjectItem(entry, "params");
-                            cJSON *res = params ? cJSON_GetObjectItem(params, "result") : NULL;
-                            if (res && res->valuestring) {
-                                free(qinfos[i].result);
-                                qinfos[i].result = strdup(res->valuestring);
-                            }
+                            const char *res_done = json_str(params, "result");
+                            if (res_done)
+                                str_replace(&qinfos[i].result, res_done);
                         }
                         break;
                     }
@@ -603,15 +576,15 @@ void ui_state_generate_session_md(ui_state_t *ui) {
          * Nodes without a matching parent in qinfos are treated as roots.
          * Uses visited[] to prevent cycles from causing infinite loops. */
         size_t qalloc = qcount > 0 ? (size_t)qcount : 1;
-        int *render_order = malloc(qalloc * sizeof(int));
-        int *render_depth = malloc(qalloc * sizeof(int));
-        int *visited = calloc(qalloc, sizeof(int));
+        int *render_order = xmalloc(qalloc * sizeof(int));
+        int *render_depth = xmalloc(qalloc * sizeof(int));
+        int *visited = xcalloc(qalloc, sizeof(int));
         int rcount = 0;
 
         /* Stack sized 2*qcount to handle branching safely */
         int stack_cap = qcount > 0 ? qcount * 2 : 1;
-        int *dfs_stack = malloc((size_t)stack_cap * sizeof(int));
-        int *dfs_depth = malloc((size_t)stack_cap * sizeof(int));
+        int *dfs_stack = xmalloc((size_t)stack_cap * sizeof(int));
+        int *dfs_depth = xmalloc((size_t)stack_cap * sizeof(int));
         if (!render_order || !render_depth || !visited || !dfs_stack || !dfs_depth) {
             free(render_order); free(render_depth); free(visited);
             free(dfs_stack); free(dfs_depth);
@@ -815,8 +788,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         cJSON *entry = cJSON_Parse(line);
         if (!entry) continue;
 
-        int loop = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "react_loop"));
-        const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+        int loop = json_int(entry, "react_loop", 0);
+        const char *tool = json_str(entry, "tool");
 
         if (loop != react_loop || !tool) {
             cJSON_Delete(entry);
@@ -825,11 +798,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         if (strcmp(tool, "query") == 0) {
             cJSON *params = cJSON_GetObjectItem(entry, "params");
-            cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
-            if (text && text->valuestring) {
-                free(query_text);
-                query_text = strdup(text->valuestring);
-            }
+            const char *text_s = json_str(params, "text");
+            if (text_s)
+                str_replace(&query_text, text_s);
             /* Fall through to step collection so query appears as a
              * browsable step with clickable store ref in reactRX.md */
         }
@@ -838,9 +809,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             /* Fallback query text for interrupted loops (no "query" entry) */
             if (!query_text) {
                 cJSON *params = cJSON_GetObjectItem(entry, "params");
-                cJSON *qtext = params ? cJSON_GetObjectItem(params, "query") : NULL;
-                if (qtext && qtext->valuestring)
-                    query_text = strdup(qtext->valuestring);
+                const char *qtext = json_str(params, "query");
+                if (qtext)
+                    query_text = xstrdup(qtext);
             }
             /* Fall through to step collection so recall context appears
              * as a browsable step with clickable store ref in reactRX.md */
@@ -866,15 +837,15 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
             }
             step_info_t *si = &steps[nsteps++];
             memset(si, 0, sizeof(*si));
-            si->tool = strdup(tool);
-            si->step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
-            cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
-            si->ts = (ts_j && ts_j->valuestring) ? atof(ts_j->valuestring) : 0;
+            si->tool = xstrdup(tool);
+            si->step = json_int(entry, "step", 0);
+            const char *ts_s = json_str(entry, "ts");
+            si->ts = ts_s ? atof(ts_s) : 0;
             char cdesc[128];
             snprintf(cdesc, sizeof(cdesc),
                 "\xe2\x9c\x82 context compacted: %d\xe2\x86\x92%d msgs, %d%%\xe2\x86\x92%d%%",
                 cs.before_msgs, cs.after_msgs, cs.before_pct, cs.after_pct);
-            si->compact_desc = strdup(cdesc);
+            si->compact_desc = xstrdup(cdesc);
             cJSON_Delete(entry);
             continue;
         }
@@ -886,8 +857,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
          * can see connection problems, auth failures, etc. */
         if (strcmp(tool, "log") == 0) {
             cJSON *params_log = cJSON_GetObjectItem(entry, "params");
-            cJSON *msg = params_log ? cJSON_GetObjectItem(params_log, "message") : NULL;
-            const char *m = (msg && msg->valuestring) ? msg->valuestring : "";
+            const char *m = json_str_or(params_log, "message", "");
             if (!ui_ci_strstr(m, "error") && !ui_ci_strstr(m, "failed") &&
                 !ui_ci_strstr(m, "timed out")) {
                 cJSON_Delete(entry);
@@ -905,25 +875,24 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         step_info_t *si = &steps[nsteps++];
         memset(si, 0, sizeof(*si));
 
-        si->tool = strdup(tool);
-        si->step = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "step"));
-        cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
-        si->ts = (ts_j && ts_j->valuestring) ? atof(ts_j->valuestring) : 0;
-        const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
-        si->ref = ref ? strdup(ref) : NULL;
-        si->size = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(entry, "size"));
-        cJSON *failed_j = cJSON_GetObjectItem(entry, "failed");
-        si->failed = (failed_j && cJSON_IsTrue(failed_j));
+        si->tool = xstrdup(tool);
+        si->step = json_int(entry, "step", 0);
+        const char *ts_s = json_str(entry, "ts");
+        si->ts = ts_s ? atof(ts_s) : 0;
+        const char *ref_s = json_str(entry, "ref");
+        si->ref = ref_s ? xstrdup(ref_s) : NULL;
+        si->size = json_int(entry, "size", 0);
+        si->failed = json_bool(entry, "failed", 0);
 
         cJSON *params = cJSON_GetObjectItem(entry, "params");
         char *thought = extract_thought(params);
         si->thought = thought;
-        si->desc = strdup(extract_desc(tool, params));
+        si->desc = xstrdup(extract_desc(tool, params));
 
         /* For subtask: extract child_dir from params for reactR0.md link */
         if (strcmp(tool, "subtask") == 0 && params) {
-            const char *cd = cJSON_GetStringValue(cJSON_GetObjectItem(params, "child_dir"));
-            si->child_dir = cd ? strdup(cd) : NULL;
+            const char *cd = json_str(params, "child_dir");
+            si->child_dir = cd ? xstrdup(cd) : NULL;
         }
 
         cJSON_Delete(entry);
@@ -1014,7 +983,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         int desc_len = 0;
         if (si->desc && si->desc[0]) {
             desc_len = (int)strlen(si->desc);
-            desc_clean = malloc((size_t)desc_len + 1);
+            desc_clean = xmalloc((size_t)desc_len + 1);
             if (desc_clean) {
                 for (int k = 0; k < desc_len; k++) {
                     if (si->desc[k] == '\n' || si->desc[k] == '\r')
@@ -1230,7 +1199,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
         if (show_preview && si->ref) {
             char rpath[NASH_PATH_MAX];
-            snprintf(rpath, sizeof(rpath), "%s/%s", eff_dir, si->ref);
+            path_join(rpath, sizeof(rpath), eff_dir, si->ref);
 
             if (is_plan) {
                 /* Plan: read full file and render as markdown (no code

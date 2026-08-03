@@ -25,7 +25,7 @@ static int viewing_react_file(ui_state_t *ui, int react_loop,
     /* Basename matches — if session_dir given, verify full path */
     if (session_dir) {
         char full[NASH_PATH_MAX];
-        snprintf(full, sizeof(full), "%s/%s", session_dir, expected);
+        path_join(full, sizeof(full), session_dir, expected);
         return strcmp(ui->current_filepath, full) == 0;
     }
     return 1;
@@ -43,8 +43,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     if (ev->session_dir) {
         if (!ui->playbook_session_dir ||
             strcmp(ui->playbook_session_dir, ev->session_dir) != 0) {
-            free(ui->playbook_session_dir);
-            ui->playbook_session_dir = strdup(ev->session_dir);
+            str_replace(&ui->playbook_session_dir, ev->session_dir);
             pass_dir_changed = 1;
         }
         ui->playbook_react_loop = ev->react_loop;
@@ -62,8 +61,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 if (ui->pb_passes[i].pass_index == ev->pass_index) {
                     /* Update existing — session_dir/react_loop may have changed */
                     if (strcmp(ui->pb_passes[i].session_dir, ev->session_dir) != 0) {
-                        free(ui->pb_passes[i].session_dir);
-                        ui->pb_passes[i].session_dir = strdup(ev->session_dir);
+                        str_replace(&ui->pb_passes[i].session_dir, ev->session_dir);
                     }
                     ui->pb_passes[i].react_loop = ev->react_loop;
                     found = 1;
@@ -78,8 +76,8 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                     ui->pb_pass_cap = new_cap;
                 }
                 pb_pass_info_t *pi = &ui->pb_passes[ui->pb_pass_count++];
-                pi->session_dir = strdup(ev->session_dir);
-                pi->pass_label = ev->pass_label ? strdup(ev->pass_label) : NULL;
+                pi->session_dir = xstrdup(ev->session_dir);
+                pi->pass_label = ev->pass_label ? xstrdup(ev->pass_label) : NULL;
                 pi->react_loop = ev->react_loop;
                 pi->pass_index = ev->pass_index;
             }
@@ -132,8 +130,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 snprintf(buf, sizeof(buf), "Running step %d...", ev->step);
         }
         ui->status = STATUS_RUNNING;
-        free(ui->status_text);
-        ui->status_text = strdup(buf);
+        str_replace(&ui->status_text, buf);
         ui->current_step = ev->step;
         ui->max_steps = ev->max_steps;
         if (ev->context_size > 0)
@@ -188,7 +185,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
-            ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
             ne->label = ui->current_label;  /* transfer ownership */
             ui->current_label = NULL;
             ne->scroll_y = ui->scroll_y;
@@ -200,8 +197,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                      eff_session_dir, ui->current_react_loop);
-            free(ui->current_filepath);
-            ui->current_filepath = strdup(rpath);
+            str_replace(&ui->current_filepath, rpath);
             ui->scroll_y = 0;
             ui->scroll_x = 0;
             ui->cursor_link = 0;
@@ -258,15 +254,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             snprintf(sbuf, sizeof(sbuf), "[step %d] %s: %s",
                      ev->step, action, desc);
         }
-        free(ui->status_text);
-        ui->status_text = strdup(sbuf);
+        str_replace(&ui->status_text, sbuf);
 
         /* Full (untruncated) version for stream_tokens and tool_display
          * so the main content area and live progress show the complete
          * tool arguments without truncation (like done output). */
         char *full = NULL;
         int flen = asprintf(&full, "[step %d] %s: %s", ev->step, action, desc);
-        if (flen < 0) { full = strdup(sbuf); flen = (int)strlen(full); }
+        if (flen < 0) { full = xstrdup(sbuf); flen = (int)strlen(full); }
 
         /* Show tool command in streaming area (replaces thinking text)
          * so the user sees what tool is about to run in the main content,
@@ -330,16 +325,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
     case REACT_EVENT_DONE:
         if (ev->result) {
             ui->status = STATUS_DONE;
-            free(ui->status_text);
-            ui->status_text = strdup("Done");
+            str_replace(&ui->status_text, "Done");
         } else {
             /* Fatal error — react_run returned NULL.  Keep any prior
              * STATUS_ERROR message from REACT_EVENT_ERROR if present;
              * otherwise set a generic error status. */
             if (ui->status != STATUS_ERROR) {
                 ui->status = STATUS_ERROR;
-                free(ui->status_text);
-                ui->status_text = strdup("Inference failed (no result)");
+                str_replace(&ui->status_text, "Inference failed (no result)");
             }
         }
         if (ui->stream_tokens) ui->stream_tokens[0] = '\0';
@@ -375,12 +368,11 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
 
     case REACT_EVENT_USER_ASK:
         ui->status = STATUS_AWAITING_INPUT;
-        free(ui->status_text);
-        ui->status_text = strdup("Agent is asking a question — see main pane. Type answer below.");
+        str_replace(&ui->status_text, "Agent is asking a question — see main pane. Type answer below.");
         /* Store full question for display in main pane */
         free(ui->user_ask_question);
         ui->user_ask_question = (ev->message && ev->message[0])
-            ? strdup(ev->message) : strdup("(no question specified)");
+            ? xstrdup(ev->message) : xstrdup("(no question specified)");
 
         /* Auto-navigate to reactRX.md so the user can see the question.
          * The question is rendered only in reactRX.md (ui_md_gen.c), not
@@ -394,7 +386,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
                 ui->nav_cap = new_cap;
             }
             nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
-            ne->filepath = ui->current_filepath ? strdup(ui->current_filepath) : NULL;
+            ne->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
             ne->label = ui->current_label;  /* transfer ownership */
             ui->current_label = NULL;
             ne->scroll_y = ui->scroll_y;
@@ -406,8 +398,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
             char rpath[NASH_PATH_MAX];
             snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
                      eff_session_dir, ui->current_react_loop);
-            free(ui->current_filepath);
-            ui->current_filepath = strdup(rpath);
+            str_replace(&ui->current_filepath, rpath);
             ui->scroll_y = 0;
             ui->scroll_x = 0;
             ui->cursor_link = 0;
@@ -432,8 +423,7 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
         /* Surface error message in the status bar so the user sees it */
         if (ev->message && ev->message[0]) {
             ui->status = STATUS_ERROR;
-            free(ui->status_text);
-            ui->status_text = strdup(ev->message);
+            str_replace(&ui->status_text, ev->message);
         }
         /* Defer expensive file I/O to main loop */
         ui->needs_react_regen = 1;

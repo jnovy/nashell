@@ -46,8 +46,7 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
                            int isolated, double global_weight) {
     if (!nash_dir) return NULL;
 
-    workspace_t *ws = calloc(1, sizeof(*ws));
-    if (!ws) return NULL;
+    workspace_t *ws = xcalloc(1, sizeof(*ws));
 
     ws->global_weight = (global_weight > 0.0) ? global_weight : 0.8;
     ws->isolated = isolated;
@@ -61,7 +60,7 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
 
     /* Create workspace memory if name is provided and safe */
     if (ws_name && ws_name[0] && ws_name_is_safe(ws_name)) {
-        ws->name = strdup(ws_name);
+        ws->name = xstrdup(ws_name);
 
         /* Build workspace root: ~/.nash/workspaces/<name>/ */
         char ws_root[NASH_PATH_MAX];
@@ -169,7 +168,7 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
         return merged;
     }
 
-    merged.entries = calloc(total, sizeof(memory_entry_t));
+    merged.entries = xcalloc(total, sizeof(memory_entry_t));
     if (!merged.entries) {
         memory_results_free(&ws_results);
         memory_results_free(&gl_results);
@@ -503,8 +502,8 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     key_to_path(key, ".json", fname, sizeof(fname));
 
     char src_path[NASH_PATH_MAX], dst_path[NASH_PATH_MAX];
-    snprintf(src_path, sizeof(src_path), "%s/%s", src->dir, fname);
-    snprintf(dst_path, sizeof(dst_path), "%s/%s", dst->dir, fname);
+    path_join(src_path, sizeof(src_path), src->dir, fname);
+    path_join(dst_path, sizeof(dst_path), dst->dir, fname);
 
     /* Read source JSON file and write to destination */
     size_t sz = 0;
@@ -517,8 +516,8 @@ static int transfer_entry(memory_t *src, memory_t *dst, const char *key) {
     char emb_fname[512];
     key_to_path(key, ".emb", emb_fname, sizeof(emb_fname));
     char src_emb[NASH_PATH_MAX], dst_emb[NASH_PATH_MAX];
-    snprintf(src_emb, sizeof(src_emb), "%s/%s", src->dir, emb_fname);
-    snprintf(dst_emb, sizeof(dst_emb), "%s/%s", dst->dir, emb_fname);
+    path_join(src_emb, sizeof(src_emb), src->dir, emb_fname);
+    path_join(dst_emb, sizeof(dst_emb), dst->dir, emb_fname);
 
     size_t esz = 0;
     void *edata = slurp_file_binary(src_emb, &esz);
@@ -565,7 +564,7 @@ static void list_workspaces_recurse(const char *base, const char *prefix,
                                     int *count) {
     char dirpath[NASH_PATH_MAX];
     if (prefix[0])
-        snprintf(dirpath, sizeof(dirpath), "%s/%s", base, prefix);
+        path_join(dirpath, sizeof(dirpath), base, prefix);
     else
         snprintf(dirpath, sizeof(dirpath), "%s", base);
 
@@ -593,7 +592,7 @@ static void list_workspaces_recurse(const char *base, const char *prefix,
         /* Build relative name */
         char relname[NASH_PATH_MAX];
         if (prefix[0])
-            snprintf(relname, sizeof(relname), "%s/%s", prefix, ent->d_name);
+            path_join(relname, sizeof(relname), prefix, ent->d_name);
         else
             snprintf(relname, sizeof(relname), "%s", ent->d_name);
 

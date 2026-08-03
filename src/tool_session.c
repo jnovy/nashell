@@ -264,7 +264,7 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
                    params, alias, out.len, total_matches > 0 ? total_matches : result_count,
                    NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     free(alias);
     free(hash);
     str_free(&out);

@@ -1,4 +1,5 @@
 #include "nash_log.h"
+#include "str.h"
 #include "tui.h"
 #include "ui_state.h"
 #include "cJSON.h"
@@ -85,7 +86,7 @@ void nash_log(const char *fmt, ...) {
     if (hash && lt) {
         ref = tool_register_alias(lt, hash);
     } else {
-        ref = hash ? strdup(hash) : NULL;
+        ref = hash ? xstrdup(hash) : NULL;
     }
 
     /* 2. Append journal entry so it appears in reactRx.md */

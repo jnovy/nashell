@@ -109,11 +109,11 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
 
     /* Collect tool steps into arrays for forward-looking analysis */
     int cap = 128;
-    char **tools = calloc((size_t)cap, sizeof(char *));
-    char **refs = calloc((size_t)cap, sizeof(char *));
-    int *failed = calloc((size_t)cap, sizeof(int));
-    int *steps = calloc((size_t)cap, sizeof(int));
-    char **params_str = calloc((size_t)cap, sizeof(char *));
+    char **tools = xcalloc((size_t)cap, sizeof(char *));
+    char **refs = xcalloc((size_t)cap, sizeof(char *));
+    int *failed = xcalloc((size_t)cap, sizeof(int));
+    int *steps = xcalloc((size_t)cap, sizeof(int));
+    char **params_str = xcalloc((size_t)cap, sizeof(char *));
     if (!tools || !refs || !failed || !steps || !params_str) {
         free(tools); free(refs); free(failed); free(steps); free(params_str);
         free(data); return ts;
@@ -128,7 +128,7 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
 
         cJSON *entry = cJSON_Parse(line);
         if (entry) {
-            const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+            const char *tool = json_str(entry, "tool");
             if (tool && strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0 &&
                 strcmp(tool, "context") != 0 && strcmp(tool, "memory_context") != 0) {
                 if (n >= cap) {
@@ -143,15 +143,12 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
                     }
                     cap = new_cap;
                 }
-                tools[n] = strdup(tool);
-                const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
-                refs[n] = ref ? strdup(ref) : NULL;
-                cJSON *f = cJSON_GetObjectItem(entry, "failed");
-                cJSON *err = cJSON_GetObjectItem(entry, "error");
-                const char *err_s = cJSON_GetStringValue(err);
-                failed[n] = (f && cJSON_IsTrue(f)) || (err_s && err_s[0]) ? 1 : 0;
-                steps[n] = cJSON_GetObjectItem(entry, "step")
-                           ? cJSON_GetObjectItem(entry, "step")->valueint : n;
+                tools[n] = xstrdup(tool);
+                const char *ref = json_str(entry, "ref");
+                refs[n] = ref ? xstrdup(ref) : NULL;
+                const char *err_s = json_str(entry, "error");
+                failed[n] = json_bool(entry, "failed", 0) || (err_s && err_s[0]) ? 1 : 0;
+                steps[n] = json_int(entry, "step", n);
                 cJSON *p = cJSON_GetObjectItem(entry, "params");
                 params_str[n] = p ? cJSON_PrintUnformatted(p) : NULL;
                 if (strcmp(tool, "done") == 0) has_done = 1;
@@ -167,7 +164,7 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
     if (n == 0) goto cleanup;
 
     /* Score each step */
-    step_score_t *scores = calloc((size_t)n, sizeof(step_score_t));
+    step_score_t *scores = xcalloc((size_t)n, sizeof(step_score_t));
     for (int i = 0; i < n; i++) {
         /* Check for spinning: 3+ consecutive identical tool+params */
         if (i >= 2 && tools[i] && tools[i-1] && tools[i-2] &&
@@ -262,7 +259,7 @@ static trajectory_score_t score_session_trajectory(const char *session_dir) {
         }
         if (best_start >= 0) {
             ts.causal_step = steps[best_start];
-            ts.causal_tool = tools[best_start] ? strdup(tools[best_start]) : NULL;
+            ts.causal_tool = tools[best_start] ? xstrdup(tools[best_start]) : NULL;
         }
     }
 
@@ -303,32 +300,27 @@ static void scan_session(const char *session_dir, failure_list_t *out) {
 
         cJSON *entry = cJSON_Parse(line);
         if (entry) {
-            int rl = cJSON_GetObjectItem(entry, "react_loop")
-                     ? cJSON_GetObjectItem(entry, "react_loop")->valueint : -1;
-            int step = cJSON_GetObjectItem(entry, "step")
-                       ? cJSON_GetObjectItem(entry, "step")->valueint : -1;
-            const char *tool = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "tool"));
+            int rl = json_int(entry, "react_loop", -1);
+            int step = json_int(entry, "step", -1);
+            const char *tool = json_str(entry, "tool");
 
             if (rl > max_loop) max_loop = rl;
             if (step > last_step) last_step = step;
 
             /* Skip system/query entries */
             if (tool && strcmp(tool, "system") != 0 && strcmp(tool, "query") != 0) {
-                cJSON *failed = cJSON_GetObjectItem(entry, "failed");
-                cJSON *err_node = cJSON_GetObjectItem(entry, "error");
-                const char *err_str = err_node && cJSON_IsString(err_node)
-                                      ? err_node->valuestring : NULL;
-                int is_error = (failed && cJSON_IsTrue(failed)) ||
+                const char *err_str = json_str(entry, "error");
+                int is_error = json_bool(entry, "failed", 0) ||
                                (err_str && err_str[0]);
 
                 if (is_error) {
                     failure_instance_t fi = {0};
-                    fi.session_dir = strdup(session_dir);
+                    fi.session_dir = xstrdup(session_dir);
                     fi.react_loop = rl;
                     fi.step = step;
                     fi.cause = FAIL_TOOL_ERROR;
-                    fi.tool = strdup(tool);
-                    fi.error_msg = err_str ? strdup(err_str) : strdup("unknown error");
+                    fi.tool = xstrdup(tool);
+                    fi.error_msg = err_str ? xstrdup(err_str) : xstrdup("unknown error");
                     fi.mechanism = classify_mechanism(tool, err_str,
                                       cJSON_GetObjectItem(entry, "params"));
 
@@ -337,7 +329,7 @@ static void scan_session(const char *session_dir, failure_list_t *out) {
 
                 /* Detect unread refs: if a tool produced a ref and the next
                  * tool is NOT file_read of that ref, it's a potential issue */
-                const char *ref = cJSON_GetStringValue(cJSON_GetObjectItem(entry, "ref"));
+                const char *ref = json_str(entry, "ref");
                 if (ref && ref[0]) {
                     prev_had_ref_read = 0;  /* pending read of this ref */
                 } else if (strcmp(tool, "file_read") == 0 && !prev_had_ref_read) {
@@ -347,37 +339,35 @@ static void scan_session(const char *session_dir, failure_list_t *out) {
                 /* Detect shell retry: same command repeated */
                 if (strcmp(tool, "shell_exec") == 0) {
                     cJSON *params = cJSON_GetObjectItem(entry, "params");
-                    const char *cmd = cJSON_GetStringValue(
-                        cJSON_GetObjectItem(params, "command"));
+                    const char *cmd = params ? json_str(params, "command") : NULL;
                     if (cmd && prev_shell_cmd && strcmp(cmd, prev_shell_cmd) == 0) {
                         failure_instance_t fi = {0};
-                        fi.session_dir = strdup(session_dir);
+                        fi.session_dir = xstrdup(session_dir);
                         fi.react_loop = rl;
                         fi.step = step;
                         fi.cause = FAIL_CYCLING;
                         fi.mechanism = FMECH_SHELL_RETRY;
-                        fi.tool = strdup(tool);
-                        fi.error_msg = strdup("repeated shell command");
+                        fi.tool = xstrdup(tool);
+                        fi.error_msg = xstrdup("repeated shell command");
                         add_failure(out, fi);
                     }
                     free(prev_shell_cmd);
-                    prev_shell_cmd = cmd ? strdup(cmd) : NULL;
+                    prev_shell_cmd = cmd ? xstrdup(cmd) : NULL;
                 }
 
                 /* Detect done with empty result */
                 if (strcmp(tool, "done") == 0) {
                     cJSON *params = cJSON_GetObjectItem(entry, "params");
-                    const char *result = cJSON_GetStringValue(
-                        cJSON_GetObjectItem(params, "result"));
+                    const char *result = params ? json_str(params, "result") : NULL;
                     if (!result || !result[0]) {
                         failure_instance_t fi = {0};
-                        fi.session_dir = strdup(session_dir);
+                        fi.session_dir = xstrdup(session_dir);
                         fi.react_loop = rl;
                         fi.step = step;
                         fi.cause = FAIL_EMPTY_RESULT;
                         fi.mechanism = FMECH_OTHER;
-                        fi.tool = strdup(tool);
-                        fi.error_msg = strdup("done() called with empty result");
+                        fi.tool = xstrdup(tool);
+                        fi.error_msg = xstrdup("done() called with empty result");
                         add_failure(out, fi);
                     }
                 }
@@ -398,13 +388,13 @@ static void scan_session(const char *session_dir, failure_list_t *out) {
      * comparing with config.max_react_steps */
     if (last_step >= 29) {  /* default max is 30, so step 29 = hit limit */
         failure_instance_t fi = {0};
-        fi.session_dir = strdup(session_dir);
+        fi.session_dir = xstrdup(session_dir);
         fi.react_loop = max_loop;
         fi.step = last_step;
         fi.cause = FAIL_STEP_LIMIT;
         fi.mechanism = FMECH_OTHER;
-        fi.tool = strdup("react_loop");
-        fi.error_msg = strdup("likely hit step limit");
+        fi.tool = xstrdup("react_loop");
+        fi.error_msg = xstrdup("likely hit step limit");
         add_failure(out, fi);
     }
 
@@ -418,8 +408,7 @@ static void cluster_failures(failure_list_t *list,
                               int *out_n) {
     /* Group by (cause, mechanism) pair */
     int max_clusters = 64;
-    failure_cluster_t *clusters = calloc(max_clusters, sizeof(failure_cluster_t));
-    if (!clusters) { *out_clusters = NULL; *out_n = 0; return; }
+    failure_cluster_t *clusters = xcalloc(max_clusters, sizeof(failure_cluster_t));
     int n_clusters = 0;
 
     /* Per-cluster session tracking — dynamic arrays freed after loop */
@@ -452,8 +441,8 @@ static void cluster_failures(failure_list_t *list,
             found = n_clusters++;
             clusters[found].cause = fi->cause;
             clusters[found].mechanism = fi->mechanism;
-            clusters[found].tool = fi->tool ? strdup(fi->tool) : NULL;
-            clusters[found].instances = calloc(5, sizeof(failure_instance_t));
+            clusters[found].tool = fi->tool ? xstrdup(fi->tool) : NULL;
+            clusters[found].instances = xcalloc(5, sizeof(failure_instance_t));
 
             /* Grow session tracking arrays */
             if (safe_realloc((void **)&cluster_sessions,
@@ -489,7 +478,7 @@ static void cluster_failures(failure_list_t *list,
                     cluster_session_caps[found] = new_cap;
                 }
                 cluster_sessions[found][clusters[found].n_sessions] =
-                    strdup(fi->session_dir);
+                    xstrdup(fi->session_dir);
                 clusters[found].n_sessions++;
             }
         }
@@ -497,13 +486,13 @@ static void cluster_failures(failure_list_t *list,
         /* Keep up to 5 representative instances */
         if (clusters[found].n_instances < 5) {
             failure_instance_t *inst = &clusters[found].instances[clusters[found].n_instances++];
-            inst->session_dir = fi->session_dir ? strdup(fi->session_dir) : NULL;
+            inst->session_dir = fi->session_dir ? xstrdup(fi->session_dir) : NULL;
             inst->react_loop = fi->react_loop;
             inst->step = fi->step;
             inst->cause = fi->cause;
             inst->mechanism = fi->mechanism;
-            inst->tool = fi->tool ? strdup(fi->tool) : NULL;
-            inst->error_msg = fi->error_msg ? strdup(fi->error_msg) : NULL;
+            inst->tool = fi->tool ? xstrdup(fi->tool) : NULL;
+            inst->error_msg = fi->error_msg ? xstrdup(fi->error_msg) : NULL;
         }
 next_failure: ;
     }
@@ -527,7 +516,7 @@ next_failure: ;
                  clusters[i].count,
                  clusters[i].n_sessions,
                  clusters[i].n_sessions == 1 ? "" : "s");
-        clusters[i].summary = strdup(buf);
+        clusters[i].summary = xstrdup(buf);
     }
 
     /* Sort by count (descending) */
@@ -569,20 +558,18 @@ static void pm_collect_sessions(const char *sessions_dir,
                 continue;
             *dirs_cap = new_cap;
         }
-        snprintf(path, sizeof(path), "%s/%s", sessions_dir, ent->d_name);
-        (*dirs)[(*n_dirs)++] = strdup(path);
+        path_join(path, sizeof(path), sessions_dir, ent->d_name);
+        (*dirs)[(*n_dirs)++] = xstrdup(path);
     }
     closedir(d);
 }
 
 postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) {
-    postmortem_report_t *report = calloc(1, sizeof(postmortem_report_t));
-    if (!report) return NULL;
+    postmortem_report_t *report = xcalloc(1, sizeof(postmortem_report_t));
 
     /* Collect session dirs from global + all workspaces */
     int dirs_cap = 64;
-    char **dirs = calloc(dirs_cap, sizeof(char *));
-    if (!dirs) { free(report); return NULL; }
+    char **dirs = xcalloc(dirs_cap, sizeof(char *));
     int n_dirs = 0;
 
     char sessions_dir[NASH_PATH_MAX];
@@ -626,7 +613,7 @@ postmortem_report_t *postmortem_analyze(const char *nash_dir, int max_sessions) 
     /* Scan sessions + SWE-Shepherd trajectory scoring */
     failure_list_t failures = {0};
     int traj_cap = scan_count > 0 ? scan_count : 16;
-    report->trajectories = calloc((size_t)traj_cap, sizeof(trajectory_score_t));
+    report->trajectories = xcalloc((size_t)traj_cap, sizeof(trajectory_score_t));
     if (!report->trajectories) traj_cap = 0;
     report->n_trajectories = 0;
     float sum_efficiency = 0.0f, sum_waste = 0.0f;

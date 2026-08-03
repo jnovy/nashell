@@ -110,7 +110,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
         tool_journal(ctx, "todo",
                        params, alias, out.len, count, NULL, NULL);
 
-        char *ref_copy = strdup(alias);
+        char *ref_copy = xstrdup(alias);
         free(alias); free(hash);
         todo_free_lines(lines, count);
         str_free(&out);

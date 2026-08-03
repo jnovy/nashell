@@ -52,8 +52,7 @@ uint32_t compress_crc32(const char *data, size_t len) {
  * Caller must free each word and the array. */
 static char **tokenize_words(const char *text, int *n_words) {
     int cap = 64, count = 0;
-    char **words = malloc((size_t)cap * sizeof(char *));
-    if (!words) { *n_words = 0; return NULL; }
+    char **words = xmalloc((size_t)cap * sizeof(char *));
 
     const char *p = text;
     while (*p) {
@@ -65,17 +64,15 @@ static char **tokenize_words(const char *text, int *n_words) {
         while (*p && (isalnum((unsigned char)*p) || *p == '_')) p++;
         int wlen = (int)(p - start);
         if (wlen > 1 && wlen < 64) {  /* skip single chars */
-            char *w = malloc((size_t)(wlen + 1));
-            if (w) {
-                for (int i = 0; i < wlen; i++)
-                    w[i] = (char)tolower((unsigned char)start[i]);
-                w[wlen] = '\0';
-                if (count >= cap) {
-                    cap *= 2;
-                    if (safe_realloc((void **)&words, (size_t)cap * sizeof(char *))) { free(w); break; }
-                }
-                words[count++] = w;
+            char *w = xmalloc((size_t)(wlen + 1));
+            for (int i = 0; i < wlen; i++)
+                w[i] = (char)tolower((unsigned char)start[i]);
+            w[wlen] = '\0';
+            if (count >= cap) {
+                cap *= 2;
+                if (safe_realloc((void **)&words, (size_t)cap * sizeof(char *))) { free(w); break; }
             }
+            words[count++] = w;
         }
     }
     *n_words = count;
@@ -248,8 +245,7 @@ static float score_sentence(const char *sentence, int sentence_len,
  * Caller must free each chunk and the array. */
 static char **split_chunks(const char *text, int *n_chunks) {
     int cap = 128, count = 0;
-    char **chunks = malloc((size_t)cap * sizeof(char *));
-    if (!chunks) { *n_chunks = 0; return NULL; }
+    char **chunks = xmalloc((size_t)cap * sizeof(char *));
 
     const char *p = text;
     /* Dynamic merge buffer — grows to accommodate arbitrarily many
@@ -257,21 +253,18 @@ static char **split_chunks(const char *text, int *n_chunks) {
      * Previously a fixed 512-byte stack buffer that caused artificial
      * chunk boundaries in long bullet lists. */
     int merge_cap = 512;
-    char *merge_buf = malloc((size_t)merge_cap);
+    char *merge_buf = xmalloc((size_t)merge_cap);
     int  merge_len = 0;
-    if (!merge_buf) { free(chunks); *n_chunks = 0; return NULL; }
 
     /* SIMP 2 FIX: Replaced FLUSH_MERGE macro (16-line macro with goto control
      * flow) with flush_merge inline helper using push_chunk (DEDUP 2). */
     #define FLUSH_MERGE() do { \
         if (merge_len > 0) { \
-            char *_chunk = malloc((size_t)(merge_len + 1)); \
-            if (_chunk) { \
-                memcpy(_chunk, merge_buf, (size_t)merge_len); \
-                _chunk[merge_len] = '\0'; \
-                if (push_chunk(&chunks, &count, &cap, _chunk) < 0) \
-                    { free(_chunk); goto done; } \
-            } \
+            char *_chunk = xmalloc((size_t)(merge_len + 1)); \
+            memcpy(_chunk, merge_buf, (size_t)merge_len); \
+            _chunk[merge_len] = '\0'; \
+            if (push_chunk(&chunks, &count, &cap, _chunk) < 0) \
+                { free(_chunk); goto done; } \
             merge_len = 0; \
         } \
     } while(0)
@@ -314,13 +307,11 @@ static char **split_chunks(const char *text, int *n_chunks) {
         } else {
             FLUSH_MERGE();
             /* DEDUP 2 FIX: Use push_chunk instead of inline grow-and-add */
-            char *chunk = malloc((size_t)(ll + 1));
-            if (chunk) {
-                memcpy(chunk, p, (size_t)ll);
-                chunk[ll] = '\0';
-                if (push_chunk(&chunks, &count, &cap, chunk) < 0)
-                    { free(chunk); goto done; }
-            }
+            char *chunk = xmalloc((size_t)(ll + 1));
+            memcpy(chunk, p, (size_t)ll);
+            chunk[ll] = '\0';
+            if (push_chunk(&chunks, &count, &cap, chunk) < 0)
+                { free(chunk); goto done; }
         }
 
         p = *eol ? eol + 1 : eol;
@@ -394,7 +385,7 @@ char *compress_to_relevant(const char *text, const char *query,
     if (max_chars < 1) max_chars = 1;
 
     /* Short-circuit when text already fits within budget */
-    if (tlen <= max_chars) return strdup(text);
+    if (tlen <= max_chars) return xstrdup(text);
 
     /* Split into content-agnostic chunks (lines with short-line merging) */
     int n_chunks;
@@ -405,8 +396,7 @@ char *compress_to_relevant(const char *text, const char *query,
         /* D2 FIX: Guard against negative precision if max_chars < tag length */
         if (max_chars < COMPRESS_TAG_LEN + 1)
             max_chars = COMPRESS_TAG_LEN + 1;
-        char *out = malloc((size_t)(max_chars + COMPRESS_TAG_LEN + 1));
-        if (!out) return NULL;
+        char *out = xmalloc((size_t)(max_chars + COMPRESS_TAG_LEN + 1));
         snprintf(out, (size_t)(max_chars + COMPRESS_TAG_LEN + 1),
                  "%.*s" COMPRESS_TAG,
                  (int)utf8_clamp(text, max_chars - COMPRESS_TAG_LEN), text);
@@ -418,10 +408,9 @@ char *compress_to_relevant(const char *text, const char *query,
         size_t total = 0;
         for (int i = 0; i < n_chunks; i++) total += strlen(chunks[i]) + 1;
         size_t out_cap = total + COMPRESS_TAG_LEN + 1;
-        char *out = malloc(out_cap);
-        if (out)
-            emit_chunks(out, chunks, NULL, n_chunks, max_chars,
-                        n_chunks);
+        char *out = xmalloc(out_cap);
+        emit_chunks(out, chunks, NULL, n_chunks, max_chars,
+                    n_chunks);
         free_string_array(chunks, n_chunks);
         return out;
     }
@@ -431,22 +420,11 @@ char *compress_to_relevant(const char *text, const char *query,
     char **qwords = tokenize_words(query ? query : "", &n_qwords);
 
     /* Score each chunk by query relevance using BM25 TF saturation */
-    scored_chunk_t *scored = malloc((size_t)n_chunks * sizeof(scored_chunk_t));
-    if (!scored) {
-        free_string_array(qwords, n_qwords);
-        free_string_array(chunks, n_chunks);
-        return NULL;
-    }
+    scored_chunk_t *scored = xmalloc((size_t)n_chunks * sizeof(scored_chunk_t));
 
     /* BM25 needs average document length (avgdl) for length normalization.
      * Pre-compute word count per chunk and derive avgdl. */
-    int *wordcounts = malloc((size_t)n_chunks * sizeof(int));
-    if (!wordcounts) {
-        free(scored);
-        free_string_array(qwords, n_qwords);
-        free_string_array(chunks, n_chunks);
-        return NULL;
-    }
+    int *wordcounts = xmalloc((size_t)n_chunks * sizeof(int));
     int total_words = 0;
     for (int i = 0; i < n_chunks; i++) {
         wordcounts[i] = count_words(chunks[i]);
@@ -492,21 +470,11 @@ char *compress_to_relevant(const char *text, const char *query,
 
     /* B6 FIX: Build output via shared emit helper */
     size_t out_cap = (size_t)max_chars + COMPRESS_TAG_LEN + 1;
-    char *out = malloc(out_cap);
-    if (!out) {
-        free(scored);
-        free_string_array(qwords, n_qwords);
-        free_string_array(chunks, n_chunks);
-        return NULL;
-    }
-    int *indices = malloc((size_t)keep * sizeof(int));
-    if (indices) {
-        for (int i = 0; i < keep; i++) indices[i] = scored[i].index;
-        emit_chunks(out, chunks, indices, keep, max_chars, n_chunks);
-        free(indices);
-    } else {
-        out[0] = '\0';
-    }
+    char *out = xmalloc(out_cap);
+    int *indices = xmalloc((size_t)keep * sizeof(int));
+    for (int i = 0; i < keep; i++) indices[i] = scored[i].index;
+    emit_chunks(out, chunks, indices, keep, max_chars, n_chunks);
+    free(indices);
 
     /* Cleanup */
     free(scored);

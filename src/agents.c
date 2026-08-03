@@ -59,11 +59,10 @@ static int parse_tags(yaml_node_t *node, char ***out_tags) {
     if (!node) return 0;
     int n = yaml_len(node);
     if (n <= 0) return 0;
-    *out_tags = calloc((size_t)n, sizeof(char *));
-    if (!*out_tags) return 0;
+    *out_tags = xcalloc((size_t)n, sizeof(char *));
     for (int i = 0; i < n; i++) {
         const char *s = yaml_str(yaml_item(node, i));
-        (*out_tags)[i] = strdup(s ? s : "");
+        (*out_tags)[i] = xstrdup(s ? s : "");
     }
     return n;
 }
@@ -71,10 +70,10 @@ static int parse_tags(yaml_node_t *node, char ***out_tags) {
 /* Fill version, provider, sensitivity, tags from YAML root into agent entry */
 static void parse_agent_metadata(yaml_node_t *root, agent_entry_t *a) {
     const char *ver = yaml_str(yaml_get(root, "version"));
-    a->version = strdup(ver ? ver : "");
+    a->version = xstrdup(ver ? ver : "");
 
     const char *prov = yaml_str(yaml_get(root, "provider"));
-    a->provider_name = prov ? strdup(prov) : NULL;
+    a->provider_name = prov ? xstrdup(prov) : NULL;
 
     a->sensitivity = parse_sensitivity(yaml_str(yaml_get(root, "sensitivity")));
 
@@ -109,10 +108,9 @@ int is_safe_path_component(const char *s) {
 /* Escape a string for safe JSON embedding.  Caller must free the result.
  * Handles quotes, backslashes, and control characters. */
 static char *json_escape_str(const char *s) {
-    if (!s) return strdup("");
+    if (!s) return xstrdup("");
     size_t cap = strlen(s) * 2 + 1;
-    char *out = malloc(cap);
-    if (!out) return strdup("");
+    char *out = xmalloc(cap);
     size_t j = 0;
     for (size_t i = 0; s[i]; i++) {
         if (j + 8 > cap) {
@@ -289,7 +287,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
                     continue;
 
                 char yaml_path[NASH_PATH_MAX];
-                snprintf(yaml_path, sizeof(yaml_path), "%s/%s",
+                path_join(yaml_path, sizeof(yaml_path),
                          agents_dir, de->d_name);
 
                 /* Parse YAML to get agent-specific fields */
@@ -344,32 +342,21 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
 
                 /* ID: workspace_name/agent_name */
                 char id[NASH_PATH_MAX];
-                snprintf(id, sizeof(id), "%s/%s", ws_prefix, name);
-                a->id = strdup(id);
-                a->workspace_name = strdup(ws_prefix);
-                a->agent_file = strdup(yaml_path);
-                a->workspace_dir = strdup(dir_path);
+                path_join(id, sizeof(id), ws_prefix, name);
+                a->id = xstrdup(id);
+                a->workspace_name = xstrdup(ws_prefix);
+                a->agent_file = xstrdup(yaml_path);
+                a->workspace_dir = xstrdup(dir_path);
                 if (has_schedule)
                     a->schedule = parsed_sched;
-                a->schedule_str = strdup(has_schedule ? sched_str : "manual");
+                a->schedule_str = xstrdup(has_schedule ? sched_str : "manual");
                 a->timeout = yaml_int(yaml_get(root, "timeout"), 0);
                 a->enabled = 1;
-                a->last_status = strdup("never");
+                a->last_status = xstrdup("never");
                 const char *summ = yaml_str(yaml_get(root, "summary"));
-                a->summary = strdup(summ ? summ : "");
+                a->summary = xstrdup(summ ? summ : "");
                 const char *desc = yaml_str(yaml_get(root, "description"));
-                a->description = strdup(desc ? desc : "");
-                if (!a->id || !a->workspace_name || !a->agent_file ||
-                    !a->workspace_dir || !a->schedule_str || !a->last_status ||
-                    !a->summary || !a->description) {
-                    free(a->id); free(a->workspace_name);
-                    free(a->agent_file); free(a->workspace_dir);
-                    free(a->schedule_str); free(a->last_status);
-                    free(a->summary); free(a->description);
-                    memset(a, 0, sizeof(*a));
-                    yaml_free(root);
-                    continue;
-                }
+                a->description = xstrdup(desc ? desc : "");
                 parse_agent_metadata(root, a);
 
                 (*n_agents)++;
@@ -391,7 +378,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
         if (strcmp(de->d_name, "memory") == 0) continue;
 
         char subpath[NASH_PATH_MAX];
-        snprintf(subpath, sizeof(subpath), "%s/%s", dir_path, de->d_name);
+        path_join(subpath, sizeof(subpath), dir_path, de->d_name);
 
         struct stat sst;
         if (stat(subpath, &sst) != 0 || !S_ISDIR(sst.st_mode)) continue;
@@ -399,7 +386,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
         /* Build nested prefix */
         char subprefix[NASH_PATH_MAX];
         if (ws_prefix[0])
-            snprintf(subprefix, sizeof(subprefix), "%s/%s", ws_prefix, de->d_name);
+            path_join(subprefix, sizeof(subprefix), ws_prefix, de->d_name);
         else
             snprintf(subprefix, sizeof(subprefix), "%s", de->d_name);
 
@@ -453,7 +440,7 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
             continue;
 
         char yaml_path[NASH_PATH_MAX];
-        snprintf(yaml_path, sizeof(yaml_path), "%s/%s", dir_path, de->d_name);
+        path_join(yaml_path, sizeof(yaml_path), dir_path, de->d_name);
 
         /* Masking: symlink to /dev/null disables this agent */
         struct stat yst;
@@ -520,33 +507,26 @@ static void scan_flat_agent_dir(const char *nash_dir, const char *dir_path,
 
         /* ID: workspace/agent_name (same format as workspace-local) */
         char id[NASH_PATH_MAX];
-        snprintf(id, sizeof(id), "%s/%s", ws, name);
-        a->id = strdup(id);
-        a->workspace_name = strdup(ws);
-        a->agent_file = strdup(yaml_path);
+        path_join(id, sizeof(id), ws, name);
+        a->id = xstrdup(id);
+        a->workspace_name = xstrdup(ws);
+        a->agent_file = xstrdup(yaml_path);
 
         /* Resolve workspace_dir from workspace name */
         char ws_dir[NASH_PATH_MAX];
         snprintf(ws_dir, sizeof(ws_dir), "%s/workspaces/%s", nash_dir, ws);
-        a->workspace_dir = strdup(ws_dir);
-
-        if (!a->id || !a->workspace_name || !a->agent_file || !a->workspace_dir) {
-            free(a->id); free(a->workspace_name);
-            free(a->agent_file); free(a->workspace_dir);
-            memset(a, 0, sizeof(*a));
-            yaml_free(root); continue;
-        }
+        a->workspace_dir = xstrdup(ws_dir);
 
         if (has_schedule)
             a->schedule = parsed_sched;
-        a->schedule_str = strdup(has_schedule ? sched_str : "manual");
+        a->schedule_str = xstrdup(has_schedule ? sched_str : "manual");
         a->timeout = yaml_int(yaml_get(root, "timeout"), 0);
         a->enabled = 1;
-        a->last_status = strdup("never");
+        a->last_status = xstrdup("never");
         const char *summ = yaml_str(yaml_get(root, "summary"));
-        a->summary = strdup(summ ? summ : "");
+        a->summary = xstrdup(summ ? summ : "");
         const char *desc = yaml_str(yaml_get(root, "description"));
-        a->description = strdup(desc ? desc : "");
+        a->description = xstrdup(desc ? desc : "");
         parse_agent_metadata(root, a);
 
         (*n_agents)++;
@@ -593,8 +573,7 @@ static void agent_dedup(agent_entry_t *agents, int *n_agents) {
 #endif
 
 agent_queue_t *agent_scan(const char *nash_dir) {
-    agent_queue_t *q = calloc(1, sizeof(*q));
-    if (!q) return NULL;
+    agent_queue_t *q = xcalloc(1, sizeof(*q));
 
     int cap = 0;
 
@@ -617,7 +596,7 @@ agent_queue_t *agent_scan(const char *nash_dir) {
     /* Fix IDs: remove leading slash if ws_prefix was "" */
     for (int i = 0; i < q->n_agents; i++) {
         if (q->agents[i].id && q->agents[i].id[0] == '/') {
-            char *fixed = strdup(q->agents[i].id + 1);
+            char *fixed = xstrdup(q->agents[i].id + 1);
             free(q->agents[i].id);
             q->agents[i].id = fixed;
         }
@@ -651,25 +630,19 @@ int agent_queue_load(agent_queue_t *q, const char *nash_dir) {
     int n = cJSON_GetArraySize(arr);
     for (int i = 0; i < n; i++) {
         cJSON *item = cJSON_GetArrayItem(arr, i);
-        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(item, "id"));
+        const char *id = json_str(item, "id");
         if (!id) continue;
 
         /* Find matching scanned agent */
         for (int j = 0; j < q->n_agents; j++) {
             if (strcmp(q->agents[j].id, id) != 0) continue;
 
-            cJSON *lr = cJSON_GetObjectItem(item, "last_run");
-            if (lr && cJSON_IsNumber(lr))
-                q->agents[j].last_run = (time_t)cJSON_GetNumberValue(lr);
+            q->agents[j].last_run = (time_t)json_num(item, "last_run", 0);
+            q->agents[j].last_duration = json_int(item, "last_duration", 0);
 
-            cJSON *ld = cJSON_GetObjectItem(item, "last_duration");
-            if (ld && cJSON_IsNumber(ld))
-                q->agents[j].last_duration = (int)cJSON_GetNumberValue(ld);
-
-            cJSON *ls = cJSON_GetObjectItem(item, "last_status");
-            if (ls && cJSON_IsString(ls)) {
-                free(q->agents[j].last_status);
-                q->agents[j].last_status = strdup(cJSON_GetStringValue(ls));
+            const char *ls = json_str(item, "last_status");
+            if (ls) {
+                str_replace(&q->agents[j].last_status, ls);
             }
             break;
         }
@@ -748,8 +721,7 @@ int agent_queue_update_run(const char *nash_dir, const char *agent_id,
 
         q->agents[i].last_run = run_time;
         q->agents[i].last_duration = duration;
-        free(q->agents[i].last_status);
-        q->agents[i].last_status = strdup(status ? status : "unknown");
+        str_replace(&q->agents[i].last_status, status ? status : "unknown");
         q->agents[i].next_due = agent_next_occurrence(
             &q->agents[i].schedule, run_time);
         break;
@@ -970,7 +942,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
     char **arg_tokens = NULL;
     if (arguments && *arguments) {
         /* First pass: count tokens */
-        char *tmp = strdup(arguments);
+        char *tmp = xstrdup(arguments);
         char *saveptr;
         for (char *tok = strtok_r(tmp, " \t", &saveptr); tok;
              tok = strtok_r(NULL, " \t", &saveptr))
@@ -978,12 +950,12 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
         free(tmp);
         /* Second pass: extract tokens */
         if (n_arg_tokens > 0) {
-            arg_tokens = calloc((size_t)n_arg_tokens, sizeof(char *));
+            arg_tokens = xcalloc((size_t)n_arg_tokens, sizeof(char *));
             int ti = 0;
-            tmp = strdup(arguments);
+            tmp = xstrdup(arguments);
             for (char *tok = strtok_r(tmp, " \t", &saveptr); tok;
                  tok = strtok_r(NULL, " \t", &saveptr))
-                arg_tokens[ti++] = strdup(tok);
+                arg_tokens[ti++] = xstrdup(tok);
             free(tmp);
         }
     }
@@ -998,23 +970,23 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
         return pb; /* return with existing vars; caller still gets a usable playbook */
     }
     int vi = pb->n_vars;
-    pb->var_keys[vi]       = strdup("workspace_name");
-    pb->var_values[vi]     = strdup(a->workspace_name);
-    pb->var_keys[vi + 1]   = strdup("workspace_dir");
-    pb->var_values[vi + 1] = strdup(a->workspace_dir);
-    pb->var_keys[vi + 2]   = strdup("agent_id");
-    pb->var_values[vi + 2] = strdup(a->id);
+    pb->var_keys[vi]       = xstrdup("workspace_name");
+    pb->var_values[vi]     = xstrdup(a->workspace_name);
+    pb->var_keys[vi + 1]   = xstrdup("workspace_dir");
+    pb->var_values[vi + 1] = xstrdup(a->workspace_dir);
+    pb->var_keys[vi + 2]   = xstrdup("agent_id");
+    pb->var_values[vi + 2] = xstrdup(a->id);
     vi += 3;
 
     /* Always inject {{arguments}} (empty string if none provided) */
-    pb->var_keys[vi]   = strdup("arguments");
-    pb->var_values[vi] = strdup((arguments && *arguments) ? arguments : "");
+    pb->var_keys[vi]   = xstrdup("arguments");
+    pb->var_values[vi] = xstrdup((arguments && *arguments) ? arguments : "");
     vi++;
     /* Inject {{arg1}}, {{arg2}}, ... for each provided token */
     for (int i = 0; i < n_arg_tokens; i++) {
         char key[32];
         snprintf(key, sizeof(key), "arg%d", i + 1);
-        pb->var_keys[vi]   = strdup(key);
+        pb->var_keys[vi]   = xstrdup(key);
         pb->var_values[vi] = arg_tokens[i]; /* transfer ownership */
         vi++;
     }
@@ -1205,9 +1177,9 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
             .ui = NULL,  /* headless */
             .playbook_ok = 0,
             .done = 0,
-            .workspace_override = a->workspace_name ? strdup(a->workspace_name) : NULL,
+            .workspace_override = a->workspace_name ? xstrdup(a->workspace_name) : NULL,
             .agent_ws = agent_ws,
-            .agent_id = strdup(a->id),
+            .agent_id = xstrdup(a->id),
             .agent_start_time = time(NULL),
             .deadline = (a->timeout > 0) ? time(NULL) + a->timeout : 0,
         };
@@ -1231,8 +1203,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
 
         a->last_run = start_ts.tv_sec;
         a->last_duration = dur;
-        free(a->last_status);
-        a->last_status = strdup(status);
+        str_replace(&a->last_status, status);
         a->next_due = agent_next_occurrence(&a->schedule, a->last_run);
 
         agent_history_append(nash_dir, a, dur, status, NULL);

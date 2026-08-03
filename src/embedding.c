@@ -18,13 +18,12 @@
 
 embed_ctx_t *embed_new(const embed_config_t *cfg) {
     if (!cfg) return NULL;
-    embed_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) return NULL;
+    embed_ctx_t *ctx = xcalloc(1, sizeof(*ctx));
 
     ctx->cfg.type = cfg->type;
-    ctx->cfg.model = cfg->model ? strdup(cfg->model) : NULL;
-    ctx->cfg.api_base = cfg->api_base ? strdup(cfg->api_base) : NULL;
-    ctx->cfg.model_path = cfg->model_path ? strdup(cfg->model_path) : NULL;
+    ctx->cfg.model = cfg->model ? xstrdup(cfg->model) : NULL;
+    ctx->cfg.api_base = cfg->api_base ? xstrdup(cfg->api_base) : NULL;
+    ctx->cfg.model_path = cfg->model_path ? xstrdup(cfg->model_path) : NULL;
     ctx->cfg.dimension = cfg->dimension;
     ctx->cfg.max_input_chars = cfg->max_input_chars;
     ctx->available = 0;
@@ -46,13 +45,12 @@ void embed_free(embed_ctx_t *ctx) {
 
 embed_ctx_t *embed_share(embed_ctx_t *src) {
     if (!src) return NULL;
-    embed_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) return NULL;
+    embed_ctx_t *ctx = xcalloc(1, sizeof(*ctx));
 
     ctx->cfg.type = src->cfg.type;
-    ctx->cfg.model = src->cfg.model ? strdup(src->cfg.model) : NULL;
-    ctx->cfg.api_base = src->cfg.api_base ? strdup(src->cfg.api_base) : NULL;
-    ctx->cfg.model_path = src->cfg.model_path ? strdup(src->cfg.model_path) : NULL;
+    ctx->cfg.model = src->cfg.model ? xstrdup(src->cfg.model) : NULL;
+    ctx->cfg.api_base = src->cfg.api_base ? xstrdup(src->cfg.api_base) : NULL;
+    ctx->cfg.model_path = src->cfg.model_path ? xstrdup(src->cfg.model_path) : NULL;
     ctx->cfg.dimension = src->cfg.dimension;
     ctx->cfg.max_input_chars = src->cfg.max_input_chars;
     ctx->available = src->available;
@@ -169,7 +167,7 @@ static char *build_url(embed_ctx_t *ctx) {
     default:
         return NULL;
     }
-    return strdup(url);
+    return xstrdup(url);
 }
 
 /* Build request JSON body */
@@ -221,13 +219,11 @@ static embed_vec_t parse_response(embed_ctx_t *ctx, const char *response) {
             if (first && cJSON_IsArray(first)) {
                 int dim = cJSON_GetArraySize(first);
                 if (dim > 0) {
-                    result.data = malloc(sizeof(float) * (size_t)dim);
-                    if (result.data) {
-                        result.dim = dim;
-                        for (int i = 0; i < dim; i++) {
-                            cJSON *v = cJSON_GetArrayItem(first, i);
-                            result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
-                        }
+                    result.data = xmalloc(sizeof(float) * (size_t)dim);
+                    result.dim = dim;
+                    for (int i = 0; i < dim; i++) {
+                        cJSON *v = cJSON_GetArrayItem(first, i);
+                        result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
                     }
                 }
             }
@@ -245,13 +241,11 @@ static embed_vec_t parse_response(embed_ctx_t *ctx, const char *response) {
                     if (embeddings && cJSON_IsArray(embeddings)) {
                         int dim = cJSON_GetArraySize(embeddings);
                         if (dim > 0) {
-                            result.data = malloc(sizeof(float) * (size_t)dim);
-                            if (result.data) {
-                                result.dim = dim;
-                                for (int i = 0; i < dim; i++) {
-                                    cJSON *v = cJSON_GetArrayItem(embeddings, i);
-                                    result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
-                                }
+                            result.data = xmalloc(sizeof(float) * (size_t)dim);
+                            result.dim = dim;
+                            for (int i = 0; i < dim; i++) {
+                                cJSON *v = cJSON_GetArrayItem(embeddings, i);
+                                result.data[i] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
                             }
                         }
                     }
@@ -345,8 +339,7 @@ static embed_vec_t *parse_response_batch(embed_ctx_t *ctx, const char *response,
     cJSON *root = cJSON_Parse(response);
     if (!root) return NULL;
 
-    embed_vec_t *results = calloc((size_t)n_expected, sizeof(embed_vec_t));
-    if (!results) { cJSON_Delete(root); return NULL; }
+    embed_vec_t *results = xcalloc((size_t)n_expected, sizeof(embed_vec_t));
 
     switch (ctx->cfg.type) {
     case EMBED_OLLAMA: {
@@ -360,13 +353,11 @@ static embed_vec_t *parse_response_batch(embed_ctx_t *ctx, const char *response,
                 if (vec && cJSON_IsArray(vec)) {
                     int dim = cJSON_GetArraySize(vec);
                     if (dim > 0) {
-                        results[i].data = malloc(sizeof(float) * (size_t)dim);
-                        if (results[i].data) {
-                            results[i].dim = dim;
-                            for (int j = 0; j < dim; j++) {
-                                cJSON *v = cJSON_GetArrayItem(vec, j);
-                                results[i].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
-                            }
+                        results[i].data = xmalloc(sizeof(float) * (size_t)dim);
+                        results[i].dim = dim;
+                        for (int j = 0; j < dim; j++) {
+                            cJSON *v = cJSON_GetArrayItem(vec, j);
+                            results[i].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
                         }
                     }
                 }
@@ -386,22 +377,18 @@ static embed_vec_t *parse_response_batch(embed_ctx_t *ctx, const char *response,
                 cJSON *item = cJSON_GetArrayItem(data, i);
                 if (!item) continue;
                 /* Use "index" field for correct ordering */
-                int idx = i;
-                cJSON *idx_j = cJSON_GetObjectItem(item, "index");
-                if (idx_j) idx = (int)cJSON_GetNumberValue(idx_j);
+                int idx = json_int(item, "index", i);
                 if (idx < 0 || idx >= n_expected) continue;
 
                 cJSON *emb = cJSON_GetObjectItem(item, "embedding");
                 if (emb && cJSON_IsArray(emb)) {
                     int dim = cJSON_GetArraySize(emb);
                     if (dim > 0) {
-                        results[idx].data = malloc(sizeof(float) * (size_t)dim);
+                        results[idx].data = xmalloc(sizeof(float) * (size_t)dim);
                         results[idx].dim = dim;
-                        if (results[idx].data) {
-                            for (int j = 0; j < dim; j++) {
-                                cJSON *v = cJSON_GetArrayItem(emb, j);
-                                results[idx].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
-                            }
+                        for (int j = 0; j < dim; j++) {
+                            cJSON *v = cJSON_GetArrayItem(emb, j);
+                            results[idx].data[j] = v ? (float)cJSON_GetNumberValue(v) : 0.0f;
                         }
                     }
                 }
@@ -583,11 +570,7 @@ embed_vec_t embed_vec_load(const char *path) {
     }
 
     /* Read data: float32 × dimension */
-    result.data = malloc(sizeof(float) * (size_t)dim);
-    if (!result.data) {
-        fclose(f);
-        return result;
-    }
+    result.data = xmalloc(sizeof(float) * (size_t)dim);
 
     if (fread(result.data, sizeof(float), (size_t)dim, f) != (size_t)dim) {
         free(result.data);
@@ -616,8 +599,7 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
         && ctx->available) {
         /* Process in chunks of up to 64 texts to avoid oversized requests */
         const int BATCH_SIZE = 64;
-        embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
-        if (!results) return NULL;
+        embed_vec_t *results = xcalloc((size_t)n_texts, sizeof(embed_vec_t));
 
         for (int offset = 0; offset < n_texts; offset += BATCH_SIZE) {
             int chunk = n_texts - offset;
@@ -648,8 +630,7 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
     /* ONNX backend: use native batch inference for 2-3x speedup.
      * Process in chunks of up to 32 texts (ONNX_BATCH_MAX). */
     if (ctx->cfg.type == EMBED_ONNX && ctx->onnx) {
-        embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
-        if (!results) return NULL;
+        embed_vec_t *results = xcalloc((size_t)n_texts, sizeof(embed_vec_t));
 
         for (int offset = 0; offset < n_texts; offset += 32) {
             int chunk = n_texts - offset;
@@ -678,8 +659,7 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
     }
 
     /* Sequential fallback for other backends */
-    embed_vec_t *results = calloc((size_t)n_texts, sizeof(embed_vec_t));
-    if (!results) return NULL;
+    embed_vec_t *results = xcalloc((size_t)n_texts, sizeof(embed_vec_t));
 
     for (int i = 0; i < n_texts; i++) {
         results[i] = embed_text(ctx, texts[i]);
@@ -776,8 +756,7 @@ static int split_into_segments(const char *text, size_t text_len,
     if (!text || text_len == 0 || !out_segs) return 0;
 
     int cap = 32, count = 0;
-    chunk_seg_t *segs = malloc(sizeof(chunk_seg_t) * (size_t)cap);
-    if (!segs) return 0;
+    chunk_seg_t *segs = xmalloc(sizeof(chunk_seg_t) * (size_t)cap);
 
     /* Helper macro to add a segment */
     #define ADD_SEG(o, l) do { \
@@ -951,8 +930,7 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
 
     /* If everything fits in one chunk, use the single-text path */
     if (prefix_full_len + vlen <= (size_t)chunk_max_chars) {
-        char **result = malloc(sizeof(char *));
-        if (!result) { free(prefix_full); free(prefix_short); return NULL; }
+        char **result = xmalloc(sizeof(char *));
         result[0] = embed_prepare_text(key, value, chunk_max_chars);
         if (!result[0]) { free(result); free(prefix_full); free(prefix_short); return NULL; }
         *out_n_chunks = 1;
@@ -975,8 +953,7 @@ char **embed_prepare_text_chunked(const char *key, const char *value,
      * Semantic overlap: the last segment of chunk N is repeated as the
      * first segment of chunk N+1, providing context continuity. */
     const int MAX_CHUNKS = 16;
-    char **result = malloc(sizeof(char *) * (size_t)MAX_CHUNKS);
-    if (!result) { free(prefix_full); free(prefix_short); free(segs); return NULL; }
+    char **result = xmalloc(sizeof(char *) * (size_t)MAX_CHUNKS);
 
     int actual = 0;
     int seg_i = 0;
@@ -1148,8 +1125,7 @@ embed_multi_vec_t embed_multi_vec_load(const char *path) {
 
     /* Read all float data */
     size_t total_floats = (size_t)dim * (size_t)n_chunks;
-    result.data = malloc(sizeof(float) * total_floats);
-    if (!result.data) { fclose(f); return result; }
+    result.data = xmalloc(sizeof(float) * total_floats);
 
     if (fread(result.data, sizeof(float), total_floats, f) != total_floats) {
         free(result.data);

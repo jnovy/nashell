@@ -103,9 +103,9 @@ static int test_local(const char *url, char **model_name, int *ctx_size) {
             cJSON *data = cJSON_GetObjectItem(root, "data");
             if (cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
                 cJSON *first = cJSON_GetArrayItem(data, 0);
-                cJSON *id = cJSON_GetObjectItem(first, "id");
-                if (cJSON_IsString(id) && id->valuestring)
-                    *model_name = strdup(id->valuestring);
+                const char *mid = json_str(first, "id");
+                if (mid)
+                    *model_name = xstrdup(mid);
             }
             cJSON_Delete(root);
         }
@@ -120,9 +120,7 @@ static int test_local(const char *url, char **model_name, int *ctx_size) {
         if (root) {
             cJSON *dgs = cJSON_GetObjectItem(root, "default_generation_settings");
             if (dgs) {
-                cJSON *nctx = cJSON_GetObjectItem(dgs, "n_ctx");
-                if (cJSON_IsNumber(nctx))
-                    *ctx_size = (int)nctx->valuedouble;
+                *ctx_size = json_int(dgs, "n_ctx", *ctx_size);
             }
             cJSON_Delete(root);
         }

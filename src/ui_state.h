@@ -258,4 +258,15 @@ void ui_state_search(ui_state_t *ui, const char *query);
  * Returns malloc'd string, caller frees. */
 char *ui_state_breadcrumb(ui_state_t *ui);
 
+/* ── Locking convenience wrappers ────────────────────────── */
+/* These acquire ui->mtx, perform the operation, release mtx,
+ * then call tui_render().  Eliminates the 4-line lock/call/unlock/render
+ * pattern that repeats ~100x across command handlers. */
+
+void ui_locked_set_status(ui_state_t *ui, ui_status_t status, const char *text);
+void ui_locked_set_status_fmt(ui_state_t *ui, ui_status_t status,
+                              const char *fmt, ...);
+void ui_locked_push_content(ui_state_t *ui, const char *name,
+                            const char *markdown);
+
 #endif

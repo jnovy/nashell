@@ -34,16 +34,13 @@ static int cmd_name(command_ctx_t *ctx, const char *name) {
 
     if (strlen(name) == 0 || strlen(name) > 255 ||
         strchr(name, '/') != NULL || strchr(name, '\n') != NULL) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "/name: invalid name (no slashes, max 255 chars)");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
     char *sb = sessions_base_dir(ctx->nash_dir, ctx->cfg->workspace);
     char link_path[1088];
-    snprintf(link_path, sizeof(link_path), "%s/%s", sb, name);
+    path_join(link_path, sizeof(link_path), sb, name);
     free(sb);
     /* Remove existing symlink if present */
     unlink(link_path);
@@ -52,19 +49,11 @@ static int cmd_name(command_ctx_t *ctx, const char *name) {
         /* Extract just the session ID (basename) for display */
         const char *session_id = strrchr(session_dir, '/');
         session_id = session_id ? session_id + 1 : session_dir;
-        pthread_mutex_lock(&ui->mtx);
-        char status[512];
-        snprintf(status, sizeof(status),
+        ui_locked_set_status_fmt(ui, STATUS_READY,
             "Named session: %s → %s", name, session_id);
-        ui_state_set_status(ui, STATUS_READY, status);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
     } else {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "/name: failed to create symlink");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
     }
     return CMD_CONTINUE;
 }
@@ -75,36 +64,23 @@ static int cmd_cwd(command_ctx_t *ctx, const char *dir) {
 
     while (*dir == ' ') dir++;
     if (*dir == '\0') {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "/cwd: missing directory argument");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
     /* Create directory if it doesn't exist */
     struct stat st;
     if (stat(dir, &st) != 0) {
         if (mkdir_p(dir, 0755) != 0) {
-            char errbuf[512];
-            snprintf(errbuf, sizeof(errbuf),
+            ui_locked_set_status_fmt(ui, STATUS_ERROR,
                 "/cwd: failed to create '%s': %s", dir, strerror(errno));
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, errbuf);
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
     }
     /* Change to the directory */
     if (chdir(dir) != 0) {
-        char errbuf[512];
-        snprintf(errbuf, sizeof(errbuf),
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
             "/cwd: failed to chdir to '%s': %s", dir, strerror(errno));
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR, errbuf);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
     /* Enable repo map for subsequent queries (same as CLI PATH arg) */
@@ -114,12 +90,7 @@ static int cmd_cwd(command_ctx_t *ctx, const char *dir) {
     char resolved[NASH_PATH_MAX];
     if (!getcwd(resolved, sizeof(resolved)))
         snprintf(resolved, sizeof(resolved), "%s", dir);
-    char status_msg[NASH_PATH_MAX + 16];
-    snprintf(status_msg, sizeof(status_msg), "CWD: %s", resolved);
-    pthread_mutex_lock(&ui->mtx);
-    ui_state_set_status(ui, STATUS_READY, status_msg);
-    pthread_mutex_unlock(&ui->mtx);
-    tui_render(ui);
+    ui_locked_set_status_fmt(ui, STATUS_READY, "CWD: %s", resolved);
     return CMD_CONTINUE;
 }
 
@@ -128,11 +99,8 @@ static int cmd_dream(command_ctx_t *ctx) {
     ui_state_t *ui = ctx->ui;
 
     if (*ctx->inferring) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
                             "Wait for inference to finish");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -142,11 +110,8 @@ static int cmd_dream(command_ctx_t *ctx) {
     playbook_resolve("dream", ctx->nash_dir, pb_path, sizeof(pb_path));
     playbook_t *dream_pb = playbook_load(pb_path);
     if (!dream_pb) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "Cannot load dream playbook");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -183,11 +148,8 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
     while (*arg == ' ') arg++;
 
     if (*ctx->inferring) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
                             "Wait for inference to finish");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -229,13 +191,8 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
     }
     playbook_t *pb = playbook_load(pb_path);
     if (!pb) {
-        pthread_mutex_lock(&ui->mtx);
-        char errmsg[NASH_PATH_MAX + 64];
-        snprintf(errmsg, sizeof(errmsg),
+        ui_locked_set_status_fmt(ui, STATUS_ERROR,
                  "/play: cannot load playbook '%.4080s'", pb_path);
-        ui_state_set_status(ui, STATUS_ERROR, errmsg);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -268,27 +225,23 @@ static int cmd_play(command_ctx_t *ctx, const char *arg) {
 /* Callback for jsonl_iterate: format run log events */
 static int format_run_event_cb(cJSON *ev, void *user_data) {
     str_t *display = user_data;
-    const char *e = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "e"));
+    const char *e = json_str(ev, "e");
     if (!e) return 0;
 
     if (strcmp(e, "start") == 0) {
         str_appendf(display, "**Playbook**: %s  \n",
-            cJSON_GetStringValue(cJSON_GetObjectItem(ev, "pb")));
+            json_str_or(ev, "pb", "?"));
         str_appendf(display, "**Passes**: %d\n\n",
-            (int)cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "n")));
+            json_int(ev, "n", 0));
     } else if (strcmp(e, "pass") == 0) {
-        int idx = (int)cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "i"));
-        const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "l"));
-        const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "sid"));
+        int idx = json_int(ev, "i", 0);
         str_appendf(display, "- **Pass %d**: %s\n  session: `%s`\n",
-            idx + 1, label ? label : "?", sid ? sid : "?");
+            idx + 1, json_str_or(ev, "l", "?"), json_str_or(ev, "sid", "?"));
     } else if (strcmp(e, "done") == 0) {
-        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
-        double ts = cJSON_GetNumberValue(cJSON_GetObjectItem(ev, "ts"));
-        str_appendf(display, "  status: %s  (%.0f)\n", st ? st : "?", ts);
+        str_appendf(display, "  status: %s  (%.0f)\n",
+            json_str_or(ev, "st", "?"), json_num(ev, "ts", 0));
     } else if (strcmp(e, "end") == 0) {
-        const char *st = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "st"));
-        str_appendf(display, "\n**Result**: %s\n", st ? st : "?");
+        str_appendf(display, "\n**Result**: %s\n", json_str_or(ev, "st", "?"));
     }
     return 0;
 }
@@ -313,18 +266,15 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
     if (show_detail && show_id && *show_id) {
         /* Validate run ID to prevent path traversal */
         if (!is_safe_path_component(show_id)) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR,
+            ui_locked_set_status(ui, STATUS_ERROR,
                 "/runs show: invalid run ID");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
         /* /runs show <id> — display a specific run log */
         char rpath[NASH_PATH_MAX + NASH_PATH_MAX];
         /* Try exact filename, or append .jsonl */
         if (strstr(show_id, ".jsonl"))
-            snprintf(rpath, sizeof(rpath), "%s/%s", rdir, show_id);
+            path_join(rpath, sizeof(rpath), rdir, show_id);
         else
             snprintf(rpath, sizeof(rpath), "%s/%s.jsonl", rdir, show_id);
 
@@ -332,11 +282,8 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
         str_appendf(&display, "# Run Log: %s\n\n", show_id);
         if (jsonl_iterate(rpath, format_run_event_cb, &display) < 0) {
             str_free(&display);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR,
+            ui_locked_set_status(ui, STATUS_ERROR,
                 "/runs show: run log not found");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
 
@@ -362,13 +309,13 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
              * Previously, beyond 1024 runs entries were silently dropped.
              * Also replaced O(N²) bubble sort with qsort. */
             int names_cap = 128;
-            char **names = malloc(sizeof(char *) * (size_t)names_cap);
+            char **names = xmalloc(sizeof(char *) * (size_t)names_cap);
             int nnames = 0;
             if (names) {
                 while ((ent = readdir(d))) {
                     int nlen = (int)strlen(ent->d_name);
                     if (nlen > 6 && strcmp(ent->d_name + nlen - 6, ".jsonl") == 0) {
-                        VEC_PUSH(names, nnames, names_cap, strdup(ent->d_name));
+                        VEC_PUSH(names, nnames, names_cap, xstrdup(ent->d_name));
                     }
                 }
             }
@@ -378,17 +325,15 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
                 qsort(names, (size_t)nnames, sizeof(char *), cmp_str_desc);
             for (int i = 0; i < nnames; i++) {
                 char fpath[NASH_PATH_MAX + NASH_PATH_MAX];
-                snprintf(fpath, sizeof(fpath), "%s/%s", rdir, names[i]);
+                path_join(fpath, sizeof(fpath), rdir, names[i]);
                 FILE *rf = fopen(fpath, "r");
                 if (rf) {
                     char line[NASH_LINE_MAX];
                     if (fgets(line, sizeof(line), rf)) {
                         cJSON *ev = cJSON_Parse(line);
                         if (ev) {
-                            const char *pb_name = cJSON_GetStringValue(
-                                cJSON_GetObjectItem(ev, "pb"));
-                            int n = (int)cJSON_GetNumberValue(
-                                cJSON_GetObjectItem(ev, "n"));
+                            const char *pb_name = json_str(ev, "pb");
+                            int n = json_int(ev, "n", 0);
                             /* Check if run completed by scanning for end event */
                             const char *status_str = "running";
                             char lastline[NASH_LINE_MAX];
@@ -397,11 +342,9 @@ static int cmd_runs(command_ctx_t *ctx, const char *sub) {
                             if (lastline[0]) {
                                 cJSON *last = cJSON_Parse(lastline);
                                 if (last) {
-                                    const char *le = cJSON_GetStringValue(
-                                        cJSON_GetObjectItem(last, "e"));
+                                    const char *le = json_str(last, "e");
                                     if (le && strcmp(le, "end") == 0) {
-                                        const char *st = cJSON_GetStringValue(
-                                            cJSON_GetObjectItem(last, "st"));
+                                        const char *st = json_str(last, "st");
                                         status_str = (st && strcmp(st, "ok") == 0)
                                             ? "ok" : "fail";
                                     }
@@ -570,11 +513,8 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
 
     ms_args_t args;
     if (ms_parse_args(input, &args) < 0) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "Usage: /ms [-q query] [-k key] [-p pattern] [-r] [-n max] [-d days]");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -600,11 +540,8 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
             mem_count = mem_results.count;
         }
         if (mem_count == 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_READY,
+            ui_locked_set_status(ui, STATUS_READY,
                 "No memory found for that key");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
         /* Fall through to display */
@@ -767,7 +704,7 @@ static int cmd_memory_query(command_ctx_t *ctx, const char *input) {
     }
 
     /* ── Pass markdown with links to TUI for OSC 8 rendering ── */
-    char *banner = strdup(str_cstr(&md_file));
+    char *banner = xstrdup(str_cstr(&md_file));
     str_free(&md_file);
     pthread_mutex_lock(&ui->mtx);
     ui_state_push_content(ui, "memory-search", banner);

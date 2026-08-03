@@ -434,9 +434,6 @@ int react_find_tool_partner(const llm_chat_t *chat, int msg_idx,
  * (pass3) and emergency eviction. */
 void react_recover_tool_threading(llm_chat_t *chat);
 
-/* Safe JSON string accessor */
-const char *react_json_get_str(cJSON *obj, const char *key);
-
 /* Build the full system prompt string. Returns malloc'd string — caller frees.
  * Used for both chat injection and journal logging.
  * Respects ctx->headless (suppresses user_ask rules, adjusts identity) and

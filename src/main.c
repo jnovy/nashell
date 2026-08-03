@@ -181,14 +181,14 @@ static void route_query_to_outbox(const char *nash_dir, const char *query,
 static char *get_nash_dir(const config_t *cfg) {
     if (cfg->data_dir && cfg->data_dir[0]) {
         mkdir(cfg->data_dir, 0755);
-        return strdup(cfg->data_dir);
+        return xstrdup(cfg->data_dir);
     }
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/.nash", home);
     mkdir(path, 0755);
-    return strdup(path);
+    return xstrdup(path);
 }
 
 /* Recursive mkdir: create all path components (like mkdir -p).
@@ -494,15 +494,13 @@ done:
 /* Callback for jsonl_iterate: find parent query text by react_loop */
 static int find_parent_query_cb(cJSON *entry, void *user_data) {
     struct { int target_loop; char *buf; } *ctx = user_data;
-    const char *jtool = cJSON_GetStringValue(
-        cJSON_GetObjectItem(entry, "tool"));
-    int rl = (int)cJSON_GetNumberValue(
-        cJSON_GetObjectItem(entry, "react_loop"));
+    const char *jtool = json_str(entry, "tool");
+    int rl = json_int(entry, "react_loop", -1);
     if (jtool && strcmp(jtool, "query") == 0 && rl == ctx->target_loop) {
         cJSON *params = cJSON_GetObjectItem(entry, "params");
-        cJSON *text = params ? cJSON_GetObjectItem(params, "text") : NULL;
-        if (text && text->valuestring)
-            snprintf(ctx->buf, 256, "%.250s", text->valuestring);
+        const char *text = json_str(params, "text");
+        if (text)
+            snprintf(ctx->buf, 256, "%.250s", text);
         return 1;  /* stop iteration */
     }
     return 0;
@@ -577,12 +575,11 @@ int main(int argc, char **argv) {
                 return 1;
             }
             memset(&cfg->named_providers[n], 0, sizeof(named_provider_t));
-            cfg->named_providers[n].name = strdup("__cli_api");
-            cfg->named_providers[n].config.type = strdup("local");
-            cfg->named_providers[n].config.api_base = strdup(url);
+            cfg->named_providers[n].name = xstrdup("__cli_api");
+            cfg->named_providers[n].config.type = xstrdup("local");
+            cfg->named_providers[n].config.api_base = xstrdup(url);
             cfg->n_named_providers = n + 1;
-            free(cfg->routing.default_provider);
-            cfg->routing.default_provider = strdup("__cli_api");
+            str_replace(&cfg->routing.default_provider, "__cli_api");
         } else if (strcmp(argv[i], "--provider") == 0 && i + 1 < argc) {
             provider_name_arg = argv[++i];
         } else if ((strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--query") == 0) && i + 1 < argc) {
@@ -592,8 +589,7 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--validate-playbook") == 0 && i + 1 < argc) {
             validate_playbook_arg = argv[++i];
         } else if (strcmp(argv[i], "--data-dir") == 0 && i + 1 < argc) {
-            free(cfg->data_dir);
-            cfg->data_dir = strdup(argv[++i]);
+            str_replace(&cfg->data_dir, argv[++i]);
         } else if (strcmp(argv[i], "--session") == 0 && i + 1 < argc) {
             session_dir_arg = argv[++i];
         } else if (strcmp(argv[i], "--regression") == 0) {
@@ -648,8 +644,7 @@ int main(int argc, char **argv) {
             config_free(cfg);
             return 0;
         } else if ((strcmp(argv[i], "--workspace") == 0 || strcmp(argv[i], "-w") == 0) && i + 1 < argc) {
-            free(cfg->workspace);
-            cfg->workspace = strdup(argv[++i]);
+            str_replace(&cfg->workspace, argv[++i]);
         } else if (strcmp(argv[i], "--isolated") == 0) {
             cfg->workspace_isolated = 1;
         } else if (strcmp(argv[i], "--agent") == 0) {
@@ -663,7 +658,7 @@ int main(int argc, char **argv) {
                     size_t total = 0;
                     for (int j = i + 1; j < argc && argv[j][0] != '-'; j++)
                         total += strlen(argv[j]) + 1;
-                    agent_arguments = malloc(total + 1);
+                    agent_arguments = xmalloc(total + 1);
                     if (!agent_arguments) {
                         fprintf(stderr, "nash: out of memory for agent arguments\n");
                         config_free(cfg);
@@ -795,8 +790,7 @@ int main(int argc, char **argv) {
             if (strncmp(cwd_auto, ws_prefix, pfx_len) == 0 && cwd_auto[pfx_len]) {
                 /* CWD is under workspaces/ — extract workspace name.
                  * e.g. ~/.nash/workspaces/rh/container-tools → "rh/container-tools" */
-                free(cfg->workspace);
-                cfg->workspace = strdup(cwd_auto + pfx_len);
+                str_replace(&cfg->workspace, cwd_auto + pfx_len);
                 if (cfg->workspace) {
                     /* Strip trailing slash if any */
                     size_t wlen = strlen(cfg->workspace);
@@ -908,12 +902,12 @@ int main(int argc, char **argv) {
     /* Deep-copy resolved provider into cfg->provider (owned strings).
      * This populates the "resolved provider snapshot" that banner.c,
      * react.c, config_dump_spec, etc. all read from. */
-    cfg->provider.type           = resolved_prov.type ? strdup(resolved_prov.type) : NULL;
-    cfg->provider.model_id       = resolved_prov.model_id ? strdup(resolved_prov.model_id) : NULL;
-    cfg->provider.api_base       = resolved_prov.api_base ? strdup(resolved_prov.api_base) : NULL;
-    cfg->provider.api_key_env    = resolved_prov.api_key_env ? strdup(resolved_prov.api_key_env) : NULL;
-    cfg->provider.project_id     = resolved_prov.project_id ? strdup(resolved_prov.project_id) : NULL;
-    cfg->provider.region         = resolved_prov.region ? strdup(resolved_prov.region) : NULL;
+    cfg->provider.type           = resolved_prov.type ? xstrdup(resolved_prov.type) : NULL;
+    cfg->provider.model_id       = resolved_prov.model_id ? xstrdup(resolved_prov.model_id) : NULL;
+    cfg->provider.api_base       = resolved_prov.api_base ? xstrdup(resolved_prov.api_base) : NULL;
+    cfg->provider.api_key_env    = resolved_prov.api_key_env ? xstrdup(resolved_prov.api_key_env) : NULL;
+    cfg->provider.project_id     = resolved_prov.project_id ? xstrdup(resolved_prov.project_id) : NULL;
+    cfg->provider.region         = resolved_prov.region ? xstrdup(resolved_prov.region) : NULL;
     cfg->provider.context_size   = resolved_prov.context_size;
     cfg->provider.chars_per_token = resolved_prov.chars_per_token;
     cfg->provider.caching        = resolved_prov.caching;
@@ -969,7 +963,7 @@ int main(int argc, char **argv) {
     } else {
         /* API providers: use config values, with sensible defaults */
         context_size = cfg->provider.context_size;
-        server_model = cfg->provider.model_id ? strdup(cfg->provider.model_id) : NULL;
+        server_model = cfg->provider.model_id ? xstrdup(cfg->provider.model_id) : NULL;
 
         /* Cloud providers have no /props endpoint to auto-detect context_size.
          * Without a default, context eviction never triggers. */
@@ -989,7 +983,7 @@ int main(int argc, char **argv) {
     }
     if (provider && server_model) {
         free((char *)provider->cfg.model_id);  /* free the copy made by provider_create */
-        provider->cfg.model_id = strdup(server_model);  /* replace with server-reported model */
+        provider->cfg.model_id = xstrdup(server_model);  /* replace with server-reported model */
     }
 
     /* ── Apply model profile (Unified Spec) ── */
@@ -1054,7 +1048,7 @@ int main(int argc, char **argv) {
              * original default model instead of the worker model. */
             free(server_model);
             server_model = worker_provider->cfg.model_id
-                         ? strdup(worker_provider->cfg.model_id) : NULL;
+                         ? xstrdup(worker_provider->cfg.model_id) : NULL;
         }
     }
 
@@ -1094,10 +1088,10 @@ int main(int argc, char **argv) {
      * continues to use ctx->memory which points here. */
     memory_t *memory = ws ? ws->global : NULL;
     if (server_model && memory)
-        memory->model = strdup(server_model);
+        memory->model = xstrdup(server_model);
     /* Also set model on workspace memory if it exists */
     if (server_model && ws && ws->workspace)
-        ws->workspace->model = strdup(server_model);
+        ws->workspace->model = xstrdup(server_model);
 
     if (cfg->workspace && cfg->workspace[0])
         fprintf(stderr, "[info] workspace: %s%s\n", cfg->workspace,
@@ -1146,18 +1140,18 @@ int main(int argc, char **argv) {
         if (memory && memory_has_embeddings(memory)) {
             embed_ctx_t *src_embed = memory_embed_ctx(memory);
             if (src_embed) {
-                backfill_args_t *bfa = calloc(1, sizeof(*bfa));
+                backfill_args_t *bfa = xcalloc(1, sizeof(*bfa));
                 if (bfa) {
-                    bfa->nash_dir = strdup(nash_dir);
+                    bfa->nash_dir = xstrdup(nash_dir);
                     bfa->workspace = (cfg->workspace && cfg->workspace[0])
-                                   ? strdup(cfg->workspace) : NULL;
+                                   ? xstrdup(cfg->workspace) : NULL;
                     bfa->embed_cfg.type = src_embed->cfg.type;
                     bfa->embed_cfg.model = src_embed->cfg.model
-                                         ? strdup(src_embed->cfg.model) : NULL;
+                                         ? xstrdup(src_embed->cfg.model) : NULL;
                     bfa->embed_cfg.api_base = src_embed->cfg.api_base
-                                            ? strdup(src_embed->cfg.api_base) : NULL;
+                                            ? xstrdup(src_embed->cfg.api_base) : NULL;
                     bfa->embed_cfg.model_path = src_embed->cfg.model_path
-                                              ? strdup(src_embed->cfg.model_path) : NULL;
+                                              ? xstrdup(src_embed->cfg.model_path) : NULL;
                     bfa->embed_cfg.dimension = src_embed->cfg.dimension;
                     bfa->embed_cfg.max_input_chars = src_embed->cfg.max_input_chars;
                     bfa->session_idx = session_idx;
@@ -1661,7 +1655,7 @@ int main(int argc, char **argv) {
         /* Initialize default slot (from cfg->workspace or global) */
         {
             daemon_ws_slot_t *s = &ws_pool[0];
-            s->name = cfg->workspace ? strdup(cfg->workspace) : NULL;
+            s->name = cfg->workspace ? xstrdup(cfg->workspace) : NULL;
             s->ws = ws;  /* reuse the ws already created at L655 */
             s->mem = ws ? ws->global : NULL;
             s->session_dir = create_session_dir(nash_dir, cfg->workspace);
@@ -1801,16 +1795,16 @@ int main(int argc, char **argv) {
                     free(s->name);
                     memset(s, 0, sizeof(*s));
                 }
-                s->name = task_ws ? strdup(task_ws) : NULL;
+                s->name = task_ws ? xstrdup(task_ws) : NULL;
                 int ws_iso = cfg->workspace_isolated ||
                              (cfg->workspace_global_recall == 0);
                 double gw = cfg->workspace_global_weight;
                 s->ws = workspace_new(nash_dir, s->name, ws_iso, gw);
                 s->mem = s->ws ? s->ws->global : NULL;
                 if (server_model && s->mem)
-                    s->mem->model = strdup(server_model);
+                    s->mem->model = xstrdup(server_model);
                 if (server_model && s->ws && s->ws->workspace)
-                    s->ws->workspace->model = strdup(server_model);
+                    s->ws->workspace->model = xstrdup(server_model);
                 workspace_set_recall_config(s->ws, cfg->recall_min_score,
                                             cfg->recall_blend_semantic,
                                             cfg->recall_blend_substring,
@@ -1866,8 +1860,8 @@ int main(int argc, char **argv) {
             /* Propagate context to next react loop (like TUI does) */
             free(slot->react.last_query);
             free(slot->react.last_result);
-            slot->react.last_query = strdup(task->query);
-            slot->react.last_result = result ? strdup(result) : NULL;
+            slot->react.last_query = xstrdup(task->query);
+            slot->react.last_result = result ? xstrdup(result) : NULL;
             slot->tools.react_loop++;
 
             /* Tier 1 dreaming */
@@ -1923,7 +1917,7 @@ int main(int argc, char **argv) {
             char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
             if (access(jpath, F_OK) == 0) {
-                session_dir = strdup(session_dir_arg);
+                session_dir = xstrdup(session_dir_arg);
             } else {
                 fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
             }
@@ -1982,7 +1976,7 @@ int main(int argc, char **argv) {
          * because journal_free() will free the original. */
         if (lazy_session) {
             const char *jsd = journal_session_dir(journal);
-            session_dir = jsd ? strdup(jsd) : NULL;
+            session_dir = jsd ? xstrdup(jsd) : NULL;
         }
         /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
         memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
@@ -2014,7 +2008,7 @@ int main(int argc, char **argv) {
             char jpath[4112];
             snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
             if (access(jpath, F_OK) == 0) {
-                session_dir = strdup(session_dir_arg);
+                session_dir = xstrdup(session_dir_arg);
             } else {
                 fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
             }
@@ -2025,7 +2019,7 @@ int main(int argc, char **argv) {
                 char jpath[4112];
                 snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
                 if (access(jpath, F_OK) == 0) {
-                    session_dir = strdup(cwd);
+                    session_dir = xstrdup(cwd);
                 }
             }
         }
@@ -2048,12 +2042,12 @@ int main(int argc, char **argv) {
 
         /* Create UI state and initialize TUI */
         ui_state_t *ui = ui_state_new(session_dir, shared_store);
-        ui->nash_dir = strdup(nash_dir);  /* for /? cross-session search */
+        ui->nash_dir = xstrdup(nash_dir);  /* for /? cross-session search */
         if (ws && ws->name)
-            ui->workspace_name = strdup(ws->name);  /* for status bar breadcrumb */
+            ui->workspace_name = xstrdup(ws->name);  /* for status bar breadcrumb */
         /* Pass model name + context info for nashell-style status bar */
         if (server_model)
-            ui->model_name = strdup(server_model);
+            ui->model_name = xstrdup(server_model);
         ui->context_size = context_size;
         ui->context_used = 0;
         ui->pause_flag = &react.pause_requested;  /* Space → pause react loop */
@@ -2113,7 +2107,7 @@ int main(int argc, char **argv) {
                      agent_target_id,
                      agent_arguments ? " " : "",
                      agent_arguments ? agent_arguments : "");
-            char *auto_cmd = strdup(agent_cmd);
+            char *auto_cmd = xstrdup(agent_cmd);
             command_ctx_t cmd_ctx = {
                 .session_dir  = session_dir,
                 .nash_dir     = nash_dir,
@@ -2201,11 +2195,8 @@ int main(int argc, char **argv) {
              * Update status bar so user knows they can type a new query. */
             if (atomic_load(&inferring) == INFER_REACT && atomic_load(&react.pause_waiting) &&
                 ui->status != STATUS_READY) {
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_READY,
+                ui_locked_set_status(ui, STATUS_READY,
                     "Paused (type query to redirect, Space to resume)");
-                pthread_mutex_unlock(&ui->mtx);
-                tui_render(ui);
             }
 
             /* Check if inference thread completed */
@@ -2251,8 +2242,8 @@ int main(int argc, char **argv) {
                 tui_render(ui);
                 if (react.last_query) free(react.last_query);
                 if (react.last_result) free(react.last_result);
-                react.last_query = strdup(iargs.query);
-                react.last_result = result ? strdup(result) : NULL;
+                react.last_query = xstrdup(iargs.query);
+                react.last_result = result ? xstrdup(result) : NULL;
                 free(result);
                 free(iargs.query);
                 iargs.query = NULL;
@@ -2299,10 +2290,7 @@ int main(int argc, char **argv) {
                     atomic_store(&react.user_ask_pending, 0);  /* unblock the react loop */
                     pthread_cond_signal(&react.user_ask_cond);
                     pthread_mutex_unlock(&react.user_ask_mutex);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_RUNNING, "Running...");
-                    pthread_mutex_unlock(&ui->mtx);
-                    tui_render(ui);
+                    ui_locked_set_status(ui, STATUS_RUNNING, "Running...");
                     continue;
                 }
 
@@ -2316,10 +2304,7 @@ int main(int argc, char **argv) {
                     submitted_query = NULL;  /* ownership transferred */
                     pthread_cond_signal(&react.pause_cond);
                     pthread_mutex_unlock(&react.pause_mutex);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_RUNNING, "Resuming...");
-                    pthread_mutex_unlock(&ui->mtx);
-                    tui_render(ui);
+                    ui_locked_set_status(ui, STATUS_RUNNING, "Resuming...");
                     continue;
                 }
 
@@ -2347,11 +2332,8 @@ int main(int argc, char **argv) {
                     submitted_query = NULL;
                     atomic_store(&react.pause_requested, 1);
                     provider->abort_retry = 1;  /* wake provider_sleep early */
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_RUNNING,
+                    ui_locked_set_status(ui, STATUS_RUNNING,
                         "Pausing to handle command…");
-                    pthread_mutex_unlock(&ui->mtx);
-                    tui_render(ui);
                     continue;
                 }
 
@@ -2398,11 +2380,8 @@ int main(int argc, char **argv) {
                     submitted_query = NULL;  /* ownership transferred */
                     atomic_store(&react.pause_requested, 1);
                     provider->abort_retry = 1;  /* wake provider_sleep early */
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_RUNNING,
+                    ui_locked_set_status(ui, STATUS_RUNNING,
                         "Pausing after current step…");
-                    pthread_mutex_unlock(&ui->mtx);
-                    tui_render(ui);
                     continue;
                 }
                 /* ── Tree branching: determine parent_loop ── */
@@ -2456,16 +2435,16 @@ int main(int argc, char **argv) {
                     struct { int target_loop; char *buf; } pq_ctx = { parent_loop, parent_query_text };
                     jsonl_iterate(jpath2, find_parent_query_cb, &pq_ctx);
                     size_t fqlen = strlen(submitted_query) + 512;
-                    final_query = malloc(fqlen);
+                    final_query = xmalloc(fqlen);
                     if (final_query) {
                         snprintf(final_query, fqlen,
                             "[Branched from R%d: \"%s\"]\n%s",
                             parent_loop, parent_query_text, submitted_query);
                     } else {
-                        final_query = strdup(submitted_query);
+                        final_query = xstrdup(submitted_query);
                     }
                 } else {
-                    final_query = strdup(submitted_query);
+                    final_query = xstrdup(submitted_query);
                 }
 
                 pthread_mutex_lock(&ui->mtx);
@@ -2483,7 +2462,7 @@ int main(int argc, char **argv) {
                  * context about what the user is looking at. */
                 free(react.tui_viewing_file);
                 react.tui_viewing_file = ui->current_filepath
-                    ? strdup(ui->current_filepath) : NULL;
+                    ? xstrdup(ui->current_filepath) : NULL;
                 free(submitted_query);  /* strdup'd into final_query; ui_state_add_query also strdup'd */
                 /* Forward query to bridge for session threading */
                 route_query_to_outbox(nash_dir, final_query,
@@ -2494,9 +2473,7 @@ int main(int argc, char **argv) {
                 } else {
                     nash_log("[main] failed to create inference thread");
                     free(final_query);
-                    pthread_mutex_lock(&ui->mtx);
-                    ui_state_set_status(ui, STATUS_READY, "Error: thread creation failed");
-                    pthread_mutex_unlock(&ui->mtx);
+                    ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
                 }
                 tui_render(ui);
             }
@@ -2567,7 +2544,7 @@ int main(int argc, char **argv) {
                                     int path_ok = 1;
                                     if (ui->playbook_session_dir) {
                                         char full[4096];
-                                        snprintf(full, sizeof(full), "%s/%s",
+                                        path_join(full, sizeof(full),
                                                  ui->playbook_session_dir, expect);
                                         path_ok = (strcmp(fp, full) == 0);
                                     }
@@ -2591,8 +2568,7 @@ int main(int argc, char **argv) {
          * and then exit naturally (or we just signal to unblock it). */
         if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
             pthread_mutex_lock(&react.pause_mutex);
-            free(react.pause_query);
-            react.pause_query = strdup("quit");
+            str_replace(&react.pause_query, "quit");
             atomic_store(&react.pause_requested, 0);  /* clear so loop doesn't re-pause */
             pthread_cond_signal(&react.pause_cond);
             pthread_mutex_unlock(&react.pause_mutex);
@@ -2600,8 +2576,7 @@ int main(int argc, char **argv) {
         /* If inference thread is paused on user_ask condvar, unblock it too */
         if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
             pthread_mutex_lock(&react.user_ask_mutex);
-            free(react.user_ask_answer);
-            react.user_ask_answer = strdup("(quit)");
+            str_replace(&react.user_ask_answer, "(quit)");
             atomic_store(&react.user_ask_pending, 0);
             pthread_cond_signal(&react.user_ask_cond);
             pthread_mutex_unlock(&react.user_ask_mutex);

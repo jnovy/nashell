@@ -22,21 +22,20 @@
 char *unwrap_thought(const char *thought) {
     if (!thought || thought[0] != '{') return NULL;  /* nothing to unwrap */
 
-    char *current = strdup(thought);
-    if (!current) return NULL;
+    char *current = xstrdup(thought);
 
     for (int depth = 0; depth < 5; depth++) {
         cJSON *nested = cJSON_Parse(current);
         if (!nested) break;
-        cJSON *inner = cJSON_GetObjectItemCaseSensitive(nested, "thought");
-        if (!inner || !cJSON_IsString(inner) || !inner->valuestring) {
+        const char *inner = json_str(nested, "thought");
+        if (!inner) {
             /* No thought field or not a string — the input is a JSON object
              * (e.g. a full action echo) with no extractable thought. */
             cJSON_Delete(nested);
             free(current);
             return NULL;
         }
-        if (inner->valuestring[0] == '\0') {
+        if (inner[0] == '\0') {
             /* Nested thought is empty — the model echoed the full action
              * JSON as the thought field but left thought="".  Return NULL
              * so the display layer treats this as "no thought". */
@@ -44,7 +43,7 @@ char *unwrap_thought(const char *thought) {
             free(current);
             return NULL;
         }
-        char *next = strdup(inner->valuestring);
+        char *next = xstrdup(inner);
         cJSON_Delete(nested);
         free(current);
         if (!next) return NULL;  /* OOM */
@@ -59,27 +58,23 @@ char *unwrap_thought(const char *thought) {
 }
 
 journal_t *journal_new(const char *session_dir) {
-    journal_t *j = calloc(1, sizeof(*j));
-    if (!j) return NULL;
+    journal_t *j = xcalloc(1, sizeof(*j));
     pthread_mutex_init(&j->mtx, NULL);  /* FIX CRIT2: thread-safe journal */
-    j->session_dir = strdup(session_dir);
-    if (!j->session_dir) { free(j); return NULL; }
+    j->session_dir = xstrdup(session_dir);
     char path[NASH_PATH_MAX];
     snprintf(path, sizeof(path), "%s/journal.jsonl", session_dir);
-    j->path = strdup(path);
+    j->path = xstrdup(path);
     j->lazy_created = 1;
-    if (!j->path) { free(j->session_dir); free(j); return NULL; }
     return j;
 }
 
 /* Lazy journal: session directory is not created until first journal_append().
  * If program exits without any append, no session directory exists. */
 journal_t *journal_new_lazy(const char *nash_dir, const char *workspace) {
-    journal_t *j = calloc(1, sizeof(*j));
-    if (!j) return NULL;
+    journal_t *j = xcalloc(1, sizeof(*j));
     pthread_mutex_init(&j->mtx, NULL);  /* FIX CRIT2: thread-safe journal */
-    j->nash_dir = strdup(nash_dir);
-    j->workspace = (workspace && workspace[0]) ? strdup(workspace) : NULL;
+    j->nash_dir = xstrdup(nash_dir);
+    j->workspace = (workspace && workspace[0]) ? xstrdup(workspace) : NULL;
     j->lazy_created = 0;
     return j;
 }
@@ -114,12 +109,10 @@ static int journal_create_lazy_session(journal_t *j) {
     free(base);
     if (mkdir(path, 0755) != 0 && errno != EEXIST) return -1;
 
-    j->session_dir = strdup(path);
-    if (!j->session_dir) return -1;
+    j->session_dir = xstrdup(path);
     char jpath[NASH_PATH_MAX];
     snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", path);
-    j->path = strdup(jpath);
-    if (!j->path) { free(j->session_dir); j->session_dir = NULL; return -1; }
+    j->path = xstrdup(jpath);
     j->lazy_created = 1;
     return 0;
 }
@@ -191,8 +184,7 @@ void journal_parse_compaction_stats(cJSON *params, journal_compaction_stats_t *s
     if (!params) return;
     /* S3 FIX: Macro-driven extraction eliminates 4× repeated pattern. */
     #define PARSE_INT_FIELD(name) do { \
-        cJSON *_j = cJSON_GetObjectItem(params, #name); \
-        if (_j) s->name = (int)_j->valuedouble; \
+        s->name = json_int(params, #name, s->name); \
     } while (0)
     PARSE_INT_FIELD(before_msgs);
     PARSE_INT_FIELD(after_msgs);
@@ -262,11 +254,11 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
     pthread_mutex_lock(&j->mtx);
     if (!j->path) {
         pthread_mutex_unlock(&j->mtx);
-        return strdup("Session history: (empty — new session)");
+        return xstrdup("Session history: (empty — new session)");
     }
     FILE *f = fopen(j->path, "r");
     pthread_mutex_unlock(&j->mtx);  /* path is stable after lazy init */
-    if (!f) return strdup("Session history: (empty — new session)");
+    if (!f) return xstrdup("Session history: (empty — new session)");
     flock(fileno(f), LOCK_SH);
 
     str_t out = str_new(2048);
@@ -300,10 +292,10 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
             str_appendf(&out, "  [Query R%d]", loop);
 
             if (tool && strcmp(tool, "query") == 0 && params) {
-                cJSON *text = cJSON_GetObjectItem(params, "text");
-                if (text && text->valuestring) {
+                const char *qtext = json_str(params, "text");
+                if (qtext) {
                     char truncated[101];
-                    utf8_truncate(truncated, text->valuestring, 100);
+                    utf8_truncate(truncated, qtext, 100);
                     str_appendf(&out, " \"%s\"", truncated);
                 }
             }
@@ -348,23 +340,23 @@ char *journal_manifest_filtered(journal_t *j, int max_steps,
         const char *thought = NULL;
         char *unwrapped2 = NULL;
         if (params) {
-            cJSON *th = cJSON_GetObjectItem(params, "thought");
-            if (th && th->valuestring && th->valuestring[0]) {
-                unwrapped2 = unwrap_thought(th->valuestring);
+            const char *th = json_str(params, "thought");
+            if (th && th[0]) {
+                unwrapped2 = unwrap_thought(th);
                 if (unwrapped2)
                     thought = unwrapped2;
-                else if (th->valuestring[0] != '{')
-                    thought = th->valuestring; /* plain text, use as-is */
+                else if (th[0] != '{')
+                    thought = th; /* plain text, use as-is */
                 /* else: JSON with no extractable thought — skip */
             }
-            cJSON *cmd = cJSON_GetObjectItem(params, "command");
-            cJSON *p = cJSON_GetObjectItem(params, "path");
-            cJSON *pat = cJSON_GetObjectItem(params, "pattern");
-            cJSON *res = cJSON_GetObjectItem(params, "result");
-            if (cmd && cmd->valuestring) key_param = cmd->valuestring;
-            else if (p && p->valuestring) key_param = p->valuestring;
-            else if (pat && pat->valuestring) key_param = pat->valuestring;
-            else if (res && res->valuestring) key_param = res->valuestring;
+            const char *cmd_s = json_str(params, "command");
+            const char *p_s   = json_str(params, "path");
+            const char *pat_s = json_str(params, "pattern");
+            const char *res_s = json_str(params, "result");
+            if (cmd_s) key_param = cmd_s;
+            else if (p_s) key_param = p_s;
+            else if (pat_s) key_param = pat_s;
+            else if (res_s) key_param = res_s;
         }
 
         /* Show thought above the step line (truncated for manifest) */
@@ -426,8 +418,7 @@ void journal_chunks_free(journal_chunks_t *jc) {
 static char *read_file_head(const char *path, int max_bytes) {
     FILE *f = fopen(path, "r");
     if (!f) return NULL;
-    char *buf = malloc((size_t)max_bytes + 1);
-    if (!buf) { fclose(f); return NULL; }
+    char *buf = xmalloc((size_t)max_bytes + 1);
     size_t n = fread(buf, 1, (size_t)max_bytes, f);
     fclose(f);
     buf[n] = '\0';
@@ -455,8 +446,7 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
     /* Pass 1: extract per-step semantic text segments */
     typedef struct { char *text; } seg_t;
     int seg_count = 0, seg_cap = 64;
-    seg_t *segs = calloc((size_t)seg_cap, sizeof(seg_t));
-    if (!segs) { fclose(f); return result; }
+    seg_t *segs = xcalloc((size_t)seg_cap, sizeof(seg_t));
 
     /* Track query text for chunk prefixes */
     char query_text[201] = {0};
@@ -476,9 +466,9 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 
         /* Capture query text for chunk context prefix */
         if (strcmp(tool, "query") == 0 && params && !query_text[0]) {
-            cJSON *qt = cJSON_GetObjectItem(params, "text");
-            if (qt && qt->valuestring) {
-                utf8_truncate(query_text, qt->valuestring, 200);
+            const char *qt = json_str(params, "text");
+            if (qt) {
+                utf8_truncate(query_text, qt, 200);
             }
             cJSON_Delete(entry);
             continue;
@@ -494,11 +484,11 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 
         /* Extract thought — highest semantic value */
         if (params) {
-            cJSON *th = cJSON_GetObjectItem(params, "thought");
-            if (th && th->valuestring && th->valuestring[0]) {
-                char *unwrapped = unwrap_thought(th->valuestring);
+            const char *th_s = json_str(params, "thought");
+            if (th_s && th_s[0]) {
+                char *unwrapped = unwrap_thought(th_s);
                 const char *thought = unwrapped ? unwrapped
-                    : (th->valuestring[0] != '{' ? th->valuestring : NULL);
+                    : (th_s[0] != '{' ? th_s : NULL);
                 if (thought && strlen(thought) > 5) {
                     char trunc[401];
                     utf8_truncate(trunc, thought, 400);
@@ -510,26 +500,26 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 
         /* Tool-specific content extraction */
         if (strcmp(tool, "done") == 0 && params) {
-            cJSON *res = cJSON_GetObjectItem(params, "result");
-            if (res && res->valuestring && strlen(res->valuestring) > 5) {
+            const char *res_s = json_str(params, "result");
+            if (res_s && strlen(res_s) > 5) {
                 char trunc[501];
-                utf8_truncate(trunc, res->valuestring, 500);
+                utf8_truncate(trunc, res_s, 500);
                 str_appendf(&seg, "Result: %s\n", trunc);
             }
         } else if (strcmp(tool, "memory_store") == 0 && params) {
-            cJSON *key_j = cJSON_GetObjectItem(params, "key");
-            cJSON *val_j = cJSON_GetObjectItem(params, "value");
-            if (key_j && key_j->valuestring)
-                str_appendf(&seg, "Stored: %s\n", key_j->valuestring);
-            if (val_j && val_j->valuestring) {
+            const char *key_s = json_str(params, "key");
+            const char *val_s = json_str(params, "value");
+            if (key_s)
+                str_appendf(&seg, "Stored: %s\n", key_s);
+            if (val_s) {
                 char trunc[301];
-                utf8_truncate(trunc, val_j->valuestring, 300);
+                utf8_truncate(trunc, val_s, 300);
                 str_appendf(&seg, "%s\n", trunc);
             }
         } else if (strcmp(tool, "memory_search") == 0 && params) {
-            cJSON *q = cJSON_GetObjectItem(params, "query");
-            if (q && q->valuestring)
-                str_appendf(&seg, "Searched: %s\n", q->valuestring);
+            const char *q_s = json_str(params, "query");
+            if (q_s)
+                str_appendf(&seg, "Searched: %s\n", q_s);
         } else if ((strcmp(tool, "file_read") == 0 ||
                     strcmp(tool, "grep_search") == 0 ||
                     strcmp(tool, "shell_exec") == 0 ||
@@ -537,23 +527,23 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
                     strcmp(tool, "web_fetch") == 0) && ref) {
             /* Read first N chars of referenced content */
             char ref_path[NASH_PATH_MAX];
-            snprintf(ref_path, sizeof(ref_path), "%s/%s", session_dir, ref);
+            path_join(ref_path, sizeof(ref_path), session_dir, ref);
             int content_limit = (strcmp(tool, "shell_exec") == 0) ? 300 : 400;
             char *content = read_file_head(ref_path, content_limit);
             if (content && strlen(content) > 10) {
                 /* Add tool context */
                 if (params) {
-                    cJSON *p = cJSON_GetObjectItem(params, "path");
-                    cJSON *cmd = cJSON_GetObjectItem(params, "command");
-                    cJSON *pat = cJSON_GetObjectItem(params, "pattern");
-                    if (p && p->valuestring)
-                        str_appendf(&seg, "%s %s: ", tool, p->valuestring);
-                    else if (cmd && cmd->valuestring) {
+                    const char *p_s = json_str(params, "path");
+                    const char *cmd_s = json_str(params, "command");
+                    const char *pat_s = json_str(params, "pattern");
+                    if (p_s)
+                        str_appendf(&seg, "%s %s: ", tool, p_s);
+                    else if (cmd_s) {
                         char ct[101];
-                        utf8_truncate(ct, cmd->valuestring, 100);
+                        utf8_truncate(ct, cmd_s, 100);
                         str_appendf(&seg, "shell: %s\n", ct);
-                    } else if (pat && pat->valuestring)
-                        str_appendf(&seg, "%s '%s': ", tool, pat->valuestring);
+                    } else if (pat_s)
+                        str_appendf(&seg, "%s '%s': ", tool, pat_s);
                     else
                         str_appendf(&seg, "%s: ", tool);
                 }
@@ -605,7 +595,7 @@ journal_chunks_t journal_extract_chunks(const char *session_dir,
 
     /* Allocate chunks array (upper bound = seg_count) */
     int chunk_cap = seg_count < max_chunks ? seg_count : max_chunks;
-    result.texts = calloc((size_t)chunk_cap + 1, sizeof(char *));
+    result.texts = xcalloc((size_t)chunk_cap + 1, sizeof(char *));
     if (!result.texts) {
         for (int i = 0; i < seg_count; i++) free(segs[i].text);
         free(segs);

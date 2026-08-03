@@ -176,12 +176,7 @@ static int cmd_todo_list_all(command_ctx_t *ctx) {
         ui_state_set_status(ui, STATUS_READY, "TODO list (all workspaces)");
         free(ui->current_filepath);
         ui->current_filepath = NULL;
-        char *new_path = strdup(tpath);
-        if (!new_path) {
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
-            return CMD_CONTINUE;
-        }
+        char *new_path = xstrdup(tpath);
         ui->current_filepath = new_path;
         ui->scroll_y = 0;
         ui->scroll_x = 0;
@@ -201,11 +196,8 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
     char fpath[NASH_PATH_MAX];
 
     if (todo_resolve_path(ctx->ws, ctx->memory, fpath, sizeof(fpath)) != 0) {
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_ERROR,
+        ui_locked_set_status(ui, STATUS_ERROR,
             "Cannot determine todo.md path (no workspace or memory)");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
         return CMD_CONTINUE;
     }
 
@@ -217,19 +209,14 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         const char *text = args + 4;
         while (*text == ' ') text++;
         if (!*text) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "/todo add <text>");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "/todo add <text>");
             return CMD_CONTINUE;
         }
         /* Load existing lines, append new one, save atomically */
         char **lines = NULL;
         int count = todo_load(fpath, &lines);
         if (count < 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "Out of memory");
             return CMD_CONTINUE;
         }
         char new_line[4096];
@@ -237,9 +224,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         count = todo_add(&lines, count, new_line);
         if (count < 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "Out of memory");
             return CMD_CONTINUE;
         }
         if (todo_save(fpath, lines, count) != 0) {
@@ -248,21 +233,14 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
             if (slash) { *slash = '\0'; mkdir(fpath, 0755); *slash = '/'; }
             if (todo_save(fpath, lines, count) != 0) {
                 todo_free_lines(lines, count);
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "Cannot write todo.md");
-                pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+                ui_locked_set_status(ui, STATUS_ERROR, "Cannot write todo.md");
                 return CMD_CONTINUE;
             }
         }
         todo_free_lines(lines, count);
 
-        char status[256];
-        snprintf(status, sizeof(status), "Added: %s", text);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, status);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_READY, "Added: %s", text);
         return CMD_CONTINUE;
     }
 
@@ -273,42 +251,30 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         char *endptr;
         long val = strtol(num_start, &endptr, 10);
         if (*endptr != '\0' || endptr == num_start) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "/todo done <number>");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "/todo done <number>");
             return CMD_CONTINUE;
         }
         int idx = (int)val;
         if (idx < 1) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "/todo done <number>");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "/todo done <number>");
             return CMD_CONTINUE;
         }
         /* Load, flip, save */
         char **lines = NULL;
         int count = todo_load(fpath, &lines);
         if (count < 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "Out of memory");
             return CMD_CONTINUE;
         }
         if (count == 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "No todo.md found");
             return CMD_CONTINUE;
         }
         const char *done_err = NULL;
         if (todo_mark_done(lines, count, idx, &done_err) != 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, done_err ? done_err : "Cannot mark done");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, done_err ? done_err : "Cannot mark done");
             return CMD_CONTINUE;
         }
         todo_save(fpath, lines, count);
@@ -316,10 +282,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         snprintf(status, sizeof(status), "Done: %s", lines[idx-1]);
         todo_free_lines(lines, count);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, status);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_READY, status);
         return CMD_CONTINUE;
     }
 
@@ -329,10 +292,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         if (strncmp(args, "remove ", 7) == 0) num_start = args + 7;
         else if (strncmp(args, "rm ", 3) == 0) num_start = args + 3;
         else if (strcmp(args, "remove") == 0 || strcmp(args, "rm") == 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "/todo remove <number>");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "/todo remove <number>");
             return CMD_CONTINUE;
         }
         if (num_start) {
@@ -340,33 +300,23 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
             char *endptr;
             long val = strtol(num_start, &endptr, 10);
             if (*endptr != '\0' || endptr == num_start) {
-                pthread_mutex_lock(&ui->mtx);
-                ui_state_set_status(ui, STATUS_ERROR, "/todo remove <number>");
-                pthread_mutex_unlock(&ui->mtx);
-                tui_render(ui);
+                ui_locked_set_status(ui, STATUS_ERROR, "/todo remove <number>");
                 return CMD_CONTINUE;
             }
             int idx = (int)val;
             if (idx < 1) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "/todo remove <number>");
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "/todo remove <number>");
             return CMD_CONTINUE;
         }
         char **lines = NULL;
         int count = todo_load(fpath, &lines);
         if (count < 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "Out of memory");
             return CMD_CONTINUE;
         }
         if (count == 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "No todo.md found");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "No todo.md found");
             return CMD_CONTINUE;
         }
         char *removed_text = NULL;
@@ -374,9 +324,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         int new_count = todo_remove(lines, count, idx, &removed_text, &rm_err);
         if (new_count < 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, rm_err ? rm_err : "Cannot remove");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, rm_err ? rm_err : "Cannot remove");
             return CMD_CONTINUE;
         }
         char status[256];
@@ -385,10 +333,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         todo_save(fpath, lines, new_count);
         todo_free_lines(lines, new_count);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, status);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status(ui, STATUS_READY, status);
         return CMD_CONTINUE;
         }
     }
@@ -398,29 +343,21 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
         char **lines = NULL;
         int count = todo_load(fpath, &lines);
         if (count < 0) {
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, "Out of memory");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_ERROR, "Out of memory");
             return CMD_CONTINUE;
         }
         if (count == 0) {
             todo_free_lines(lines, count);
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_READY, "No todo.md found (nothing to purge)");
-            pthread_mutex_unlock(&ui->mtx); tui_render(ui);
+            ui_locked_set_status(ui, STATUS_READY, "No todo.md found (nothing to purge)");
             return CMD_CONTINUE;
         }
         int purged = 0;
         int kept = todo_purge(lines, count, &purged);
         todo_save(fpath, lines, kept);
         todo_free_lines(lines, kept);
-        char status[128];
-        snprintf(status, sizeof(status), "Purged %d completed items, %d remaining", purged, kept);
         cmd_todo_refresh(ui, fpath, ctx->ws ? ctx->ws->name : NULL);
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_READY, status);
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
+        ui_locked_set_status_fmt(ui, STATUS_READY,
+            "Purged %d completed items, %d remaining", purged, kept);
         return CMD_CONTINUE;
     }
 
@@ -433,13 +370,8 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
 
         /* Check for unknown subcommand first */
         if (!show_all && strcmp(args, "list") != 0 && args[0] != '\0') {
-            char status[256];
-            snprintf(status, sizeof(status),
+            ui_locked_set_status(ui, STATUS_ERROR,
                 "Unknown subcommand. Usage: /todo [list|add <text>|done <N>|remove <N>|purge|-w]");
-            pthread_mutex_lock(&ui->mtx);
-            ui_state_set_status(ui, STATUS_ERROR, status);
-            pthread_mutex_unlock(&ui->mtx);
-            tui_render(ui);
             return CMD_CONTINUE;
         }
 
@@ -493,11 +425,7 @@ int cmd_todo(command_ctx_t *ctx, const char *args) {
             ui_state_set_status(ui, STATUS_READY, "TODO list");
             free(ui->current_filepath);
             ui->current_filepath = NULL;
-            char *new_path = strdup(tpath);
-            if (!new_path) {
-                pthread_mutex_unlock(&ui->mtx);
-                return CMD_CONTINUE;
-            }
+            char *new_path = xstrdup(tpath);
             ui->current_filepath = new_path;
             ui->scroll_y = 0;
             ui->scroll_x = 0;

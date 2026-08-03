@@ -33,13 +33,13 @@ static void add_candidate(char ***arr, int *count, int *cap,
                           const char *value, const char *prefix, int prefix_len) {
     if (prefix_len > 0 && strncmp(value, prefix, (size_t)prefix_len) != 0)
         return;
-    VEC_PUSH(*arr, *count, *cap, strdup(value));
+    VEC_PUSH(*arr, *count, *cap, xstrdup(value));
 }
 
 /* Compute the longest common prefix of an array of strings. */
 static char *longest_common_prefix(char **arr, int count) {
-    if (count == 0) return strdup("");
-    if (count == 1) return strdup(arr[0]);
+    if (count == 0) return xstrdup("");
+    if (count == 1) return xstrdup(arr[0]);
     int len = (int)strlen(arr[0]);
     for (int i = 1; i < count; i++) {
         int j = 0;
@@ -280,7 +280,7 @@ static int provide_dirs(const char *nash_dir, const char *prefix,
         } else {
             snprintf(cand, sizeof(cand), "%s", ent->d_name);
         }
-        VEC_PUSH(*arr, *count, *cap, strdup(cand));
+        VEC_PUSH(*arr, *count, *cap, xstrdup(cand));
         added++;
     }
     closedir(d);
@@ -565,7 +565,7 @@ completion_result_t *completion_complete(const char *buf, int len, int cursor,
         return NULL;
     }
 
-    completion_result_t *r = calloc(1, sizeof(*r));
+    completion_result_t *r = xcalloc(1, sizeof(*r));
     r->candidates = candidates;
     r->count = ccount;
     r->replace_start = replace_start;

@@ -71,8 +71,7 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
     /* Build partner map once (O(n)) instead of per-candidate O(n²) scanning */
     evict_partner_map_t pmap = evict_build_partner_map(chat, evict_start, evict_end);
 
-    int *evict_mark = calloc((size_t)n_evictable, sizeof(int));
-    if (!evict_mark) { evict_free_partner_map(&pmap); return 0; }
+    int *evict_mark = xcalloc((size_t)n_evictable, sizeof(int));
 
     /* target_remaining = target_chars - head_chars = how much non-head content
      * we want to retain after eviction. */
@@ -384,7 +383,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
                 if (nl) src = nl + 1;
             }
             size_t src_len = strlen(src);
-            char *cleaned = malloc(src_len + 1);
+            char *cleaned = xmalloc(src_len + 1);
             if (cleaned) {
                 size_t di = 0;
                 for (size_t si = 0; si < src_len; ) {

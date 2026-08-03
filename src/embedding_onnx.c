@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "embedding_onnx.h"
 #include "nash_limits.h"
+#include "str.h"
 #include "onnxruntime_c_api.h"
 #include "tui.h"
 #include "nash_log.h"
@@ -63,9 +64,8 @@ static void wp_vocab_free(wp_vocab_t *v) {
 static void wp_vocab_insert(wp_vocab_t *v, const char *token, int id) {
     int len = (int)strlen(token);
     unsigned h = wp_hash(token, len);
-    wp_entry_t *e = malloc(sizeof(*e));
-    if (!e) return;
-    e->token = strdup(token);
+    wp_entry_t *e = xmalloc(sizeof(*e));
+    e->token = xstrdup(token);
     e->id = id;
     e->next = v->buckets[h];
     v->buckets[h] = e;
@@ -89,8 +89,7 @@ static wp_vocab_t *wp_vocab_load(const char *path) {
         return NULL;
     }
 
-    wp_vocab_t *v = calloc(1, sizeof(*v));
-    if (!v) { fclose(f); return NULL; }
+    wp_vocab_t *v = xcalloc(1, sizeof(*v));
 
     char line[1024];
     int id = 0;
@@ -284,8 +283,7 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
         return NULL;
     }
 
-    onnx_embed_ctx_t *ctx = calloc(1, sizeof(*ctx));
-    if (!ctx) { wp_vocab_free(vocab); return NULL; }
+    onnx_embed_ctx_t *ctx = xcalloc(1, sizeof(*ctx));
     ctx->api = api;
     ctx->vocab = vocab;
 
@@ -461,8 +459,7 @@ float *onnx_embed_text(onnx_embed_ctx_t *ctx, const char *text, int *out_dim) {
     }
 
     /* Mean pooling: average over token positions, weighted by attention_mask */
-    float *embedding = calloc((size_t)hidden_dim, sizeof(float));
-    if (!embedding) goto cleanup;
+    float *embedding = xcalloc((size_t)hidden_dim, sizeof(float));
 
     float mask_sum = 0.0f;
     for (int t = 0; t < n_tokens; t++) {
@@ -541,10 +538,10 @@ float **onnx_embed_text_batch(onnx_embed_ctx_t *ctx, const char **texts,
 
     /* Allocate tokenization buffers: n_texts * WP_MAX_TOKENS each */
     size_t buf_elems = (size_t)n_texts * WP_MAX_TOKENS;
-    int64_t *all_input_ids     = calloc(buf_elems, sizeof(int64_t));
-    int64_t *all_attention_mask = calloc(buf_elems, sizeof(int64_t));
-    int64_t *all_token_type_ids = calloc(buf_elems, sizeof(int64_t));
-    int *token_counts = calloc((size_t)n_texts, sizeof(int));
+    int64_t *all_input_ids = xcalloc(buf_elems, sizeof(int64_t));
+    int64_t *all_attention_mask = xcalloc(buf_elems, sizeof(int64_t));
+    int64_t *all_token_type_ids = xcalloc(buf_elems, sizeof(int64_t));
+    int *token_counts = xcalloc((size_t)n_texts, sizeof(int));
 
     if (!all_input_ids || !all_attention_mask || !all_token_type_ids || !token_counts) {
         free(all_input_ids); free(all_attention_mask);
@@ -583,9 +580,9 @@ float **onnx_embed_text_batch(onnx_embed_ctx_t *ctx, const char **texts,
 
     /* Build compact padded buffers: shape {n_texts, max_tokens} */
     size_t compact_elems = (size_t)n_texts * (size_t)max_tokens;
-    int64_t *compact_ids  = calloc(compact_elems, sizeof(int64_t));
-    int64_t *compact_mask = calloc(compact_elems, sizeof(int64_t));
-    int64_t *compact_type = calloc(compact_elems, sizeof(int64_t));
+    int64_t *compact_ids = xcalloc(compact_elems, sizeof(int64_t));
+    int64_t *compact_mask = xcalloc(compact_elems, sizeof(int64_t));
+    int64_t *compact_type = xcalloc(compact_elems, sizeof(int64_t));
 
     if (!compact_ids || !compact_mask || !compact_type) {
         free(all_input_ids); free(all_attention_mask);
@@ -686,13 +683,12 @@ float **onnx_embed_text_batch(onnx_embed_ctx_t *ctx, const char **texts,
     if (out_dim) *out_dim = hidden_dim;
 
     /* Mean pool + L2 normalize each row independently */
-    results = calloc((size_t)n_texts, sizeof(float *));
-    if (!results) goto batch_cleanup;
+    results = xcalloc((size_t)n_texts, sizeof(float *));
 
     for (int i = 0; i < n_texts; i++) {
         if (token_counts[i] <= 0) continue;  /* no tokens - leave NULL */
 
-        float *emb = calloc((size_t)hidden_dim, sizeof(float));
+        float *emb = xcalloc((size_t)hidden_dim, sizeof(float));
         if (!emb) continue;
 
         /* Mean pooling over attended tokens for row i */

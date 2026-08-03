@@ -12,11 +12,9 @@
 /* ── Chat management ─────────────────────────────────────────── */
 
 llm_chat_t *llm_chat_new(void) {
-    llm_chat_t *c = calloc(1, sizeof(*c));
-    if (!c) return NULL;
+    llm_chat_t *c = xcalloc(1, sizeof(*c));
     c->cap_msgs = 32;
-    c->msgs = calloc(c->cap_msgs, sizeof(llm_msg_t));
-    if (!c->msgs) { free(c); return NULL; }
+    c->msgs = xcalloc(c->cap_msgs, sizeof(llm_msg_t));
     return c;
 }
 
@@ -56,14 +54,8 @@ int llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
     if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
-    m->role = strdup(role);
-    m->content = strdup(content);
-    if (!m->role || !m->content) {
-        nash_log("[llm] CRITICAL: strdup failed for message role=%s — context will be incomplete", role);
-        free(m->role);
-        free(m->content);
-        return -1;
-    }
+    m->role = xstrdup(role);
+    m->content = xstrdup(content);
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     chat->n_msgs++;
@@ -119,14 +111,8 @@ int llm_chat_add_typed(llm_chat_t *chat, const char *role,
     if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
-    m->role = strdup(role);
-    m->content = strdup(content);
-    if (!m->role || !m->content) {
-        nash_log("[llm] CRITICAL: strdup failed for typed message role=%s", role);
-        free(m->role);
-        free(m->content);
-        return -1;
-    }
+    m->role = xstrdup(role);
+    m->content = xstrdup(content);
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     m->msg_type = type;
@@ -147,8 +133,7 @@ int llm_chat_add_formatted(llm_chat_t *chat, const char *role,
     int needed = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (needed < 0) { va_end(ap2); return -1; }
-    char *buf = malloc((size_t)needed + 1);
-    if (!buf) { va_end(ap2); return -1; }
+    char *buf = xmalloc((size_t)needed + 1);
     vsnprintf(buf, (size_t)needed + 1, fmt, ap2);
     va_end(ap2);
     int rc = llm_chat_add_typed(chat, role, buf, type);
@@ -225,14 +210,8 @@ int llm_chat_insert_typed(llm_chat_t *chat, int pos,
     /* BUG 4 FIX: Allocate strings BEFORE shifting array.
      * Previously, memmove ran first, then strdup failure left a
      * corrupted hole at pos with shifted messages at pos+1..n_msgs. */
-    char *r = strdup(role);
-    char *c = strdup(content);
-    if (!r || !c) {
-        nash_log("[llm] CRITICAL: strdup failed for inserted typed message role=%s", role);
-        free(r);
-        free(c);
-        return -1;
-    }
+    char *r = xstrdup(role);
+    char *c = xstrdup(content);
     /* Shift existing messages to make room */
     int tail = chat->n_msgs - pos;
     if (tail > 0)
@@ -256,16 +235,9 @@ int llm_chat_add_tool_result(llm_chat_t *chat, const char *tool_call_id,
     if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
-    m->role = strdup("tool");
-    m->content = strdup(content);
-    m->tool_call_id = tool_call_id ? strdup(tool_call_id) : NULL;
-    if (!m->role || !m->content || (tool_call_id && !m->tool_call_id)) {
-        nash_log("[llm] CRITICAL: strdup failed for tool result");
-        free(m->role);
-        free(m->content);
-        free(m->tool_call_id);
-        return -1;
-    }
+    m->role = xstrdup("tool");
+    m->content = xstrdup(content);
+    m->tool_call_id = tool_call_id ? xstrdup(tool_call_id) : NULL;
     m->content_len = strlen(m->content);
     chat->total_chars += (long)m->content_len;
     m->msg_type = LLM_MSG_TOOL_RESULT;
@@ -282,25 +254,18 @@ int llm_chat_add_assistant_tool_call(llm_chat_t *chat, const char *content,
     if (llm_chat_ensure_capacity(chat) != 0) return -1;
     llm_msg_t *m = &chat->msgs[chat->n_msgs];
     memset(m, 0, sizeof(*m));
-    m->role = strdup("assistant");
-    m->content = content ? strdup(content) : strdup("");
-    m->tool_calls_json = tool_calls_json ? strdup(tool_calls_json) : NULL;
-    if (!m->role || !m->content || (tool_calls_json && !m->tool_calls_json)) {
-        nash_log("[llm] CRITICAL: strdup failed for assistant tool call");
-        free(m->role);
-        free(m->content);
-        free(m->tool_calls_json);
-        return -1;
-    }
+    m->role = xstrdup("assistant");
+    m->content = content ? xstrdup(content) : xstrdup("");
+    m->tool_calls_json = tool_calls_json ? xstrdup(tool_calls_json) : NULL;
     /* Proposal C: Extract and cache outbound tool_call_id from JSON */
     if (m->tool_calls_json) {
         cJSON *tc_arr = cJSON_Parse(m->tool_calls_json);
         if (tc_arr && cJSON_IsArray(tc_arr)) {
             cJSON *first = cJSON_GetArrayItem(tc_arr, 0);
             if (first) {
-                cJSON *id_item = cJSON_GetObjectItem(first, "id");
-                if (id_item && cJSON_IsString(id_item))
-                    m->tool_call_id_outbound = strdup(id_item->valuestring);
+                const char *id_val = json_str(first, "id");
+                if (id_val)
+                    m->tool_call_id_outbound = xstrdup(id_val);
             }
         }
         cJSON_Delete(tc_arr);
@@ -333,7 +298,7 @@ void llm_chat_replace_content(llm_chat_t *chat, int idx, char *new_content /*con
  * Format per message: ### role\n\ncontent\n\n
  * Returns malloc'd string. Caller must free. */
 char *llm_chat_serialize(llm_chat_t *chat) {
-    if (!chat || chat->n_msgs == 0) return strdup("");
+    if (!chat || chat->n_msgs == 0) return xstrdup("");
     str_t s = str_new(4096);
     for (int i = 0; i < chat->n_msgs; i++) {
         llm_msg_t *m = &chat->msgs[i];
@@ -354,8 +319,7 @@ static char *extract_json_string_value(const char *text, const char *key) {
 
     /* Build search pattern: "key" */
     size_t klen = strlen(key);
-    char *pattern = malloc(klen + 3);
-    if (!pattern) return NULL;
+    char *pattern = xmalloc(klen + 3);
     pattern[0] = '"';
     memcpy(pattern + 1, key, klen);
     pattern[klen + 1] = '"';
@@ -388,8 +352,7 @@ static char *extract_json_string_value(const char *text, const char *key) {
     if (!*p) return NULL;
 
     size_t vlen = (size_t)(p - val_start);
-    char *val = malloc(vlen + 1);
-    if (!val) return NULL;
+    char *val = xmalloc(vlen + 1);
     memcpy(val, val_start, vlen);
     val[vlen] = '\0';
     return val;
@@ -450,11 +413,9 @@ static cJSON *parse_hybrid_tool_call(const char *text) {
                    *p != '<' && *p != ',') p++;
             size_t alen = (size_t)(p - astart);
             if (alen > 0 && alen < 256) {
-                action = malloc(alen + 1);
-                if (action) {
-                    memcpy(action, astart, alen);
-                    action[alen] = '\0';
-                }
+                action = xmalloc(alen + 1);
+                memcpy(action, astart, alen);
+                action[alen] = '\0';
             }
         }
     }
@@ -509,13 +470,11 @@ static cJSON *parse_hybrid_tool_call(const char *text) {
             val_end--;
 
         size_t val_len = (size_t)(val_end - val_start);
-        char *val = malloc(val_len + 1);
-        if (val) {
-            memcpy(val, val_start, val_len);
-            val[val_len] = '\0';
-            cJSON_AddStringToObject(result, pname, val);
-            free(val);
-        }
+        char *val = xmalloc(val_len + 1);
+        memcpy(val, val_start, val_len);
+        val[val_len] = '\0';
+        cJSON_AddStringToObject(result, pname, val);
+        free(val);
 
         /* Advance past </parameter> */
         const char *close = strstr(val_start, "</parameter>");
@@ -526,9 +485,8 @@ static cJSON *parse_hybrid_tool_call(const char *text) {
         }
     }
 
-    cJSON *act_item = cJSON_GetObjectItem(result, "action");
     nash_log("[llm] parsed hybrid JSON+XML tool call (action=%s)",
-             act_item ? act_item->valuestring : "(unknown)");
+             json_str_or(result, "action", "(unknown)"));
     return result;
 }
 
@@ -589,8 +547,7 @@ cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
     }
 
     /* Make a NUL-terminated copy of the body */
-    char *body_copy = malloc(body_len + 1);
-    if (!body_copy) return NULL;
+    char *body_copy = xmalloc(body_len + 1);
     memcpy(body_copy, body, body_len);
     body_copy[body_len] = '\0';
 
@@ -600,22 +557,19 @@ cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
         cJSON *inner = cJSON_Parse(brace);
         if (inner) {
             /* Convert {"name":"X","arguments":{...}} → {"action":"X",...} */
-            cJSON *name = cJSON_GetObjectItem(inner, "name");
             cJSON *args = cJSON_GetObjectItem(inner, "arguments");
 
             cJSON *result = cJSON_CreateObject();
             /* Add thought if there was text before <tool_call> */
             if (thought_len > 0) {
-                char *thought = malloc(thought_len + 1);
-                if (thought) {
-                    memcpy(thought, thought_start, thought_len);
-                    thought[thought_len] = '\0';
-                    cJSON_AddStringToObject(result, "thought", thought);
-                    free(thought);
-                }
+                char *thought = xmalloc(thought_len + 1);
+                memcpy(thought, thought_start, thought_len);
+                thought[thought_len] = '\0';
+                cJSON_AddStringToObject(result, "thought", thought);
+                free(thought);
             }
             cJSON_AddStringToObject(result, "action",
-                (name && cJSON_IsString(name)) ? name->valuestring : "");
+                json_str_or(inner, "name", ""));
 
             if (args && cJSON_IsObject(args)) {
                 cJSON *child = args->child;
@@ -648,13 +602,11 @@ cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
     cJSON *result = cJSON_CreateObject();
     /* Add thought if there was text before <tool_call> */
     if (thought_len > 0) {
-        char *thought = malloc(thought_len + 1);
-        if (thought) {
-            memcpy(thought, thought_start, thought_len);
-            thought[thought_len] = '\0';
-            cJSON_AddStringToObject(result, "thought", thought);
-            free(thought);
-        }
+        char *thought = xmalloc(thought_len + 1);
+        memcpy(thought, thought_start, thought_len);
+        thought[thought_len] = '\0';
+        cJSON_AddStringToObject(result, "thought", thought);
+        free(thought);
     }
     char fn_name[256];
     if (fn_name_len >= sizeof(fn_name)) fn_name_len = sizeof(fn_name) - 1;
@@ -708,13 +660,11 @@ cJSON *parse_xml_tool_call(const char *text, int *multi_count) {
             val_end--;
 
         size_t val_len = (size_t)(val_end - val_start);
-        char *val = malloc(val_len + 1);
-        if (val) {
-            memcpy(val, val_start, val_len);
-            val[val_len] = '\0';
-            cJSON_AddStringToObject(result, pname, val);
-            free(val);
-        }
+        char *val = xmalloc(val_len + 1);
+        memcpy(val, val_start, val_len);
+        val[val_len] = '\0';
+        cJSON_AddStringToObject(result, pname, val);
+        free(val);
 
         /* Advance past </parameter> */
         const char *close = strstr(val_start, "</parameter>");
@@ -738,8 +688,7 @@ static char *repair_json(const char *src) {
     if (!src) return NULL;
     size_t len = strlen(src);
     /* Allocate extra space for inserted colons + post-loop closing quote + NUL */
-    char *buf = malloc(len * 2 + 3);
-    if (!buf) return NULL;
+    char *buf = xmalloc(len * 2 + 3);
 
     size_t j = 0;
     int in_string = 0;
@@ -889,8 +838,7 @@ int llm_fetch_context_size(const char *api_base) {
     int n_ctx = 0;
     cJSON *dgs = cJSON_GetObjectItem(resp, "default_generation_settings");
     if (dgs) {
-        cJSON *ctx = cJSON_GetObjectItem(dgs, "n_ctx");
-        if (ctx && cJSON_IsNumber(ctx)) n_ctx = (int)cJSON_GetNumberValue(ctx);
+        n_ctx = json_int(dgs, "n_ctx", 0);
     }
 
     cJSON_Delete(resp);
@@ -919,9 +867,9 @@ char *llm_fetch_model_name(const char *api_base) {
     cJSON *data = cJSON_GetObjectItem(resp, "data");
     if (data && cJSON_IsArray(data) && cJSON_GetArraySize(data) > 0) {
         cJSON *m0 = cJSON_GetArrayItem(data, 0);
-        cJSON *id = cJSON_GetObjectItem(m0, "id");
-        if (id && id->valuestring)
-            model_name = strdup(id->valuestring);
+        const char *id_s = json_str(m0, "id");
+        if (id_s)
+            model_name = xstrdup(id_s);
     }
 
     /* Fallback: try models[0].model (Ollama format) */
@@ -929,9 +877,9 @@ char *llm_fetch_model_name(const char *api_base) {
         cJSON *models = cJSON_GetObjectItem(resp, "models");
         if (models && cJSON_IsArray(models) && cJSON_GetArraySize(models) > 0) {
             cJSON *m0 = cJSON_GetArrayItem(models, 0);
-            cJSON *mn = cJSON_GetObjectItem(m0, "model");
-            if (mn && mn->valuestring)
-                model_name = strdup(mn->valuestring);
+            const char *mn_s = json_str(m0, "model");
+            if (mn_s)
+                model_name = xstrdup(mn_s);
         }
     }
 
@@ -995,10 +943,10 @@ char *llm_apply_template(const char *api_base, const char *user_query) {
     str_free(&response);
     if (!resp) return NULL;
 
-    cJSON *prompt = cJSON_GetObjectItem(resp, "prompt");
+    const char *prompt = json_str(resp, "prompt");
     char *result = NULL;
-    if (prompt && prompt->valuestring)
-        result = strdup(prompt->valuestring);
+    if (prompt)
+        result = xstrdup(prompt);
     cJSON_Delete(resp);
     return result;
 }

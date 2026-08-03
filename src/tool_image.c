@@ -36,8 +36,7 @@ static const char b64_table[] =
 static char *base64_encode(const unsigned char *data, size_t input_len,
                            size_t *output_len) {
     size_t olen = 4 * ((input_len + 2) / 3);
-    char *out = malloc(olen + 1);
-    if (!out) return NULL;
+    char *out = xmalloc(olen + 1);
 
     size_t i, j;
     for (i = 0, j = 0; i + 2 < input_len; i += 3, j += 4) {
@@ -111,7 +110,7 @@ static char *build_openai_image_request(provider_t *p, const char *question,
     cJSON *img_url = cJSON_CreateObject();
     /* Build data URI: data:<mime>;base64,<data> */
     size_t uri_len = strlen(mime) + strlen(b64) + 32;
-    char *data_uri = malloc(uri_len);
+    char *data_uri = xmalloc(uri_len);
     if (data_uri) {
         snprintf(data_uri, uri_len, "data:%s;base64,%s", mime, b64);
         cJSON_AddStringToObject(img_url, "url", data_uri);
@@ -196,12 +195,11 @@ static char *extract_response_text(provider_t *p, const char *resp_json) {
             int n = cJSON_GetArraySize(content);
             for (int i = 0; i < n; i++) {
                 cJSON *block = cJSON_GetArrayItem(content, i);
-                cJSON *type = cJSON_GetObjectItem(block, "type");
-                if (type && cJSON_IsString(type) &&
-                    strcmp(type->valuestring, "text") == 0) {
-                    cJSON *text = cJSON_GetObjectItem(block, "text");
-                    if (text && cJSON_IsString(text)) {
-                        result = strdup(text->valuestring);
+                const char *type = json_str(block, "type");
+                if (type && strcmp(type, "text") == 0) {
+                    const char *text = json_str(block, "text");
+                    if (text) {
+                        result = xstrdup(text);
                         break;
                     }
                 }
@@ -214,9 +212,9 @@ static char *extract_response_text(provider_t *p, const char *resp_json) {
             cJSON *choice = cJSON_GetArrayItem(choices, 0);
             cJSON *message = cJSON_GetObjectItem(choice, "message");
             if (message) {
-                cJSON *content = cJSON_GetObjectItem(message, "content");
-                if (content && cJSON_IsString(content)) {
-                    result = strdup(content->valuestring);
+                const char *cstr = json_str(message, "content");
+                if (cstr) {
+                    result = xstrdup(cstr);
                 }
             }
         }
@@ -229,11 +227,11 @@ static char *extract_response_text(provider_t *p, const char *resp_json) {
             const char *msg = "";
             if (cJSON_IsString(error)) msg = error->valuestring;
             else {
-                cJSON *emsg = cJSON_GetObjectItem(error, "message");
-                if (emsg && cJSON_IsString(emsg)) msg = emsg->valuestring;
+                const char *emsg = json_str(error, "message");
+                if (emsg) msg = emsg;
             }
             size_t len = strlen(msg) + 64;
-            result = malloc(len);
+            result = xmalloc(len);
             if (result) snprintf(result, len, "API error: %s", msg);
         }
     }
@@ -251,10 +249,9 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     const char *orig_path = path;  /* before resolve */
 
     /* Optional question/prompt about the image */
-    cJSON *question_j = cJSON_GetObjectItem(params, "question");
-    const char *question = (question_j && cJSON_IsString(question_j) &&
-                            question_j->valuestring[0])
-        ? question_j->valuestring
+    const char *q = json_str(params, "question");
+    const char *question = (q && q[0])
+        ? q
         : "Describe this image in detail. Include all visible text, "
           "layout, colors, and any notable features.";
 
@@ -429,7 +426,7 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     tool_journal(ctx, "image_analyze",
                    params, alias, strlen(analysis), 0, NULL, NULL);
 
-    char *ref_copy = strdup(alias);
+    char *ref_copy = xstrdup(alias);
     tool_result_t result = tools_make_result(1, meta, ref_copy);
     result.importance = 2;  /* high — user explicitly requested analysis */
 

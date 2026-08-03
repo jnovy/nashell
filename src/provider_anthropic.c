@@ -82,8 +82,7 @@ static const char *get_vertex_token(provider_t *p) {
         return NULL;
     }
 
-    free(p->_cached_auth_token);
-    p->_cached_auth_token = strdup(out.data);
+    str_replace(&p->_cached_auth_token, out.data);
     p->_auth_token_expiry = now + 600;   /* refresh every 10 min to avoid stale tokens */
     str_free(&out);
 
@@ -108,8 +107,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
         const char *content = chat->msgs[i].content;
 
         if (strcmp(role, "system") == 0) {
-            free(system_text);
-            system_text = strdup(content ? content : "");
+            str_replace(&system_text, content ? content : "");
             continue;
         }
 
@@ -119,8 +117,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 /* Find or create last user message to append tool_result */
                 cJSON *last = cJSON_GetArrayItem(api_messages,
                               cJSON_GetArraySize(api_messages) - 1);
-                cJSON *last_role = last ? cJSON_GetObjectItem(last, "role") : NULL;
-                if (last_role && strcmp(last_role->valuestring,
+                const char *last_role = last ? json_str(last, "role") : NULL;
+                if (last_role && strcmp(last_role,
                                   "user") == 0) {
                     cJSON *lc = cJSON_GetObjectItem(last, "content");
                     cJSON *tr = cJSON_CreateObject();
@@ -154,8 +152,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
             {
                 int nm = cJSON_GetArraySize(api_messages);
                 cJSON *prev = nm > 0 ? cJSON_GetArrayItem(api_messages, nm - 1) : NULL;
-                cJSON *pr = prev ? cJSON_GetObjectItem(prev, "role") : NULL;
-                if (pr && strcmp(pr->valuestring, "assistant") == 0) {
+                const char *pr = prev ? json_str(prev, "role") : NULL;
+                if (pr && strcmp(pr, "assistant") == 0) {
                     blocks = cJSON_GetObjectItem(prev, "content");
                     merge_asst = 1;
                 }
@@ -189,9 +187,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                         /* Use the actual tool_call ID from the API response,
                          * NOT a synthetic one. Anthropic requires tool_use.id
                          * to match the tool_result.tool_use_id exactly. */
-                        cJSON *tc_id_obj = cJSON_GetObjectItem(tc, "id");
-                        const char *real_id = (tc_id_obj && cJSON_IsString(tc_id_obj))
-                            ? tc_id_obj->valuestring : NULL;
+                        const char *real_id = json_str(tc, "id");
                         char synth_id[32];
                         if (!real_id) {
                             snprintf(synth_id, sizeof(synth_id), "call_%d", call_idx);
@@ -203,13 +199,12 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                         cJSON_AddStringToObject(tu, "type", "tool_use");
                         cJSON_AddStringToObject(tu, "id", real_id);
 
-                        cJSON *name = cJSON_GetObjectItem(fn, "name");
                         cJSON_AddStringToObject(tu, "name",
-                                                (name && cJSON_IsString(name)) ? name->valuestring : "");
+                                                json_str_or(fn, "name", ""));
 
-                        cJSON *args_str = cJSON_GetObjectItem(fn, "arguments");
-                        if (args_str && cJSON_IsString(args_str)) {
-                            cJSON *input = cJSON_Parse(args_str->valuestring);
+                        const char *args_str = json_str(fn, "arguments");
+                        if (args_str) {
+                            cJSON *input = cJSON_Parse(args_str);
                             if (input) cJSON_AddItemToObject(tu, "input", input);
                             else cJSON_AddItemToObject(tu, "input",
                                                        cJSON_CreateObject());
@@ -218,8 +213,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                         }
 
                         cJSON_AddItemToArray(blocks, tu);
-                        free(pending_tool_id);
-                        pending_tool_id = strdup(real_id);
+                        str_replace(&pending_tool_id, real_id);
                     }
                 }
                 cJSON_Delete(tc_arr);
@@ -266,8 +260,9 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
             int n = cJSON_GetArraySize(api_messages);
             if (n > 0) last = cJSON_GetArrayItem(api_messages, n - 1);
 
-            if (last && cJSON_GetObjectItem(last, "role") &&
-                strcmp(cJSON_GetObjectItem(last, "role")->valuestring, "user") == 0) {
+            const char *last_role_str = json_str(last, "role");
+            if (last && last_role_str &&
+                strcmp(last_role_str, "user") == 0) {
                 cJSON *lc = cJSON_GetObjectItem(last, "content");
                 if (lc && cJSON_IsArray(lc)) {
                     cJSON_AddItemToArray(lc, tr);
@@ -311,7 +306,7 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
                 /* Prefix text before "Tool result:" */
                 if (tr_start > content) {
                     size_t prefix_len = (size_t)(tr_start - content);
-                    char *prefix = malloc(prefix_len + 1);
+                    char *prefix = xmalloc(prefix_len + 1);
                     if (prefix) {
                         memcpy(prefix, content, prefix_len);
                         prefix[prefix_len] = '\0';
@@ -372,8 +367,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
 
                 int nm = cJSON_GetArraySize(api_messages);
                 cJSON *last = nm > 0 ? cJSON_GetArrayItem(api_messages, nm - 1) : NULL;
-                cJSON *lr = last ? cJSON_GetObjectItem(last, "role") : NULL;
-                if (lr && strcmp(lr->valuestring, "user") == 0) {
+                const char *lr = last ? json_str(last, "role") : NULL;
+                if (lr && strcmp(lr, "user") == 0) {
                     /* Merge: append text block to existing user message */
                     cJSON *lc = cJSON_GetObjectItem(last, "content");
                     if (lc && cJSON_IsArray(lc)) {
@@ -434,8 +429,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
         int n = cJSON_GetArraySize(api_messages);
         for (int i = n - 2; i >= 0; i--) {
             cJSON *msg = cJSON_GetArrayItem(api_messages, i);
-            cJSON *r = cJSON_GetObjectItem(msg, "role");
-            if (r && strcmp(r->valuestring, "user") == 0) {
+            const char *r = json_str(msg, "role");
+            if (r && strcmp(r, "user") == 0) {
                 cJSON *c = cJSON_GetObjectItem(msg, "content");
                 if (c && cJSON_IsArray(c) && cJSON_GetArraySize(c) > 0) {
                     cJSON *last_block = cJSON_GetArrayItem(c,
@@ -620,7 +615,7 @@ static const char *anthropic_get_endpoint(provider_t *p) {
                 "locations/%s/publishers/anthropic/models/%s%s",
                 region, project, region, model, suffix);
         }
-        *cache = strdup(url);
+        *cache = xstrdup(url);
         return *cache;
     } else {
         const char *base = p->cfg.api_base;
@@ -641,16 +636,13 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
     if (stats) {
         cJSON *usage = cJSON_GetObjectItem(resp, "usage");
         if (usage) {
-            cJSON *it = cJSON_GetObjectItem(usage, "input_tokens");
-            cJSON *ot = cJSON_GetObjectItem(usage, "output_tokens");
-            if (ot && cJSON_IsNumber(ot)) stats->completion_tokens = ot->valueint;
+            stats->completion_tokens = json_int(usage, "output_tokens", 0);
             /* Anthropic prompt caching: input_tokens = uncached only.
              * Add cache_read + cache_creation to get the true total. */
-            cJSON *cr = cJSON_GetObjectItem(usage, "cache_read_input_tokens");
-            if (cr && cJSON_IsNumber(cr)) stats->cache_read_tokens = cr->valueint;
-            cJSON *cc = cJSON_GetObjectItem(usage, "cache_creation_input_tokens");
-            if (cc && cJSON_IsNumber(cc)) stats->cache_creation_tokens = cc->valueint;
-            if (it && cJSON_IsNumber(it)) stats->prompt_tokens = it->valueint
+            stats->cache_read_tokens = json_int(usage, "cache_read_input_tokens", 0);
+            stats->cache_creation_tokens = json_int(usage, "cache_creation_input_tokens", 0);
+            int it = json_int(usage, "input_tokens", 0);
+            if (it) stats->prompt_tokens = it
                                          + stats->cache_read_tokens
                                          + stats->cache_creation_tokens;
         }
@@ -670,16 +662,16 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
     int n = cJSON_GetArraySize(content);
     for (int i = 0; i < n; i++) {
         cJSON *block = cJSON_GetArrayItem(content, i);
-        cJSON *btype = cJSON_GetObjectItem(block, "type");
-        if (!btype || !cJSON_IsString(btype)) continue;
+        const char *btype = json_str(block, "type");
+        if (!btype) continue;
 
-        if (strcmp(btype->valuestring, "text") == 0) {
-            cJSON *text = cJSON_GetObjectItem(block, "text");
-            if (text && cJSON_IsString(text)) {
+        if (strcmp(btype, "text") == 0) {
+            const char *text = json_str(block, "text");
+            if (text) {
                 if (thought.len > 0) str_append_cstr(&thought, " ");
-                str_append_cstr(&thought, text->valuestring);
+                str_append_cstr(&thought, text);
             }
-        } else if (strcmp(btype->valuestring, "tool_use") == 0) {
+        } else if (strcmp(btype, "tool_use") == 0) {
             if (!tool_block) tool_block = block;  /* keep first, not last */
             tool_use_count++;
         }
@@ -693,13 +685,11 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
     }
 
     /* Check stop reason */
-    cJSON *stop_reason = cJSON_GetObjectItem(resp, "stop_reason");
-    const char *stop = stop_reason && cJSON_IsString(stop_reason) ?
-                       stop_reason->valuestring : "";
+    const char *stop = json_str_or(resp, "stop_reason", "");
 
     if (strcmp(stop, "end_turn") == 0 && !tool_block) {
         /* No tool call — model wants to finish */
-        char *result = thought.len > 0 ? strdup(thought.data) : strdup("");
+        char *result = thought.len > 0 ? xstrdup(thought.data) : xstrdup("");
         str_free(&thought);
         if (chat) {
             free(chat->last_tool_call_id);
@@ -712,8 +702,8 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
     }
 
     if (tool_block) {
-        cJSON *name = cJSON_GetObjectItem(tool_block, "name");
-        cJSON *id = cJSON_GetObjectItem(tool_block, "id");
+        const char *tb_name = json_str(tool_block, "name");
+        const char *tb_id = json_str(tool_block, "id");
         cJSON *input = cJSON_GetObjectItem(tool_block, "input");
 
         /* Build unified response */
@@ -723,8 +713,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
         if (thought.len > 0 && !is_whitespace_only(thought.data))
             thought_val = thought.data;
         cJSON_AddStringToObject(unified, "thought", thought_val);
-        cJSON_AddStringToObject(unified, "action",
-                                (name && cJSON_IsString(name)) ? name->valuestring : "");
+        cJSON_AddStringToObject(unified, "action", tb_name ? tb_name : "");
 
         /* Merge input params into unified */
         if (input && cJSON_IsObject(input)) {
@@ -742,20 +731,16 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
         /* Store tool call info */
         if (chat) {
             free(chat->last_tool_call_id);
-            chat->last_tool_call_id = (id && cJSON_IsString(id)) ?
-                                      strdup(id->valuestring) : NULL;
+            chat->last_tool_call_id = tb_id ? xstrdup(tb_id) : NULL;
 
             /* Build tool_calls JSON in OpenAI format for history */
             cJSON *tc_arr = cJSON_CreateArray();
             cJSON *tc = cJSON_CreateObject();
-            cJSON_AddStringToObject(tc, "id",
-                                    id && cJSON_IsString(id) ?
-                                    id->valuestring : "call_0");
+            cJSON_AddStringToObject(tc, "id", tb_id ? tb_id : "call_0");
             cJSON_AddStringToObject(tc, "type", "function");
             cJSON *fn = cJSON_CreateObject();
-            cJSON_AddStringToObject(fn, "name",
-                                    (name && cJSON_IsString(name)) ? name->valuestring : "");
-            char *args_str = input ? cJSON_PrintUnformatted(input) : strdup("{}");
+            cJSON_AddStringToObject(fn, "name", tb_name ? tb_name : "");
+            char *args_str = input ? cJSON_PrintUnformatted(input) : xstrdup("{}");
             cJSON_AddStringToObject(fn, "arguments", args_str);
             free(args_str);
             cJSON_AddItemToObject(tc, "function", fn);
@@ -772,7 +757,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
     }
 
     /* Fallback: return thought text */
-    char *result = thought.len > 0 ? strdup(thought.data) : NULL;
+    char *result = thought.len > 0 ? xstrdup(thought.data) : NULL;
     str_free(&thought);
     cJSON_Delete(resp);
     return result;

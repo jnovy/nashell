@@ -40,19 +40,19 @@ static char *extract_text_from_response(const char *raw) {
         if (j) {
             cJSON *c = cJSON_GetObjectItem(j, "content");
             if (c && cJSON_IsString(c) && c->valuestring && c->valuestring[0]) {
-                char *result = strdup(c->valuestring);
+                char *result = xstrdup(c->valuestring);
                 cJSON_Delete(j);
                 return result;
             }
             cJSON *r = cJSON_GetObjectItem(j, "result");
             if (r && cJSON_IsString(r) && r->valuestring && r->valuestring[0]) {
-                char *result = strdup(r->valuestring);
+                char *result = xstrdup(r->valuestring);
                 cJSON_Delete(j);
                 return result;
             }
             cJSON *t = cJSON_GetObjectItem(j, "thought");
             if (t && cJSON_IsString(t) && t->valuestring && t->valuestring[0]) {
-                char *result = strdup(t->valuestring);
+                char *result = xstrdup(t->valuestring);
                 cJSON_Delete(j);
                 return result;
             }
@@ -68,7 +68,7 @@ static char *extract_text_from_response(const char *raw) {
         if (end) return strndup(start, end - start);
     }
 
-    return strdup(raw);
+    return xstrdup(raw);
 }
 
 /* ════════════════════════════════════════════════════════
@@ -184,11 +184,10 @@ static char *build_crit_detail(const query_result_t *qr) {
 }
 
 static char *truncate_trace(const char *trace, int max_chars) {
-    if (!trace) return strdup("(no trace available)");
+    if (!trace) return xstrdup("(no trace available)");
     int len = (int)strlen(trace);
-    if (len <= max_chars) return strdup(trace);
-    char *t = malloc(max_chars + 20);
-    if (!t) return strdup("(truncation failed)");
+    if (len <= max_chars) return xstrdup(trace);
+    char *t = xmalloc(max_chars + 20);
     memcpy(t, trace, max_chars);
     strcpy(t + max_chars, "\n...[truncated]");
     return t;
@@ -197,7 +196,7 @@ static char *truncate_trace(const char *trace, int max_chars) {
 sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report) {
     if (!report) return NULL;
 
-    sh_evidence_t *bundle = calloc(1, sizeof(sh_evidence_t));
+    sh_evidence_t *bundle = xcalloc(1, sizeof(sh_evidence_t));
     str_t pass_summary = str_new(512);
 
     for (int i = 0; i < report->n_bank_results; i++) {
@@ -220,7 +219,7 @@ sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report)
 
     /* Cluster failures by exact signature agreement (§3.2) */
     int clusters_cap = 8;
-    bundle->clusters = calloc(clusters_cap, sizeof(sh_cluster_t));
+    bundle->clusters = xcalloc(clusters_cap, sizeof(sh_cluster_t));
 
     for (int i = 0; i < report->n_bank_results; i++) {
         bank_result_t *br = &report->bank_results[i];
@@ -248,9 +247,9 @@ sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report)
                 sh_cluster_t *fc = &bundle->clusters[ci];
                 memset(fc, 0, sizeof(*fc));
                 fc->sig = sig;
-                fc->query_ids = calloc(16, sizeof(char *));
-                fc->trace_excerpts = calloc(16, sizeof(char *));
-                fc->crit_details = calloc(16, sizeof(char *));
+                fc->query_ids = xcalloc(16, sizeof(char *));
+                fc->trace_excerpts = xcalloc(16, sizeof(char *));
+                fc->crit_details = xcalloc(16, sizeof(char *));
             }
 
             sh_cluster_t *fc = &bundle->clusters[ci];
@@ -262,7 +261,7 @@ sh_evidence_t *optimize_build_evidence_bundle(const regression_report_t *report)
                     safe_realloc((void **)&fc->crit_details, nc * sizeof(char *)))
                     continue;
             }
-            fc->query_ids[idx] = strdup(qr->query_id);
+            fc->query_ids[idx] = xstrdup(qr->query_id);
             fc->trace_excerpts[idx] = truncate_trace(qr->trace_summary, 600);
             fc->crit_details[idx] = build_crit_detail(qr);
             fc->n_entries = idx + 1;
@@ -630,7 +629,7 @@ char *optimize_reflect(provider_t *reflection_lm,
 
     char *start = (char *)skip_whitespace(text);
     rtrim_whitespace(start);
-    char *result = strdup(start);
+    char *result = xstrdup(start);
     free(text);
 
     fprintf(stderr, "[self-harness] proposal %d/%d: %zu chars (round %d)\n",
@@ -655,7 +654,7 @@ static prompt_candidate_t score_prompt(const char *prompt_text,
                                         char **tool_descs,
                                         int n_tool_descs) {
     prompt_candidate_t cand = {0};
-    cand.prompt_text = prompt_text ? strdup(prompt_text) : NULL;
+    cand.prompt_text = prompt_text ? xstrdup(prompt_text) : NULL;
     cand.round = round;
     if (out_report) *out_report = NULL;
 
@@ -794,7 +793,7 @@ query_flip_t *optimize_compare_reports_per_query(
         total += candidate->bank_results[i].n_results;
     if (total == 0) return NULL;
 
-    query_flip_t *flips = calloc((size_t)total, sizeof(query_flip_t));
+    query_flip_t *flips = xcalloc((size_t)total, sizeof(query_flip_t));
     int n = 0;
 
     for (int i = 0; i < candidate->n_bank_results; i++) {
@@ -864,12 +863,12 @@ static void append_flip_audit(str_t *audit, const query_flip_t *flips,
 /* MergeAccepted [§3.4]: pick accepted candidate with best score.
  * For text-blob harness surfaces, we use last-writer-wins with best delta. */
 static char *merge_accepted_prompts(prompt_candidate_t *accepted, int n) {
-    if (n == 0) return strdup("");
-    if (n == 1) return strdup(accepted[0].prompt_text);
+    if (n == 0) return xstrdup("");
+    if (n == 1) return xstrdup(accepted[0].prompt_text);
     int best = 0;
     for (int i = 1; i < n; i++)
         if (accepted[i].score > accepted[best].score) best = i;
-    return strdup(accepted[best].prompt_text);
+    return xstrdup(accepted[best].prompt_text);
 }
 
 static int write_prompt_to_profile(const char *profile_path,
@@ -1081,7 +1080,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
 
     /* Rejected proposal history (persists across epochs) */
     int rejected_cap = 16;
-    rejected_proposal_t *rejected = calloc(rejected_cap, sizeof(rejected_proposal_t));
+    rejected_proposal_t *rejected = xcalloc(rejected_cap, sizeof(rejected_proposal_t));
     int n_rejected = 0;
 
     /* Round 0: Baseline */
@@ -1098,7 +1097,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
         return best;
     }
 
-    best.prompt_text = current_prompt ? strdup(current_prompt) : NULL;
+    best.prompt_text = current_prompt ? xstrdup(current_prompt) : NULL;
     best.score = baseline_report->overall_score;
     best.held_in_score = baseline_report->held_in_score;
     best.held_out_score = baseline_report->held_out_score;
@@ -1127,9 +1126,9 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
     regression_report_t *round_baseline_report = baseline_report;
     baseline_report = NULL;  /* ownership transferred */
 
-    char *current = current_prompt ? strdup(current_prompt) : strdup("");
+    char *current = current_prompt ? xstrdup(current_prompt) : xstrdup("");
     prompt_candidate_t round_baseline = best;
-    round_baseline.prompt_text = strdup(current);
+    round_baseline.prompt_text = xstrdup(current);
 
     /* SkillOpt: cross-epoch longitudinal guidance */
     char *slow_guidance = NULL;
@@ -1143,7 +1142,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
 
     /* ══ Epoch loop [arXiv:2605.23904v2, §3.2] ══ */
     for (int epoch = 0; epoch < n_epochs && !stop_early; epoch++) {
-        char *epoch_start_skill = strdup(current);
+        char *epoch_start_skill = xstrdup(current);
         sh_evidence_t *epoch_start_evidence = NULL;
 
         if (n_epochs > 1)
@@ -1153,11 +1152,11 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
         /* Capture epoch-start evidence for slow update */
         if (evidence) {
             /* Shallow snapshot: just copy the summary counts */
-            epoch_start_evidence = calloc(1, sizeof(sh_evidence_t));
+            epoch_start_evidence = xcalloc(1, sizeof(sh_evidence_t));
             epoch_start_evidence->total_passes = evidence->total_passes;
             epoch_start_evidence->total_failures = evidence->total_failures;
             epoch_start_evidence->n_clusters = evidence->n_clusters;
-            epoch_start_evidence->clusters = calloc(
+            epoch_start_evidence->clusters = xcalloc(
                 evidence->n_clusters > 0 ? evidence->n_clusters : 1,
                 sizeof(sh_cluster_t));
             for (int i = 0; i < evidence->n_clusters; i++) {
@@ -1196,7 +1195,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
 
             /* Stage 2: Parallel Propose */
             fprintf(stderr, "  Generating %d proposals...\n", K);
-            char **cand_texts = calloc(K, sizeof(char *));
+            char **cand_texts = xcalloc(K, sizeof(char *));
             int n_valid = 0;
             for (int k = 0; k < K; k++) {
                 cand_texts[k] = optimize_reflect(opt->reflection, current,
@@ -1213,16 +1212,16 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
             }
 
             /* Stage 3: Validate each candidate */
-            prompt_candidate_t *accepted_list = calloc(K, sizeof(prompt_candidate_t));
+            prompt_candidate_t *accepted_list = xcalloc(K, sizeof(prompt_candidate_t));
             int n_accepted = 0;
             regression_report_t *best_report = NULL;
 
             /* Rec #7: Track manifests from this round for verification */
-            manifest_entry_t *round_manifests = calloc(K, sizeof(manifest_entry_t));
+            manifest_entry_t *round_manifests = xcalloc(K, sizeof(manifest_entry_t));
             /* Rec #2: Track per-candidate tool description overrides */
-            char ***cand_td_names = calloc(K, sizeof(char **));
-            char ***cand_td_descs = calloc(K, sizeof(char **));
-            int *cand_td_counts = calloc(K, sizeof(int));
+            char ***cand_td_names = xcalloc(K, sizeof(char **));
+            char ***cand_td_descs = xcalloc(K, sizeof(char **));
+            int *cand_td_counts = xcalloc(K, sizeof(int));
 
             for (int k = 0; k < K; k++) {
                 if (!cand_texts[k]) continue;
@@ -1233,7 +1232,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                 int n_td = 0;
                 char *prompt_only = optimize_parse_proposal(cand_texts[k],
                     &td_names, &td_descs, &n_td);
-                if (!prompt_only) prompt_only = strdup(cand_texts[k]);
+                if (!prompt_only) prompt_only = xstrdup(cand_texts[k]);
 
                 /* Rec #7: Parse decision manifest predictions */
                 round_manifests[k] = optimize_parse_manifest(cand_texts[k]);
@@ -1293,7 +1292,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                     fprintf(stderr, ")\n");
                     log_query_flips(flips, n_flips, n_fixes, n_regr);
                     accepted_list[n_accepted] = cand;
-                    accepted_list[n_accepted].prompt_text = strdup(cand.prompt_text);
+                    accepted_list[n_accepted].prompt_text = xstrdup(cand.prompt_text);
                     n_accepted++;
                     if (!best_report || cand.score > best.score) {
                         if (best_report) regression_free_report(best_report);
@@ -1316,7 +1315,7 @@ prompt_candidate_t optimize_run(optimize_config_t *opt,
                             goto skip_reject;
                         rejected_cap = new_cap;
                     }
-                    rejected[n_rejected].prompt_text = strdup(cand_texts[k]);
+                    rejected[n_rejected].prompt_text = xstrdup(cand_texts[k]);
                     /* SkillOpt: generate brief rejection audit with per-query detail */
                     {
                         str_t audit = str_new(256);
@@ -1379,7 +1378,7 @@ skip_reject: ;
                 for (int a = 0; a < n_accepted; a++) {
                     if (accepted_list[a].score > best.score) {
                         optimize_free_candidate(&best);
-                        best.prompt_text = strdup(accepted_list[a].prompt_text);
+                        best.prompt_text = xstrdup(accepted_list[a].prompt_text);
                         best.score = accepted_list[a].score;
                         best.held_in_score = accepted_list[a].held_in_score;
                         best.held_out_score = accepted_list[a].held_out_score;
@@ -1390,7 +1389,7 @@ skip_reject: ;
                 }
 
                 optimize_free_candidate(&round_baseline);
-                round_baseline.prompt_text = strdup(current);
+                round_baseline.prompt_text = xstrdup(current);
                 round_baseline.score = best.score;
                 round_baseline.held_in_score = best.held_in_score;
                 round_baseline.held_out_score = best.held_out_score;
@@ -1757,7 +1756,7 @@ char *optimize_parse_proposal(const char *raw_text,
 
     /* If no structured markers, treat entire text as system prompt (backwards compat) */
     if (!tool_section && !prompt_section)
-        return strdup(raw_text);
+        return xstrdup(raw_text);
 
     /* Extract system prompt portion */
     char *prompt_text = NULL;
@@ -1783,8 +1782,8 @@ char *optimize_parse_proposal(const char *raw_text,
         while (*p == '\n') p++;
 
         int cap = 8;
-        char **names = calloc(cap, sizeof(char *));
-        char **descs = calloc(cap, sizeof(char *));
+        char **names = xcalloc(cap, sizeof(char *));
+        char **descs = xcalloc(cap, sizeof(char *));
         int n = 0;
 
         while (*p) {
@@ -1842,7 +1841,7 @@ char *optimize_parse_proposal(const char *raw_text,
         }
     }
 
-    return prompt_text ? prompt_text : strdup("");
+    return prompt_text ? prompt_text : xstrdup("");
 }
 
 int optimize_write_tool_descs_to_profile(const char *profile_path,
@@ -1931,7 +1930,7 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
         if (!eol) eol = fix + strlen(fix);
 
         int cap = 8;
-        m.expect_fix = calloc(cap, sizeof(char *));
+        m.expect_fix = xcalloc(cap, sizeof(char *));
         const char *p = fix;
         while (p < eol) {
             while (p < eol && (*p == ' ' || *p == ',')) p++;
@@ -1960,7 +1959,7 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
         if (!eol) eol = risk + strlen(risk);
 
         int cap = 8;
-        m.at_risk = calloc(cap, sizeof(char *));
+        m.at_risk = xcalloc(cap, sizeof(char *));
         const char *p = risk;
         while (p < eol) {
             while (p < eol && (*p == ' ' || *p == ',')) p++;

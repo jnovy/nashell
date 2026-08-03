@@ -156,7 +156,7 @@ static void discover_files(rm_state_t *st, const char *root) {
             if (strcmp(root, ".") == 0)
                 snprintf(fullpath, sizeof(fullpath), "%s", line);
             else
-                snprintf(fullpath, sizeof(fullpath), "%s/%s", root, line);
+                path_join(fullpath, sizeof(fullpath), root, line);
 
             /* Verify it's a regular file */
             struct stat sb;
@@ -182,7 +182,7 @@ static void discover_files(rm_state_t *st, const char *root) {
         if (ent->d_name[0] == '.') continue;
 
         char fullpath[NASH_PATH_MAX];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", root, ent->d_name);
+        path_join(fullpath, sizeof(fullpath), root, ent->d_name);
 
         struct stat sb;
         if (stat(fullpath, &sb) != 0) continue;
@@ -212,14 +212,13 @@ static void load_file_lines(rm_file_t *f, const char *root) {
     if (strcmp(root, ".") == 0)
         snprintf(fullpath, sizeof(fullpath), "%s", f->path);
     else
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", root, f->path);
+        path_join(fullpath, sizeof(fullpath), root, f->path);
 
     FILE *fp = fopen(fullpath, "r");
     if (!fp) return;
 
     int cap = 256;
-    f->lines = malloc(sizeof(char *) * (size_t)cap);
-    if (!f->lines) { fclose(fp); return; }
+    f->lines = xmalloc(sizeof(char *) * (size_t)cap);
     f->n_lines = 0;
 
     char buf[RM_MAX_LINE_LEN];
@@ -231,7 +230,7 @@ static void load_file_lines(rm_file_t *f, const char *root) {
         }
         size_t len = strlen(buf);
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
-        f->lines[f->n_lines] = strdup(buf);
+        f->lines[f->n_lines] = xstrdup(buf);
         f->n_lines++;
     }
     fclose(fp);
@@ -699,10 +698,10 @@ static void pagerank(rm_state_t *st, rm_graph_t *g,
     if (n == 0) return;
 
     /* Initialize personalization vector */
-    float *pers = calloc((size_t)n, sizeof(float));
-    float *rank = calloc((size_t)n, sizeof(float));
-    float *new_rank = calloc((size_t)n, sizeof(float));
-    float *out_weight = calloc((size_t)n, sizeof(float));
+    float *pers = xcalloc((size_t)n, sizeof(float));
+    float *rank = xcalloc((size_t)n, sizeof(float));
+    float *new_rank = xcalloc((size_t)n, sizeof(float));
+    float *out_weight = xcalloc((size_t)n, sizeof(float));
     if (!pers || !rank || !new_rank || !out_weight) {
         free(pers); free(rank); free(new_rank); free(out_weight);
         return;
@@ -888,8 +887,7 @@ static void render_file(str_t *out, rm_state_t *st, int file_idx,
     if (!f->lines || f->n_lines == 0) return;
 
     /* Build a set of lines to show: the definition lines + context */
-    int *visible = calloc((size_t)f->n_lines, sizeof(int));
-    if (!visible) return;
+    int *visible = xcalloc((size_t)f->n_lines, sizeof(int));
 
     for (int s = 0; s < n_show; s++) {
         int line0 = show_lines[s] - 1;  /* 0-based */
@@ -968,8 +966,7 @@ char *repomap_build(const char *root_dir, const char *user_query,
     const char *root = root_dir ? root_dir : ".";
 
     /* Allocate state */
-    rm_state_t *st = calloc(1, sizeof(rm_state_t));
-    if (!st) return NULL;
+    rm_state_t *st = xcalloc(1, sizeof(rm_state_t));
 
     /* Phase 1a: Discover files */
     discover_files(st, root);
@@ -990,7 +987,7 @@ char *repomap_build(const char *root_dir, const char *user_query,
     }
 
     /* Phase 2: Build graph */
-    rm_graph_t *g = calloc(1, sizeof(rm_graph_t));
+    rm_graph_t *g = xcalloc(1, sizeof(rm_graph_t));
     if (!g) {
         for (int i = 0; i < st->n_files; i++) free_file_lines(&st->files[i]);
         free(st);
@@ -1003,7 +1000,7 @@ char *repomap_build(const char *root_dir, const char *user_query,
 
     /* Phase 4: Distribute rank to symbols */
     int max_ranked = st->n_tags < 4096 ? st->n_tags : 4096;
-    ranked_sym_t *ranked = malloc(sizeof(ranked_sym_t) * (size_t)max_ranked);
+    ranked_sym_t *ranked = xmalloc(sizeof(ranked_sym_t) * (size_t)max_ranked);
     int n_ranked = 0;
     if (ranked) {
         n_ranked = distribute_rank(st, g, ranked, max_ranked,
@@ -1027,7 +1024,7 @@ char *repomap_build(const char *root_dir, const char *user_query,
     } file_render_t;
 
     int fr_cap = st->n_files < 64 ? st->n_files : 64;
-    file_render_t *frs = calloc((size_t)fr_cap, sizeof(file_render_t));
+    file_render_t *frs = xcalloc((size_t)fr_cap, sizeof(file_render_t));
     int n_frs = 0;
 
     if (frs && ranked) {
@@ -1106,8 +1103,7 @@ static char **split_content_lines(const char *content, int content_len,
     if (!content || content_len <= 0) return NULL;
 
     int cap = 128;
-    char **lines = malloc(sizeof(char *) * (size_t)cap);
-    if (!lines) return NULL;
+    char **lines = xmalloc(sizeof(char *) * (size_t)cap);
 
     const char *p = content;
     const char *end = content + content_len;
@@ -1126,7 +1122,7 @@ static char **split_content_lines(const char *content, int content_len,
                 break;
         }
 
-        lines[*out_n_lines] = malloc((size_t)(len + 1));
+        lines[*out_n_lines] = xmalloc((size_t)(len + 1));
         if (!lines[*out_n_lines]) break;
         memcpy(lines[*out_n_lines], p, (size_t)len);
         lines[*out_n_lines][len] = '\0';
@@ -1170,7 +1166,7 @@ int repomap_file_symbols(const char *content, int content_len,
     /* Build minimal rm_state_t with one file entry.
      * Heap-allocated because rm_state_t is ~3.3MB (files[512] with
      * NASH_PATH_MAX paths + tags[8192]), far too large for the stack. */
-    rm_state_t *st = calloc(1, sizeof(*st));
+    rm_state_t *st = xcalloc(1, sizeof(*st));
     if (!st) {
         free_string_array(lines, n_lines);
         return 0;

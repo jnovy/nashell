@@ -26,6 +26,7 @@
 */
 #define _POSIX_C_SOURCE 200809L
 #include "toml.h"
+#include "str.h"
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -64,7 +65,7 @@ static void *CALLOC(size_t nmemb, size_t sz) {
 
 // some old platforms define strdup macro -- drop it.
 #undef strdup
-#define strdup(x) error - forbidden - use STRDUP instead
+#define xstrdup(x) error - forbidden - use STRDUP instead
 
 static char *STRDUP(const char *s) {
   int len = strlen(s);

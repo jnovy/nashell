@@ -9,19 +9,7 @@
 #include "nash_limits.h"
 #include "cJSON.h"
 
-/* Helper: get JSON string or default */
-static const char *jstr(cJSON *obj, const char *key, const char *def) {
-    cJSON *item = cJSON_GetObjectItem(obj, key);
-    return (item && cJSON_IsString(item)) ? item->valuestring : def;
-}
-static double jnum(cJSON *obj, const char *key, double def) {
-    cJSON *item = cJSON_GetObjectItem(obj, key);
-    return (item && cJSON_IsNumber(item)) ? cJSON_GetNumberValue(item) : def;
-}
-static int jbool(cJSON *obj, const char *key, int def) {
-    cJSON *item = cJSON_GetObjectItem(obj, key);
-    return item ? cJSON_IsTrue(item) : def;
-}
+/* JSON helpers: use global json_str_or / json_num / json_bool from str.h */
 
 /* Print banner: header art + server props + client overrides */
 /* Build banner into str_t — shared implementation for both stdio and TUI.
@@ -85,29 +73,29 @@ char *build_banner_impl(const config_t *cfg, const char *props_json,
             cJSON *params = gs ? cJSON_GetObjectItem(gs, "params") : NULL;
             cJSON *caps = cJSON_GetObjectItem(props, "chat_template_caps");
             cJSON *mods = cJSON_GetObjectItem(props, "modalities");
-            int n_ctx = (int)jnum(gs, "n_ctx", 0);
+            int n_ctx = (int)json_num(gs, "n_ctx", 0);
 
             str_appendf(&s, "server: %s\n", cfg->provider.api_base ? cfg->provider.api_base : "(none)");
-            str_appendf(&s, "  model:    %s\n", jstr(props, "model_alias", "(unknown)"));
-            str_appendf(&s, "  build:    %s\n", jstr(props, "build_info", "?"));
+            str_appendf(&s, "  model:    %s\n", json_str_or(props, "model_alias", "(unknown)"));
+            str_appendf(&s, "  build:    %s\n", json_str_or(props, "build_info", "?"));
             str_appendf(&s, "  ctx:      %d tok (%dk) | slots: %d\n",
-                        n_ctx, n_ctx / 1024, (int)jnum(props, "total_slots", 0));
+                        n_ctx, n_ctx / 1024, (int)json_num(props, "total_slots", 0));
 
             if (params) {
                 str_appendf(&s, "  defaults: temp=%.1f top_k=%d top_p=%.2f min_p=%.2f",
-                            jnum(params, "temperature", 0),
-                            (int)jnum(params, "top_k", 0),
-                            jnum(params, "top_p", 0),
-                            jnum(params, "min_p", 0));
-                double rp = jnum(params, "repeat_penalty", 1.0);
+                            json_num(params, "temperature", 0),
+                            (int)json_num(params, "top_k", 0),
+                            json_num(params, "top_p", 0),
+                            json_num(params, "min_p", 0));
+                double rp = json_num(params, "repeat_penalty", 1.0);
                 if (rp != 1.0) str_appendf(&s, " rep=%.1f", rp);
                 str_append_cstr(&s, "\n");
             }
 
             str_appendf(&s, "  caps:     tools=%s vision=%s reasoning=%s\n",
-                        caps && jbool(caps, "supports_tools", 0) ? "yes" : "no",
-                        mods && jbool(mods, "vision", 0) ? "yes" : "no",
-                        params ? jstr(params, "reasoning_format", "none") : "?");
+                        caps && json_bool(caps, "supports_tools", 0) ? "yes" : "no",
+                        mods && json_bool(mods, "vision", 0) ? "yes" : "no",
+                        params ? json_str_or(params, "reasoning_format", "none") : "?");
             str_append_cstr(&s, "\n");
             cJSON_Delete(props);
         }

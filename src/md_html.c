@@ -157,7 +157,7 @@ char *md_tables_to_bullets(const char *md) {
                     /* Save header names (they'll be overwritten by parse_table_cells) */
                     char *saved_headers[64];
                     for (int i = 0; i < nhdr; i++)
-                        saved_headers[i] = strdup(headers[i]);
+                        saved_headers[i] = xstrdup(headers[i]);
 
                     /* Advance past header line */
                     const char *next = (*eol == '\n') ? eol + 1 : eol;
@@ -297,7 +297,7 @@ static int is_table_separator(const char *md, int i) {
 }
 
 char *md_to_html(const char *md) {
-    if (!md) return strdup("");
+    if (!md) return xstrdup("");
 
     size_t len = strlen(md);
     str_t out = str_new(len + len / 4 + 64);
