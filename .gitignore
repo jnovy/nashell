@@ -8,6 +8,8 @@ tests/*.so
 tests/test_tool_plugin
 tests/test_tool_plugin_dlopen
 cscope.out
+tags
+*.ctags
 *.jpg
 *.jpeg
 *.png
