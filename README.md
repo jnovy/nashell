@@ -1,4 +1,4 @@
-# nash - Autonomous Agentic Harness - New Agentic Shell
+# nash - New Agentic Shell - Agentic Harness
 
 <p align="center">
   <img src="demo/nash-demo.gif" alt="nash demo" width="800">
@@ -22,7 +22,7 @@ Unlike wrapper-based agents, nash has minimal runtime dependencies. It runs loca
 - **Self-improvement** - postmortem analysis, regression testing, prompt optimization
 - **Session journaling** - checkpoint/resume, episodic search, full audit trail
 - **Context management** - importance-tagged eviction, BM25 compression, lossless breadcrumbs
-- **Plugin system** - `libnash.so` for independent tool development
+- **Plugin system** - `libnash.so` + [external `.so` plugins](docs/plugins.md) for custom tool development
 - **Research-grounded** - papers were driving the design (see [Research Foundations](docs/research.md))
 
 ---
@@ -83,6 +83,7 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 |----------|-------------|
 | [Memory Architecture](docs/memory.md) | Four-tier memory system, Bayesian scoring, embeddings, pruning, dreaming, reactive retrieval, workspaces |
 | [ReAct Loop & Tools](docs/react-loop.md) | ReAct loop, 20 built-in tools, plugin registry, error recovery |
+| [Custom Tool Plugins](docs/plugins.md) | External `.so` plugin API, ABI versioning, lifecycle hooks, examples |
 | [Multi-Provider Support](docs/providers.md) | Local, OpenAI, Anthropic, Vertex AI provider configuration |
 | [Context Management](docs/context-management.md) | Structural reasoning, Harness-1 eviction, scratchpad architecture |
 | [TUI](docs/tui.md) | Terminal interface, slash commands, tree branching, SearXNG search |
@@ -92,7 +93,7 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 | [Model Profiles & Spec](docs/model-profiles.md) | Per-model overrides, unified spec export/import |
 | [Configuration & Sessions](docs/configuration.md) | config.toml reference, session structure, checkpoint/resume |
 | [Building & Usage](docs/building.md) | Dependencies, build, run, CLI reference, testing |
-| [Research Foundations](docs/research.md) | 36 papers informing the design |
+| [Research Foundations](docs/research.md) | papers influencing the design |
 
 ---
 

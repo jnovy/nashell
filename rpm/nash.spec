@@ -1,7 +1,7 @@
 Name:           nash
 Version:        0.1.0
 Release:        13%{?dist}
-Summary:        Autonomous Agentic Harness - New Agentic Shell
+Summary:        New Agentic Shell - Agentic Harness
 
 License:        MIT
 URL:            https://github.com/jnovy/nash
