@@ -2,7 +2,8 @@ VERSION ?= 0.1.0
 
 CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
-# ONNX Runtime: use pip-installed libonnxruntime if no system package
+# ONNX Runtime: requires onnxruntime-devel (headers) to build.
+# For linking, use pip-installed libonnxruntime if no system package.
 ORT_LIB := $(shell python3 -c "import onnxruntime; import os; print(os.path.dirname(onnxruntime.__file__) + '/capi')" 2>/dev/null)
 ifneq ($(ORT_LIB),)
   ORT_LDFLAGS = -L$(ORT_LIB) -Wl,-rpath,$(ORT_LIB) -lonnxruntime

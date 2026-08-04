@@ -2,7 +2,7 @@
 #include "embedding_onnx.h"
 #include "nash_limits.h"
 #include "str.h"
-#include "onnxruntime_c_api.h"
+#include <onnxruntime/onnxruntime_c_api.h>
 #include "tui.h"
 #include "nash_log.h"
 #include <stdio.h>
