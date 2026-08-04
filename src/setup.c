@@ -359,8 +359,51 @@ static int configure_vertex(setup_provider_t *sp) {
   sp->caching = prompt_yn("Enable prompt caching?", 1);
   prompt("Provider name", "vertex", sp->name, sizeof(sp->name));
 
-  fprintf(stderr, "Note: Vertex AI uses 'gcloud auth print-access-token' for auth.\n");
-  fprintf(stderr, "Make sure you have gcloud CLI configured.\n");
+  /* Validate gcloud CLI is installed and authenticated */
+  fprintf(stderr, "Checking gcloud CLI... ");
+  fflush(stderr);
+
+  FILE *fp = popen("which gcloud 2>/dev/null", "r");
+  char gcpath[256] = {0};
+  if (fp) {
+    if (fgets(gcpath, sizeof(gcpath), fp))
+      gcpath[strcspn(gcpath, "\r\n")] = '\0';
+    pclose(fp);
+  }
+
+  if (!gcpath[0]) {
+    fprintf(stderr, "NOT FOUND\n");
+    fprintf(stderr, "  gcloud CLI is not installed.\n");
+    fprintf(stderr, "  Install it from: https://cloud.google.com/sdk/docs/install\n");
+    fprintf(stderr, "  Then run: gcloud auth login\n");
+    if (!prompt_yn("Continue without gcloud?", 0))
+      return -1;
+  } else {
+    fprintf(stderr, "OK (%s)\n", gcpath);
+
+    /* Test authentication */
+    fprintf(stderr, "Testing gcloud auth... ");
+    fflush(stderr);
+
+    fp = popen("gcloud auth print-access-token 2>/dev/null", "r");
+    char token[64] = {0};
+    if (fp) {
+      if (fgets(token, sizeof(token), fp))
+        token[strcspn(token, "\r\n")] = '\0';
+      pclose(fp);
+    }
+
+    if (!token[0]) {
+      fprintf(stderr, "FAILED\n");
+      fprintf(stderr, "  gcloud is installed but not authenticated.\n");
+      fprintf(stderr, "  Run: gcloud auth login\n");
+      fprintf(stderr, "       gcloud auth application-default login\n");
+      if (!prompt_yn("Continue without authentication?", 0))
+        return -1;
+    } else {
+      fprintf(stderr, "OK (authenticated)\n");
+    }
+  }
 
   return 0;
 }

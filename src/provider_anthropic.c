@@ -67,7 +67,10 @@ static const char *get_vertex_token(provider_t *p) {
   }
 
   if (r.exit_code != 0) {
-    nash_log("[provider/vertex] gcloud auth failed (exit %d)", r.exit_code);
+    if (r.exit_code == 127)
+      nash_log("[provider/vertex] gcloud auth failed (exit %d) - gcloud CLI not installed", r.exit_code);
+    else
+      nash_log("[provider/vertex] gcloud auth failed (exit %d) - try: gcloud auth login", r.exit_code);
     str_free(&out);
     return NULL;
   }
