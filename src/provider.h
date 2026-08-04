@@ -25,7 +25,7 @@ typedef struct {
   const char *api_base;    /* base URL (local server or API endpoint) */
   const char *api_key_env; /* env var name for API key (e.g. "OPENAI_API_KEY") */
   const char *project_id;  /* Vertex AI project ID */
-  const char *region;      /* Vertex AI region (e.g. "us-east5") */
+  const char *region;      /* Vertex AI region (e.g. "global") */
   int context_size;        /* context window size */
   float chars_per_token;   /* chars per token ratio (default 3.5) */
   int caching;             /* enable prompt caching (Anthropic) */

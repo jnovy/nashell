@@ -352,7 +352,7 @@ static int configure_vertex(setup_provider_t *sp) {
     fprintf(stderr, "Project ID is required for Vertex AI.\n");
     return -1;
   }
-  prompt("Region", env_region ? env_region : "us-east5",
+  prompt("Region", env_region ? env_region : "global",
          sp->region, sizeof(sp->region));
   prompt("Model", env_model ? env_model : "claude-opus-4-6",
          sp->model_id, sizeof(sp->model_id));
