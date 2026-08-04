@@ -181,6 +181,35 @@ static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
   return total;
 }
 
+/* SSRF protection for redirects: called before each request (including
+ * redirects to new hosts).  Rejects connections to internal/private IPs
+ * that would bypass the initial url_check_ssrf() validation. */
+static int ssrf_prereq_cb(void *clientp, char *conn_primary_ip,
+                           char *conn_local_ip, int conn_primary_port,
+                           int conn_local_port) {
+  (void)clientp;
+  (void)conn_local_ip;
+  (void)conn_primary_port;
+  (void)conn_local_port;
+  if (!conn_primary_ip)
+    return CURL_PREREQFUNC_ABORT;
+
+  /* Try IPv4 first, then IPv6 */
+  struct sockaddr_in sa4 = {.sin_family = AF_INET};
+  if (inet_pton(AF_INET, conn_primary_ip, &sa4.sin_addr) == 1) {
+    if (is_internal_ip((struct sockaddr *)&sa4))
+      return CURL_PREREQFUNC_ABORT;
+    return CURL_PREREQFUNC_OK;
+  }
+  struct sockaddr_in6 sa6 = {.sin6_family = AF_INET6};
+  if (inet_pton(AF_INET6, conn_primary_ip, &sa6.sin6_addr) == 1) {
+    if (is_internal_ip((struct sockaddr *)&sa6))
+      return CURL_PREREQFUNC_ABORT;
+    return CURL_PREREQFUNC_OK;
+  }
+  return CURL_PREREQFUNC_ABORT; /* unparseable IP - fail closed */
+}
+
 tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
   TOOL_REQ_STR(params, "url", url);
 
@@ -207,6 +236,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
   curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
   curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
   curl_easy_setopt(curl, CURLOPT_RESOLVE, resolve_list);
+  curl_easy_setopt(curl, CURLOPT_PREREQFUNCTION, ssrf_prereq_cb);
   long web_timeout = (ctx->cfg && ctx->cfg->web_timeout > 0)
                        ? (long)ctx->cfg->web_timeout
                        : 30L;

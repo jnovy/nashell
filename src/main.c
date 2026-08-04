@@ -2218,6 +2218,15 @@ int main(int argc, char **argv) {
         tui_render(ui);
       }
 
+      /* Check if playbook worker is waiting for user to continue (inter-pass pause) */
+      if (atomic_load(&inferring) == INFER_PLAYBOOK &&
+          atomic_load(&pargs_tui.waiting_for_user)) {
+        char pause_msg[256];
+        snprintf(pause_msg, sizeof(pause_msg), "Paused before pass: %s (press Enter to continue)",
+                 pargs_tui.inter_pass_message ? pargs_tui.inter_pass_message : "next");
+        ui_locked_set_status(ui, STATUS_READY, pause_msg);
+      }
+
       /* Check if inference thread is paused and waiting for redirect.
              * Update status bar so user knows they can type a new query. */
       if (atomic_load(&inferring) == INFER_REACT && atomic_load(&react.pause_waiting) &&
@@ -2318,6 +2327,16 @@ int main(int argc, char **argv) {
           pthread_cond_signal(&react.user_ask_cond);
           pthread_mutex_unlock(&react.user_ask_mutex);
           ui_locked_set_status(ui, STATUS_RUNNING, "Running...");
+          continue;
+        }
+
+        /* Check if playbook worker is waiting for inter-pass user confirmation */
+        if (atomic_load(&inferring) == INFER_PLAYBOOK &&
+            atomic_load(&pargs_tui.waiting_for_user)) {
+          free(submitted_query);
+          submitted_query = NULL;
+          atomic_store(&pargs_tui.waiting_for_user, 0);
+          ui_locked_set_status(ui, STATUS_RUNNING, "Continuing...");
           continue;
         }
 

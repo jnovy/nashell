@@ -931,9 +931,12 @@ void *playbook_worker(void *arg) {
           pa->waiting_for_user = 1;
           pa->inter_pass_message = pb->passes[pass].label;
           while (pa->waiting_for_user) {
+            if (pa->deadline > 0 && time(NULL) >= pa->deadline)
+              break;
             struct timespec ts = {0, 50000000};
             nanosleep(&ts, NULL);
           }
+          pa->waiting_for_user = 0;
         } else {
           fprintf(stderr, "[play] auto-continuing pass %d/%d (%s)\n",
                   pass + 1, pb->n_passes,

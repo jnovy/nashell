@@ -996,6 +996,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
       safe_realloc((void **)&pb->var_values, (size_t)new_nvars * sizeof(char *))) {
     for (int ti2 = 0; ti2 < n_arg_tokens; ti2++)
       free(arg_tokens[ti2]);
+    free(arg_tokens);
     return pb; /* return with existing vars; caller still gets a usable playbook */
   }
   int vi = pb->n_vars;
