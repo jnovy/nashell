@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 
 CC      ?= gcc
 CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE

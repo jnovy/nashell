@@ -1,6 +1,6 @@
 Name:           nash
-Version:        0.1.0
-Release:        17%{?dist}
+Version:        0.1.1
+Release:        1%{?dist}
 Summary:        New Agentic Shell - Agentic Harness
 
 License:        MIT
@@ -140,6 +140,9 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.1-1
+- Bump version to 0.1.1
+
 * Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-17
 - Fix ORT API version mismatch: fallback loop for runtime compatibility. Switch
   from bundled to system onnxruntime-devel headers, removing 10k+ lines of
