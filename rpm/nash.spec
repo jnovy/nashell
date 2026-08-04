@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        15%{?dist}
+Release:        16%{?dist}
 Summary:        New Agentic Shell - Agentic Harness
 
 License:        MIT
@@ -140,6 +140,10 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-16
+- setup: validate gcloud CLI installation and auth for Vertex AI provider. fix:
+  suppress redundant tool command code block during tool execution
+
 * Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-15
 - Add auto-download of ONNX embedding model in setup wizard
 
