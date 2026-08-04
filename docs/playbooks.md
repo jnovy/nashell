@@ -58,7 +58,7 @@ passes:
 
 ## Standalone Mode
 
-By default, nash injects up to 13 layers of contextual preprompting before the user query: memory index, pinned memories, temporal calendar, episodic recall, skills, lessons, strategies, anti-patterns, associated memories, repo map, scratchpad, and previous result. This is what makes nash agents smarter over time -- but it also ties behavior to the host machine's memory state.
+By default, nash injects up to 12 layers of contextual preprompting before the user query: memory index, pinned memories, temporal calendar, episodic recall, skills, lessons, strategies, anti-patterns, associated memories, repo map, scratchpad, and previous result. This is what makes nash agents smarter over time -- but it also ties behavior to the host machine's memory state.
 
 The `standalone` flag suppresses all host-local context, making the YAML fully portable across nash installations:
 
@@ -140,3 +140,11 @@ Every playbook execution is logged to `~/.nash/runs/` as a JSONL file with event
 - `end` -- overall result (ok/fail)
 
 View run history with `/runs` (list) and `/runs show ID` (details) in the TUI.
+
+---
+
+## See Also
+
+- [Configuration & Sessions](configuration.md) - config.toml reference
+- [Agents](agents.md) - scheduled execution of playbooks
+- [Self-Harness](self-harness.md) - regression testing and prompt optimization

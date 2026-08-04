@@ -233,3 +233,11 @@ Nash headers - the external plugin interface is intentionally narrow.
 | "ABI version mismatch" log | Plugin compiled against different Nash version | Recompile with current `src/tool_plugin.h` |
 | dlopen error | Missing `-lnash` or wrong rpath | Build with `-L /path/to/nash -lnash -Wl,-rpath,...` |
 | Tool overrides not working | Plugin loads after dispatch | Ensure `.so` is in `plugin_dir` at startup |
+
+---
+
+## See Also
+
+- [ReAct Loop & Tools](react-loop.md) - built-in tool registry and dispatch
+- [Model Profiles](model-profiles.md) - per-model tool filtering
+- [Building & Usage](building.md) - build instructions and CLI reference

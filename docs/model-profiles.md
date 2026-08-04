@@ -22,7 +22,7 @@ chars_per_token = 4.0
 native_context = 131072
 
 [thinking]
-mode = "on"
+mode = "yes"
 budget = 8192                          # constrained -- local model
 
 [client]
@@ -95,7 +95,7 @@ The special sentinel `-2.0` for `vscore_exponent` exists because both `0.0` (dis
 - **Tool filtering** -- whitelist or blacklist tools per model (small models can't compose complex tools)
 - **Native context warnings** -- alerts when server n_ctx is much smaller than model capacity
 
-Example profiles for Claude, Qwen, LLaMA, DeepSeek, Gemma, and Mistral are shown above. Create them at `~/.nash/models/` to customize behavior per model.
+Example profiles for Claude and Qwen are shown above. Create them at `~/.nash/models/` to customize behavior per model.
 
 ---
 

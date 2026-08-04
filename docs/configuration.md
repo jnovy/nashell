@@ -32,7 +32,7 @@ model_id = "gpt-4o"
 # chars_per_token = 3.5                   # chars per token ratio
 
 [thinking]
-mode = "yes"                              # yes | no | edrm (adaptive)
+mode = "yes"                              # yes | no | on | off
 budget = -1                               # -1=unrestricted, 0=none, N>0=max tokens
 
 [embedding]

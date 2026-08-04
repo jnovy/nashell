@@ -1,33 +1,20 @@
 # Context Management
 
-## Structural Reasoning (Default)
+## Thinking Mode
 
-Nash's default thinking mode is **structural reasoning** -- a two-call pattern inspired by [arXiv:2603.05344] that separates reasoning from action:
-
-1. **Call 1: Reason** -- LLM is called with **no tool schemas** and thinking OFF. Without tools available, the model is structurally forced to produce plain-text analysis instead of jumping to action.
-2. **Call 2: Act** -- Tools are restored. The reasoning from Call 1 persists as an assistant message in context, informing the tool call.
-
-Key advantages over native thinking (`on` mode):
-- **Persistent reasoning** -- native thinking vanishes after each turn; structural reasoning becomes a regular context message visible to all future steps
-- **Provider-agnostic** -- works with every provider (local, OpenAI, Anthropic, Vertex) with no API requirements
-- **Faster & cheaper** -- models produce concise analysis (500-1500 tokens) vs verbose native thinking (2000-8000 tokens)
-- **Controllable** -- reasoning depth is shaped by the prompt, not a token budget knob
-- **Smaller request payload** -- Call 1 has no tool schemas (~2-4K fewer input tokens)
-
-The reasoning messages are marked LOW importance so they compress/evict early during context pressure, preventing accumulation.
+Nash supports native extended thinking for providers that offer it (Anthropic, OpenAI, llama.cpp). When enabled, the LLM uses its built-in reasoning capability before producing tool calls.
 
 Configuration:
 ```toml
 [thinking]
-mode = "on"              # off | on | structural (default: on)
+mode = "on"              # on | yes | off | no (default: on)
 budget = -1              # -1=unrestricted, 0=none, N>0=max thinking tokens
 ```
 
-| Mode | Mechanism | Provider Requirement | Speed | Cost |
-|------|-----------|---------------------|-------|------|
-| `off` | No reasoning phase | Any | Fastest | Lowest |
-| `on` | Native thinking API | Anthropic/OpenAI/llama.cpp | Slowest | Highest |
-| **`structural`** | Two-call: reason (no tools) -> act | **Any** | Fast | Low |
+| Mode | Mechanism | Provider Requirement |
+|------|-----------|---------------------|
+| `on`/`yes` | Native thinking API | Anthropic/OpenAI/llama.cpp |
+| `off`/`no` | No reasoning phase | Any |
 
 ## Harness-1 Context Management
 
@@ -62,10 +49,10 @@ This preserves more useful context at each stage instead of dropping messages wh
 
 ### 3. Sentence-BM25 Relevance Compression
 
-New `compress.c` module (301 lines) implements relevance-based text compression:
+The `compress.c` module (511 lines) implements relevance-based text compression:
 
 - Splits text into sentences
-- Filters stopwords (70 English + 20 programming terms) to prevent common words from drowning out semantically meaningful query terms
+- Filters stopwords (101 terms: English function words + programming keywords) to prevent common words from drowning out semantically meaningful query terms
 - Scores each sentence by BM25-like term overlap with the current query
 - Keeps top-N sentences in their original order
 
@@ -166,3 +153,11 @@ The `extract_llm_text_output()` helper accepts both plain markdown and JSON tool
 ### Auto-Save Done Results
 
 When `done` is called, the result is automatically saved to the scratchpad as `R<N>_result` (priority 1), ensuring the next react loop has full access to the previous loop's conclusion.
+
+---
+
+## See Also
+
+- [Memory Architecture](memory.md) - persistent memory system
+- [ReAct Loop & Tools](react-loop.md) - tool execution and error recovery
+- [Configuration & Sessions](configuration.md) - eviction and context config keys

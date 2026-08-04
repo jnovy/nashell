@@ -7,7 +7,7 @@ User Query -> [Plan] -> Tool Call -> Observe Result -> [Reflect] -> Next Tool Ca
 ```
 
 - **Native OpenAI tool_calls API** -- uses structured `tool_calls` with `tool_call_id` threading, not JSON-in-content hacks
-- **20 built-in tools** -- shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete, image_analyze, user_ask, subtask, todo
+- **20 built-in tools** -- shell_exec, file_read, file_write, file_edit, grep_search, glob_search, web_fetch, web_search, notes, plan, done, memory_store, memory_search, memory_pin, memory_unpin, memory_delete (default: off), image_analyze, user_ask, subtask, todo
 - **Plugin-based tool registry** (`tool_plugin.h`) -- tools self-register via `__attribute__((constructor))`, formatted per-provider (local/OpenAI/Anthropic), ABI v3 with lifecycle hooks (`init`/`cleanup`)
 - **External plugin override** -- external `.so` plugins loaded via `dlopen` can override built-in tools in-place; `tool_plugin_load_dir()` loads all plugins from a directory
 - **Dispatch table** -- tool execution via plugin registry lookup, not strcmp chains
@@ -70,3 +70,11 @@ Nash's `file_read` tool supports `start_line` and `end_line` parameters to elimi
 - **Line numbers in output** -- each line prefixed with its number (`100: static void ...`)
 - **total_lines in response** -- helps model decide whether to use ranges on next call
 - **Backward compatible** -- no parameters = full file read
+
+---
+
+## See Also
+
+- [Custom Tool Plugins](plugins.md) - external .so plugin API
+- [Context Management](context-management.md) - eviction and compression
+- [TUI](tui.md) - slash commands and tool management

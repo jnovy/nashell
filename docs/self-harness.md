@@ -190,3 +190,11 @@ Re-run `--optimize` when:
 - **Changing the task domain** -- switching from coding to research tasks may need different prompting
 - **After adding new tools** -- the model may need guidance on when/how to use them
 - **After significant config changes** -- new memory thresholds, eviction policies, or tool restrictions
+
+---
+
+## See Also
+
+- [Model Profiles & Spec](model-profiles.md) - per-model configuration and spec export
+- [Playbooks](playbooks.md) - YAML workflow definitions used by self-harness
+- [Building & Usage](building.md) - CLI flags for --optimize, --regression, --postmortem

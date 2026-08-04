@@ -1,12 +1,18 @@
-# nash - New Agentic Shell - Agentic Harness
+# nashell - New Agentic Shell - Agentic Harness
+
+![C](https://img.shields.io/badge/C-C11-blue)
+![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Single Binary](https://img.shields.io/badge/single-binary-orange)
+![Built with nash](https://img.shields.io/badge/built%20with-nash-CC5500)
+
+**nash** is an agentic harness implemented as a single compiled binary. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
+
+Unlike wrapper-based agents, nash has minimal runtime dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
 <p align="center">
   <img src="demo/nash-demo.gif" alt="nash demo" width="800">
 </p>
-
-**nash** is a agentic harness implemented as a single compiled binary. It connects to any OpenAI-compatible LLM server (llama.cpp, OpenAI, Anthropic, Vertex AI) and executes multi-step coding tasks through a ReAct (Reason + Act) loop with persistent memory, a TUI interface, and research-grounded cognitive architecture.
-
-Unlike wrapper-based agents, nash has minimal runtime dependencies. It runs locally with local models, maintains long-term memory across sessions, and learns from every task it completes.
 
 ---
 
@@ -57,17 +63,20 @@ Unlike wrapper-based agents, nash has minimal runtime dependencies. It runs loca
 # Build
 make
 
-# Interactive TUI mode
-./nash
-
 # First-time setup wizard
 ./nash --setup
+
+# Interactive TUI mode
+./nash
 
 # Single query (headless)
 ./nash -p "fix the memory leak in tools.c"
 
 # Run a playbook
 ./nash --play dream
+
+# Run all due agents
+./nash --agent --due
 
 # Resume a session
 ./nash --session ~/.nash/sessions/my-project
@@ -85,7 +94,7 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 | [ReAct Loop & Tools](docs/react-loop.md) | ReAct loop, 20 built-in tools, plugin registry, error recovery |
 | [Custom Tool Plugins](docs/plugins.md) | External `.so` plugin API, ABI versioning, lifecycle hooks, examples |
 | [Multi-Provider Support](docs/providers.md) | Local, OpenAI, Anthropic, Vertex AI provider configuration |
-| [Context Management](docs/context-management.md) | Structural reasoning, Harness-1 eviction, scratchpad architecture |
+| [Context Management](docs/context-management.md) | Thinking mode, Harness-1 eviction, scratchpad architecture |
 | [TUI](docs/tui.md) | Terminal interface, slash commands, tree branching, SearXNG search |
 | [Playbooks](docs/playbooks.md) | YAML multi-pass workflows, standalone mode, custom system prompts |
 | [Agents](docs/agents.md) | Cron-scheduled autonomous tasks, three-tier discovery, sensitivity gating, workspace binding |
@@ -94,6 +103,7 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 | [Configuration & Sessions](docs/configuration.md) | config.toml reference, session structure, checkpoint/resume |
 | [Building & Usage](docs/building.md) | Dependencies, build, run, CLI reference, testing |
 | [Research Foundations](docs/research.md) | papers influencing the design |
+| [Session Threading (Design)](docs/design-session-threading.md) | Matrix/Telegram bridge session threading design |
 
 ---
 
@@ -137,7 +147,7 @@ project_id = "my-gcp-project"
 region = "global"
 
 [thinking]
-mode = "yes"                              # yes | no | edrm (adaptive)
+mode = "yes"                              # yes | no | on | off
 
 [embedding]
 type = "onnx"                             # onnx | ollama | openai | none

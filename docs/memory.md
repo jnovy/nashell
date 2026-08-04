@@ -1,5 +1,35 @@
 # Memory Architecture
 
+## Table of Contents
+
+- [Unified Memory Architecture (v4)](#unified-memory-architecture-v4----session-centric-design)
+  - [Four Tiers](#four-tiers)
+  - [Data Flow](#data-flow)
+  - [Knowledge Formation](#knowledge-formation)
+- [Persistent Memory System](#persistent-memory-system)
+  - [Hybrid Scoring](#hybrid-scoring----semantic--substring--bayesian-validation)
+  - [Memory Index](#memory-index)
+  - [Bayesian Validation Score](#bayesian-validation-score)
+  - [Memory Tools](#memory-tools)
+  - [Pinned Knowledge](#pinned-knowledge)
+  - [Triggers](#triggers)
+- [Workspace Isolation](#workspace-isolation)
+  - [Workspace Structure](#workspace-structure)
+  - [Discovery](#discovery)
+  - [Recall Mechanics](#recall-mechanics)
+  - [Isolated Mode](#isolated-mode)
+- [Dreaming (Consolidation)](#dreaming-consolidation)
+  - [Dream Pipeline](#dream-pipeline)
+- [Reactive Retrieval (Event-Driven)](#reactive-retrieval-event-driven)
+  - [Error-Triggered Recall](#error-triggered-recall)
+  - [Eviction-Triggered Re-Retrieval](#eviction-triggered-re-retrieval)
+  - [Cycling-Triggered Retrieval](#cycling-triggered-retrieval)
+- [Temporal Event Calendar](#temporal-event-calendar)
+- [Episodic Recall (Session History)](#episodic-recall-session-history)
+- [Configuration](#configuration)
+
+---
+
 ## Unified Memory Architecture (v4) -- Session-Centric Design
 
 Nash v4 introduces a session-centric memory architecture built on three principles:
@@ -360,3 +390,11 @@ Users can search session history directly:
 ```
 
 Results display in the TUI with session timestamp, model, query, result, and relevance score. The user can then navigate to that session for full details.
+
+---
+
+## See Also
+
+- [Configuration & Sessions](configuration.md) - memory-related config.toml keys
+- [Context Management](context-management.md) - how memory interacts with context eviction
+- [Playbooks](playbooks.md) - dream consolidation playbook

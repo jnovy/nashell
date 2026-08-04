@@ -12,7 +12,7 @@ Nash provides a full ncurses-based TUI with:
 - **Input history** -- arrow keys browse query history; arrow-down past the last entry restores in-progress text (standard shell/readline behavior)
 - **Pause/Resume** -- press Space during inference to pause after the current step; Space or new query to resume
 - **Auto-redirect** -- typing a new query during active inference automatically pauses the current task, stashes the new query, and dispatches it immediately when the loop yields -- no "Space then type" dance required
-- **Cross-session search** -- type `/?query` for incremental scratchpad search, or `/? query` for semantic session history search (embedding-based, searches `summary.emb` across all sessions)
+- **Cross-session search** -- type `/?query` to search memory and session history with hybrid scoring (ranked results displayed in the TUI)
 
 ## TUI Slash Commands
 
@@ -33,11 +33,51 @@ Nash provides a full ncurses-based TUI with:
 | `/agent result ID` | Display the latest output from an agent run |
 | `/memory_search QUERY` | Search memory using hybrid scoring; display ranked results in the TUI |
 | `/ms QUERY` | Full-parameter memory search (alias: `/memory_search`). Supports `-q` query, `-k` key, `-p` pattern, `-r` regex, `-n` max results, `-d` days. Searches both curated memory (L4) and session journals (L3) |
-| `/workspace NAME` | Switch to a named workspace mid-session; `/workspace` shows current workspace |
-| `/?query` | Cross-session scratchpad search (live incremental results) |
-| `/? query` | Semantic session history search (embedding-based, shows ranked results) |
+| `/todo [args]` | Persistent TODO list management (add, list, done, remove, purge) |
+| `/tool [sub]` | Tool management: `list`, `show`, `on`, `off`, `reset`, `save`, `load`, `toggle` |
+| `/?query` | Search memory and session history (hybrid scoring, ranked results) |
 | `/continue` | Resume from checkpoint with the original query |
 | `quit` / `exit` | Exit nash |
+
+## Tool Management (`/tool`)
+
+The `/tool` command controls which tools are available to the agent during a
+session. Tools can be enabled or disabled at runtime, and configurations can
+be saved to named profiles for reuse.
+
+| Subcommand | Description |
+|------------|-------------|
+| `/tool` or `/tool list` | Show all tools with their current on/off status |
+| `/tool show NAME` | Display full details for a tool -- description, parameters, status, version, and group |
+| `/tool on NAME` | Enable a previously disabled tool |
+| `/tool off NAME` | Disable a tool (protected tools `done` and `user_ask` cannot be disabled) |
+| `/tool NAME` | Toggle a tool on or off |
+| `/tool reset` | Reset all tools to their default state |
+| `/tool save PROFILE` | Save the current set of disabled tools to a named profile |
+| `/tool load` | List all saved tool profiles |
+| `/tool load PROFILE` | Load a saved profile, replacing the current blocked list |
+
+Tool profiles are stored as plain text files (one disabled tool name per line)
+in `~/.nash/tool-profiles/`. Profile names must be alphanumeric (a-z, 0-9,
+dashes, underscores).
+
+## TODO List (`/todo`)
+
+The `/todo` command manages a persistent per-workspace TODO list stored as
+`todo.md` in the workspace directory. Items use Markdown checkbox format
+(`- [ ]` for open, `- [x]` for done).
+
+| Subcommand | Description |
+|------------|-------------|
+| `/todo` or `/todo list` | Display all items in the current workspace |
+| `/todo add <text>` | Add a new open item |
+| `/todo done <N>` | Mark item number N as completed |
+| `/todo remove <N>` | Remove item N entirely (alias: `/todo rm <N>`) |
+| `/todo purge` | Remove all completed items, keeping open ones |
+| `/todo -w` | Show aggregated TODO items from all workspaces |
+
+The TODO list is also available as a tool for the agent -- the LLM can read
+and modify workspace TODOs during autonomous operation.
 
 ## Tree-Based Branching
 
