@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <curl/curl.h>
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
@@ -87,6 +88,47 @@ static void mask_key(const char *key, char *out, size_t outsz) {
   } else {
     snprintf(out, outsz, "%.6s...%.3s", key, key + len - 3);
   }
+}
+
+/* ── File download helper ────────────────────────────────────────── */
+
+/* libcurl write callback that writes directly to a FILE*. */
+static size_t file_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+  return fwrite(ptr, size, nmemb, (FILE *)userdata);
+}
+
+/* Download a URL to a local file.  Shows progress on stderr.
+ * Returns 0 on success, -1 on failure (partial file removed). */
+static int download_to_file(const char *url, const char *dest) {
+  CURL *curl = curl_easy_init();
+  if (!curl) return -1;
+
+  FILE *f = fopen(dest, "wb");
+  if (!f) {
+    curl_easy_cleanup(curl);
+    return -1;
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, file_write_cb);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, f);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L); /* show progress meter */
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);  /* 10 min for large files */
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+  curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+
+  CURLcode res = curl_easy_perform(curl);
+  fclose(f);
+  curl_easy_cleanup(curl);
+
+  if (res != CURLE_OK) {
+    unlink(dest); /* remove partial file */
+    return -1;
+  }
+  return 0;
 }
 
 /* ── Provider testing ─────────────────────────────────────────────── */
@@ -371,7 +413,51 @@ typedef struct {
   char api_base[512];   /* API base for ollama/openai */
 } setup_embedding_t;
 
-static void configure_embedding(setup_embedding_t *emb) {
+/* HuggingFace URLs for all-MiniLM-L6-v2 ONNX model */
+#define HF_MINILM_BASE \
+  "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
+#define HF_MINILM_ONNX  HF_MINILM_BASE "/onnx/model.onnx"
+#define HF_MINILM_VOCAB HF_MINILM_BASE "/vocab.txt"
+
+/* Download the all-MiniLM-L6-v2 ONNX model into model_dir.
+ * Creates model_dir/onnx/ and downloads model.onnx + vocab.txt.
+ * Returns 0 on success, -1 on failure. */
+static int download_onnx_model(const char *model_dir) {
+  /* Create directories */
+  char onnx_dir[NASH_PATH_MAX];
+  snprintf(onnx_dir, sizeof(onnx_dir), "%s/onnx", model_dir);
+  if (mkdir_p(model_dir, 0755) != 0) {
+    fprintf(stderr, "  Failed to create %s: %s\n", model_dir, strerror(errno));
+    return -1;
+  }
+  if (mkdir_p(onnx_dir, 0755) != 0) {
+    fprintf(stderr, "  Failed to create %s: %s\n", onnx_dir, strerror(errno));
+    return -1;
+  }
+
+  /* Download vocab.txt */
+  char dest[NASH_PATH_MAX];
+  snprintf(dest, sizeof(dest), "%s/vocab.txt", model_dir);
+  fprintf(stderr, "  Downloading vocab.txt...\n");
+  if (download_to_file(HF_MINILM_VOCAB, dest) != 0) {
+    fprintf(stderr, "  Failed to download vocab.txt\n");
+    return -1;
+  }
+
+  /* Download model.onnx (~86 MB) */
+  snprintf(dest, sizeof(dest), "%s/onnx/model.onnx", model_dir);
+  fprintf(stderr, "  Downloading model.onnx (~86 MB)...\n");
+  if (download_to_file(HF_MINILM_ONNX, dest) != 0) {
+    fprintf(stderr, "  Failed to download model.onnx\n");
+    return -1;
+  }
+
+  fprintf(stderr, "  Download complete.\n");
+  return 0;
+}
+
+static void configure_embedding(setup_embedding_t *emb,
+                                const char *nash_dir) {
   fprintf(stderr, "\nEmbedding model for semantic memory:\n");
   fprintf(stderr, "  1) ONNX (built-in, fast, no server needed)\n");
   fprintf(stderr, "  2) Server-provided (Ollama or OpenAI-compatible)\n");
@@ -379,11 +465,38 @@ static void configure_embedding(setup_embedding_t *emb) {
   int choice = prompt_choice("Choice", 3, 1);
 
   switch (choice) {
-    case 1:
+    case 1: {
       snprintf(emb->type, sizeof(emb->type), "onnx");
-      prompt("ONNX model path", "~/models/all-MiniLM-L6-v2",
+
+      /* Build default path under nash_dir */
+      char default_path[NASH_PATH_MAX];
+      snprintf(default_path, sizeof(default_path),
+               "%s/models/all-MiniLM-L6-v2", nash_dir);
+
+      prompt("ONNX model path", default_path,
              emb->model_path, sizeof(emb->model_path));
+
+      /* Check if model files already exist */
+      char check_path[NASH_PATH_MAX];
+      snprintf(check_path, sizeof(check_path),
+               "%s/onnx/model.onnx", emb->model_path);
+      if (access(check_path, R_OK) == 0) {
+        fprintf(stderr, "  Model already present at %s\n", emb->model_path);
+        break;
+      }
+
+      /* Offer to download */
+      if (prompt_yn("Download all-MiniLM-L6-v2 (~86 MB)?", 1)) {
+        if (download_onnx_model(emb->model_path) != 0) {
+          fprintf(stderr, "  Download failed. You can download manually later.\n");
+        }
+      } else {
+        fprintf(stderr, "  Skipped. Place model.onnx and vocab.txt manually:\n");
+        fprintf(stderr, "    %s/onnx/model.onnx\n", emb->model_path);
+        fprintf(stderr, "    %s/vocab.txt\n", emb->model_path);
+      }
       break;
+    }
     case 2:
       snprintf(emb->type, sizeof(emb->type), "ollama");
       prompt("Embedding model name", "nomic-embed-text",
@@ -704,7 +817,7 @@ int setup_run(const char *nash_dir, int add_only) {
 
   /* Embedding */
   setup_embedding_t embedding = {0};
-  configure_embedding(&embedding);
+  configure_embedding(&embedding, nash_dir);
 
   /* Routing */
   setup_routing_t routing = {0};

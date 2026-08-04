@@ -2006,7 +2006,7 @@ int config_write_default(const char *path) {
     "# Graceful fallback: if backend unavailable, uses substring matching.\n"
     "[embedding]\n"
     "type = \"onnx\"                            # \"onnx\" (local), \"ollama\", \"openai\", \"none\"\n"
-    "model_path = \"~/models/all-MiniLM-L6-v2\" # ONNX model directory\n"
+    "model_path = \"~/.nash/models/all-MiniLM-L6-v2\" # ONNX model directory\n"
     "# model = \"nomic-embed-text\"             # embedding model name (ollama/openai)\n"
     "# api_base = \"http://localhost:11434\"    # API base (ollama/openai)\n"
     "# dimension = 0                          # 0 = auto-detect\n"
