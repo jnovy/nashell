@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        13%{?dist}
+Release:        14%{?dist}
 Summary:        New Agentic Shell - Agentic Harness
 
 License:        MIT
@@ -18,6 +18,9 @@ BuildRequires:  ncurses-devel
 BuildRequires:  utf8proc-devel
 BuildRequires:  onnxruntime-devel
 BuildRequires:  bash-completion
+
+# onnxruntime is only available on these architectures
+ExclusiveArch:  x86_64 aarch64 ppc64le
 
 Requires:       libcurl
 Requires:       openssl-libs
@@ -137,6 +140,10 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-14
+- Add ExclusiveArch for x86_64, aarch64, ppc64le (onnxruntime not available on
+  i686, s390x)
+
 * Mon Aug 03 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-13
 - Add MIT LICENSE file and remove license TODO from spec
 
