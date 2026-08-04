@@ -274,11 +274,17 @@ onnx_embed_ctx_t *onnx_embed_init(const char *model_dir) {
   wp_vocab_t *vocab = wp_vocab_load(vocab_path);
   if (!vocab) return NULL;
 
-  /* Get ONNX Runtime API */
+  /* Get ONNX Runtime API - try compile-time version first, then fall back
+   * to older versions so a binary built against newer headers still works
+   * with an older onnxruntime shared library at runtime. */
   const OrtApiBase *base = OrtGetApiBase();
-  const OrtApi *api = base->GetApi(ORT_API_VERSION);
+  const OrtApi *api = NULL;
+  for (int v = ORT_API_VERSION; v >= 1; v--) {
+    api = base->GetApi(v);
+    if (api) break;
+  }
   if (!api) {
-    nash_log("[onnx-embed] failed to get ONNX Runtime API v%d",
+    nash_log("[onnx-embed] failed to get ONNX Runtime API (tried v%d..1)",
              ORT_API_VERSION);
     wp_vocab_free(vocab);
     return NULL;
