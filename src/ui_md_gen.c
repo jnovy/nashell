@@ -1493,8 +1493,16 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                   sc, ui->current_step, progress_ptr);
     }
     free(progress_dyn);
-    if (ui->stream_tokens && ui->stream_len > 0) {
-      /* Suppress display of raw JSON action objects (e.g.
+    if (!ui->tool_executing &&
+        ui->stream_tokens && ui->stream_len > 0) {
+      /* During tool execution, stream_tokens holds the tool command
+             * text (set by TOOL_START handler) which is already shown in
+             * the progress line above.  Showing it again in a code block
+             * is redundant and adds extra lines that push the stats
+             * footer off-screen, causing visible flicker as auto-scroll
+             * oscillates between the two.
+             *
+             * Suppress display of raw JSON action objects (e.g.
              * {"thought":"","action":"file_read","path":"R1S31"}).
              * Local models emit the entire JSON response as streamed
              * tokens — showing it raw is ugly and distracting.

@@ -1,6 +1,6 @@
 Name:           nash
 Version:        0.1.0
-Release:        14%{?dist}
+Release:        15%{?dist}
 Summary:        New Agentic Shell - Agentic Harness
 
 License:        MIT
@@ -140,6 +140,9 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-15
+- Add auto-download of ONNX embedding model in setup wizard
+
 * Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-14
 - Add ExclusiveArch for x86_64, aarch64, ppc64le (onnxruntime not available on
   i686, s390x)
@@ -204,7 +207,7 @@ make test CC=gcc \
 - Add missing dependencies: libjpeg-turbo, zlib-ng-compat, utf8proc, x265,
   libde265, tesseract, leptonica, pkgconfig
 
-* Sun Jun 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-2
+* Mon Jun 22 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.0-2
 - feat: /todo command and persistent todo tool
 - feat: Aider-style repo map for structural codebase context
 - feat: BM25 scoring for memory search relevance
