@@ -1,7 +1,7 @@
 # nashell - New Agentic Shell - Agentic Harness
 
 ![C](https://img.shields.io/badge/C-C11-blue)
-![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-blue)
+![Platforms](https://img.shields.io/badge/platforms-Linux-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Single Binary](https://img.shields.io/badge/single-binary-orange)
 ![Built with nash](https://img.shields.io/badge/built%20with-nash-CC5500)
