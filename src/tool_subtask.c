@@ -207,6 +207,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     restore.react_loop = ctx->react_loop;
     restore.step = ctx->step;
     restore.max_steps = 0; /* won't trigger auto-nav (step > 1) */
+    restore.pass_index = -1; /* not a playbook pass */
     ctx->on_event(&restore, ctx->on_event_data);
   }
 
