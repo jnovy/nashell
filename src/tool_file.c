@@ -54,8 +54,11 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_error("file_read: path must not contain '..' components.");
   }
 
-  /* BUG FIX: Reject symlink-based escapes outside workspace */
-  if (path_escapes_cwd(path) > 0) {
+  /* BUG FIX: Reject symlink-based escapes outside workspace.
+   * Skip this check for internally-resolved paths (aliases like R1S3,
+   * store/ prefixes) - these are trusted paths created by nash itself
+   * and legitimately live outside the workspace directory. */
+  if (!resolved && strcmp(path, orig_path) == 0 && path_escapes_cwd(path) > 0) {
     free(resolved);
     return tools_make_error("file_read: path resolves outside the workspace directory.");
   }
