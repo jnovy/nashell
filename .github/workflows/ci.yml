@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            gcc make pkgconfig \
+            libcurl-devel openssl-devel readline-devel \
+            ncurses-devel utf8proc-devel onnxruntime-devel \
+            git
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Run unit tests
+        run: make test
