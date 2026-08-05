@@ -548,6 +548,7 @@ static void test_mark_candidates_pair_eviction(void) {
   for (int i = evict_start; i < evict_end; i++)
     evictable_chars += (long)chat->msgs[i].content_len;
 
+  ASSERT(n_evictable > 0);
   int *mark = calloc((size_t)n_evictable, sizeof(int));
   int n_marked = evict_mark_candidates(chat, evict_start, evict_end,
                                        &pmap, 0, /* no floor */
@@ -555,6 +556,7 @@ static void test_mark_candidates_pair_eviction(void) {
                                        0,
                                        score_by_position, NULL,
                                        mark);
+  ASSERT(n_marked >= 0);
 
   /* If a tool_call is marked, its partner tool_result should also be marked */
   for (int i = 0; i < n_evictable; i++) {

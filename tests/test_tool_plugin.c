@@ -317,11 +317,14 @@ static void test_sort(void) {
 
   /* Register in reverse alphabetical order */
   static const tool_plugin_t z_plugin = {
-    TOOL_PLUGIN_ABI_VERSION, "z_tool", "1.0.0", "z", NULL, NULL, 0, 0, NULL};
+    TOOL_PLUGIN_ABI_VERSION, "z_tool", "1.0.0", "z", NULL, NULL, 0, 0,
+    NULL, NULL, NULL, NULL};
   static const tool_plugin_t a_plugin = {
-    TOOL_PLUGIN_ABI_VERSION, "a_tool", "1.0.0", "a", NULL, NULL, 0, 0, NULL};
+    TOOL_PLUGIN_ABI_VERSION, "a_tool", "1.0.0", "a", NULL, NULL, 0, 0,
+    NULL, NULL, NULL, NULL};
   static const tool_plugin_t m_plugin = {
-    TOOL_PLUGIN_ABI_VERSION, "m_tool", "1.0.0", "m", NULL, NULL, 0, 0, NULL};
+    TOOL_PLUGIN_ABI_VERSION, "m_tool", "1.0.0", "m", NULL, NULL, 0, 0,
+    NULL, NULL, NULL, NULL};
 
   tool_plugin_register(&z_plugin);
   tool_plugin_register(&a_plugin);

@@ -66,6 +66,7 @@ static int failures = 0;
   } while (0)
 
 /* Create a temporary directory for test isolation */
+__attribute__((unused))
 static char *make_test_dir(void) {
   char tmpl[] = "/tmp/nash_test_XXXXXX";
   char *dir = mkdtemp(tmpl);
@@ -77,6 +78,7 @@ static char *make_test_dir(void) {
 }
 
 /* Recursively remove a directory */
+__attribute__((unused))
 static void rm_rf(const char *path) {
   char cmd[4096];
   snprintf(cmd, sizeof(cmd), "rm -rf '%s'", path);

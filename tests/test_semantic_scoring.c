@@ -302,6 +302,7 @@ static void test_relevant_low_survives_irrelevant_normal(void) {
   /* Pick a NORMAL msg at a similar early position (pair 1, index 3) */
   int normal_score = evict_score_progressive_semantic(
     chat, evict_start + 3, 3, n_evictable, &sctx);
+  (void)normal_score; /* computed for documentation; exact threshold depends on position */
 
   /* LOW(0)*100 + 40(bonus) = 40 base + pos_norm
      * NORMAL(1)*100 + 0(bonus) = 100 base + pos_norm
