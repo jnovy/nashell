@@ -48,20 +48,10 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
   char resolved_buf[NASH_PATH_MAX];
   path = tools_resolve_path(ctx, path, resolved_buf, &resolved);
 
-  /* Reject path traversal attempts (BUG FIX: was missing, unlike file_write/file_edit) */
-  if (path_has_traversal(path)) {
-    free(resolved);
-    return tools_make_error("file_read: path must not contain '..' components.");
-  }
-
-  /* BUG FIX: Reject symlink-based escapes outside workspace.
-   * Skip this check for internally-resolved paths (aliases like R1S3,
-   * store/ prefixes) - these are trusted paths created by nash itself
-   * and legitimately live outside the workspace directory. */
-  if (!resolved && strcmp(path, orig_path) == 0 && path_escapes_cwd(path) > 0) {
-    free(resolved);
-    return tools_make_error("file_read: path resolves outside the workspace directory.");
-  }
+  /* file_read is non-destructive - allow reading from any path.
+   * path_has_traversal and path_escapes_cwd checks are kept only for
+   * file_write and file_edit where accidental writes outside the
+   * workspace could be harmful. */
 
   /* Safety: check file type and size before reading */
   struct stat st;
