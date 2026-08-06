@@ -8,35 +8,6 @@
 #include <unistd.h>
 #include <limits.h>
 
-static int path_has_traversal(const char *path);
-
-/* BUG FIX: Detect symlink-based escapes by resolving the real path
- * and verifying it stays within the current working directory.
- * Returns 1 if the path escapes, 0 if safe, -1 on error. */
-static int path_escapes_cwd(const char *path) {
-  char cwd[PATH_MAX];
-  char real[PATH_MAX];
-  if (!getcwd(cwd, sizeof(cwd))) return -1;
-  if (!realpath(path, real)) {
-    /* If the file doesn't exist yet (e.g. file_write), resolve parent dir */
-    char tmp[PATH_MAX];
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    char *slash = strrchr(tmp, '/');
-    if (slash) {
-      *slash = '\0';
-      if (!realpath(tmp, real)) return -1;
-    } else {
-      /* File in current directory, no parent to resolve */
-      return 0;
-    }
-  }
-  size_t cwdlen = strlen(cwd);
-  /* Real path must start with cwd and be followed by '/' or end */
-  if (strncmp(real, cwd, cwdlen) != 0) return 1;
-  if (real[cwdlen] != '\0' && real[cwdlen] != '/') return 1;
-  return 0;
-}
-
 /* ── file_read ───────────────────────────────────────── */
 
 tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
@@ -47,11 +18,6 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
   char *resolved = NULL;
   char resolved_buf[NASH_PATH_MAX];
   path = tools_resolve_path(ctx, path, resolved_buf, &resolved);
-
-  /* file_read is non-destructive - allow reading from any path.
-   * path_has_traversal and path_escapes_cwd checks are kept only for
-   * file_write and file_edit where accidental writes outside the
-   * workspace could be harmful. */
 
   /* Safety: check file type and size before reading */
   struct stat st;
@@ -297,21 +263,6 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
   return tools_make_result(1, meta, ref_copy);
 }
 
-/* ── path traversal guard ────────────────────────────── */
-
-/* Returns 1 if path contains a ".." component (path traversal). */
-static int path_has_traversal(const char *path) {
-  const char *p = path;
-  while ((p = strstr(p, "..")) != NULL) {
-    /* Check that ".." is a full component: preceded by / or start, followed by / or end */
-    int at_start = (p == path || p[-1] == '/');
-    int at_end = (p[2] == '\0' || p[2] == '/');
-    if (at_start && at_end) return 1;
-    p += 2;
-  }
-  return 0;
-}
-
 /* ── file_write ──────────────────────────────────────── */
 
 tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
@@ -319,14 +270,6 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
   const char *content = json_str(params, "content");
   if (!content)
     return tools_make_error("file_write requires a 'content' parameter.");
-
-  /* Reject path traversal attempts */
-  if (path_has_traversal(path))
-    return tools_make_error("file_write: path must not contain '..' components.");
-
-  /* BUG FIX: Reject symlink-based escapes outside workspace */
-  if (path_escapes_cwd(path) > 0)
-    return tools_make_error("file_write: path resolves outside the workspace directory.");
 
   /* FIX 5b: Create parent directories if they don't exist.
      * Previously file_write to a non-existent directory path failed
@@ -386,14 +329,6 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
   const char *new_text = json_str(params, "new_text");
   if (!new_text)
     return tools_make_error("file_edit requires a 'new_text' parameter.");
-
-  /* Reject path traversal attempts */
-  if (path_has_traversal(path))
-    return tools_make_error("file_edit: path must not contain '..' components.");
-
-  /* BUG FIX: Reject symlink-based escapes outside workspace */
-  if (path_escapes_cwd(path) > 0)
-    return tools_make_error("file_edit: path resolves outside the workspace directory.");
 
   size_t flen = 0;
   char *content = slurp_file(path, &flen);
