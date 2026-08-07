@@ -1,5 +1,5 @@
 Name:           nash
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        New Agentic Shell - Agentic Harness
 
@@ -140,6 +140,12 @@ make test CC=gcc \
 %{_includedir}/nash/
 
 %changelog
+* Fri Aug 07 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.2-1
+- Remove file_read/file_write/file_edit path restriction checks - allow access
+  to any filesystem path. Fix session.md duplication when subtask is used. Fix 8
+  compiler warnings across test files. Add GitHub Actions CI pipeline for build
+  and unit tests
+
 * Tue Aug 04 2026 Jindrich Novy <jnovy@redhat.com> - 0.1.1-1
 - Bump version to 0.1.1
 
