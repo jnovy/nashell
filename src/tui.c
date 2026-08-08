@@ -22,6 +22,7 @@ static WINDOW *win_bottom = NULL; /* bottom pane: status + input */
 static int main_height = 0;
 static int bottom_height = 0;
 static int paste_mode = 0; /* bracketed paste: 1 while receiving pasted text */
+static int panes_resized = 0; /* set by resize_panes when dimensions change */
 
 /* ── Clipboard token store ───────────────────────────────
  * Multi-line pastes are stored here and represented as [clipboard1] etc.
@@ -494,16 +495,28 @@ static void resize_panes_with_input_buf(const char *buf, int input_len,
   /* Cap at 50% of screen */
   int max_bottom = rows / 2;
   if (max_bottom < 2) max_bottom = 2;
-  bottom_height = 1 + input_lines;
-  if (bottom_height > max_bottom) bottom_height = max_bottom;
-  if (bottom_height < 2) bottom_height = 2;
+  int new_bottom = 1 + input_lines;
+  if (new_bottom > max_bottom) new_bottom = max_bottom;
+  if (new_bottom < 2) new_bottom = 2;
 
-  main_height = rows - bottom_height;
+  int new_main = rows - new_bottom;
 
-  wresize(win_main, main_height, cols);
-  mvwin(win_main, 0, 0);
-  wresize(win_bottom, bottom_height, cols);
-  mvwin(win_bottom, main_height, 0);
+  /* Only call wresize/mvwin when dimensions actually changed.
+   * Unnecessary wresize invalidates window content and forces
+   * ncurses to rewrite everything on the next doupdate(). */
+  if (new_main != main_height || new_bottom != bottom_height ||
+      cols != getmaxx(win_main)) {
+    main_height = new_main;
+    bottom_height = new_bottom;
+    wresize(win_main, main_height, cols);
+    mvwin(win_main, 0, 0);
+    wresize(win_bottom, bottom_height, cols);
+    mvwin(win_bottom, main_height, 0);
+    panes_resized = 1;
+  } else {
+    main_height = new_main;
+    bottom_height = new_bottom;
+  }
 }
 
 /* ── In-page search: highlight overlay ──────────────── */
@@ -941,21 +954,27 @@ void tui_render(ui_state_t *ui) {
 
   resize_panes_with_input_buf(ui->input_buffer, ui->input_len, ui->cursor_pos);
 
-  /* Clear stdscr to prevent stale background content showing through */
-  werase(stdscr);
-  wnoutrefresh(stdscr);
+  /* On resize only: clear stdscr background and force full redraw
+   * to prevent stale content at window boundaries. */
+  if (panes_resized) {
+    werase(stdscr);
+    wnoutrefresh(stdscr);
+  }
 
   /* Render both panes (each does werase + draw + wnoutrefresh) */
   render_main(ui);
   render_bottom(ui);
 
-  /* Force ncurses to redraw every character (not just changes).
-     * This implements true double-buffering: the entire screen is
-     * recomposed from scratch on every render cycle. */
-  touchwin(win_main);
-  touchwin(win_bottom);
-  wnoutrefresh(win_main);
-  wnoutrefresh(win_bottom);
+  /* Force full redraw only after resize or OSC8 flush (which writes
+   * directly to stdout and desynchronizes ncurses' physical screen
+   * model). Normal frames use differential updates for efficiency. */
+  if (panes_resized) {
+    touchwin(win_main);
+    touchwin(win_bottom);
+    wnoutrefresh(win_main);
+    wnoutrefresh(win_bottom);
+    panes_resized = 0;
+  }
 
   /* Set cursor visibility based on focus */
   curs_set(ui->focus == FOCUS_QUERY ? 1 : 0);
@@ -968,8 +987,13 @@ void tui_render(ui_state_t *ui) {
   /* Emit deferred OSC 8 hyperlink sequences directly to stdout.
      * Must happen AFTER doupdate() since ncurses' waddch cannot pass
      * ESC bytes to the terminal (renders them as ^[ caret notation). */
-  if (md_osc8_count > 0)
+  if (md_osc8_count > 0) {
     md_osc8_flush(win_main, getbegy(win_main));
+    /* OSC8 flush writes directly to stdout, desynchronizing ncurses'
+     * physical screen model. Force full redraw on the next frame so
+     * ncurses rewrites the affected cells correctly. */
+    panes_resized = 1;
+  }
 
   ui->dirty = 0;
 
