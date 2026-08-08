@@ -99,22 +99,47 @@ static int reflection_dedup_index_scan(
 void react_post_loop(react_ctx_t *ctx, const char *user_query,
                      const char *final_result, int task_succeeded,
                      react_event_fn on_event, void *userdata) {
+  /* Count cold starts BEFORE incrementing hits/misses.
+     * Cold start = recalled key with recall_hits==0 && recall_misses==0
+     * (vscore=0.5, no evidence yet). Must be measured before the increment
+     * loop below, otherwise every recalled key already has hits>=1. */
+  int cold_start_count = 0;
+  if (ctx->flags.enable_scoring &&
+      (ctx->tools->ws || ctx->tools->memory) &&
+      ctx->tools->n_recalled_keys > 0) {
+    for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
+      memory_t *km = NULL;
+      if (ctx->tools->ws)
+        km = workspace_find_memory(ctx->tools->ws,
+                                   ctx->tools->recalled_keys[i]);
+      else
+        km = ctx->tools->memory;
+      if (km) {
+        mem_index_entry_t *ie = memory_find(
+          km, ctx->tools->recalled_keys[i]);
+        if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
+          cold_start_count++;
+        memory_find_free(ie);
+      }
+    }
+  }
+
   /* Validation scoring: update recall_hits / recall_misses for recalled memories.
-     * Counter bumps are written to JSON files but NOT git-committed —
+     * Counter bumps are written to JSON files but NOT git-committed -
      * these are high-frequency, low-value changes that pollute the git log
      * (access_count, recall_hits, recall_misses). Git history is reserved
      * for meaningful content changes (store, delete, prune, consolidate).
      *
      * Symmetric scoring: increment hits on success, misses on failure.
      * Without misses, vscore = (hits+1)/(hits+misses+2) can only increase
-     * monotonically, making Bayesian pruning impossible — every memory
-     * that participates in enough successful tasks converges to vscore≈1.0
+     * monotonically, making Bayesian pruning impossible - every memory
+     * that participates in enough successful tasks converges to vscore~1.0
      * regardless of whether it actually contributed to success.
      *
      * The noise objection (failure is rarely caused by recalled memories)
      * is valid but outweighed: with symmetric scoring, vscore converges
      * to the background success rate of tasks where the memory was recalled.
-     * This is a meaningful signal — memories recalled during consistently
+     * This is a meaningful signal - memories recalled during consistently
      * failing task types get demoted, while memories recalled during
      * consistently succeeding task types get promoted. The cold-start
      * exponent (vscore_exponent=0.3) already dampens vscore's influence
@@ -154,26 +179,9 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
 
     /* Build array of recalled keys */
     cJSON *keys_arr = cJSON_CreateArray();
-    int cold_start_count = 0; /* keys with vscore=0.5 (no evidence) */
     for (int i = 0; i < ctx->tools->n_recalled_keys; i++) {
       cJSON_AddItemToArray(keys_arr,
                            cJSON_CreateString(ctx->tools->recalled_keys[i]));
-      /* Check if this key has zero evidence */
-      {
-        memory_t *km = NULL;
-        if (ctx->tools->ws)
-          km = workspace_find_memory(ctx->tools->ws,
-                                     ctx->tools->recalled_keys[i]);
-        else
-          km = ctx->tools->memory;
-        if (km) {
-          mem_index_entry_t *ie = memory_find(
-            km, ctx->tools->recalled_keys[i]);
-          if (ie && ie->recall_hits == 0 && ie->recall_misses == 0)
-            cold_start_count++;
-          memory_find_free(ie);
-        }
-      }
     }
     cJSON_AddItemToObject(mq, "recalled_keys", keys_arr);
     cJSON_AddNumberToObject(mq, "cold_start_count", cold_start_count);
