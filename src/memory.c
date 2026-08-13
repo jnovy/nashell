@@ -2014,12 +2014,11 @@ int memory_is_stale(const char *validity, double created_at, int *days_past) {
     if (stale && days_past) *days_past = (int)age_days;
     return stale;
   }
-  if (strncmp(validity, "days:", 5) == 0) {
-    int valid_days = atoi(validity + 5);
-    if (valid_days <= 0) return 0; /* malformed = treat as persistent */
-    int stale = (age_days > (double)valid_days);
-    if (stale && days_past) *days_past = (int)(age_days - valid_days);
-    return stale;
+  if (strncmp(validity, "causal:", 7) == 0) {
+    /* Causal validity: never auto-expires. The description after "causal:"
+     * tells the model what event would invalidate this fact. Display code
+     * shows it as an advisory hint, but memory_is_stale returns 0. */
+    return 0;
   }
   return 0; /* unknown validity type = treat as persistent */
 }

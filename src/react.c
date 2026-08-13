@@ -701,6 +701,12 @@ static int trig_cb(const mem_index_entry_t *entry, void *ud) {
                  "--- %s ---\n%s",
                  entry->triggers[t], entry->key,
                  entry->value ? entry->value : "");
+      /* Causal validity advisory hint */
+      if (entry->validity && strncmp(entry->validity, "causal:", 7) == 0) {
+        size_t len = strlen(hint);
+        snprintf(hint + len, sizeof(hint) - len,
+                 "\n  [MAY BE INVALID IF: %s]", entry->validity + 7);
+      }
       llm_chat_add_typed(tc->chat, "user", hint,
                          LLM_MSG_MEMORY_HINT);
       tool_fire_ledger_add(tc->tools, entry->key);
@@ -1534,11 +1540,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                 cy_mem.entries[cj].created_at, NULL);
               char cy_hint[2048];
               snprintf(cy_hint, sizeof(cy_hint),
-                       "[MEMORY HINT — you may be stuck, consider this approach]\n"
+                       "[MEMORY HINT -- you may be stuck, consider this approach]\n"
                        "--- %s%s ---\n%s",
                        cy_mem.entries[cj].key,
                        cy_stale ? " [STALE]" : "",
                        cy_mem.entries[cj].value);
+              /* Causal validity advisory hint */
+              if (cy_mem.entries[cj].validity &&
+                  strncmp(cy_mem.entries[cj].validity, "causal:", 7) == 0) {
+                size_t clen = strlen(cy_hint);
+                snprintf(cy_hint + clen, sizeof(cy_hint) - clen,
+                         "\n  [MAY BE INVALID IF: %s]",
+                         cy_mem.entries[cj].validity + 7);
+              }
               llm_chat_add_typed(chat, "user", cy_hint,
                                  LLM_MSG_MEMORY_HINT);
               tool_track_recalled_key(ctx->tools,
@@ -2128,11 +2142,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
               err_mem.entries[j].created_at, NULL);
             char hint[2048];
             snprintf(hint, sizeof(hint),
-                     "[MEMORY HINT — relevant to this error]\n"
+                     "[MEMORY HINT -- relevant to this error]\n"
                      "--- %s%s ---\n%s",
                      err_mem.entries[j].key,
                      err_stale ? " [STALE]" : "",
                      err_mem.entries[j].value);
+            /* Causal validity advisory hint */
+            if (err_mem.entries[j].validity &&
+                strncmp(err_mem.entries[j].validity, "causal:", 7) == 0) {
+              size_t elen = strlen(hint);
+              snprintf(hint + elen, sizeof(hint) - elen,
+                       "\n  [MAY BE INVALID IF: %s]",
+                       err_mem.entries[j].validity + 7);
+            }
             llm_chat_add_typed(chat, "user", hint, LLM_MSG_MEMORY_HINT);
             tool_track_recalled_key(ctx->tools,
                                     err_mem.entries[j].key);

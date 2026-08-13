@@ -597,21 +597,24 @@ static void test_validity_persistent(void) {
   ASSERT_EQ(memory_is_stale("persistent", 0, NULL), 0);
 }
 
-static void test_validity_days_not_stale(void) {
-  /* An entry created now with days:7 should not be stale */
+static void test_validity_causal_never_stale(void) {
+  /* Causal validity never auto-expires regardless of age */
   double now = (double)time(NULL);
+  double year_ago = now - 365.0 * 86400.0;
   int days_past = 99;
-  ASSERT_EQ(memory_is_stale("days:7", now, &days_past), 0);
-  ASSERT_EQ(days_past, 0);
+  ASSERT_EQ(memory_is_stale("causal:new build submitted", now, &days_past), 0);
+  ASSERT_EQ(days_past, 0); /* unchanged - not stale */
+  /* Even a year-old causal entry is not stale */
+  ASSERT_EQ(memory_is_stale("causal:new build submitted", year_ago, &days_past), 0);
 }
 
-static void test_validity_days_stale(void) {
-  /* An entry created 10 days ago with days:3 should be stale (7d past) */
-  double now = (double)time(NULL);
-  double ten_days_ago = now - 10.0 * 86400.0;
-  int days_past = 0;
-  ASSERT_EQ(memory_is_stale("days:3", ten_days_ago, &days_past), 1);
-  ASSERT_EQ(days_past, 7);
+static void test_validity_causal_description(void) {
+  /* The causal description (after "causal:") should be extractable */
+  const char *validity = "causal:errata advisory is created for this build";
+  ASSERT_EQ(strncmp(validity, "causal:", 7), 0);
+  ASSERT_STR_EQ(validity + 7, "errata advisory is created for this build");
+  /* And it's never stale */
+  ASSERT_EQ(memory_is_stale(validity, 0, NULL), 0);
 }
 
 static void test_validity_volatile(void) {
@@ -659,7 +662,7 @@ static void test_validity_basis_preserved_on_update(void) {
   memory_t *m = memory_new(dir);
 
   memory_store(m, "fact:update-test", "value1", 0, NULL, NULL, 0, NULL, 0);
-  memory_set_validity(m, "fact:update-test", "days:14");
+  memory_set_validity(m, "fact:update-test", "causal:new build tagged in candidate");
   memory_set_basis(m, "fact:update-test", "initial evidence");
 
   /* Re-store with new value - validity and basis should be preserved */
@@ -669,7 +672,7 @@ static void test_validity_basis_preserved_on_update(void) {
   ASSERT_NOT_NULL(found);
   ASSERT_STR_EQ(found->value, "value2");
   ASSERT_NOT_NULL(found->validity);
-  ASSERT_STR_EQ(found->validity, "days:14");
+  ASSERT_STR_EQ(found->validity, "causal:new build tagged in candidate");
   ASSERT_NOT_NULL(found->basis);
   ASSERT_STR_EQ(found->basis, "initial evidence");
   memory_find_free(found);
@@ -705,12 +708,12 @@ static void test_validity_in_find(void) {
   memory_t *m = memory_new(dir);
 
   memory_store(m, "lesson:find-val-test", "find validity test", 0, NULL, NULL, 0, NULL, 0);
-  memory_set_validity(m, "lesson:find-val-test", "days:7");
+  memory_set_validity(m, "lesson:find-val-test", "causal:upstream release published");
 
   mem_index_entry_t *found = memory_find(m, "lesson:find-val-test");
   ASSERT_NOT_NULL(found);
   ASSERT_NOT_NULL(found->validity);
-  ASSERT_STR_EQ(found->validity, "days:7");
+  ASSERT_STR_EQ(found->validity, "causal:upstream release published");
   memory_find_free(found);
 
   memory_free(m);
@@ -764,8 +767,8 @@ int main(void) {
   /* Temporal validity + basis + staleness */
   printf("\n  --- Temporal Validity ---\n");
   RUN_TEST(test_validity_persistent);
-  RUN_TEST(test_validity_days_not_stale);
-  RUN_TEST(test_validity_days_stale);
+  RUN_TEST(test_validity_causal_never_stale);
+  RUN_TEST(test_validity_causal_description);
   RUN_TEST(test_validity_volatile);
   RUN_TEST(test_validity_session);
   RUN_TEST(test_validity_null_is_persistent);

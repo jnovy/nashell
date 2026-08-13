@@ -86,22 +86,21 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
       int stale = memory_is_stale(all->entries[j].validity,
                                   all->entries[j].created_at, &days_past);
       if (stale) {
-        if (all->entries[j].validity &&
-            strncmp(all->entries[j].validity, "days:", 5) == 0)
-          str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) "
-                      "[STALE - %dd past validity] ---\n%s\n",
-                      all->entries[j].key, recency_buf,
-                      hits + misses, confidence, days_past, content);
-        else
-          str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) "
-                      "[STALE - re-verify before trusting] ---\n%s\n",
-                      all->entries[j].key, recency_buf,
-                      hits + misses, confidence, content);
+        str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) "
+                    "[STALE - re-verify before trusting] ---\n%s\n",
+                    all->entries[j].key, recency_buf,
+                    hits + misses, confidence, content);
       } else {
         str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) ---\n%s\n",
                     all->entries[j].key, recency_buf,
                     hits + misses, confidence, content);
       }
+      /* Causal validity: show advisory hint about what would invalidate
+       * this fact. Not stale - just a reminder to check. */
+      if (all->entries[j].validity &&
+          strncmp(all->entries[j].validity, "causal:", 7) == 0)
+        str_appendf(&msg, "  [MAY BE INVALID IF: %s]\n",
+                    all->entries[j].validity + 7);
       if (all->entries[j].basis && all->entries[j].basis[0]) {
         str_appendf(&msg, "  basis: %s\n", all->entries[j].basis);
       }
