@@ -465,6 +465,51 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
   if (rc != 0) return tools_make_error("failed to store memory");
 
+  /* Contradiction detection: search for similar existing memories that
+     * might conflict with this new entry. SodaMem [arXiv Jul 2026] showed
+     * that tracking SUPERSEDES/CONTRADICTS edges prevents stale facts from
+     * silently persisting. We surface potential contradictions as a warning
+     * so the agent can set 'supersedes' if appropriate. */
+  {
+    memory_t *query_mem = ctx->ws
+                            ? workspace_find_memory(ctx->ws, key)
+                            : ctx->memory;
+    if (!query_mem) query_mem = ctx->memory;
+    if (query_mem) {
+      memory_results_t similar = memory_query(query_mem, value, 5);
+      str_t warn = str_new(0);
+      int n_conflicts = 0;
+      for (int si = 0; si < similar.count; si++) {
+        /* Skip self and entries this one already supersedes */
+        if (strcmp(similar.entries[si].key, key) == 0) continue;
+        TOOL_OPT_STR(params, "supersedes", sup_check);
+        if (sup_check && strcmp(similar.entries[si].key, sup_check) == 0)
+          continue;
+        if (similar.entries[si].raw_relevance >= 0.60) {
+          if (n_conflicts == 0)
+            str_append_cstr(&warn,
+              "WARNING: similar memories found that may be contradicted "
+              "by this new entry:\n");
+          str_appendf(&warn, "  - %s (similarity: %.0f%%)\n",
+                      similar.entries[si].key,
+                      similar.entries[si].raw_relevance * 100.0);
+          n_conflicts++;
+          if (n_conflicts >= 3) break;
+        }
+      }
+      if (n_conflicts > 0)
+        str_append_cstr(&warn,
+          "Consider setting supersedes if the new entry replaces one of these.");
+      memory_results_free(&similar);
+      /* Store warning text for inclusion in tool result below */
+      if (n_conflicts > 0) {
+        cJSON_AddStringToObject(params, "_contradiction_warning",
+                                str_cstr(&warn));
+      }
+      str_free(&warn);
+    }
+  }
+
   /* P2: Lesson lineage — if 'supersedes' is provided, set the lineage chain.
      * Self-Harness [arXiv:2606.09498] — harness lineage h₀→h₁→h₂. */
   TOOL_OPT_STR(params, "supersedes", supersedes);
@@ -473,6 +518,22 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
       workspace_set_supersedes(ctx->ws, key, supersedes);
     else
       memory_set_supersedes(ctx->memory, key, supersedes);
+  }
+
+  /* Temporal validity and evidence basis */
+  TOOL_OPT_STR(params, "validity", validity_str);
+  if (validity_str) {
+    if (ctx->ws)
+      workspace_set_validity(ctx->ws, key, validity_str);
+    else
+      memory_set_validity(ctx->memory, key, validity_str);
+  }
+  TOOL_OPT_STR(params, "basis", basis_str);
+  if (basis_str) {
+    if (ctx->ws)
+      workspace_set_basis(ctx->ws, key, basis_str);
+    else
+      memory_set_basis(ctx->memory, key, basis_str);
   }
 
   /* Belief Entropy probe — compute ℋ_BE for the new memory entry.
@@ -543,6 +604,13 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
   tool_result_t res = tool_result_ok();
   cJSON_AddStringToObject(res.meta, "key", key);
   if (alias) cJSON_AddStringToObject(res.meta, "ref", alias);
+
+  /* Surface contradiction warning if detected */
+  {
+    const char *cw = json_str(params, "_contradiction_warning");
+    if (cw && cw[0])
+      cJSON_AddStringToObject(res.meta, "contradiction_warning", cw);
+  }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "memory_store",
@@ -807,6 +875,8 @@ static const tool_param_t memory_store_params[] = {
   TOOL_PARAM("supersedes", "string", "Key of the memory this entry replaces (lesson lineage tracking)", 0),
   TOOL_PARAM_ARRAY("triggers", "Content patterns that auto-inject this memory when matched in tool I/O", 0, "string"),
   TOOL_PARAM("global", "boolean", "Store in global memory instead of workspace (default: false)", 0),
+  TOOL_PARAM("validity", "string", "Expiration hint: persistent (default, never stale), volatile (always re-verify), session (expires after session), days:N (expires after N days)", 0),
+  TOOL_PARAM("basis", "string", "Evidence supporting this memory (e.g. 'confirmed by querying API with 7 positive results'). Displayed at recall to help judge trustworthiness.", 0),
   TOOL_PARAM_END};
 
 static const tool_param_t memory_search_params[] = {

@@ -476,6 +476,20 @@ int workspace_set_belief_entropy(workspace_t *ws, const char *key, double h_be) 
   return memory_set_belief_entropy(m, key, h_be);
 }
 
+/* ── temporal validity ───────────────────────────────── */
+
+int workspace_set_validity(workspace_t *ws, const char *key, const char *validity) {
+  memory_t *m = workspace_find_memory(ws, key);
+  if (!m) return -1;
+  return memory_set_validity(m, key, validity);
+}
+
+int workspace_set_basis(workspace_t *ws, const char *key, const char *basis) {
+  memory_t *m = workspace_find_memory(ws, key);
+  if (!m) return -1;
+  return memory_set_basis(m, key, basis);
+}
+
 /* ── git defer/flush ─────────────────────────────────── */
 
 void workspace_git_defer(workspace_t *ws) {

@@ -92,6 +92,12 @@ int workspace_set_supersedes(workspace_t *ws, const char *new_key,
 /* Set belief entropy on the memory that contains key. */
 int workspace_set_belief_entropy(workspace_t *ws, const char *key, double h_be);
 
+/* Set validity (expiration hint) on the memory that contains key. */
+int workspace_set_validity(workspace_t *ws, const char *key, const char *validity);
+
+/* Set basis (evidence description) on the memory that contains key. */
+int workspace_set_basis(workspace_t *ws, const char *key, const char *basis);
+
 /* Deferred git: defer/flush on both layers. */
 void workspace_git_defer(workspace_t *ws);
 void workspace_git_flush(workspace_t *ws, const char *msg);

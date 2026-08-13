@@ -79,9 +79,32 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
         content = all->entries[j].value ? all->entries[j].value : "";
       }
 
-      str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) ---\n%s\n",
-                  all->entries[j].key, recency_buf,
-                  hits + misses, confidence, content);
+      /* Staleness marker: check temporal validity and prepend warning.
+             * SodaMem [arXiv Jul 2026]: agents must know what is CURRENTLY
+             * true, not just what was once said. */
+      int days_past = 0;
+      int stale = memory_is_stale(all->entries[j].validity,
+                                  all->entries[j].created_at, &days_past);
+      if (stale) {
+        if (all->entries[j].validity &&
+            strncmp(all->entries[j].validity, "days:", 5) == 0)
+          str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) "
+                      "[STALE - %dd past validity] ---\n%s\n",
+                      all->entries[j].key, recency_buf,
+                      hits + misses, confidence, days_past, content);
+        else
+          str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) "
+                      "[STALE - re-verify before trusting] ---\n%s\n",
+                      all->entries[j].key, recency_buf,
+                      hits + misses, confidence, content);
+      } else {
+        str_appendf(&msg, "\n--- %s (%s, %d recalls, confidence: %d%%) ---\n%s\n",
+                    all->entries[j].key, recency_buf,
+                    hits + misses, confidence, content);
+      }
+      if (all->entries[j].basis && all->entries[j].basis[0]) {
+        str_appendf(&msg, "  basis: %s\n", all->entries[j].basis);
+      }
       tool_track_recalled_key(tools, all->entries[j].key);
       tool_fire_ledger_add(tools, all->entries[j].key);
       remaining--;

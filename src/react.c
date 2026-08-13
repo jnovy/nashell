@@ -684,12 +684,23 @@ static int trig_cb(const mem_index_entry_t *entry, void *ud) {
   for (int t = 0; t < entry->n_triggers; t++) {
     if (!entry->triggers[t] || !entry->triggers[t][0]) continue;
     if (strcasestr(tc->surface, entry->triggers[t])) {
+      /* Check staleness for cue-anchored memories */
+      int cue_days_past = 0;
+      int cue_stale = memory_is_stale(entry->validity,
+                                      entry->created_at, &cue_days_past);
       char hint[4096];
-      snprintf(hint, sizeof(hint),
-               "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
-               "--- %s ---\n%s",
-               entry->triggers[t], entry->key,
-               entry->value ? entry->value : "");
+      if (cue_stale)
+        snprintf(hint, sizeof(hint),
+                 "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
+                 "--- %s [STALE - re-verify before trusting] ---\n%s",
+                 entry->triggers[t], entry->key,
+                 entry->value ? entry->value : "");
+      else
+        snprintf(hint, sizeof(hint),
+                 "[CUE-ANCHORED MEMORY - triggered by: %s]\n"
+                 "--- %s ---\n%s",
+                 entry->triggers[t], entry->key,
+                 entry->value ? entry->value : "");
       llm_chat_add_typed(tc->chat, "user", hint,
                          LLM_MSG_MEMORY_HINT);
       tool_fire_ledger_add(tc->tools, entry->key);
@@ -1518,11 +1529,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
               }
             }
             if (!cdup && cy_mem.entries[cj].relevance > cy_min_rel) {
+              int cy_stale = memory_is_stale(
+                cy_mem.entries[cj].validity,
+                cy_mem.entries[cj].created_at, NULL);
               char cy_hint[2048];
               snprintf(cy_hint, sizeof(cy_hint),
                        "[MEMORY HINT — you may be stuck, consider this approach]\n"
-                       "--- %s ---\n%s",
+                       "--- %s%s ---\n%s",
                        cy_mem.entries[cj].key,
+                       cy_stale ? " [STALE]" : "",
                        cy_mem.entries[cj].value);
               llm_chat_add_typed(chat, "user", cy_hint,
                                  LLM_MSG_MEMORY_HINT);
@@ -2108,11 +2123,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             }
           }
           if (!dup && err_mem.entries[j].relevance > err_min_rel) {
+            int err_stale = memory_is_stale(
+              err_mem.entries[j].validity,
+              err_mem.entries[j].created_at, NULL);
             char hint[2048];
             snprintf(hint, sizeof(hint),
                      "[MEMORY HINT — relevant to this error]\n"
-                     "--- %s ---\n%s",
+                     "--- %s%s ---\n%s",
                      err_mem.entries[j].key,
+                     err_stale ? " [STALE]" : "",
                      err_mem.entries[j].value);
             llm_chat_add_typed(chat, "user", hint, LLM_MSG_MEMORY_HINT);
             tool_track_recalled_key(ctx->tools,

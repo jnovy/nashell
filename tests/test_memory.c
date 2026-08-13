@@ -590,6 +590,134 @@ static void test_pin_preserves_value(void) {
   free(dir);
 }
 
+/* ── Temporal Validity tests ── */
+
+static void test_validity_persistent(void) {
+  /* "persistent" is never stale */
+  ASSERT_EQ(memory_is_stale("persistent", 0, NULL), 0);
+}
+
+static void test_validity_days_not_stale(void) {
+  /* An entry created now with days:7 should not be stale */
+  double now = (double)time(NULL);
+  int days_past = 99;
+  ASSERT_EQ(memory_is_stale("days:7", now, &days_past), 0);
+  ASSERT_EQ(days_past, 0);
+}
+
+static void test_validity_days_stale(void) {
+  /* An entry created 10 days ago with days:3 should be stale (7d past) */
+  double now = (double)time(NULL);
+  double ten_days_ago = now - 10.0 * 86400.0;
+  int days_past = 0;
+  ASSERT_EQ(memory_is_stale("days:3", ten_days_ago, &days_past), 1);
+  ASSERT_EQ(days_past, 7);
+}
+
+static void test_validity_volatile(void) {
+  /* Volatile is always stale */
+  double now = (double)time(NULL);
+  ASSERT_EQ(memory_is_stale("volatile", now, NULL), 1);
+}
+
+static void test_validity_session(void) {
+  /* Session entries are stale after 6 hours */
+  double now = (double)time(NULL);
+  /* Created 1 hour ago - not stale */
+  ASSERT_EQ(memory_is_stale("session", now - 3600.0, NULL), 0);
+  /* Created 12 hours ago - stale */
+  ASSERT_EQ(memory_is_stale("session", now - 43200.0, NULL), 1);
+}
+
+static void test_validity_null_is_persistent(void) {
+  /* NULL validity = persistent = never stale */
+  ASSERT_EQ(memory_is_stale(NULL, 0, NULL), 0);
+  ASSERT_EQ(memory_is_stale("", 0, NULL), 0);
+}
+
+static void test_basis_field(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "fact:test-basis", "API field is X", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_basis(m, "fact:test-basis", "confirmed by querying API");
+
+  /* Verify via memory_find */
+  mem_index_entry_t *found = memory_find(m, "fact:test-basis");
+  ASSERT_NOT_NULL(found);
+  ASSERT_NOT_NULL(found->basis);
+  ASSERT_STR_EQ(found->basis, "confirmed by querying API");
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_validity_basis_preserved_on_update(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "fact:update-test", "value1", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_validity(m, "fact:update-test", "days:14");
+  memory_set_basis(m, "fact:update-test", "initial evidence");
+
+  /* Re-store with new value - validity and basis should be preserved */
+  memory_store(m, "fact:update-test", "value2", 0, NULL, NULL, 0, NULL, 0);
+
+  mem_index_entry_t *found = memory_find(m, "fact:update-test");
+  ASSERT_NOT_NULL(found);
+  ASSERT_STR_EQ(found->value, "value2");
+  ASSERT_NOT_NULL(found->validity);
+  ASSERT_STR_EQ(found->validity, "days:14");
+  ASSERT_NOT_NULL(found->basis);
+  ASSERT_STR_EQ(found->basis, "initial evidence");
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_validity_in_query_results(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "fact:query-val-test", "some fact for query test", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_validity(m, "fact:query-val-test", "volatile");
+  memory_set_basis(m, "fact:query-val-test", "test basis text");
+
+  memory_results_t results = memory_query(m, "fact:query-val-test", 5);
+  ASSERT_GT(results.count, 0);
+  ASSERT_NOT_NULL(results.entries[0].validity);
+  ASSERT_STR_EQ(results.entries[0].validity, "volatile");
+  ASSERT_NOT_NULL(results.entries[0].basis);
+  ASSERT_STR_EQ(results.entries[0].basis, "test basis text");
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_validity_in_find(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:find-val-test", "find validity test", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_validity(m, "lesson:find-val-test", "days:7");
+
+  mem_index_entry_t *found = memory_find(m, "lesson:find-val-test");
+  ASSERT_NOT_NULL(found);
+  ASSERT_NOT_NULL(found->validity);
+  ASSERT_STR_EQ(found->validity, "days:7");
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
 int main(void) {
   printf("test_memory:\n");
 
@@ -632,6 +760,19 @@ int main(void) {
   RUN_TEST(test_unpin_nonexistent);
   RUN_TEST(test_pin_already_pinned);
   RUN_TEST(test_pin_preserves_value);
+
+  /* Temporal validity + basis + staleness */
+  printf("\n  --- Temporal Validity ---\n");
+  RUN_TEST(test_validity_persistent);
+  RUN_TEST(test_validity_days_not_stale);
+  RUN_TEST(test_validity_days_stale);
+  RUN_TEST(test_validity_volatile);
+  RUN_TEST(test_validity_session);
+  RUN_TEST(test_validity_null_is_persistent);
+  RUN_TEST(test_basis_field);
+  RUN_TEST(test_validity_basis_preserved_on_update);
+  RUN_TEST(test_validity_in_query_results);
+  RUN_TEST(test_validity_in_find);
 
   TEST_SUMMARY();
 }

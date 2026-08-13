@@ -123,6 +123,8 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
   free_string_array(e->triggers, e->n_triggers);
   if (e->has_emb) embed_multi_vec_free(&e->emb);
   free(e->supersedes);
+  free(e->validity);
+  free(e->basis);
   memset(e, 0, sizeof(*e));
 }
 
@@ -277,6 +279,12 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   const char *ss = json_str(entry, "supersedes");
   ie->supersedes = ss ? xstrdup(ss) : NULL;
   ie->version = json_int(entry, "version", 0);
+
+  /* Temporal validity and evidence basis */
+  const char *val_s = json_str(entry, "validity");
+  ie->validity = val_s ? xstrdup(val_s) : NULL;
+  const char *bas_s = json_str(entry, "basis");
+  ie->basis = bas_s ? xstrdup(bas_s) : NULL;
 
   /* Copy refs */
   cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
@@ -461,6 +469,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
   double belief_entropy = -1;
   char *old_supersedes = NULL;
   int old_version = 0;
+  char *old_validity = NULL;
+  char *old_basis = NULL;
   char **old_triggers = NULL;
   int n_old_triggers = 0;
   {
@@ -480,6 +490,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
       const char *ss2 = json_str(old, "supersedes");
       if (ss2) old_supersedes = xstrdup(ss2);
       old_version = json_int(old, "version", old_version);
+      /* Preserve validity and basis from old entry */
+      const char *ov2 = json_str(old, "validity");
+      if (ov2) old_validity = xstrdup(ov2);
+      const char *ob2 = json_str(old, "basis");
+      if (ob2) old_basis = xstrdup(ob2);
       /* Preserve triggers if caller did not provide new ones */
       if (!triggers) {
         cJSON *ot = cJSON_GetObjectItem(old, "triggers");
@@ -575,6 +590,17 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddNumberToObject(entry, "version", old_version);
   else
     cJSON_AddNumberToObject(entry, "version", 1);
+
+  /* Temporal validity and evidence basis - preserve from old entry.
+     * New values are set by the caller via memory_set_validity/basis(). */
+  if (old_validity) {
+    cJSON_AddStringToObject(entry, "validity", old_validity);
+    free(old_validity);
+  }
+  if (old_basis) {
+    cJSON_AddStringToObject(entry, "basis", old_basis);
+    free(old_basis);
+  }
 
   dump_json(path, entry);
 
@@ -1207,6 +1233,8 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     e->belief_entropy = ie->belief_entropy;
     e->supersedes = ie->supersedes ? xstrdup(ie->supersedes) : NULL;
     e->version = ie->version;
+    e->validity = ie->validity ? xstrdup(ie->validity) : NULL;
+    e->basis = ie->basis ? xstrdup(ie->basis) : NULL;
     e->journal_ref = NULL; /* loaded on demand if needed */
 
     /* Copy refs from index */
@@ -1671,6 +1699,8 @@ void memory_results_free(memory_results_t *r) {
     free(r->entries[i].triggers);
     /* P2: Free lineage fields */
     free(r->entries[i].supersedes);
+    free(r->entries[i].validity);
+    free(r->entries[i].basis);
   }
   free(r->entries);
   r->entries = NULL;
@@ -1957,6 +1987,107 @@ int memory_set_belief_entropy(memory_t *m, const char *key, double h_be) {
   {
     mem_index_entry_t *ie = mem_index_find(&m->idx, key);
     if (ie) ie->belief_entropy = h_be;
+  }
+
+  pthread_mutex_unlock(&m->mtx);
+  return 0;
+}
+
+/* ── temporal validity ──────────────────────────────────── */
+
+int memory_is_stale(const char *validity, double created_at, int *days_past) {
+  if (days_past) *days_past = 0;
+  if (!validity || !validity[0]) return 0; /* NULL = persistent = never stale */
+  if (strcmp(validity, "persistent") == 0) return 0;
+
+  double now = (double)time(NULL);
+  double age_days = (now - created_at) / 86400.0;
+
+  if (strcmp(validity, "volatile") == 0) {
+    /* Volatile entries are always marked stale to signal re-verification */
+    if (days_past) *days_past = (int)age_days;
+    return 1;
+  }
+  if (strcmp(validity, "session") == 0) {
+    /* Session entries are stale if older than 6 hours */
+    int stale = (age_days > 0.25);
+    if (stale && days_past) *days_past = (int)age_days;
+    return stale;
+  }
+  if (strncmp(validity, "days:", 5) == 0) {
+    int valid_days = atoi(validity + 5);
+    if (valid_days <= 0) return 0; /* malformed = treat as persistent */
+    int stale = (age_days > (double)valid_days);
+    if (stale && days_past) *days_past = (int)(age_days - valid_days);
+    return stale;
+  }
+  return 0; /* unknown validity type = treat as persistent */
+}
+
+int memory_set_validity(memory_t *m, const char *key, const char *validity) {
+  if (!m || !key || !validity) return -1;
+  pthread_mutex_lock(&m->mtx);
+
+  cJSON *entry = memory_load_entry_json(m, key);
+  if (!entry) {
+    pthread_mutex_unlock(&m->mtx);
+    return -1;
+  }
+
+  cJSON *v = cJSON_GetObjectItem(entry, "validity");
+  if (v)
+    cJSON_SetValuestring(v, validity);
+  else
+    cJSON_AddStringToObject(entry, "validity", validity);
+
+  /* Write back */
+  char fname[512];
+  key_to_path(key, ".json", fname, sizeof(fname));
+  char path[NASH_PATH_MAX];
+  path_join(path, sizeof(path), m->dir, fname);
+
+  dump_json(path, entry);
+  cJSON_Delete(entry);
+
+  /* Update in-memory index */
+  {
+    mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+    if (ie) str_replace(&ie->validity, validity);
+  }
+
+  pthread_mutex_unlock(&m->mtx);
+  return 0;
+}
+
+int memory_set_basis(memory_t *m, const char *key, const char *basis) {
+  if (!m || !key || !basis) return -1;
+  pthread_mutex_lock(&m->mtx);
+
+  cJSON *entry = memory_load_entry_json(m, key);
+  if (!entry) {
+    pthread_mutex_unlock(&m->mtx);
+    return -1;
+  }
+
+  cJSON *b = cJSON_GetObjectItem(entry, "basis");
+  if (b)
+    cJSON_SetValuestring(b, basis);
+  else
+    cJSON_AddStringToObject(entry, "basis", basis);
+
+  /* Write back */
+  char fname[512];
+  key_to_path(key, ".json", fname, sizeof(fname));
+  char path[NASH_PATH_MAX];
+  path_join(path, sizeof(path), m->dir, fname);
+
+  dump_json(path, entry);
+  cJSON_Delete(entry);
+
+  /* Update in-memory index */
+  {
+    mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+    if (ie) str_replace(&ie->basis, basis);
   }
 
   pthread_mutex_unlock(&m->mtx);
@@ -2334,6 +2465,8 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
   copy->created_at = src->created_at;
   copy->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
   copy->version = src->version;
+  copy->validity = src->validity ? xstrdup(src->validity) : NULL;
+  copy->basis = src->basis ? xstrdup(src->basis) : NULL;
   copy->n_refs = src->n_refs;
   if (src->refs && src->n_refs > 0) {
     copy->refs = xcalloc((size_t)src->n_refs, sizeof(char *));
@@ -2363,6 +2496,8 @@ void memory_find_free(mem_index_entry_t *entry) {
   free_string_array(entry->refs, entry->n_refs);
   free_string_array(entry->triggers, entry->n_triggers);
   free(entry->supersedes);
+  free(entry->validity);
+  free(entry->basis);
   free(entry);
 }
 
