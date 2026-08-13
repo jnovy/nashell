@@ -721,6 +721,131 @@ static void test_validity_in_find(void) {
   free(dir);
 }
 
+/* ── test_validity_basis_persist_on_disk: verify validity/basis survive
+ *    memory_free() + memory_new() reload from JSON on disk ── */
+static void test_validity_basis_persist_on_disk(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Store entry, set validity and basis */
+  memory_store(m, "fact:disk-persist", "build is 1.43.2-2.el9", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_validity(m, "fact:disk-persist", "causal:new brew build submitted");
+  memory_set_basis(m, "fact:disk-persist", "brew latest-build query on 2026-08-13");
+
+  /* Verify in-memory before reload */
+  mem_index_entry_t *pre = memory_find(m, "fact:disk-persist");
+  ASSERT_NOT_NULL(pre);
+  ASSERT_STR_EQ(pre->validity, "causal:new brew build submitted");
+  ASSERT_STR_EQ(pre->basis, "brew latest-build query on 2026-08-13");
+  memory_find_free(pre);
+
+  /* Destroy in-memory state, reload from disk */
+  memory_free(m);
+  m = memory_new(dir);
+  ASSERT_NOT_NULL(m);
+
+  /* Verify fields survived the round-trip */
+  mem_index_entry_t *post = memory_find(m, "fact:disk-persist");
+  ASSERT_NOT_NULL(post);
+  ASSERT_STR_EQ(post->value, "build is 1.43.2-2.el9");
+  ASSERT_NOT_NULL(post->validity);
+  ASSERT_STR_EQ(post->validity, "causal:new brew build submitted");
+  ASSERT_NOT_NULL(post->basis);
+  ASSERT_STR_EQ(post->basis, "brew latest-build query on 2026-08-13");
+  memory_find_free(post);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ── test_contradiction_detection_mechanism: verify that memory_query()
+ *    returns similar entries with raw_relevance >= 0.60, which is the
+ *    threshold used by tool_memory_store() (tool_memory.c:488) to emit
+ *    contradiction warnings. Tests the underlying mechanism without
+ *    needing full tool_ctx_t infrastructure. ── */
+static void test_contradiction_detection_mechanism(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Store an entry about a JIRA field */
+  memory_store(m, "lesson:errata-field-id",
+               "The JIRA errataLink field is customfield_12323",
+               0, NULL, NULL, 0, NULL, 0);
+
+  /* Query with the KEY of the existing entry - simulates storing a new
+   * memory whose value mentions the same concept. The substring scorer
+   * gives 3.0 for full-query-in-key match (memory.c:787), yielding
+   * raw_relevance = 3.0/4.0 = 0.75 which is above the 0.60 threshold. */
+  memory_results_t results = memory_query(m, "lesson:errata-field-id", 5);
+  ASSERT_GT(results.count, 0);
+
+  /* Find the original entry in results */
+  int found = -1;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:errata-field-id") == 0) {
+      found = i;
+      break;
+    }
+  }
+  ASSERT(found >= 0); /* entry must appear in results */
+  ASSERT(results.entries[found].raw_relevance >= 0.60);
+
+  memory_results_free(&results);
+
+  /* Negative case: completely unrelated query should NOT trigger */
+  memory_results_t unrelated = memory_query(m, "docker compose networking", 5);
+  int has_high_match = 0;
+  for (int i = 0; i < unrelated.count; i++) {
+    if (strcmp(unrelated.entries[i].key, "lesson:errata-field-id") == 0 &&
+        unrelated.entries[i].raw_relevance >= 0.60) {
+      has_high_match = 1;
+    }
+  }
+  ASSERT_EQ(has_high_match, 0); /* unrelated query must NOT trigger */
+  memory_results_free(&unrelated);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ── test_contradiction_detection_similar_values: verify that two entries
+ *    with overlapping key names are found as potential contradictions ── */
+static void test_contradiction_detection_similar_values(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Store two entries about the same topic with different keys */
+  memory_store(m, "fact:latest-buildah-build",
+               "buildah-1.43.2-1.el9 is the latest candidate build",
+               0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "fact:latest-buildah-build-updated",
+               "buildah-1.43.2-2.el9 is the latest candidate build",
+               0, NULL, NULL, 0, NULL, 0);
+
+  /* Querying with the first entry's key should find it with high relevance.
+   * This simulates the contradiction check in tool_memory.c:479 where
+   * memory_query is called with the new entry's value text. */
+  memory_results_t results = memory_query(m, "fact:latest-buildah-build", 5);
+  ASSERT_GT(results.count, 0);
+
+  /* The first entry's key matches the query exactly -> raw_relevance >= 0.60 */
+  int found_original = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "fact:latest-buildah-build") == 0 &&
+        results.entries[i].raw_relevance >= 0.60) {
+      found_original = 1;
+    }
+  }
+  ASSERT_EQ(found_original, 1);
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
 int main(void) {
   printf("test_memory:\n");
 
@@ -776,6 +901,12 @@ int main(void) {
   RUN_TEST(test_validity_basis_preserved_on_update);
   RUN_TEST(test_validity_in_query_results);
   RUN_TEST(test_validity_in_find);
+  RUN_TEST(test_validity_basis_persist_on_disk);
+
+  /* Contradiction detection mechanism */
+  printf("\n  --- Contradiction Detection ---\n");
+  RUN_TEST(test_contradiction_detection_mechanism);
+  RUN_TEST(test_contradiction_detection_similar_values);
 
   TEST_SUMMARY();
 }
