@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <string.h>
 #include "cJSON.h"
 #include "embedding.h"
 
@@ -46,7 +47,7 @@ typedef struct {
   char *path;            /* full path to .json file (owned) */
   char *supersedes;      /* key this entry supersedes (owned, NULL = none) */
   int version;           /* lineage version (0 = original, 2+ = superseding) */
-  char *validity;        /* temporal validity: "persistent", "volatile", "session", "causal:description" (owned, NULL = persistent) */
+  char *validity;        /* temporal validity: "persistent", "volatile", "session", "expires_when:description" (owned, NULL = persistent) */
   char *basis;           /* evidence basis for this memory (owned, NULL = none) */
   char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;        /* 0 = no triggers, purely semantic recall */
@@ -162,7 +163,7 @@ typedef struct {
      * the full evolution history for retrospective analysis. */
   char *supersedes; /* key of the memory this entry supersedes (NULL = none) */
   int version;      /* lineage version number (1 = original, 2+ = superseding) */
-  char *validity;   /* temporal validity: "persistent", "volatile", "session", "causal:description" (NULL = persistent) */
+  char *validity;   /* temporal validity: "persistent", "volatile", "session", "expires_when:description" (NULL = persistent) */
   char *basis;      /* evidence basis for this memory (NULL = none) */
   char **triggers;  /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;   /* 0 = no triggers, purely semantic recall */
@@ -264,10 +265,11 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
  * Returns 0 on success, -1 if key not found. */
 int memory_set_belief_entropy(memory_t *m, const char *key, double h_be);
 
-/* Set validity (temporal causal tracking) on a memory entry.
+/* Set validity (temporal tracking) on a memory entry.
  * validity: "persistent" (default), "volatile", "session",
- *           "causal:description" (advisory hint about what invalidates this fact).
- * Causal entries never auto-expire - they show [MAY BE INVALID IF: ...] at recall.
+ *           "expires_when:description" (advisory hint about what invalidates this fact).
+ * expires_when: entries never auto-expire - they show [MAY BE INVALID IF: ...] at recall.
+ * Legacy "causal:" prefix is also accepted for backward compatibility.
  * Updates both on-disk JSON and in-memory index.
  * Returns 0 on success, -1 if key not found. */
 int memory_set_validity(memory_t *m, const char *key, const char *validity);
@@ -280,9 +282,20 @@ int memory_set_basis(memory_t *m, const char *key, const char *basis);
 
 /* Check if a memory entry is stale based on its validity field.
  * Returns 1 if stale (volatile/session expired), 0 if valid.
- * "causal:" entries are never stale (they use advisory hints instead).
+ * "expires_when:" entries are never stale (they use advisory hints instead).
+ * Legacy "causal:" prefix is also treated as non-stale.
  * If days_past is non-NULL, stores how many days past expiration (0 if valid). */
 int memory_is_stale(const char *validity, double created_at, int *days_past);
+
+/* Extract the invalidation description from an expires_when: or legacy causal:
+ * validity string. Returns pointer to the description after the prefix,
+ * or NULL if validity is not an expires_when/causal entry. */
+static inline const char *validity_expires_desc(const char *validity) {
+  if (!validity) return NULL;
+  if (strncmp(validity, "expires_when:", 13) == 0) return validity + 13;
+  if (strncmp(validity, "causal:", 7) == 0) return validity + 7;
+  return NULL;
+}
 
 /* Add validation evidence to a memory's in-memory index entry.
  * Used by consolidation to carry forward recall_hits/misses from

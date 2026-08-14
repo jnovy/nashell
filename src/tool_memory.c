@@ -875,7 +875,7 @@ static const tool_param_t memory_store_params[] = {
   TOOL_PARAM("supersedes", "string", "Key of the memory this entry replaces (lesson lineage tracking)", 0),
   TOOL_PARAM_ARRAY("triggers", "Content patterns that auto-inject this memory when matched in tool I/O", 0, "string"),
   TOOL_PARAM("global", "boolean", "Store in global memory instead of workspace (default: false)", 0),
-  TOOL_PARAM("validity", "string", "Temporal validity class: persistent (default, never stale), volatile (always re-verify), session (expires after session), causal:description (shows advisory hint about what event would invalidate this fact - never auto-expires)", 0),
+  TOOL_PARAM("validity", "string", "Temporal validity class: persistent (default, never stale), volatile (always re-verify), session (expires after session), expires_when:description (shows advisory hint about what event would invalidate this fact - never auto-expires)", 0),
   TOOL_PARAM("basis", "string", "Evidence supporting this memory (e.g. 'confirmed by querying API with 7 positive results'). Displayed at recall to help judge trustworthiness.", 0),
   TOOL_PARAM_END};
 

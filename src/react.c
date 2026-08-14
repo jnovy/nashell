@@ -701,11 +701,12 @@ static int trig_cb(const mem_index_entry_t *entry, void *ud) {
                  "--- %s ---\n%s",
                  entry->triggers[t], entry->key,
                  entry->value ? entry->value : "");
-      /* Causal validity advisory hint */
-      if (entry->validity && strncmp(entry->validity, "causal:", 7) == 0) {
+      /* Expiration advisory hint */
+      const char *edesc = validity_expires_desc(entry->validity);
+      if (edesc) {
         size_t len = strlen(hint);
         snprintf(hint + len, sizeof(hint) - len,
-                 "\n  [MAY BE INVALID IF: %s]", entry->validity + 7);
+                 "\n  [MAY BE INVALID IF: %s]", edesc);
       }
       llm_chat_add_typed(tc->chat, "user", hint,
                          LLM_MSG_MEMORY_HINT);
@@ -1545,13 +1546,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                        cy_mem.entries[cj].key,
                        cy_stale ? " [STALE]" : "",
                        cy_mem.entries[cj].value);
-              /* Causal validity advisory hint */
-              if (cy_mem.entries[cj].validity &&
-                  strncmp(cy_mem.entries[cj].validity, "causal:", 7) == 0) {
+              /* Expiration advisory hint */
+              const char *cy_edesc = validity_expires_desc(
+                  cy_mem.entries[cj].validity);
+              if (cy_edesc) {
                 size_t clen = strlen(cy_hint);
                 snprintf(cy_hint + clen, sizeof(cy_hint) - clen,
-                         "\n  [MAY BE INVALID IF: %s]",
-                         cy_mem.entries[cj].validity + 7);
+                         "\n  [MAY BE INVALID IF: %s]", cy_edesc);
               }
               llm_chat_add_typed(chat, "user", cy_hint,
                                  LLM_MSG_MEMORY_HINT);
@@ -2147,13 +2148,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                      err_mem.entries[j].key,
                      err_stale ? " [STALE]" : "",
                      err_mem.entries[j].value);
-            /* Causal validity advisory hint */
-            if (err_mem.entries[j].validity &&
-                strncmp(err_mem.entries[j].validity, "causal:", 7) == 0) {
+            /* Expiration advisory hint */
+            const char *err_edesc = validity_expires_desc(
+                err_mem.entries[j].validity);
+            if (err_edesc) {
               size_t elen = strlen(hint);
               snprintf(hint + elen, sizeof(hint) - elen,
-                       "\n  [MAY BE INVALID IF: %s]",
-                       err_mem.entries[j].validity + 7);
+                       "\n  [MAY BE INVALID IF: %s]", err_edesc);
             }
             llm_chat_add_typed(chat, "user", hint, LLM_MSG_MEMORY_HINT);
             tool_track_recalled_key(ctx->tools,

@@ -597,24 +597,36 @@ static void test_validity_persistent(void) {
   ASSERT_EQ(memory_is_stale("persistent", 0, NULL), 0);
 }
 
-static void test_validity_causal_never_stale(void) {
-  /* Causal validity never auto-expires regardless of age */
+static void test_validity_expires_when_never_stale(void) {
+  /* expires_when: validity never auto-expires regardless of age */
   double now = (double)time(NULL);
   double year_ago = now - 365.0 * 86400.0;
   int days_past = 99;
-  ASSERT_EQ(memory_is_stale("causal:new build submitted", now, &days_past), 0);
+  ASSERT_EQ(memory_is_stale("expires_when:new build submitted", now, &days_past), 0);
   ASSERT_EQ(days_past, 0); /* unchanged - not stale */
-  /* Even a year-old causal entry is not stale */
+  /* Even a year-old entry is not stale */
+  ASSERT_EQ(memory_is_stale("expires_when:new build submitted", year_ago, &days_past), 0);
+  /* Legacy causal: prefix also works */
+  ASSERT_EQ(memory_is_stale("causal:new build submitted", now, &days_past), 0);
   ASSERT_EQ(memory_is_stale("causal:new build submitted", year_ago, &days_past), 0);
 }
 
-static void test_validity_causal_description(void) {
-  /* The causal description (after "causal:") should be extractable */
-  const char *validity = "causal:errata advisory is created for this build";
-  ASSERT_EQ(strncmp(validity, "causal:", 7), 0);
-  ASSERT_STR_EQ(validity + 7, "errata advisory is created for this build");
-  /* And it's never stale */
-  ASSERT_EQ(memory_is_stale(validity, 0, NULL), 0);
+static void test_validity_expires_when_description(void) {
+  /* The description should be extractable via validity_expires_desc() */
+  const char *v1 = "expires_when:errata advisory is created for this build";
+  const char *desc1 = validity_expires_desc(v1);
+  ASSERT_STR_EQ(desc1, "errata advisory is created for this build");
+  ASSERT_EQ(memory_is_stale(v1, 0, NULL), 0);
+
+  /* Legacy causal: prefix also extracts correctly */
+  const char *v2 = "causal:upstream release published";
+  const char *desc2 = validity_expires_desc(v2);
+  ASSERT_STR_EQ(desc2, "upstream release published");
+
+  /* Non-expiring validity returns NULL */
+  ASSERT_EQ(validity_expires_desc("persistent") == NULL, 1);
+  ASSERT_EQ(validity_expires_desc("volatile") == NULL, 1);
+  ASSERT_EQ(validity_expires_desc(NULL) == NULL, 1);
 }
 
 static void test_validity_volatile(void) {
@@ -662,7 +674,7 @@ static void test_validity_basis_preserved_on_update(void) {
   memory_t *m = memory_new(dir);
 
   memory_store(m, "fact:update-test", "value1", 0, NULL, NULL, 0, NULL, 0);
-  memory_set_validity(m, "fact:update-test", "causal:new build tagged in candidate");
+  memory_set_validity(m, "fact:update-test", "expires_when:new build tagged in candidate");
   memory_set_basis(m, "fact:update-test", "initial evidence");
 
   /* Re-store with new value - validity and basis should be preserved */
@@ -672,7 +684,7 @@ static void test_validity_basis_preserved_on_update(void) {
   ASSERT_NOT_NULL(found);
   ASSERT_STR_EQ(found->value, "value2");
   ASSERT_NOT_NULL(found->validity);
-  ASSERT_STR_EQ(found->validity, "causal:new build tagged in candidate");
+  ASSERT_STR_EQ(found->validity, "expires_when:new build tagged in candidate");
   ASSERT_NOT_NULL(found->basis);
   ASSERT_STR_EQ(found->basis, "initial evidence");
   memory_find_free(found);
@@ -892,8 +904,8 @@ int main(void) {
   /* Temporal validity + basis + staleness */
   printf("\n  --- Temporal Validity ---\n");
   RUN_TEST(test_validity_persistent);
-  RUN_TEST(test_validity_causal_never_stale);
-  RUN_TEST(test_validity_causal_description);
+  RUN_TEST(test_validity_expires_when_never_stale);
+  RUN_TEST(test_validity_expires_when_description);
   RUN_TEST(test_validity_volatile);
   RUN_TEST(test_validity_session);
   RUN_TEST(test_validity_null_is_persistent);

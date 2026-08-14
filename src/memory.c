@@ -2014,10 +2014,15 @@ int memory_is_stale(const char *validity, double created_at, int *days_past) {
     if (stale && days_past) *days_past = (int)age_days;
     return stale;
   }
+  if (strncmp(validity, "expires_when:", 13) == 0) {
+    /* expires_when: validity - never auto-expires. The description after
+     * "expires_when:" tells the model what event would invalidate this fact.
+     * Display code shows it as an advisory hint, but memory_is_stale
+     * returns 0. */
+    return 0;
+  }
+  /* Legacy compat: treat old "causal:" prefix the same way */
   if (strncmp(validity, "causal:", 7) == 0) {
-    /* Causal validity: never auto-expires. The description after "causal:"
-     * tells the model what event would invalidate this fact. Display code
-     * shows it as an advisory hint, but memory_is_stale returns 0. */
     return 0;
   }
   return 0; /* unknown validity type = treat as persistent */
