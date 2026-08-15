@@ -269,7 +269,6 @@ int memory_set_belief_entropy(memory_t *m, const char *key, double h_be);
  * validity: "persistent" (default), "volatile", "session",
  *           "expires_when:description" (advisory hint about what invalidates this fact).
  * expires_when: entries never auto-expire - they show [MAY BE INVALID IF: ...] at recall.
- * Legacy "causal:" prefix is also accepted for backward compatibility.
  * Updates both on-disk JSON and in-memory index.
  * Returns 0 on success, -1 if key not found. */
 int memory_set_validity(memory_t *m, const char *key, const char *validity);
@@ -283,17 +282,15 @@ int memory_set_basis(memory_t *m, const char *key, const char *basis);
 /* Check if a memory entry is stale based on its validity field.
  * Returns 1 if stale (volatile/session expired), 0 if valid.
  * "expires_when:" entries are never stale (they use advisory hints instead).
- * Legacy "causal:" prefix is also treated as non-stale.
  * If days_past is non-NULL, stores how many days past expiration (0 if valid). */
 int memory_is_stale(const char *validity, double created_at, int *days_past);
 
-/* Extract the invalidation description from an expires_when: or legacy causal:
- * validity string. Returns pointer to the description after the prefix,
- * or NULL if validity is not an expires_when/causal entry. */
+/* Extract the invalidation description from an expires_when: validity string.
+ * Returns pointer to the description after the prefix,
+ * or NULL if validity is not an expires_when entry. */
 static inline const char *validity_expires_desc(const char *validity) {
   if (!validity) return NULL;
   if (strncmp(validity, "expires_when:", 13) == 0) return validity + 13;
-  if (strncmp(validity, "causal:", 7) == 0) return validity + 7;
   return NULL;
 }
 

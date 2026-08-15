@@ -2021,10 +2021,6 @@ int memory_is_stale(const char *validity, double created_at, int *days_past) {
      * returns 0. */
     return 0;
   }
-  /* Legacy compat: treat old "causal:" prefix the same way */
-  if (strncmp(validity, "causal:", 7) == 0) {
-    return 0;
-  }
   return 0; /* unknown validity type = treat as persistent */
 }
 
