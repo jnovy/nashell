@@ -606,9 +606,6 @@ static void test_validity_expires_when_never_stale(void) {
   ASSERT_EQ(days_past, 0); /* unchanged - not stale */
   /* Even a year-old entry is not stale */
   ASSERT_EQ(memory_is_stale("expires_when:new build submitted", year_ago, &days_past), 0);
-  /* Legacy causal: prefix also works */
-  ASSERT_EQ(memory_is_stale("causal:new build submitted", now, &days_past), 0);
-  ASSERT_EQ(memory_is_stale("causal:new build submitted", year_ago, &days_past), 0);
 }
 
 static void test_validity_expires_when_description(void) {
@@ -617,11 +614,6 @@ static void test_validity_expires_when_description(void) {
   const char *desc1 = validity_expires_desc(v1);
   ASSERT_STR_EQ(desc1, "errata advisory is created for this build");
   ASSERT_EQ(memory_is_stale(v1, 0, NULL), 0);
-
-  /* Legacy causal: prefix also extracts correctly */
-  const char *v2 = "causal:upstream release published";
-  const char *desc2 = validity_expires_desc(v2);
-  ASSERT_STR_EQ(desc2, "upstream release published");
 
   /* Non-expiring validity returns NULL */
   ASSERT_EQ(validity_expires_desc("persistent") == NULL, 1);
@@ -720,12 +712,12 @@ static void test_validity_in_find(void) {
   memory_t *m = memory_new(dir);
 
   memory_store(m, "lesson:find-val-test", "find validity test", 0, NULL, NULL, 0, NULL, 0);
-  memory_set_validity(m, "lesson:find-val-test", "causal:upstream release published");
+  memory_set_validity(m, "lesson:find-val-test", "expires_when:upstream release published");
 
   mem_index_entry_t *found = memory_find(m, "lesson:find-val-test");
   ASSERT_NOT_NULL(found);
   ASSERT_NOT_NULL(found->validity);
-  ASSERT_STR_EQ(found->validity, "causal:upstream release published");
+  ASSERT_STR_EQ(found->validity, "expires_when:upstream release published");
   memory_find_free(found);
 
   memory_free(m);
@@ -741,13 +733,13 @@ static void test_validity_basis_persist_on_disk(void) {
 
   /* Store entry, set validity and basis */
   memory_store(m, "fact:disk-persist", "build is 1.43.2-2.el9", 0, NULL, NULL, 0, NULL, 0);
-  memory_set_validity(m, "fact:disk-persist", "causal:new brew build submitted");
+  memory_set_validity(m, "fact:disk-persist", "expires_when:new brew build submitted");
   memory_set_basis(m, "fact:disk-persist", "brew latest-build query on 2026-08-13");
 
   /* Verify in-memory before reload */
   mem_index_entry_t *pre = memory_find(m, "fact:disk-persist");
   ASSERT_NOT_NULL(pre);
-  ASSERT_STR_EQ(pre->validity, "causal:new brew build submitted");
+  ASSERT_STR_EQ(pre->validity, "expires_when:new brew build submitted");
   ASSERT_STR_EQ(pre->basis, "brew latest-build query on 2026-08-13");
   memory_find_free(pre);
 
@@ -761,7 +753,7 @@ static void test_validity_basis_persist_on_disk(void) {
   ASSERT_NOT_NULL(post);
   ASSERT_STR_EQ(post->value, "build is 1.43.2-2.el9");
   ASSERT_NOT_NULL(post->validity);
-  ASSERT_STR_EQ(post->validity, "causal:new brew build submitted");
+  ASSERT_STR_EQ(post->validity, "expires_when:new brew build submitted");
   ASSERT_NOT_NULL(post->basis);
   ASSERT_STR_EQ(post->basis, "brew latest-build query on 2026-08-13");
   memory_find_free(post);
