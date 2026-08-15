@@ -616,6 +616,16 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     free(serialized);
   }
 
+  /* Lightweight INFORM: inject session state (modified files list).
+   * Regenerated each step, so zero context growth. */
+  {
+    char *inform = tool_format_inform_block(ctx->tools);
+    if (inform) {
+      llm_chat_add_formatted(chat, "user", LLM_MSG_INFORM, "%s", inform);
+      free(inform);
+    }
+  }
+
   /* Inject previous result — loaded from session_dir/result.md.
      * Keep prev_result alive until after TUI view check for dedup. */
   char *prev_result = NULL;

@@ -349,6 +349,51 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
   ctx->recalled_keys[ctx->n_recalled_keys++] = xstrdup(key);
 }
 
+/* ── Lightweight INFORM: modified-file tracking ─────── */
+
+void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step) {
+  if (!ctx || !path) return;
+  /* Check if already tracked */
+  for (int i = 0; i < ctx->n_modified_files; i++) {
+    if (strcmp(ctx->modified_files[i].path, path) == 0) {
+      ctx->modified_files[i].last_step = step;
+      ctx->modified_files[i].count++;
+      return;
+    }
+  }
+  /* New entry */
+  if (ctx->n_modified_files >= INFORM_MAX_FILES) {
+    /* Evict oldest (lowest last_step) */
+    int oldest = 0;
+    for (int i = 1; i < ctx->n_modified_files; i++)
+      if (ctx->modified_files[i].last_step < ctx->modified_files[oldest].last_step)
+        oldest = i;
+    free(ctx->modified_files[oldest].path);
+    ctx->modified_files[oldest] = ctx->modified_files[ctx->n_modified_files - 1];
+    ctx->n_modified_files--;
+  }
+  ctx->modified_files[ctx->n_modified_files].path = xstrdup(path);
+  ctx->modified_files[ctx->n_modified_files].last_step = step;
+  ctx->modified_files[ctx->n_modified_files].count = 1;
+  ctx->n_modified_files++;
+}
+
+char *tool_format_inform_block(tool_ctx_t *ctx) {
+  if (!ctx || ctx->n_modified_files == 0) return NULL;
+  str_t buf = str_new(256);
+  str_append_cstr(&buf, "[SESSION STATE]\nFiles modified this session:");
+  for (int i = 0; i < ctx->n_modified_files; i++) {
+    /* Show just the basename for brevity */
+    const char *base = strrchr(ctx->modified_files[i].path, '/');
+    base = base ? base + 1 : ctx->modified_files[i].path;
+    str_appendf(&buf, "\n  %s (step %d, %dx)",
+                base,
+                ctx->modified_files[i].last_step,
+                ctx->modified_files[i].count);
+  }
+  return str_steal(&buf);
+}
+
 /* ── Fire ledger ────────────────────────────────────── */
 
 #define FIRE_LEDGER_MAX 256

@@ -134,10 +134,29 @@ typedef struct {
      * child react loops (subtask) can forward events to the TUI. */
   react_event_fn on_event; /* parent's event callback (NULL = headless) */
   void *on_event_data;     /* parent's event userdata */
+  /* Lightweight INFORM: track files modified this session so the model
+   * knows what it changed without re-reading. Injected into system prompt
+   * tail each step; zero context growth (regenerated, not appended). */
+#define INFORM_MAX_FILES 32
+  struct {
+    char *path;      /* heap-allocated, freed at context teardown */
+    int last_step;   /* step number of most recent modification */
+    int count;       /* total modifications to this file */
+  } modified_files[INFORM_MAX_FILES];
+  int n_modified_files;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
+
+/* Lightweight INFORM: record a file modification for session state tracking.
+ * Call after successful file_edit or file_write. */
+void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step);
+
+/* Format the INFORM block for injection into the system prompt tail.
+ * Returns a heap-allocated string, or NULL if no files were modified.
+ * Caller must free. */
+char *tool_format_inform_block(tool_ctx_t *ctx);
 
 /* Fire ledger: dedup memory injection within a context window.
  * Resets on compaction so that memories re-arm for the new window. */

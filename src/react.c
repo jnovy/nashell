@@ -2389,6 +2389,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   ctx->tools->n_recalled_keys = 0;
   ctx->tools->recalled_keys_cap = 0;
 
+  /* Free modified-files tracking (INFORM) */
+  for (int i = 0; i < ctx->tools->n_modified_files; i++)
+    free(ctx->tools->modified_files[i].path);
+  ctx->tools->n_modified_files = 0;
+
   /* Free fire ledger (full cleanup, not just reset) */
   tool_fire_ledger_free(ctx->tools);
 

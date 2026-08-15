@@ -23,7 +23,16 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
   struct stat st;
   if (stat(path, &st) != 0) {
     char msg[4224];
-    snprintf(msg, sizeof(msg), "cannot stat '%.4095s': %s", path, strerror(errno));
+    /* Detect store ref aliases (R<digit>S<digit>) and add a hint */
+    if (orig_path[0] == 'R' && orig_path[1] >= '0' && orig_path[1] <= '9')
+      snprintf(msg, sizeof(msg),
+               "cannot stat '%.4095s': %s. "
+               "This looks like a store ref alias -- "
+               "re-run the original command to regenerate it.",
+               path, strerror(errno));
+    else
+      snprintf(msg, sizeof(msg), "cannot stat '%.4095s': %s",
+               path, strerror(errno));
     free(resolved);
     return tools_make_error(msg);
   }
@@ -311,6 +320,7 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddNumberToObject(res.meta, "bytes", (double)len);
   cJSON_AddStringToObject(res.meta, "ref", alias);
 
+  tool_track_modified_file(ctx, path, ctx->step);
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "file_write", params, alias,
                len, count_lines(content), NULL, NULL);
@@ -345,10 +355,19 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
   size_t old_len = strlen(old_text);
   char *pos = strstr(content, old_text);
   if (!pos) {
+    /* Enriched error: show old_text length, preview, and file size so the
+     * model can self-diagnose without a full re-read (saves ~$200/yr). */
+    char hint[512];
+    int olen = (int)old_len;
+    snprintf(hint, sizeof(hint),
+             "old_text not found in file (file is %zu bytes). "
+             "You sent %d chars starting with: \"%.120s%s\". "
+             "Re-read the file to get current content before retrying.",
+             flen, olen, old_text, olen > 120 ? "..." : "");
     free(content);
     free(pre_hash);
     free(pre_alias);
-    return tools_make_error("old_text not found in file");
+    return tools_make_error(hint);
   }
 
   /* FIX #1: Detect multiple matches — if old_text appears more than once,
@@ -857,6 +876,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(res.meta, "pre_ref", pre_alias);
     cJSON_AddStringToObject(res.meta, "post_ref", post_alias);
 
+    tool_track_modified_file(ctx, path, ctx->step);
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "file_edit", params, diff_alias,
                  diff_len, 0, NULL, NULL);

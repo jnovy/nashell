@@ -97,15 +97,30 @@ tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
     }
     return res;
 
+  } else if (strcmp(op, "clear_all") == 0) {
+    /* Clear every section at once */
+    int cleared = ctx->scratch.count;
+    while (ctx->scratch.count > 0)
+      scratchpad_clear(&ctx->scratch, ctx->scratch.sections[0].name);
+    scratchpad_persist(ctx);
+
+    tool_result_t res = tool_result_ok();
+    cJSON_AddStringToObject(res.meta, "op", "clear_all");
+    cJSON_AddNumberToObject(res.meta, "cleared", cleared);
+    cJSON_AddNumberToObject(res.meta, "sections", 0);
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "notes", params, NULL, 0, 0, NULL, NULL);
+    return res;
+
   } else {
-    return tools_make_error("unknown op (use: write, append, clear)");
+    return tools_make_error("unknown op (use: write, append, clear, clear_all)");
   }
 }
 
 /* ── plugin registration ──────────────────────────────── */
 
 static const tool_param_t notes_params[] = {
-  TOOL_PARAM("op", "string", "Operation: write, append, clear", 1),
+  TOOL_PARAM("op", "string", "Operation: write, append, clear, clear_all", 1),
   TOOL_PARAM("section", "string", "Section name", 0),
   TOOL_PARAM("content", "string", "Section content (for write/append)", 0),
   TOOL_PARAM("priority", "integer", "Section priority 1-9 (1=highest, default 5)", 0),
@@ -113,6 +128,6 @@ static const tool_param_t notes_params[] = {
 
 static const tool_plugin_t notes_plugin =
   TOOL_DEF("notes",
-           "Persistent scratchpad that survives context compaction. Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, notes(op=\"append\", section=\"name\", content=\"...\") to append, notes(op=\"clear\", section=\"name\") to delete a section. Priority 1=highest, 9=lowest (default 5). Record key findings in notes -- they survive context eviction. Save incrementally (every 3-5 file reads), not in one batch at the end. For complex tasks, use structured sections: findings (verified facts with file:line or source URLs), rejected (dead ends and failed approaches so you do not retry them), unresolved (open questions not yet addressed), plan (next steps and current hypothesis). Rewrite sections to remove obsolete info rather than only appending.",
+           "Persistent scratchpad that survives context compaction. Supports section-based ops: notes(op=\"write\", section=\"name\", content=\"...\", priority=N) to write a section, notes(op=\"append\", section=\"name\", content=\"...\") to append, notes(op=\"clear\", section=\"name\") to delete a section, notes(op=\"clear_all\") to delete all sections at once. Priority 1=highest, 9=lowest (default 5). Record key findings in notes -- they survive context eviction. Save incrementally (every 3-5 file reads), not in one batch at the end. For complex tasks, use structured sections: findings (verified facts with file:line or source URLs), rejected (dead ends and failed approaches so you do not retry them), unresolved (open questions not yet addressed), plan (next steps and current hypothesis). Rewrite sections to remove obsolete info rather than only appending.",
            notes_params, tool_notes);
 TOOL_PLUGIN_REGISTER(notes_plugin)

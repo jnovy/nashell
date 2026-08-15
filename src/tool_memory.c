@@ -448,6 +448,27 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
   /* Workspace routing: 'global' parameter forces store to global memory */
   int force_global = json_bool(params, "global", 0);
 
+  /* Dedup: skip store if key already exists with identical value */
+  {
+    memory_t *check_mem = ctx->ws
+                            ? workspace_find_memory(ctx->ws, key)
+                            : ctx->memory;
+    if (check_mem) {
+      mem_index_entry_t *existing = memory_find(check_mem, key);
+      if (existing && existing->value && strcmp(existing->value, value) == 0) {
+        memory_find_free(existing);
+        free(refs_copy);
+        tool_result_t res = tool_result_ok();
+        cJSON_AddStringToObject(res.meta, "status", "unchanged");
+        cJSON_AddStringToObject(res.meta, "key", key);
+        tools_inject_thought(ctx, params);
+        tool_journal(ctx, "memory_store", params, NULL, 0, 0, NULL, NULL);
+        return res;
+      }
+      memory_find_free(existing);
+    }
+  }
+
   int rc;
   if (ctx->ws) {
     rc = workspace_store(ctx->ws, key, value, pinned,
