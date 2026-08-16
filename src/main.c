@@ -1109,7 +1109,9 @@ int main(int argc, char **argv) {
   workspace_set_recall_config(ws, cfg->recall_min_score,
                               cfg->recall_blend_semantic,
                               cfg->recall_blend_substring,
-                              cfg->vscore_exponent);
+                              cfg->vscore_exponent,
+                              cfg->superseded_demotion,
+                              cfg->recency_bonus);
 
   /* Prune stale memories at startup */
   int pruned = workspace_prune(ws,
@@ -1830,7 +1832,9 @@ int main(int argc, char **argv) {
         workspace_set_recall_config(s->ws, cfg->recall_min_score,
                                     cfg->recall_blend_semantic,
                                     cfg->recall_blend_substring,
-                                    cfg->vscore_exponent);
+                                    cfg->vscore_exponent,
+                                    cfg->superseded_demotion,
+                                    cfg->recency_bonus);
         s->session_dir = create_session_dir(nash_dir, s->name);
         s->journal = journal_new(s->session_dir);
         session_init_tools(&s->tools, shared_store, s->journal,

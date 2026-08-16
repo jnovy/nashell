@@ -52,6 +52,7 @@ typedef struct {
   char **triggers;       /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;        /* 0 = no triggers, purely semantic recall */
   uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
+  double superseded_at;  /* epoch when this entry was superseded by another, 0.0 = active */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -80,6 +81,8 @@ typedef struct {
   float recall_blend_semantic;  /* semantic weight (default 0.5) */
   float recall_blend_substring; /* substring weight (default 0.5) */
   float vscore_exponent;        /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
+  float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3) */
+  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.0 = disabled) */
 
   /* Guard against recursive consolidation — set during
      * memory_try_consolidate to prevent consolidation→store→consolidation loops.
@@ -161,9 +164,10 @@ typedef struct {
      * The old entry is NOT deleted — it becomes inactive (low relevance via
      * validation scoring) while the new one takes over. The chain preserves
      * the full evolution history for retrospective analysis. */
-  char *supersedes; /* key of the memory this entry supersedes (NULL = none) */
-  int version;      /* lineage version number (1 = original, 2+ = superseding) */
-  char *validity;   /* temporal validity: "persistent", "volatile", "session", "expires_when:description" (NULL = persistent) */
+  char *supersedes;    /* key of the memory this entry supersedes (NULL = none) */
+  int version;         /* lineage version number (1 = original, 2+ = superseding) */
+  double superseded_at; /* epoch when this entry was superseded by another, 0.0 = active */
+  char *validity;      /* temporal validity: "persistent", "volatile", "session", "expires_when:description" (NULL = persistent) */
   char *basis;      /* evidence basis for this memory (NULL = none) */
   char **triggers;  /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;   /* 0 = no triggers, purely semantic recall */
@@ -182,7 +186,8 @@ void memory_free(memory_t *m);
  * sync — call once after config_apply_profile() and config_set_defaults(). */
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
-                              float vscore_exp);
+                              float vscore_exp, float superseded_demotion,
+                              float recency_bonus);
 
 /* Convert a memory key to a filesystem path component.
  * Replaces ':' and '/' with '_', appends ext (e.g. ".json").

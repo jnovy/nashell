@@ -139,7 +139,7 @@ static void test_query_min_score_filtering(void) {
                0, NULL, NULL, 0, NULL, 0);
 
   /* With very high min_score, only strong matches survive */
-  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0);
+  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0, 0.3f, 0.0f);
   memory_results_t r = memory_query(m, "exact-match", 10);
   /* Only the key-matching entry should survive 0.70 threshold */
   ASSERT_EQ(r.count, 1);
@@ -158,7 +158,7 @@ static void test_query_ref_boost(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
   /* Use low min_score so weak matches survive */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f);
 
   /* Entry A: key matches "boost" → score = 0.75 (above 0.5 trigger).
      * Refs entry B. */
@@ -196,7 +196,7 @@ static void test_query_vscore_influence(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* Enable vscore with exponent 1.0 (full influence) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0, 0.3f, 0.0f);
 
   /* Both entries match equally on substring */
   memory_store(m, "lesson:proven-method", "how to fix bugs in code", 0, NULL, NULL, 0, NULL, 0);
@@ -232,7 +232,7 @@ static void test_query_vscore_disabled(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* vscore disabled (exponent = 0) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f);
 
   memory_store(m, "lesson:method-a", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:method-b", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
@@ -480,7 +480,7 @@ static void test_increment_nonexistent(void) {
 static void test_vscore_calculation(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0, 0.3f, 0.0f);
 
   memory_store(m, "lesson:good-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:bad-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);

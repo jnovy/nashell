@@ -280,6 +280,13 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   ie->supersedes = ss ? xstrdup(ss) : NULL;
   ie->version = json_int(entry, "version", 0);
 
+  /* Superseded-at timestamp (SodaMem temporal scoring) */
+  const char *sa_s = json_str(entry, "superseded_at");
+  if (sa_s)
+    ie->superseded_at = atof(sa_s);
+  else
+    ie->superseded_at = json_num(entry, "superseded_at", 0);
+
   /* Temporal validity and evidence basis */
   const char *val_s = json_str(entry, "validity");
   ie->validity = val_s ? xstrdup(val_s) : NULL;
@@ -363,6 +370,17 @@ memory_t *memory_new(const char *project_root) {
   mkdir(path, 0755);
   m->dir = xstrdup(path);
 
+  /* Sensible defaults for recall config (in case memory_set_recall_config
+   * is never called, e.g. in test binaries). xcalloc zeros everything,
+   * but 0.0 for superseded_demotion would completely suppress superseded
+   * entries rather than demoting them. */
+  m->recall_min_score = 0.15;
+  m->recall_blend_semantic = 0.5f;
+  m->recall_blend_substring = 0.5f;
+  m->vscore_exponent = 0.3f;
+  m->superseded_demotion = 0.3f;
+  m->recency_bonus = 0.0f;
+
   /* Recursive mutex: memory_prune() → memory_delete_batch() nesting. */
   {
     pthread_mutexattr_t attr;
@@ -383,6 +401,19 @@ memory_t *memory_new(const char *project_root) {
      *     our index serves as the "cue" layer for fast navigation. */
   mem_index_load(m);
 
+  /* Reverse supersedes pass: for entries that declare supersedes=X,
+   * mark X as superseded. This handles entries created before the
+   * superseded_at field existed (auto-migration on first load).
+   * SodaMem (arXiv 2608.08055): temporal validity intervals. */
+  for (int i = 0; i < m->idx.count; i++) {
+    mem_index_entry_t *ie = &m->idx.entries[i];
+    if (!ie->supersedes) continue;
+    mem_index_entry_t *old = mem_index_find(&m->idx, ie->supersedes);
+    if (old && old->superseded_at == 0.0) {
+      old->superseded_at = ie->created_at; /* best estimate */
+    }
+  }
+
   return m;
 }
 
@@ -398,7 +429,8 @@ void memory_free(memory_t *m) {
 
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
-                              float vscore_exp) {
+                              float vscore_exp, float superseded_demotion,
+                              float recency_bonus) {
   if (!m) return;
   /* FIX BUG-22: Acquire mutex so these writes are atomic with respect to
      * memory_query() which reads these fields under the same lock. */
@@ -407,6 +439,8 @@ void memory_set_recall_config(memory_t *m, double min_score,
   m->recall_blend_semantic = blend_semantic;
   m->recall_blend_substring = blend_substring;
   m->vscore_exponent = vscore_exp;
+  m->superseded_demotion = superseded_demotion;
+  m->recency_bonus = recency_bonus;
   pthread_mutex_unlock(&m->mtx);
 }
 
@@ -469,6 +503,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
   double belief_entropy = -1;
   char *old_supersedes = NULL;
   int old_version = 0;
+  double old_superseded_at = 0.0;
   char *old_validity = NULL;
   char *old_basis = NULL;
   char **old_triggers = NULL;
@@ -490,6 +525,12 @@ int memory_store(memory_t *m, const char *key, const char *value,
       const char *ss2 = json_str(old, "supersedes");
       if (ss2) old_supersedes = xstrdup(ss2);
       old_version = json_int(old, "version", old_version);
+      /* Preserve superseded_at from old entry */
+      const char *sa_s2 = json_str(old, "superseded_at");
+      if (sa_s2)
+        old_superseded_at = atof(sa_s2);
+      else
+        old_superseded_at = json_num(old, "superseded_at", 0);
       /* Preserve validity and basis from old entry */
       const char *ov2 = json_str(old, "validity");
       if (ov2) old_validity = xstrdup(ov2);
@@ -590,6 +631,13 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON_AddNumberToObject(entry, "version", old_version);
   else
     cJSON_AddNumberToObject(entry, "version", 1);
+
+  /* Preserve superseded_at from old entry */
+  if (old_superseded_at > 0.0) {
+    char sa_ts[32];
+    snprintf(sa_ts, sizeof(sa_ts), "%.5f", old_superseded_at);
+    cJSON_AddStringToObject(entry, "superseded_at", sa_ts);
+  }
 
   /* Temporal validity and evidence basis - preserve from old entry.
      * New values are set by the caller via memory_set_validity/basis(). */
@@ -836,6 +884,9 @@ static double score_entry_hybrid(const char *key, const char *value,
                                  float semantic_sim, int has_semantic,
                                  float blend_semantic, float blend_substring,
                                  float vscore_exponent,
+                                 double superseded_at, double created_at,
+                                 float superseded_demotion,
+                                 float recency_bonus,
                                  double *out_relevance,
                                  double *out_importance) {
   double relevance;
@@ -901,6 +952,32 @@ static double score_entry_hybrid(const char *key, const char *value,
      * importance is still computed and exposed via memory_entry_t for
      * diagnostics (test_memory_context) but doesn't affect ranking. */
   double composite = relevance;
+
+  /* Superseded entry demotion (SodaMem arXiv 2608.08055).
+     * When entry B supersedes entry A, A is demoted because B contains
+     * the evolved knowledge. Not recency decay - old entries without
+     * successors are unaffected. Only entries explicitly superseded
+     * by a newer version get penalized.
+     * Default demotion factor: 0.3 (superseded entry scores at 30%). */
+  if (superseded_at > 0.0 && superseded_demotion < 1.0f) {
+    composite *= (double)superseded_demotion;
+  }
+
+  /* Optional soft temporal bonus (SodaMem beta).
+     * NOT recency decay - old knowledge is not penalized.
+     * This is a BONUS for recently-created entries, giving them a mild
+     * edge when competing with older entries of similar relevance.
+     * Disabled by default (recency_bonus=0.0).
+     *
+     * Formula: composite *= 1.0 + bonus * exp(-age_days / 30.0)
+     * At age=0:  multiplier = 1.0 + bonus (e.g., 1.1 with bonus=0.1)
+     * At age=30: multiplier ~= 1.0 + bonus*0.37
+     * At age=90: multiplier ~= 1.0 (essentially no boost) */
+  if (recency_bonus > 0.0f && created_at > 0.0) {
+    double age_days = (epoch_now() - created_at) / 86400.0;
+    if (age_days < 0) age_days = 0;
+    composite *= 1.0 + (double)recency_bonus * exp(-age_days / 30.0);
+  }
 
   /* P3: Bayesian validation scoring — data-driven memory quality signal.
      * vscore = (hits+1)/(hits+misses+2) — Beta posterior mean with
@@ -1099,6 +1176,9 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                                   m->recall_blend_semantic,
                                   m->recall_blend_substring,
                                   m->vscore_exponent,
+                                  ie->superseded_at, ie->created_at,
+                                  m->superseded_demotion,
+                                  m->recency_bonus,
                                   &out_rel, &out_imp);
 
     /* Type filtering */
@@ -1233,6 +1313,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     e->belief_entropy = ie->belief_entropy;
     e->supersedes = ie->supersedes ? xstrdup(ie->supersedes) : NULL;
     e->version = ie->version;
+    e->superseded_at = ie->superseded_at;
     e->validity = ie->validity ? xstrdup(ie->validity) : NULL;
     e->basis = ie->basis ? xstrdup(ie->basis) : NULL;
     e->journal_ref = NULL; /* loaded on demand if needed */
@@ -1917,7 +1998,6 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
   cJSON *old_entry = memory_load_entry_json(m, old_key);
   if (old_entry) {
     old_version = json_int(old_entry, "version", old_version);
-    cJSON_Delete(old_entry);
   }
 
   /* Set supersedes and version */
@@ -1950,6 +2030,33 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
       ie->version = old_version + 1;
     }
   }
+
+  /* Mark the old entry as superseded - set superseded_at timestamp.
+   * This enables temporal scoring to demote the old entry.
+   * SodaMem (arXiv 2608.08055): validity intervals for superseded facts. */
+  {
+    double now = epoch_now();
+    mem_index_entry_t *old_ie = mem_index_find(&m->idx, old_key);
+    if (old_ie && old_ie->superseded_at == 0.0) {
+      old_ie->superseded_at = now;
+    }
+    /* Persist superseded_at to old entry's JSON on disk */
+    if (old_entry) {
+      char ts[32];
+      snprintf(ts, sizeof(ts), "%.5f", now);
+      cJSON *sa = cJSON_GetObjectItem(old_entry, "superseded_at");
+      if (sa)
+        cJSON_SetValuestring(sa, ts);
+      else
+        cJSON_AddStringToObject(old_entry, "superseded_at", ts);
+      char old_fname[512];
+      key_to_path(old_key, ".json", old_fname, sizeof(old_fname));
+      char old_path[NASH_PATH_MAX];
+      path_join(old_path, sizeof(old_path), m->dir, old_fname);
+      dump_json(old_path, old_entry);
+    }
+  }
+  if (old_entry) cJSON_Delete(old_entry);
 
   pthread_mutex_unlock(&m->mtx);
   return 0;
@@ -2465,6 +2572,7 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
   copy->created_at = src->created_at;
   copy->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
   copy->version = src->version;
+  copy->superseded_at = src->superseded_at;
   copy->validity = src->validity ? xstrdup(src->validity) : NULL;
   copy->basis = src->basis ? xstrdup(src->basis) : NULL;
   copy->n_refs = src->n_refs;

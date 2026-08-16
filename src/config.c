@@ -154,6 +154,8 @@ void config_set_defaults(config_t *cfg) {
      *   19% penalty instead of 50%. Preserves downward signal for memories
      *   with actual misses (vscore=0.33 → ×0.72). */
   if (cfg->vscore_exponent < 0) cfg->vscore_exponent = 0.3f;
+  if (cfg->superseded_demotion < 0) cfg->superseded_demotion = 0.3f;
+  if (cfg->recency_bonus < 0) cfg->recency_bonus = 0.0f;
   if (cfg->tool_retry_limit <= 0) cfg->tool_retry_limit = 3;
   /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
   /* max_react_steps: -1 = unlimited (default). Positive = hard limit.
@@ -243,6 +245,8 @@ config_t *config_load(const char *path) {
   config_t *cfg = xcalloc(1, sizeof(*cfg));
   cfg->temperature = -1.0f;     /* sentinel: 0.0 is valid (deterministic sampling) */
   cfg->vscore_exponent = -1.0f; /* sentinel: 0 is valid (disables vscore) */
+  cfg->superseded_demotion = -1.0f;
+  cfg->recency_bonus = -1.0f;
   /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
   cfg->profile_inject_memory = -1;
   cfg->profile_inject_prev_result = -1;
@@ -460,6 +464,14 @@ config_t *config_load(const char *path) {
     {
       double v = toml_dbl(limits, "vscore_exponent", -1);
       if (v >= 0) cfg->vscore_exponent = (float)v;
+    }
+    {
+      double v = toml_dbl(limits, "superseded_demotion", -1);
+      if (v >= 0) cfg->superseded_demotion = (float)v;
+    }
+    {
+      double v = toml_dbl(limits, "recency_bonus", -1);
+      if (v >= 0) cfg->recency_bonus = (float)v;
     }
     cfg->tool_retry_limit = toml_int(limits, "tool_retry_limit", -1);
     cfg->checkpoint_frequency = toml_int(limits, "checkpoint_frequency", 0);
@@ -853,6 +865,8 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
     p->top_p = -1.0f;           /* -1 = inherit (0.0-1.0, 1.0=disabled) */
     p->top_k = -1;              /* -1 = inherit (0=disabled) */
     p->vscore_exponent = -2.0f; /* -2 = inherit (0 and -1 are valid) */
+    p->superseded_demotion = -2.0f;
+    p->recency_bonus = -2.0f;
 
     /* [client] subtable */
     toml_table_t *client_tbl = toml_table_in(root, "client");
@@ -917,6 +931,14 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
       {
         double v = toml_dbl(mem_tbl, "vscore_exponent", -2);
         if (v > -2) p->vscore_exponent = (float)v;
+      }
+      {
+        double v = toml_dbl(mem_tbl, "superseded_demotion", -2);
+        if (v > -2) p->superseded_demotion = (float)v;
+      }
+      {
+        double v = toml_dbl(mem_tbl, "recency_bonus", -2);
+        if (v > -2) p->recency_bonus = (float)v;
       }
       p->memory_index_max = toml_int(mem_tbl, "memory_index_max", 0);
       p->max_skills_per_query = toml_int(mem_tbl, "max_skills_per_query", 0);
@@ -1080,6 +1102,8 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
   if (p->recall_blend_semantic > 0) cfg->recall_blend_semantic = p->recall_blend_semantic;
   if (p->recall_blend_substring > 0) cfg->recall_blend_substring = p->recall_blend_substring;
   if (p->vscore_exponent > -2.0f) cfg->vscore_exponent = p->vscore_exponent;
+  if (p->superseded_demotion > -2.0f) cfg->superseded_demotion = p->superseded_demotion;
+  if (p->recency_bonus > -2.0f) cfg->recency_bonus = p->recency_bonus;
   if (p->memory_index_max > 0) cfg->memory_index_max = p->memory_index_max;
   if (p->max_skills_per_query > 0) cfg->max_skills_per_query = p->max_skills_per_query;
   if (p->max_lessons_per_query > 0) cfg->max_lessons_per_query = p->max_lessons_per_query;
@@ -1276,6 +1300,8 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "recall_blend_semantic = %.1f\n", cfg->recall_blend_semantic);
   fprintf(out, "recall_blend_substring = %.1f\n", cfg->recall_blend_substring);
   fprintf(out, "vscore_exponent = %.1f\n", cfg->vscore_exponent);
+  fprintf(out, "superseded_demotion = %.1f\n", cfg->superseded_demotion);
+  fprintf(out, "recency_bonus = %.1f\n", cfg->recency_bonus);
   fprintf(out, "memory_index_max = %d\n", cfg->memory_index_max);
   fprintf(out, "max_skills_per_query = %d\n", cfg->max_skills_per_query);
   fprintf(out, "max_lessons_per_query = %d\n", cfg->max_lessons_per_query);
@@ -1611,6 +1637,14 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     {
       double vs = toml_dbl(mem, "vscore_exponent", -1);
       if (vs >= 0) cfg->vscore_exponent = (float)vs;
+    }
+    {
+      double vs = toml_dbl(mem, "superseded_demotion", -1);
+      if (vs >= 0) cfg->superseded_demotion = (float)vs;
+    }
+    {
+      double vs = toml_dbl(mem, "recency_bonus", -1);
+      if (vs >= 0) cfg->recency_bonus = (float)vs;
     }
     v = toml_int(mem, "memory_index_max", 0);
     if (v > 0) cfg->memory_index_max = v;
@@ -2077,6 +2111,8 @@ int config_write_default(const char *path) {
     "recall_blend_semantic = 0.4  # weight for semantic similarity in memory recall (0.0-1.0)\n"
     "recall_blend_substring = 0.6 # weight for substring matching in memory recall (0.0-1.0)\n"
     "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
+    "superseded_demotion = 0.3    # multiplicative penalty for superseded entries (0.0-1.0)\n"
+    "recency_bonus = 0.0          # soft temporal bonus for recent entries (0.0 = disabled)\n"
     "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
     "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
     "\n"

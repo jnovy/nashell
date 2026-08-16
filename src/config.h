@@ -141,6 +141,8 @@ typedef struct {
   float recall_blend_semantic;    /* 0.0 = inherit */
   float recall_blend_substring;   /* 0.0 = inherit */
   float vscore_exponent;          /* -2.0 = inherit (since -1.0 and 0.0 are valid values) */
+  float superseded_demotion;      /* -2.0 = inherit. Multiplicative penalty for superseded entries */
+  float recency_bonus;            /* -2.0 = inherit. Soft temporal bonus for recent entries */
   int tool_retry_limit;           /* 0 = inherit */
   int cycling_detection;          /* -1 = inherit */
   int max_reflection_steps;       /* 0 = inherit */
@@ -244,6 +246,9 @@ typedef struct {
                                     * Default 0.3 reduces cold-start penalty: new memories (vscore=0.5)
                                     * get ×0.81 instead of ×0.50, while still penalizing memories
                                     * with actual misses (vscore=0.33 → ×0.72). */
+  float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3). */
+  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.0 = disabled). */
+
   int tool_retry_limit;         /* max consecutive errors on same tool before forced strategy switch (default 3) */
   int checkpoint_frequency;     /* save checkpoint every N steps (0 = every step, default 0) */
   /* Memory pruning (Bayesian validation scoring) */
