@@ -1338,17 +1338,22 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         if (visible) {
           int sx = 2 - scroll_x;
           if (sx >= 0 && sx < cols) {
+            /* Clip to available columns to prevent ncurses row-wrap */
+            int avail = cols - sx;
+            int clipped = seg_col_to_byte(line_buf, code_len, avail);
             wattron(win, COLOR_PAIR(C_STREAM));
-            mvwaddnstr(win, vis_line, sx, line_buf, code_len);
+            mvwaddnstr(win, vis_line, sx, line_buf, clipped);
             wattroff(win, COLOR_PAIR(C_STREAM));
           } else if (sx < 0 && sx + code_dw - 2 > 0) {
-            /* Partially scrolled off left edge — clip left side */
+            /* Partially scrolled off left edge - clip left side */
             int skip_cols = -sx;
             int byte_off = seg_col_to_byte(line_buf, code_len, skip_cols);
             int rem = code_len - byte_off;
-            if (rem > 0) {
+            /* Clip to available columns to prevent ncurses row-wrap */
+            int clipped = seg_col_to_byte(line_buf + byte_off, rem, cols);
+            if (clipped > 0) {
               wattron(win, COLOR_PAIR(C_STREAM));
-              mvwaddnstr(win, vis_line, 0, line_buf + byte_off, rem);
+              mvwaddnstr(win, vis_line, 0, line_buf + byte_off, clipped);
               wattroff(win, COLOR_PAIR(C_STREAM));
             }
           }
