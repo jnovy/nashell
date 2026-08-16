@@ -1100,15 +1100,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                  tm->tm_hour, tm->tm_min);
     }
 
-    /* Available display columns for inline text after the prefix.
-         * Prefix (rendered): "HH:MM RXSY_pad tool_pad " */
-    int term_cols = ui->visible_cols > 0 ? ui->visible_cols : 120;
-    int prefix_cols = TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len + 1;
-    int suffix_cols = (int)strlen(elapsed_str);
-    int avail = term_cols - prefix_cols - suffix_cols;
-    if (avail < 10) avail = 10;
-
-    int is_shell = (strcmp(si->tool, "shell_exec") == 0);
 
 /* Helper: emit the tool header line (without any text content) */
 #define EMIT_TOOL_HEADER(with_elapsed) \
@@ -1140,14 +1131,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
                   tool_pad, (text), \
                   (with_elapsed) ? elapsed_str : ""); \
     } \
-  } while (0)
-
-/* Helper: emit continuation line with text (indented to match tool column) */
-#define EMIT_CONTINUATION(text, with_elapsed) \
-  do { \
-    str_appendf(&md, "%*s `%s`%s\n", \
-                TIME_COL_WIDTH + REF_COL_WIDTH + 1 + max_tool_len, "", \
-                (text), (with_elapsed) ? elapsed_str : ""); \
   } while (0)
 
 /* Helper: emit the tool header with inline thought (plain text, no backticks) */
@@ -1214,25 +1197,17 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
       EMIT_THOUGHT_PARAGRAPH();
     }
 
-    /* Tool header line with arguments (desc) inline */
-    if (is_shell && desc_clean) {
-      /* shell_exec: command always on same line as tool;
-             * the md renderer word-wraps long code spans across multiple lines */
+    /* Tool header line with arguments (desc) inline.
+     * Always keep desc on the same line as the tool name;
+     * md_render.c word-wraps long code spans across multiple lines. */
+    if (desc_clean) {
       EMIT_TOOL_WITH_TEXT(desc_clean, 1);
-    } else if (desc_clean && desc_len <= avail) {
-      /* Desc fits on the tool line */
-      EMIT_TOOL_WITH_TEXT(desc_clean, 1);
-    } else if (desc_clean) {
-      /* Desc too long: tool header then desc on continuation */
-      EMIT_TOOL_HEADER(0);
-      EMIT_CONTINUATION(desc_clean, 1);
     } else {
       EMIT_TOOL_HEADER(1);
     }
 
 #undef EMIT_TOOL_HEADER
 #undef EMIT_TOOL_WITH_TEXT
-#undef EMIT_CONTINUATION
 #undef EMIT_TOOL_WITH_THOUGHT
 #undef EMIT_THOUGHT_PARAGRAPH
 #undef TIME_COL_WIDTH
