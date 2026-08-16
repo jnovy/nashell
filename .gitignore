@@ -54,3 +54,5 @@ fixed_point_sin.c
 .vscode/
 .idea/
 __pycache__/
+dirs_usage.txt
+scripts/eval_*
