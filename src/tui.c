@@ -1403,6 +1403,20 @@ int tui_input(ui_state_t *ui, char **out_query) {
           ui->dirty = 1;
         } else if (ui->focus == FOCUS_JOURNAL) {
           ui_state_back(ui);
+        } else if (ui->focus == FOCUS_QUERY) {
+          /* ESC in query pane: cancel active search and clear input */
+          if (ui->search_active)
+            ui_state_search(ui, NULL);
+          if (ui->page_search_term) {
+            free(ui->page_search_term);
+            ui->page_search_term = NULL;
+            ui->page_search_total = 0;
+            ui->page_search_current = 0;
+          }
+          ui->input_buffer[0] = '\0';
+          ui->input_len = 0;
+          ui->cursor_pos = 0;
+          ui->dirty = 1;
         }
       }
       /* else: some other Alt+key combo, ignore */

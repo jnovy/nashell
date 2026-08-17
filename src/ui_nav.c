@@ -677,8 +677,14 @@ void ui_state_search(ui_state_t *ui, const char *query) {
   if (!query || !query[0]) {
     if (ui->search_active) {
       ui->search_active = 0;
-      /* Pop the search results from nav stack */
-      if (ui->nav_depth > 0) {
+      /* Pop all entries pushed during the search session.
+       * Entries pushed while browsing search results have saved_doc set
+       * (the search results MD is preserved for back-navigation).
+       * The bottom-most entry is the original page pushed at search start
+       * (saved_doc == NULL).  Pop intermediate entries first, then restore
+       * from the original page entry so the user returns to where they
+       * were before the search began. */
+      while (ui->nav_depth > 0) {
         ui->nav_depth--;
         nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
         free(ui->current_filepath);
@@ -690,10 +696,13 @@ void ui_state_search(ui_state_t *ui, const char *query) {
         ui->scroll_y = entry->scroll_y;
         ui->scroll_x = entry->scroll_x;
         ui->cursor_link = entry->cursor_link;
+        int had_saved = entry->saved_doc != NULL;
         md_doc_free(entry->saved_doc);
         entry->saved_doc = NULL;
-        ui_state_reload_file(ui);
+        if (!had_saved)
+          break; /* reached the original page entry */
       }
+      ui_state_reload_file(ui);
     }
     return;
   }
