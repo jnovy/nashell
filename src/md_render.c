@@ -297,13 +297,42 @@ static int parse_inline_d(const char *text, int text_len, inline_seg_t *segs, in
   const char *end = text + text_len;
 
   while (p < end && n < max_segs) {
-    /* Item 1: use try_parse_marker for all three formatting types */
+    /* Bold and italic: recursive parsing allows nested formatting */
     if (try_parse_marker(&p, end, "**", 2, A_BOLD, segs, &n, max_segs, depth))
       continue;
     if (try_parse_marker(&p, end, "*", 1, A_UNDERLINE, segs, &n, max_segs, depth))
       continue;
-    if (try_parse_marker(&p, end, "`", 1, COLOR_PAIR(C_STREAM), segs, &n, max_segs, depth))
+    /* Inline code: backtick spans are LITERAL - no formatting inside.
+     * Standard Markdown treats `code` content verbatim; recursive
+     * parsing would misinterpret shell globs (*), underscores, etc. */
+    if (*p == '`') {
+      const char *code_start = p + 1;
+      const char *closing = memchr(code_start, '`', (size_t)(end - code_start));
+      if (closing && n < max_segs) {
+        int code_len = (int)(closing - code_start);
+        segs[n].text = code_start;
+        segs[n].len = code_len;
+        segs[n].attr = COLOR_PAIR(C_STREAM);
+        segs[n].url = NULL;
+        segs[n].url_len = 0;
+        n++;
+        p = closing + 1;
+        continue;
+      }
+      /* No closing backtick - emit '`' as literal text */
+      if (n > 0 && segs[n - 1].attr == 0) {
+        segs[n - 1].len += 1; /* extend previous plain segment */
+      } else if (n < max_segs) {
+        segs[n].text = p;
+        segs[n].len = 1;
+        segs[n].attr = 0;
+        segs[n].url = NULL;
+        segs[n].url_len = 0;
+        n++;
+      }
+      p++;
       continue;
+    }
 
     /* Markdown link: [text](url) — render only text with link color */
     if (*p == '[') {
