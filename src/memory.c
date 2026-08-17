@@ -523,6 +523,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
   int n_old_triggers = 0;
   int *old_ref_types = NULL;
   int n_old_ref_types = 0;
+  char **old_refs = NULL;
+  int n_old_refs = 0;
   {
     cJSON *old = slurp_json(path);
     if (old) {
@@ -567,8 +569,22 @@ int memory_store(memory_t *m, const char *key, const char *value,
           }
         }
       }
-      /* SodaMem: Preserve ref_types from old entry */
+      /* SodaMem: Preserve refs and ref_types from old entry (BUG-F fix:
+       * load old ref keys so ref_types can be matched by key, not position) */
       {
+        cJSON *ors = cJSON_GetObjectItem(old, "refs");
+        if (ors && cJSON_IsArray(ors)) {
+          n_old_refs = cJSON_GetArraySize(ors);
+          if (n_old_refs > 0) {
+            old_refs = xcalloc((size_t)n_old_refs, sizeof(char *));
+            for (int i = 0; i < n_old_refs; i++) {
+              cJSON *ri = cJSON_GetArrayItem(ors, i);
+              old_refs[i] = (ri && ri->valuestring)
+                              ? xstrdup(ri->valuestring)
+                              : xstrdup("");
+            }
+          }
+        }
         cJSON *ort = cJSON_GetObjectItem(old, "ref_types");
         if (ort && cJSON_IsArray(ort)) {
           n_old_ref_types = cJSON_GetArraySize(ort);
@@ -633,11 +649,19 @@ int memory_store(memory_t *m, const char *key, const char *value,
     for (int i = 0; i < n_refs; i++)
       cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
     /* SodaMem: Save ref_types parallel to refs.
-     * Preserve old ref_types for refs that still exist. New refs default to RELATES (0). */
-    if (old_ref_types && n_old_ref_types > 0) {
+     * BUG-F fix: match old ref_types by key, not position, so reordered
+     * refs preserve their correct edge types. */
+    if (old_ref_types && n_old_ref_types > 0 &&
+        old_refs && n_old_refs > 0) {
       cJSON *rt_arr = cJSON_AddArrayToObject(entry, "ref_types");
       for (int i = 0; i < n_refs; i++) {
-        int rt = (i < n_old_ref_types) ? old_ref_types[i] : 0;
+        int rt = 0; /* default: RELATES */
+        for (int j = 0; j < n_old_refs && j < n_old_ref_types; j++) {
+          if (old_refs[j] && strcmp(refs[i], old_refs[j]) == 0) {
+            rt = old_ref_types[j];
+            break;
+          }
+        }
         cJSON_AddItemToArray(rt_arr, cJSON_CreateNumber(rt));
       }
     }
@@ -660,8 +684,9 @@ int memory_store(memory_t *m, const char *key, const char *value,
     free_string_array(old_triggers, n_old_triggers);
   }
   free(old_ref_types);
+  free_string_array(old_refs, n_old_refs);
 
-  /* P2: Lesson lineage — preserve supersedes and version from old entry.
+  /* P2: Lesson lineage - preserve supersedes and version from old entry.
      * New supersedes values are set by the caller via memory_set_supersedes(). */
   if (old_supersedes) {
     cJSON_AddStringToObject(entry, "supersedes", old_supersedes);
@@ -1538,12 +1563,12 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
                            : "(no description)";
       str_appendf(&result, "- %s", e->key);
       if (e->pinned) str_append_cstr(&result, " [pinned]");
-      str_appendf(&result, " \xe2\x80\x94 %s\n", desc);
+      str_appendf(&result, " - %s\n", desc);
     }
     str_append_cstr(&result, "\n");
   }
 
-  /* Other (uncategorized) entries — only if no filter or filter matches "other" */
+  /* Other (uncategorized) entries - only if no filter or filter matches "other" */
   if (!type_filter || !type_filter[0] ||
       strncasecmp(type_filter, "Other", strlen(type_filter)) == 0) {
     int n_other = 0;
@@ -1559,7 +1584,7 @@ char *memory_build_listing(memory_t *m, const char *type_filter) {
         const char *desc = (e->description && e->description[0])
                              ? e->description
                              : "(no description)";
-        str_appendf(&result, "- %s \xe2\x80\x94 %s\n", e->key, desc);
+        str_appendf(&result, "- %s - %s\n", e->key, desc);
       }
       str_append_cstr(&result, "\n");
     }
@@ -2142,31 +2167,39 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
         }
       }
       if (!found) {
-        /* Grow arrays */
+        /* Grow arrays (BUG-C fix: use safe_realloc to avoid leaking on OOM) */
         int n = ie->n_refs;
-        ie->refs = realloc(ie->refs, sizeof(char *) * (size_t)(n + 1));
-        ie->ref_types = realloc(ie->ref_types, sizeof(int) * (size_t)(n + 1));
-        ie->refs[n] = xstrdup(old_key);
-        ie->ref_types[n] = MEM_EDGE_SUPERSEDES;
-        ie->n_refs = n + 1;
+        if (safe_realloc((void **)&ie->refs, sizeof(char *) * (size_t)(n + 1)) ||
+            safe_realloc((void **)&ie->ref_types, sizeof(int) * (size_t)(n + 1))) {
+          /* OOM - skip adding ref */
+        } else {
+          ie->refs[n] = xstrdup(old_key);
+          ie->ref_types[n] = MEM_EDGE_SUPERSEDES;
+          ie->n_refs = n + 1;
+        }
       }
     }
-    /* Persist SUPERSEDES ref to JSON */
+    /* Persist SUPERSEDES ref to JSON (BUG-A fix: rebuild from in-memory
+     * index instead of blind append, preventing duplicate refs on disk) */
     cJSON *re_entry = memory_load_entry_json(m, new_key);
-    if (re_entry) {
-      cJSON *ra = cJSON_GetObjectItem(re_entry, "refs");
-      cJSON *rt = cJSON_GetObjectItem(re_entry, "ref_types");
-      if (!ra) { ra = cJSON_AddArrayToObject(re_entry, "refs"); }
-      if (!rt) { rt = cJSON_AddArrayToObject(re_entry, "ref_types"); }
-      cJSON_AddItemToArray(ra, cJSON_CreateString(old_key));
-      cJSON_AddItemToArray(rt, cJSON_CreateNumber(MEM_EDGE_SUPERSEDES));
+    if (re_entry && ie) {
+      cJSON_DeleteItemFromObject(re_entry, "refs");
+      cJSON_DeleteItemFromObject(re_entry, "ref_types");
+      cJSON *ra = cJSON_AddArrayToObject(re_entry, "refs");
+      cJSON *rt = cJSON_AddArrayToObject(re_entry, "ref_types");
+      for (int r = 0; r < ie->n_refs; r++) {
+        cJSON_AddItemToArray(ra, cJSON_CreateString(
+            ie->refs[r] ? ie->refs[r] : ""));
+        cJSON_AddItemToArray(rt, cJSON_CreateNumber(
+            ie->ref_types ? ie->ref_types[r] : 0));
+      }
       char re_fname[512];
       key_to_path(new_key, ".json", re_fname, sizeof(re_fname));
       char re_path[NASH_PATH_MAX];
       path_join(re_path, sizeof(re_path), m->dir, re_fname);
       dump_json(re_path, re_entry);
-      cJSON_Delete(re_entry);
     }
+    if (re_entry) cJSON_Delete(re_entry);
   }
 
   pthread_mutex_unlock(&m->mtx);
@@ -2196,14 +2229,19 @@ int memory_add_ref(memory_t *m, const char *key, const char *ref_key,
     }
   }
 
-  /* Add new ref + type */
+  /* Add new ref + type (BUG-C fix: use safe_realloc to avoid leaking on OOM) */
   {
     int n = ie->n_refs;
-    ie->refs = realloc(ie->refs, sizeof(char *) * (size_t)(n + 1));
+    if (safe_realloc((void **)&ie->refs, sizeof(char *) * (size_t)(n + 1))) {
+      pthread_mutex_unlock(&m->mtx);
+      return -1;
+    }
     if (!ie->ref_types)
       ie->ref_types = xcalloc((size_t)(n + 1), sizeof(int));
-    else
-      ie->ref_types = realloc(ie->ref_types, sizeof(int) * (size_t)(n + 1));
+    else if (safe_realloc((void **)&ie->ref_types, sizeof(int) * (size_t)(n + 1))) {
+      pthread_mutex_unlock(&m->mtx);
+      return -1;
+    }
     ie->refs[n] = xstrdup(ref_key);
     ie->ref_types[n] = (int)edge_type;
     ie->n_refs = n + 1;
@@ -2794,6 +2832,20 @@ int memory_has_key(memory_t *m, const char *key) {
   int found = (mem_index_find(&m->idx, key) != NULL);
   pthread_mutex_unlock(&m->mtx);
   return found;
+}
+
+/* BUG-G fix: Count entries created after the given epoch, under mutex.
+ * Replaces direct idx.entries[] access that was racy with concurrent realloc. */
+int memory_count_newer_than(memory_t *m, double epoch) {
+  if (!m) return 0;
+  pthread_mutex_lock(&m->mtx);
+  int count = 0;
+  for (int i = 0; i < m->idx.count; i++) {
+    if (m->idx.entries[i].created_at > epoch)
+      count++;
+  }
+  pthread_mutex_unlock(&m->mtx);
+  return count;
 }
 
 /* FIX #8: Re-index a single entry by reading its on-disk JSON into the

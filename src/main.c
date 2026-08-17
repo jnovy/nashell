@@ -1217,17 +1217,12 @@ int main(int argc, char **argv) {
         dream_new_count += memory_count(ws->workspace);
     } else {
       double last_dream_epoch = (double)dream_st.st_mtime;
-      for (int i = 0; i < memory_count(memory); i++) {
-        if (memory->idx.entries[i].created_at > last_dream_epoch)
-          dream_new_count++;
-      }
+      /* BUG-G fix: use thread-safe accessor instead of direct idx access
+       * which was racy with concurrent mem_index_grow() realloc. */
+      dream_new_count = memory_count_newer_than(memory, last_dream_epoch);
       /* Also count new workspace entries */
-      if (ws && ws->workspace) {
-        for (int i = 0; i < memory_count(ws->workspace); i++) {
-          if (ws->workspace->idx.entries[i].created_at > last_dream_epoch)
-            dream_new_count++;
-        }
-      }
+      if (ws && ws->workspace)
+        dream_new_count += memory_count_newer_than(ws->workspace, last_dream_epoch);
     }
   }
 

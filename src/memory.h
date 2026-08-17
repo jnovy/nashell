@@ -402,4 +402,8 @@ void memory_find_free(mem_index_entry_t *entry);
  * Returns 1 if found, 0 otherwise. No heap allocation. */
 int memory_has_key(memory_t *m, const char *key);
 
+/* Count entries created after the given epoch (thread-safe).
+ * BUG-G fix: replaces direct idx access that was racy with realloc. */
+int memory_count_newer_than(memory_t *m, double epoch);
+
 #endif
