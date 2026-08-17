@@ -4,6 +4,8 @@ Nash provides a full ncurses-based TUI with:
 
 - **Markdown rendering** -- headers, bold, italic, inline code, code blocks, tables, horizontal rules, lists
 - **Inline formatting in links** -- tool names rendered in bold, descriptions as inline code
+- **Code block clipping** -- long code block lines are clipped to terminal width instead of wrapping across multiple visual rows (prevents overwriting progress indicators and footers)
+- **Differential rendering** -- only changed cells are sent to the terminal via ncurses, eliminating visible flicker from the 50ms render loop (full redraws still occur on terminal resize and after OSC8 hyperlink flush)
 - **Step expansion** -- click/Enter on a step to expand its full content from the store
 - **Streaming output** -- real-time token display during LLM generation
 - **Status bar** -- model name, context usage percentage (`ctx 42%`), background jobs count, dream reminder

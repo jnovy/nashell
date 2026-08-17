@@ -154,6 +154,19 @@ The `extract_llm_text_output()` helper accepts both plain markdown and JSON tool
 
 When `done` is called, the result is automatically saved to the scratchpad as `R<N>_result` (priority 1), ensuring the next react loop has full access to the previous loop's conclusion.
 
+### Session State Tracking
+
+During each react loop, nash tracks which files have been modified by tool calls (`file_write`, `file_edit`). At context construction time, this information is injected as a lightweight `[SESSION STATE]` inform block:
+
+```
+[SESSION STATE]
+Files modified this session:
+  main.c (step 5, 3x)
+  config.h (step 12, 1x)
+```
+
+The block shows the file basename, the last step number that modified it, and the total modification count. It is regenerated each step (zero context growth) and only injected when there are modified files. This prevents wasted re-reads and blind retries when the model forgets what it changed earlier in the session.
+
 ---
 
 ## See Also

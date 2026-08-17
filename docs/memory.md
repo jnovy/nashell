@@ -8,11 +8,19 @@
   - [Knowledge Formation](#knowledge-formation)
 - [Persistent Memory System](#persistent-memory-system)
   - [Hybrid Scoring](#hybrid-scoring----semantic--substring--bayesian-validation)
+  - [Superseded-Entry Demotion](#superseded-entry-demotion)
+  - [Soft Temporal Scoring](#soft-temporal-scoring)
   - [Memory Index](#memory-index)
   - [Bayesian Validation Score](#bayesian-validation-score)
   - [Memory Tools](#memory-tools)
   - [Pinned Knowledge](#pinned-knowledge)
   - [Triggers](#triggers)
+- [Temporal Validity & Evidence Basis](#temporal-validity--evidence-basis)
+  - [Validity Classes](#validity-classes)
+  - [Evidence Basis](#evidence-basis)
+  - [Stale Markers in Recall](#stale-markers-in-recall)
+- [Contradiction Detection](#contradiction-detection)
+- [Store Deduplication](#store-deduplication)
 - [Workspace Isolation](#workspace-isolation)
   - [Workspace Structure](#workspace-structure)
   - [Discovery](#discovery)
@@ -164,6 +172,39 @@ The scoring research foundations:
 - **Generative Agents** [Park et al., 2023] -- composite scoring (recency x importance x relevance) as the foundation for memory retrieval ranking.
 - **Memory Survey** [arXiv:2404.13501] -- comprehensive survey identifying five critical memory operations, including validation/reflection as essential for memory quality.
 
+### Superseded-Entry Demotion
+
+When a memory entry B supersedes entry A (via the `supersedes` parameter on `memory_store`), entry A's composite recall score is multiplied by `superseded_demotion` (default: 0.3). This means superseded entries score at 30% of their original relevance, pushing them below their replacement in recall ranking without deleting them entirely.
+
+```
+if entry.superseded_at > 0 AND superseded_demotion < 1.0:
+    composite *= superseded_demotion
+```
+
+The superseded entry retains its full content and history -- it is demoted in ranking, not removed. Set `superseded_demotion = 1.0` to disable demotion entirely.
+
+Config: `superseded_demotion` in `[limits]` section (also available as per-profile and workspace `[memory]` override).
+
+### Soft Temporal Scoring
+
+An optional mild recency bonus can be applied to recently-created entries via `recency_bonus` (default: 0.0 = disabled):
+
+```
+composite *= 1.0 + recency_bonus * exp(-age_days / 30.0)
+```
+
+This is explicitly NOT recency decay -- old knowledge is never penalized. The bonus gives recently-created entries a mild edge when competing with older entries of similar relevance:
+
+| Age | Multiplier (bonus=0.1) |
+|-----|----------------------|
+| 0 days | x1.10 |
+| 30 days | x1.037 |
+| 90 days | x1.005 (effectively 1.0) |
+
+Disabled by default to preserve the design principle that knowledge does not expire on a calendar. Enable only if your use case benefits from recency-weighted retrieval.
+
+Config: `recency_bonus` in `[limits]` section (also available as per-profile and workspace `[memory]` override).
+
 ### Memory Abstention Gate
 
 Memories scoring below `recall_min_score` are **not injected**, implementing "abstention" -- the system stays silent when no stored experience is relevant. This prevents noise injection that hurts performance.
@@ -300,9 +341,92 @@ Recalled memories are rendered with temporal and confidence metadata, not just b
 When analyzing a C codebase for the first time...
 ```
 
-Recency is computed from the `created_at` timestamp. Confidence uses the Beta posterior mean: `(hits + 1) / (hits + misses + 2) x 100%`. Recall count is the raw `recall_hits` value.
+Stale entries (see [Temporal Validity](#temporal-validity--evidence-basis)) receive a `[STALE]` marker:
+
+```
+--- fact:api-endpoint (3mo ago, 12 recalls, confidence: 78%) [STALE - re-verify before trusting] ---
+The production API endpoint is https://api.example.com/v2
+  basis: confirmed by testing 2026-05-01
+  [MAY BE INVALID IF: API endpoint changes after migration]
+```
+
+Recency is computed from the `created_at` timestamp. Confidence uses the Beta posterior mean: `(hits + 1) / (hits + misses + 2) x 100%`. Recall count is the raw `recall_hits` value. When a `basis` is set, it appears below the content. When `expires_when:` validity is set, the advisory hint appears as `[MAY BE INVALID IF: ...]`.
 
 This implements the key finding from [arXiv:2605.15184](https://arxiv.org/abs/2605.15184) that **rendering IS retrieval** -- how memories are presented to the model matters as much as which ones are retrieved. The metadata helps the model weight recalled knowledge appropriately ("this has been recalled 327 times with 95% confidence" vs. "this was created yesterday with no validation").
+
+---
+
+## Temporal Validity & Evidence Basis
+
+Memories can declare their temporal validity class and the evidence that supports them. These metadata fields help the agent and harness judge when stored knowledge may be outdated.
+
+### Validity Classes
+
+The `validity` parameter on `memory_store` accepts four classes:
+
+| Class | Behavior | Use Case |
+|-------|----------|----------|
+| `persistent` (default) | Never stale | Stable facts, coding patterns, lessons |
+| `volatile` | Always marked stale | Values that change frequently (prices, versions) |
+| `session` | Stale after 6 hours | Ephemeral facts ("server is down", "build is broken") |
+| `expires_when:description` | Never auto-expires; shows advisory hint | Facts tied to a specific real-world condition |
+
+Examples:
+
+```
+memory_store(key="lesson:git-rebase", value="...", validity="persistent")
+memory_store(key="fact:api-key", value="...", validity="volatile")
+memory_store(key="fact:server-down", value="...", validity="session")
+memory_store(key="fact:k8s-version", value="1.29", validity="expires_when:cluster is upgraded")
+```
+
+Null or empty validity is treated as `persistent`. Unknown values are also treated as `persistent`.
+
+### Evidence Basis
+
+The `basis` parameter records WHY a fact is believed to be true:
+
+```
+memory_store(
+    key="fact:api-latency",
+    value="P99 latency is 45ms",
+    basis="confirmed by querying API with 7 positive results on 2026-08-10"
+)
+```
+
+The basis is displayed at recall time so the model can judge trustworthiness. It is pure metadata -- no logic is applied to it. Basis is preserved across memory updates (key changes preserve existing basis if not re-specified).
+
+### Stale Markers in Recall
+
+Stale entries are marked in all four injection paths (system prompt recall, cue-anchored triggers, cycling recall hints, error-recall hints):
+
+- **Stale header:** `--- key (age, N recalls, confidence: X%) [STALE - re-verify before trusting] ---`
+- **Normal header:** `--- key (age, N recalls, confidence: X%) ---`
+- **Basis line:** `  basis: evidence text` (below content, when set)
+- **Advisory hint:** `  [MAY BE INVALID IF: description]` (below content, for `expires_when:` entries)
+
+---
+
+## Contradiction Detection
+
+When storing a new memory, the harness automatically queries for semantically similar existing entries. If any match has raw relevance >= 0.60 (60% similarity), a warning is surfaced in the tool result:
+
+```
+WARNING: similar memories found that may be contradicted by this new entry:
+  - lesson:old-approach (similarity: 85%)
+  - skill:related-technique (similarity: 62%)
+Consider setting supersedes if the new entry replaces one of these.
+```
+
+Up to 3 conflicting entries are shown. The warning suggests using the `supersedes` parameter to establish a lineage chain, which triggers [superseded-entry demotion](#superseded-entry-demotion) on the old entry. Self-matches (same key) and entries already superseded by the new entry are excluded from detection.
+
+---
+
+## Store Deduplication
+
+When `memory_store` is called with a key that already exists with an identical value (exact string match), the store is skipped entirely. The tool returns `status: "unchanged"` without writing to disk or running contradiction detection. This eliminates redundant disk writes when the agent re-stores the same knowledge.
+
+---
 
 ### Working Memory Auto-Promotion
 

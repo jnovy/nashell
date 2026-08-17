@@ -63,6 +63,8 @@ consolidation_threshold = 0.82            # cosine threshold for dedup
 recall_blend_semantic = 0.4               # semantic similarity weight (grep-favoring)
 recall_blend_substring = 0.6              # substring match weight (grep-favoring)
 dream_reminder_threshold = 50            # new entries before dream reminder
+superseded_demotion = 0.3                 # score multiplier for superseded entries (0.0-1.0)
+recency_bonus = 0.0                       # soft temporal bonus for recent entries (0.0 = disabled)
 
 # Error-triggered reactive retrieval
 error_recall_min_length = 10
