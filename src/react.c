@@ -638,7 +638,9 @@ char *react_extract_llm_text_output(const char *raw) {
 /* Auto-assign importance to a tool result based on tool name and success.
  * Harness-1 §3.2: different tools produce outputs of different value. */
 static int react_tool_importance(const char *tool_name, int success) {
-  if (!success) return LLM_MSG_IMPORTANCE_LOW;
+  /* ACID-Agent [arXiv 2608.13900]: Failed tools get TAINTED for aggressive
+   * eviction. Prevents bad reasoning from anchoring the model (+11.7%). */
+  if (!success) return LLM_MSG_IMPORTANCE_TAINTED;
   if (!tool_name) return LLM_MSG_IMPORTANCE_NORMAL;
   /* Search/analysis tools produce higher-value results */
   if (strcmp(tool_name, "grep_search") == 0 ||
@@ -1028,10 +1030,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                    "Your response was plain text, not a JSON tool call. "
                    "If you are finished, call the `done` tool with your result. "
                    "If you have more work to do, call the appropriate tool.");
-      /* Parse error corrections are ephemeral — explicitly LOW */
+      /* ACID-Agent: Parse error corrections are failed state — taint both
+       * the malformed assistant response and the correction hint. */
       if (chat->n_msgs >= 2) {
-        chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_LOW;
-        chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_LOW;
+        chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_TAINTED;
+        chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_TAINTED;
       }
       free(response);
       continue;
@@ -1844,9 +1847,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 
     /* Harness-1 §3.2: Tag the newly added messages with importance.
-         * The assistant message gets NORMAL, the tool result gets tool-specific importance. */
+         * The assistant message gets NORMAL, the tool result gets tool-specific importance.
+         * ACID-Agent [arXiv 2608.13900]: When tool failed, taint the ENTIRE
+         * transaction — both the assistant reasoning that led to the bad call
+         * AND the error result. The flawed reasoning is actively harmful. */
     if (chat->n_msgs >= 2) {
-      chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
+      chat->msgs[chat->n_msgs - 2].importance =
+          tr.success ? LLM_MSG_IMPORTANCE_NORMAL : LLM_MSG_IMPORTANCE_TAINTED;
       chat->msgs[chat->n_msgs - 1].importance = (llm_msg_importance_t)tool_imp;
       chat->msgs[chat->n_msgs - 1].msg_type = tr.success ? LLM_MSG_TOOL_RESULT : LLM_MSG_ERROR;
 

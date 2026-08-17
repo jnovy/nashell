@@ -1,5 +1,6 @@
 #include "test_common.h"
 #include "../src/memory.h"
+#include "../src/llm.h"
 /* linked via LIB_OBJ */
 
 /* ── test_store_and_recall ── */
@@ -850,6 +851,177 @@ static void test_contradiction_detection_similar_values(void) {
   free(dir);
 }
 
+/* ── Typed Edges (SodaMem) ── */
+
+static void test_typed_edge_add_ref(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:a", "alpha value", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:b", "beta value", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Add a CONTRADICTS edge from a -> b */
+  int rc = memory_add_ref(m, "lesson:a", "lesson:b", MEM_EDGE_CONTRADICTS);
+  ASSERT_EQ(rc, 0);
+
+  /* Reload from disk and verify edge persisted */
+  memory_free(m);
+  m = memory_new(dir);
+
+  /* Find entry a in index and check ref_types */
+  memory_results_t results = memory_query(m, "alpha", 5);
+  ASSERT_GT(results.count, 0);
+  int found = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:a") == 0) {
+      ASSERT_EQ(results.entries[i].n_refs, 1);
+      if (results.entries[i].n_refs > 0)
+        ASSERT_STR_EQ(results.entries[i].refs[0], "lesson:b");
+      found = 1;
+    }
+  }
+  ASSERT_EQ(found, 1);
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_typed_edge_add_ref_nonexistent(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Adding ref to nonexistent entry should fail */
+  int rc = memory_add_ref(m, "nonexistent", "also-nonexistent", MEM_EDGE_RELATES);
+  ASSERT_EQ(rc, -1);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_typed_edge_supersedes_auto(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:old", "old knowledge", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:new", "new knowledge", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Set supersedes should auto-create SUPERSEDES ref */
+  memory_set_supersedes(m, "lesson:new", "lesson:old");
+
+  /* Reload and verify */
+  memory_free(m);
+  m = memory_new(dir);
+
+  memory_results_t results = memory_query(m, "new knowledge", 5);
+  int found_ref = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:new") == 0) {
+      for (int r = 0; r < results.entries[i].n_refs; r++) {
+        if (strcmp(results.entries[i].refs[r], "lesson:old") == 0) {
+          found_ref = 1;
+        }
+      }
+    }
+  }
+  ASSERT_EQ(found_ref, 1);
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_superseded_hard_exclusion(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Lower min_score so demoted entries still appear */
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.3f, 0.0f);
+
+  /* Store two entries with very similar content */
+  memory_store(m, "fact:version-old", "the software version is 1.0", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "fact:version-new", "the software version is 2.0", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_supersedes(m, "fact:version-new", "fact:version-old");
+
+  /* With soft demotion (0.3) and low min_score, old entry should still appear */
+  memory_results_t results = memory_query(m, "version", 10);
+  int found_old = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "fact:version-old") == 0)
+      found_old = 1;
+  }
+  ASSERT_EQ(found_old, 1); /* still visible with soft demotion */
+  memory_results_free(&results);
+
+  /* Set demotion to 0.0 for hard exclusion */
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.0f, 0.0f);
+
+  results = memory_query(m, "version", 10);
+  found_old = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "fact:version-old") == 0)
+      found_old = 1;
+  }
+  ASSERT_EQ(found_old, 0); /* hard excluded */
+
+  /* New entry should still be there */
+  int found_new = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "fact:version-new") == 0)
+      found_new = 1;
+  }
+  ASSERT_EQ(found_new, 1);
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_typed_edge_update_existing(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:x", "x value", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:y", "y value", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Add as RELATES first */
+  int rc = memory_add_ref(m, "lesson:x", "lesson:y", MEM_EDGE_RELATES);
+  ASSERT_EQ(rc, 0);
+
+  /* Update to UPDATES */
+  rc = memory_add_ref(m, "lesson:x", "lesson:y", MEM_EDGE_UPDATES);
+  ASSERT_EQ(rc, 0);
+
+  /* Should still have only 1 ref (updated, not duplicated) */
+  memory_free(m);
+  m = memory_new(dir);
+
+  memory_results_t results = memory_query(m, "x value", 5);
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:x") == 0) {
+      ASSERT_EQ(results.entries[i].n_refs, 1);
+    }
+  }
+
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ── TAINTED Importance Tier ── */
+
+static void test_tainted_importance_value(void) {
+  /* Verify TAINTED is -1 and below LOW */
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_TAINTED, -1);
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_LOW, 0);
+  ASSERT((int)LLM_MSG_IMPORTANCE_TAINTED < (int)LLM_MSG_IMPORTANCE_LOW);
+}
+
 int main(void) {
   printf("test_memory:\n");
 
@@ -911,6 +1083,18 @@ int main(void) {
   printf("\n  --- Contradiction Detection ---\n");
   RUN_TEST(test_contradiction_detection_mechanism);
   RUN_TEST(test_contradiction_detection_similar_values);
+
+  /* Typed Edges (SodaMem arXiv 2608.08055) */
+  printf("\n  --- Typed Edges ---\n");
+  RUN_TEST(test_typed_edge_add_ref);
+  RUN_TEST(test_typed_edge_add_ref_nonexistent);
+  RUN_TEST(test_typed_edge_supersedes_auto);
+  RUN_TEST(test_typed_edge_update_existing);
+  RUN_TEST(test_superseded_hard_exclusion);
+
+  /* TAINTED Importance Tier (ACID-Agent arXiv 2608.13900) */
+  printf("\n  --- TAINTED Importance ---\n");
+  RUN_TEST(test_tainted_importance_value);
 
   TEST_SUMMARY();
 }

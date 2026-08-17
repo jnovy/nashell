@@ -30,6 +30,18 @@
  * memory_query() iterates the in-memory array instead of scanning
  * the filesystem, reducing recall from O(n) file reads to O(n) array
  * scan + O(k) file reads for top-k results only. */
+
+/* Typed edge types for memory references (SodaMem arXiv 2608.08055).
+ * Each ref in refs[] has a parallel edge type in ref_types[].
+ * Edge type controls ref-boost weight during retrieval scoring. */
+typedef enum {
+  MEM_EDGE_RELATES = 0,      /* default — current behavior (+0.3 boost) */
+  MEM_EDGE_SUPERSEDES = 1,   /* this entry replaces the ref'd entry (0.0 boost) */
+  MEM_EDGE_CONTRADICTS = 2,  /* this entry conflicts with ref'd entry (-0.2 boost) */
+  MEM_EDGE_UPDATES = 3,      /* this entry refines/extends ref'd entry (+0.5 boost) */
+  MEM_EDGE_DEPENDS = 4,      /* this entry requires ref'd entry (+0.4 boost) */
+} mem_edge_type_t;
+
 typedef struct {
   char *key;         /* memory key (owned) */
   char *description; /* first sentence/line of value (owned, ≤250 chars) */
@@ -40,7 +52,8 @@ typedef struct {
   int recall_misses;
   double belief_entropy;
   double created_at;
-  char **refs; /* inter-memory ref keys (owned) */
+  char **refs;    /* inter-memory ref keys (owned) */
+  int *ref_types;  /* parallel edge type per ref (owned, MEM_EDGE_*); NULL = all RELATES */
   int n_refs;
   embed_multi_vec_t emb; /* cached embedding (loaded once) */
   int has_emb;           /* 1 if emb is valid */
@@ -263,6 +276,12 @@ int memory_increment_access(memory_t *m, const char *key);
  * Sets version = old_version + 1 on the new entry.
  * Returns 0 on success, -1 if new_key not found. */
 int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key);
+
+/* Add a typed reference edge from entry 'key' to 'ref_key'.
+ * SodaMem [arXiv 2608.08055]: typed edges enable edge-aware retrieval boost.
+ * Thread-safe (takes mutex). Returns 0 on success, -1 on error. */
+int memory_add_ref(memory_t *m, const char *key, const char *ref_key,
+                   mem_edge_type_t edge_type);
 
 /* Set belief entropy (ℋ_BE) on a memory entry.
  * Called after a successful belief entropy probe.

@@ -930,8 +930,12 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
           if (brief[b] == '\n' || brief[b] == '\r') brief[b] = ' ';
       }
 
-      str_appendf(&breadcrumb, "- %s: %s (%s, %d chars)\n",
-                  chat->msgs[mi].store_alias, brief, role, msg_clen);
+      /* ACID-Agent: mark tainted (failed) evictions in breadcrumbs */
+      const char *fail_tag =
+          (chat->msgs[mi].importance == LLM_MSG_IMPORTANCE_TAINTED)
+              ? "[FAILED] " : "";
+      str_appendf(&breadcrumb, "- %s%s: %s (%s, %d chars)\n",
+                  fail_tag, chat->msgs[mi].store_alias, brief, role, msg_clen);
       continue;
     }
 
@@ -942,7 +946,11 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
     int clen = msg_clen > max_per_msg ? max_per_msg : msg_clen;
     /* Clamp to UTF-8 boundary to avoid splitting multi-byte chars */
     clen = (int)utf8_clamp(content, (size_t)clen);
-    str_appendf(&summary, "[%s]: ", role);
+    /* ACID-Agent: mark failed steps in summary too */
+    if (chat->msgs[mi].importance == LLM_MSG_IMPORTANCE_TAINTED)
+      str_appendf(&summary, "[FAILED %s]: ", role);
+    else
+      str_appendf(&summary, "[%s]: ", role);
     str_append(&summary, content, (size_t)clen);
     if (msg_clen > max_per_msg)
       str_append_cstr(&summary, "...[truncated]");

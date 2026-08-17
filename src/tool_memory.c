@@ -521,6 +521,23 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
       if (n_conflicts > 0)
         str_append_cstr(&warn,
           "Consider setting supersedes if the new entry replaces one of these.");
+      /* SodaMem: Auto-create CONTRADICTS typed edges for detected conflicts.
+       * This goes beyond warnings - the edges affect retrieval scoring,
+       * suppressing conflicting facts via -0.2 boost weight. */
+      if (n_conflicts > 0) {
+        /* Re-scan to create edges (similar already iterated above).
+         * We stored the conflict keys in the warning string, but for
+         * proper edge creation we need the actual keys. Re-query. */
+        memory_results_t conflicts = memory_query(query_mem, value, 5);
+        for (int ci = 0; ci < conflicts.count && ci < 3; ci++) {
+          if (strcmp(conflicts.entries[ci].key, key) == 0) continue;
+          if (conflicts.entries[ci].raw_relevance >= 0.60) {
+            memory_add_ref(query_mem, key, conflicts.entries[ci].key,
+                           MEM_EDGE_CONTRADICTS);
+          }
+        }
+        memory_results_free(&conflicts);
+      }
       memory_results_free(&similar);
       /* Store warning text for inclusion in tool result below */
       if (n_conflicts > 0) {

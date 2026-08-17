@@ -120,6 +120,7 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
   free(e->value);
   free(e->path);
   free_string_array(e->refs, e->n_refs);
+  free(e->ref_types);
   free_string_array(e->triggers, e->n_triggers);
   if (e->has_emb) embed_multi_vec_free(&e->emb);
   free(e->supersedes);
@@ -302,6 +303,18 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
       for (int i = 0; i < ie->n_refs; i++) {
         cJSON *ref = cJSON_GetArrayItem(refs_arr, i);
         ie->refs[i] = (ref && ref->valuestring) ? xstrdup(ref->valuestring) : xstrdup("");
+      }
+      /* SodaMem [arXiv 2608.08055]: Load typed edge types parallel to refs.
+       * Backward compatible: missing/short ref_types array defaults to RELATES (0). */
+      cJSON *rt_arr = cJSON_GetObjectItem(entry, "ref_types");
+      ie->ref_types = xcalloc((size_t)ie->n_refs, sizeof(int)); /* 0 = RELATES */
+      if (rt_arr && cJSON_IsArray(rt_arr)) {
+        int rt_count = cJSON_GetArraySize(rt_arr);
+        for (int i = 0; i < ie->n_refs && i < rt_count; i++) {
+          cJSON *rt = cJSON_GetArrayItem(rt_arr, i);
+          if (rt && cJSON_IsNumber(rt))
+            ie->ref_types[i] = (int)rt->valuedouble;
+        }
       }
     }
   }
@@ -508,6 +521,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
   char *old_basis = NULL;
   char **old_triggers = NULL;
   int n_old_triggers = 0;
+  int *old_ref_types = NULL;
+  int n_old_ref_types = 0;
   {
     cJSON *old = slurp_json(path);
     if (old) {
@@ -548,6 +563,21 @@ int memory_store(memory_t *m, const char *key, const char *value,
               old_triggers[i] = (ti && ti->valuestring)
                                   ? xstrdup(ti->valuestring)
                                   : xstrdup("");
+            }
+          }
+        }
+      }
+      /* SodaMem: Preserve ref_types from old entry */
+      {
+        cJSON *ort = cJSON_GetObjectItem(old, "ref_types");
+        if (ort && cJSON_IsArray(ort)) {
+          n_old_ref_types = cJSON_GetArraySize(ort);
+          if (n_old_ref_types > 0) {
+            old_ref_types = xcalloc((size_t)n_old_ref_types, sizeof(int));
+            for (int i = 0; i < n_old_ref_types; i++) {
+              cJSON *rt = cJSON_GetArrayItem(ort, i);
+              if (rt && cJSON_IsNumber(rt))
+                old_ref_types[i] = (int)rt->valuedouble;
             }
           }
         }
@@ -602,6 +632,15 @@ int memory_store(memory_t *m, const char *key, const char *value,
     cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
     for (int i = 0; i < n_refs; i++)
       cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
+    /* SodaMem: Save ref_types parallel to refs.
+     * Preserve old ref_types for refs that still exist. New refs default to RELATES (0). */
+    if (old_ref_types && n_old_ref_types > 0) {
+      cJSON *rt_arr = cJSON_AddArrayToObject(entry, "ref_types");
+      for (int i = 0; i < n_refs; i++) {
+        int rt = (i < n_old_ref_types) ? old_ref_types[i] : 0;
+        cJSON_AddItemToArray(rt_arr, cJSON_CreateNumber(rt));
+      }
+    }
   }
 
   /* Cue-anchored triggers: content-match patterns for automatic injection.
@@ -620,6 +659,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
     }
     free_string_array(old_triggers, n_old_triggers);
   }
+  free(old_ref_types);
 
   /* P2: Lesson lineage — preserve supersedes and version from old entry.
      * New supersedes values are set by the caller via memory_set_supersedes(). */
@@ -958,8 +998,12 @@ static double score_entry_hybrid(const char *key, const char *value,
      * the evolved knowledge. Not recency decay - old entries without
      * successors are unaffected. Only entries explicitly superseded
      * by a newer version get penalized.
-     * Default demotion factor: 0.3 (superseded entry scores at 30%). */
+     * Default demotion factor: 0.3 (superseded entry scores at 30%).
+     * Hard exclusion: when demotion <= 0.0, return 0 (skip entirely).
+     * This implements SodaMem's validity gate for obsolete facts. */
   if (superseded_at > 0.0 && superseded_demotion < 1.0f) {
+    if (superseded_demotion <= 0.0f)
+      return 0; /* hard exclusion - superseded entry never reaches model */
     composite *= (double)superseded_demotion;
   }
 
@@ -1238,6 +1282,17 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
       ref_map[slot].idx = j;
     }
 
+    /* SodaMem [arXiv 2608.08055]: Edge-type-aware boost weights.
+     * Different edge types get different boost multipliers:
+     *   RELATES(0)=+0.3, SUPERSEDES(1)=0.0, CONTRADICTS(2)=-0.2,
+     *   UPDATES(3)=+0.5, DEPENDS(4)=+0.4 */
+    static const double edge_boost_weight[] = {
+      0.3,   /* MEM_EDGE_RELATES */
+      0.0,   /* MEM_EDGE_SUPERSEDES - don't boost what you replaced */
+      -0.2,  /* MEM_EDGE_CONTRADICTS - suppress conflicting facts */
+      0.5,   /* MEM_EDGE_UPDATES - pull in foundation you extend */
+      0.4,   /* MEM_EDGE_DEPENDS - pull in prerequisites */
+    };
     for (int i = 0; i < n_scored; i++) {
       if (scored[i].score < 0.5) continue;
       mem_index_entry_t *ie = &m->idx.entries[scored[i].idx_pos];
@@ -1251,8 +1306,14 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                              * normalized scoring invariant. Without this cap,
                              * mutually-referencing memories inflate each other
                              * unboundedly in a single pass. */
-              double boosted = scored[ref_map[slot].idx].score + 0.3 * scored[i].score;
-              scored[ref_map[slot].idx].score = boosted > 1.0 ? 1.0 : boosted;
+              int etype = (ie->ref_types && ri < ie->n_refs)
+                            ? ie->ref_types[ri] : 0;
+              if (etype < 0 || etype > 4) etype = 0;
+              double weight = edge_boost_weight[etype];
+              double boosted = scored[ref_map[slot].idx].score + weight * scored[i].score;
+              if (boosted > 1.0) boosted = 1.0;
+              if (boosted < 0.0) boosted = 0.0;
+              scored[ref_map[slot].idx].score = boosted;
             }
             break;
           }
@@ -1555,6 +1616,8 @@ static void gc_refs_rewrite_multi(const char *filepath,
     cJSON_Delete(entry);
     return;
   }
+  /* SodaMem: Also maintain ref_types parallel array */
+  cJSON *ref_types = cJSON_GetObjectItem(entry, "ref_types");
   int modified = 0;
   for (int i = cJSON_GetArraySize(refs) - 1; i >= 0; i--) {
     cJSON *item = cJSON_GetArrayItem(refs, i);
@@ -1562,6 +1625,8 @@ static void gc_refs_rewrite_multi(const char *filepath,
     for (int d = 0; d < n_deleted; d++) {
       if (strcmp(item->valuestring, deleted_keys[d]) == 0) {
         cJSON_DeleteItemFromArray(refs, i);
+        if (ref_types && cJSON_IsArray(ref_types) && i < cJSON_GetArraySize(ref_types))
+          cJSON_DeleteItemFromArray(ref_types, i);
         modified = 1;
         break;
       }
@@ -1594,8 +1659,11 @@ static char **gc_refs_collect_modified_paths(memory_t *m, const char **deleted_k
       for (int d = 0; d < n_deleted; d++) {
         if (strcmp(ie->refs[r], deleted_keys[d]) == 0) {
           free(ie->refs[r]);
-          for (int s = r; s < ie->n_refs - 1; s++)
+          for (int s = r; s < ie->n_refs - 1; s++) {
             ie->refs[s] = ie->refs[s + 1];
+            if (ie->ref_types)
+              ie->ref_types[s] = ie->ref_types[s + 1];
+          }
           ie->n_refs--;
           modified = 1;
           break;
@@ -2057,6 +2125,111 @@ int memory_set_supersedes(memory_t *m, const char *new_key, const char *old_key)
     }
   }
   if (old_entry) cJSON_Delete(old_entry);
+
+  /* SodaMem: Also create a typed SUPERSEDES ref edge to unify the dual
+   * representation (separate 'supersedes' field + refs[]). */
+  {
+    mem_index_entry_t *ie = mem_index_find(&m->idx, new_key);
+    if (ie) {
+      /* Check if ref already exists */
+      int found = 0;
+      for (int r = 0; r < ie->n_refs; r++) {
+        if (ie->refs[r] && strcmp(ie->refs[r], old_key) == 0) {
+          /* Update type if needed */
+          if (ie->ref_types) ie->ref_types[r] = MEM_EDGE_SUPERSEDES;
+          found = 1;
+          break;
+        }
+      }
+      if (!found) {
+        /* Grow arrays */
+        int n = ie->n_refs;
+        ie->refs = realloc(ie->refs, sizeof(char *) * (size_t)(n + 1));
+        ie->ref_types = realloc(ie->ref_types, sizeof(int) * (size_t)(n + 1));
+        ie->refs[n] = xstrdup(old_key);
+        ie->ref_types[n] = MEM_EDGE_SUPERSEDES;
+        ie->n_refs = n + 1;
+      }
+    }
+    /* Persist SUPERSEDES ref to JSON */
+    cJSON *re_entry = memory_load_entry_json(m, new_key);
+    if (re_entry) {
+      cJSON *ra = cJSON_GetObjectItem(re_entry, "refs");
+      cJSON *rt = cJSON_GetObjectItem(re_entry, "ref_types");
+      if (!ra) { ra = cJSON_AddArrayToObject(re_entry, "refs"); }
+      if (!rt) { rt = cJSON_AddArrayToObject(re_entry, "ref_types"); }
+      cJSON_AddItemToArray(ra, cJSON_CreateString(old_key));
+      cJSON_AddItemToArray(rt, cJSON_CreateNumber(MEM_EDGE_SUPERSEDES));
+      char re_fname[512];
+      key_to_path(new_key, ".json", re_fname, sizeof(re_fname));
+      char re_path[NASH_PATH_MAX];
+      path_join(re_path, sizeof(re_path), m->dir, re_fname);
+      dump_json(re_path, re_entry);
+      cJSON_Delete(re_entry);
+    }
+  }
+
+  pthread_mutex_unlock(&m->mtx);
+  return 0;
+}
+
+/* -- memory_add_ref: Add a typed reference edge to a memory entry.
+ * SodaMem [arXiv 2608.08055]: typed edges enable edge-aware retrieval.
+ * Updates both in-memory index and on-disk JSON. Thread-safe. */
+int memory_add_ref(memory_t *m, const char *key, const char *ref_key,
+                   mem_edge_type_t edge_type) {
+  if (!m || !key || !ref_key) return -1;
+  pthread_mutex_lock(&m->mtx);
+
+  mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+  if (!ie) {
+    pthread_mutex_unlock(&m->mtx);
+    return -1;
+  }
+
+  /* Check if ref already exists - update type if so */
+  for (int r = 0; r < ie->n_refs; r++) {
+    if (ie->refs[r] && strcmp(ie->refs[r], ref_key) == 0) {
+      if (ie->ref_types)
+        ie->ref_types[r] = (int)edge_type;
+      goto persist;
+    }
+  }
+
+  /* Add new ref + type */
+  {
+    int n = ie->n_refs;
+    ie->refs = realloc(ie->refs, sizeof(char *) * (size_t)(n + 1));
+    if (!ie->ref_types)
+      ie->ref_types = xcalloc((size_t)(n + 1), sizeof(int));
+    else
+      ie->ref_types = realloc(ie->ref_types, sizeof(int) * (size_t)(n + 1));
+    ie->refs[n] = xstrdup(ref_key);
+    ie->ref_types[n] = (int)edge_type;
+    ie->n_refs = n + 1;
+  }
+
+persist:;
+  /* Persist to JSON on disk */
+  cJSON *entry = memory_load_entry_json(m, key);
+  if (entry) {
+    /* Rebuild refs and ref_types arrays from in-memory state */
+    cJSON_DeleteItemFromObject(entry, "refs");
+    cJSON_DeleteItemFromObject(entry, "ref_types");
+    cJSON *ra = cJSON_AddArrayToObject(entry, "refs");
+    cJSON *rt = cJSON_AddArrayToObject(entry, "ref_types");
+    for (int i = 0; i < ie->n_refs; i++) {
+      cJSON_AddItemToArray(ra, cJSON_CreateString(ie->refs[i] ? ie->refs[i] : ""));
+      cJSON_AddItemToArray(rt, cJSON_CreateNumber(
+          ie->ref_types ? ie->ref_types[i] : 0));
+    }
+    char fname[512];
+    key_to_path(key, ".json", fname, sizeof(fname));
+    char path[NASH_PATH_MAX];
+    path_join(path, sizeof(path), m->dir, fname);
+    dump_json(path, entry);
+    cJSON_Delete(entry);
+  }
 
   pthread_mutex_unlock(&m->mtx);
   return 0;
@@ -2602,6 +2775,7 @@ void memory_find_free(mem_index_entry_t *entry) {
   free(entry->value);
   free(entry->path);
   free_string_array(entry->refs, entry->n_refs);
+  free(entry->ref_types);
   free_string_array(entry->triggers, entry->n_triggers);
   free(entry->supersedes);
   free(entry->validity);

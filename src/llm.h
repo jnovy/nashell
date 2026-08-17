@@ -74,9 +74,13 @@ typedef enum {
 
 /* Message importance level — controls eviction priority.
  * Inspired by Harness-1's 4-level importance tagging for curated documents.
- * See: arXiv 2606.02373 "Harness-1: RL for Search Agents with State-Externalizing Harnesses" */
+ * See: arXiv 2606.02373 "Harness-1: RL for Search Agents with State-Externalizing Harnesses"
+ * TAINTED tier: arXiv 2608.13900 "ACID-Agent" - failed state isolation.
+ * Failed tool calls and their reasoning get TAINTED (-1) for aggressive
+ * eviction, preventing bad reasoning from anchoring the model. */
 typedef enum {
-  LLM_MSG_IMPORTANCE_LOW = 0,     /* errors, stale hints — evict first */
+  LLM_MSG_IMPORTANCE_TAINTED = -1, /* failed tools + their reasoning — evict immediately */
+  LLM_MSG_IMPORTANCE_LOW = 0,     /* stale hints, deduped results — evict first */
   LLM_MSG_IMPORTANCE_NORMAL = 1,  /* regular tool results — default */
   LLM_MSG_IMPORTANCE_HIGH = 2,    /* recent results, grep matches — compress before evict */
   LLM_MSG_IMPORTANCE_CRITICAL = 3 /* system, user query, scratchpad — never evict */
