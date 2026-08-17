@@ -845,5 +845,23 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     return CMD_NOT_FOUND;
   }
 
+  /* Unknown /command - show error, do not route to LLM */
+  if (sq[0] == '/') {
+    /* Extract just the command word for the error message */
+    char cmd_word[64];
+    const char *end = strchr(sq + 1, ' ');
+    size_t len = end ? (size_t)(end - sq) : strlen(sq);
+    if (len >= sizeof(cmd_word))
+      len = sizeof(cmd_word) - 1;
+    memcpy(cmd_word, sq, len);
+    cmd_word[len] = '\0';
+
+    ui_locked_set_status_fmt(ctx->ui, STATUS_ERROR,
+                             "Unknown command: %s", cmd_word);
+    free(sq);
+    *submitted_query = NULL;
+    return CMD_CONTINUE;
+  }
+
   return CMD_NOT_FOUND;
 }
