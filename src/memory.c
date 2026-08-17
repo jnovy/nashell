@@ -2754,6 +2754,11 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
     for (int i = 0; i < src->n_refs; i++)
       copy->refs[i] = src->refs[i] ? xstrdup(src->refs[i]) : NULL;
   }
+  /* Copy ref_types (typed edges) from index */
+  if (src->ref_types && src->n_refs > 0) {
+    copy->ref_types = xcalloc((size_t)src->n_refs, sizeof(int));
+    memcpy(copy->ref_types, src->ref_types, sizeof(int) * (size_t)src->n_refs);
+  }
   /* Copy triggers from index */
   copy->n_triggers = src->n_triggers;
   if (src->triggers && src->n_triggers > 0) {

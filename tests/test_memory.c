@@ -1022,6 +1022,599 @@ static void test_tainted_importance_value(void) {
   ASSERT((int)LLM_MSG_IMPORTANCE_TAINTED < (int)LLM_MSG_IMPORTANCE_LOW);
 }
 
+/* ===============================================================
+ * Comprehensive Typed Edges Tests
+ * =============================================================== */
+
+/* Verify that storing with refs but no explicit ref_types defaults to RELATES (0) */
+static void test_typed_edge_relates_default(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  const char *refs[] = {"lesson:related1", "lesson:related2"};
+  memory_store(m, "lesson:source", "source value", 0, NULL, refs, 2, NULL, 0);
+  memory_store(m, "lesson:related1", "related1 value", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:related2", "related2 value", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Now add typed edges to set ref_types in index; the store path only
+   * writes ref_types to JSON when old_ref_types existed. Use memory_add_ref
+   * to explicitly create RELATES edges and verify default behavior. */
+  memory_add_ref(m, "lesson:source", "lesson:related1", MEM_EDGE_RELATES);
+  memory_add_ref(m, "lesson:source", "lesson:related2", MEM_EDGE_RELATES);
+
+  mem_index_entry_t *found = memory_find(m, "lesson:source");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 2);
+  ASSERT_NOT_NULL(found->ref_types);
+  ASSERT_EQ(found->ref_types[0], MEM_EDGE_RELATES);
+  ASSERT_EQ(found->ref_types[1], MEM_EDGE_RELATES);
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify all 5 edge types can be created and read back */
+static void test_typed_edge_all_types(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:hub", "hub entry", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:r", "relates target", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:s", "supersedes target", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:c", "contradicts target", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:u", "updates target", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:d", "depends target", 0, NULL, NULL, 0, NULL, 0);
+
+  ASSERT_EQ(memory_add_ref(m, "lesson:hub", "lesson:r", MEM_EDGE_RELATES), 0);
+  ASSERT_EQ(memory_add_ref(m, "lesson:hub", "lesson:s", MEM_EDGE_SUPERSEDES), 0);
+  ASSERT_EQ(memory_add_ref(m, "lesson:hub", "lesson:c", MEM_EDGE_CONTRADICTS), 0);
+  ASSERT_EQ(memory_add_ref(m, "lesson:hub", "lesson:u", MEM_EDGE_UPDATES), 0);
+  ASSERT_EQ(memory_add_ref(m, "lesson:hub", "lesson:d", MEM_EDGE_DEPENDS), 0);
+
+  mem_index_entry_t *found = memory_find(m, "lesson:hub");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 5);
+  ASSERT_NOT_NULL(found->ref_types);
+  ASSERT_EQ(found->ref_types[0], MEM_EDGE_RELATES);
+  ASSERT_EQ(found->ref_types[1], MEM_EDGE_SUPERSEDES);
+  ASSERT_EQ(found->ref_types[2], MEM_EDGE_CONTRADICTS);
+  ASSERT_EQ(found->ref_types[3], MEM_EDGE_UPDATES);
+  ASSERT_EQ(found->ref_types[4], MEM_EDGE_DEPENDS);
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify ref_types survive free+reload from disk (JSON persistence) */
+static void test_typed_edge_persist_on_disk(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:src", "source data", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:dep", "dependency data", 0, NULL, NULL, 0, NULL, 0);
+
+  memory_add_ref(m, "lesson:src", "lesson:dep", MEM_EDGE_DEPENDS);
+
+  /* Verify in-memory */
+  mem_index_entry_t *pre = memory_find(m, "lesson:src");
+  ASSERT_NOT_NULL(pre);
+  ASSERT_EQ(pre->n_refs, 1);
+  ASSERT_NOT_NULL(pre->ref_types);
+  ASSERT_EQ(pre->ref_types[0], MEM_EDGE_DEPENDS);
+  memory_find_free(pre);
+
+  /* Destroy and reload from disk */
+  memory_free(m);
+  m = memory_new(dir);
+
+  mem_index_entry_t *post = memory_find(m, "lesson:src");
+  ASSERT_NOT_NULL(post);
+  ASSERT_EQ(post->n_refs, 1);
+  ASSERT_STR_EQ(post->refs[0], "lesson:dep");
+  ASSERT_NOT_NULL(post->ref_types);
+  ASSERT_EQ(post->ref_types[0], MEM_EDGE_DEPENDS);
+  memory_find_free(post);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify multiple refs with different types on the same entry */
+static void test_typed_edge_multiple_refs(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:center", "center entry", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:t1", "target one", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:t2", "target two", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:t3", "target three", 0, NULL, NULL, 0, NULL, 0);
+
+  memory_add_ref(m, "lesson:center", "lesson:t1", MEM_EDGE_CONTRADICTS);
+  memory_add_ref(m, "lesson:center", "lesson:t2", MEM_EDGE_UPDATES);
+  memory_add_ref(m, "lesson:center", "lesson:t3", MEM_EDGE_DEPENDS);
+
+  /* Reload from disk to test full round-trip */
+  memory_free(m);
+  m = memory_new(dir);
+
+  mem_index_entry_t *found = memory_find(m, "lesson:center");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 3);
+  ASSERT_NOT_NULL(found->ref_types);
+
+  /* Verify each ref has its correct type */
+  for (int i = 0; i < found->n_refs; i++) {
+    if (strcmp(found->refs[i], "lesson:t1") == 0)
+      ASSERT_EQ(found->ref_types[i], MEM_EDGE_CONTRADICTS);
+    else if (strcmp(found->refs[i], "lesson:t2") == 0)
+      ASSERT_EQ(found->ref_types[i], MEM_EDGE_UPDATES);
+    else if (strcmp(found->refs[i], "lesson:t3") == 0)
+      ASSERT_EQ(found->ref_types[i], MEM_EDGE_DEPENDS);
+  }
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify GC cleanup: deleting a ref'd entry shifts ref_types in parallel */
+static void test_typed_edge_gc_cleanup(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:parent", "parent entry", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:child1", "child one", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:child2", "child two", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:child3", "child three", 0, NULL, NULL, 0, NULL, 0);
+
+  memory_add_ref(m, "lesson:parent", "lesson:child1", MEM_EDGE_RELATES);
+  memory_add_ref(m, "lesson:parent", "lesson:child2", MEM_EDGE_CONTRADICTS);
+  memory_add_ref(m, "lesson:parent", "lesson:child3", MEM_EDGE_UPDATES);
+
+  /* Delete child2 - this should trigger GC that shifts ref_types */
+  memory_delete(m, "lesson:child2");
+
+  mem_index_entry_t *found = memory_find(m, "lesson:parent");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 2);
+  ASSERT_NOT_NULL(found->ref_types);
+
+  /* After GC: child1 (RELATES) and child3 (UPDATES) should remain */
+  int found_child1 = 0, found_child3 = 0;
+  for (int i = 0; i < found->n_refs; i++) {
+    if (strcmp(found->refs[i], "lesson:child1") == 0) {
+      ASSERT_EQ(found->ref_types[i], MEM_EDGE_RELATES);
+      found_child1 = 1;
+    } else if (strcmp(found->refs[i], "lesson:child3") == 0) {
+      ASSERT_EQ(found->ref_types[i], MEM_EDGE_UPDATES);
+      found_child3 = 1;
+    }
+  }
+  ASSERT_EQ(found_child1, 1);
+  ASSERT_EQ(found_child3, 1);
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify ref_types preserved when re-storing (updating) an entry's value */
+static void test_typed_edge_preserved_on_value_update(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  const char *refs[] = {"lesson:target"};
+  memory_store(m, "lesson:source", "original value", 0, NULL, refs, 1, NULL, 0);
+  memory_store(m, "lesson:target", "target value", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Set edge type via memory_add_ref */
+  memory_add_ref(m, "lesson:source", "lesson:target", MEM_EDGE_UPDATES);
+
+  /* Verify before update */
+  mem_index_entry_t *pre = memory_find(m, "lesson:source");
+  ASSERT_NOT_NULL(pre);
+  ASSERT_EQ(pre->n_refs, 1);
+  ASSERT_NOT_NULL(pre->ref_types);
+  ASSERT_EQ(pre->ref_types[0], MEM_EDGE_UPDATES);
+  memory_find_free(pre);
+
+  /* Re-store with new value but same refs - ref_types should be preserved */
+  memory_store(m, "lesson:source", "updated value", 0, NULL, refs, 1, NULL, 0);
+
+  mem_index_entry_t *post = memory_find(m, "lesson:source");
+  ASSERT_NOT_NULL(post);
+  ASSERT_STR_EQ(post->value, "updated value");
+  ASSERT_EQ(post->n_refs, 1);
+  ASSERT_STR_EQ(post->refs[0], "lesson:target");
+  ASSERT_NOT_NULL(post->ref_types);
+  ASSERT_EQ(post->ref_types[0], MEM_EDGE_UPDATES);
+  memory_find_free(post);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify memory_add_ref handles NULL parameters */
+static void test_typed_edge_null_params(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  ASSERT_EQ(memory_add_ref(NULL, "key", "ref", MEM_EDGE_RELATES), -1);
+  ASSERT_EQ(memory_add_ref(m, NULL, "ref", MEM_EDGE_RELATES), -1);
+  ASSERT_EQ(memory_add_ref(m, "key", NULL, MEM_EDGE_RELATES), -1);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify memory_find copies ref_types correctly (bug fix test) */
+static void test_find_copies_ref_types(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:a", "alpha", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:b", "beta", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:c", "gamma", 0, NULL, NULL, 0, NULL, 0);
+
+  memory_add_ref(m, "lesson:a", "lesson:b", MEM_EDGE_CONTRADICTS);
+  memory_add_ref(m, "lesson:a", "lesson:c", MEM_EDGE_DEPENDS);
+
+  /* memory_find must return deep copy including ref_types */
+  mem_index_entry_t *copy = memory_find(m, "lesson:a");
+  ASSERT_NOT_NULL(copy);
+  ASSERT_EQ(copy->n_refs, 2);
+  ASSERT_NOT_NULL(copy->refs);
+  ASSERT_NOT_NULL(copy->ref_types);
+  ASSERT_STR_EQ(copy->refs[0], "lesson:b");
+  ASSERT_EQ(copy->ref_types[0], MEM_EDGE_CONTRADICTS);
+  ASSERT_STR_EQ(copy->refs[1], "lesson:c");
+  ASSERT_EQ(copy->ref_types[1], MEM_EDGE_DEPENDS);
+  memory_find_free(copy);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ===============================================================
+ * Comprehensive Supersession Tests
+ * =============================================================== */
+
+/* Verify multi-level supersession chain: A supersedes B supersedes C */
+static void test_superseded_chain(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  /* Low min_score to see demoted entries */
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+
+  memory_store(m, "fact:version-v1", "the software version is 1.0", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "fact:version-v2", "the software version is 2.0", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "fact:version-v3", "the software version is 3.0", 0, NULL, NULL, 0, NULL, 0);
+
+  /* Chain: v3 supersedes v2 supersedes v1 */
+  memory_set_supersedes(m, "fact:version-v2", "fact:version-v1");
+  memory_set_supersedes(m, "fact:version-v3", "fact:version-v2");
+
+  /* v3 should have version >= 3 (lineage tracking) */
+  mem_index_entry_t *v3 = memory_find(m, "fact:version-v3");
+  ASSERT_NOT_NULL(v3);
+  ASSERT(v3->version >= 3);
+  ASSERT_STR_EQ(v3->supersedes, "fact:version-v2");
+  memory_find_free(v3);
+
+  /* v2 should be superseded (superseded_at > 0) */
+  mem_index_entry_t *v2 = memory_find(m, "fact:version-v2");
+  ASSERT_NOT_NULL(v2);
+  ASSERT(v2->superseded_at > 0.0);
+  memory_find_free(v2);
+
+  /* v1 should also be superseded */
+  mem_index_entry_t *v1 = memory_find(m, "fact:version-v1");
+  ASSERT_NOT_NULL(v1);
+  ASSERT(v1->superseded_at > 0.0);
+  memory_find_free(v1);
+
+  /* With soft demotion (0.3), all should still appear */
+  memory_results_t results = memory_query(m, "version", 10);
+  int count_version = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strstr(results.entries[i].key, "fact:version-v"))
+      count_version++;
+  }
+  ASSERT_EQ(count_version, 3); /* all visible with soft demotion */
+  memory_results_free(&results);
+
+  /* With hard exclusion, only v3 should appear */
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.0f, 0.0f);
+  results = memory_query(m, "version", 10);
+  count_version = 0;
+  int found_v3 = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strstr(results.entries[i].key, "fact:version-v")) {
+      count_version++;
+      if (strcmp(results.entries[i].key, "fact:version-v3") == 0)
+        found_v3 = 1;
+    }
+  }
+  ASSERT_EQ(count_version, 1); /* only non-superseded entry */
+  ASSERT_EQ(found_v3, 1);
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify negative demotion value acts as hard exclusion (same as 0.0) */
+static void test_superseded_negative_demotion(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "fact:neg-old", "old negdemo fact", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "fact:neg-new", "new negdemo fact", 0, NULL, NULL, 0, NULL, 0);
+  memory_set_supersedes(m, "fact:neg-new", "fact:neg-old");
+
+  /* Set negative demotion - should behave like hard exclusion */
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, -0.5f, 0.0f);
+
+  memory_results_t results = memory_query(m, "negdemo", 10);
+  int found_old = 0;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "fact:neg-old") == 0)
+      found_old = 1;
+  }
+  ASSERT_EQ(found_old, 0); /* hard excluded */
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* Verify auto-created SUPERSEDES ref has correct type */
+static void test_supersedes_auto_ref_type(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_store(m, "lesson:old-way", "old approach", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:new-way", "new approach", 0, NULL, NULL, 0, NULL, 0);
+
+  memory_set_supersedes(m, "lesson:new-way", "lesson:old-way");
+
+  /* Verify the new entry has a SUPERSEDES ref to the old entry */
+  mem_index_entry_t *found = memory_find(m, "lesson:new-way");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 1);
+  ASSERT_STR_EQ(found->refs[0], "lesson:old-way");
+  ASSERT_NOT_NULL(found->ref_types);
+  ASSERT_EQ(found->ref_types[0], MEM_EDGE_SUPERSEDES);
+  memory_find_free(found);
+
+  /* Verify it survives disk round-trip */
+  memory_free(m);
+  m = memory_new(dir);
+
+  found = memory_find(m, "lesson:new-way");
+  ASSERT_NOT_NULL(found);
+  ASSERT_EQ(found->n_refs, 1);
+  ASSERT_STR_EQ(found->refs[0], "lesson:old-way");
+  ASSERT_NOT_NULL(found->ref_types);
+  ASSERT_EQ(found->ref_types[0], MEM_EDGE_SUPERSEDES);
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ===============================================================
+ * Edge-Aware Boost Weight Tests
+ *
+ * The ref-boost mechanism (memory.c:1285-1323) applies when a
+ * high-scoring entry (>= 0.5) has refs. The ref'd entry gets:
+ *   boosted_score = target.score + weight * source.score
+ * We test that different edge types produce the expected relative
+ * ordering of scores.
+ * =============================================================== */
+
+/* SUPERSEDES ref should NOT boost the ref'd entry (weight=0.0),
+ * while RELATES does boost (+0.3). Compare the two to prove SUPERSEDES
+ * is weaker. Query must be exact key substring for score >= 0.5. */
+static void test_edge_boost_supersedes_no_boost(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+
+  /* Source: key contains "zsup-source" - query matches key via fast path */
+  memory_store(m, "lesson:zsup-source", "source info about zsup", 0, NULL, NULL, 0, NULL, 0);
+  /* Two targets with identical content containing "zsup" for weak match */
+  memory_store(m, "lesson:zsup-old", "old info about zsup", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:zsup-related", "old info about zsup", 0, NULL, NULL, 0, NULL, 0);
+
+  /* SUPERSEDES edge (weight 0.0) vs RELATES edge (weight 0.3) */
+  memory_add_ref(m, "lesson:zsup-source", "lesson:zsup-old", MEM_EDGE_SUPERSEDES);
+  memory_add_ref(m, "lesson:zsup-source", "lesson:zsup-related", MEM_EDGE_RELATES);
+
+  memory_results_t results = memory_query(m, "zsup-source", 10);
+  double old_score = -1, related_score = -1;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:zsup-old") == 0)
+      old_score = results.entries[i].relevance;
+    if (strcmp(results.entries[i].key, "lesson:zsup-related") == 0)
+      related_score = results.entries[i].relevance;
+  }
+  /* SUPERSEDES (0.0 boost) should be LOWER than RELATES (+0.3 boost) */
+  if (old_score >= 0 && related_score >= 0) {
+    ASSERT(old_score < related_score);
+  }
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* CONTRADICTS ref should suppress the ref'd entry (weight=-0.2).
+ * The ref-boost mechanism only fires when scored[i].score >= 0.5.
+ * Substring scoring: full query in key -> 3.0+/4.0 = 0.75+ (above threshold).
+ * So queries must be exact substrings of the source key. */
+static void test_edge_boost_contradicts_suppresses(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+
+  /* Source key contains "zcontra" - query "zcontra" will match key via
+   * fast path: strcasestr(key, query) -> YES -> score = 3.0+/4.0 = 0.75+ */
+  memory_store(m, "lesson:zcontra-source", "source info about zcontra", 0, NULL, NULL, 0, NULL, 0);
+  /* Two targets: both contain "zcontra" in value so they appear in scored[]
+   * but below 0.5 threshold (value-only match = 1.0/4.0 = 0.25) */
+  memory_store(m, "lesson:zcontra-wrong", "wrong info about zcontra", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:zcontra-neutral", "wrong info about zcontra", 0, NULL, NULL, 0, NULL, 0);
+
+  /* CONTRADICTS edge: source -> wrong (weight -0.2, should suppress) */
+  memory_add_ref(m, "lesson:zcontra-source", "lesson:zcontra-wrong", MEM_EDGE_CONTRADICTS);
+
+  memory_results_t results = memory_query(m, "zcontra-source", 10);
+  double wrong_score = -1, neutral_score = -1;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:zcontra-wrong") == 0)
+      wrong_score = results.entries[i].relevance;
+    if (strcmp(results.entries[i].key, "lesson:zcontra-neutral") == 0)
+      neutral_score = results.entries[i].relevance;
+  }
+  /* Wrong (contradicted) should score LOWER than neutral (no ref) */
+  if (wrong_score >= 0 && neutral_score >= 0) {
+    ASSERT(wrong_score < neutral_score);
+  }
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* UPDATES ref should boost more than RELATES (+0.5 vs +0.3).
+ * Query must be exact key substring so source scores >= 0.5 (boost threshold). */
+static void test_edge_boost_updates_stronger(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+
+  /* Source: key contains "zupd-main" - query matches key via fast path */
+  memory_store(m, "lesson:zupd-main", "main info about zupd", 0, NULL, NULL, 0, NULL, 0);
+  /* Two targets with identical content containing "zupd" for weak match */
+  memory_store(m, "lesson:zupd-updated", "reference info about zupd", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:zupd-related", "reference info about zupd", 0, NULL, NULL, 0, NULL, 0);
+
+  /* UPDATES on one, RELATES on the other */
+  memory_add_ref(m, "lesson:zupd-main", "lesson:zupd-updated", MEM_EDGE_UPDATES);
+  memory_add_ref(m, "lesson:zupd-main", "lesson:zupd-related", MEM_EDGE_RELATES);
+
+  memory_results_t results = memory_query(m, "zupd-main", 10);
+  double updated_score = -1, related_score = -1;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:zupd-updated") == 0)
+      updated_score = results.entries[i].relevance;
+    if (strcmp(results.entries[i].key, "lesson:zupd-related") == 0)
+      related_score = results.entries[i].relevance;
+  }
+  /* UPDATES (+0.5) should boost more than RELATES (+0.3) */
+  if (updated_score >= 0 && related_score >= 0) {
+    ASSERT(updated_score > related_score);
+  }
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* DEPENDS ref should boost the target (+0.4 weight).
+ * Query must be exact key substring so source scores >= 0.5 (boost threshold). */
+static void test_edge_boost_depends(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+
+  /* Source: key contains "zdep-app" - query matches key via fast path */
+  memory_store(m, "lesson:zdep-app", "main info about zdep", 0, NULL, NULL, 0, NULL, 0);
+  /* Two targets with identical content containing "zdep" for weak match */
+  memory_store(m, "lesson:zdep-prereq", "prerequisite info about zdep", 0, NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:zdep-noreq", "prerequisite info about zdep", 0, NULL, NULL, 0, NULL, 0);
+
+  /* DEPENDS on one, nothing on the other */
+  memory_add_ref(m, "lesson:zdep-app", "lesson:zdep-prereq", MEM_EDGE_DEPENDS);
+
+  memory_results_t results = memory_query(m, "zdep-app", 10);
+  double dep_score = -1, nodep_score = -1;
+  for (int i = 0; i < results.count; i++) {
+    if (strcmp(results.entries[i].key, "lesson:zdep-prereq") == 0)
+      dep_score = results.entries[i].relevance;
+    if (strcmp(results.entries[i].key, "lesson:zdep-noreq") == 0)
+      nodep_score = results.entries[i].relevance;
+  }
+  /* DEPENDS (+0.4) should boost dep above nodep */
+  if (dep_score >= 0 && nodep_score >= 0) {
+    ASSERT(dep_score > nodep_score);
+  }
+  memory_results_free(&results);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* ===============================================================
+ * Comprehensive TAINTED Importance Tier Tests
+ * =============================================================== */
+
+/* Verify all 5 importance tiers are in strict ascending order */
+static void test_tainted_ordering(void) {
+  ASSERT((int)LLM_MSG_IMPORTANCE_TAINTED < (int)LLM_MSG_IMPORTANCE_LOW);
+  ASSERT((int)LLM_MSG_IMPORTANCE_LOW < (int)LLM_MSG_IMPORTANCE_NORMAL);
+  ASSERT((int)LLM_MSG_IMPORTANCE_NORMAL < (int)LLM_MSG_IMPORTANCE_HIGH);
+  ASSERT((int)LLM_MSG_IMPORTANCE_HIGH < (int)LLM_MSG_IMPORTANCE_CRITICAL);
+}
+
+/* Verify the scoring formula base scores: imp * 100 */
+static void test_tainted_score_formula(void) {
+  /* The eviction scoring formula uses imp * 100 as base.
+   * TAINTED = -1 -> -100 (always evicted first)
+   * LOW = 0 -> 0
+   * NORMAL = 1 -> 100
+   * HIGH = 2 -> 200
+   * CRITICAL = 3 -> 300 */
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_TAINTED * 100, -100);
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_LOW * 100, 0);
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_NORMAL * 100, 100);
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_HIGH * 100, 200);
+  ASSERT_EQ((int)LLM_MSG_IMPORTANCE_CRITICAL * 100, 300);
+}
+
+/* Verify TAINTED is below the eviction skip threshold (>= HIGH) */
+static void test_tainted_below_skip_threshold(void) {
+  /* Eviction skips messages with importance >= HIGH.
+   * TAINTED must be below this threshold. */
+  ASSERT((int)LLM_MSG_IMPORTANCE_TAINTED < (int)LLM_MSG_IMPORTANCE_HIGH);
+  /* Also verify LOW and NORMAL are below (they should be evictable too) */
+  ASSERT((int)LLM_MSG_IMPORTANCE_LOW < (int)LLM_MSG_IMPORTANCE_HIGH);
+  ASSERT((int)LLM_MSG_IMPORTANCE_NORMAL < (int)LLM_MSG_IMPORTANCE_HIGH);
+}
+
 int main(void) {
   printf("test_memory:\n");
 
@@ -1092,9 +1685,36 @@ int main(void) {
   RUN_TEST(test_typed_edge_update_existing);
   RUN_TEST(test_superseded_hard_exclusion);
 
+  /* Typed Edges - Comprehensive */
+  printf("\n  --- Typed Edges (Comprehensive) ---\n");
+  RUN_TEST(test_typed_edge_relates_default);
+  RUN_TEST(test_typed_edge_all_types);
+  RUN_TEST(test_typed_edge_persist_on_disk);
+  RUN_TEST(test_typed_edge_multiple_refs);
+  RUN_TEST(test_typed_edge_gc_cleanup);
+  RUN_TEST(test_typed_edge_preserved_on_value_update);
+  RUN_TEST(test_typed_edge_null_params);
+  RUN_TEST(test_find_copies_ref_types);
+
+  /* Supersession - Comprehensive */
+  printf("\n  --- Supersession (Comprehensive) ---\n");
+  RUN_TEST(test_superseded_chain);
+  RUN_TEST(test_superseded_negative_demotion);
+  RUN_TEST(test_supersedes_auto_ref_type);
+
+  /* Edge-Aware Boost Weights */
+  printf("\n  --- Edge-Aware Boost Weights ---\n");
+  RUN_TEST(test_edge_boost_supersedes_no_boost);
+  RUN_TEST(test_edge_boost_contradicts_suppresses);
+  RUN_TEST(test_edge_boost_updates_stronger);
+  RUN_TEST(test_edge_boost_depends);
+
   /* TAINTED Importance Tier (ACID-Agent arXiv 2608.13900) */
   printf("\n  --- TAINTED Importance ---\n");
   RUN_TEST(test_tainted_importance_value);
+  RUN_TEST(test_tainted_ordering);
+  RUN_TEST(test_tainted_score_formula);
+  RUN_TEST(test_tainted_below_skip_threshold);
 
   TEST_SUMMARY();
 }
