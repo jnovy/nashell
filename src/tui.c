@@ -674,18 +674,25 @@ static void render_main(ui_state_t *ui) {
 
       int vis = rows > 0 ? rows : 20;
 
-      if (ui->doc->link_count > 0) {
+      int max_scroll = ui->doc->total_lines - vis;
+      if (max_scroll < 0) max_scroll = 0;
+
+      if (ui->status == STATUS_RUNNING) {
+        /* While inference is active, always scroll to the very bottom
+         * so the stats footer (HR + token counts) stays visible.
+         * Centering on the last link would leave the stats off-screen
+         * when streaming content pushes them past vis/2 lines below
+         * the link, causing visible flicker as the content length
+         * oscillates between render frames. */
+        ui->scroll_y = max_scroll;
+      } else if (ui->doc->link_count > 0) {
         int link_line = md_link_line(ui->doc, ui->doc->link_count - 1);
         int half = vis / 2;
         int target = link_line - half;
-        int max_scroll = ui->doc->total_lines - vis;
-        if (max_scroll < 0) max_scroll = 0;
         if (target < 0) target = 0;
         if (target > max_scroll) target = max_scroll;
         ui->scroll_y = target;
       } else {
-        int max_scroll = ui->doc->total_lines - vis;
-        if (max_scroll < 0) max_scroll = 0;
         ui->scroll_y = max_scroll;
       }
 
