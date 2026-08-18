@@ -1481,6 +1481,30 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                                          &score_ctx,
                                          evict_mark);
 
+  /* Decision observability: record PREDICT_EVICTION for each marked msg */
+  if (ctx->tools->predict && n_to_evict > 0) {
+    for (int ei = 0; ei < n_evictable; ei++) {
+      if (!evict_mark[ei]) continue;
+      int mi = evict_start + ei;
+      char esub[256], eclaim[512];
+      snprintf(esub, sizeof(esub), "msg[%d]", mi);
+      const char *tname = chat->msgs[mi].tool_name;
+      const char *tpath = chat->msgs[mi].tool_path;
+      snprintf(eclaim, sizeof(eclaim),
+               "evicting %s%s%s (imp=%d rec=%d) - content recoverable or no longer needed",
+               tname ? tname : "unknown",
+               tpath ? " " : "", tpath ? tpath : "",
+               chat->msgs[mi].importance, chat->msgs[mi].recoverability);
+      predict_record(ctx->tools->predict, PREDICT_EVICTION, step, esub, eclaim, 0.7);
+      /* Store CRC for later verification */
+      if (chat->msgs[mi].content && chat->msgs[mi].content_len > 0)
+        predict_store_evicted_crc(ctx->tools->predict,
+                                  compress_crc32(chat->msgs[mi].content,
+                                                 chat->msgs[mi].content_len),
+                                  (uint32_t)chat->msgs[mi].content_len, mi);
+    }
+  }
+
   free(score_ctx.similarities); /* NULL-safe */
 
   /* ── Step 4: Sweep phase — remove marked messages + build breadcrumbs ── */
@@ -1515,9 +1539,22 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
   total_chars = react_calc_total_chars(chat);
   usage_pct = react_usage_pct(total_chars, context_budget);
   char *bm25_query = react_build_bm25_query(chat, user_query, &ctx->tools->scratch);
+  int pre_compress_chars = total_chars;
   if (usage_pct > target_pct) {
     evict_compress(chat, keep_head, keep_tail, bm25_query,
                    target_pct, context_budget, &pol);
+    /* Decision observability: record compression prediction */
+    if (ctx->tools->predict) {
+      int post_chars = react_calc_total_chars(chat);
+      char csub[256], cclaim[512];
+      snprintf(csub, sizeof(csub), "compress_pass");
+      snprintf(cclaim, sizeof(cclaim),
+               "BM25 compressed from %d to %d chars (%.0f%% retained) - essential info preserved",
+               pre_compress_chars, post_chars,
+               pre_compress_chars > 0 ? 100.0 * post_chars / pre_compress_chars : 100.0);
+      predict_record(ctx->tools->predict, PREDICT_COMPRESSION, step,
+                     csub, cclaim, 0.7);
+    }
   }
   free(bm25_query);
 

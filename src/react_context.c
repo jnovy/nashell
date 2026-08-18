@@ -104,6 +104,16 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
       }
       tool_track_recalled_key(tools, all->entries[j].key);
       tool_fire_ledger_add(tools, all->entries[j].key);
+      if (tools->predict) {
+        char iclaim[512];
+        snprintf(iclaim, sizeof(iclaim),
+                 "injecting %s (confidence=%d) - will assist task completion",
+                 all->entries[j].key, confidence);
+        predict_record(tools->predict, PREDICT_INJECTION, 0,
+                       all->entries[j].key, iclaim,
+                       confidence / 100.0);
+        predict_store_injected_key(tools->predict, all->entries[j].key);
+      }
       remaining--;
       added++;
     }

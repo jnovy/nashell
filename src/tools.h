@@ -21,6 +21,9 @@
 /* Forward declaration for session index (v4 unified memory L3 tier) */
 typedef struct session_index_t session_index_t;
 
+/* Forward declaration for prediction tracking (decision observability) */
+typedef struct predict_tracker_t predict_tracker_t;
+
 /* Dynamic hash map for step aliases (R1S0 → store hash).
  * Grows automatically — no artificial limit. */
 typedef struct alias_node {
@@ -156,6 +159,10 @@ typedef struct {
     int is_new_file; /* 1 = file_write created this (rollback = delete) */
   } txn_edits[TXN_MAX_EDITS];
   int txn_n_edits;   /* number of entries in txn_edits[] */
+
+  /* Decision observability: prediction tracking for harness evolution.
+   * NULL when prediction_tracking is disabled. */
+  predict_tracker_t *predict;
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */

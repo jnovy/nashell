@@ -404,6 +404,11 @@ typedef struct {
      * Struct definition lives in device_control_config.h (shared with
      * the external device_control plugin). */
   device_control_config_t device_control;
+
+  /* [observability] - prediction tracking for harness evolution */
+  int prediction_tracking;    /* 0=use default(on), 1=on, -1=off */
+  int prediction_journal;     /* 0=use default(on), 1=on, -1=off */
+  int prediction_verbose;     /* 0=off, 1=on */
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.

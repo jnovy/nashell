@@ -85,6 +85,7 @@ typedef struct {
   int longest_harmful_streak;
   int causal_step;   /* earliest step that caused failure (-1 if N/A) */
   char *causal_tool; /* tool at causal step (NULL if N/A) */
+  float prediction_accuracy; /* prediction tracking accuracy (-1.0 = no data) */
 } trajectory_score_t;
 
 /* Full postmortem report */

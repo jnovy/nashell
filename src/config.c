@@ -137,6 +137,11 @@ void config_set_defaults(config_t *cfg) {
      * -1 = not set (sentinel), 0 = user_ask, 1 = always, 2 = never */
   if (cfg->reflection_gate < 0) cfg->reflection_gate = 0;
 
+  /* [observability] defaults - prediction tracking enabled by default */
+  if (cfg->prediction_tracking == 0) cfg->prediction_tracking = 1;
+  if (cfg->prediction_journal == 0) cfg->prediction_journal = 1;
+  /* prediction_verbose: 0 = off (default via calloc). No sentinel needed. */
+
   /* P3: Self-Harness tunable surfaces — see config.h for descriptions.
      * Blend defaults: 40/60 semantic/substring — grep-favoring for inline delivery.
      * arXiv 2605.15184 "Is Grep All You Need?" Finding #1: substring matching
@@ -610,6 +615,17 @@ config_t *config_load(const char *path) {
     }
   }
 done_tools:
+
+  /* [observability] - prediction tracking settings */
+  toml_table_t *obs = toml_table_in(root, "observability");
+  if (obs) {
+    toml_datum_t pt_flag = toml_bool_in(obs, "prediction_tracking");
+    if (pt_flag.ok) cfg->prediction_tracking = pt_flag.u.b ? 1 : -1;
+    toml_datum_t pj = toml_bool_in(obs, "prediction_journal");
+    if (pj.ok) cfg->prediction_journal = pj.u.b ? 1 : -1;
+    toml_datum_t pv = toml_bool_in(obs, "prediction_verbose");
+    if (pv.ok) cfg->prediction_verbose = pv.u.b ? 1 : 0;
+  }
 
   toml_free(root);
   config_set_defaults(cfg);

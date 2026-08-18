@@ -1,5 +1,6 @@
 #include "react_internal.h"
 #include "compress.h"
+#include "harness_metrics.h"
 #include <strings.h> /* strcasestr */
 #include "tui.h"     /* g_tui_active -- for condvar timeout escape hatch */
 #include "tools_internal.h"
@@ -813,6 +814,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * up to CYCLE_MAX_PERIOD. Replaces the old last-vs-current comparison. */
   cycle_window_t cw;
   cycle_window_init(&cw);
+
+  /* Decision observability: create prediction tracker if enabled */
+  if (ctx->tools->cfg && ctx->tools->cfg->prediction_tracking > 0)
+    ctx->tools->predict = predict_tracker_new();
+
   int repeat_count = 0;               /* backward-compat escalation counter */
   int consecutive_null_responses = 0; /* Track LLM failures (HTTP 500 etc.) */
 
@@ -1494,6 +1500,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                        step + 1, "cycling_cached", cached, match_ref,
                        strlen(match_result), 0,
                        NULL, NULL, 0);
+        if (ctx->tools->predict)
+          predict_record(ctx->tools->predict, PREDICT_CYCLING, step + 1,
+                         "cycle_break",
+                         "breaking cycle via cached result - will restore progress",
+                         0.6);
       } else {
         /* Stage 2+: refuse - the result is already in context */
         ev.message = "Cycling - refusing repeated action, result already in context";
@@ -1530,6 +1541,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         journal_append(ctx->tools->journal, ctx->tools->react_loop,
                        step + 1, cycling_event, refused, match_ref,
                        0, 0, "refused repeated action", NULL, 0);
+        if (ctx->tools->predict)
+          predict_record(ctx->tools->predict, PREDICT_CYCLING, step + 1,
+                         "cycle_break",
+                         "breaking cycle via refused/escalated - will restore progress",
+                         0.4);
 
         /* ── Change 6: Cycling-triggered retrieval ─────────────
                  * The agent is stuck repeating the same action. Query
@@ -1816,6 +1832,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             ctx->tools->dedup_lens[di] == content_len) {
           dedup_step = ctx->tools->dedup_steps[di];
           is_dedup = 1;
+          if (ctx->tools->predict) {
+            char dsub[256], dclaim[512];
+            snprintf(dsub, sizeof(dsub), "step_%d", step + 1);
+            snprintf(dclaim, sizeof(dclaim),
+                     "content is duplicate of step %d (CRC32 match) - replacing with reference",
+                     dedup_step);
+            predict_record(ctx->tools->predict, PREDICT_DEDUP, step + 1,
+                           dsub, dclaim, 0.95);
+          }
           break;
         }
       }
@@ -1878,6 +1903,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
           tr.success ? LLM_MSG_IMPORTANCE_NORMAL : LLM_MSG_IMPORTANCE_TAINTED;
       chat->msgs[chat->n_msgs - 1].importance = (llm_msg_importance_t)tool_imp;
       chat->msgs[chat->n_msgs - 1].msg_type = tr.success ? LLM_MSG_TOOL_RESULT : LLM_MSG_ERROR;
+      if (ctx->tools->predict && tool_imp <= LLM_MSG_IMPORTANCE_LOW) {
+        char isub[256], iclaim[512];
+        snprintf(isub, sizeof(isub), "%s", path_s);
+        snprintf(iclaim, sizeof(iclaim),
+                 "marking %s result as LOW importance - safe to evict early",
+                 action_name);
+        predict_record(ctx->tools->predict, PREDICT_IMPORTANCE, step + 1,
+                       isub, iclaim, 0.7);
+      }
 
       /* CWL §3 [arXiv:2606.11213]: Set recoverability based on tool type.
              * Messages whose content is persisted elsewhere can be evicted more
@@ -2013,6 +2047,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         ctx->tools->pre_compact_warned = 0; /* allow re-warning after save */
       }
     }
+
+    /* Decision observability: check pending predictions against this step */
+    if (ctx->tools->predict)
+      predict_check_triggers(ctx->tools->predict, step + 1,
+                             action_name, path_s,
+                             meta_str, meta_str ? strlen(meta_str) : 0,
+                             !tr.success);
 
     /* Multi-tool detection: inject corrective hint when the model emitted
          * multiple tool calls (concatenated JSON or native tool_calls array > 1).
@@ -2193,6 +2234,14 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             injected++;
           }
         }
+        if (ctx->tools->predict && injected > 0) {
+          char eclaim[512];
+          snprintf(eclaim, sizeof(eclaim),
+                   "injected %d memories for error - will help resolve it",
+                   injected);
+          predict_record(ctx->tools->predict, PREDICT_ERROR_RECALL,
+                         step + 1, "error_recall", eclaim, 0.5);
+        }
         memory_results_free(&err_mem);
       }
     }
@@ -2329,6 +2378,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                            "references before context compaction evicts the file contents. "
                            "Use notes(op=\"append\", section=\"findings\", content=\"...\").",
                            LLM_MSG_MEMORY_HINT);
+        if (ctx->tools->predict)
+          predict_record(ctx->tools->predict, PREDICT_NUDGE, step + 1,
+                         "notes_nudge",
+                         "nudging agent to save findings - expecting notes() within 3 steps",
+                         0.5);
         /* Don't reset the counter here — it creates a
                  * gap where the model can accumulate 5 more file_reads without
                  * re-nudging even if it ignored this nudge. The counter is
@@ -2388,6 +2442,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   if (!final_result)
     react_checkpoint_remove(ctx);
 
+  /* Decision observability: finalize predictions + flush to journal + update metrics */
+  if (ctx->tools->predict) {
+    predict_finalize(ctx->tools->predict);
+    if (ctx->tools->cfg && ctx->tools->cfg->prediction_journal > 0)
+      predict_journal_flush(ctx->tools->predict, ctx->tools->journal,
+                            ctx->tools->react_loop);
+    const char *ndir = ctx->tools->journal ? ctx->tools->journal->nash_dir : NULL;
+    if (ndir) {
+      harness_metrics_t *hm = harness_metrics_load(ndir);
+      if (hm) {
+        harness_metrics_update(hm, ctx->tools->predict);
+        harness_metrics_save(hm, ndir);
+        harness_metrics_free(hm);
+      }
+    }
+  }
+
   /* Post-loop: validation scoring, reflection, promotion, pruning */
   {
     int task_succeeded = (final_result != NULL);
@@ -2422,6 +2493,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
   /* Free fire ledger (full cleanup, not just reset) */
   tool_fire_ledger_free(ctx->tools);
+
+  /* Free prediction tracker */
+  if (ctx->tools->predict) {
+    predict_tracker_free(ctx->tools->predict);
+    ctx->tools->predict = NULL;
+  }
 
   cycle_window_free(&cw);
   return final_result;

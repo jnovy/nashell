@@ -12,6 +12,7 @@
 #include "store.h"
 #include "nash_log.h"
 #include "cJSON.h"
+#include "predict.h"
 #include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
