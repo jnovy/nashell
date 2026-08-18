@@ -89,6 +89,11 @@ static void child_setup(int pipe_wr, unsigned flags, const char *workdir) {
 
   /* Scrub sensitive environment variables */
   scrub_env();
+
+  /* Reset SIGPIPE to default. nash ignores SIGPIPE (main.c) and fork()
+   * inherits the disposition - children must get default SIGPIPE so that
+   * writes to broken pipes produce SIGPIPE instead of silent EPIPE. */
+  signal(SIGPIPE, SIG_DFL);
 }
 
 /* ── kill + reap ─────────────────────────────────────────────────── */
@@ -166,7 +171,11 @@ subprocess_result_t subprocess_run(char *const argv[],
     if (pr > 0 && (pfd.revents & POLLIN)) {
       char buf[NASH_PATH_MAX];
       ssize_t n = read(pipefd[0], buf, sizeof(buf));
-      if (n <= 0) break; /* EOF or error */
+      if (n == 0) break; /* EOF */
+      if (n < 0) {
+        if (errno == EAGAIN || errno == EINTR) continue; /* transient */
+        break; /* real error */
+      }
 
       /* Enforce byte cap with partial write */
       if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
@@ -240,8 +249,25 @@ subprocess_result_t subprocess_run(char *const argv[],
     return r;
   }
 
+  /* Normal exit path (EOF or read error). Give child 2s to exit on its
+   * own, then force-kill. This prevents indefinite blocking when the
+   * child has background processes that keep it alive after pipe EOF. */
   int status;
-  waitpid(pid, &status, 0);
+  struct timespec wdl;
+  clock_gettime(CLOCK_MONOTONIC, &wdl);
+  wdl.tv_sec += 2;
+  while (1) {
+    pid_t w = waitpid(pid, &status, WNOHANG);
+    if (w > 0) break;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (now.tv_sec > wdl.tv_sec ||
+        (now.tv_sec == wdl.tv_sec && now.tv_nsec >= wdl.tv_nsec)) {
+      kill_and_reap(pid, &status);
+      break;
+    }
+    usleep(50000); /* 50ms */
+  }
   r.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
   return r;
 }
