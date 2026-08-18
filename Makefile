@@ -24,6 +24,7 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/react_context.c \
           src/react_checkpoint.c src/react_reflection.c \
           src/react_error.c src/react_eviction.c \
+          src/react_cycling.c \
           src/config.c src/toml.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
@@ -94,6 +95,7 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/react_checkpoint.c \
           src/react_reflection.c \
           src/react_error.c src/react_eviction.c \
+          src/react_cycling.c \
           src/config.c src/toml.c \
           src/provider.c src/provider_local.c \
           src/provider_openai.c src/provider_anthropic.c \
@@ -156,7 +158,8 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_compress tests/test_semantic_scoring \
            tests/test_breadcrumbs tests/test_optimizer \
            tests/test_reflection tests/test_tool_plugin \
-           tests/test_tool_plugin_dlopen
+           tests/test_tool_plugin_dlopen \
+           tests/test_cycling
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \

@@ -117,9 +117,76 @@ static inline eviction_policy_t react_eviction_policy(const config_t *cfg) {
 
 /* Maximum total recovery attempts across all error types before giving up.
  * Prevents unbounded retries from alternating error types.
- * TODO(react-recovery): Currently unused — no per-type recovery counters exist
- * in react.c to aggregate. Wire up when recovery tracking is implemented. */
+ * Wired up via cycle_window_t.total_recoveries in react.c. */
 #define REACT_MAX_TOTAL_RECOVERY 12
+
+/* Sliding-window cycle detection (arXiv 2608.00101)
+ * Tracks the last CYCLE_WINDOW_SIZE action signatures to detect
+ * repeating patterns beyond simple last-vs-current comparison.
+ * Detects: A->A (existing), A->B->A, A->B->C->A, and longer cycles. */
+#define CYCLE_WINDOW_SIZE 12  /* last N signatures to retain */
+#define CYCLE_MAX_PERIOD 4    /* max cycle length to detect (A->B->C->D->A) */
+
+typedef struct {
+  /* Circular buffer of recent action signatures */
+  char *sigs[CYCLE_WINDOW_SIZE];     /* heap-allocated sig strings */
+  char *results[CYCLE_WINDOW_SIZE];  /* cached result JSON per sig */
+  char *refs[CYCLE_WINDOW_SIZE];     /* cached store alias per sig */
+  int steps[CYCLE_WINDOW_SIZE];      /* step number for each entry */
+  int head;                          /* next write position */
+  int count;                         /* entries in buffer (<=CYCLE_WINDOW_SIZE) */
+
+  /* Cycle detection state */
+  int cycle_len;          /* detected cycle period (0 = no cycle) */
+  int cycle_occurrences;  /* how many times the cycle has repeated */
+  int cycle_first_step;   /* step where cycle was first detected */
+
+  /* Compute amplification tracking */
+  long tokens_baseline;     /* tokens on first-occurrence steps (no cycling) */
+  long tokens_total;        /* total tokens including retried steps */
+  int cycling_steps;        /* count of steps classified as cycling */
+
+  /* Total recovery counter (wires up REACT_MAX_TOTAL_RECOVERY) */
+  int total_recoveries;     /* sum across all recovery types */
+} cycle_window_t;
+
+/* Initialize a cycle window (zero-fill). */
+static inline void cycle_window_init(cycle_window_t *cw) {
+  memset(cw, 0, sizeof(*cw));
+}
+
+/* Free all heap-allocated strings in a cycle window. */
+static inline void cycle_window_free(cycle_window_t *cw) {
+  for (int i = 0; i < CYCLE_WINDOW_SIZE; i++) {
+    free(cw->sigs[i]);
+    free(cw->results[i]);
+    free(cw->refs[i]);
+  }
+  memset(cw, 0, sizeof(*cw));
+}
+
+/* Reset cycle window (e.g. after eviction invalidates cached results).
+ * Preserves amplification counters across resets. */
+static inline void cycle_window_reset(cycle_window_t *cw) {
+  long tb = cw->tokens_baseline;
+  long tt = cw->tokens_total;
+  int cs = cw->cycling_steps;
+  int tr = cw->total_recoveries;
+  cycle_window_free(cw);
+  cw->tokens_baseline = tb;
+  cw->tokens_total = tt;
+  cw->cycling_steps = cs;
+  cw->total_recoveries = tr;
+}
+
+/* Functions in react_cycling.c */
+int cycle_window_push(cycle_window_t *cw, const char *sig,
+                      const char *result_json, const char *ref, int step);
+int cycle_window_find(const cycle_window_t *cw, const char *sig,
+                      int skip_slot);
+int cycle_window_detect(cycle_window_t *cw);
+float cycle_window_amplification(const cycle_window_t *cw);
+char *cycle_window_describe(const cycle_window_t *cw);
 
 /* Maximum keep_tail — prevents unbounded tail growth from
  * interleaved user_ask responses shrinking the evictable range. */

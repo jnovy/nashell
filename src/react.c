@@ -808,14 +808,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   struct timespec task_start;
   clock_gettime(CLOCK_MONOTONIC, &task_start);
 
-  /* Cycling detection: track last action signature and its result.
-     * If the model repeats the exact same action, return the cached result
-     * instead of re-executing — no window, no threshold, just last-vs-current.
-     * Two-stage: 1st repeat → cached result, 2nd+ repeat → refuse. */
-  char *last_sig = NULL;
-  char *last_result_json = NULL;      /* cached meta_str from previous action */
-  char *last_ref = NULL;              /* cached store alias (e.g. "R0S24") */
-  int repeat_count = 0;               /* consecutive repeats of last_sig */
+  /* Cycling detection: sliding-window signature tracking (arXiv 2608.00101).
+     * Detects period-1 (A->A), period-2 (A->B->A->B), and longer cycles
+     * up to CYCLE_MAX_PERIOD. Replaces the old last-vs-current comparison. */
+  cycle_window_t cw;
+  cycle_window_init(&cw);
+  int repeat_count = 0;               /* backward-compat escalation counter */
   int consecutive_null_responses = 0; /* Track LLM failures (HTTP 500 etc.) */
 
   int total_400_errors = 0;       /* Track HTTP 400 errors (never reset) */
@@ -1434,7 +1432,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     }
 #undef SIG_HASH_FIELD
 
-    int is_repeat = (last_sig && sig && strcmp(last_sig, sig) == 0);
+    /* Sliding-window cycle detection: push into window, then check
+         * if this signature appeared anywhere in the recent history. */
+    int cw_slot = cycle_window_push(&cw, sig, NULL, NULL, step + 1);
+    int is_repeat = (cycle_window_find(&cw, sig, cw_slot) >= 0);
 
     /* Exempt device_control from cycling detection entirely.
          * The signature doesn't capture GUI-specific params (x, y,
@@ -1447,11 +1448,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (is_repeat && strcmp(action_name, "device_control") == 0)
       is_repeat = 0;
 
-    /* Cycling: two-stage response to repeated identical actions.
-         * Stage 1 (repeat_count==0): return cached result — model gets real data.
-         * Stage 2 (repeat_count>=1): refuse — tell model to stop, result is above. */
+    /* Detect cycle pattern (period and repetition count) */
+    int cycle_period = 0;
+    if (is_repeat) {
+      cycle_period = cycle_window_detect(&cw);
+      cw.cycling_steps++;
+      cw.total_recoveries++;
+    }
+
+    /* Cycling: sliding-window response to repeated actions.
+         * Stage 1 (first repeat): return cached result from window.
+         * Stage 2 (cycle confirmed): refuse + describe the cycle pattern.
+         * Stage 3 (persistent cycle): escalated refusal. */
     tool_result_t tr;
-    if (cycling_enabled && is_repeat && last_result_json) {
+    int match_slot = is_repeat ? cycle_window_find(&cw, sig, cw_slot) : -1;
+    const char *match_result = (match_slot >= 0) ? cw.results[match_slot] : NULL;
+    const char *match_ref = (match_slot >= 0) ? cw.refs[match_slot] : NULL;
+    if (cycling_enabled && is_repeat && match_result) {
       repeat_count++;
 
       react_event_t ev = {0};
@@ -1461,37 +1474,47 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
       if (repeat_count == 1) {
         /* Stage 1: return cached result */
-        ev.message = "Cycling — returning cached result from previous identical action";
+        ev.message = "Cycling - returning cached result from previous identical action";
         react_emit(on_event, userdata, &ev);
 
-        cJSON *cached = cJSON_Parse(last_result_json);
+        cJSON *cached = cJSON_Parse(match_result);
         if (!cached) cached = cJSON_CreateObject();
         cJSON_AddStringToObject(cached, "note",
-                                "cached — identical action already executed, result reused");
+                                "cached - identical action already executed, result reused");
+        if (cycle_period >= 2) {
+          char *desc = cycle_window_describe(&cw);
+          if (desc) {
+            cJSON_AddStringToObject(cached, "cycle", desc);
+            free(desc);
+          }
+        }
         tr = (tool_result_t){.meta = cached, .store_ref = NULL, .success = 1};
 
         journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                       step + 1, "cycling_cached", cached, last_ref,
-                       strlen(last_result_json), 0,
+                       step + 1, "cycling_cached", cached, match_ref,
+                       strlen(match_result), 0,
                        NULL, NULL, 0);
       } else {
-        /* Stage 2+: refuse — the result is already in context */
-        ev.message = "Cycling — refusing repeated action, result already in context";
+        /* Stage 2+: refuse - the result is already in context */
+        ev.message = "Cycling - refusing repeated action, result already in context";
         react_emit(on_event, userdata, &ev);
 
         cJSON *refused = cJSON_CreateObject();
         if (repeat_count >= 4) {
           /* Escalation: 3+ consecutive refusals -- forceful message */
-          char esc_msg[512];
+          char esc_msg[1024];
+          char *desc = cycle_window_describe(&cw);
           snprintf(esc_msg, sizeof(esc_msg),
                    "STOP. This action has been refused %d times. "
-                   "You are stuck in an infinite loop. "
+                   "You are stuck in an infinite loop%s%s. "
                    "You MUST take a DIFFERENT action immediately. Options: "
                    "(1) Use a different tool or different parameters, "
                    "(2) Analyze the results you already have, "
                    "(3) Call done() with your current findings. "
                    "DO NOT repeat this action again.",
-                   repeat_count - 1);
+                   repeat_count - 1,
+                   desc ? " - " : "", desc ? desc : "");
+          free(desc);
           cJSON_AddStringToObject(refused, "error", esc_msg);
         } else {
           cJSON_AddStringToObject(refused, "error",
@@ -1505,7 +1528,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                       ? "cycling_escalated"
                                       : "cycling_refused";
         journal_append(ctx->tools->journal, ctx->tools->react_loop,
-                       step + 1, cycling_event, refused, last_ref,
+                       step + 1, cycling_event, refused, match_ref,
                        0, 0, "refused repeated action", NULL, 0);
 
         /* ── Change 6: Cycling-triggered retrieval ─────────────
@@ -1750,24 +1773,23 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* Build tool result string for context */
     char *meta_str = cJSON_PrintUnformatted(tr.meta);
 
-    /* Cache signature + result for cycling detection on next step.
-         * Only update on fresh executions, not cached hits. */
+    /* Update the cycle window entry with actual result for future cache hits.
+         * The signature was already pushed via cycle_window_push(); now we
+         * backfill the result and ref into the slot we used. */
     if (!is_repeat) {
-      free(last_sig);
-      last_sig = sig;
-      sig = NULL; /* ownership transferred — don't free below */
-      str_replace(&last_result_json, meta_str);
-      /* Cache the store alias for journal hyperlinks on cycling hits */
-      free(last_ref);
-      last_ref = NULL;
+      int update_slot = (cw.head - 1 + CYCLE_WINDOW_SIZE) % CYCLE_WINDOW_SIZE;
+      free(cw.results[update_slot]);
+      cw.results[update_slot] = meta_str ? xstrdup(meta_str) : NULL;
+      free(cw.refs[update_slot]);
+      cw.refs[update_slot] = NULL;
       if (tr.store_ref && ctx->tools->aliases) {
         const char *alias = alias_map_reverse_lookup(
           ctx->tools->aliases, tr.store_ref);
-        if (alias) last_ref = xstrdup(alias);
+        if (alias) cw.refs[update_slot] = xstrdup(alias);
       }
       repeat_count = 0;
     }
-    free(sig); /* no-op if ownership was transferred above */
+    free(sig);
     size_t result_len = strlen(meta_str) + 128;
     char *result_msg = xmalloc(result_len);
     char _dur[32];
@@ -2267,17 +2289,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Reset cycling detection state after compaction evicts messages.
          * Without this, the model cannot legitimately re-read content that was
-         * evicted from context — the stale last_sig matches the new action and
-         * cycling_cached fires as a false positive.  The cached result IS
-         * returned (stage 1), but the "note: cached" annotation confuses the
-         * model, and a third attempt triggers cycling_refused → data loss. */
+         * evicted from context - stale signatures match new actions and
+         * cycling_cached fires as a false positive. Amplification counters
+         * are preserved across resets via cycle_window_reset(). */
     if (chat->n_msgs < pre_evict_msgs) {
-      free(last_sig);
-      last_sig = NULL;
-      free(last_result_json);
-      last_result_json = NULL;
-      free(last_ref);
-      last_ref = NULL;
+      cycle_window_reset(&cw);
       repeat_count = 0;
       /* Reset pre-compaction warning so it can fire again for the
              * next batch of file reads before the next compaction. */
@@ -2404,8 +2420,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   /* Free fire ledger (full cleanup, not just reset) */
   tool_fire_ledger_free(ctx->tools);
 
-  free(last_sig);
-  free(last_result_json);
-  free(last_ref);
+  cycle_window_free(&cw);
   return final_result;
 }
