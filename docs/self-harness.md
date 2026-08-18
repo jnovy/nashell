@@ -112,6 +112,29 @@ The self-harness playbook includes a 4th pass ("Retrieval Quality Diagnosis") th
 
 This closes the feedback loop between memory retrieval outcomes and retrieval configuration, enabling data-driven tuning of the retrieval parameters.
 
+### Decision Observability
+
+Nash tracks the accuracy of internal harness decisions across sessions, enabling data-driven evolution of the harness itself. When `prediction_tracking` is enabled (default: true), every significant harness decision is recorded as a prediction with a verifiable outcome.
+
+Eight decision categories are tracked:
+
+| Category | What is predicted | Example verification |
+|----------|-------------------|---------------------|
+| `eviction` | "Message N won't be needed again" | Was the content re-requested later? |
+| `injection` | "Memory key X will help this task" | Did the task succeed with this memory? |
+| `compression` | "BM25 kept essential content from msg N" | Was compressed content sufficient? |
+| `cycling` | "Breaking cycle will restore progress" | Did the agent make progress after intervention? |
+| `importance` | "Message N is LOW/NORMAL importance" | Was the importance assignment correct? |
+| `dedup` | "Content is duplicate of step N" | Was the deduplication accurate? |
+| `error_recall` | "Memory retrieval will help resolve error" | Did the recalled memory help fix the error? |
+| `nudge` | "Nudge will improve agent behavior" | Did the agent's behavior improve? |
+
+**Cross-session persistence:** Decision accuracy is persisted to `~/.nash/harness_metrics.json` using exponential moving averages (EMA, alpha=0.1). Each category maintains a rolling accuracy score that smooths out session-to-session variance while adapting to long-term trends.
+
+**Journal integration:** When `prediction_journal` is enabled (default: true), predictions are flushed to the session journal as `prediction` entries, making them available for post-hoc analysis and the self-harness playbook.
+
+Config: `[observability]` section in config.toml - see [Configuration](configuration.md).
+
 ## Prompt Optimization -- `--optimize`
 
 After creating a model profile, run `--optimize` to automatically tune the `system_prompt_extra` field for your specific model. This implements the Self-Harness iterative loop ([arXiv:2606.09498](https://arxiv.org/abs/2606.09498)):

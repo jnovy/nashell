@@ -4,11 +4,13 @@
 
 - [Unified Memory Architecture (v4)](#unified-memory-architecture-v4----session-centric-design)
   - [Four Tiers](#four-tiers)
+  - [TAINTED Importance Tier](#tainted-importance-tier)
   - [Data Flow](#data-flow)
   - [Knowledge Formation](#knowledge-formation)
 - [Persistent Memory System](#persistent-memory-system)
   - [Hybrid Scoring](#hybrid-scoring----semantic--substring--bayesian-validation)
   - [Superseded-Entry Demotion](#superseded-entry-demotion)
+  - [Typed Memory Edges](#typed-memory-edges)
   - [Soft Temporal Scoring](#soft-temporal-scoring)
   - [Memory Index](#memory-index)
   - [Bayesian Validation Score](#bayesian-validation-score)
@@ -69,6 +71,27 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 ```
 
 Data moves **down** (L1->L4) through explicit agent action or natural session lifecycle. Data moves **up** (L4/L3->L1) through recall and injection. There is no automatic promotion pipeline.
+
+### TAINTED Importance Tier
+
+Within the L1 context window, messages are assigned an importance level that influences eviction order. The TAINTED tier (importance = -1) sits below all other tiers and marks messages for aggressive eviction:
+
+| Tier | Value | Eviction Priority |
+|------|-------|-------------------|
+| TAINTED | -1 | Evicted first (before LOW) |
+| LOW | 0 | Evicted early |
+| NORMAL | 1 | Standard eviction order |
+| HIGH | 2 | Evicted last |
+
+Messages automatically receive TAINTED importance when:
+
+- A tool call fails (the tool result message)
+- The assistant reasoning that led to a failed tool call (the preceding assistant message)
+- A parse-error correction is applied (garbled tool JSON repaired by the harness)
+
+During eviction, TAINTED messages receive a base score of -100, guaranteeing they are evicted before any other content. Eviction breadcrumbs for TAINTED messages are prefixed with `[FAILED]` so the agent can distinguish failed-state summaries from normal eviction summaries.
+
+Grounded in ACID-Agent [arXiv 2608.13900] - failed state isolation prevents error context from polluting the working context window.
 
 ### Data Flow
 
@@ -184,6 +207,28 @@ if entry.superseded_at > 0 AND superseded_demotion < 1.0:
 The superseded entry retains its full content and history -- it is demoted in ranking, not removed. Set `superseded_demotion = 1.0` to disable demotion entirely.
 
 Config: `superseded_demotion` in `[limits]` section (also available as per-profile and workspace `[memory]` override).
+
+### Typed Memory Edges
+
+Memory entries reference each other via `refs[]` arrays. Each reference now carries a **typed edge** that describes the relationship between the two entries. Edge types influence retrieval scoring during the [Associative Graph Walk](#associative-graph-walk):
+
+| Edge Type | Value | Boost Weight | Description |
+|-----------|-------|-------------|-------------|
+| `RELATES` | 0 | +0.3 | General association (default for legacy refs) |
+| `SUPERSEDES` | 1 | 0.0 | This entry replaces the referenced entry |
+| `CONTRADICTS` | 2 | -0.2 | This entry conflicts with the referenced entry |
+| `UPDATES` | 3 | +0.5 | This entry refines or extends the referenced entry |
+| `DEPENDS` | 4 | +0.4 | This entry requires the referenced entry |
+
+Boost weights are applied during associative graph walk: when a recalled memory has a ref with a positive boost, the referenced entry gets a relevance bonus and is more likely to be injected. Negative boosts (CONTRADICTS) suppress injection of conflicting content.
+
+Edges are created automatically in three cases:
+
+1. **`supersedes` parameter** on `memory_store` - creates a SUPERSEDES edge from the new entry to the old one, and triggers [superseded-entry demotion](#superseded-entry-demotion) on the old entry
+2. **Contradiction detection** - when `memory_store` detects a potential conflict with an existing entry, a CONTRADICTS edge is created automatically
+3. **Dreaming consolidation** - the SYNTHESIZE pass creates RELATES edges between related memories
+
+Backward compatible: missing or short `ref_types` arrays default to RELATES (0) for all refs.
 
 ### Soft Temporal Scoring
 
@@ -325,7 +370,7 @@ Config: `episodic_recall=true`, `episodic_max_results=2`, `episodic_min_score=0.
 
 After semantic recall, nash follows `refs[]` links on recalled memories one level deep. When a recalled memory references other memories via its `refs` array, those referenced entries are looked up via `memory_find()` and injected as `[ASSOCIATED MEMORIES]` if they pass the relevance threshold.
 
-The `refs[]` infrastructure has existed since the dreaming/consolidation system was implemented (populated by the SYNTHESIZE pass), but refs were previously only used for a +0.3 score boost during recall. This change actually injects the referenced content, implementing depth-1 associative navigation.
+Each ref carries a [typed edge](#typed-memory-edges) that determines its boost weight during the walk. UPDATES (+0.5) and DEPENDS (+0.4) edges pull in foundation content aggressively, RELATES (+0.3) provides a moderate boost, SUPERSEDES (0.0) does not boost replaced content, and CONTRADICTS (-0.2) actively suppresses conflicting entries.
 
 Inspired by [MRAgent](https://arxiv.org/abs/2606.06036) (ICML 2026 -- graph memory with iterative exploration, +23% on LoCoMo/LongMemEval) and [MemCog](https://arxiv.org/abs/2605.28046) (navigable memory store with associative link graphs).
 

@@ -114,7 +114,14 @@ context_eviction_pct = 70                 # evict when context > 70% full
 [search]
 engine = "searxng"                        # SearXNG (auto-started via podman/docker)
 # searxng_url = "http://localhost:8080"   # custom SearXNG instance
+
+[observability]
+# prediction_tracking = true              # enable decision prediction tracking
+# prediction_journal = true               # flush predictions to journal as entries
+# prediction_verbose = false              # verbose prediction logging
 ```
+
+The `[observability]` section controls decision prediction tracking for harness evolution. See [Decision Observability](self-harness.md#decision-observability) for details. All three options default to the values shown above. Setting `prediction_tracking = false` disables all prediction infrastructure with zero overhead (NULL-check guard).
 
 ---
 

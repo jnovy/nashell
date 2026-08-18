@@ -41,6 +41,8 @@ Nash provides a full ncurses-based TUI with:
 | `/continue` | Resume from checkpoint with the original query |
 | `quit` / `exit` | Exit nash |
 
+Unrecognized slash commands (e.g., `/foo`) are rejected with an error displayed in the status bar ("Unknown command: /foo") instead of being silently sent to the LLM as a chat message.
+
 ## Tool Management (`/tool`)
 
 The `/tool` command controls which tools are available to the agent during a
