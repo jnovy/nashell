@@ -144,6 +144,18 @@ typedef struct {
     int count;       /* total modifications to this file */
   } modified_files[INFORM_MAX_FILES];
   int n_modified_files;
+  /* Edit transaction: tracks save-points for rollback.
+   * Auto-opens on first file_edit/file_write, cleared on rollback or
+   * at react loop end. Only the FIRST pre-edit hash per path is kept
+   * so rollback restores to the true original state. */
+#define TXN_MAX_EDITS 64
+  struct {
+    char *path;      /* file path (heap-allocated) */
+    char *pre_hash;  /* content-addressed store hash before edit (NULL = new file) */
+    int step;        /* step number when first edit occurred */
+    int is_new_file; /* 1 = file_write created this (rollback = delete) */
+  } txn_edits[TXN_MAX_EDITS];
+  int txn_n_edits;   /* number of entries in txn_edits[] */
 } tool_ctx_t;
 
 /* Track a recalled memory key for post-task validation scoring */
@@ -152,6 +164,15 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
 /* Lightweight INFORM: record a file modification for session state tracking.
  * Call after successful file_edit or file_write. */
 void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step);
+
+/* Edit transaction: record a save-point before modifying a file.
+ * Only the FIRST pre-edit hash per path is kept (dedup).
+ * is_new_file: 1 = file did not exist before (rollback = delete). */
+void tool_txn_record(tool_ctx_t *ctx, const char *path,
+                     const char *pre_hash, int is_new_file);
+
+/* Free all txn_edits entries (called at react loop end or after rollback). */
+void tool_txn_clear(tool_ctx_t *ctx);
 
 /* Format the INFORM block for injection into the system prompt tail.
  * Returns a heap-allocated string, or NULL if no files were modified.

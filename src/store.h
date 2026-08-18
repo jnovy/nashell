@@ -25,6 +25,10 @@ char *store_save(store_t *s, const char *content);
  * Returns .store/<hash> */
 char *store_resolve(store_t *s, const char *hash);
 
+/* Load content from store by hash. Returns heap-allocated content string,
+ * or NULL if hash not found. Caller must free. */
+char *store_load(store_t *s, const char *hash);
+
 /* Compute SHA256 hex string (caller must free, 64 hex chars + NUL) */
 char *sha256_hex(const char *data, size_t len);
 

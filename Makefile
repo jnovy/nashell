@@ -159,7 +159,7 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_breadcrumbs tests/test_optimizer \
            tests/test_reflection tests/test_tool_plugin \
            tests/test_tool_plugin_dlopen \
-           tests/test_cycling
+           tests/test_cycling tests/test_rollback
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \

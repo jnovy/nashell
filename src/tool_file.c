@@ -304,6 +304,25 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
     }
   }
 
+  /* Record save-point for rollback before writing */
+  {
+    struct stat pre_st;
+    if (stat(path, &pre_st) == 0 && S_ISREG(pre_st.st_mode)) {
+      /* File exists - save its content for potential rollback */
+      size_t pre_len = 0;
+      char *pre_content = slurp_file(path, &pre_len);
+      if (pre_content) {
+        char *pre_hash = store_save(ctx->store, pre_content);
+        tool_txn_record(ctx, path, pre_hash, 0);
+        free(pre_hash);
+        free(pre_content);
+      }
+    } else {
+      /* New file - rollback means delete */
+      tool_txn_record(ctx, path, NULL, 1);
+    }
+  }
+
   size_t len = strlen(content);
   if (write_file(path, content, len) != 0) {
     char msg[512];
@@ -433,6 +452,9 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     }
     free(verify);
   }
+
+  /* Record save-point for rollback (only the first edit per path is kept) */
+  tool_txn_record(ctx, path, pre_hash, 0);
 
   /* Store post-edit content */
   char *post_hash = store_save(ctx->store, result);

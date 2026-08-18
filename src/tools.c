@@ -378,6 +378,32 @@ void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step) {
   ctx->n_modified_files++;
 }
 
+void tool_txn_record(tool_ctx_t *ctx, const char *path,
+                     const char *pre_hash, int is_new_file) {
+  if (!ctx || !path) return;
+  if (ctx->txn_n_edits >= TXN_MAX_EDITS) return; /* silent cap */
+  /* Dedup: only keep the FIRST pre-edit hash per path so rollback
+   * restores to the true original state, not an intermediate. */
+  for (int i = 0; i < ctx->txn_n_edits; i++) {
+    if (strcmp(ctx->txn_edits[i].path, path) == 0)
+      return; /* already tracked */
+  }
+  ctx->txn_edits[ctx->txn_n_edits].path = xstrdup(path);
+  ctx->txn_edits[ctx->txn_n_edits].pre_hash = pre_hash ? xstrdup(pre_hash) : NULL;
+  ctx->txn_edits[ctx->txn_n_edits].step = ctx->step;
+  ctx->txn_edits[ctx->txn_n_edits].is_new_file = is_new_file;
+  ctx->txn_n_edits++;
+}
+
+void tool_txn_clear(tool_ctx_t *ctx) {
+  if (!ctx) return;
+  for (int i = 0; i < ctx->txn_n_edits; i++) {
+    free(ctx->txn_edits[i].path);
+    free(ctx->txn_edits[i].pre_hash);
+  }
+  ctx->txn_n_edits = 0;
+}
+
 char *tool_format_inform_block(tool_ctx_t *ctx) {
   if (!ctx || ctx->n_modified_files == 0) return NULL;
   str_t buf = str_new(256);
@@ -586,6 +612,31 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "shell_exec", params, alias,
                out.len, out.data ? count_lines(out.data) : 0, exit_code == 0 ? NULL : "non-zero exit", NULL);
+
+  /* Build-failure hint: if the command failed and we have pending edits,
+   * nudge the agent about rollback availability. Heuristic: command starts
+   * with make, gcc, g++, cargo, go build, npm run, cmake --build, meson. */
+  if (exit_code != 0 && ctx->txn_n_edits > 0) {
+    const char *c = command;
+    while (*c == ' ' || *c == '\t') c++;
+    if (strncmp(c, "make", 4) == 0 ||
+        strncmp(c, "gcc", 3) == 0 ||
+        strncmp(c, "g++", 3) == 0 ||
+        strncmp(c, "cargo build", 11) == 0 ||
+        strncmp(c, "cargo test", 10) == 0 ||
+        strncmp(c, "go build", 8) == 0 ||
+        strncmp(c, "npm run build", 13) == 0 ||
+        strncmp(c, "cmake --build", 13) == 0 ||
+        strncmp(c, "meson compile", 13) == 0) {
+      char hint[256];
+      snprintf(hint, sizeof(hint),
+               "Build failed. You have %d pending file edit(s). "
+               "Use rollback() to revert all changes and try a different "
+               "approach, or fix the errors and retry.",
+               ctx->txn_n_edits);
+      cJSON_AddStringToObject(meta, "rollback_hint", hint);
+    }
+  }
 
   char *ref_copy = xstrdup(alias);
   free(alias);
@@ -821,6 +872,97 @@ static const tool_param_t user_ask_params[] = {
   TOOL_PARAM("question", "string", "Question to ask the user", 1),
   TOOL_PARAM_END};
 
+static const tool_param_t rollback_params[] = {
+  TOOL_PARAM("reason", "string", "Why rolling back (logged to journal)", 0),
+  TOOL_PARAM_END};
+
+/* ── Rollback tool: revert all file edits/writes in current session ── */
+
+static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
+  if (ctx->txn_n_edits == 0)
+    return tools_make_error("No edits to roll back.");
+
+  const char *reason = NULL;
+  cJSON *jreason = cJSON_GetObjectItemCaseSensitive(params, "reason");
+  if (cJSON_IsString(jreason) && jreason->valuestring[0])
+    reason = jreason->valuestring;
+
+  int restored = 0, deleted = 0, failed = 0;
+  str_t detail = str_new(256);
+
+  /* Walk in reverse order to undo most recent edits first */
+  for (int i = ctx->txn_n_edits - 1; i >= 0; i--) {
+    const char *path = ctx->txn_edits[i].path;
+    if (ctx->txn_edits[i].is_new_file) {
+      if (unlink(path) == 0) {
+        str_appendf(&detail, "  deleted %s\n", path);
+        deleted++;
+      } else {
+        str_appendf(&detail, "  FAILED to delete %s: %s\n", path, strerror(errno));
+        failed++;
+      }
+    } else {
+      char *content = store_load(ctx->store, ctx->txn_edits[i].pre_hash);
+      if (content) {
+        FILE *fp = fopen(path, "w");
+        if (fp) {
+          size_t len = strlen(content);
+          size_t written = fwrite(content, 1, len, fp);
+          fclose(fp);
+          if (written == len) {
+            str_appendf(&detail, "  restored %s (step %d)\n", path, ctx->txn_edits[i].step);
+            restored++;
+          } else {
+            str_appendf(&detail, "  FAILED partial write %s\n", path);
+            failed++;
+          }
+        } else {
+          str_appendf(&detail, "  FAILED to open %s: %s\n", path, strerror(errno));
+          failed++;
+        }
+        free(content);
+      } else {
+        str_appendf(&detail, "  FAILED to load pre-edit content for %s\n", path);
+        failed++;
+      }
+    }
+  }
+
+  /* Clear transaction state */
+  tool_txn_clear(ctx);
+
+  /* Also clear modified_files since they are now reverted */
+  for (int i = 0; i < ctx->n_modified_files; i++)
+    free(ctx->modified_files[i].path);
+  ctx->n_modified_files = 0;
+
+  /* Build result summary */
+  str_t summary = str_new(256);
+  str_appendf(&summary, "Rolled back %d file(s): %d restored, %d deleted",
+              restored + deleted, restored, deleted);
+  if (failed > 0)
+    str_appendf(&summary, ", %d failed", failed);
+  if (reason)
+    str_appendf(&summary, "\nReason: %s", reason);
+  str_appendf(&summary, "\n%s", str_cstr(&detail));
+  str_free(&detail);
+
+  cJSON *meta = cJSON_CreateObject();
+  cJSON_AddNumberToObject(meta, "restored", restored);
+  cJSON_AddNumberToObject(meta, "deleted", deleted);
+  cJSON_AddNumberToObject(meta, "failed", failed);
+  cJSON_AddStringToObject(meta, "summary", str_cstr(&summary));
+
+  /* Log to journal via tool_journal helper */
+  tools_inject_thought(ctx, params);
+  tool_journal(ctx, "rollback", params, NULL,
+               (size_t)(restored + deleted), 0,
+               failed > 0 ? "partial rollback failure" : NULL, NULL);
+
+  str_free(&summary);
+  return tools_make_result(failed == 0, meta, NULL);
+}
+
 /* ── Plugin descriptors for tools defined in this file ────────────── */
 
 static const tool_plugin_t core_plugins[] = {
@@ -860,8 +1002,17 @@ static const tool_plugin_t core_plugins[] = {
            "If request_uncertainty >= 0.5, call user_ask BEFORE proceeding with any "
            "other tool. Do NOT guess when the user's intent is unclear -- ask.",
            user_ask_params, tool_user_ask_stub),
+
+  TOOL_DEF("rollback",
+           "Revert all file edits and writes made in this session back to their "
+           "original state. Use when a sequence of edits led to build failures or "
+           "a wrong approach and you want to start over cleanly. Transaction state "
+           "is tracked automatically - every file_edit and file_write records a "
+           "save-point. Rollback restores files to their state before the FIRST "
+           "edit in this session (not intermediate states).",
+           rollback_params, tool_rollback),
 };
-TOOL_PLUGIN_REGISTER_ARRAY(core_plugins, 4)
+TOOL_PLUGIN_REGISTER_ARRAY(core_plugins, 5)
 
 /* Validate required params from the plugin's tool_param_t array, then call
  * the handler.  Returns 1 always (result written to *out). */

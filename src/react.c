@@ -2417,6 +2417,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     free(ctx->tools->modified_files[i].path);
   ctx->tools->n_modified_files = 0;
 
+  /* Free edit transaction save-points */
+  tool_txn_clear(ctx->tools);
+
   /* Free fire ledger (full cleanup, not just reset) */
   tool_fire_ledger_free(ctx->tools);
 

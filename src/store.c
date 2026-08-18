@@ -84,6 +84,40 @@ char *store_resolve(store_t *s, const char *hash) {
   return path;
 }
 
+char *store_load(store_t *s, const char *hash) {
+  if (!s || !hash) return NULL;
+  char *path = store_resolve(s, hash);
+  if (!path) return NULL;
+
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  free(path);
+  if (fd < 0) return NULL;
+
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size < 0) {
+    close(fd);
+    return NULL;
+  }
+
+  size_t sz = (size_t)st.st_size;
+  char *buf = xmalloc(sz + 1);
+  size_t off = 0;
+  while (off < sz) {
+    ssize_t n = read(fd, buf + off, sz - off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      free(buf);
+      close(fd);
+      return NULL;
+    }
+    if (n == 0) break;
+    off += (size_t)n;
+  }
+  close(fd);
+  buf[off] = '\0';
+  return buf;
+}
+
 /* ── Garbage Collection ──────────────────────────────── */
 
 #include <dirent.h>
