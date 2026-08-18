@@ -337,7 +337,7 @@ static void test_null_safety(void) {
   predict_verify(NULL, 0, PREDICT_CONFIRMED, 1);
   predict_verify_by_subject(NULL, PREDICT_EVICTION, "x", PREDICT_CONFIRMED, 1);
   predict_finalize(NULL);
-  predict_journal_flush(NULL, NULL, 0);
+  predict_journal_flush(NULL, NULL);
   predict_check_triggers(NULL, 1, "foo", NULL, NULL, 0, 0);
   predict_store_evicted_crc(NULL, 0, 0, 0);
   predict_store_injected_key(NULL, "x");
