@@ -2446,8 +2446,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   if (ctx->tools->predict) {
     predict_finalize(ctx->tools->predict);
     if (ctx->tools->cfg && ctx->tools->cfg->prediction_journal > 0)
-      predict_journal_flush(ctx->tools->predict, ctx->tools->journal,
-                            ctx->tools->react_loop);
+      predict_journal_flush(ctx->tools->predict, ctx->tools);
     const char *ndir = ctx->tools->journal ? ctx->tools->journal->nash_dir : NULL;
     if (ndir) {
       harness_metrics_t *hm = harness_metrics_load(ndir);

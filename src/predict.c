@@ -4,6 +4,7 @@
  * See predict.h for design rationale. */
 
 #include "predict.h"
+#include "tools.h"
 #include "journal.h"
 #include "compress.h"
 #include "cJSON.h"
@@ -191,9 +192,12 @@ void predict_finalize(predict_tracker_t *pt)
 
 /* ── Journal flush ── */
 
-void predict_journal_flush(predict_tracker_t *pt, journal_t *j, int react_loop)
+void predict_journal_flush(predict_tracker_t *pt, void *tool_ctx_ptr)
 {
-    if (!pt || !j) return;
+    tool_ctx_t *ctx = (tool_ctx_t *)tool_ctx_ptr;
+    if (!pt || !ctx || !ctx->journal) return;
+    journal_t *j = ctx->journal;
+    int react_loop = ctx->react_loop;
 
     for (int i = 0; i < pt->count; i++) {
         int idx = (pt->head - pt->count + i + PREDICT_RING_SIZE) % PREDICT_RING_SIZE;
@@ -209,8 +213,23 @@ void predict_journal_flush(predict_tracker_t *pt, journal_t *j, int react_loop)
         if (p->verified_step >= 0)
             cJSON_AddNumberToObject(params, "verified_step", p->verified_step);
 
+        /* Store prediction content to get a clickable ref in reactRX.md */
+        char *ref = NULL;
+        if (ctx->store) {
+            char *content = cJSON_Print(params);
+            if (content) {
+                char *hash = store_save(ctx->store, content);
+                if (hash) {
+                    ref = tool_register_alias(ctx, hash);
+                    free(hash);
+                }
+                free(content);
+            }
+        }
+
         journal_append(j, react_loop, p->step, "prediction", params,
-                       NULL, 0, 0, NULL, NULL, p->ts);
+                       ref, 0, 0, NULL, NULL, p->ts);
+        free(ref);
         cJSON_Delete(params);
     }
 
@@ -229,8 +248,24 @@ void predict_journal_flush(predict_tracker_t *pt, journal_t *j, int react_loop)
                                     (double)pt->confirmed[t] / verifiable);
         cJSON_AddItemToObject(summary, predict_type_name((predict_type_t)t), entry);
     }
+
+    /* Store summary content to get a clickable ref in reactRX.md */
+    char *sref = NULL;
+    if (ctx->store) {
+        char *content = cJSON_Print(summary);
+        if (content) {
+            char *hash = store_save(ctx->store, content);
+            if (hash) {
+                sref = tool_register_alias(ctx, hash);
+                free(hash);
+            }
+            free(content);
+        }
+    }
+
     journal_append(j, react_loop, -1, "prediction_summary", summary,
-                   NULL, 0, 0, NULL, NULL, now_ts());
+                   sref, 0, 0, NULL, NULL, now_ts());
+    free(sref);
     cJSON_Delete(summary);
 }
 

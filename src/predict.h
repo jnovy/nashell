@@ -97,8 +97,8 @@ void predict_verify_by_subject(predict_tracker_t *pt, predict_type_t type,
 /* Expire all pending predictions (call at session end). */
 void predict_finalize(predict_tracker_t *pt);
 
-/* Emit predictions to journal. */
-void predict_journal_flush(predict_tracker_t *pt, journal_t *j, int react_loop);
+/* Emit predictions to journal with store-backed refs for clickable links. */
+void predict_journal_flush(predict_tracker_t *pt, void *tool_ctx);
 
 /* Real-time verification: check pending predictions after each tool exec. */
 void predict_check_triggers(predict_tracker_t *pt, int step,
