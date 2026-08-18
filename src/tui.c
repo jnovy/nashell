@@ -740,6 +740,12 @@ static void render_ncurses_row(WINDOW *win, int row, int cols,
   if (content && content[0]) {
     mvwaddnstr(win, row, 0, content, -1);
   }
+  /* Force-apply color pair to the entire row.  mvwhline + mvwaddnstr
+   * can leave gaps when UTF-8 wide characters cause ncurses' internal
+   * cursor tracking to diverge from the terminal's actual column position.
+   * mvwchgat changes only attributes (not characters), so it reliably
+   * paints the background color across all cols regardless of content. */
+  mvwchgat(win, row, 0, cols, A_NORMAL, (short)pair_num, NULL);
   wattroff(win, attr);
 }
 
