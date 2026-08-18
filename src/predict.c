@@ -9,6 +9,7 @@
 #include "compress.h"
 #include "cJSON.h"
 #include "nash_log.h"
+#include "str.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -199,41 +200,23 @@ void predict_journal_flush(predict_tracker_t *pt, void *tool_ctx_ptr)
     journal_t *j = ctx->journal;
     int react_loop = ctx->react_loop;
 
+    /* Build combined text with all individual prediction details */
+    str_t details = str_new(1024);
     for (int i = 0; i < pt->count; i++) {
         int idx = (pt->head - pt->count + i + PREDICT_RING_SIZE) % PREDICT_RING_SIZE;
         prediction_t *p = &pt->ring[idx];
-
-        cJSON *params = cJSON_CreateObject();
-        cJSON_AddNumberToObject(params, "decision_id", p->decision_id);
-        cJSON_AddStringToObject(params, "type", predict_type_name(p->type));
-        cJSON_AddStringToObject(params, "subject", p->subject);
-        cJSON_AddStringToObject(params, "claim", p->claim);
-        cJSON_AddNumberToObject(params, "confidence", p->confidence);
-        cJSON_AddStringToObject(params, "outcome", predict_outcome_name(p->outcome));
+        str_appendf(&details, "#%d %s [%s] step=%d conf=%.0f%% %s",
+                    p->decision_id, predict_type_name(p->type),
+                    predict_outcome_name(p->outcome), p->step,
+                    p->confidence * 100.0, p->subject);
         if (p->verified_step >= 0)
-            cJSON_AddNumberToObject(params, "verified_step", p->verified_step);
-
-        /* Store prediction content to get a clickable ref in reactRX.md */
-        char *ref = NULL;
-        if (ctx->store) {
-            char *content = cJSON_Print(params);
-            if (content) {
-                char *hash = store_save(ctx->store, content);
-                if (hash) {
-                    ref = tool_register_alias(ctx, hash);
-                    free(hash);
-                }
-                free(content);
-            }
-        }
-
-        journal_append(j, react_loop, p->step, "prediction", params,
-                       ref, 0, 0, NULL, NULL, p->ts);
-        free(ref);
-        cJSON_Delete(params);
+            str_appendf(&details, " (verified@step %d)", p->verified_step);
+        str_append_cstr(&details, "\n");
+        if (p->claim[0])
+            str_appendf(&details, "  %s\n", p->claim);
     }
 
-    /* Flush aggregate summary */
+    /* Flush single aggregate summary with combined details as ref */
     cJSON *summary = cJSON_CreateObject();
     for (int t = 0; t < PREDICT_COUNT; t++) {
         if (pt->totals[t] == 0) continue;
@@ -249,19 +232,27 @@ void predict_journal_flush(predict_tracker_t *pt, void *tool_ctx_ptr)
         cJSON_AddItemToObject(summary, predict_type_name((predict_type_t)t), entry);
     }
 
-    /* Store summary content to get a clickable ref in reactRX.md */
+    /* Store combined details + summary JSON as one clickable ref */
     char *sref = NULL;
     if (ctx->store) {
-        char *content = cJSON_Print(summary);
-        if (content) {
-            char *hash = store_save(ctx->store, content);
-            if (hash) {
-                sref = tool_register_alias(ctx, hash);
-                free(hash);
-            }
-            free(content);
+        str_t blob = str_new(details.len + 512);
+        str_append_cstr(&blob, "# Prediction Details\n\n");
+        str_append(&blob, details.data, details.len);
+        str_append_cstr(&blob, "\n# Aggregate Summary\n\n");
+        char *sjson = cJSON_Print(summary);
+        if (sjson) {
+            str_append_cstr(&blob, sjson);
+            str_append_cstr(&blob, "\n");
+            free(sjson);
         }
+        char *hash = store_save(ctx->store, blob.data);
+        if (hash) {
+            sref = tool_register_alias(ctx, hash);
+            free(hash);
+        }
+        str_free(&blob);
     }
+    str_free(&details);
 
     journal_append(j, react_loop, -1, "prediction_summary", summary,
                    sref, 0, 0, NULL, NULL, now_ts());

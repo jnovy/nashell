@@ -196,22 +196,6 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     if (err_s) return err_s;
     return json_str_or(params, "server_message", "LLM server error");
   }
-  /* Prediction entries: show type + outcome */
-  if (strcmp(tool, "prediction") == 0) {
-    static char pred_desc[256];
-    const char *type_s = json_str_or(params, "type", "?");
-    const char *outcome_s = json_str_or(params, "outcome", "?");
-    const char *subject_s = json_str(params, "subject");
-    if (subject_s) {
-      int slen = (int)strlen(subject_s);
-      if (slen > 60) slen = 60;
-      snprintf(pred_desc, sizeof(pred_desc), "%s [%s] %.*s",
-               type_s, outcome_s, slen, subject_s);
-    } else {
-      snprintf(pred_desc, sizeof(pred_desc), "%s [%s]", type_s, outcome_s);
-    }
-    return pred_desc;
-  }
   /* Prediction summary: show totals */
   if (strcmp(tool, "prediction_summary") == 0) {
     static char psum_desc[128];
