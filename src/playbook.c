@@ -1183,6 +1183,13 @@ void *playbook_worker(void *arg) {
                      "Try a different approach.]\n\n%s",
                      prompt);
           }
+          /* Increment loop number so the retry gets its own journal
+           * namespace.  Without this, journal_check_required_tools sees
+           * tool calls from the original failed run, giving false passes. */
+          pass_react_loop++;
+          pass_tools.react_loop = pass_react_loop;
+          ev_ctx.react_loop = pass_react_loop;
+
           result = react_run(&pass_react, retry_prompt, pb_event_cb, &ev_ctx);
           free(retry_prompt);
           pass_failed = (result == NULL);
