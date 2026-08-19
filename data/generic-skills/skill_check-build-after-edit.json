@@ -1,0 +1,16 @@
+{
+  "key": "skill:check-build-after-edit",
+  "value": "## When to apply\nAfter editing any source file in a compiled language project.\n\n## Steps\n1. After each file_edit, run the project's build command (make, cargo build, go build, etc.)\n2. Read the build output to check for errors and warnings\n3. If the build fails, fix the error immediately before making more changes\n4. Treat warnings as potential bugs - investigate before dismissing\n\n## Why this matters\nCompilation catches syntax errors, type mismatches, and missing dependencies instantly. Deferring the build means accumulating errors that interact and become harder to diagnose. A clean build after each edit keeps the codebase in a known-good state.\n\n## Pitfalls\n- Making 5+ edits across files before checking if any of them compile\n- Ignoring warnings that later become errors in different build configurations\n- Not reading the full build output when there are multiple errors",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "After editing source files, run the build to verify compilation before proceeding.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

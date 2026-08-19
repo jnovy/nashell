@@ -1,0 +1,16 @@
+{
+  "key": "skill:read-errors-fully",
+  "value": "## When to apply\nWhenever a command, build, or test fails.\n\n## Steps\n1. Read the COMPLETE error output, not just the first or last few lines\n2. Identify the root cause error - often buried in the middle of cascading failures\n3. Distinguish between the primary error and secondary errors caused by it\n4. Fix the root cause first, then re-run to see if secondary errors resolve\n\n## Why this matters\nThe most visible error (usually the last line) is often a symptom, not the cause. A missing header causes dozens of undefined symbol errors - fixing the header fixes all of them. Reading only the tail wastes effort on symptoms.\n\n## Pitfalls\n- Reading only the last error and attempting to fix it directly\n- Fixing multiple errors at once when they may share a single root cause\n- Assuming you know the error without reading the output because a similar command failed before",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "When a command fails, read the COMPLETE error output before attempting fixes.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

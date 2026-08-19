@@ -1,0 +1,16 @@
+{
+  "key": "skill:predict-before-acting",
+  "value": "## When to apply\nBefore every tool call, especially file reads, searches, and shell commands.\n\n## Steps\n1. Before invoking a tool, mentally predict what it will return\n2. Ask: will this result actually help me achieve my goal?\n3. If the predicted result won't be useful, refine the action or choose a different tool\n4. After the tool returns, compare the actual result to your prediction - surprises indicate gaps in understanding\n\n## Why this matters\nSpeculative tool calls waste context space and time. Each unnecessary call pushes useful information further from the context window. Predicting outcomes forces you to think about what you actually need, leading to more targeted actions.\n\n## Pitfalls\n- Calling a tool just to see what happens without a clear hypothesis\n- Reading a file you already read earlier in the session without checking notes first\n- Running a search with a pattern you suspect won't match",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Before each tool call, predict what it will return and refine the approach if needed.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

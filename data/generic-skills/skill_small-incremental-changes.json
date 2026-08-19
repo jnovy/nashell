@@ -1,0 +1,16 @@
+{
+  "key": "skill:small-incremental-changes",
+  "value": "## When to apply\nWhen implementing any feature, fix, or refactor that touches multiple files or locations.\n\n## Steps\n1. Break the work into the smallest independently testable changes\n2. Make one change at a time - edit one file or one function\n3. Verify each change works (compiles, tests pass) before making the next\n4. If a change fails, you know exactly which edit caused the problem\n\n## Why this matters\nLarge multi-file changes without intermediate verification create a debugging nightmare. When something breaks, any of the N changes could be the cause. Small incremental changes give you N independent verification points, each trivial to debug.\n\n## Pitfalls\n- Editing 5 files to implement a feature before testing any of them\n- Thinking you can hold all the interdependencies in your head without verification\n- Skipping the build step for changes that seem obviously correct",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Make small, testable changes one at a time and verify each before making the next.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

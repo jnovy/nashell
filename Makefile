@@ -164,7 +164,7 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_reflection tests/test_tool_plugin \
            tests/test_tool_plugin_dlopen \
            tests/test_cycling tests/test_rollback \
-           tests/test_predict tests/test_harness_metrics
+           tests/test_predict tests/test_harness_metrics \\\n           tests/test_workspace
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
@@ -201,4 +201,19 @@ dist:
 fmt:
 	git ls-files -z '*.c' '*.h' | xargs -0 clang-format -i
 
-.PHONY: all clean test dist fmt
+# Install nash binary, library, and data files
+DESTDIR ?=
+PREFIX  ?= /usr/local
+install: all
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/
+	install -d $(DESTDIR)$(PREFIX)/lib
+	install -m 755 $(LIB_REAL) $(DESTDIR)$(PREFIX)/lib/
+	ln -sf $(LIB_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_SONAME)
+	ln -sf $(LIB_REAL) $(DESTDIR)$(PREFIX)/lib/$(LIB_LINKER)
+	install -d $(DESTDIR)$(NASH_DATADIR)/generic-skills
+	install -m 644 data/generic-skills/*.json $(DESTDIR)$(NASH_DATADIR)/generic-skills/
+	install -d $(DESTDIR)$(NASH_DATADIR)/playbooks
+	install -m 644 playbooks/*.yaml $(DESTDIR)$(NASH_DATADIR)/playbooks/
+
+.PHONY: all clean test dist fmt install

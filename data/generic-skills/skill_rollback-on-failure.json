@@ -1,0 +1,16 @@
+{
+  "key": "skill:rollback-on-failure",
+  "value": "## When to apply\nWhen a sequence of edits has led to build failures, test failures, or a fundamentally wrong approach.\n\n## Steps\n1. Recognize when you're in a bad state: multiple failed fix attempts, cascading errors, or wrong architectural approach\n2. Use rollback to restore all files to their pre-edit state rather than manually undoing changes\n3. After rollback, re-read the relevant code to understand the clean starting state\n4. Plan the corrected approach before making any new edits\n\n## Why this matters\nManually undoing a chain of edits is error-prone - you may miss a change or introduce new errors. Rollback atomically restores the known-good state. Starting fresh with a better plan is faster than debugging a broken chain of patches.\n\n## Pitfalls\n- Spending 10+ minutes trying to manually fix cascading errors instead of rolling back\n- Rolling back without understanding WHY the approach failed, leading to the same mistake\n- Not saving your findings/plan to scratchpad before rollback (rollback only affects files, not notes)",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "When edits lead to failures, use rollback to restore files rather than manually undoing each change.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

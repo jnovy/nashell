@@ -1,0 +1,16 @@
+{
+  "key": "skill:save-findings-incrementally",
+  "value": "## When to apply\nDuring any task that involves reading 3 or more files.\n\n## Steps\n1. After every 3-5 file reads, write key findings to scratchpad/notes\n2. Include file paths, line numbers, and exact data - not vague summaries\n3. Rewrite scratchpad sections to keep them current rather than only appending\n4. Before context gets large, consolidate what you know into structured notes\n\n## Why this matters\nContext compaction can evict file contents and tool outputs at any time. If findings are only in evicted context, you must re-read files - wasting tool calls and risking different content. Notes survive compaction.\n\n## Pitfalls\n- Waiting until the end to save all findings at once - context may compact first\n- Saving vague summaries instead of concrete data (paths, numbers, exact text)\n- Only appending to notes without removing obsolete information",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Save findings to scratchpad/notes every 3-5 file reads, not in one batch at the end.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

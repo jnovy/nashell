@@ -1,5 +1,5 @@
 name: dream
-description: "Memory consolidation - 4-pass cognitive maintenance"
+description: "Memory consolidation - 5-pass cognitive maintenance"
 version: 1
 
 session_mode: per-pass
@@ -145,9 +145,42 @@ passes:
       - Do NOT create fact: entries -- use scratchpad for working state
 
       WHEN DONE:
-      - Compose a FULL summary of ALL changes across ALL 4 passes
-        (read the scratchpad for passes 1-3)
-      - Run: shell_exec "cd {{memory_dir}} && git add -A && git commit -m
-        'Dream consolidation (4-pass)\n\n<your full summary here>
+      - Log all generalization and cross-linking changes to the scratchpad
+      - Call done with a summary of what was generalized and linked
+
+  - label: "Promote to global"
+    required_tools: [shell_exec, file_read, memory_store, memory_search]
+    on_error: continue
+    prompt: |
+      You are performing SKILL PROMOTION for the memory store at: {{memory_dir}}
+
+      Read the scratchpad for context from previous passes.
+
+      TASK: Identify workspace-local skills that should be promoted to global
+      scope. A skill is a promotion candidate if ALL of these hold:
+      1. It has recall_hits >= 3 (proven useful)
+      2. Its validation score (hits / (hits + misses)) > 0.65 (reliable)
+      3. It is NOT project-specific (does not reference specific file paths,
+         project names, or narrow tooling)
+
+      For each candidate:
+      1. Read the full entry via file_read on the JSON file
+      2. Evaluate whether the skill is genuinely generic (useful across projects)
+      3. If yes, call memory_store with global=true to create a global copy
+      4. Log the decision (promoted or rejected with reason) to scratchpad
+
+      CONSTRAINTS:
+      - Be conservative - only promote truly generic skills
+      - Never promote entries that reference specific repos, file paths, or
+        project-specific APIs
+      - Maximum 5 promotions per dream cycle
+      - Never touch pinned memories
+      - If no candidates qualify, just log that and move on
+
+      WHEN DONE:
+      - Compose a FULL summary of ALL changes across ALL 5 passes
+        (read the scratchpad for passes 1-4)
+      - Run: shell_exec "cd {{memory_dir}} && git add -A && git commit -s -m
+        'Dream consolidation (5-pass)\n\n<your full summary here>
         \n\nConsolidated-by: {{model}}'"
       - Call done with the SAME summary text

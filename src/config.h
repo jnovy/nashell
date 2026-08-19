@@ -311,6 +311,10 @@ typedef struct {
   /* Associative graph walk — follow refs[] of recalled memories. */
   int associative_depth; /* ref-follow depth (0=disabled, default 1) */
 
+  /* Sparsity-aware global skill boost - when workspace has few local skills,
+   * expand injection cap so global skills fill the gap. */
+  int generic_skill_boost; /* enable sparsity boost (default 1) */
+
   /* Repo map — structural codebase context injection.
      * Aider-style repo map: symbol extraction, PageRank, elided rendering. */
   int repo_map;           /* enable repo map injection (default 1) */

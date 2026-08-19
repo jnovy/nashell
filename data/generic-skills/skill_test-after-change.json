@@ -1,0 +1,16 @@
+{
+  "key": "skill:test-after-change",
+  "value": "## When to apply\nAfter modifying any source code file.\n\n## Steps\n1. After each code change, run the build to verify compilation\n2. Run the relevant test suite (unit tests, integration tests) for the modified code\n3. Read test output fully - check for failures, not just the exit code\n4. Fix any failures before moving to the next change\n\n## Why this matters\nCatching errors immediately after the change that introduced them makes debugging trivial. If you batch multiple changes before testing, any failure could come from any change, multiplying debugging effort.\n\n## Pitfalls\n- Making several changes across files before running any tests\n- Checking only the exit code without reading test output for warnings or skipped tests\n- Assuming a change is correct because it compiles - compilation does not verify logic",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "After modifying code, always build and run relevant tests before moving to the next change.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

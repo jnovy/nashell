@@ -1,0 +1,16 @@
+{
+  "key": "skill:use-grep-before-reading",
+  "value": "## When to apply\nWhen looking for specific code, definitions, or patterns in a codebase.\n\n## Steps\n1. Use grep_search with a targeted pattern to find relevant file locations\n2. Note the file paths and line numbers from grep results\n3. Use file_read with start_line/end_line to read only the relevant sections\n4. Avoid reading entire files unless you need a holistic understanding\n\n## Why this matters\nLarge codebases have thousands of lines across hundreds of files. Reading files sequentially is O(n) in total lines. Grep finds exact locations in one call, reducing file reads to O(matches). This saves context space and tool calls.\n\n## Pitfalls\n- Reading an entire 2000-line file to find one function definition\n- Using overly broad grep patterns that return hundreds of matches\n- Forgetting to use glob_search first when you don't know which files to grep",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Use grep_search to find relevant code locations before reading entire large files.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

@@ -184,6 +184,7 @@ typedef struct {
   char *basis;      /* evidence basis for this memory (NULL = none) */
   char **triggers;  /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;   /* 0 = no triggers, purely semantic recall */
+  int is_global;    /* 1 if entry came from global layer, 0 if workspace-local */
 } memory_entry_t;
 
 typedef struct {
@@ -215,6 +216,12 @@ int memory_store(memory_t *m, const char *key, const char *value,
                  int pinned, const char *journal_ref,
                  const char **refs, int n_refs,
                  const char **triggers, int n_triggers);
+
+/* Seed global memory with curated baseline generic skills.
+ * Copies JSON files from datadir/generic-skills/ into the memory directory.
+ * Idempotent: creates a .seeded marker to skip on subsequent calls.
+ * Returns number of skills seeded, or 0 if already seeded / datadir missing. */
+int memory_seed_defaults(memory_t *m, const char *datadir);
 
 /* Pin an existing memory (set pinned=true). Returns 0 on success, -1 if not found. */
 int memory_pin(memory_t *m, const char *key);

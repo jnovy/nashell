@@ -58,6 +58,9 @@ workspace_t *workspace_new(const char *nash_dir, const char *ws_name,
     return NULL;
   }
 
+  /* Seed curated baseline generic skills on first run */
+  memory_seed_defaults(ws->global, NASH_DATADIR);
+
   /* Create workspace memory if name is provided and safe */
   if (ws_name && ws_name[0] && ws_name_is_safe(ws_name)) {
     ws->name = xstrdup(ws_name);
@@ -145,7 +148,10 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
 
   /* If no workspace, just search global */
   if (!ws->workspace) {
-    return memory_query(ws->global, query, max_results);
+    memory_results_t gr = memory_query(ws->global, query, max_results);
+    for (int i = 0; i < gr.count; i++)
+      gr.entries[i].is_global = 1;
+    return gr;
   }
 
   /* 1. Recall from workspace */
@@ -159,9 +165,11 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
   /* 3. Recall from global */
   memory_results_t gl_results = memory_query(ws->global, query, max_results);
 
-  /* Apply weight discount to global results */
-  for (int i = 0; i < gl_results.count; i++)
+  /* Apply weight discount to global results and tag origin layer */
+  for (int i = 0; i < gl_results.count; i++) {
     gl_results.entries[i].relevance *= ws->global_weight;
+    gl_results.entries[i].is_global = 1;
+  }
 
   /* 4. Merge: combine into one array, sort by relevance, keep top max_results */
   int total = ws_results.count + gl_results.count;

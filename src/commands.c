@@ -795,6 +795,50 @@ int command_dispatch(command_ctx_t *ctx, char **submitted_query) {
     *submitted_query = NULL;
     return rc;
   }
+  if (strncmp(sq, "/memory promote ", 16) == 0) {
+    const char *key = sq + 16;
+    while (*key == ' ') key++;
+    if (!ctx->ws) {
+      ui_locked_set_status(ctx->ui, STATUS_ERROR,
+                           "No workspace active");
+    } else if (!*key) {
+      ui_locked_set_status(ctx->ui, STATUS_ERROR,
+                           "/memory promote <key>");
+    } else {
+      int rc = workspace_promote(ctx->ws, key);
+      if (rc == 0)
+        ui_locked_set_status_fmt(ctx->ui, STATUS_READY,
+                                "Promoted '%s' to global", key);
+      else
+        ui_locked_set_status_fmt(ctx->ui, STATUS_ERROR,
+                                "Promote failed - '%s' not in workspace", key);
+    }
+    free(sq);
+    *submitted_query = NULL;
+    return CMD_CONTINUE;
+  }
+  if (strncmp(sq, "/memory demote ", 15) == 0) {
+    const char *key = sq + 15;
+    while (*key == ' ') key++;
+    if (!ctx->ws) {
+      ui_locked_set_status(ctx->ui, STATUS_ERROR,
+                           "No workspace active");
+    } else if (!*key) {
+      ui_locked_set_status(ctx->ui, STATUS_ERROR,
+                           "/memory demote <key>");
+    } else {
+      int rc = workspace_demote(ctx->ws, key);
+      if (rc == 0)
+        ui_locked_set_status_fmt(ctx->ui, STATUS_READY,
+                                "Demoted '%s' to workspace", key);
+      else
+        ui_locked_set_status_fmt(ctx->ui, STATUS_ERROR,
+                                "Demote failed - '%s' not in global", key);
+    }
+    free(sq);
+    *submitted_query = NULL;
+    return CMD_CONTINUE;
+  }
   if (strncmp(sq, "/?", 2) == 0) {
     /* /? with text -> memory/session search; bare /? -> clear UI search */
     const char *after = sq + 2;

@@ -1,0 +1,16 @@
+{
+  "key": "skill:structured-scratchpad",
+  "value": "## When to apply\nFor any task requiring 5+ file reads or involving multi-step reasoning.\n\n## Steps\n1. Create structured scratchpad sections: findings (verified facts with sources), plan (next steps), rejected (dead ends), unresolved (open questions)\n2. Record each verified fact with its source (file:line, command output, URL)\n3. When a section grows stale, rewrite it to remove obsolete entries rather than only appending\n4. Before making decisions, review the scratchpad to avoid repeating failed approaches\n\n## Why this matters\nComplex tasks generate too many intermediate findings to hold in working memory. Structured sections make it easy to find what you know, what you've tried, and what remains. Rewriting prevents sections from becoming an append-only log of noise.\n\n## Pitfalls\n- Using a single flat section that grows into an unreadable wall of text\n- Never removing obsolete findings, leading to contradictory information\n- Forgetting to check the rejected section before retrying a failed approach",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Use structured scratchpad sections for complex tasks and rewrite sections to remove obsolete info.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

@@ -876,6 +876,82 @@ static int memory_set_pinned(memory_t *m, const char *key, int pinned) {
   return 0;
 }
 
+/* ---- Generic skill seeding ---- */
+
+int memory_seed_defaults(memory_t *m, const char *datadir) {
+  if (!m || !datadir) return 0;
+
+  /* Check .seeded marker - skip if already seeded */
+  char marker[NASH_PATH_MAX];
+  snprintf(marker, sizeof(marker), "%s/.seeded", m->dir);
+  if (access(marker, F_OK) == 0) return 0;
+
+  /* Build skills source directory path */
+  char skills_dir[NASH_PATH_MAX];
+  snprintf(skills_dir, sizeof(skills_dir), "%s/generic-skills", datadir);
+
+  DIR *dp = opendir(skills_dir);
+  if (!dp) return 0;  /* datadir not installed - skip silently */
+
+  int seeded = 0;
+  struct dirent *ent;
+  while ((ent = readdir(dp)) != NULL) {
+    size_t nlen = strlen(ent->d_name);
+    if (nlen < 6 || strcmp(ent->d_name + nlen - 5, ".json") != 0)
+      continue;
+
+    /* Read the JSON file */
+    char src_path[NASH_PATH_MAX];
+    snprintf(src_path, sizeof(src_path), "%s/%s", skills_dir, ent->d_name);
+
+    FILE *fp = fopen(src_path, "r");
+    if (!fp) continue;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz <= 0 || sz > 64 * 1024) { fclose(fp); continue; }
+    fseek(fp, 0, SEEK_SET);
+    char *buf = xmalloc((size_t)sz + 1);
+    size_t rd = fread(buf, 1, (size_t)sz, fp);
+    buf[rd] = '\0';
+    fclose(fp);
+
+    /* Parse key and value from JSON */
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) continue;
+
+    cJSON *jkey = cJSON_GetObjectItem(root, "key");
+    cJSON *jval = cJSON_GetObjectItem(root, "value");
+    if (!jkey || !cJSON_IsString(jkey) ||
+        !jval || !cJSON_IsString(jval)) {
+      cJSON_Delete(root);
+      continue;
+    }
+
+    /* Only seed if key doesn't already exist */
+    mem_index_entry_t *existing = memory_find(m, jkey->valuestring);
+    if (!existing) {
+      memory_store(m, jkey->valuestring, jval->valuestring,
+                   0, NULL, NULL, 0, NULL, 0);
+      seeded++;
+    } else {
+      memory_find_free(existing);
+    }
+
+    cJSON_Delete(root);
+  }
+  closedir(dp);
+
+  /* Write .seeded marker */
+  FILE *mf = fopen(marker, "w");
+  if (mf) {
+    fprintf(mf, "%d\n", seeded);
+    fclose(mf);
+  }
+
+  return seeded;
+}
+
 int memory_pin(memory_t *m, const char *key) {
   return memory_set_pinned(m, key, 1);
 }

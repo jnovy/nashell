@@ -122,6 +122,9 @@ void config_set_defaults(config_t *cfg) {
   /* Associative graph walk (default: depth 1).
      * Use == 0 so users can set to -1 to explicitly disable. */
   if (cfg->associative_depth == 0) cfg->associative_depth = 1;
+  /* Sparsity-aware global skill boost (default: enabled).
+     * Use == 0 so users can set to -1 to explicitly disable. */
+  if (cfg->generic_skill_boost == 0) cfg->generic_skill_boost = 1;
   /* Repo map (default: enabled, 8000 chars).
      * Use == 0 so users can set to -1 to explicitly disable. */
   if (cfg->repo_map == 0) cfg->repo_map = 1;
@@ -406,6 +409,7 @@ config_t *config_load(const char *path) {
     cfg->max_strategies_per_query = toml_int(limits, "max_strategies_per_query", -1);
     cfg->max_antipatterns_per_query = toml_int(limits, "max_antipatterns_per_query", -1);
     cfg->skill_full_disclosure = toml_bl(limits, "skill_full_disclosure", 0);
+    cfg->generic_skill_boost = toml_bl(limits, "generic_skill_boost", 0);
     cfg->context_eviction_pct = toml_int(limits, "context_eviction_pct", -1);
     cfg->eviction_floor_pct = toml_int(limits, "eviction_floor_pct", -1);
     cfg->scratchpad_budget_pct = toml_int(limits, "scratchpad_budget_pct", -1);
@@ -1442,6 +1446,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "episodic_max_results = %d\n", cfg->episodic_max_results);
   fprintf(out, "episodic_min_score = %.2f\n", cfg->episodic_min_score);
   fprintf(out, "associative_depth = %d\n", cfg->associative_depth);
+  fprintf(out, "generic_skill_boost = %s\n", cfg->generic_skill_boost > 0 ? "true" : "false");
   fprintf(out, "repo_map = %s\n", cfg->repo_map ? "true" : "false");
   fprintf(out, "repo_map_max_chars = %d\n", cfg->repo_map_max_chars);
   fprintf(out, "auto_promote = %s\n", cfg->auto_promote ? "true" : "false");
@@ -1867,6 +1872,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     }
     v = toml_int(limits, "associative_depth", 0);
     if (v > 0) cfg->associative_depth = v;
+    v = toml_int(limits, "generic_skill_boost", 0);
+    if (v > 0) cfg->generic_skill_boost = v;
     v = toml_int(limits, "repo_map", 0);
     if (v > 0) cfg->repo_map = v;
     v = toml_int(limits, "repo_map_max_chars", 0);

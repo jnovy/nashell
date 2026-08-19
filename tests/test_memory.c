@@ -3,6 +3,8 @@
 #include "../src/llm.h"
 /* linked via LIB_OBJ */
 
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 /* ── test_store_and_recall ── */
 static void test_store_and_recall(void) {
   char *dir = make_test_dir();
@@ -1615,6 +1617,133 @@ static void test_tainted_below_skip_threshold(void) {
   ASSERT((int)LLM_MSG_IMPORTANCE_NORMAL < (int)LLM_MSG_IMPORTANCE_HIGH);
 }
 
+/* is_global defaults to 0 for single-layer memory_query */
+static void test_is_global_default(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+  ASSERT_NOT_NULL(m);
+  int rc = memory_store(m, "skill:test-global-flag",
+                        "test skill for is_global default", 0,
+                        NULL, NULL, 0, NULL, 0);
+  ASSERT_EQ(rc, 0);
+  memory_results_t results = memory_query(m, "test global flag", 5);
+  ASSERT_GT(results.count, 0);
+  /* Single-layer query: is_global should default to 0 */
+  ASSERT_EQ(results.entries[0].is_global, 0);
+  memory_results_free(&results);
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+/* memory_seed_defaults tests */
+static void test_seed_defaults(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+  ASSERT_NOT_NULL(m);
+
+  /* Create a fake datadir with a skills subdirectory */
+  char datadir[2048], skills_dir[2048];
+  snprintf(datadir, sizeof(datadir), "%s/fakedata", dir);
+  snprintf(skills_dir, sizeof(skills_dir), "%s/generic-skills", datadir);
+  mkdir(datadir, 0755);
+  mkdir(skills_dir, 0755);
+
+  /* Write a test skill JSON */
+  char skill_path[2048];
+  snprintf(skill_path, sizeof(skill_path), "%s/skill_test-seed.json", skills_dir);
+  FILE *fp = fopen(skill_path, "w");
+  ASSERT_NOT_NULL(fp);
+  fprintf(fp,
+    "{\"key\":\"skill:test-seed\","
+    "\"value\":\"A seeded test skill\","
+    "\"tags\":[],"
+    "\"pinned\":false,"
+    "\"created_at\":\"1786900000.00000\","
+    "\"last_accessed\":\"1786900000.00000\","
+    "\"access_count\":1,"
+    "\"recall_hits\":0,"
+    "\"recall_misses\":0,"
+    "\"belief_entropy\":-1,"
+    "\"description\":\"A seeded test skill\","
+    "\"version\":1}"
+  );
+  fclose(fp);
+
+  int seeded = memory_seed_defaults(m, datadir);
+  ASSERT_EQ(seeded, 1);
+
+  /* Verify the skill was stored */
+  mem_index_entry_t *found = memory_find(m, "skill:test-seed");
+  ASSERT_NOT_NULL(found);
+  ASSERT_STR_CONTAINS(found->value, "seeded test skill");
+  memory_find_free(found);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_seed_defaults_idempotent(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+  ASSERT_NOT_NULL(m);
+
+  /* Create fake datadir */
+  char datadir[2048], skills_dir[2048];
+  snprintf(datadir, sizeof(datadir), "%s/fakedata", dir);
+  snprintf(skills_dir, sizeof(skills_dir), "%s/generic-skills", datadir);
+  mkdir(datadir, 0755);
+  mkdir(skills_dir, 0755);
+
+  /* Write a test skill JSON */
+  char skill_path[2048];
+  snprintf(skill_path, sizeof(skill_path), "%s/skill_test-idem.json", skills_dir);
+  FILE *fp = fopen(skill_path, "w");
+  ASSERT_NOT_NULL(fp);
+  fprintf(fp,
+    "{\"key\":\"skill:test-idem\","
+    "\"value\":\"Idempotent test\","
+    "\"tags\":[],"
+    "\"pinned\":false,"
+    "\"created_at\":\"1786900000.00000\","
+    "\"last_accessed\":\"1786900000.00000\","
+    "\"access_count\":1,"
+    "\"recall_hits\":0,"
+    "\"recall_misses\":0,"
+    "\"belief_entropy\":-1,"
+    "\"description\":\"Idempotent test\","
+    "\"version\":1}"
+  );
+  fclose(fp);
+
+  /* First seed */
+  int seeded1 = memory_seed_defaults(m, datadir);
+  ASSERT_EQ(seeded1, 1);
+
+  /* Second seed should return 0 (already seeded) */
+  int seeded2 = memory_seed_defaults(m, datadir);
+  ASSERT_EQ(seeded2, 0);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
+static void test_seed_defaults_no_datadir(void) {
+  char *dir = make_test_dir();
+  memory_t *m = memory_new(dir);
+  ASSERT_NOT_NULL(m);
+
+  /* Non-existent datadir should return 0 gracefully */
+  int seeded = memory_seed_defaults(m, "/nonexistent/path");
+  ASSERT_EQ(seeded, 0);
+
+  memory_free(m);
+  rm_rf(dir);
+  free(dir);
+}
+
 int main(void) {
   printf("test_memory:\n");
 
@@ -1715,6 +1844,16 @@ int main(void) {
   RUN_TEST(test_tainted_ordering);
   RUN_TEST(test_tainted_score_formula);
   RUN_TEST(test_tainted_below_skip_threshold);
+
+  /* is_global default */
+  printf("\n  --- is_global ---\n");
+  RUN_TEST(test_is_global_default);
+
+  /* Generic skill seeding */
+  printf("\n  --- Seed Defaults ---\n");
+  RUN_TEST(test_seed_defaults);
+  RUN_TEST(test_seed_defaults_idempotent);
+  RUN_TEST(test_seed_defaults_no_datadir);
 
   TEST_SUMMARY();
 }

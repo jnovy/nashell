@@ -1,0 +1,16 @@
+{
+  "key": "skill:verify-before-edit",
+  "value": "## When to apply\nBefore any file_edit call.\n\n## Steps\n1. Always file_read the target file first to see current content\n2. Copy the exact text you plan to replace - character for character\n3. Verify the text still exists at the expected location (files change)\n4. Only then call file_edit with the verified old_text\n\n## Why this matters\nStale assumptions about file content are the #1 cause of failed edits. Files may have been modified by previous steps, other tools, or concurrent processes.\n\n## Pitfalls\n- Assuming file content from memory without re-reading\n- Using approximate text that differs in whitespace or punctuation\n- Editing a file that was already modified by an earlier step in the same task",
+  "tags": [],
+  "pinned": false,
+  "created_at": "1786900000.00000",
+  "last_accessed": "1786900000.00000",
+  "access_count": 1,
+  "recall_hits": 0,
+  "recall_misses": 0,
+  "belief_entropy": -1,
+  "description": "Before any file_edit call.",
+  "version": 1,
+  "validity": "persistent",
+  "basis": "curated baseline generic skill"
+}

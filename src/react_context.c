@@ -466,13 +466,32 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                                     : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);
   str_free(&recall_query);
 
+  /* Sparsity-aware global skill boost: when the workspace has few local
+   * skills in the recall results, expand the injection cap so global skills
+   * can fill the gap.  Controlled by cfg->generic_skill_boost (default on). */
+  int boosted_skills = max_skills;
+  if (!ctx->tools->cfg || ctx->tools->cfg->generic_skill_boost > 0) {
+    int local_skill_count = 0;
+    for (int i = 0; i < all_memories.count; i++) {
+      if (!all_memories.entries[i].is_global &&
+          strncmp(all_memories.entries[i].key, "skill:", 6) == 0)
+        local_skill_count++;
+    }
+    if (local_skill_count < max_skills) {
+      int boost = max_skills - local_skill_count;
+      boosted_skills = max_skills + boost;
+      if (boosted_skills > max_skills * 2)
+        boosted_skills = max_skills * 2;
+    }
+  }
+
   /* Progressive disclosure: skills use summary mode by default (description only)
          * unless skill_full_disclosure is set. Other types always inject full text. */
   int skill_summary = ctx->tools->cfg
                         ? !ctx->tools->cfg->skill_full_disclosure
                         : 0;
   inject_memory_type(chat, ctx->tools, &all_memories,
-                     "[RELEVANT SKILLS]", "skill:", 6, max_skills, LLM_MSG_SKILLS,
+                     "[RELEVANT SKILLS]", "skill:", 6, boosted_skills, LLM_MSG_SKILLS,
                      skill_summary);
   inject_memory_type(chat, ctx->tools, &all_memories,
                      "[RELEVANT LESSONS]", "lesson:", 7, max_lessons, LLM_MSG_LESSONS, 0);
