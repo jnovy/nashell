@@ -129,6 +129,48 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
   memset(e, 0, sizeof(*e));
 }
 
+/* Deep-copy a mem_index_entry_t.  All owned strings/arrays are duplicated.
+ * Embeddings are NOT copied (has_emb set to 0).  Caller must eventually
+ * call mem_index_entry_free(dst) to release. */
+static void mem_index_entry_deep_copy(mem_index_entry_t *dst,
+                                      const mem_index_entry_t *src) {
+  memset(dst, 0, sizeof(*dst));
+  dst->key = src->key ? xstrdup(src->key) : NULL;
+  dst->description = src->description ? xstrdup(src->description) : NULL;
+  dst->value = src->value ? xstrdup(src->value) : NULL;
+  dst->path = src->path ? xstrdup(src->path) : NULL;
+  dst->pinned = src->pinned;
+  dst->access_count = src->access_count;
+  dst->recall_hits = src->recall_hits;
+  dst->recall_misses = src->recall_misses;
+  dst->belief_entropy = src->belief_entropy;
+  dst->created_at = src->created_at;
+  dst->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
+  dst->version = src->version;
+  dst->superseded_at = src->superseded_at;
+  dst->validity = src->validity ? xstrdup(src->validity) : NULL;
+  dst->basis = src->basis ? xstrdup(src->basis) : NULL;
+  dst->gen = src->gen;
+  dst->n_refs = src->n_refs;
+  if (src->refs && src->n_refs > 0) {
+    dst->refs = xcalloc((size_t)src->n_refs, sizeof(char *));
+    for (int i = 0; i < src->n_refs; i++)
+      dst->refs[i] = src->refs[i] ? xstrdup(src->refs[i]) : NULL;
+  }
+  if (src->ref_types && src->n_refs > 0) {
+    dst->ref_types = xcalloc((size_t)src->n_refs, sizeof(int));
+    memcpy(dst->ref_types, src->ref_types, sizeof(int) * (size_t)src->n_refs);
+  }
+  dst->n_triggers = src->n_triggers;
+  if (src->triggers && src->n_triggers > 0) {
+    dst->triggers = xcalloc((size_t)src->n_triggers, sizeof(char *));
+    for (int i = 0; i < src->n_triggers; i++)
+      dst->triggers[i] = src->triggers[i] ? xstrdup(src->triggers[i]) : NULL;
+  }
+  dst->has_emb = 0;
+  memset(&dst->emb, 0, sizeof(dst->emb));
+}
+
 /* ── FIX 2a: Hash map for O(1) key→index lookup ─────────────────── */
 
 static unsigned int mem_fnv1a(const char *s) {
@@ -1829,19 +1871,17 @@ int memory_delete(memory_t *m, const char *key) {
   /* P1: Remove from in-memory index */
   mem_index_remove(&m->idx, key);
 
-  /* FIX BUG-8: Collect paths needing ref rewrite under mutex,
-     * then do file I/O after releasing the lock. */
+  /* Collect paths needing ref rewrite and do the rewrite under the mutex
+     * to prevent TOCTOU races with concurrent memory_store(). */
   int n_gc_paths = 0;
   char **gc_paths = gc_refs_collect_modified_paths(m, &key, 1, &n_gc_paths);
+  gc_refs_rewrite_collected(gc_paths, n_gc_paths, &key, 1);
 
   /* Prepare commit message under lock; run git outside. */
   char msg[256];
   snprintf(msg, sizeof(msg), "memory: delete %s", key);
 
   pthread_mutex_unlock(&m->mtx);
-
-  /* Phase 2: Rewrite JSON files outside the mutex */
-  gc_refs_rewrite_collected(gc_paths, n_gc_paths, &key, 1);
 
   memory_git_commit(m, msg);
   return 0;
@@ -1902,13 +1942,14 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
     return 0;
   }
 
-  /* FIX BUG-8: Phase 2 — remove deleted keys from in-memory refs arrays
-     * and collect paths needing on-disk rewrite (file I/O deferred). */
+  /* Remove deleted keys from in-memory refs arrays, collect paths needing
+     * on-disk rewrite, and do the rewrite under the mutex to prevent
+     * TOCTOU races with concurrent memory_store(). */
   int n_gc_paths = 0;
   char **gc_paths = gc_refs_collect_modified_paths(m, found_keys, n_found, &n_gc_paths);
+  gc_refs_rewrite_collected(gc_paths, n_gc_paths, keys, n_keys);
 
-  /* Phase 3: Single git commit for all deletions.
-     * Build msg under lock, run git outside to avoid blocking. */
+  /* Build commit message under lock; run git outside to avoid blocking. */
   char msg[1024];
   if (n_found == 1) {
     snprintf(msg, sizeof(msg), "memory: delete %s", found_keys[0]);
@@ -1918,10 +1959,6 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
 
   free(found_keys);
   pthread_mutex_unlock(&m->mtx);
-
-  /* FIX BUG-8: Phase 2b — rewrite JSON files outside the mutex
-     * so file I/O doesn't block concurrent memory operations. */
-  gc_refs_rewrite_collected(gc_paths, n_gc_paths, keys, n_keys);
 
   memory_git_commit(m, msg);
   return n_found;
@@ -2799,37 +2836,36 @@ int memory_iterate(memory_t *m, memory_iter_cb cb, void *user_data) {
   if (!m || !cb) return 0;
   pthread_mutex_lock(&m->mtx);
 
-  /* FIX BUG-6: Snapshot the index array before iterating.
-     * The mutex is recursive, so the callback could call memory_store()
-     * (which may trigger realloc on the entries array) or memory_delete()
-     * (which does swap-remove).  Either mutation would corrupt a live
-     * iteration over the original array.  A shallow copy of the struct
-     * array isolates the iterator from such mutations — the pointers
-     * inside each struct (key, value, etc.) remain valid because they
-     * are only freed inside mem_index_entry_free, which is called under
-     * the same mutex and would update the live array, not our copy. */
+  /* Deep-copy snapshot of the index array before iterating.
+     * The mutex is recursive, so a callback could call memory_store()
+     * (which may realloc the entries array) or memory_delete() (which
+     * does swap-remove + mem_index_entry_free).  A shallow memcpy would
+     * share string pointers with the live index - if a callback frees
+     * an entry via memory_delete(), the shallow copy's pointers dangle.
+     * Deep-copying all owned strings makes the snapshot fully independent,
+     * so the mutex can be released before iteration. */
   int snap_count = m->idx.count;
   if (snap_count == 0) {
     pthread_mutex_unlock(&m->mtx);
     return 0;
   }
-  size_t snap_sz = sizeof(mem_index_entry_t) * (size_t)snap_count;
-  mem_index_entry_t *snap = xmalloc(snap_sz);
-  memcpy(snap, m->idx.entries, snap_sz);
+  mem_index_entry_t *snap = xcalloc((size_t)snap_count, sizeof(*snap));
+  for (int i = 0; i < snap_count; i++)
+    mem_index_entry_deep_copy(&snap[i], &m->idx.entries[i]);
 
-  /* Keep the mutex held during iteration so that the string pointers
-     * inside each shallow-copied entry (key, value, description, etc.)
-     * remain valid.  The mutex is recursive, so callbacks that call
-     * memory_store()/memory_delete() can re-acquire it.  The snapshot
-     * array protects against structural changes (realloc, swap-remove). */
+  pthread_mutex_unlock(&m->mtx);
+
+  /* Iterate over the deep-copied snapshot without holding the mutex.
+     * Callbacks are free to call memory_store/delete/iterate. */
   int count = 0;
   for (int i = 0; i < snap_count; i++) {
     if (cb(&snap[i], user_data) != 0)
       break;
     count++;
   }
+  for (int i = 0; i < snap_count; i++)
+    mem_index_entry_free(&snap[i]);
   free(snap);
-  pthread_mutex_unlock(&m->mtx);
   return count;
 }
 
@@ -2847,42 +2883,7 @@ mem_index_entry_t *memory_find(memory_t *m, const char *key) {
     return NULL;
   }
   mem_index_entry_t *copy = xcalloc(1, sizeof(*copy));
-  copy->key = src->key ? xstrdup(src->key) : NULL;
-  copy->description = src->description ? xstrdup(src->description) : NULL;
-  copy->value = src->value ? xstrdup(src->value) : NULL;
-  copy->path = src->path ? xstrdup(src->path) : NULL;
-  copy->pinned = src->pinned;
-  copy->access_count = src->access_count;
-  copy->recall_hits = src->recall_hits;
-  copy->recall_misses = src->recall_misses;
-  copy->belief_entropy = src->belief_entropy;
-  copy->created_at = src->created_at;
-  copy->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
-  copy->version = src->version;
-  copy->superseded_at = src->superseded_at;
-  copy->validity = src->validity ? xstrdup(src->validity) : NULL;
-  copy->basis = src->basis ? xstrdup(src->basis) : NULL;
-  copy->n_refs = src->n_refs;
-  if (src->refs && src->n_refs > 0) {
-    copy->refs = xcalloc((size_t)src->n_refs, sizeof(char *));
-    for (int i = 0; i < src->n_refs; i++)
-      copy->refs[i] = src->refs[i] ? xstrdup(src->refs[i]) : NULL;
-  }
-  /* Copy ref_types (typed edges) from index */
-  if (src->ref_types && src->n_refs > 0) {
-    copy->ref_types = xcalloc((size_t)src->n_refs, sizeof(int));
-    memcpy(copy->ref_types, src->ref_types, sizeof(int) * (size_t)src->n_refs);
-  }
-  /* Copy triggers from index */
-  copy->n_triggers = src->n_triggers;
-  if (src->triggers && src->n_triggers > 0) {
-    copy->triggers = xcalloc((size_t)src->n_triggers, sizeof(char *));
-    for (int i = 0; i < src->n_triggers; i++)
-      copy->triggers[i] = src->triggers[i] ? xstrdup(src->triggers[i]) : NULL;
-  }
-  /* Don't copy embedding data — callers only need metadata */
-  copy->has_emb = 0;
-  memset(&copy->emb, 0, sizeof(copy->emb));
+  mem_index_entry_deep_copy(copy, src);
   pthread_mutex_unlock(&m->mtx);
   return copy;
 }
