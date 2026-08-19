@@ -275,16 +275,22 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
     struct dirent *de;
     while ((de = readdir(dir)) != NULL) {
       if (strncmp(de->d_name, "task_", 5) != 0) continue;
-      /* Skip .tmp files (partial writes) */
+      /* Skip .tmp files (partial writes) and .claimed (already taken) */
       if (strstr(de->d_name, ".tmp")) continue;
+      if (strstr(de->d_name, ".claimed")) continue;
       char path[NASH_PATH_MAX];
       if ((size_t)snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name) >= sizeof(path))
         continue;
-      char *query = read_file(path);
+      /* Atomically claim the task by renaming to a .claimed suffix.
+       * If rename fails (ENOENT), another consumer already took it. */
+      char claimed[NASH_PATH_MAX];
+      snprintf(claimed, sizeof(claimed), "%s.claimed", path);
+      if (rename(path, claimed) != 0) continue;
+      char *query = read_file(claimed);
       if (query) {
         /* Extract task ID from filename: task_{id} */
         char *tid = xstrdup(de->d_name + 5); /* skip "task_" */
-        unlink(path);
+        unlink(claimed);
         closedir(dir);
         if (task_id_out)
           *task_id_out = tid;
@@ -348,17 +354,22 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
           }
           if (iev->len > 0 &&
               strncmp(iev->name, "task_", 5) == 0 &&
-              !strstr(iev->name, ".tmp")) {
+              !strstr(iev->name, ".tmp") &&
+              !strstr(iev->name, ".claimed")) {
             char path[NASH_PATH_MAX];
             if ((size_t)snprintf(path, sizeof(path), "%s/%s",
                                  inbox_dir, iev->name) >= sizeof(path))
               continue;
             /* Small delay for atomic write */
             usleep(50000);
-            char *query = read_file(path);
+            /* Atomically claim the task by renaming to .claimed */
+            char claimed2[NASH_PATH_MAX];
+            snprintf(claimed2, sizeof(claimed2), "%s.claimed", path);
+            if (rename(path, claimed2) != 0) continue;
+            char *query = read_file(claimed2);
             if (query) {
               char *tid = xstrdup(iev->name + 5);
-              unlink(path);
+              unlink(claimed2);
               inotify_rm_watch(ifd, wd);
               close(ifd);
               if (task_id_out)
@@ -398,13 +409,18 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
       while ((de = readdir(dir)) != NULL) {
         if (strncmp(de->d_name, "task_", 5) != 0) continue;
         if (strstr(de->d_name, ".tmp")) continue;
+        if (strstr(de->d_name, ".claimed")) continue;
         char path[NASH_PATH_MAX];
         if ((size_t)snprintf(path, sizeof(path), "%s/%s", inbox_dir, de->d_name) >= sizeof(path))
           continue;
-        char *query = read_file(path);
+        /* Atomically claim the task by renaming to .claimed */
+        char claimed3[NASH_PATH_MAX];
+        snprintf(claimed3, sizeof(claimed3), "%s.claimed", path);
+        if (rename(path, claimed3) != 0) continue;
+        char *query = read_file(claimed3);
         if (query) {
           char *tid = xstrdup(de->d_name + 5);
-          unlink(path);
+          unlink(claimed3);
           closedir(dir);
           inotify_rm_watch(ifd, wd);
           close(ifd);
