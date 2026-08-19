@@ -1497,6 +1497,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
   char *result = NULL;
   int auth_refreshed = 0;
   for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
+    /* If a previous attempt already streamed tokens to the TUI via
+     * on_token(), suppress streaming on retries to avoid duplicate
+     * output.  The full response text is still returned as a string. */
+    if (attempt > 1 && st.streaming_token_count > 0)
+      st.on_token = NULL;
     str_clear(&st.line_buf);
     str_clear(&st.full_content);
     str_clear(&st.tool_call_name);
