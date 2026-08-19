@@ -650,7 +650,7 @@ static char *anthropic_parse_response(provider_t *p, const char *response_json,
       stats->cache_read_tokens = json_int(usage, "cache_read_input_tokens", 0);
       stats->cache_creation_tokens = json_int(usage, "cache_creation_input_tokens", 0);
       int it = json_int(usage, "input_tokens", 0);
-      if (it) stats->prompt_tokens = it + stats->cache_read_tokens + stats->cache_creation_tokens;
+      stats->prompt_tokens = it + stats->cache_read_tokens + stats->cache_creation_tokens;
     }
   }
 
