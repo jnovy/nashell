@@ -486,6 +486,8 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
   if (rc != 0) return tools_make_error("failed to store memory");
 
+  char *contradiction_warn = NULL; /* set below if conflicts detected */
+
   /* Contradiction detection: search for similar existing memories that
      * might conflict with this new entry. SodaMem [arXiv Jul 2026] showed
      * that tracking SUPERSEDES/CONTRADICTS edges prevents stale facts from
@@ -539,10 +541,10 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
         memory_results_free(&conflicts);
       }
       memory_results_free(&similar);
-      /* Store warning text for inclusion in tool result below */
+      /* Store warning text for inclusion in tool result below.
+       * Use the outer-scope local instead of mutating the caller's params. */
       if (n_conflicts > 0) {
-        cJSON_AddStringToObject(params, "_contradiction_warning",
-                                str_cstr(&warn));
+        contradiction_warn = xstrdup(str_cstr(&warn));
       }
       str_free(&warn);
     }
@@ -644,11 +646,8 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
   if (alias) cJSON_AddStringToObject(res.meta, "ref", alias);
 
   /* Surface contradiction warning if detected */
-  {
-    const char *cw = json_str(params, "_contradiction_warning");
-    if (cw && cw[0])
-      cJSON_AddStringToObject(res.meta, "contradiction_warning", cw);
-  }
+  if (contradiction_warn && contradiction_warn[0])
+    cJSON_AddStringToObject(res.meta, "contradiction_warning", contradiction_warn);
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "memory_store",
@@ -657,6 +656,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
   res.store_ref = alias ? xstrdup(alias) : NULL;
   free(alias);
   free(hash);
+  free(contradiction_warn);
   return res;
 }
 
