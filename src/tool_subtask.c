@@ -44,6 +44,26 @@ static void subtask_event_cb(const react_event_t *ev, void *userdata) {
 
 tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   TOOL_REQ_STR(params, "query", query);
+  TOOL_OPT_STR(params, "context", context_level);
+
+  /* Parse context inheritance level:
+   *   "minimal"  - query only (no scratchpad, no memory)
+   *   "standard" - scratchpad + INFORM (default, current behavior)
+   *   "rich"     - scratchpad + INFORM + memory injection */
+  enum { CTX_MINIMAL, CTX_STANDARD, CTX_RICH } ctx_mode = CTX_STANDARD;
+  if (context_level) {
+    if (strcmp(context_level, "minimal") == 0)
+      ctx_mode = CTX_MINIMAL;
+    else if (strcmp(context_level, "rich") == 0)
+      ctx_mode = CTX_RICH;
+    else if (strcmp(context_level, "standard") != 0) {
+      char err[128];
+      snprintf(err, sizeof(err),
+               "Invalid context level \"%s\" - must be minimal, standard, or rich",
+               context_level);
+      return tools_make_error(err);
+    }
+  }
 
   /* Subtask runs with unlimited steps (same as parent) */
   int max_steps = -1;
@@ -106,12 +126,15 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
   /* Scratchpad: snapshot parent's scratchpad into child (read-only copy).
      * Child modifications do NOT propagate back to parent.
+     * Skipped for "minimal" context - child gets a clean slate.
      * No scratchpad_copy() exists, so we serialize + parse. */
   scratchpad_init(&child_tools.scratch);
-  char *parent_scratch = scratchpad_serialize(&ctx->scratch);
-  if (parent_scratch) {
-    scratchpad_parse(&child_tools.scratch, parent_scratch, "inherited", 5);
-    free(parent_scratch);
+  if (ctx_mode != CTX_MINIMAL) {
+    char *parent_scratch = scratchpad_serialize(&ctx->scratch);
+    if (parent_scratch) {
+      scratchpad_parse(&child_tools.scratch, parent_scratch, "inherited", 5);
+      free(parent_scratch);
+    }
   }
 
   /* Block user_ask in child — no TUI user to answer.
@@ -134,9 +157,17 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     .tools = &child_tools,          /* own */
     .max_steps = max_steps,         /* capped */
     .verbose = 0,                   /* quiet — parent handles UI */
-    .flags = REACT_FLAGS_BARE,      /* no reflection/scoring/memory injection */
+    .flags = REACT_FLAGS_BARE,      /* baseline: no reflection/scoring/memory */
     .parent_loop = ctx->react_loop, /* DAG edge to parent */
   };
+
+  /* "rich" context: enable memory injection + compaction for the child.
+   * This lets the child access workspace memory (lessons, skills, strategies)
+   * which is useful for implementation subtasks that need prior decisions. */
+  if (ctx_mode == CTX_RICH) {
+    child_react.flags.inject_memory = 1;
+    child_react.flags.enable_compaction = 1;
+  }
 
   /* Initialize user_ask mutex/cond (react_run may reference them) */
   pthread_mutex_init(&child_react.user_ask_mutex, NULL);
@@ -267,12 +298,20 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── plugin registration ──────────────────────────────── */
 
+static const char *context_enum[] = {"minimal", "standard", "rich", NULL};
+
 static const tool_param_t subtask_params[] = {
   TOOL_PARAM("query", "string", "Task description for the sub-task to solve", 1),
+  TOOL_PARAM_ENUM("context", "string",
+    "Context inheritance level: "
+    "\"minimal\" = query only (no scratchpad, no memory - best for search/analysis), "
+    "\"standard\" = inherits scratchpad (default), "
+    "\"rich\" = inherits scratchpad + memory injection (for implementation tasks needing prior decisions)",
+    0, context_enum),
   TOOL_PARAM_END};
 
 static const tool_plugin_t subtask_plugin =
   TOOL_DEF("subtask",
-           "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps.",
+           "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps. Use context=\"minimal\" for search/analysis (no parent noise), context=\"rich\" for implementation needing memory.",
            subtask_params, tool_subtask);
 TOOL_PLUGIN_REGISTER(subtask_plugin)
