@@ -152,11 +152,26 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * ui->mtx, causing mutex starvation that froze the TUI. */
       ui->needs_react_regen = 1;
 
-      /* Reset cumulative stats and user_scrolled on first step of a
-         * new react loop (or after checkpoint restore changed the loop)
-         * so stats start fresh and auto-scroll is active. */
-      if (ev->step == 0 || loop_changed) {
+      /* Reset user_scrolled on any context transition so auto-scroll
+         * is active when the TUI navigates into a new react file. */
+      if (ev->step == 0 || loop_changed || pass_dir_changed)
         ui->user_scrolled = 0;
+
+      /* Reset cumulative stats on first step of a new react loop
+         * (or after checkpoint restore changed the loop) so stats
+         * start fresh.
+         *
+         * Skip reset when the loop change is caused by subtask
+         * entry/exit (pass_dir_changed && pass_index < 0).  Subtask
+         * events carry the child's react_loop (always 0) which
+         * differs from the parent's, but the parent's cumulative
+         * stats should keep accumulating across subtask boundaries.
+         * Without this guard the stats footer flickers: reset on
+         * subtask STEP_START, re-accumulated on STEP_COMPLETE, reset
+         * again on restore, etc.  Playbook pass transitions
+         * (pass_index >= 0) still reset correctly. */
+      if (ev->step == 0 ||
+          (loop_changed && !(pass_dir_changed && ev->pass_index < 0))) {
         ui->cum_prompt_tokens = 0;
         ui->cum_completion_tokens = 0;
         ui->cum_predicted_per_second = 0;
