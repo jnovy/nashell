@@ -1931,8 +1931,10 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  /* One-shot headless mode */
-  if (query) {
+  /* One-shot headless mode (only when no terminal available, or mailbox mode).
+   * When a terminal IS available, fall through to the interactive TUI
+   * and auto-submit the query there for a full-fledged display. */
+  if (query && (!isatty(STDERR_FILENO) || mailbox_mode)) {
     /* Detect existing session: --session arg, or CWD with journal.jsonl */
     char *session_dir = NULL;
     int lazy_session = 0;
@@ -2156,6 +2158,39 @@ int main(int argc, char **argv) {
       free(auto_cmd); /* in case dispatch didn't consume it */
       free(agent_arguments);
       agent_arguments = NULL;
+    }
+
+    /* Auto-dispatch -p/--query: submit the query immediately in the TUI.
+     * This gives the user the full ncurses display while the query runs.
+     * Unlike headless mode, the user can scroll, interact, and even
+     * submit follow-up queries after the initial one completes. */
+    if (query && !agent_tui_mode) {
+      char *final_query = xstrdup(query);
+      pthread_mutex_lock(&ui->mtx);
+      ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+      ui_state_add_query(ui, query);
+      ui->current_react_loop = tools.react_loop;
+      pthread_mutex_unlock(&ui->mtx);
+      tui_render(ui);
+      iargs = (infer_args_t){
+        .react = &react,
+        .query = final_query,
+        .ui = ui,
+        .result = NULL,
+        .done = 0,
+      };
+      if (provider)
+        provider->abort_retry = 0;
+      route_query_to_outbox(nash_dir, final_query,
+                            ws && ws->name ? ws->name : NULL, NULL, 1);
+      if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
+        atomic_store(&inferring, INFER_REACT);
+      } else {
+        nash_log("[main] failed to create inference thread");
+        free(final_query);
+        ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
+      }
+      tui_render(ui);
     }
 
     while (running) {
