@@ -980,13 +980,100 @@ static char *evict_build_breadcrumbs(react_ctx_t *ctx, const llm_chat_t *chat,
 
 /* ── Step 2.5: Tool Lifecycle — Stale Read Detection ───── */
 
+/* Build a digest marker for a stale file_read: header line + first N_HEAD
+ * lines of original content + "..." + last N_TAIL lines, capped at
+ * DIGEST_MAX_CHARS.  Gives the agent structural cues (imports at top,
+ * closing definitions at bottom) so it knows WHAT was in the file without
+ * needing the full content — reduces fabrication vs a zero-info marker.
+ *
+ * Returns a malloc'd string.  Caller takes ownership. */
+#define STALE_DIGEST_HEAD_LINES  8
+#define STALE_DIGEST_TAIL_LINES  4
+#define STALE_DIGEST_MAX_CHARS 512
+
+static char *evict_build_stale_digest(const char *path, const char *content,
+                                      size_t content_len,
+                                      const char *reason_str) {
+  str_t s = str_new(STALE_DIGEST_MAX_CHARS + 64);
+  str_appendf(&s, "[Stale: read %s (%zu chars, %s later).\n",
+              path, content_len, reason_str);
+
+  if (!content || !content[0]) {
+    str_append_cstr(&s, "Re-read if needed.]");
+    return str_steal(&s);
+  }
+
+  /* Collect line start pointers */
+  int n_lines = 0;
+  const char *p = content;
+  while (*p) { if (*p == '\n') n_lines++; p++; }
+  if (content_len > 0 && content[content_len - 1] != '\n')
+    n_lines++; /* count last line without trailing newline */
+
+  int head = STALE_DIGEST_HEAD_LINES;
+  int tail = STALE_DIGEST_TAIL_LINES;
+  int need_ellipsis = (n_lines > head + tail);
+
+  if (!need_ellipsis) {
+    /* File is short enough — keep all lines within budget */
+    size_t avail = STALE_DIGEST_MAX_CHARS > s.len + 30
+                     ? STALE_DIGEST_MAX_CHARS - s.len - 30 : 0;
+    size_t take = content_len < avail ? content_len : avail;
+    str_append(&s, content, take);
+    if (take > 0 && content[take - 1] != '\n')
+      str_append_cstr(&s, "\n");
+  } else {
+    /* Head: first N lines */
+    const char *hp = content;
+    int lines_seen = 0;
+    while (*hp && lines_seen < head) {
+      if (*hp == '\n') lines_seen++;
+      hp++;
+    }
+    size_t head_bytes = (size_t)(hp - content);
+    /* Budget: reserve room for ellipsis + tail + footer */
+    size_t avail = STALE_DIGEST_MAX_CHARS > s.len + 50
+                     ? STALE_DIGEST_MAX_CHARS - s.len - 50 : 0;
+    size_t head_take = head_bytes < avail ? head_bytes : avail;
+    str_append(&s, content, head_take);
+
+    str_append_cstr(&s, "...\n");
+
+    /* Tail: last N lines — walk backwards from end */
+    const char *end = content + content_len;
+    const char *tp = end;
+    int tail_seen = 0;
+    /* Skip trailing newline if present */
+    if (tp > content && tp[-1] == '\n') tp--;
+    while (tp > content && tail_seen < tail) {
+      tp--;
+      if (*tp == '\n') tail_seen++;
+    }
+    if (*tp == '\n') tp++; /* skip past the newline we stopped on */
+    size_t tail_bytes = (size_t)(end - tp);
+    size_t tail_avail = STALE_DIGEST_MAX_CHARS > s.len + 25
+                          ? STALE_DIGEST_MAX_CHARS - s.len - 25 : 0;
+    size_t tail_take = tail_bytes < tail_avail ? tail_bytes : tail_avail;
+    if (tail_take > 0) {
+      str_append(&s, end - tail_take, tail_take);
+      if (end[-1] != '\n')
+        str_append_cstr(&s, "\n");
+    }
+  }
+
+  str_append_cstr(&s, "Re-read if needed.]");
+  return str_steal(&s);
+}
+
 /* Pichay [arXiv:2603.09023] + Headroom read_lifecycle:
  * Detect file_read results that are STALE (file was subsequently edited)
  * or SUPERSEDED (same file was re-read later). Replace stale content with
  * a compact marker ("paging handle") and downgrade importance to LOW.
  *
  * Pichay empirical data: 67% of file reads are stale, 12% superseded.
- * Replacing them with ~80-char markers yields up to 93% context reduction.
+ * Replacing them with digest markers (head+tail excerpts, ~300-512 chars)
+ * yields substantial context reduction while giving the agent structural
+ * cues to avoid fabrication.  See evict_build_stale_digest().
  * Fault rate (model needs to re-read): 0.025% across 1.4M evictions.
  *
  * Must run BEFORE the mark phase so stale reads score lowest and get
@@ -1025,18 +1112,16 @@ void evict_lifecycle_stale_reads(llm_chat_t *chat,
 
     if (!stale_reason) continue;
 
-    /* Replace content with compact paging handle.
-         * The original content is still accessible via store_alias if needed. */
+    /* Replace content with digest marker: head/tail excerpt of the
+         * original content so the agent has structural cues (imports,
+         * signatures) without fabricating. */
     const char *reason_str = (stale_reason == 1) ? "edited" : "re-read";
-    char marker[256];
-    snprintf(marker, sizeof(marker),
-             "[Stale: read %s (%zu chars). File was %s later. "
-             "Re-read if needed.]",
-             m->tool_path, m->content_len, reason_str);
+    char *digest = evict_build_stale_digest(
+      m->tool_path, m->content, m->content_len, reason_str);
 
     /* Replace content — llm_chat_replace_content updates content_len
          * and total_chars incrementally. */
-    llm_chat_replace_content(chat, i, xstrdup(marker));
+    llm_chat_replace_content(chat, i, digest);
 
     /* Downgrade importance so mark phase evicts these first */
     chat->msgs[i].importance = LLM_MSG_IMPORTANCE_LOW;

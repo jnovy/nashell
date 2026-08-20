@@ -464,6 +464,189 @@ static void test_stale_reads_get_low_importance(void) {
 }
 
 /* ══════════════════════════════════════════════════════════
+ *  3. Stale Digest Tests — head+tail excerpts in markers
+ * ══════════════════════════════════════════════════════════ */
+
+/* Digest preserves head lines (imports/includes visible) */
+static void test_digest_head_lines(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  const char *c_header =
+    "#ifndef CONFIG_H\n"
+    "#define CONFIG_H\n"
+    "#include <stdbool.h>\n"
+    "#include \"types.h\"\n"
+    "typedef struct {\n"
+    "    char *workspace_dir;\n"
+    "    int max_steps;\n"
+    "    bool verbose;\n"
+    "    int context_size;\n"
+    "    float temperature;\n"
+    "    char *model_name;\n"
+    "    int retry_count;\n"
+    "    int timeout_sec;\n"
+    "    int max_tokens;\n"
+    "    char *api_key;\n"
+    "    int file_read_max_inline;\n"
+    "} config_t;\n"
+    "#endif\n";
+  add_tool_pair(chat, 0, "file_read", "src/config.h", c_header);
+  add_tool_pair(chat, 1, "file_edit", "src/config.h", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  const char *marker = chat->msgs[2].content;
+  /* Header line present */
+  ASSERT_STR_CONTAINS(marker, "[Stale:");
+  ASSERT_STR_CONTAINS(marker, "src/config.h");
+  ASSERT_STR_CONTAINS(marker, "edited");
+  /* Head lines preserved — first 8 lines should be visible */
+  ASSERT_STR_CONTAINS(marker, "#ifndef CONFIG_H");
+  ASSERT_STR_CONTAINS(marker, "#include <stdbool.h>");
+  ASSERT_STR_CONTAINS(marker, "typedef struct {");
+  /* Footer present */
+  ASSERT_STR_CONTAINS(marker, "Re-read if needed.]");
+
+  llm_chat_free(chat);
+}
+
+/* Digest preserves tail lines (closing defs visible) */
+static void test_digest_tail_lines(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  const char *c_header =
+    "#ifndef CONFIG_H\n"
+    "#define CONFIG_H\n"
+    "#include <stdbool.h>\n"
+    "#include \"types.h\"\n"
+    "typedef struct {\n"
+    "    char *workspace_dir;\n"
+    "    int max_steps;\n"
+    "    bool verbose;\n"
+    "    int context_size;\n"
+    "    float temperature;\n"
+    "    char *model_name;\n"
+    "    int retry_count;\n"
+    "    int timeout_sec;\n"
+    "    int max_tokens;\n"
+    "    char *api_key;\n"
+    "    int file_read_max_inline;\n"
+    "} config_t;\n"
+    "#endif\n";
+  add_tool_pair(chat, 0, "file_read", "src/config.h", c_header);
+  add_tool_pair(chat, 1, "file_edit", "src/config.h", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  const char *marker = chat->msgs[2].content;
+  /* Tail lines preserved — last 4 lines should be visible */
+  ASSERT_STR_CONTAINS(marker, "file_read_max_inline");
+  ASSERT_STR_CONTAINS(marker, "} config_t;");
+  ASSERT_STR_CONTAINS(marker, "#endif");
+  /* Ellipsis separates head from tail */
+  ASSERT_STR_CONTAINS(marker, "...");
+
+  llm_chat_free(chat);
+}
+
+/* Short file (<=12 lines) preserved entirely, no ellipsis */
+static void test_digest_short_file(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  const char *short_file =
+    "#include <stdio.h>\n"
+    "int main(void) {\n"
+    "    printf(\"hello\\n\");\n"
+    "    return 0;\n"
+    "}\n";
+  add_tool_pair(chat, 0, "file_read", "hello.c", short_file);
+  add_tool_pair(chat, 1, "file_edit", "hello.c", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  const char *marker = chat->msgs[2].content;
+  ASSERT_STR_CONTAINS(marker, "[Stale:");
+  /* All content should be present — file is only 5 lines */
+  ASSERT_STR_CONTAINS(marker, "#include <stdio.h>");
+  ASSERT_STR_CONTAINS(marker, "int main(void)");
+  ASSERT_STR_CONTAINS(marker, "return 0;");
+  /* No ellipsis for short files */
+  ASSERT(!strstr(marker, "...") ||
+         strstr(marker, "...") > strstr(marker, "Re-read"));
+  ASSERT_STR_CONTAINS(marker, "Re-read if needed.]");
+
+  llm_chat_free(chat);
+}
+
+/* Digest respects 512-char cap even with huge content */
+static void test_digest_max_chars(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  /* Build a large file with many lines */
+  char *big = malloc(10001);
+  int pos = 0;
+  for (int i = 0; i < 200; i++) {
+    pos += snprintf(big + pos, 10001 - pos,
+                    "line_%03d: some_content_padding_here;\n", i);
+  }
+  big[pos] = '\0';
+  add_tool_pair(chat, 0, "file_read", "big.c", big);
+  free(big);
+  add_tool_pair(chat, 1, "file_edit", "big.c", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  const char *marker = chat->msgs[2].content;
+  ASSERT_STR_CONTAINS(marker, "[Stale:");
+  ASSERT_STR_CONTAINS(marker, "Re-read if needed.]");
+  /* Digest should not exceed 512 + some slack for the header/footer */
+  ASSERT((int)strlen(marker) <= 700);
+  /* Head line visible */
+  ASSERT_STR_CONTAINS(marker, "line_000:");
+  /* Ellipsis present (200 lines > 12) */
+  ASSERT_STR_CONTAINS(marker, "...");
+
+  llm_chat_free(chat);
+}
+
+/* Empty content produces minimal marker */
+static void test_digest_empty_content(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  add_tool_pair(chat, 0, "file_read", "empty.txt", "");
+  add_tool_pair(chat, 1, "file_edit", "empty.txt", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  const char *marker = chat->msgs[2].content;
+  ASSERT_STR_CONTAINS(marker, "[Stale:");
+  ASSERT_STR_CONTAINS(marker, "empty.txt");
+  ASSERT_STR_CONTAINS(marker, "Re-read if needed.]");
+
+  llm_chat_free(chat);
+}
+
+/* Digest content_len consistency after replacement */
+static void test_digest_content_len_consistent(void) {
+  llm_chat_t *chat = make_lifecycle_chat();
+  const char *content =
+    "line1\nline2\nline3\nline4\nline5\n"
+    "line6\nline7\nline8\nline9\nline10\n"
+    "line11\nline12\nline13\nline14\nline15\n";
+  add_tool_pair(chat, 0, "file_read", "test.c", content);
+  add_tool_pair(chat, 1, "file_edit", "test.c", "Edit applied.");
+  finish_chat(chat);
+
+  evict_lifecycle_stale_reads(chat, 1, chat->n_msgs - 1);
+
+  /* content_len must match actual strlen after replacement */
+  ASSERT_EQ((int)chat->msgs[2].content_len,
+            (int)strlen(chat->msgs[2].content));
+
+  llm_chat_free(chat);
+}
+
+/* ══════════════════════════════════════════════════════════
  *  Main
  * ══════════════════════════════════════════════════════════ */
 
@@ -491,7 +674,15 @@ int main(void) {
   RUN_TEST(test_type_compress_respects_boundaries);
   RUN_TEST(test_type_compress_mixed);
 
-  /* 3. Integration */
+  /* 3. Stale digest (head+tail excerpts) */
+  RUN_TEST(test_digest_head_lines);
+  RUN_TEST(test_digest_tail_lines);
+  RUN_TEST(test_digest_short_file);
+  RUN_TEST(test_digest_max_chars);
+  RUN_TEST(test_digest_empty_content);
+  RUN_TEST(test_digest_content_len_consistent);
+
+  /* 4. Integration */
   RUN_TEST(test_total_chars_consistency);
   RUN_TEST(test_stale_reads_get_low_importance);
 
