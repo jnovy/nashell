@@ -117,6 +117,23 @@ static const char *extract_desc(const char *tool, cJSON *params) {
   }
   if ((strcmp(tool, "file_edit") == 0 || strcmp(tool, "file_write") == 0) && path_s)
     return path_s;
+  /* image_analyze: show just the filename (no path=) + question */
+  if (strcmp(tool, "image_analyze") == 0 && path_s) {
+    static char ia_desc[256];
+    const char *base = strrchr(path_s, '/');
+    base = base ? base + 1 : path_s;
+    const char *q = json_str(params, "question");
+    if (q && q[0]) {
+      int qlen = (int)strlen(q);
+      int trunc = (qlen > 80);
+      if (trunc) qlen = 80;
+      snprintf(ia_desc, sizeof(ia_desc), "%s %.*s%s",
+               base, qlen, q, trunc ? "..." : "");
+    } else {
+      snprintf(ia_desc, sizeof(ia_desc), "%s", base);
+    }
+    return ia_desc;
+  }
   if ((strcmp(tool, "web_fetch") == 0 || strcmp(tool, "web_search") == 0) && url_s)
     return url_s;
   if (strcmp(tool, "shell_exec") == 0)
