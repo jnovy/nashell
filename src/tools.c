@@ -1231,14 +1231,19 @@ static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddNumberToObject(meta, "failed", failed);
   cJSON_AddStringToObject(meta, "summary", str_cstr(&summary));
 
+  /* Store summary as a ref so the UI renders it as clickable */
+  char *sum_hash = store_save(ctx->store, str_cstr(&summary));
+  char *sum_alias = tool_register_alias(ctx, sum_hash ? sum_hash : "");
+  free(sum_hash);
+
   /* Log to journal via tool_journal helper */
   tools_inject_thought(ctx, params);
-  tool_journal(ctx, "rollback", params, NULL,
+  tool_journal(ctx, "rollback", params, sum_alias,
                (size_t)(restored + deleted), 0,
                failed > 0 ? "partial rollback failure" : NULL, NULL);
 
   str_free(&summary);
-  return tools_make_result(failed == 0, meta, NULL);
+  return tools_make_result(failed == 0, meta, sum_alias);
 }
 
 /* ── Plugin descriptors for tools defined in this file ────────────── */
