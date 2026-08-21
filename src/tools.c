@@ -649,6 +649,9 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── done ────────────────────────────────────────────── */
 
+/* Forward declaration - defined in plan section below */
+static cJSON *plan_load(const tool_ctx_t *ctx);
+
 static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   const char *result = json_str_or(params, "result", "(no result)");
 
@@ -659,6 +662,33 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   cJSON *meta = cJSON_CreateObject();
   cJSON_AddStringToObject(meta, "result", result);
   cJSON_AddStringToObject(meta, "ref", alias);
+
+  /* Warn if plan has incomplete steps */
+  cJSON *plan_steps = plan_load(ctx);
+  if (plan_steps) {
+    int total = cJSON_GetArraySize(plan_steps);
+    int done = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, plan_steps) {
+      if (json_bool(item, "done", 0)) done++;
+    }
+    if (done < total) {
+      str_t warn = str_new(256);
+      str_appendf(&warn, "WARNING: %d/%d plan steps incomplete:",
+                  total - done, total);
+      int idx = 0;
+      cJSON_ArrayForEach(item, plan_steps) {
+        idx++;
+        if (!json_bool(item, "done", 0)) {
+          const char *t = json_str(item, "text");
+          str_appendf(&warn, " %d. %s;", idx, t ? t : "?");
+        }
+      }
+      cJSON_AddStringToObject(meta, "warning", str_cstr(&warn));
+      str_free(&warn);
+    }
+    cJSON_Delete(plan_steps);
+  }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "done", params, alias,
@@ -683,46 +713,262 @@ static tool_result_t tool_user_ask_stub(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── plan ──────────────────────────────────────────────── */
 
-static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
-  const char *result = json_str(params, "result");
-  if (!result || !result[0])
-    return tools_make_error("missing 'result' parameter with the plan text");
+/* Build the path to session_dir/plan.json */
+static void plan_json_path(const tool_ctx_t *ctx, char *buf, size_t sz) {
+  path_join(buf, sz, ctx->session_dir, "plan.json");
+}
 
-  /* Write plan to scratchpad as a high-priority section.
-     * The plan survives context eviction and is visible to the model
-     * throughout the react loop via the scratchpad injection. */
-  scratchpad_write(&ctx->scratch, "plan", result, 1); /* priority 1 = high */
+/* Load plan steps from plan.json.  Returns cJSON array (caller owns) or NULL. */
+static cJSON *plan_load(const tool_ctx_t *ctx) {
+  char path[NASH_PATH_MAX];
+  plan_json_path(ctx, path, sizeof(path));
+  cJSON *root = slurp_json(path);
+  if (!root) return NULL;
+  cJSON *steps = cJSON_DetachItemFromObject(root, "steps");
+  cJSON_Delete(root);
+  return steps; /* may be NULL if key missing */
+}
+
+/* Save plan steps array to plan.json.  steps is not consumed. */
+static void plan_save(const tool_ctx_t *ctx, const cJSON *steps) {
+  char path[NASH_PATH_MAX];
+  plan_json_path(ctx, path, sizeof(path));
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddItemToObject(root, "steps", cJSON_Duplicate(steps, 1));
+  dump_json(path, root);
+  cJSON_Delete(root);
+}
+
+/* Project plan state to scratchpad section "plan" at priority 1.
+ * Format: [x] 1. step text (R0S5)  /  [ ] 2. step text
+ * Appends a progress summary line. */
+static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
+  str_t s = str_new(512);
+  int total = 0, done = 0;
+  cJSON *item;
+  cJSON_ArrayForEach(item, steps) {
+    total++;
+    int is_done = json_bool(item, "done", 0);
+    const char *text = json_str(item, "text");
+    const char *ev = json_str(item, "evidence");
+    if (is_done) {
+      done++;
+      if (ev && ev[0])
+        str_appendf(&s, "[x] %d. %s (%s)\n", total, text ? text : "", ev);
+      else
+        str_appendf(&s, "[x] %d. %s\n", total, text ? text : "");
+    } else {
+      str_appendf(&s, "[ ] %d. %s\n", total, text ? text : "");
+    }
+  }
+  if (total > 0)
+    str_appendf(&s, "Progress: %d/%d complete", done, total);
+  scratchpad_write(&ctx->scratch, "plan", str_cstr(&s), 1);
   scratchpad_save(&ctx->scratch, ctx->session_dir);
+  str_free(&s);
+}
 
-  /* Store in content-addressed store for audit trail */
-  char *hash = store_save(ctx->store, result);
-  char *alias = tool_register_alias(ctx, hash ? hash : "");
-
-  /* Count plan steps (lines starting with a digit) */
-  int steps = 0;
-  const char *p = result;
+/* Parse numbered steps from plan text into a cJSON array of step objects. */
+static cJSON *plan_parse_steps(const char *text) {
+  cJSON *steps = cJSON_CreateArray();
+  const char *p = text;
   while (*p) {
-    while (*p == ' ' || *p == '\t')
-      p++;
-    if (*p >= '1' && *p <= '9') steps++;
-    while (*p && *p != '\n')
-      p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p >= '1' && *p <= '9') {
+      /* Skip number and punctuation (e.g. "1. ") */
+      const char *line_start = p;
+      while (*p && *p != '.' && *p != ')' && *p != ' ' && *p != '\n') p++;
+      if (*p == '.' || *p == ')') p++;
+      while (*p == ' ' || *p == '\t') p++;
+      /* Grab the rest of the line as step text */
+      const char *end = p;
+      while (*end && *end != '\n') end++;
+      /* Trim trailing whitespace */
+      const char *trim = end;
+      while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
+      char *step_text;
+      if (trim > p) {
+        step_text = strndup(p, (size_t)(trim - p));
+      } else {
+        /* fallback: use entire line */
+        const char *le = line_start;
+        while (*le && *le != '\n') le++;
+        step_text = strndup(line_start, (size_t)(le - line_start));
+      }
+      cJSON *step = cJSON_CreateObject();
+      cJSON_AddStringToObject(step, "text", step_text);
+      cJSON_AddBoolToObject(step, "done", 0);
+      cJSON_AddNullToObject(step, "evidence");
+      cJSON_AddItemToArray(steps, step);
+      free(step_text);
+      p = end;
+    } else {
+      while (*p && *p != '\n') p++;
+    }
     if (*p == '\n') p++;
   }
+  return steps;
+}
 
-  cJSON *meta = cJSON_CreateObject();
-  cJSON_AddStringToObject(meta, "status", "plan saved to scratchpad");
-  cJSON_AddNumberToObject(meta, "steps", steps);
-  if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
+  const char *result = json_str(params, "result");
+  const char *op = json_str(params, "op");
 
-  tools_inject_thought(ctx, params);
-  tool_journal(ctx, "plan",
-               params, alias, strlen(result), steps, NULL, NULL);
+  /* If "result" is provided, this is a plan create/replace (backward compat) */
+  if (result && result[0]) {
+    cJSON *steps = plan_parse_steps(result);
+    int n = cJSON_GetArraySize(steps);
+    if (n == 0) {
+      cJSON_Delete(steps);
+      return tools_make_error("No numbered steps found in plan text. "
+                              "Use '1. step' format.");
+    }
 
-  char *ref_copy = alias ? xstrdup(alias) : NULL;
-  free(alias);
-  free(hash);
-  return tools_make_result(1, meta, ref_copy);
+    /* Save structured state to plan.json */
+    plan_save(ctx, steps);
+
+    /* Project to scratchpad for prompt visibility */
+    plan_project_to_scratchpad(ctx, steps);
+    cJSON_Delete(steps);
+
+    /* Store in content-addressed store for audit trail */
+    char *hash = store_save(ctx->store, result);
+    char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "plan saved to scratchpad");
+    cJSON_AddNumberToObject(meta, "steps", n);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "plan",
+                 params, alias, strlen(result), n, NULL, NULL);
+
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
+    free(alias);
+    free(hash);
+    return tools_make_result(1, meta, ref_copy);
+  }
+
+  /* Op-based dispatch (check, uncheck, status) */
+  if (!op || !op[0])
+    return tools_make_error("Provide either 'result' to create a plan, "
+                            "or 'op' (check/uncheck/status) to update it.");
+
+  cJSON *steps = plan_load(ctx);
+
+  if (strcmp(op, "status") == 0) {
+    if (!steps) return tools_make_error("No plan exists yet. "
+                                        "Create one with plan(result=\"...\").");
+    int total = cJSON_GetArraySize(steps);
+    int done = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, steps) {
+      if (json_bool(item, "done", 0)) done++;
+    }
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddNumberToObject(meta, "total", total);
+    cJSON_AddNumberToObject(meta, "done", done);
+    cJSON_AddNumberToObject(meta, "remaining", total - done);
+
+    /* Build readable status */
+    str_t s = str_new(256);
+    str_appendf(&s, "%d/%d steps complete", done, total);
+    if (done < total) {
+      str_append_cstr(&s, ". Remaining:");
+      int idx = 0;
+      cJSON_ArrayForEach(item, steps) {
+        idx++;
+        if (!json_bool(item, "done", 0)) {
+          const char *t = json_str(item, "text");
+          str_appendf(&s, " %d. %s;", idx, t ? t : "?");
+        }
+      }
+    }
+    cJSON_AddStringToObject(meta, "status", str_cstr(&s));
+    str_free(&s);
+
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "plan", params, NULL, 0, done, NULL, NULL);
+    cJSON_Delete(steps);
+    return tools_make_result(1, meta, NULL);
+  }
+
+  if (strcmp(op, "check") == 0 || strcmp(op, "uncheck") == 0) {
+    if (!steps) return tools_make_error("No plan exists yet. "
+                                        "Create one with plan(result=\"...\").");
+    int step_num = json_int(params, "step", 0);
+    int total = cJSON_GetArraySize(steps);
+    if (step_num < 1 || step_num > total) {
+      cJSON_Delete(steps);
+      char err[128];
+      snprintf(err, sizeof(err),
+               "Invalid step %d. Plan has %d steps (1-%d).",
+               step_num, total, total);
+      return tools_make_error(err);
+    }
+
+    int checking = (strcmp(op, "check") == 0);
+    cJSON *step = cJSON_GetArrayItem(steps, step_num - 1);
+
+    if (checking) {
+      const char *evidence = json_str(params, "evidence");
+      if (!evidence || !evidence[0]) {
+        cJSON_Delete(steps);
+        return tools_make_error("'evidence' required: provide a ref alias "
+                                "(e.g. R0S5) from a tool result that proves "
+                                "this step is complete.");
+      }
+      /* Validate evidence ref exists */
+      const char *resolved = alias_map_lookup(ctx->aliases, evidence);
+      if (!resolved) {
+        cJSON_Delete(steps);
+        char err[256];
+        snprintf(err, sizeof(err),
+                 "Evidence ref '%s' not found. Provide a valid ref alias "
+                 "from a prior tool result.", evidence);
+        return tools_make_error(err);
+      }
+      cJSON_ReplaceItemInObject(step, "done", cJSON_CreateTrue());
+      cJSON_DeleteItemFromObject(step, "evidence");
+      cJSON_AddStringToObject(step, "evidence", evidence);
+    } else {
+      /* uncheck */
+      cJSON_ReplaceItemInObject(step, "done", cJSON_CreateFalse());
+      cJSON_DeleteItemFromObject(step, "evidence");
+      cJSON_AddNullToObject(step, "evidence");
+    }
+
+    plan_save(ctx, steps);
+    plan_project_to_scratchpad(ctx, steps);
+
+    /* Count completed */
+    int done = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, steps) {
+      if (json_bool(item, "done", 0)) done++;
+    }
+
+    const char *step_text = json_str(step, "text");
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "op", op);
+    cJSON_AddNumberToObject(meta, "step", step_num);
+    cJSON_AddStringToObject(meta, "step_text", step_text ? step_text : "");
+    cJSON_AddNumberToObject(meta, "done", done);
+    cJSON_AddNumberToObject(meta, "total", total);
+
+    char status[128];
+    snprintf(status, sizeof(status), "step %d %s (%d/%d complete)",
+             step_num, checking ? "checked" : "unchecked", done, total);
+    cJSON_AddStringToObject(meta, "status", status);
+
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "plan", params, NULL, 0, done, NULL, NULL);
+    cJSON_Delete(steps);
+    return tools_make_result(1, meta, NULL);
+  }
+
+  return tools_make_error("Unknown op. Use 'check', 'uncheck', or 'status'.");
 }
 
 
@@ -865,7 +1111,10 @@ static const tool_param_t done_params[] = {
   TOOL_PARAM_END};
 
 static const tool_param_t plan_params[] = {
-  TOOL_PARAM("result", "string", "Numbered plan: 1. step (tool)\n2. ...", 1),
+  TOOL_PARAM("result", "string", "Numbered plan: 1. step (tool)\n2. ...", 0),
+  TOOL_PARAM("op", "string", "Operation: check, uncheck, status (omit when creating a plan)", 0),
+  TOOL_PARAM("step", "integer", "Step number to check/uncheck (1-based)", 0),
+  TOOL_PARAM("evidence", "string", "Ref alias (e.g. R0S5) proving step completion", 0),
   TOOL_PARAM_END};
 
 static const tool_param_t user_ask_params[] = {
@@ -987,7 +1236,11 @@ static const tool_plugin_t core_plugins[] = {
            done_params, tool_done),
 
   TOOL_DEF("plan",
-           "Outline a numbered execution plan (3-8 steps) before starting work.",
+           "Outline a numbered execution plan (3-8 steps) before starting work. "
+           "Tracks completion: use plan(op=\"check\", step=N, evidence=\"R0S5\") to mark "
+           "a step done with proof, plan(op=\"uncheck\", step=N) to revert, or "
+           "plan(op=\"status\") to see progress. Incomplete steps trigger a warning "
+           "when calling done.",
            plan_params, tool_plan),
 
   TOOL_DEF("user_ask",
