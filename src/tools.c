@@ -739,10 +739,10 @@ static void plan_save(const tool_ctx_t *ctx, const cJSON *steps) {
   cJSON_Delete(root);
 }
 
-/* Project plan state to scratchpad section "plan" at priority 1.
+/* Format plan state as human-readable text.
  * Format: [x] 1. step text (R0S5)  /  [ ] 2. step text
- * Appends a progress summary line. */
-static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
+ * Appends a progress summary line.  Caller must free() the result. */
+static char *plan_format_text(const cJSON *steps) {
   str_t s = str_new(512);
   int total = 0, done = 0;
   cJSON *item;
@@ -763,9 +763,28 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
   }
   if (total > 0)
     str_appendf(&s, "Progress: %d/%d complete", done, total);
-  scratchpad_write(&ctx->scratch, "plan", str_cstr(&s), 1);
-  scratchpad_save(&ctx->scratch, ctx->session_dir);
+  char *result = xstrdup(str_cstr(&s));
   str_free(&s);
+  return result;
+}
+
+/* Project plan state to scratchpad section "plan" at priority 1. */
+static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
+  char *text = plan_format_text(steps);
+  scratchpad_write(&ctx->scratch, "plan", text, 1);
+  scratchpad_save(&ctx->scratch, ctx->session_dir);
+  free(text);
+}
+
+/* Store plan text in content-addressed store and return an alias.
+ * Caller must free() the returned alias. */
+static char *plan_store_and_alias(tool_ctx_t *ctx, const cJSON *steps) {
+  char *text = plan_format_text(steps);
+  char *hash = store_save(ctx->store, text);
+  char *alias = tool_register_alias(ctx, hash ? hash : "");
+  free(text);
+  free(hash);
+  return alias;
 }
 
 /* Parse numbered steps from plan text into a cJSON array of step objects. */
@@ -888,10 +907,15 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", str_cstr(&s));
     str_free(&s);
 
+    char *alias = plan_store_and_alias(ctx, steps);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
     tools_inject_thought(ctx, params);
-    tool_journal(ctx, "plan", params, NULL, 0, done, NULL, NULL);
+    tool_journal(ctx, "plan", params, alias, 0, done, NULL, NULL);
     cJSON_Delete(steps);
-    return tools_make_result(1, meta, NULL);
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
+    free(alias);
+    return tools_make_result(1, meta, ref_copy);
   }
 
   if (strcmp(op, "check") == 0 || strcmp(op, "uncheck") == 0) {
@@ -962,10 +986,15 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
              step_num, checking ? "checked" : "unchecked", done, total);
     cJSON_AddStringToObject(meta, "status", status);
 
+    char *alias = plan_store_and_alias(ctx, steps);
+    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+
     tools_inject_thought(ctx, params);
-    tool_journal(ctx, "plan", params, NULL, 0, done, NULL, NULL);
+    tool_journal(ctx, "plan", params, alias, 0, done, NULL, NULL);
     cJSON_Delete(steps);
-    return tools_make_result(1, meta, NULL);
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
+    free(alias);
+    return tools_make_result(1, meta, ref_copy);
   }
 
   return tools_make_error("Unknown op. Use 'check', 'uncheck', or 'status'.");
