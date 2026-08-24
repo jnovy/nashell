@@ -1644,6 +1644,53 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         react_emit(on_event, userdata, &ev);
       }
 
+      /* Pre-execution trigger: check cue-anchored memories against the
+       * action name + params BEFORE executing the tool. If a memory
+       * fires, intercept: inject the hint and loop back to the LLM
+       * without executing the tool. This enables patterns like
+       * "check memory before calling user_ask". */
+      if ((ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory) {
+        char *pre_params = cJSON_PrintUnformatted(action);
+        size_t pre_len = strlen(action_name) + 1 +
+                         (pre_params ? strlen(pre_params) : 0) + 1;
+        char *pre_surface = xmalloc(pre_len);
+        snprintf(pre_surface, pre_len, "%s %s",
+                 action_name, pre_params ? pre_params : "");
+        free(pre_params);
+
+        trig_ctx_t pre_tctx = {pre_surface, ctx->tools, chat, 0};
+        if (ctx->tools->ws) {
+          memory_iterate(ctx->tools->ws->global, trig_cb, &pre_tctx);
+          if (pre_tctx.injected < 2 && ctx->tools->ws->workspace)
+            memory_iterate(ctx->tools->ws->workspace, trig_cb, &pre_tctx);
+        } else {
+          memory_iterate(ctx->tools->memory, trig_cb, &pre_tctx);
+        }
+        free(pre_surface);
+
+        if (pre_tctx.injected > 0) {
+          /* Intercepted: add assistant response to chat so it is
+           * preserved, then inject a reconsider prompt and skip
+           * tool execution entirely. The model will re-evaluate
+           * with the memory hint visible in context. */
+          llm_chat_add(chat, "assistant", response);
+          llm_chat_add(chat, "user",
+            "[PRE-EXECUTION INTERCEPT] A cue-anchored memory was "
+            "triggered by your intended action. Review the memory "
+            "hint above and reconsider whether to proceed with this "
+            "tool call or take a different approach.");
+          if (chat->n_msgs > 0)
+            chat->msgs[chat->n_msgs - 1].importance =
+              LLM_MSG_IMPORTANCE_HIGH;
+          nash_log("[react] pre-exec trigger intercepted %s (step %d)",
+                   action_name, step + 1);
+          free(sig);
+          free(response);
+          cJSON_Delete(action);
+          continue;
+        }
+      }
+
       /* Normal execution — inject thought into tool_ctx for journal recording */
       ctx->tools->thought = thought;
       ctx->tools->on_event = on_event;
