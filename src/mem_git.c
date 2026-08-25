@@ -43,7 +43,7 @@ void memory_git_init(memory_t *m) {
   /* Initial commit with any existing files */
   const char *add_argv[] = {"git", "add", "-A", NULL};
   memory_git_run(m, add_argv);
-  const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty",
+  const char *commit_argv[] = {"git", "commit", "-q", "-s", "--allow-empty",
                                "-m", "memory: initialize memory store", NULL};
   memory_git_run(m, commit_argv);
 }
@@ -76,7 +76,7 @@ void memory_git_commit(memory_t *m, const char *msg) {
     snprintf(full_msg, sizeof(full_msg), "%s", msg);
   }
 
-  const char *commit_argv[] = {"git", "commit", "-q", "--allow-empty-message",
+  const char *commit_argv[] = {"git", "commit", "-q", "-s", "--allow-empty-message",
                                "-m", full_msg, NULL};
   memory_git_run(m, commit_argv);
 }

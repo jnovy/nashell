@@ -1,4 +1,4 @@
-/* react_context.c — Initial context construction for the react loop.
+/* react_context.c  - Initial context construction for the react loop.
  * Extracted from react_run().
  *
  * Builds the initial chat context: system prompt, memory injection,
@@ -38,7 +38,7 @@ static const char *format_recency(double created_at, char *buf, size_t bufsz) {
 
 /* Converted from INJECT_TYPE macro to debuggable static function.
  * Injects relevant memories of a given type prefix into the chat context.
- * Change 3 (arXiv 2605.15184 Finding #6): Enriched rendering — includes
+ * Change 3 (arXiv 2605.15184 Finding #6): Enriched rendering  - includes
  * temporal recency and confidence metadata alongside memory content.
  *
  * Progressive disclosure (arXiv 2604.08224 §4.3.3): when summary_only=1,
@@ -126,7 +126,7 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
   str_free(&msg);
 }
 
-/* Shared helper — injects memory index and pinned knowledge into chat.
+/* Shared helper  - injects memory index and pinned knowledge into chat.
  * Used by both react_build_context() and react_checkpoint_restore().
  * Returns mem_summary and pinned via output params for logging (caller frees). */
 void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
@@ -190,7 +190,7 @@ static int build_pmap_cb(cJSON *entry, void *user_data) {
   return 0;
 }
 
-/* Extracted from react_build_context — was 65 lines nested 4 deep.
+/* Extracted from react_build_context  - was 65 lines nested 4 deep.
  * Filters scratchpad sections for branching: only R*_result sections from
  * ancestor loops are included. Returns malloc'd serialized string (caller frees).
  * Walks parent chain in journal to build ancestor set, then filters sections. */
@@ -228,7 +228,7 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     }
   }
 
-  /* Build filtered scratchpad copy — only ancestor R*_result sections */
+  /* Build filtered scratchpad copy  - only ancestor R*_result sections */
   scratchpad_t filtered;
   scratchpad_init(&filtered);
   for (int si = 0; si < scratch->count; si++) {
@@ -331,7 +331,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
         pthread_mutex_unlock(&ws_mem->mtx);
       }
 
-      /* Sort by timestamp descending (insertion sort — small N) */
+      /* Sort by timestamp descending (insertion sort  - small N) */
       for (int i = 1; i < n_recent; i++) {
         tcal_entry_t tmp = recent[i];
         int j = i - 1;
@@ -361,7 +361,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
             time_t ts = (time_t)recent[i].ts;
             char datebuf[16];
             format_iso_date(ts, datebuf, sizeof(datebuf));
-            str_appendf(&cal, "  %s  %s — %s\n",
+            str_appendf(&cal, "  %s  %s  - %s\n",
                         datebuf, recent[i].key, recent[i].desc);
           }
         }
@@ -372,7 +372,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
             time_t ts = (time_t)older[i].ts;
             char datebuf[16];
             format_iso_date(ts, datebuf, sizeof(datebuf));
-            str_appendf(&cal, "  %s  %s — %s\n",
+            str_appendf(&cal, "  %s  %s  - %s\n",
                         datebuf, older[i].key, older[i].desc);
           }
         }
@@ -430,7 +430,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
                 ts_str = ts_str ? ts_str + 1 : sr->session_dir;
                 llm_chat_add_formatted(chat, "user",
                                        LLM_MSG_EPISODIC,
-                                       "[RECALLED SESSION CHUNK — %s]\n%s\n"
+                                       "[RECALLED SESSION CHUNK  - %s]\n%s\n"
                                        "  -> file_read %s/journal.jsonl for full context",
                                        ts_str, preview, sr->session_dir);
               }
@@ -443,7 +443,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
     }
   }
 
-  /* Inject relevant memories by type — semantic recall filtered by prefix. */
+  /* Inject relevant memories by type  - semantic recall filtered by prefix. */
   int max_skills = ctx->tools->cfg ? ctx->tools->cfg->max_skills_per_query : 3;
   int max_lessons = ctx->tools->cfg ? ctx->tools->cfg->max_lessons_per_query : 2;
   int max_strategies = ctx->tools->cfg ? ctx->tools->cfg->max_strategies_per_query : 2;
@@ -504,7 +504,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
          * When a recalled memory has refs[], follow them one level deep.
          * MRAgent (ICML 2026): reconstruction via graph traversal outperforms
          * single-query retrieval by 23%. Our refs[] already exist but are only
-         * used for score boosting — actually injecting them implements
+         * used for score boosting  - actually injecting them implements
          * associative recall. */
   {
     int assoc_depth = ctx->tools->cfg
@@ -575,13 +575,13 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
   (void)on_event;
   (void)userdata;
 
-  /* Reset per-loop counters FIRST — before any journal logging that uses step. */
+  /* Reset per-loop counters FIRST  - before any journal logging that uses step. */
   ctx->tools->step = 0;
 
   /* System message */
   react_add_system_prompt(chat, ctx);
 
-  /* Inject memory summary (counts only — no alphabetical listing) */
+  /* Inject memory summary (counts only  - no alphabetical listing) */
   if (ctx->flags.inject_memory && (ctx->tools->memory || ctx->tools->ws)) {
     char *mem_summary = NULL, *pinned = NULL;
     react_inject_memory_and_pinned(chat, ctx->tools, &mem_summary, &pinned);
@@ -636,7 +636,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
           &ctx->tools->scratch, ctx->tools->session_dir,
           ctx->parent_loop, max_scratchpad);
       } else {
-        /* Normal (linear) — serialize all sections */
+        /* Normal (linear)  - serialize all sections */
         serialized = scratchpad_serialize_budget(&ctx->tools->scratch, max_scratchpad);
       }
     }
@@ -655,7 +655,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     }
   }
 
-  /* Inject previous result — loaded from session_dir/result.md.
+  /* Inject previous result  - loaded from session_dir/result.md.
      * Keep prev_result alive until after TUI view check for dedup. */
   char *prev_result = NULL;
   if (ctx->flags.inject_prev_result && ctx->tools->session_dir) {
@@ -684,7 +684,7 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
      * about what the user is looking at. Skip for session.md (generic
      * overview) and NULL (no file / headless mode).
      * Also skip when the viewed file has the same content as prev_result
-     * — this happens when the user is viewing the [done] result, which
+     *  - this happens when the user is viewing the [done] result, which
      * is already fully present in ctx:prev_result. */
   if (ctx->tui_viewing_file && ctx->tui_viewing_file[0]) {
     const char *base = strrchr(ctx->tui_viewing_file, '/');

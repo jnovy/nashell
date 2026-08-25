@@ -34,7 +34,7 @@ static void consolidation_carry_scores(memory_t *m,
   /* memory_update_scores() handles both disk persistence (load JSON,
      * add counters, write back) and in-memory index update in one call.
      * Previously this function did its own load/modify/write cycle first,
-     * then called memory_update_scores which did the same — resulting in
+     * then called memory_update_scores which did the same  - resulting in
      * double-counting (old_hits added twice to disk). */
   memory_update_scores(m, survivor_key, old_hits, old_misses);
 }
@@ -70,7 +70,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * cached embeddings when available, falling back to disk load.
      *
      * Consolidation threshold: cosine similarity above which two memories
-     * are considered near-duplicates and merged. 0.82 is conservative —
+     * are considered near-duplicates and merged. 0.82 is conservative  -
      * only genuinely redundant entries trigger consolidation.
      * Configurable via config.toml [limits] consolidation_threshold.
      *
@@ -84,7 +84,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
   /* FIX CRITICAL #1: Snapshot index keys and paths under the mutex,
      * then iterate the snapshot without holding the lock.  Previously
-     * iterated m->idx.entries[] directly without the mutex — a concurrent
+     * iterated m->idx.entries[] directly without the mutex  - a concurrent
      * memory_delete (swap-remove) could cause use-after-free or OOB. */
   memory_t *m = target;
   typedef struct {
@@ -106,7 +106,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
           mem_index_entry_t *e = &m->idx.entries[i];
           snap[i].key = e->key ? xstrdup(e->key) : NULL;
           snap[i].path = e->path ? xstrdup(e->path) : NULL;
-          /* Don't deep-copy embeddings under the mutex — the bulk
+          /* Don't deep-copy embeddings under the mutex  - the bulk
                      * mallocs block all concurrent memory operations.  Instead
                      * record whether an embedding exists and load from disk
                      * outside the lock (the fallback path already handles this). */
@@ -124,7 +124,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   for (int i = 0; i < snap_count; i++) {
     if (!snap[i].key) continue;
 
-    /* Skip self — the entry we just stored */
+    /* Skip self  - the entry we just stored */
     if (strcmp(snap[i].key, new_key) == 0) continue;
 
     /* Get embedding: prefer cached snapshot, fall back to disk */
@@ -211,7 +211,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * This prevents contradictory entries from being merged into incoherent
      * mush, and allows corrective insights to properly replace outdated ones.
      *
-     * FIX B10: Include key lengths in allocation — the format string
+     * FIX B10: Include key lengths in allocation  - the format string
      * interpolates new_key and old_key too, which could be up to 256
      * chars each. */
   size_t prompt_sz = strlen(new_value) + strlen(old_value) +
@@ -223,11 +223,11 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
            "--- NEW entry (key: %s) ---\n%s\n\n"
            "--- EXISTING entry (key: %s) ---\n%s\n\n"
            "First, classify the relationship as exactly one of:\n"
-           "SUPERSEDES — the NEW entry corrects, updates, or invalidates the EXISTING entry "
+           "SUPERSEDES  - the NEW entry corrects, updates, or invalidates the EXISTING entry "
            "(e.g. opposite advice, updated procedure, refined understanding)\n"
-           "COMPLEMENTARY — the entries cover different aspects of the same topic "
+           "COMPLEMENTARY  - the entries cover different aspects of the same topic "
            "(e.g. different failure modes, different contexts, different techniques)\n"
-           "REDUNDANT — the entries say essentially the same thing with different wording\n\n"
+           "REDUNDANT  - the entries say essentially the same thing with different wording\n\n"
            "Output format:\n"
            "Line 1: SUPERSEDES or COMPLEMENTARY or REDUNDANT\n"
            "Line 2+: If REDUNDANT, output the merged text (concise, preserve unique info). "
@@ -252,7 +252,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      * input itself must be valid at the time of the call.
      * FIX MED#10: Inherit llm_timeout to prevent indefinite blocking.
      *
-     * WARNING (FIX #21): Shallow struct copy below — ALL pointer fields in
+     * WARNING (FIX #21): Shallow struct copy below  - ALL pointer fields in
      * provider_config_t MUST be deep-copied.  Currently 5 pointer fields:
      *   model_id, api_base, api_key_env, project_id, region
      * If you add a new pointer field to provider_config_t, add a strdup here
@@ -289,14 +289,14 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
   /* Parse classification from first line of response */
   if (strncmp(response, "COMPLEMENTARY", 13) == 0) {
-    /* Entries cover different aspects — keep both, do nothing */
+    /* Entries cover different aspects  - keep both, do nothing */
     free(response);
     cJSON_Delete(old_entry);
     return NULL;
   }
 
   if (strncmp(response, "SUPERSEDES", 10) == 0) {
-    /* New entry corrects/updates old — delete old, keep new as-is.
+    /* New entry corrects/updates old  - delete old, keep new as-is.
          * FIX D4: Return key for batch deletion instead of inline delete. */
     char *del_key = (strcmp(old_key, new_key) != 0) ? xstrdup(old_key) : NULL;
     /* Carry forward old entry's validation evidence to the new entry.
@@ -330,7 +330,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
       }
     }
     if (!merged) {
-      /* Couldn't extract merged text — skip */
+      /* Couldn't extract merged text  - skip */
       free(response);
       cJSON_Delete(old_entry);
       return NULL;
@@ -381,7 +381,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   }
   /* FIX BUG#3: removed unreachable cJSON_Delete that was after the
      * unconditional return in the REDUNDANT block above. */
-  return NULL; /* unreachable — silences compiler warning */
+  return NULL; /* unreachable  - silences compiler warning */
 }
 
 /* ── memory_store ──────────────────────────────────────── */
@@ -404,7 +404,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
   /* Parse refs (comma-separated string of related memory keys).
      * Inter-memory relationships for "see also" links.
      * Research: MemForest [arXiv:2605.23986], ActiveGraph [arXiv:2605.21997],
-     * MemIR [arXiv:2605.25869] — all validate graph-structured memory. */
+     * MemIR [arXiv:2605.25869]  - all validate graph-structured memory. */
   const char *refs_arr[32];
   int n_refs = 0;
   cJSON *refs_j = cJSON_GetObjectItem(params, "refs");
@@ -550,8 +550,8 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     }
   }
 
-  /* P2: Lesson lineage — if 'supersedes' is provided, set the lineage chain.
-     * Self-Harness [arXiv:2606.09498] — harness lineage h₀→h₁→h₂. */
+  /* P2: Lesson lineage  - if 'supersedes' is provided, set the lineage chain.
+     * Self-Harness [arXiv:2606.09498]  - harness lineage h₀→h₁→h₂. */
   TOOL_OPT_STR(params, "supersedes", supersedes);
   if (supersedes) {
     if (ctx->ws)
@@ -576,7 +576,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
       memory_set_basis(ctx->memory, key, basis_str);
   }
 
-  /* Belief Entropy probe — compute ℋ_BE for the new memory entry.
+  /* Belief Entropy probe  - compute ℋ_BE for the new memory entry.
      * Only runs when enabled in config AND provider is local (has /completion).
      * The probe is lightweight (~30 tokens) and non-blocking on failure. */
   if (ctx->cfg && ctx->cfg->belief_entropy.enabled && ctx->provider &&
@@ -774,10 +774,10 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                            : -1.0;
 
       if (mem_score >= ses_score && mi < mem_count) {
-        /* Emit memory result (>= means memory wins ties — intentional:
+        /* Emit memory result (>= means memory wins ties  - intentional:
                  * curated memory is higher quality than raw session logs) */
         memory_entry_t *e = &mem_results.entries[mi];
-        str_appendf(&out, "[MEMORY — %s]\n%s\n\n", e->key, e->value);
+        str_appendf(&out, "[MEMORY -- %s]\n%s\n\n", e->key, e->value);
         tool_track_recalled_key(ctx, e->key);
         tool_fire_ledger_add(ctx, e->key);
         mi++;
@@ -803,7 +803,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                                 r->confidence < 3)
                                  ? conf_labels[r->confidence]
                                  : "UNKNOWN";
-          str_appendf(&out, "[SESSION — %s  %s  score=%.3f",
+          str_appendf(&out, "[SESSION -- %s  %s  score=%.3f",
                       ts_buf, clabel,
                       r->composite_score);
           if (has_semantic)
@@ -834,7 +834,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
           }
         } else {
           str_appendf(&out,
-                      "[SESSION — %s]\n    %s\n"
+                      "[SESSION -- %s]\n    %s\n"
                       "  -> file_read %s/journal.jsonl for details\n",
                       ts_buf,
                       r->session_dir ? r->session_dir : "",

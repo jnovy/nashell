@@ -686,25 +686,34 @@ int memory_store(memory_t *m, const char *key, const char *value,
      * During recall, ref'd memories get a score boost (+0.3 × parent score)
      * when the referencing memory scores highly (≥0.5), creating implicit
      * "see also" behavior without explicit graph traversal. */
-  if (refs && n_refs > 0) {
-    cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
-    for (int i = 0; i < n_refs; i++)
-      cJSON_AddItemToArray(refs_arr, cJSON_CreateString(refs[i]));
-    /* SodaMem: Save ref_types parallel to refs.
-     * BUG-F fix: match old ref_types by key, not position, so reordered
-     * refs preserve their correct edge types. */
-    if (old_ref_types && n_old_ref_types > 0 &&
-        old_refs && n_old_refs > 0) {
-      cJSON *rt_arr = cJSON_AddArrayToObject(entry, "ref_types");
-      for (int i = 0; i < n_refs; i++) {
-        int rt = 0; /* default: RELATES */
-        for (int j = 0; j < n_old_refs && j < n_old_ref_types; j++) {
-          if (old_refs[j] && strcmp(refs[i], old_refs[j]) == 0) {
-            rt = old_ref_types[j];
-            break;
+  /* Use caller-provided refs if given, otherwise preserve from old entry. */
+  {
+    const char **r_arr = refs;
+    int r_cnt = n_refs;
+    if (!r_arr && old_refs) {
+      r_arr = (const char **)old_refs;
+      r_cnt = n_old_refs;
+    }
+    if (r_arr && r_cnt > 0) {
+      cJSON *refs_arr = cJSON_AddArrayToObject(entry, "refs");
+      for (int i = 0; i < r_cnt; i++)
+        cJSON_AddItemToArray(refs_arr, cJSON_CreateString(r_arr[i]));
+      /* SodaMem: Save ref_types parallel to refs.
+       * BUG-F fix: match old ref_types by key, not position, so reordered
+       * refs preserve their correct edge types. */
+      if (old_ref_types && n_old_ref_types > 0 &&
+          old_refs && n_old_refs > 0) {
+        cJSON *rt_arr = cJSON_AddArrayToObject(entry, "ref_types");
+        for (int i = 0; i < r_cnt; i++) {
+          int rt = 0; /* default: RELATES */
+          for (int j = 0; j < n_old_refs && j < n_old_ref_types; j++) {
+            if (old_refs[j] && strcmp(r_arr[i], old_refs[j]) == 0) {
+              rt = old_ref_types[j];
+              break;
+            }
           }
+          cJSON_AddItemToArray(rt_arr, cJSON_CreateNumber(rt));
         }
-        cJSON_AddItemToArray(rt_arr, cJSON_CreateNumber(rt));
       }
     }
   }
