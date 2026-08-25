@@ -69,6 +69,10 @@ typedef struct {
      * use without executing it. */
   char **required_tools; /* NULL = no requirement */
   int n_required_tools;
+  /* Early pipeline termination: if the pass result contains this
+   * substring, the playbook stops cleanly (success, not failure).
+   * NULL = disabled (default). */
+  char *stop_when;
 } pb_pass_t;
 
 typedef struct {

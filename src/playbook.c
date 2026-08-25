@@ -196,6 +196,10 @@ playbook_t *playbook_load(const char *path) {
       else
         pb->passes[i].on_error = PB_ON_ERROR_ABORT;
 
+      /* Early pipeline stop: substring match on pass result */
+      const char *sw = yaml_str(yaml_get(pass, "stop_when"));
+      pb->passes[i].stop_when = sw ? xstrdup(sw) : NULL;
+
       /* Mandatory tool verification (SIGIL, arxiv 2607.27309) */
       yaml_node_t *req_tools = yaml_get(pass, "required_tools");
       if (req_tools && req_tools->type == YAML_SEQUENCE) {
@@ -240,6 +244,7 @@ void playbook_free(playbook_t *pb) {
     free(pb->passes[i].command);
     free(pb->passes[i].system_prompt);
     free_string_array(pb->passes[i].required_tools, pb->passes[i].n_required_tools);
+    free(pb->passes[i].stop_when);
     free_react_overrides(&pb->passes[i].react);
   }
   free(pb->passes);
@@ -1297,6 +1302,27 @@ void *playbook_worker(void *arg) {
       if (pass_failed) {
         playbook_ok = 0;
         break;
+      }
+
+      /* stop_when: clean early pipeline termination on substring match */
+      if (pb->passes[pass].stop_when && prev_result &&
+          strstr(prev_result, pb->passes[pass].stop_when)) {
+        fprintf(stderr,
+                "[play] pass %d/%d ('%s'): stop_when matched "
+                "('%s'), ending playbook (success)\n",
+                pass + 1, pb->n_passes, pb->passes[pass].label,
+                pb->passes[pass].stop_when);
+        if (run_log) {
+          struct timespec stop_tp;
+          clock_gettime(CLOCK_REALTIME, &stop_tp);
+          fprintf(run_log,
+                  "{\"e\":\"stop_when\",\"i\":%d,\"pat\":\"%s\","
+                  "\"ts\":%ld.%05ld}\n",
+                  pass, pb->passes[pass].stop_when,
+                  (long)stop_tp.tv_sec, stop_tp.tv_nsec / 10000);
+          fflush(run_log);
+        }
+        break; /* playbook_ok stays 1 (success) */
       }
     }
 
