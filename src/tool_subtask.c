@@ -172,9 +172,13 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   /* Initialize user_ask mutex/cond (react_run may reference them) */
   pthread_mutex_init(&child_react.user_ask_mutex, NULL);
   pthread_cond_init(&child_react.user_ask_cond, NULL);
-  pthread_mutex_init(&child_react.pause_mutex, NULL);
-  pthread_cond_init(&child_react.pause_cond, NULL);
-  child_react.parent_abort = &ctx->provider->abort_retry;
+  /* Pause infrastructure: share the parent's pause mutex/cond/query.
+   * When the user types during a subtask, main.c writes to the root
+   * react_ctx_t's pause fields.  The child reads from the parent via
+   * pause_owner and injects the redirect into its own chat, so user
+   * input reaches the currently-visible react loop. */
+  child_react.pause_owner = ctx->react_ctx;
+  child_tools.react_ctx = &child_react; /* back-link for nested subtasks */
 
   /* ── Journal the subtask start ────────────────────────── */
   tools_inject_thought(ctx, params);
@@ -246,11 +250,9 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   /* ── Cleanup child resources ──────────────────────────── */
   pthread_mutex_destroy(&child_react.user_ask_mutex);
   pthread_cond_destroy(&child_react.user_ask_cond);
-  pthread_mutex_destroy(&child_react.pause_mutex);
-  pthread_cond_destroy(&child_react.pause_cond);
+  /* pause_mutex/cond/query belong to parent (via pause_owner) - not ours */
   free(child_react.user_ask_question);
   free(child_react.user_ask_answer);
-  free(child_react.pause_query);
 
   scratchpad_free(&child_tools.scratch);
   alias_map_free(child_tools.aliases);
@@ -269,8 +271,6 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
   /* ── Build result for parent context ──────────────────── */
   if (!result) {
-    if (atomic_load(&ctx->provider->abort_retry))
-      return tools_make_error("Sub-task interrupted by user input");
     return tools_make_error("Sub-task failed to produce a result");
   }
 

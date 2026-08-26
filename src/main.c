@@ -389,6 +389,7 @@ static void session_init_react(react_ctx_t *react, provider_t *provider,
   react->planner_provider = planner_provider;
   react->reflection_provider = reflection_provider;
   react->tools = tools;
+  tools->react_ctx = react; /* back-link for subtask pause routing */
   react->max_steps = cfg->max_react_steps;
   react->verbose = 1;
   react->flags = (react_flags_t)REACT_FLAGS_DEFAULT;

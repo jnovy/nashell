@@ -35,10 +35,17 @@ static void log_parse_error(react_ctx_t *ctx, int step, const char *type,
 
 /* Wait for user pause/redirect — shared between top-of-loop and bottom-of-loop
  * pause handlers. Waits on condvar, injects redirect query into chat, and
- * cleans up checkpoint. Caller is responsible for outer condition checks. */
+ * cleans up checkpoint. Caller is responsible for outer condition checks.
+ *
+ * When pause_owner is set (subtask), uses the parent's pause infrastructure
+ * (mutex, cond, query, waiting, requested) so that main.c's existing input
+ * routing delivers the redirect here.  The redirect is injected into the
+ * caller's chat (the subtask's chat), not the parent's. */
 static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
                                     int step,
                                     react_event_fn on_event, void *userdata) {
+  /* po = pause owner: parent if subtask, self if root */
+  react_ctx_t *po = ctx->pause_owner ? ctx->pause_owner : ctx;
   {
     react_event_t ev = {0};
     ev.react_loop = ctx->tools->react_loop;
@@ -50,25 +57,25 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
   /* Wait for user to provide a redirect query (or resume).
      * Uses pthread_cond_timedwait with 2s timeout as an escape hatch:
      * if the TUI thread crashes/exits without signaling, the inference
-     * thread won't block forever — it checks g_tui_active each cycle
+     * thread won't block forever - it checks g_tui_active each cycle
      * and breaks out with a synthetic "quit" redirect. */
-  atomic_store(&ctx->pause_waiting, 1);
-  pthread_mutex_lock(&ctx->pause_mutex);
-  while (!ctx->pause_query) {
+  atomic_store(&po->pause_waiting, 1);
+  pthread_mutex_lock(&po->pause_mutex);
+  while (!po->pause_query) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 2;
-    pthread_cond_timedwait(&ctx->pause_cond, &ctx->pause_mutex, &ts);
-    if (!ctx->pause_query && !atomic_load(&g_tui_active)) {
-      ctx->pause_query = xstrdup("quit");
+    pthread_cond_timedwait(&po->pause_cond, &po->pause_mutex, &ts);
+    if (!po->pause_query && !atomic_load(&g_tui_active)) {
+      po->pause_query = xstrdup("quit");
       break;
     }
   }
-  char *redirect = ctx->pause_query;
-  ctx->pause_query = NULL;
-  atomic_store(&ctx->pause_waiting, 0);
-  atomic_store(&ctx->pause_requested, 0);
-  pthread_mutex_unlock(&ctx->pause_mutex);
+  char *redirect = po->pause_query;
+  po->pause_query = NULL;
+  atomic_store(&po->pause_waiting, 0);
+  atomic_store(&po->pause_requested, 0);
+  pthread_mutex_unlock(&po->pause_mutex);
 
   /* Reset abort flag so next LLM call proceeds normally */
   ctx->provider->abort_retry = 0;
@@ -840,11 +847,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * we wait on a condvar for the user to provide a redirect query.
          * This preserves the full conversation history in the llm_chat_t. */
     if (react_should_abort(ctx)) {
-      if (ctx->parent_abort) {
-        /* Subtask: parent requested abort.  Break cleanly.
-         * Parent's react loop handles the redirect after we return. */
-        break;
-      }
       react_checkpoint_save(ctx, step, user_query,
                             chat->last_tool_call_id);
       react_wait_for_redirect(ctx, chat, step, on_event, userdata);
@@ -2456,9 +2458,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * condvar for the user to provide a redirect query or resume.
          * Checkpoint was already saved above. */
     if (!final_result && react_should_abort(ctx)) {
-      if (ctx->parent_abort) {
-        break;  /* subtask: exit cleanly */
-      }
       react_wait_for_redirect(ctx, chat, step + 1, on_event, userdata);
     }
 

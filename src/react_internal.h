@@ -268,13 +268,16 @@ typedef int (*evict_score_fn)(const llm_chat_t *chat, int mi, int ri,
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */
 float react_get_chars_per_token(const react_ctx_t *ctx);
 
-/* Check if this context should abort: own pause OR parent abort.
- * Subtask children have parent_abort pointing to provider->abort_retry.
- * When the user pauses, abort_retry is set, telling the child to exit
- * cleanly rather than retrying failed LLM calls. */
+/* Check if this context should abort: own pause OR parent's pause.
+ * Subtask children have pause_owner pointing to the parent react_ctx_t.
+ * When the user pauses, the parent's pause_requested is set; the child
+ * detects it here and enters react_wait_for_redirect on the parent's
+ * pause infrastructure, injecting the redirect into its own chat. */
 static inline int react_should_abort(const react_ctx_t *ctx) {
   if (atomic_load(&((react_ctx_t *)ctx)->pause_requested)) return 1;
-  if (ctx->parent_abort && atomic_load(ctx->parent_abort)) return 1;
+  if (ctx->pause_owner &&
+      atomic_load(&((react_ctx_t *)ctx->pause_owner)->pause_requested))
+    return 1;
   return 0;
 }
 

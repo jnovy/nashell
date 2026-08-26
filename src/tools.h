@@ -24,6 +24,9 @@ typedef struct session_index_t session_index_t;
 /* Forward declaration for prediction tracking (decision observability) */
 typedef struct predict_tracker_t predict_tracker_t;
 
+/* Forward declaration for react context (circular: react.h includes tools.h) */
+typedef struct react_ctx_t react_ctx_t;
+
 /* Dynamic hash map for step aliases (R1S0 → store hash).
  * Grows automatically — no artificial limit. */
 typedef struct alias_node {
@@ -76,8 +79,9 @@ typedef struct {
   char *session_dir;    /* .sessions/<id>/ */
   int session_lock_fd;  /* flock fd for exclusive session access (-1 = none) */
   scratchpad_t scratch; /* section-based scratchpad */
-  provider_t *provider; /* provider abstraction (FIX #3: for consolidation) */
-  int step;             /* current step number (within react loop) */
+  provider_t *provider;   /* provider abstraction (FIX #3: for consolidation) */
+  react_ctx_t *react_ctx;  /* parent react context (for subtask pause routing) */
+  int step;               /* current step number (within react loop) */
   int react_loop;       /* react loop counter (0-based, increments per query) */
   /* Step alias tracking — dynamic hash map, no size limit */
   alias_map_t *aliases;

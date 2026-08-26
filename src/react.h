@@ -59,7 +59,7 @@ typedef struct {
   int preamble_consumed; /* 1 after plan() — degrade preamble importance to LOW */
 } react_runtime_t;
 
-typedef struct {
+typedef struct react_ctx_t {
   provider_t *provider;             /* [INIT-ONLY] default/worker provider */
   provider_t *planner_provider;     /* [INIT-ONLY] planning steps (step 0). NULL = use provider */
   provider_t *reflection_provider;  /* [INIT-ONLY] post-task reflection. NULL = use provider */
@@ -71,9 +71,9 @@ typedef struct {
   int system_prompt_replace;        /* [INIT-ONLY] 0 = append to base, 1 = replace base entirely */
   int headless;                     /* [INIT-ONLY] 1 = no UI (agent/headless mode) */
   react_runtime_t rt;               /* [INFER-ONLY] mutable per-loop runtime state */
-  atomic_int pause_requested;       /* [MAIN→INFER] set by TUI (Space) to pause */
-  int paused;                       /* [INFER→MAIN] 1 when paused (read after join) */
-  _Atomic int *parent_abort;        /* [INIT-ONLY] external abort signal (NULL for root) */
+  atomic_int pause_requested;       /* [MAIN->INFER] set by TUI (Space) to pause */
+  int paused;                       /* [INFER->MAIN] 1 when paused (read after join) */
+  struct react_ctx_t *pause_owner;  /* [INIT-ONLY] parent pause context (NULL = self) */
 
   /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,
@@ -90,8 +90,13 @@ typedef struct {
      * The inference thread sets pause_waiting=1, emits REACT_EVENT_WARNING,
      * then waits on pause_cond until the TUI thread provides a redirect query.
      * This keeps the llm_chat_t alive so conversation context is preserved.
-     * All fields protected by pause_mutex except pause_waiting (atomic). */
-  atomic_int pause_waiting;    /* [INFER→MAIN] 1 = paused, waiting for query */
+     * All fields protected by pause_mutex except pause_waiting (atomic).
+     *
+     * Subtask children set pause_owner to the parent react_ctx_t, sharing
+     * the parent's pause infrastructure.  Main.c always writes to the root
+     * react_ctx_t's pause fields; the child reads from the parent via
+     * pause_owner and injects the redirect into its own chat. */
+  atomic_int pause_waiting;    /* [INFER->MAIN] 1 = paused, waiting for query */
   char *pause_query;           /* [MAIN, guarded by pause_mutex] redirect query */
   pthread_mutex_t pause_mutex; /* protects pause handoff */
   pthread_cond_t pause_cond;   /* signaled when redirect query is ready */
