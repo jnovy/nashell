@@ -59,6 +59,14 @@ static void shutdown_handler(int sig) {
   shutdown_requested = 1;
 }
 
+/* TUI mode: Ctrl-C sets this flag instead of killing the process.
+ * The main TUI loop polls it and triggers pause + journal logging. */
+static volatile sig_atomic_t g_sigint_received = 0;
+static void tui_sigint_handler(int sig) {
+  (void)sig;
+  g_sigint_received = 1;
+}
+
 /* ── Daemon lock file ────────────────────────────────────────────────────────
  * Prevent multiple daemon/matrix/telegram instances from running
  * simultaneously.  Each would poll the same Matrix/Telegram room,
@@ -2101,6 +2109,18 @@ int main(int argc, char **argv) {
     nash_log_set_ui(ui);          /* enable TUI error routing */
     ui->visible_rows = LINES - 4; /* terminal height minus chrome (top/bottom bars) */
 
+    /* Install SIGINT handler so Ctrl-C pauses the react loop instead
+     * of killing the process.  Uses sigaction (not signal) for
+     * portable behavior; no SA_RESTART so blocking calls get EINTR. */
+    {
+      struct sigaction sa_int;
+      memset(&sa_int, 0, sizeof(sa_int));
+      sa_int.sa_handler = tui_sigint_handler;
+      sigemptyset(&sa_int.sa_mask);
+      sa_int.sa_flags = 0;
+      sigaction(SIGINT, &sa_int, NULL);
+    }
+
     /* Load existing journal entries into UI state */
     ui_state_load_journal(ui, journal);
 
@@ -2333,6 +2353,29 @@ int main(int argc, char **argv) {
         /* Quit requested */
         running = 0;
         break;
+      }
+
+      /* Ctrl-C: SIGINT handler set g_sigint_received.
+       * If inference is running, pause it (like Space) and log to journal.
+       * If idle, treat as quit. */
+      if (g_sigint_received) {
+        g_sigint_received = 0;
+        if (atomic_load(&inferring)) {
+          /* Log the Ctrl-C interruption to the journal */
+          journal_append(journal,
+                         react.tools->react_loop, react.tools->step,
+                         "user_interrupt", NULL, NULL,
+                         0, 0, NULL, NULL, 0.0);
+          /* Trigger pause (same as Space bar) */
+          atomic_store(&react.pause_requested, 1);
+          if (provider) provider->abort_retry = 1;
+          ui_locked_set_status(ui, STATUS_READY, "Interrupted (Ctrl-C)");
+          tui_render(ui);
+        } else {
+          /* Not inferring - quit */
+          running = 0;
+          break;
+        }
       }
 
       /* Auto-dispatch stashed redirect: when inference was paused
