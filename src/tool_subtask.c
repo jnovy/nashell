@@ -174,6 +174,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   pthread_cond_init(&child_react.user_ask_cond, NULL);
   pthread_mutex_init(&child_react.pause_mutex, NULL);
   pthread_cond_init(&child_react.pause_cond, NULL);
+  child_react.parent_abort = &ctx->provider->abort_retry;
 
   /* ── Journal the subtask start ────────────────────────── */
   tools_inject_thought(ctx, params);
@@ -268,6 +269,8 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
   /* ── Build result for parent context ──────────────────── */
   if (!result) {
+    if (atomic_load(&ctx->provider->abort_retry))
+      return tools_make_error("Sub-task interrupted by user input");
     return tools_make_error("Sub-task failed to produce a result");
   }
 

@@ -839,7 +839,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * Instead of breaking out (which destroys the chat context),
          * we wait on a condvar for the user to provide a redirect query.
          * This preserves the full conversation history in the llm_chat_t. */
-    if (ctx->pause_requested) {
+    if (react_should_abort(ctx)) {
+      if (ctx->parent_abort) {
+        /* Subtask: parent requested abort.  Break cleanly.
+         * Parent's react loop handles the redirect after we return. */
+        break;
+      }
       react_checkpoint_save(ctx, step, user_query,
                             chat->last_tool_call_id);
       react_wait_for_redirect(ctx, chat, step, on_event, userdata);
@@ -915,9 +920,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     if (!response) {
       /* If the HTTP call was aborted because of a pause request
-             * (Space pressed), skip error handling — continue to the
-             * top-of-loop where the pause_requested condvar handles it. */
-      if (ctx->pause_requested) {
+             * (Space pressed) or parent abort (subtask), skip error
+             * handling - continue to the top-of-loop abort check. */
+      if (react_should_abort(ctx)) {
         continue;
       }
       consecutive_null_responses++;
@@ -2450,7 +2455,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * Instead of breaking out (which destroys chat context), wait on a
          * condvar for the user to provide a redirect query or resume.
          * Checkpoint was already saved above. */
-    if (!final_result && ctx->pause_requested) {
+    if (!final_result && react_should_abort(ctx)) {
+      if (ctx->parent_abort) {
+        break;  /* subtask: exit cleanly */
+      }
       react_wait_for_redirect(ctx, chat, step + 1, on_event, userdata);
     }
 

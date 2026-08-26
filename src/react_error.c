@@ -337,7 +337,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 
   if (*consecutive_null <= 2) {
     /* Tier 0: Plain retry with backoff */
-    if (ctx->pause_requested) return 1;
+    if (react_should_abort(ctx)) return 1;
     int backoff_ms = *consecutive_null * 2000;
     char rmsg[128];
     snprintf(rmsg, sizeof(rmsg),
@@ -345,7 +345,7 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
              *consecutive_null, backoff_ms);
     ev.message = rmsg;
     react_emit(on_event, userdata, &ev);
-    for (int ms = 0; ms < backoff_ms && !ctx->pause_requested; ms += 100)
+    for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
       usleep(100000);
   } else if (*consecutive_null == 3) {
     /* Tier 1: Remove the last assistant+tool_result pair.

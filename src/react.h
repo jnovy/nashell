@@ -73,6 +73,7 @@ typedef struct {
   react_runtime_t rt;               /* [INFER-ONLY] mutable per-loop runtime state */
   atomic_int pause_requested;       /* [MAIN→INFER] set by TUI (Space) to pause */
   int paused;                       /* [INFER→MAIN] 1 when paused (read after join) */
+  _Atomic int *parent_abort;        /* [INIT-ONLY] external abort signal (NULL for root) */
 
   /* user_ask: model asks user a question during the react loop.
      * The inference thread sets question + pending, emits REACT_EVENT_USER_ASK,

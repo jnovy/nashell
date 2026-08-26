@@ -268,6 +268,16 @@ typedef int (*evict_score_fn)(const llm_chat_t *chat, int mi, int ri,
 /* Get chars-per-token ratio from provider config, defaulting to 3.5. */
 float react_get_chars_per_token(const react_ctx_t *ctx);
 
+/* Check if this context should abort: own pause OR parent abort.
+ * Subtask children have parent_abort pointing to provider->abort_retry.
+ * When the user pauses, abort_retry is set, telling the child to exit
+ * cleanly rather than retrying failed LLM calls. */
+static inline int react_should_abort(const react_ctx_t *ctx) {
+  if (atomic_load(&((react_ctx_t *)ctx)->pause_requested)) return 1;
+  if (ctx->parent_abort && atomic_load(ctx->parent_abort)) return 1;
+  return 0;
+}
+
 /* Compute dynamic keep_head: count of CRITICAL messages at head.
  * Replaces hardcoded REACT_EVICT_KEEP_HEAD=3 that assumed fixed
  * [system, memory_index, pinned] structure. Adapts to actual
