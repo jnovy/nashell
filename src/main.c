@@ -2359,8 +2359,8 @@ int main(int argc, char **argv) {
       }
 
       /* Ctrl-C: SIGINT handler set g_sigint_received.
-       * If inference is running, pause it (like Space) and log to journal.
-       * If idle, treat as quit. */
+       * Always terminate gracefully - log to journal and exit.
+       * If inference is running, abort it first. */
       if (g_sigint_received) {
         g_sigint_received = 0;
         if (atomic_load(&inferring)) {
@@ -2369,16 +2369,15 @@ int main(int argc, char **argv) {
                          react.tools->react_loop, react.tools->step,
                          "user_interrupt", NULL, NULL,
                          0, 0, NULL, NULL, 0.0);
-          /* Trigger pause (same as Space bar) */
+          /* Abort inference so shutdown can join the thread */
           atomic_store(&react.pause_requested, 1);
           if (provider) provider->abort_retry = 1;
           ui_locked_set_status(ui, STATUS_READY, "Interrupted (Ctrl-C)");
           tui_render(ui);
-        } else {
-          /* Not inferring - quit */
-          running = 0;
-          break;
         }
+        /* Terminate regardless of whether inference was running */
+        running = 0;
+        break;
       }
 
       /* Auto-dispatch stashed redirect: when inference was paused
@@ -2715,6 +2714,13 @@ int main(int argc, char **argv) {
       pthread_mutex_unlock(&react.user_ask_mutex);
     }
     if (atomic_load(&inferring)) {
+      /* Clear g_tui_active BEFORE joining so the inference thread's
+       * escape hatches fire: react_wait_for_redirect breaks out of
+       * its condvar wait (react.c), and the curl progress callback
+       * aborts any in-flight HTTP request (provider.c).  Without
+       * this, the thread can hang in a condvar wait or curl call
+       * after Ctrl-C, causing pthread_join to block forever. */
+      atomic_store(&g_tui_active, 0);
       pthread_join(infer_tid, NULL);
       atomic_store(&inferring, INFER_IDLE);
       free(iargs.result);
