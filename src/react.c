@@ -1312,6 +1312,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       ctx->tools->on_event = NULL;
       ctx->tools->on_event_data = NULL;
       ctx->tools->thought = NULL;
+      /* Save store_ref (alias like "R0S5") before freeing tr */
+      char *done_ref = tr.store_ref ? xstrdup(tr.store_ref) : NULL;
       tool_result_free(&tr);
 
       struct timespec now;
@@ -1328,10 +1330,12 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       ev.action = action_name;
       ev.description = desc;
       ev.result = final_result;
+      ev.store_ref = done_ref;
       ev.stats = stats;
       ev.context_size = ctx->provider->cfg.context_size;
       react_emit(on_event, userdata, &ev);
 
+      free(done_ref);
       cJSON_Delete(action);
       free(response);
       break;

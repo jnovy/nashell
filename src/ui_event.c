@@ -384,6 +384,51 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * auto-scroll shows the completed result. */
       ui->user_scrolled = 0;
 
+      /* Auto-navigate to the done result (RXSY store ref) so the
+       * user sees the final answer immediately.  The result text
+       * is rendered as markdown in a synthetic .md file so it stays
+       * reloadable and shows the ref alias in the breadcrumb. */
+      if (ev->store_ref && ev->result) {
+        char ref_name[32];
+        snprintf(ref_name, sizeof(ref_name), "done-%s", ev->store_ref);
+        /* Build markdown: heading with ref alias + result text */
+        size_t rlen = strlen(ev->result);
+        size_t cap = rlen + 64;
+        char *md = malloc(cap);
+        if (md) {
+          snprintf(md, cap, "# %s\n\n%s", ev->store_ref, ev->result);
+          ui_state_push_content(ui, ref_name, md);
+          free(md);
+        }
+      } else if (!viewing_react_file(ui, ui->current_react_loop,
+                                     eff_session_dir)) {
+        /* Fatal error (no store_ref) - fall back to reactRX.md */
+        if (ui->nav_depth >= ui->nav_cap) {
+          int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+          if (safe_realloc((void **)&ui->nav_stack,
+                           (size_t)new_cap * sizeof(nav_entry_t))) break;
+          ui->nav_cap = new_cap;
+        }
+        nav_entry_t *ne = &ui->nav_stack[ui->nav_depth];
+        ne->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
+        ne->label = ui->current_label; /* transfer ownership */
+        ui->current_label = NULL;
+        ne->scroll_y = ui->scroll_y;
+        ne->scroll_x = ui->scroll_x;
+        ne->cursor_link = ui->cursor_link;
+        ne->saved_doc = NULL;
+        ui->nav_depth++;
+
+        char rpath[NASH_PATH_MAX];
+        snprintf(rpath, sizeof(rpath), "%s/reactR%d.md",
+                 eff_session_dir, ui->current_react_loop);
+        str_replace(&ui->current_filepath, rpath);
+        ui->scroll_y = 0;
+        ui->scroll_x = 0;
+        ui->cursor_link = 0;
+        ui->focus = FOCUS_JOURNAL;
+      }
+
       /* Defer expensive file I/O to main loop */
       ui->needs_react_regen = 1;
       ui->needs_session_regen = 1;
