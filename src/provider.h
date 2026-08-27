@@ -29,6 +29,7 @@ typedef struct {
   int context_size;        /* context window size */
   float chars_per_token;   /* chars per token ratio (default 3.5) */
   int caching;             /* enable prompt caching (Anthropic) */
+  const char *reasoning_effort; /* OpenAI reasoning_effort override (NULL = smart default) */
   int max_tokens;          /* max completion tokens */
   float temperature;       /* sampling temperature */
   float top_p;             /* nucleus sampling threshold (0.0-1.0, 1.0=disabled) */

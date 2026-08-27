@@ -231,6 +231,7 @@ provider_t *provider_create(const provider_config_t *cfg) {
   p->cfg.api_key_env = cfg->api_key_env ? xstrdup(cfg->api_key_env) : NULL;
   p->cfg.project_id = cfg->project_id ? xstrdup(cfg->project_id) : NULL;
   p->cfg.region = cfg->region ? xstrdup(cfg->region) : NULL;
+  p->cfg.reasoning_effort = cfg->reasoning_effort ? xstrdup(cfg->reasoning_effort) : NULL;
 
   /* Set defaults */
   if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
@@ -276,6 +277,7 @@ void provider_free(provider_t *p) {
   free((char *)p->cfg.api_key_env);
   free((char *)p->cfg.project_id);
   free((char *)p->cfg.region);
+  free((char *)p->cfg.reasoning_effort);
   free(p);
 }
 

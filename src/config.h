@@ -31,6 +31,7 @@ typedef struct {
   int context_size;      /* context window size (0 = auto-detect) */
   float chars_per_token; /* chars per token ratio (default 3.5) */
   int caching;           /* enable prompt caching (Anthropic) */
+  char *reasoning_effort; /* OpenAI reasoning_effort override (NULL = smart default) */
 } provider_config_toml_t;
 
 /* Named provider — define once in [providers.*], reference by name */

@@ -331,6 +331,7 @@ config_t *config_load(const char *path) {
         np->config.context_size = toml_int(ptab, "context_size", 0);
         np->config.chars_per_token = (float)toml_dbl(ptab, "chars_per_token", 0);
         np->config.caching = toml_bl(ptab, "caching", 0);
+        np->config.reasoning_effort = toml_str(ptab, "reasoning_effort");
         idx++;
       }
       cfg->n_named_providers = idx;
@@ -644,6 +645,7 @@ void config_free(config_t *cfg) {
   free(cfg->provider.api_key_env);
   free(cfg->provider.project_id);
   free(cfg->provider.region);
+  free(cfg->provider.reasoning_effort);
   /* [providers.*] named providers */
   for (int i = 0; i < cfg->n_named_providers; i++) {
     named_provider_t *np = &cfg->named_providers[i];
@@ -654,6 +656,7 @@ void config_free(config_t *cfg) {
     free(np->config.api_key_env);
     free(np->config.project_id);
     free(np->config.region);
+    free(np->config.reasoning_effort);
   }
   free(cfg->named_providers);
   /* [routing] */
@@ -1278,6 +1281,8 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "chars_per_token = %.1f\n", cfg->provider.chars_per_token > 0 ? cfg->provider.chars_per_token : 3.5f);
   if (cfg->provider.caching)
     fprintf(out, "caching = true\n");
+  if (cfg->provider.reasoning_effort)
+    fprintf(out, "reasoning_effort = \"%s\"\n", cfg->provider.reasoning_effort);
   fprintf(out, "\n");
 
   fprintf(out, "[client]\n");
@@ -1547,6 +1552,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     {
       toml_datum_t td = toml_bool_in(provider, "caching");
       if (td.ok) cfg->provider.caching = td.u.b;
+    }
+    {
+      char *re = toml_str(provider, "reasoning_effort");
+      if (re) { free(cfg->provider.reasoning_effort); cfg->provider.reasoning_effort = re; }
     }
   }
 
@@ -2041,6 +2050,7 @@ int config_write_default(const char *path) {
     "# project_id = \"my-gcp-project\"\n"
     "# region = \"global\"\n"
     "# caching = true\n"
+    "# reasoning_effort = \"none\"  # OpenAI: none/minimal/low/medium/high/xhigh\n"
     "\n"
     "# Routing — which provider to use (change one line to switch)\n"
     "[routing]\n"

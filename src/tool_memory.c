@@ -263,6 +263,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   cons_cfg.api_key_env = cons_cfg.api_key_env ? xstrdup(cons_cfg.api_key_env) : NULL;
   cons_cfg.project_id = cons_cfg.project_id ? xstrdup(cons_cfg.project_id) : NULL;
   cons_cfg.region = cons_cfg.region ? xstrdup(cons_cfg.region) : NULL;
+  cons_cfg.reasoning_effort = cons_cfg.reasoning_effort ? xstrdup(cons_cfg.reasoning_effort) : NULL;
   cons_cfg.max_tokens = 2048;
   cons_cfg.temperature = 0.1f;
   cons_cfg.enable_thinking = 0;
@@ -275,6 +276,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   free((void *)cons_cfg.api_key_env);
   free((void *)cons_cfg.project_id);
   free((void *)cons_cfg.region);
+  free((void *)cons_cfg.reasoning_effort);
   if (cons_provider) {
     response = provider_complete(cons_provider, chat, &stats);
     provider_free(cons_provider);
