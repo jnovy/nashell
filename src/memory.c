@@ -375,6 +375,8 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   }
 
   /* Load embedding if .emb file exists */
+  /* TODO(lazy-embeddings): consider deferring load until first recall,
+   * or background-loading after index build for very large stores. */
   char emb_path[NASH_PATH_MAX];
   json_to_emb_path(filepath, emb_path, sizeof(emb_path));
   ie->emb = embed_multi_vec_load(emb_path);
@@ -1880,18 +1882,18 @@ int memory_delete(memory_t *m, const char *key) {
   /* P1: Remove from in-memory index */
   mem_index_remove(&m->idx, key);
 
-  /* Collect paths needing ref rewrite and do the rewrite under the mutex
-     * to prevent TOCTOU races with concurrent memory_store(). */
+  /* Phase 1: collect paths needing ref rewrite (in-memory refs removed above). */
   int n_gc_paths = 0;
   char **gc_paths = gc_refs_collect_modified_paths(m, &key, 1, &n_gc_paths);
-  gc_refs_rewrite_collected(gc_paths, n_gc_paths, &key, 1);
 
-  /* Prepare commit message under lock; run git outside. */
+  /* Build commit message under lock; perform disk I/O outside to reduce contention. */
   char msg[256];
   snprintf(msg, sizeof(msg), "memory: delete %s", key);
 
   pthread_mutex_unlock(&m->mtx);
 
+  /* TODO(memory-gc-two-phase): Verify no key recreation before/after rewrite if needed. */
+  gc_refs_rewrite_collected(gc_paths, n_gc_paths, &key, 1);
   memory_git_commit(m, msg);
   return 0;
 }
@@ -1951,14 +1953,11 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
     return 0;
   }
 
-  /* Remove deleted keys from in-memory refs arrays, collect paths needing
-     * on-disk rewrite, and do the rewrite under the mutex to prevent
-     * TOCTOU races with concurrent memory_store(). */
+  /* Phase 1: remove refs in-memory and collect paths to rewrite on-disk. */
   int n_gc_paths = 0;
   char **gc_paths = gc_refs_collect_modified_paths(m, found_keys, n_found, &n_gc_paths);
-  gc_refs_rewrite_collected(gc_paths, n_gc_paths, keys, n_keys);
 
-  /* Build commit message under lock; run git outside to avoid blocking. */
+  /* Build commit message under lock; perform disk I/O outside the mutex. */
   char msg[1024];
   if (n_found == 1) {
     snprintf(msg, sizeof(msg), "memory: delete %s", found_keys[0]);
@@ -1969,6 +1968,8 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
   free(found_keys);
   pthread_mutex_unlock(&m->mtx);
 
+  /* TODO(memory-gc-two-phase): consider short post-check under lock to reconcile races. */
+  gc_refs_rewrite_collected(gc_paths, n_gc_paths, keys, n_keys);
   memory_git_commit(m, msg);
   return n_found;
 }

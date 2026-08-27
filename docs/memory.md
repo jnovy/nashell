@@ -65,7 +65,7 @@ Nash v4 introduces a session-centric memory architecture built on three principl
 |  Grows, searchable via /? and memory_search         |
 +-----------------------------------------------------+
 |  L4: Curated Memory (persistent, small)             |
-|  .memory/ -- only explicitly stored entries         |
+|  memory/ - only explicitly stored entries           |
 |  Pinned entries always in context                   |
 +-----------------------------------------------------+
 ```

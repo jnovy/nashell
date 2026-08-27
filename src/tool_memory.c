@@ -257,6 +257,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
      *   model_id, api_base, api_key_env, project_id, region
      * If you add a new pointer field to provider_config_t, add a strdup here
      * or the copy will share ownership with ctx->provider->cfg. */
+  /* TODO(consolidation-reasoning-guard): avoid non-default sampling on reasoning models. */
   provider_config_t cons_cfg = ctx->provider->cfg;
   cons_cfg.model_id = cons_cfg.model_id ? xstrdup(cons_cfg.model_id) : NULL;
   cons_cfg.api_base = cons_cfg.api_base ? xstrdup(cons_cfg.api_base) : NULL;
@@ -265,7 +266,19 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   cons_cfg.region = cons_cfg.region ? xstrdup(cons_cfg.region) : NULL;
   cons_cfg.reasoning_effort = cons_cfg.reasoning_effort ? xstrdup(cons_cfg.reasoning_effort) : NULL;
   cons_cfg.max_tokens = 2048;
-  cons_cfg.temperature = 0.1f;
+  /* Detect reasoning models that reject non-default temperature/top_p and avoid overriding. */
+  int is_reasoning = 0;
+  if (cons_cfg.model_id) {
+    if (strncmp(cons_cfg.model_id, "gpt-5", 5) == 0 ||
+        strncmp(cons_cfg.model_id, "o1", 2) == 0 ||
+        strncmp(cons_cfg.model_id, "o3", 2) == 0 ||
+        strncmp(cons_cfg.model_id, "o4", 2) == 0) {
+      is_reasoning = 1;
+    }
+  }
+  if (!is_reasoning) {
+    cons_cfg.temperature = 0.1f;
+  }
   cons_cfg.enable_thinking = 0;
   cons_cfg.thinking_budget = 0;
   if (cons_cfg.llm_timeout == 0) cons_cfg.llm_timeout = 120; /* FIX MED#10: default 2min timeout */

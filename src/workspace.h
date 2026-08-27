@@ -5,15 +5,15 @@
 
 /* Workspace: two-layer memory segregation.
  *
- * Global layer (~/.nash/.memory/): universal skills, lessons, strategies.
- * Workspace layer (~/.nash/workspaces/<name>/.memory/): project-specific facts.
+ * Global layer (~/.nash/memory/): universal skills, lessons, strategies.
+ * Workspace layer (~/.nash/workspaces/<name>/memory/): project-specific facts.
  *
  * When no workspace is active, behaves identically to the old single-memory
- * architecture — all operations go to global. */
+ * architecture - all operations go to global. */
 
 typedef struct {
-  memory_t *global;     /* ~/.nash/.memory/ — always non-NULL */
-  memory_t *workspace;  /* ~/.nash/workspaces/<name>/.memory/ — NULL if none */
+  memory_t *global;     /* ~/.nash/memory/ - always non-NULL */
+  memory_t *workspace;  /* ~/.nash/workspaces/<name>/memory/ - NULL if none */
   char *name;           /* workspace name (NULL = global-only mode) */
   int isolated;         /* if true, skip global on recall */
   double global_weight; /* score multiplier for global results (default 0.8) */
