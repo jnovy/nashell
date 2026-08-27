@@ -4,6 +4,7 @@
 #include "memory.h"
 #include "tui.h"
 #include "scratchpad.h"
+#include "goal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -688,6 +689,29 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
       str_free(&warn);
     }
     cJSON_Delete(plan_steps);
+  }
+
+  /* Warn if goals have unresolved items */
+  {
+    goal_state_t gs;
+    goal_state_init(&gs);
+    if (goal_state_load(&gs, ctx->session_dir) == 0 && gs.count > 0) {
+      char *gw = goal_unresolved_warning(&gs);
+      if (gw) {
+        /* Append to existing warning or create new one */
+        cJSON *existing = cJSON_GetObjectItem(meta, "warning");
+        if (existing && cJSON_IsString(existing)) {
+          str_t combined = str_new(512);
+          str_appendf(&combined, "%s\n%s", existing->valuestring, gw);
+          cJSON_SetValuestring(existing, str_cstr(&combined));
+          str_free(&combined);
+        } else {
+          cJSON_AddStringToObject(meta, "goal_warning", gw);
+        }
+        free(gw);
+      }
+    }
+    goal_state_free(&gs);
   }
 
   tools_inject_thought(ctx, params);
