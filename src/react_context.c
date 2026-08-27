@@ -461,6 +461,22 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
     }
     free(sp_text);
   }
+  /* Phase 2 (Recuris): Enrich recall query with active goal contents.
+   * Goal state provides focused intent signals that improve semantic
+   * retrieval relevance beyond the raw user query + scratchpad. */
+  {
+    goal_state_t gs;
+    goal_state_init(&gs);
+    if (goal_state_load(&gs, ctx->tools->session_dir) == 0) {
+      for (int gi = 0; gi < gs.count; gi++) {
+        if (gs.goals[gi].status == GOAL_ACTIVE && gs.goals[gi].content) {
+          str_append_cstr(&recall_query, "\n");
+          str_append_cstr(&recall_query, gs.goals[gi].content);
+        }
+      }
+    }
+    goal_state_free(&gs);
+  }
   memory_results_t all_memories = ctx->tools->ws
                                     ? workspace_recall(ctx->tools->ws, str_cstr(&recall_query), max_candidates)
                                     : memory_query(ctx->tools->memory, str_cstr(&recall_query), max_candidates);

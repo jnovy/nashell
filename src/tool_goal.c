@@ -10,6 +10,8 @@
 #include "tool_plugin.h"
 #include "scratchpad.h"
 #include "goal.h"
+#include "memory.h"
+#include "workspace.h"
 
 #include <string.h>
 #include <time.h>
@@ -37,6 +39,51 @@ static void save_and_project(tool_ctx_t *ctx, goal_state_t *gs) {
     scratchpad_save(&ctx->scratch, ctx->session_dir);
     free(text);
   }
+}
+
+/* Phase 2 (Recuris): Fire targeted memory retrieval on goal transitions.
+ * Returns a cJSON array of relevant memory keys (caller must free via
+ * cJSON_Delete if non-NULL). Retrieves memories whose content is
+ * semantically related to the goal's query text (content or blocker). */
+static cJSON *goal_recall_memories(tool_ctx_t *ctx, const char *query, int max) {
+  if (!query || !query[0]) return NULL;
+  if (max <= 0) max = 3;
+
+  memory_results_t results;
+  if (ctx->ws)
+    results = workspace_recall(ctx->ws, query, max);
+  else if (ctx->memory)
+    results = memory_query(ctx->memory, query, max);
+  else
+    return NULL;
+
+  if (results.count <= 0) {
+    memory_results_free(&results);
+    return NULL;
+  }
+
+  cJSON *arr = cJSON_CreateArray();
+  for (int i = 0; i < results.count && i < max; i++) {
+    if (!results.entries[i].key) continue;
+    /* Only include results above a minimum relevance threshold */
+    if (results.entries[i].relevance < 0.3) continue;
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, "key", results.entries[i].key);
+    if (results.entries[i].description)
+      cJSON_AddStringToObject(obj, "summary", results.entries[i].description);
+    cJSON_AddNumberToObject(obj, "relevance",
+                            results.entries[i].relevance);
+    cJSON_AddItemToArray(arr, obj);
+    /* Track as recalled for validation scoring */
+    tool_track_recalled_key(ctx, results.entries[i].key);
+  }
+  memory_results_free(&results);
+
+  if (cJSON_GetArraySize(arr) == 0) {
+    cJSON_Delete(arr);
+    return NULL;
+  }
+  return arr;
 }
 
 /* Build a status summary cJSON object. */
@@ -128,10 +175,18 @@ static tool_result_t tool_goal(tool_ctx_t *ctx, cJSON *params) {
 
     save_and_project(ctx, &gs);
 
+    /* Phase 3: annotate subsequent journal entries with this goal */
+    journal_set_serving_goal(ctx->journal, gid, g->content);
+
     result = tool_result_ok();
     cJSON_ReplaceItemInObject(result.meta, "status", cJSON_CreateString("goal activated"));
     cJSON_AddNumberToObject(result.meta, "id", gid);
     add_status_summary(result.meta, &gs);
+
+    /* Phase 2: retrieve memories relevant to the activated goal */
+    cJSON *recalled = goal_recall_memories(ctx, g->content, 3);
+    if (recalled)
+      cJSON_AddItemToObject(result.meta, "recalled_memories", recalled);
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "goal", params, NULL, 0, 0, NULL, NULL);
@@ -172,6 +227,11 @@ static tool_result_t tool_goal(tool_ctx_t *ctx, cJSON *params) {
     cJSON_ReplaceItemInObject(result.meta, "status", cJSON_CreateString("goal blocked"));
     cJSON_AddNumberToObject(result.meta, "id", gid);
     add_status_summary(result.meta, &gs);
+
+    /* Phase 2: retrieve memories relevant to the blocker */
+    cJSON *recalled = goal_recall_memories(ctx, blocker, 3);
+    if (recalled)
+      cJSON_AddItemToObject(result.meta, "recalled_memories", recalled);
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "goal", params, NULL, 0, 0, NULL, NULL);
@@ -254,6 +314,19 @@ static tool_result_t tool_goal(tool_ctx_t *ctx, cJSON *params) {
 
     save_and_project(ctx, &gs);
 
+    /* Phase 3: clear serving goal - this goal is resolved */
+    if (ctx->journal && ctx->journal->serving_goal_id == gid)
+      journal_set_serving_goal(ctx->journal, 0, NULL);
+
+    /* Phase 5: goal success -> boost recall_hits for retrieved memories */
+    for (int ri = 0; ri < ctx->n_recalled_keys; ri++) {
+      const char *rk = ctx->recalled_keys[ri];
+      if (ctx->ws)
+        workspace_increment_hits(ctx->ws, rk);
+      else if (ctx->memory)
+        memory_increment_hits(ctx->memory, rk);
+    }
+
     result = tool_result_ok();
     cJSON_ReplaceItemInObject(result.meta, "status", cJSON_CreateString("goal completed"));
     cJSON_AddNumberToObject(result.meta, "id", gid);
@@ -289,6 +362,19 @@ static tool_result_t tool_goal(tool_ctx_t *ctx, cJSON *params) {
     }
 
     save_and_project(ctx, &gs);
+
+    /* Phase 3: clear serving goal - this goal is resolved */
+    if (ctx->journal && ctx->journal->serving_goal_id == gid)
+      journal_set_serving_goal(ctx->journal, 0, NULL);
+
+    /* Phase 5: goal failure -> increment recall_misses for retrieved memories */
+    for (int ri = 0; ri < ctx->n_recalled_keys; ri++) {
+      const char *rk = ctx->recalled_keys[ri];
+      if (ctx->ws)
+        workspace_increment_misses(ctx->ws, rk);
+      else if (ctx->memory)
+        memory_increment_misses(ctx->memory, rk);
+    }
 
     TOOL_OPT_STR(params, "reason", reason);
     result = tool_result_ok();

@@ -86,6 +86,7 @@ void journal_free(journal_t *j) {
   free(j->session_dir);
   free(j->nash_dir);
   free(j->workspace);
+  free(j->serving_goal_text);
   free(j);
 }
 
@@ -169,6 +170,13 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   if (error) cJSON_AddStringToObject(entry, "error", error);
   if (tool_call_id) cJSON_AddStringToObject(entry, "tc_id", tool_call_id);
 
+  /* Phase 3 (Recuris): Goal-annotated traces */
+  if (j->serving_goal_id > 0) {
+    cJSON_AddNumberToObject(entry, "serving_goal", j->serving_goal_id);
+    if (j->serving_goal_text)
+      cJSON_AddStringToObject(entry, "goal_text", j->serving_goal_text);
+  }
+
   char *json = cJSON_PrintUnformatted(entry);
   fprintf(f, "%s\n", json);
   free(json);
@@ -178,6 +186,15 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   fclose(f);
   pthread_mutex_unlock(&j->mtx); /* FIX CRIT2 */
   return 0;
+}
+
+void journal_set_serving_goal(journal_t *j, int goal_id, const char *text) {
+  if (!j) return;
+  pthread_mutex_lock(&j->mtx);
+  j->serving_goal_id = goal_id;
+  free(j->serving_goal_text);
+  j->serving_goal_text = (text && text[0]) ? strdup(text) : NULL;
+  pthread_mutex_unlock(&j->mtx);
 }
 
 /* ── B1 FIX: Shared compaction parameter extraction ──── */

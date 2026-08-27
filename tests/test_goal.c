@@ -1033,6 +1033,160 @@ static void test_done_no_warning_when_resolved(void) {
   teardown_ctx();
 }
 
+/* ---- Phase 3: journal serving goal tests ---- */
+
+static void test_journal_serving_goal(void) {
+  setup_ctx();
+
+  /* Set serving goal */
+  journal_set_serving_goal(g_ctx.journal, 42, "Implement feature X");
+  ASSERT_EQ(g_ctx.journal->serving_goal_id, 42);
+  ASSERT_NOT_NULL(g_ctx.journal->serving_goal_text);
+  ASSERT_STR_EQ(g_ctx.journal->serving_goal_text, "Implement feature X");
+
+  /* Append a journal entry and verify it contains serving_goal */
+  cJSON *p = cJSON_CreateObject();
+  cJSON_AddStringToObject(p, "path", "test.c");
+  journal_append(g_ctx.journal, 0, 1, "file_read", p, NULL, 100, 5, NULL, NULL, 0);
+  cJSON_Delete(p);
+
+  /* Read journal.jsonl and verify serving_goal field */
+  char path[512];
+  snprintf(path, sizeof(path), "%s/journal.jsonl", g_tmpdir);
+  FILE *f = fopen(path, "r");
+  ASSERT_NOT_NULL(f);
+  char line[4096];
+  char *last_line = NULL;
+  while (fgets(line, sizeof(line), f)) {
+    free(last_line);
+    last_line = strdup(line);
+  }
+  fclose(f);
+  ASSERT_NOT_NULL(last_line);
+  cJSON *entry = cJSON_Parse(last_line);
+  ASSERT_NOT_NULL(entry);
+  cJSON *sg = cJSON_GetObjectItem(entry, "serving_goal");
+  ASSERT_NOT_NULL(sg);
+  ASSERT_EQ((int)sg->valuedouble, 42);
+  cJSON *gt = cJSON_GetObjectItem(entry, "goal_text");
+  ASSERT_NOT_NULL(gt);
+  ASSERT_STR_EQ(gt->valuestring, "Implement feature X");
+  cJSON_Delete(entry);
+  free(last_line);
+
+  /* Clear serving goal */
+  journal_set_serving_goal(g_ctx.journal, 0, NULL);
+  ASSERT_EQ(g_ctx.journal->serving_goal_id, 0);
+  ASSERT_NULL(g_ctx.journal->serving_goal_text);
+
+  /* Append another entry - should NOT have serving_goal */
+  p = cJSON_CreateObject();
+  cJSON_AddStringToObject(p, "path", "test2.c");
+  journal_append(g_ctx.journal, 0, 2, "file_read", p, NULL, 50, 3, NULL, NULL, 0);
+  cJSON_Delete(p);
+
+  f = fopen(path, "r");
+  ASSERT_NOT_NULL(f);
+  last_line = NULL;
+  while (fgets(line, sizeof(line), f)) {
+    free(last_line);
+    last_line = strdup(line);
+  }
+  fclose(f);
+  ASSERT_NOT_NULL(last_line);
+  entry = cJSON_Parse(last_line);
+  ASSERT_NOT_NULL(entry);
+  sg = cJSON_GetObjectItem(entry, "serving_goal");
+  ASSERT_NULL(sg); /* no serving_goal when cleared */
+  cJSON_Delete(entry);
+  free(last_line);
+
+  teardown_ctx();
+}
+
+static void test_journal_serving_goal_cleared_on_done(void) {
+  setup_ctx();
+  char *ref = create_ref_alias();
+
+  /* Add and activate a goal */
+  cJSON *p1 = cJSON_CreateObject();
+  cJSON_AddStringToObject(p1, "op", "add");
+  cJSON_AddStringToObject(p1, "content", "Test goal for clearing");
+  tool_result_t r1 = tool_execute(&g_ctx, "goal", p1);
+  ASSERT(r1.success);
+  tool_result_free(&r1);
+  cJSON_Delete(p1);
+
+  cJSON *p2 = cJSON_CreateObject();
+  cJSON_AddStringToObject(p2, "op", "activate");
+  cJSON_AddNumberToObject(p2, "id", 1);
+  tool_result_t r2 = tool_execute(&g_ctx, "goal", p2);
+  ASSERT(r2.success);
+  tool_result_free(&r2);
+  cJSON_Delete(p2);
+
+  /* Verify journal has serving goal set */
+  ASSERT_EQ(g_ctx.journal->serving_goal_id, 1);
+  ASSERT_NOT_NULL(g_ctx.journal->serving_goal_text);
+
+  /* Complete the goal - should clear serving goal */
+  cJSON *p3 = cJSON_CreateObject();
+  cJSON_AddStringToObject(p3, "op", "done");
+  cJSON_AddNumberToObject(p3, "id", 1);
+  cJSON_AddStringToObject(p3, "evidence", ref);
+  tool_result_t r3 = tool_execute(&g_ctx, "goal", p3);
+  ASSERT(r3.success);
+  tool_result_free(&r3);
+  cJSON_Delete(p3);
+
+  /* Serving goal should be cleared */
+  ASSERT_EQ(g_ctx.journal->serving_goal_id, 0);
+  ASSERT_NULL(g_ctx.journal->serving_goal_text);
+
+  free(ref);
+  teardown_ctx();
+}
+
+/* ---- Phase 2: goal content enrichment test ---- */
+
+static void test_goal_content_in_recall_context(void) {
+  /* Test that active goals are persisted and loadable for recall enrichment.
+   * The actual recall_query enrichment happens in react_context.c which
+   * requires a full react_ctx_t - too heavy for unit tests. Instead we
+   * verify the prerequisite: goals.json contains active goal content
+   * that the enrichment code can load. */
+  setup_ctx();
+
+  /* Add and activate a goal */
+  cJSON *p1 = cJSON_CreateObject();
+  cJSON_AddStringToObject(p1, "op", "add");
+  cJSON_AddStringToObject(p1, "content", "Fix memory leak in parser");
+  tool_result_t r1 = tool_execute(&g_ctx, "goal", p1);
+  ASSERT(r1.success);
+  tool_result_free(&r1);
+  cJSON_Delete(p1);
+
+  cJSON *p2 = cJSON_CreateObject();
+  cJSON_AddStringToObject(p2, "op", "activate");
+  cJSON_AddNumberToObject(p2, "id", 1);
+  tool_result_t r2 = tool_execute(&g_ctx, "goal", p2);
+  ASSERT(r2.success);
+  tool_result_free(&r2);
+  cJSON_Delete(p2);
+
+  /* Load goals from disk and verify active goal is there */
+  goal_state_t gs;
+  goal_state_init(&gs);
+  int rc = goal_state_load(&gs, g_tmpdir);
+  ASSERT_EQ(rc, 0);
+  ASSERT_EQ(gs.count, 1);
+  ASSERT_EQ(gs.goals[0].status, GOAL_ACTIVE);
+  ASSERT_STR_EQ(gs.goals[0].content, "Fix memory leak in parser");
+  goal_state_free(&gs);
+
+  teardown_ctx();
+}
+
 /* ---- main ---- */
 
 int main(void) {
@@ -1111,6 +1265,13 @@ int main(void) {
   /* done() integration */
   RUN_TEST(test_done_warns_unresolved_goals);
   RUN_TEST(test_done_no_warning_when_resolved);
+
+  /* Phase 3: journal serving goal */
+  RUN_TEST(test_journal_serving_goal);
+  RUN_TEST(test_journal_serving_goal_cleared_on_done);
+
+  /* Phase 2: goal-enriched recall query */
+  RUN_TEST(test_goal_content_in_recall_context);
 
   TEST_SUMMARY();
   return fail ? 1 : 0;
