@@ -38,18 +38,32 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
                                          p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL,
                                          "max_completion_tokens", PROVIDER_OPENAI);
 
-  /* OpenAI reasoning models need reasoning_effort set appropriately:
-   *   - gpt-5.4+/gpt-5.6 REJECT function tools on /v1/chat/completions
-   *     unless reasoning_effort="none".
-   *   - gpt-5 (base) supports minimal/low/medium/high but NOT "none".
+  /* OpenAI reasoning models (gpt-5*) have restrictions:
+   *   - temperature: only default (1) is supported; any other value -> 400.
+   *   - top_p: same restriction as temperature.
+   *   - reasoning_effort:
+   *       gpt-5.4+/gpt-5.6 REJECT function tools unless reasoning_effort="none".
+   *       gpt-5 (base) supports minimal/low/medium/high but NOT "none".
    *
-   * Priority: explicit config > smart default (gpt-5. -> "none"). */
+   * Detect reasoning models and strip unsupported sampling params. */
+  const char *model = p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL;
+  int is_reasoning = (strncmp(model, "gpt-5", 5) == 0 ||
+                      strncmp(model, "o1", 2) == 0 ||
+                      strncmp(model, "o3", 2) == 0 ||
+                      strncmp(model, "o4", 2) == 0);
+
+  if (is_reasoning) {
+    /* Reasoning models only accept temperature=1 (default).
+     * Remove temperature and top_p to let the API use its defaults. */
+    cJSON_DeleteItemFromObject(req, "temperature");
+    cJSON_DeleteItemFromObject(req, "top_p");
+  }
+
+  /* reasoning_effort: explicit config > smart default (gpt-5. -> "none"). */
   if (p->cfg.reasoning_effort) {
     cJSON_AddStringToObject(req, "reasoning_effort", p->cfg.reasoning_effort);
-  } else {
-    const char *model = p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL;
-    if (strstr(model, "gpt-5."))
-      cJSON_AddStringToObject(req, "reasoning_effort", "none");
+  } else if (strstr(model, "gpt-5.")) {
+    cJSON_AddStringToObject(req, "reasoning_effort", "none");
   }
 
   char *json = cJSON_PrintUnformatted(req);
