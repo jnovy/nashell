@@ -8,6 +8,7 @@
  */
 
 #include "ui_state_internal.h"
+#include "goal.h"
 
 /* ── Local helpers ───────────────────────────────────────── */
 
@@ -235,6 +236,41 @@ static const char *extract_desc(const char *tool, cJSON *params) {
   /* Plan: don't show inline text — the full plan is rendered below */
   if (strcmp(tool, "plan") == 0)
     return "";
+  /* Goal: show op-specific description */
+  if (strcmp(tool, "goal") == 0) {
+    const char *op_s = json_str(params, "op");
+    if (!op_s) return "";
+    if (strcmp(op_s, "status") == 0)
+      return "";  /* full tree rendered in preview below */
+    int gid = json_int(params, "id", 0);
+    if (strcmp(op_s, "add") == 0) {
+      static char goal_desc[256];
+      const char *content_s = json_str(params, "content");
+      if (content_s) {
+        int clen = (int)strlen(content_s);
+        int trunc = (clen > 80);
+        if (trunc) clen = 80;
+        snprintf(goal_desc, sizeof(goal_desc), "add: %.*s%s",
+                 clen, content_s, trunc ? "..." : "");
+      } else {
+        snprintf(goal_desc, sizeof(goal_desc), "add");
+      }
+      return goal_desc;
+    }
+    /* activate, block, unblock, done, fail */
+    static char goal_op_desc[128];
+    if (strcmp(op_s, "done") == 0) {
+      const char *ev_s = json_str(params, "evidence");
+      if (ev_s)
+        snprintf(goal_op_desc, sizeof(goal_op_desc),
+                 "done G%d (evidence: %s)", gid, ev_s);
+      else
+        snprintf(goal_op_desc, sizeof(goal_op_desc), "done G%d", gid);
+    } else {
+      snprintf(goal_op_desc, sizeof(goal_op_desc), "%s G%d", op_s, gid);
+    }
+    return goal_op_desc;
+  }
   /* Truncate done result to first line, max 80 chars */
   if (strcmp(tool, "done") == 0 && res_s) {
     static char trunc_desc[128];
@@ -1254,8 +1290,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
          * Plan tool always shows full preview rendered as markdown.
          * file_edit always shows its diff preview. */
     int is_plan = (strcmp(si->tool, "plan") == 0);
+    int is_goal = (strcmp(si->tool, "goal") == 0);
     int is_file_edit = (strcmp(si->tool, "file_edit") == 0);
-    int show_preview = is_last || is_plan || is_file_edit;
+    int show_preview = is_last || is_plan || is_goal || is_file_edit;
     if (!show_preview && si->ref) {
       for (int ei = 0; ei < ui->expanded_count; ei++) {
         if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
@@ -1269,10 +1306,10 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
       char rpath[NASH_PATH_MAX];
       path_join(rpath, sizeof(rpath), eff_dir, si->ref);
 
-      if (is_plan) {
-        /* Plan: read full file and render as markdown (no code
-                 * fences, no line limit) so numbered steps display
-                 * with proper formatting. */
+      if (is_plan || is_goal) {
+        /* Plan/Goal: read full file and render as markdown (no
+                 * code fences, no line limit) so numbered steps and
+                 * goal trees display with proper formatting. */
         char *plan_text = slurp_file(rpath, NULL);
         if (plan_text) {
           str_append_cstr(&md, "\n");
@@ -1533,7 +1570,26 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
   }
 
-  /* Token generation statistics footer — show at end of active react loop */
+  /* Persistent goal summary - show current goal state at bottom of react view */
+  if (ui->current_react_loop == react_loop) {
+    goal_state_t gs;
+    goal_state_init(&gs);
+    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
+      char *goal_text = goal_format_text(&gs);
+      if (goal_text) {
+        str_append_cstr(&md, "\n---\n\n");
+        str_append_cstr(&md, "**Goals**\n\n");
+        str_append_cstr(&md, goal_text);
+        if (goal_text[0] &&
+            goal_text[strlen(goal_text) - 1] != '\n')
+          str_append_cstr(&md, "\n");
+        free(goal_text);
+      }
+    }
+    goal_state_free(&gs);
+  }
+
+  /* Token generation statistics footer - show at end of active react loop */
   if (ui->current_react_loop == react_loop &&
       (ui->cum_prompt_tokens > 0 || ui->cum_completion_tokens > 0)) {
     str_append_cstr(&md, "\n---\n");
