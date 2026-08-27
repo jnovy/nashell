@@ -41,8 +41,14 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
   /* OpenAI reasoning models (gpt-5.4+, gpt-5.6) reject function tools on
    * /v1/chat/completions unless reasoning_effort is set to "none".
    * Nash manages its own thinking via the thinking subsystem, so we disable
-   * OpenAI's internal reasoning to allow tool use. */
-  cJSON_AddStringToObject(req, "reasoning_effort", "none");
+   * OpenAI's internal reasoning to allow tool use.
+   *
+   * Note: plain "gpt-5" does NOT support "none" - only 'minimal','low',
+   * 'medium','high'.  We match "gpt-5." (with dot) to target 5.4+/5.6
+   * sub-versions only. */
+  const char *model = p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL;
+  if (strstr(model, "gpt-5."))
+    cJSON_AddStringToObject(req, "reasoning_effort", "none");
 
   char *json = cJSON_PrintUnformatted(req);
   cJSON_Delete(req);
