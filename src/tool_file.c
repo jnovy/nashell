@@ -159,8 +159,8 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
      * context window in chars (context_size × chars_per_token × pct/100).
      * Falls back to file_read_max_inline (default 50000) when context_size
      * is unknown (e.g. auto-detect not yet resolved). */
-  int max_inline = ctx->cfg->file_read_max_inline;
-  if (ctx->cfg->file_read_context_pct > 0 && ctx->provider &&
+  int max_inline = ctx->cfg ? ctx->cfg->file_read_max_inline : 50000;
+  if (ctx->cfg && ctx->cfg->file_read_context_pct > 0 && ctx->provider &&
       ctx->provider->cfg.context_size > 0) {
     float cpt = ctx->provider->cfg.chars_per_token > 0
                   ? ctx->provider->cfg.chars_per_token

@@ -185,7 +185,8 @@ static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
            TG_API_BASE, ctx->bot_token);
 
   cJSON *body = cJSON_CreateObject();
-  cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
+  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id); }
   cJSON_AddStringToObject(body, "name", name);
 
   char *body_str = cJSON_PrintUnformatted(body);
@@ -679,13 +680,16 @@ static long long tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
 
   /* Build JSON body */
   cJSON *body = cJSON_CreateObject();
-  cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
-  if (thread_id != 0)
-    cJSON_AddNumberToObject(body, "message_thread_id", (double)thread_id);
+  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id); }
+  if (thread_id != 0) {
+    char _tid[32]; snprintf(_tid, sizeof(_tid), "%lld", thread_id);
+    cJSON_AddRawToObject(body, "message_thread_id", _tid);
+  }
   if (reply_to_message_id != 0) {
     cJSON *reply_params = cJSON_CreateObject();
-    cJSON_AddNumberToObject(reply_params, "message_id",
-                            (double)reply_to_message_id);
+    char _rid[32]; snprintf(_rid, sizeof(_rid), "%lld", reply_to_message_id);
+    cJSON_AddRawToObject(reply_params, "message_id", _rid);
     cJSON_AddItemToObject(body, "reply_parameters", reply_params);
   }
   cJSON_AddStringToObject(body, "text", text);
@@ -852,9 +856,12 @@ static int tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text,
 
   /* Build JSON body */
   cJSON *body = cJSON_CreateObject();
-  cJSON_AddNumberToObject(body, "chat_id", (double)ctx->chat_id);
-  if (thread_id != 0)
-    cJSON_AddNumberToObject(body, "message_thread_id", (double)thread_id);
+  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id); }
+  if (thread_id != 0) {
+    char _tid[32]; snprintf(_tid, sizeof(_tid), "%lld", thread_id);
+    cJSON_AddRawToObject(body, "message_thread_id", _tid);
+  }
   cJSON_AddStringToObject(body, "rich_text", md_text);
   cJSON_AddStringToObject(body, "parse_mode", "RichMarkdown");
   /* Disable link previews */

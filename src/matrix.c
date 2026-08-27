@@ -780,10 +780,13 @@ static int mx_api_sync(matrix_ctx_t *ctx, cJSON **out_events) {
 
   char url[MX_URL_MAX * 2];
   if (ctx->since_token) {
+    char *enc_since = curl_easy_escape(curl, ctx->since_token, 0);
     snprintf(url, sizeof(url),
              "%s/_matrix/client/v3/sync?timeout=%d&since=%s&filter=%s",
-             ctx->homeserver, MX_SYNC_TIMEOUT, ctx->since_token,
+             ctx->homeserver, MX_SYNC_TIMEOUT,
+             enc_since ? enc_since : ctx->since_token,
              enc_filter ? enc_filter : "");
+    curl_free(enc_since);
   } else {
     snprintf(url, sizeof(url),
              "%s/_matrix/client/v3/sync?timeout=0&filter=%s",
@@ -1333,7 +1336,7 @@ static char *mx_html_fixup(const char *html) {
       /* Upgrade Telegram-style bold headings to proper <h3>.
              * Pattern: <b>text</b> followed by \n (or end).
              * Only match when at start of output or after a newline/br. */
-      if (html[i] == '<' && html[i + 1] == 'b' && html[i + 2] == '>' &&
+      if (i + 2 < len && html[i] == '<' && html[i + 1] == 'b' && html[i + 2] == '>' &&
           (i == 0 || html[i - 1] == '\n' || (i >= 5 && html[i - 5] == '<' && html[i - 4] == 'b' && html[i - 3] == 'r' && html[i - 2] == '/' && html[i - 1] == '>'))) {
         /* Find closing </b> */
         const char *close = strstr(&html[i + 3], "</b>");

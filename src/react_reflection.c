@@ -392,8 +392,8 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
     /* Disable thinking mode for reflection — it's a lightweight
          * extraction task that doesn't need chain-of-thought. Without this,
          * thinking mode leaks from the main task into reflection. */
-    int saved_thinking = refl_provider->cfg.enable_thinking;
-    refl_provider->cfg.enable_thinking = 0;
+    int saved_thinking = __atomic_load_n(&refl_provider->cfg.enable_thinking, __ATOMIC_RELAXED);
+    __atomic_store_n(&refl_provider->cfg.enable_thinking, 0, __ATOMIC_RELAXED);
 
     /* Mini react loop for reflection (max 4 steps) */
     for (int rstep = 0; rstep < (ctx->tools->cfg ? ctx->tools->cfg->max_reflection_steps : 4); rstep++) {
@@ -504,7 +504,7 @@ void react_post_loop(react_ctx_t *ctx, const char *user_query,
     llm_chat_free(reflect);
 
     /* Restore thinking mode after reflection */
-    refl_provider->cfg.enable_thinking = saved_thinking;
+    __atomic_store_n(&refl_provider->cfg.enable_thinking, saved_thinking, __ATOMIC_RELAXED);
 
     /* Flush consolidations queued by reflection-created memories.
          * Without this second flush, reflection memories never get

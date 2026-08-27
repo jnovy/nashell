@@ -124,6 +124,13 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
         if (last_role && strcmp(last_role,
                                 "user") == 0) {
           cJSON *lc = cJSON_GetObjectItem(last, "content");
+          if (!lc || !cJSON_IsArray(lc)) {
+            lc = cJSON_CreateArray();
+            if (cJSON_GetObjectItem(last, "content"))
+              cJSON_ReplaceItemInObject(last, "content", lc);
+            else
+              cJSON_AddItemToObject(last, "content", lc);
+          }
           cJSON *tr = cJSON_CreateObject();
           cJSON_AddStringToObject(tr, "type", "tool_result");
           cJSON_AddStringToObject(tr, "tool_use_id", pending_tool_id);
@@ -381,6 +388,13 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
             cJSON_AddItemToArray(lc, tb);
           } else {
             cJSON *uc = cJSON_CreateArray();
+            /* Preserve existing string content as a text block */
+            if (lc && cJSON_IsString(lc) && cJSON_GetStringValue(lc)) {
+              cJSON *old_tb = cJSON_CreateObject();
+              cJSON_AddStringToObject(old_tb, "type", "text");
+              cJSON_AddStringToObject(old_tb, "text", cJSON_GetStringValue(lc));
+              cJSON_AddItemToArray(uc, old_tb);
+            }
             cJSON_AddItemToArray(uc, tb);
             cJSON_ReplaceItemInObject(last, "content", uc);
           }

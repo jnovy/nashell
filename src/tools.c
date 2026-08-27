@@ -1021,6 +1021,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
   }
 
+  cJSON_Delete(steps);
   return tools_make_error("Unknown op. Use 'check', 'uncheck', or 'status'.");
 }
 

@@ -215,7 +215,8 @@ static char *scratchpad_filter_for_branch(scratchpad_t *scratch,
     jsonl_iterate(jpath, build_pmap_cb, &pm);
     if (pm.pmap) {
       int cur = parent_loop;
-      while (cur >= 0 && cur < pm.pmap_cap && pm.pmap[cur] >= 0) {
+      int walk_limit = pm.pmap_cap; /* cap iterations to detect cycles */
+      while (cur >= 0 && cur < pm.pmap_cap && pm.pmap[cur] >= 0 && walk_limit-- > 0) {
         if (n_ancestors >= anc_cap) {
           int new_cap = anc_cap * 2;
           if (safe_realloc((void **)&ancestors, sizeof(int) * (size_t)new_cap)) break;
@@ -505,7 +506,7 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
          * unless skill_full_disclosure is set. Other types always inject full text. */
   int skill_summary = ctx->tools->cfg
                         ? !ctx->tools->cfg->skill_full_disclosure
-                        : 0;
+                        : 1; /* default: summary mode */
   inject_memory_type(chat, ctx->tools, &all_memories,
                      "[RELEVANT SKILLS]", "skill:", 6, boosted_skills, LLM_MSG_SKILLS,
                      skill_summary);

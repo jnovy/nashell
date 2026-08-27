@@ -54,6 +54,7 @@ int llm_chat_add(llm_chat_t *chat, const char *role, const char *content) {
   if (llm_chat_ensure_capacity(chat) != 0) return -1;
   llm_msg_t *m = &chat->msgs[chat->n_msgs];
   memset(m, 0, sizeof(*m));
+  m->importance = LLM_MSG_IMPORTANCE_NORMAL;
   m->role = xstrdup(role);
   m->content = xstrdup(content);
   m->content_len = strlen(m->content);
@@ -1000,7 +1001,7 @@ belief_entropy_result_t llm_belief_entropy_probe(const char *api_base,
 
   /* Build /completion request with logprobs */
   cJSON *req = cJSON_CreateObject();
-  cJSON_AddStringToObject(req, "prompt", prompt.data);
+  cJSON_AddStringToObject(req, "prompt", prompt.data ? prompt.data : "");
   cJSON_AddNumberToObject(req, "n_predict", n_predict);
   cJSON_AddNumberToObject(req, "n_probs", n_probs);
   cJSON_AddNumberToObject(req, "temperature", temperature);

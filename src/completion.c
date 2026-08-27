@@ -607,6 +607,7 @@ static void replace_input(ui_state_t *ui, int start, int old_len,
     ui->input_cap = new_cap;
   }
   /* Shift tail */
+  if (start + old_len > ui->input_len) return;
   memmove(ui->input_buffer + start + new_len,
           ui->input_buffer + start + old_len,
           (size_t)(ui->input_len - start - old_len + 1)); /* +1 for NUL */

@@ -1386,6 +1386,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     /* 99 bytes for 11 hashed fields (10 known + 1 catch-all) + colons + 40 for ints + 1 null */
     size_t sig_cap = strlen(action_name) + strlen(cmd_s) + strlen(path_s) + strlen(pattern_s) + 99 + 48 + 1;
     char *sig = xmalloc(sig_cap);
+#define SIG_CLAMP_POS() \
+  do { if ((size_t)sig_pos >= sig_cap) sig_pos = (int)(sig_cap - 1); } while (0)
 #define SIG_HASH_FIELD(s) \
   do { \
     unsigned _h = 2166136261u; \
@@ -1393,6 +1395,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       for (const char *_p = (s); *_p; _p++) \
         _h = (_h ^ (unsigned char)*_p) * 16777619u; \
     } \
+    SIG_CLAMP_POS(); \
     sig_pos += snprintf(sig + sig_pos, sig_cap - (size_t)sig_pos, \
                         "%08x:", _h); \
   } while (0)
@@ -1401,6 +1404,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     sig_pos += snprintf(sig, sig_cap, "%s:%s:%s:%s:%d:%d:%d:%d:",
                         action_name, cmd_s, path_s, pattern_s,
                         start_line, end_line, priority, regex);
+    SIG_CLAMP_POS();
     /* Long fields get hashed — no truncation, no overflow */
     SIG_HASH_FIELD(content);
     SIG_HASH_FIELD(old_text);
@@ -1877,6 +1881,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
     /* Build tool result string for context */
     char *meta_str = cJSON_PrintUnformatted(tr.meta);
+    if (!meta_str) meta_str = xstrdup("{}");
 
     /* Update the cycle window entry with actual result for future cache hits.
          * The signature was already pushed via cycle_window_push(); now we

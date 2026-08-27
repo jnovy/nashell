@@ -450,9 +450,17 @@ static char *read_file_head(const char *path, int max_bytes) {
   size_t n = fread(buf, 1, (size_t)max_bytes, f);
   fclose(f);
   buf[n] = '\0';
-  /* Clamp to valid UTF-8 boundary */
-  while (n > 0 && ((unsigned char)buf[n] & 0xC0) == 0x80)
-    n--;
+  /* Clamp to valid UTF-8 boundary — strip any trailing incomplete
+     multi-byte sequence (continuation bytes 10xxxxxx and orphaned leader) */
+  {
+    size_t orig_n = n;
+    while (n > 0 && ((unsigned char)buf[n - 1] & 0xC0) == 0x80)
+      n--;
+    /* If we stripped continuation bytes, also remove the leading byte
+       (which is now orphaned without its full continuation sequence) */
+    if (n < orig_n && n > 0 && ((unsigned char)buf[n - 1] & 0x80))
+      n--;
+  }
   buf[n] = '\0';
   return buf;
 }

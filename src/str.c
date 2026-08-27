@@ -47,8 +47,11 @@ static int str_grow(str_t *s, size_t need) {
   if (need > SIZE_MAX - s->len - 1) return -1; /* overflow guard */
   if (s->len + need + 1 <= s->cap) return 0;
   size_t new_cap = s->cap ? s->cap * 2 : 64;
-  while (new_cap < s->len + need + 1)
-    new_cap *= 2;
+  while (new_cap < s->len + need + 1) {
+    size_t doubled = new_cap * 2;
+    if (doubled <= new_cap) return -1; /* overflow on 32-bit */
+    new_cap = doubled;
+  }
   char *p = realloc(s->data, new_cap);
   if (!p) return -1; /* keep old data on OOM */
   s->data = p;

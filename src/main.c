@@ -583,7 +583,7 @@ int main(int argc, char **argv) {
       const char *url = argv[++i];
       int n = cfg->n_named_providers;
       if (safe_realloc((void **)&cfg->named_providers,
-                       (n + 1) * sizeof(named_provider_t))) {
+                       (size_t)(n + 1) * sizeof(named_provider_t))) {
         fprintf(stderr, "nash: out of memory for --api provider\n");
         config_free(cfg);
         return 1;
@@ -1815,7 +1815,9 @@ int main(int argc, char **argv) {
           if (s->tools.scratch.count > 0)
             scratchpad_save(&s->tools.scratch, s->session_dir);
           free(s->react.last_query);
+          s->react.last_query = NULL;
           free(s->react.last_result);
+          s->react.last_result = NULL;
           session_cleanup(&s->tools, &s->react, s->journal);
           if (is_dir_empty(s->session_dir))
             rmdir(s->session_dir);

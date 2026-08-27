@@ -512,14 +512,14 @@ int evict_score_progressive(const llm_chat_t *chat, int mi, int ri,
                             int n_evictable, void *userdata) {
   int imp = (int)chat->msgs[mi].importance;
   int rec = (int)chat->msgs[mi].recoverability;
-  int msg_len = (int)chat->msgs[mi].content_len;
+  long msg_len = (long)chat->msgs[mi].content_len;
   /* Include partner size only for the primary (tool_call) message.
      * Previously both partners included each other's size, double-counting
      * the pair cost and making the partner eviction logic redundant. */
   const evict_partner_map_t *pmap = (const evict_partner_map_t *)userdata;
   if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0 && chat->msgs[mi].tool_calls_json) {
     int pi = pmap->partner[mi];
-    msg_len += (int)chat->msgs[pi].content_len;
+    msg_len += (long)chat->msgs[pi].content_len;
   }
   int pos_norm = (n_evictable > 1)
                    ? (ri * REACT_SCORE_POS_RANGE / (n_evictable - 1))
@@ -571,13 +571,13 @@ int evict_score_progressive_semantic(const llm_chat_t *chat, int mi, int ri,
   /* Compute base score (same formula as evict_score_progressive) */
   int imp = (int)chat->msgs[mi].importance;
   int rec = (int)chat->msgs[mi].recoverability;
-  int msg_len = (int)chat->msgs[mi].content_len;
+  long msg_len = (long)chat->msgs[mi].content_len;
 
   /* Include partner size for tool_call messages */
   const evict_partner_map_t *pmap = sctx ? sctx->pmap : NULL;
   if (pmap && mi < pmap->n_msgs && pmap->partner[mi] >= 0 && chat->msgs[mi].tool_calls_json) {
     int pi = pmap->partner[mi];
-    msg_len += (int)chat->msgs[pi].content_len;
+    msg_len += (long)chat->msgs[pi].content_len;
   }
 
   int pos_norm = (n_evictable > 1)
@@ -1407,6 +1407,7 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
 
   /* ── Step 2.5: Lifecycle — replace stale/superseded file reads ── */
   evict_lifecycle_stale_reads(chat, evict_start, evict_end);
+  total_chars = react_calc_total_chars(chat); /* refresh after lifecycle compression */
 
   /* ── Step 3: Mark phase — score and select messages for eviction ── */
   int *evict_mark = xcalloc((size_t)n_evictable, sizeof(int));

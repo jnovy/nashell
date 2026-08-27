@@ -217,7 +217,7 @@ static void scan_session_refs(const char *sess_dir, const char *store_dir,
     if (len <= 0) continue;
     target[len] = '\0';
     /* Check if symlink points into the store */
-    if (strstr(target, "store/") || strstr(target, store_dir)) {
+    if (strstr(target, "/store/") || strstr(target, store_dir)) {
       const char *slash = strrchr(target, '/');
       if (slash) hashset_add(refs, slash + 1);
     }

@@ -130,7 +130,7 @@ static void parse_journal_fields(const char *line,
   if (p) *react_loop = atoi(p + 13);
 
   p = strstr(line, "\"step\":");
-  if (p) *step = atoi(p + 6);
+  if (p) *step = atoi(p + 7);
 
   p = strstr(line, "\"tool\":\"");
   if (p) {

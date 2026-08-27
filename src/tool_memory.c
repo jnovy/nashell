@@ -796,6 +796,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
         tool_track_recalled_key(ctx, e->key);
         tool_fire_ledger_add(ctx, e->key);
         mi++;
+        total_emitted++;
       } else if (si < ses_count) {
         /* Emit session result */
         ss_result_t *r = &ses_results.results[si];
@@ -847,6 +848,7 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                         r->match_count - r->n_matches,
                         (r->match_count - r->n_matches) == 1 ? "" : "es");
           }
+          total_emitted++;
         } else {
           str_appendf(&out,
                       "[SESSION -- %s]\n    %s\n"
@@ -858,7 +860,6 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
         str_appendf(&out, "\n");
         si++;
       }
-      total_emitted++;
     }
 
     if (total_emitted == 0)

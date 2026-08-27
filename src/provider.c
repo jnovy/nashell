@@ -138,8 +138,9 @@ int provider_api_fetch_model_info(provider_t *p, int *context_size,
                                   char **model_name, char **props_json) {
   if (props_json) *props_json = NULL;
 
-  if (model_name && p->cfg.model_id)
-    *model_name = xstrdup(p->cfg.model_id);
+  if (model_name) {
+    *model_name = p->cfg.model_id ? xstrdup(p->cfg.model_id) : NULL;
+  }
 
   if (context_size) {
     if (p->cfg.context_size > 0)
@@ -1216,6 +1217,12 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     return NULL;
   }
 
+  if (!p->build_request) {
+    free(p->last_error);
+    p->last_error = xstrdup("build_request vtable entry is NULL");
+    free(endpoint);
+    return NULL;
+  }
   char *req_body = p->build_request(p, chat, 0);
   if (!req_body) {
     free(p->last_error);
@@ -1497,6 +1504,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     return NULL;
   }
 
+  if (!p->build_request) {
+    free(p->last_error);
+    p->last_error = xstrdup("build_request vtable entry is NULL");
+    return NULL;
+  }
   char *req_body = p->build_request(p, chat, 1);
   if (!req_body) {
     nash_log("[provider] build_request returned NULL for endpoint=%s",

@@ -330,7 +330,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
         const char *name = yaml_str(yaml_get(root, "name"));
         if (!name) {
           /* Derive from filename: strip .yaml */
-          static char namebuf[256];
+          char namebuf[256];
           snprintf(namebuf, sizeof(namebuf), "%s", de->d_name);
           namebuf[nlen - 5] = '\0';
           name = namebuf;
@@ -355,7 +355,7 @@ static void scan_workspace_dir(const char *nash_dir, const char *dir_path,
         /* Build agent entry */
         if (*n_agents >= *cap_agents) {
           *cap_agents = (*cap_agents == 0) ? 16 : *cap_agents * 2;
-          if (safe_realloc((void **)agents, *cap_agents * sizeof(agent_entry_t))) {
+          if (safe_realloc((void **)agents, (size_t)*cap_agents * sizeof(agent_entry_t))) {
             yaml_free(root);
             closedir(dp);
             return;
@@ -992,7 +992,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
      *   3 base vars + 1 {{arguments}} (always) + n {{argN}} tokens */
   int n_extra = 3 + 1 + n_arg_tokens;
   int new_nvars = pb->n_vars + n_extra;
-  if (safe_realloc((void **)&pb->var_keys, (size_t)new_nvars * sizeof(char *)) ||
+  if (safe_realloc((void **)&pb->var_keys, (size_t)new_nvars * sizeof(char *)) |
       safe_realloc((void **)&pb->var_values, (size_t)new_nvars * sizeof(char *))) {
     for (int ti2 = 0; ti2 < n_arg_tokens; ti2++)
       free(arg_tokens[ti2]);

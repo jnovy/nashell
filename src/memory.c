@@ -1259,7 +1259,7 @@ static int memory_increment_field(memory_t *m, const char *key,
  *     with synchronous fast-path access. Index iteration IS the fast path. */
 memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
   memory_results_t results = {0};
-  if (!m || !query || m->idx.count == 0) return results;
+  if (!m || !query) return results;
 
   /* FIX B1: Type prefix extraction for filtering */
   const char *type_filter = NULL;
@@ -1346,6 +1346,12 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
   /* Acquire mutex for index access — scoring reads index entries.
      * FIX #5: Lock scope reduced: embedding computation above runs unlocked. */
   pthread_mutex_lock(&m->mtx);
+
+  if (m->idx.count == 0) {
+    pthread_mutex_unlock(&m->mtx);
+    embed_multi_vec_free(&query_mv);
+    return results;
+  }
 
   /* P1: Score all entries from in-memory index — no filesystem I/O */
   int scored_cap = m->idx.count > 64 ? m->idx.count : 64;
@@ -2355,13 +2361,15 @@ int memory_add_ref(memory_t *m, const char *key, const char *ref_key,
   /* Add new ref + type (BUG-C fix: use safe_realloc to avoid leaking on OOM) */
   {
     int n = ie->n_refs;
-    if (safe_realloc((void **)&ie->refs, sizeof(char *) * (size_t)(n + 1))) {
-      pthread_mutex_unlock(&m->mtx);
-      return -1;
-    }
+    /* Realloc ref_types first — an extra slot in ref_types is harmless if
+       the subsequent refs realloc fails, since n_refs stays unchanged. */
     if (!ie->ref_types)
       ie->ref_types = xcalloc((size_t)(n + 1), sizeof(int));
     else if (safe_realloc((void **)&ie->ref_types, sizeof(int) * (size_t)(n + 1))) {
+      pthread_mutex_unlock(&m->mtx);
+      return -1;
+    }
+    if (safe_realloc((void **)&ie->refs, sizeof(char *) * (size_t)(n + 1))) {
       pthread_mutex_unlock(&m->mtx);
       return -1;
     }

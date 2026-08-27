@@ -107,11 +107,15 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
     nash_log("[mailbox] inotify_init failed: %s, falling back to poll",
              strerror(errno));
     /* Fallback: poll with stat() every second */
-    time_t deadline = timeout_sec > 0 ? time(NULL) + timeout_sec : 0;
+    if (timeout_sec <= 0) {
+      nash_log("[mailbox] timeout waiting for answer");
+      return NULL;
+    }
+    time_t deadline = time(NULL) + timeout_sec;
     while (1) {
       answer = read_file(answer_file);
       if (answer) goto got_answer;
-      if (deadline > 0 && time(NULL) >= deadline) {
+      if (time(NULL) >= deadline) {
         nash_log("[mailbox] timeout waiting for answer");
         return NULL;
       }
