@@ -284,15 +284,52 @@ void provider_free(provider_t *p) {
 /* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */
 static void strict_object(cJSON *schema) {
   if (!schema || !cJSON_IsObject(schema)) return;
-  const char *type = json_str(schema, "type");
-  if (type && strcmp(type, "object") == 0) {
+  const char *type_str = json_str(schema, "type");
+  if (type_str && strcmp(type_str, "object") == 0) {
     cJSON *props = cJSON_GetObjectItem(schema, "properties");
     if (props) {
+      /* Collect existing required set so we know which props are optional */
+      cJSON *old_req = cJSON_GetObjectItem(schema, "required");
+
+      /* Build new required array with ALL property keys (OpenAI strict mode
+       * demands every property in "properties" appears in "required").
+       * For originally-optional properties, make them nullable so the model
+       * can pass null instead of a value. */
+      cJSON *new_req = cJSON_CreateArray();
       cJSON *child = props->child;
       while (child) {
         strict_object(child);
+        /* Check if this property was originally required */
+        int was_required = 0;
+        if (old_req) {
+          cJSON *r;
+          cJSON_ArrayForEach(r, old_req) {
+            if (r->valuestring && strcmp(r->valuestring, child->string) == 0) {
+              was_required = 1;
+              break;
+            }
+          }
+        }
+        /* Make originally-optional properties nullable */
+        if (!was_required) {
+          cJSON *t = cJSON_GetObjectItem(child, "type");
+          if (t && cJSON_IsString(t) && t->valuestring) {
+            /* Replace scalar type "T" with array ["T", "null"] */
+            cJSON *arr = cJSON_CreateArray();
+            cJSON_AddItemToArray(arr, cJSON_CreateString(t->valuestring));
+            cJSON_AddItemToArray(arr, cJSON_CreateString("null"));
+            cJSON_ReplaceItemInObject(child, "type", arr);
+          }
+        }
+        cJSON_AddItemToArray(new_req, cJSON_CreateString(child->string));
         child = child->next;
       }
+      /* Replace or add the required array */
+      if (old_req)
+        cJSON_ReplaceItemInObject(schema, "required", new_req);
+      else
+        cJSON_AddItemToObject(schema, "required", new_req);
+
       if (!cJSON_GetObjectItem(schema, "additionalProperties"))
         cJSON_AddBoolToObject(schema, "additionalProperties", 0);
     }
@@ -419,7 +456,8 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
     cJSON_AddBoolToObject(so, "include_usage", 1);
     cJSON_AddItemToObject(req, "stream_options", so);
     /* Request prompt processing progress from llama.cpp server */
-    cJSON_AddBoolToObject(req, "return_progress", 1);
+    if (provider_type == PROVIDER_LOCAL)
+      cJSON_AddBoolToObject(req, "return_progress", 1);
   }
 
   /* Tools — use filter if set on provider (allows model profile tool restrictions).

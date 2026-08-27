@@ -38,6 +38,12 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
                                          p->cfg.model_id ? p->cfg.model_id : OPENAI_DEFAULT_MODEL,
                                          "max_completion_tokens", PROVIDER_OPENAI);
 
+  /* OpenAI reasoning models (gpt-5.4+, gpt-5.6) reject function tools on
+   * /v1/chat/completions unless reasoning_effort is set to "none".
+   * Nash manages its own thinking via the thinking subsystem, so we disable
+   * OpenAI's internal reasoning to allow tool use. */
+  cJSON_AddStringToObject(req, "reasoning_effort", "none");
+
   char *json = cJSON_PrintUnformatted(req);
   cJSON_Delete(req);
   return json;
@@ -59,6 +65,13 @@ static struct curl_slist *openai_build_headers(provider_t *p) {
              p->cfg.api_key_env ? p->cfg.api_key_env : "OPENAI_API_KEY");
     curl_slist_free_all(headers);
     return NULL;
+  }
+
+  /* OpenAI project scoping (sends OpenAI-Project header if project_id set) */
+  if (p->cfg.project_id && p->cfg.project_id[0]) {
+    char proj[512];
+    snprintf(proj, sizeof(proj), "OpenAI-Project: %s", p->cfg.project_id);
+    headers = curl_slist_append(headers, proj);
   }
 
   return headers;
