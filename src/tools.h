@@ -197,6 +197,34 @@ cJSON *plan_replay_journal_dir(const char *session_dir);
  * Caller owns the returned object. */
 cJSON *plan_subtask_links(const char *session_dir);
 
+/* Look up the parent step a subtask dir is linked to (0 = unlinked). */
+int plan_link_for(const cJSON *links, const char *child_name);
+
+/* Collect subtask_N dir names from session_dir, sorted by numeric suffix.
+ * Returns an array of xstrdup'd names; *out_n is set to the count.
+ * Caller frees each name and the array via plan_subtask_names_free(). */
+char **plan_subtask_names(const char *session_dir, int *out_n);
+
+/* Free a plan_subtask_names() result. */
+void plan_subtask_names_free(char **names, int n);
+
+/* Render one subtask's plan steps as N.M sub-items under parent_idx.
+ * sub_start is the 1-based number of the first sub-item.
+ * Returns the number of sub-items rendered (0 if no plan). */
+int plan_render_subtask_items(str_t *s, const char *session_dir,
+                              const char *child_name,
+                              int parent_idx, int sub_start);
+
+/* Append subtask sub-plan lines linked to parent_idx, as indented N.M
+ * items in numeric subtask order. */
+void plan_append_subtask_steps(str_t *s, const char *session_dir,
+                               int parent_idx, const cJSON *links);
+
+/* Append subtask sub-plans NOT linked to any parent step (spawned before
+ * a plan existed), as "Subtask N:" blocks in numeric subtask order. */
+void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
+                                   const cJSON *links);
+
 /* Edit transaction: record a save-point before modifying a file.
  * Only the FIRST pre-edit hash per path is kept (dedup).
  * is_new_file: 1 = file did not exist before (rollback = delete). */

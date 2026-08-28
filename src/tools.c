@@ -719,6 +719,40 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_Delete(plan_steps);
   }
 
+  /* Include child subtask plan summaries in done() result */
+  {
+    int n = 0;
+    char **names = plan_subtask_names(ctx->session_dir, &n);
+    if (names && n > 0) {
+      str_t child_plans = str_new(512);
+      for (int i = 0; i < n; i++) {
+        char child_dir[NASH_PATH_MAX];
+        snprintf(child_dir, sizeof(child_dir), "%s/%s",
+                 ctx->session_dir, names[i]);
+        cJSON *sroot = plan_replay_journal_dir(child_dir);
+        if (!sroot) continue;
+        cJSON *ssteps = cJSON_GetObjectItem(sroot, "steps");
+        if (ssteps && cJSON_IsArray(ssteps)
+            && cJSON_GetArraySize(ssteps) > 0) {
+          int stotal = cJSON_GetArraySize(ssteps);
+          int sdone = 0;
+          cJSON *si;
+          cJSON_ArrayForEach(si, ssteps) {
+            if (json_bool(si, "done", 0)) sdone++;
+          }
+          str_appendf(&child_plans, "Subtask %s: %d/%d complete; ",
+                      names[i] + 8, sdone, stotal);
+        }
+        cJSON_Delete(sroot);
+      }
+      if (child_plans.len > 0)
+        cJSON_AddStringToObject(meta, "child_plans",
+                                str_cstr(&child_plans));
+      str_free(&child_plans);
+    }
+    plan_subtask_names_free(names, n);
+  }
+
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "done", params, alias,
                strlen(result), 0, NULL, NULL);
@@ -813,6 +847,22 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
       for (int i = 0; i < total; i++) {
         cJSON *s = cJSON_GetArrayItem(*steps, i);
         if (!json_bool(s, "done", 0)) { *active_step = i + 1; break; }
+      }
+    }
+  } else if (op && strcmp(op, "mark_stale") == 0) {
+    /* Replay staleness: mark listed steps as stale */
+    cJSON *stale_arr = cJSON_GetObjectItem(params, "stale_steps");
+    if (*steps && stale_arr && cJSON_IsArray(stale_arr)) {
+      int total = cJSON_GetArraySize(*steps);
+      cJSON *si;
+      cJSON_ArrayForEach(si, stale_arr) {
+        if (!cJSON_IsNumber(si)) continue;
+        int sn = (int)si->valuedouble;
+        if (sn >= 1 && sn <= total) {
+          cJSON *step = cJSON_GetArrayItem(*steps, sn - 1);
+          cJSON_DeleteItemFromObject(step, "stale");
+          cJSON_AddBoolToObject(step, "stale", 1);
+        }
       }
     }
   }
@@ -1006,7 +1056,7 @@ static char *plan_format_text(const cJSON *steps, int active_step) {
 }
 
 /* Look up the parent step a subtask dir is linked to (0 = unlinked). */
-static int plan_link_for(const cJSON *links, const char *child_name) {
+int plan_link_for(const cJSON *links, const char *child_name) {
   if (!links) return 0;
   cJSON *v = cJSON_GetObjectItem(links, child_name);
   if (v && cJSON_IsNumber(v)) return (int)v->valuedouble;
@@ -1018,7 +1068,7 @@ static int plan_link_for(const cJSON *links, const char *child_name) {
  * deterministic.  Returns an array of xstrdup'd names (caller frees each
  * and the array); *out_n is set to the count.  Returns NULL if the
  * directory cannot be opened. */
-static char **plan_subtask_names(const char *session_dir, int *out_n) {
+char **plan_subtask_names(const char *session_dir, int *out_n) {
   DIR *d = opendir(session_dir);
   if (!d) { *out_n = 0; return NULL; }
   struct dirent *ent;
@@ -1045,7 +1095,7 @@ static char **plan_subtask_names(const char *session_dir, int *out_n) {
 }
 
 /* Free a plan_subtask_names() result. */
-static void plan_subtask_names_free(char **names, int n) {
+void plan_subtask_names_free(char **names, int n) {
   if (!names) return;
   for (int i = 0; i < n; i++) free(names[i]);
   free(names);
@@ -1058,9 +1108,9 @@ static void plan_subtask_names_free(char **names, int n) {
  * Returns the number of sub-items rendered (0 if the subtask has no
  * plan).  Plan state comes from the child journal (no plan.json or
  * parent_link.json needed). */
-static int plan_render_subtask_items(str_t *s, const char *session_dir,
-                                     const char *child_name,
-                                     int parent_idx, int sub_start) {
+int plan_render_subtask_items(str_t *s, const char *session_dir,
+                              const char *child_name,
+                              int parent_idx, int sub_start) {
   char child_dir[NASH_PATH_MAX];
   snprintf(child_dir, sizeof(child_dir), "%s/%s", session_dir, child_name);
   cJSON *sroot = plan_replay_journal_dir(child_dir);
@@ -1096,8 +1146,8 @@ static int plan_render_subtask_items(str_t *s, const char *session_dir,
  * interleaved right after that parent step.  Renders those whose
  * journal-derived link matches parent_idx, as indented N.M items, in
  * numeric subtask order. */
-static void plan_append_subtask_steps(str_t *s, const char *session_dir,
-                                      int parent_idx, const cJSON *links) {
+void plan_append_subtask_steps(str_t *s, const char *session_dir,
+                               int parent_idx, const cJSON *links) {
   int n = 0;
   char **names = plan_subtask_names(session_dir, &n);
   if (!names) return;
@@ -1113,8 +1163,8 @@ static void plan_append_subtask_steps(str_t *s, const char *session_dir,
 /* Append subtask sub-plans that are NOT linked to any parent step
  * (spawned before a plan existed) to str_t, after the main plan.
  * Rendered as "  Subtask N:" blocks, in numeric subtask order. */
-static void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
-                                          const cJSON *links) {
+void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
+                                   const cJSON *links) {
   int n = 0;
   char **names = plan_subtask_names(session_dir, &n);
   if (!names) return;
@@ -1239,6 +1289,18 @@ void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
   }
 
   if (changed) {
+    /* Persist staleness to journal so it survives replay */
+    {
+      cJSON *jp = cJSON_CreateObject();
+      cJSON_AddStringToObject(jp, "op", "mark_stale");
+      cJSON *arr = cJSON_AddArrayToObject(jp, "stale_steps");
+      for (int i = 0; i < 64; i++) {
+        if (ctx->stale_steps & ((uint64_t)1 << i))
+          cJSON_AddItemToArray(arr, cJSON_CreateNumber(i + 1));
+      }
+      tool_journal(ctx, "plan", jp, NULL, 0, 0, NULL, NULL);
+      cJSON_Delete(jp);
+    }
     /* Re-project to scratchpad with staleness merged */
     cJSON *root = plan_replay_journal_dir(ctx->session_dir);
     if (root) {

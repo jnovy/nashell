@@ -14,6 +14,17 @@
 extern cJSON *plan_replay_journal_dir(const char *session_dir);
 /* Derive subtask -> parent plan step links from the journal (tools.c) */
 extern cJSON *plan_subtask_links(const char *session_dir);
+/* Shared plan helpers (defined in tools.c, declared in tools.h) */
+extern int plan_link_for(const cJSON *links, const char *child_name);
+extern char **plan_subtask_names(const char *session_dir, int *out_n);
+extern void plan_subtask_names_free(char **names, int n);
+extern int plan_render_subtask_items(str_t *s, const char *session_dir,
+                                     const char *child_name,
+                                     int parent_idx, int sub_start);
+extern void plan_append_subtask_steps(str_t *s, const char *session_dir,
+                                      int parent_idx, const cJSON *links);
+extern void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
+                                          const cJSON *links);
 
 /* ── Local helpers ───────────────────────────────────────── */
 
@@ -1662,93 +1673,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
  * ═══════════════════════════════════════════════════════════ */
 
 /* ── F3: Plan ────────────────────────────────────────────── */
-
-/* Look up the parent step a subtask dir is linked to (0 = unlinked). */
-static int f3_link_for(const cJSON *links, const char *child_name) {
-  if (!links) return 0;
-  cJSON *v = cJSON_GetObjectItem(links, child_name);
-  if (v && cJSON_IsNumber(v)) return (int)v->valuedouble;
-  return 0;
-}
-
-/* Collect subtask_N dir names from session_dir, sorted by numeric suffix
- * (subtask_0, subtask_1, ..., subtask_10) so N.M numbering is
- * deterministic.  Returns an array of xstrdup'd names (caller frees each
- * and the array); *out_n is set to the count.  Returns NULL if the
- * directory cannot be opened. */
-static char **f3_subtask_names(const char *session_dir, int *out_n) {
-  DIR *d = opendir(session_dir);
-  if (!d) { *out_n = 0; return NULL; }
-  struct dirent *ent;
-  int n = 0, cap = 0;
-  char **names = NULL;
-  while ((ent = readdir(d)) != NULL) {
-    if (strncmp(ent->d_name, "subtask_", 8) != 0) continue;
-    if (n == cap) {
-      cap = cap ? cap * 2 : 8;
-      char **tmp = xmalloc(cap * sizeof(char *));
-      if (names) { memcpy(tmp, names, (size_t)n * sizeof(char *)); free(names); }
-      names = tmp;
-    }
-    names[n++] = xstrdup(ent->d_name);
-  }
-  closedir(d);
-  for (int i = 0; i < n; i++)
-    for (int j = i + 1; j < n; j++)
-      if (atoi(names[j] + 8) < atoi(names[i] + 8)) {
-        char *t = names[i]; names[i] = names[j]; names[j] = t;
-      }
-  *out_n = n;
-  return names;
-}
-
-static void f3_subtask_names_free(char **names, int n) {
-  if (!names) return;
-  for (int i = 0; i < n; i++) free(names[i]);
-  free(names);
-}
-
-/* Render one subtask's plan steps as N.M sub-items under parent_idx.
- * sub_start is the 1-based number of the first sub-item so that multiple
- * subtasks linked to the same parent step get unique N.M numbers.
- * Returns the number of sub-items rendered (0 if the subtask has no plan). */
-static int f3_render_subtask_items(str_t *md, const char *session_dir,
-                                   const char *child_name,
-                                   int parent_idx, int sub_start) {
-  char child_dir[NASH_PATH_MAX];
-  snprintf(child_dir, sizeof(child_dir), "%s/%s", session_dir, child_name);
-  cJSON *sroot = plan_replay_journal_dir(child_dir);
-  if (!sroot) return 0;
-  cJSON *ssteps = cJSON_GetObjectItem(sroot, "steps");
-  int sactive = json_int(sroot, "active_step", 0);
-  int rendered = 0;
-  if (ssteps && cJSON_IsArray(ssteps) && cJSON_GetArraySize(ssteps) > 0) {
-    int sidx = 0;
-    cJSON *si;
-    cJSON_ArrayForEach(si, ssteps) {
-      sidx++;
-      int sd_done = cJSON_IsTrue(cJSON_GetObjectItem(si, "done"));
-      int sd_stale = cJSON_IsTrue(cJSON_GetObjectItem(si, "stale"));
-      const char *stxt = json_str(si, "text");
-      const char *sev = json_str(si, "evidence");
-      const char *sm;
-      if (sd_done && sd_stale) sm = "~";
-      else if (sd_done) sm = "x";
-      else if (sidx == sactive) sm = ">";
-      else sm = " ";
-      str_appendf(md, "   %d.%d. [%s] %s", parent_idx, sub_start + sidx - 1,
-                  sm, stxt ? stxt : "?");
-      if (sd_done && sev && sev[0])
-        str_appendf(md, " (%s)", sev);
-      if (sd_stale)
-        str_append_cstr(md, " (STALE)");
-      str_append_cstr(md, "\n");
-      rendered++;
-    }
-  }
-  cJSON_Delete(sroot);
-  return rendered;
-}
+/* f3_* helpers removed - now using shared plan_link_for(), plan_subtask_names(),
+ * plan_subtask_names_free(), plan_render_subtask_items() from tools.c */
 
 static char *generate_working_mem_md(ui_state_t *ui) {
   const char *eff_dir = ui->playbook_session_dir
@@ -1792,65 +1718,12 @@ static char *generate_working_mem_md(ui_state_t *ui) {
         str_append_cstr(&md, "\n");
 
         /* Subtask sub-plans linked to this step: N.M sub-items */
-        {
-          int n = 0;
-          char **names = f3_subtask_names(eff_dir, &n);
-          if (names) {
-            int sub_start = 1;
-            for (int i = 0; i < n; i++) {
-              if (f3_link_for(links, names[i]) != idx) continue;
-              sub_start += f3_render_subtask_items(&md, eff_dir, names[i],
-                                                   idx, sub_start);
-            }
-            f3_subtask_names_free(names, n);
-          }
-        }
+        plan_append_subtask_steps(&md, eff_dir, idx, links);
       }
 
       /* Subtask sub-plans with no parent link (no plan at spawn):
        * appended after the main plan as "Subtask N:" blocks */
-      {
-        int n = 0;
-        char **names = f3_subtask_names(eff_dir, &n);
-        if (names) {
-          for (int i = 0; i < n; i++) {
-            if (f3_link_for(links, names[i]) != 0) continue;
-            char child_dir[NASH_PATH_MAX];
-            snprintf(child_dir, sizeof(child_dir), "%s/%s", eff_dir, names[i]);
-            cJSON *sroot = plan_replay_journal_dir(child_dir);
-            if (!sroot) continue;
-            cJSON *ssteps = cJSON_GetObjectItem(sroot, "steps");
-            int sactive = json_int(sroot, "active_step", 0);
-            if (ssteps && cJSON_IsArray(ssteps)
-                && cJSON_GetArraySize(ssteps) > 0) {
-              str_appendf(&md, "   Subtask %s:\n", names[i] + 8);
-              int sidx = 0;
-              cJSON *si;
-              cJSON_ArrayForEach(si, ssteps) {
-                sidx++;
-                int sd_done = cJSON_IsTrue(cJSON_GetObjectItem(si, "done"));
-                int sd_stale = cJSON_IsTrue(cJSON_GetObjectItem(si, "stale"));
-                const char *stxt = json_str(si, "text");
-                const char *sev = json_str(si, "evidence");
-                const char *sm;
-                if (sd_done && sd_stale) sm = "~";
-                else if (sd_done) sm = "x";
-                else if (sidx == sactive) sm = ">";
-                else sm = " ";
-                str_appendf(&md, "   [%s] %d. %s", sm, sidx,
-                            stxt ? stxt : "?");
-                if (sd_done && sev && sev[0])
-                  str_appendf(&md, " (%s)", sev);
-                if (sd_stale)
-                  str_append_cstr(&md, " (STALE)");
-                str_append_cstr(&md, "\n");
-              }
-            }
-            cJSON_Delete(sroot);
-          }
-          f3_subtask_names_free(names, n);
-        }
-      }
+      plan_append_unlinked_subtasks(&md, eff_dir, links);
       cJSON_Delete(links);
       str_append_cstr(&md, "\n");
     }
