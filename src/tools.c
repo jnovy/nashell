@@ -874,6 +874,71 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     plan_project_to_scratchpad(ctx, steps);
     cJSON_Delete(steps);
 
+    /* Auto-bridge: create + activate a goal from the user query when
+     * the first plan is created.  Models reliably call plan() but rarely
+     * call goal(), so this ensures the goal infrastructure (F3 Working
+     * Memory, F5 Timeline, serving_goal journal annotation) is populated
+     * without requiring any change to model behavior. */
+    {
+      goal_state_t gs;
+      goal_state_init(&gs);
+      goal_state_load(&gs, ctx->session_dir);
+      if (gs.count == 0) {
+        /* Extract the user query from journal.jsonl (tool="query", params.text) */
+        char *goal_content = NULL;
+        char jpath[PATH_MAX];
+        snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ctx->session_dir);
+        size_t jlen = 0;
+        char *jdata = slurp_file(jpath, &jlen);
+        if (jdata) {
+          /* Scan for last tool="query" entry */
+          char *line = jdata;
+          while (line && *line) {
+            char *eol = strchr(line, '\n');
+            if (eol) *eol = '\0';
+            cJSON *entry = cJSON_Parse(line);
+            if (entry) {
+              const char *tool = json_str(entry, "tool");
+              if (tool && strcmp(tool, "query") == 0) {
+                cJSON *p = cJSON_GetObjectItem(entry, "params");
+                const char *qt = p ? json_str(p, "text") : NULL;
+                if (qt && qt[0]) {
+                  free(goal_content);
+                  goal_content = xstrdup(qt);
+                }
+              }
+              cJSON_Delete(entry);
+            }
+            line = eol ? eol + 1 : NULL;
+          }
+          free(jdata);
+        }
+        if (!goal_content)
+          goal_content = xstrdup("Task execution");
+
+        struct timespec _ts;
+        clock_gettime(CLOCK_REALTIME, &_ts);
+        double now = (double)_ts.tv_sec + (double)_ts.tv_nsec / 1e9;
+
+        int gid = goal_add(&gs, goal_content, 0, ctx->step, now);
+        if (gid > 0) {
+          goal_t *g = goal_find(&gs, gid);
+          if (g) goal_activate(g, ctx->step, now);
+          goal_state_save(&gs, ctx->session_dir);
+          char *gtext = goal_format_text(&gs);
+          if (gtext) {
+            scratchpad_write(&ctx->scratch, "goals", gtext, 1);
+            scratchpad_save(&ctx->scratch, ctx->session_dir);
+            free(gtext);
+          }
+          if (g && ctx->journal)
+            journal_set_serving_goal(ctx->journal, gid, g->content);
+        }
+        free(goal_content);
+      }
+      goal_state_free(&gs);
+    }
+
     /* Store in content-addressed store for audit trail */
     char *hash = store_save(ctx->store, result);
     char *alias = tool_register_alias(ctx, hash ? hash : "");
