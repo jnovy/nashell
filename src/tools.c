@@ -843,13 +843,102 @@ static char *plan_format_text(const cJSON *steps, int active_step) {
   return result;
 }
 
-/* Project plan state to scratchpad section "plan" at priority 1. */
+/* Append subtask sub-plan lines for a given parent step to str_t.
+ * Scans session_dir/subtask_N/parent_link.json for links to parent_idx,
+ * then renders matching child plan steps as indented N.M items. */
+static void plan_append_subtask_steps(str_t *s, const char *session_dir,
+                                      int parent_idx) {
+  DIR *d = opendir(session_dir);
+  if (!d) return;
+  struct dirent *ent;
+  while ((ent = readdir(d)) != NULL) {
+    if (strncmp(ent->d_name, "subtask_", 8) != 0) continue;
+    char lpath[NASH_PATH_MAX];
+    snprintf(lpath, sizeof(lpath), "%s/%s/parent_link.json",
+             session_dir, ent->d_name);
+    cJSON *link = slurp_json(lpath);
+    if (!link) continue;
+    int linked = json_int(link, "parent_step", 0);
+    cJSON_Delete(link);
+    if (linked != parent_idx) continue;
+    char spath[NASH_PATH_MAX];
+    snprintf(spath, sizeof(spath), "%s/%s/plan.json",
+             session_dir, ent->d_name);
+    cJSON *sroot = slurp_json(spath);
+    cJSON *ssteps = sroot ? cJSON_GetObjectItem(sroot, "steps") : NULL;
+    int sactive = sroot ? json_int(sroot, "active_step", 0) : 0;
+    if (ssteps && cJSON_IsArray(ssteps) && cJSON_GetArraySize(ssteps) > 0) {
+      int sidx = 0;
+      cJSON *si;
+      cJSON_ArrayForEach(si, ssteps) {
+        sidx++;
+        int sd = json_bool(si, "done", 0);
+        int ss = json_bool(si, "stale", 0);
+        const char *txt = json_str(si, "text");
+        const char *ev = json_str(si, "evidence");
+        const char *m = (sd && ss) ? "~" : sd ? "x" : (sidx == sactive) ? ">" : " ";
+        str_appendf(s, "  [%s] %d.%d. %s", m, parent_idx, sidx,
+                    txt ? txt : "");
+        if (sd && ev && ev[0])
+          str_appendf(s, " (%s)", ev);
+        if (ss)
+          str_append_cstr(s, " (STALE)");
+        str_append_cstr(s, "\n");
+      }
+    }
+    cJSON_Delete(sroot);
+  }
+  closedir(d);
+}
+
+/* Project plan state to scratchpad section "plan" at priority 1.
+ * Includes subtask sub-plans interleaved after their parent steps. */
 static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
                                        int active_step) {
-  char *text = plan_format_text(steps, active_step);
-  scratchpad_write(&ctx->scratch, "plan", text, 1);
+  /* Build plan text with subtask sub-plans interleaved */
+  str_t s = str_new(512);
+  int total = 0, done_cnt = 0, stale_cnt = 0;
+  cJSON *item;
+  cJSON_ArrayForEach(item, steps) {
+    total++;
+    int is_done = json_bool(item, "done", 0);
+    int is_stale = json_bool(item, "stale", 0);
+    const char *text = json_str(item, "text");
+    const char *ev = json_str(item, "evidence");
+    if (is_done) {
+      done_cnt++;
+      if (is_stale) {
+        stale_cnt++;
+        if (ev && ev[0])
+          str_appendf(&s, "[~] %d. %s (%s) (STALE - files changed since verification)\n",
+                      total, text ? text : "", ev);
+        else
+          str_appendf(&s, "[~] %d. %s (STALE - files changed since verification)\n",
+                      total, text ? text : "");
+      } else if (ev && ev[0]) {
+        str_appendf(&s, "[x] %d. %s (%s)\n", total, text ? text : "", ev);
+      } else {
+        str_appendf(&s, "[x] %d. %s\n", total, text ? text : "");
+      }
+    } else if (total == active_step) {
+      str_appendf(&s, "[>] %d. %s\n", total, text ? text : "");
+    } else {
+      str_appendf(&s, "[ ] %d. %s\n", total, text ? text : "");
+    }
+    /* Append subtask sub-plans linked to this step */
+    plan_append_subtask_steps(&s, ctx->session_dir, total);
+  }
+  if (total > 0) {
+    str_appendf(&s, "Progress: %d/%d complete", done_cnt, total);
+    if (stale_cnt > 0)
+      str_appendf(&s, " (%d stale)", stale_cnt);
+  }
+  char *result = xstrdup(str_cstr(&s));
+  str_free(&s);
+
+  scratchpad_write(&ctx->scratch, "plan", result, 1);
   scratchpad_save(&ctx->scratch, ctx->session_dir);
-  free(text);
+  free(result);
 }
 
 /* Evidence staleness: when a file that was covered by plan step evidence

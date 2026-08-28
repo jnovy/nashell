@@ -103,6 +103,23 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_error(err);
   }
 
+  /* ── Link child plan to parent's active step (Phase 3: plan hierarchy) ── */
+  {
+    char pplan[NASH_PATH_MAX];
+    path_join(pplan, sizeof(pplan), ctx->session_dir, "plan.json");
+    cJSON *proot = slurp_json(pplan);
+    int parent_step = proot ? json_int(proot, "active_step", 0) : 0;
+    cJSON_Delete(proot);
+    if (parent_step > 0) {
+      cJSON *link = cJSON_CreateObject();
+      cJSON_AddNumberToObject(link, "parent_step", parent_step);
+      char lpath[NASH_PATH_MAX];
+      path_join(lpath, sizeof(lpath), child_dir, "parent_link.json");
+      dump_json(lpath, link);
+      cJSON_Delete(link);
+    }
+  }
+
   /* ── Create child journal ─────────────────────────────── */
   journal_t *child_journal = journal_new(child_dir);
   if (!child_journal)
