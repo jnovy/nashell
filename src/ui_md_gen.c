@@ -901,6 +901,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
   char *query_text = NULL;
   char line[NASH_LINE_MAX];
 
+  /* Local accumulators for per-loop stats reconstructed from journal.
+   * These allow the stats footer to display for ANY react loop,
+   * not just the currently-active one. */
+  int j_prompt_tokens = 0, j_completion_tokens = 0;
+  double j_gen_tps = 0, j_pp_tps = 0;
+  int j_llm_steps = 0;
+
   while (fgets(line, sizeof(line), f)) {
     cJSON *entry = cJSON_Parse(line);
     if (!entry) continue;
@@ -978,6 +985,29 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     if (strcmp(tool, "log") == 0) {
       cJSON *params_log = cJSON_GetObjectItem(entry, "params");
       const char *m = json_str_or(params_log, "message", "");
+
+      /* Extract per-step token stats from provider log lines so the
+       * stats footer can be reconstructed for any react loop (not
+       * just the currently-active one). Format:
+       *   [provider/complete] final stats: prompt_tokens=N ... completion_tokens=N pp=F gen=F */
+      const char *sp;
+      if ((sp = strstr(m, "prompt_tokens=")) != NULL) {
+        int pt = 0, ct = 0;
+        double pp = 0, gen = 0;
+        pt = atoi(sp + 14);
+        const char *cp = strstr(m, "completion_tokens=");
+        if (cp) ct = atoi(cp + 18);
+        const char *gp = strstr(m, "gen=");
+        if (gp) gen = atof(gp + 4);
+        const char *ppp = strstr(m, "pp=");
+        if (ppp) pp = atof(ppp + 3);
+        j_prompt_tokens += pt;
+        j_completion_tokens += ct;
+        if (gen > 0) j_gen_tps = gen;   /* last value, most representative */
+        if (pp > 0) j_pp_tps = pp;
+        j_llm_steps++;
+      }
+
       if (!ui_ci_strstr(m, "error") && !ui_ci_strstr(m, "failed") &&
           !ui_ci_strstr(m, "timed out")) {
         cJSON_Delete(entry);
@@ -1589,46 +1619,58 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     goal_state_free(&gs);
   }
 
-  /* Token generation statistics footer - show at end of active react loop */
-  if (ui->current_react_loop == react_loop &&
-      (ui->cum_prompt_tokens > 0 || ui->cum_completion_tokens > 0)) {
-    str_append_cstr(&md, "\n---\n");
+  /* Token generation statistics footer.
+   * For the active loop, prefer live stats (updated during streaming).
+   * For past loops, use stats reconstructed from journal log entries. */
+  {
+    int is_current = (ui->current_react_loop == react_loop);
+    int s_prompt = is_current ? ui->cum_prompt_tokens : j_prompt_tokens;
+    int s_completion = is_current ? ui->cum_completion_tokens : j_completion_tokens;
+    double s_gen = is_current ? ui->cum_predicted_per_second : j_gen_tps;
+    double s_pp = is_current ? ui->cum_prompt_per_second : j_pp_tps;
+    int s_calls = is_current ? ui->cum_llm_steps : j_llm_steps;
+    double s_elapsed = 0;
 
-    /* Build stats line: "📊 N in → M out" */
-    str_appendf(&md, "\xf0\x9f\x93\x8a %d in \xe2\x86\x92 %d out",
-                ui->cum_prompt_tokens, ui->cum_completion_tokens);
+    if (is_current) {
+      s_elapsed = ui->react_total_elapsed;
+    } else if (nsteps >= 2 && steps[nsteps - 1].ts > 0 && steps[0].ts > 0) {
+      s_elapsed = steps[nsteps - 1].ts - steps[0].ts;
+    }
 
-    /* Generation speed (last step's value — most representative) */
-    if (ui->cum_predicted_per_second > 0)
-      str_appendf(&md, " | gen %.0f t/s", ui->cum_predicted_per_second);
+    if (s_prompt > 0 || s_completion > 0) {
+      str_append_cstr(&md, "\n---\n");
 
-    /* Prompt processing speed */
-    if (ui->cum_prompt_per_second > 0)
-      str_appendf(&md, " | pp %.0f t/s", ui->cum_prompt_per_second);
+      str_appendf(&md, "\xf0\x9f\x93\x8a %d in \xe2\x86\x92 %d out",
+                  s_prompt, s_completion);
 
-    /* Start time HH:MM:SS from first step */
-    if (nsteps > 0 && steps[0].ts > 0) {
-      time_t t0 = (time_t)steps[0].ts;
-      struct tm *tm0 = localtime(&t0);
-      if (tm0) {
-        char start_buf[16];
-        strftime(start_buf, sizeof(start_buf), "%H:%M:%S", tm0);
-        str_appendf(&md, " | start %s", start_buf);
+      if (s_gen > 0)
+        str_appendf(&md, " | gen %.0f t/s", s_gen);
+
+      if (s_pp > 0)
+        str_appendf(&md, " | pp %.0f t/s", s_pp);
+
+      /* Start time HH:MM:SS from first step */
+      if (nsteps > 0 && steps[0].ts > 0) {
+        time_t t0 = (time_t)steps[0].ts;
+        struct tm *tm0 = localtime(&t0);
+        if (tm0) {
+          char start_buf[16];
+          strftime(start_buf, sizeof(start_buf), "%H:%M:%S", tm0);
+          str_appendf(&md, " | start %s", start_buf);
+        }
       }
+
+      if (s_elapsed > 0) {
+        char dur[32];
+        fmt_duration(s_elapsed, dur, sizeof(dur));
+        str_appendf(&md, " | total %s", dur);
+      }
+
+      if (s_calls > 1)
+        str_appendf(&md, " | %d calls", s_calls);
+
+      str_append_cstr(&md, "\n");
     }
-
-    /* Total elapsed time */
-    if (ui->react_total_elapsed > 0) {
-      char dur[32];
-      fmt_duration(ui->react_total_elapsed, dur, sizeof(dur));
-      str_appendf(&md, " | total %s", dur);
-    }
-
-    /* Number of LLM calls */
-    if (ui->cum_llm_steps > 1)
-      str_appendf(&md, " | %d calls", ui->cum_llm_steps);
-
-    str_append_cstr(&md, "\n");
   }
 
   /* user_ask: display full question in main pane */
