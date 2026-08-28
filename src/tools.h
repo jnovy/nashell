@@ -190,6 +190,13 @@ void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path);
  * or NULL if no plan exists.  Caller owns the returned object. */
 cJSON *plan_replay_journal_dir(const char *session_dir);
 
+/* Derive which parent plan step each subtask was spawned under, by
+ * replaying the parent journal (replaces the old parent_link.json).
+ * Returns a cJSON object mapping child dir basename (e.g. "subtask_0")
+ * to the parent step number, or NULL if the session has no journal.
+ * Caller owns the returned object. */
+cJSON *plan_subtask_links(const char *session_dir);
+
 /* Edit transaction: record a save-point before modifying a file.
  * Only the FIRST pre-edit hash per path is kept (dedup).
  * is_new_file: 1 = file did not exist before (rollback = delete). */

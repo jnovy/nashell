@@ -97,11 +97,6 @@ static void test_plan_create(void) {
   ASSERT_NOT_NULL(steps_j);
   ASSERT_EQ((int)steps_j->valuedouble, 3);
 
-  /* Verify plan.json exists */
-  char plan_path[512];
-  snprintf(plan_path, sizeof(plan_path), "%s/plan.json", g_tmpdir);
-  ASSERT_EQ(access(plan_path, F_OK), 0);
-
   /* Verify scratchpad plan section has content */
   int idx = scratchpad_find(&g_ctx.scratch, "plan");
   ASSERT(idx >= 0);
@@ -370,11 +365,6 @@ static void test_plan_backward_compat(void) {
   ASSERT_NOT_NULL(steps_j);
   ASSERT_EQ((int)steps_j->valuedouble, 2);
 
-  /* Verify plan.json was created */
-  char plan_path[512];
-  snprintf(plan_path, sizeof(plan_path), "%s/plan.json", g_tmpdir);
-  ASSERT_EQ(access(plan_path, F_OK), 0);
-
   /* Verify scratchpad has plan section */
   int idx = scratchpad_find(&g_ctx.scratch, "plan");
   ASSERT(idx >= 0);
@@ -382,6 +372,143 @@ static void test_plan_backward_compat(void) {
 
   tool_result_free(&result);
   cJSON_Delete(params);
+  teardown_ctx();
+}
+
+/* Helper: record a subtask spawn in the parent journal.  The parent is
+ * blocked while the child runs, so the plan active_step at this journal
+ * point equals the spawn-time active step. */
+static void journal_subtask_spawn(const char *child_dir) {
+  cJSON *sp = cJSON_CreateObject();
+  cJSON_AddStringToObject(sp, "child_dir", child_dir);
+  journal_append(g_ctx.journal, 0, g_ctx.step, "subtask", sp,
+                 NULL, 0, 0, NULL, NULL, 0);
+  cJSON_Delete(sp);
+  g_ctx.step++;
+}
+
+/* Helper: create a child plan in session_dir/subtask_N/journal.jsonl */
+static void create_child_plan(const char *child_dir, const char *result) {
+  char dir[512];
+  snprintf(dir, sizeof(dir), "%s/%s", g_tmpdir, child_dir);
+  mkdir(dir, 0755);
+  journal_t *cj = journal_new(dir);
+  cJSON *cp = cJSON_CreateObject();
+  cJSON_AddStringToObject(cp, "result", result);
+  journal_append(cj, 0, 0, "plan", cp, NULL, 0, 0, NULL, NULL, 0);
+  cJSON_Delete(cp);
+  journal_free(cj);
+}
+
+/* Helper: re-project the scratchpad by checking step 1 with valid evidence */
+static void reproject_via_check(void) {
+  char *alias = create_ref_alias();
+  cJSON *params = cJSON_CreateObject();
+  cJSON_AddStringToObject(params, "op", "check");
+  cJSON_AddNumberToObject(params, "step", 1);
+  cJSON_AddStringToObject(params, "evidence", alias);
+  tool_result_t r = tool_execute(&g_ctx, "plan", params);
+  ASSERT(r.success);
+  tool_result_free(&r);
+  cJSON_Delete(params);
+  free(alias);
+}
+
+static void test_plan_subtask_links(void) {
+  setup_ctx();
+
+  /* Create a 3-step plan (active_step = 1) */
+  cJSON *params = cJSON_CreateObject();
+  cJSON_AddStringToObject(params, "result",
+                          "1. step one\n2. step two\n3. step three");
+  tool_result_t r = tool_execute(&g_ctx, "plan", params);
+  ASSERT(r.success);
+  tool_result_free(&r);
+  cJSON_Delete(params);
+  g_ctx.step++;
+
+  /* Spawn subtask_0 while step 1 is active */
+  journal_subtask_spawn("subtask_0");
+
+  /* Check step 1 (active_step becomes 2) */
+  reproject_via_check();
+
+  /* Spawn subtask_1 while step 2 is active */
+  journal_subtask_spawn("subtask_1");
+
+  /* Derive links from the journal */
+  cJSON *links = plan_subtask_links(g_tmpdir);
+  ASSERT_NOT_NULL(links);
+  cJSON *l0 = cJSON_GetObjectItem(links, "subtask_0");
+  ASSERT_NOT_NULL(l0);
+  ASSERT_EQ((int)l0->valuedouble, 1);
+  cJSON *l1 = cJSON_GetObjectItem(links, "subtask_1");
+  ASSERT_NOT_NULL(l1);
+  ASSERT_EQ((int)l1->valuedouble, 2);
+  cJSON_Delete(links);
+
+  teardown_ctx();
+}
+
+static void test_plan_subtask_interleaved(void) {
+  setup_ctx();
+
+  /* Create a 3-step plan (active_step = 1) */
+  cJSON *params = cJSON_CreateObject();
+  cJSON_AddStringToObject(params, "result",
+                          "1. step one\n2. step two\n3. step three");
+  tool_result_t r = tool_execute(&g_ctx, "plan", params);
+  ASSERT(r.success);
+  tool_result_free(&r);
+  cJSON_Delete(params);
+  g_ctx.step++;
+
+  /* Spawn subtask_0 while step 1 is active */
+  journal_subtask_spawn("subtask_0");
+
+  /* Create the child's plan in subtask_0/ */
+  create_child_plan("subtask_0", "1. child one\n2. child two");
+
+  /* Re-project via check step 1 */
+  reproject_via_check();
+
+  /* Verify interleaved N.M rendering in the scratchpad */
+  int idx = scratchpad_find(&g_ctx.scratch, "plan");
+  ASSERT(idx >= 0);
+  const char *content = g_ctx.scratch.sections[idx].content;
+  ASSERT_STR_CONTAINS(content, "1.1. child one");
+  ASSERT_STR_CONTAINS(content, "1.2. child two");
+  /* A linked subtask must NOT also appear as an unlinked "Subtask 0:" block */
+  ASSERT(!strstr(content, "Subtask 0:"));
+
+  teardown_ctx();
+}
+
+static void test_plan_subtask_unlinked(void) {
+  setup_ctx();
+
+  /* Create a child plan in subtask_0/ with no parent subtask entry, so
+   * the subtask is unlinked (spawned before any plan / no journal link). */
+  create_child_plan("subtask_0", "1. child one\n2. child two");
+
+  /* Create a 2-step parent plan (no subtask entry in the parent journal) */
+  cJSON *params = cJSON_CreateObject();
+  cJSON_AddStringToObject(params, "result", "1. step one\n2. step two");
+  tool_result_t r = tool_execute(&g_ctx, "plan", params);
+  ASSERT(r.success);
+  tool_result_free(&r);
+  cJSON_Delete(params);
+  g_ctx.step++;
+
+  /* Verify the unlinked subtask is rendered as a "Subtask 0:" block */
+  int idx = scratchpad_find(&g_ctx.scratch, "plan");
+  ASSERT(idx >= 0);
+  const char *content = g_ctx.scratch.sections[idx].content;
+  ASSERT_STR_CONTAINS(content, "Subtask 0:");
+  ASSERT_STR_CONTAINS(content, "1. child one");
+  /* An unlinked subtask must NOT be interleaved as N.M */
+  ASSERT(!strstr(content, "1.1."));
+
   teardown_ctx();
 }
 
@@ -397,6 +524,9 @@ int main(void) {
   RUN_TEST(test_plan_done_warning);
   RUN_TEST(test_plan_done_no_warning);
   RUN_TEST(test_plan_backward_compat);
+  RUN_TEST(test_plan_subtask_links);
+  RUN_TEST(test_plan_subtask_interleaved);
+  RUN_TEST(test_plan_subtask_unlinked);
 
   TEST_SUMMARY();
 }
