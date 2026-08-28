@@ -10,6 +10,9 @@
 #include "ui_state_internal.h"
 #include "scratchpad.h"
 
+/* Replay journal.jsonl to reconstruct plan state (defined in tools.c) */
+extern cJSON *plan_replay_journal_dir(const char *session_dir);
+
 /* ── Local helpers ───────────────────────────────────────── */
 
 /* Sanitize text for use inside MD link [text](uri) syntax. */
@@ -1665,11 +1668,9 @@ static char *generate_working_mem_md(ui_state_t *ui) {
   str_t md = str_new(4096);
   str_append_cstr(&md, "# Plan\n\n");
 
-  /* Plan progress - load plan.json and render checkboxes with [>] active marker */
+  /* Plan progress - replay journal.jsonl to reconstruct plan state */
   {
-    char ppath[NASH_PATH_MAX];
-    snprintf(ppath, sizeof(ppath), "%s/plan.json", eff_dir);
-    cJSON *root = slurp_json(ppath);
+    cJSON *root = plan_replay_journal_dir(eff_dir);
     cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
     int active_step = root ? json_int(root, "active_step", 0) : 0;
     if (steps && cJSON_IsArray(steps) && cJSON_GetArraySize(steps) > 0) {
@@ -1698,57 +1699,49 @@ static char *generate_working_mem_md(ui_state_t *ui) {
         if (is_stale)
           str_append_cstr(&md, " (STALE)");
         str_append_cstr(&md, "\n");
+      }
 
-        /* ── Subtask sub-plans: render child plans linked to this step ── */
-        {
-          DIR *sd = opendir(eff_dir);
-          struct dirent *se;
-          if (sd) {
-            while ((se = readdir(sd)) != NULL) {
-              if (strncmp(se->d_name, "subtask_", 8) != 0) continue;
-              char lpath[NASH_PATH_MAX];
-              snprintf(lpath, sizeof(lpath), "%s/%s/parent_link.json",
-                       eff_dir, se->d_name);
-              cJSON *link = slurp_json(lpath);
-              if (!link) continue;
-              int linked_step = json_int(link, "parent_step", 0);
-              cJSON_Delete(link);
-              if (linked_step != idx) continue;
-              /* This subtask is linked to current step - render its plan */
-              char spath[NASH_PATH_MAX];
-              snprintf(spath, sizeof(spath), "%s/%s/plan.json",
-                       eff_dir, se->d_name);
-              cJSON *sroot = slurp_json(spath);
-              cJSON *ssteps = sroot ? cJSON_GetObjectItem(sroot, "steps") : NULL;
-              int sactive = sroot ? json_int(sroot, "active_step", 0) : 0;
-              if (ssteps && cJSON_IsArray(ssteps)
-                  && cJSON_GetArraySize(ssteps) > 0) {
-                int sidx = 0;
-                cJSON *si;
-                cJSON_ArrayForEach(si, ssteps) {
-                  sidx++;
-                  int sd_done = cJSON_IsTrue(cJSON_GetObjectItem(si, "done"));
-                  int sd_stale = cJSON_IsTrue(cJSON_GetObjectItem(si, "stale"));
-                  const char *stxt = json_str(si, "text");
-                  const char *sev = json_str(si, "evidence");
-                  const char *sm;
-                  if (sd_done && sd_stale) sm = "~";
-                  else if (sd_done) sm = "x";
-                  else if (sidx == sactive) sm = ">";
-                  else sm = " ";
-                  str_appendf(&md, "   %d.%d. [%s] %s", idx, sidx, sm,
-                              stxt ? stxt : "?");
-                  if (sd_done && sev && sev[0])
-                    str_appendf(&md, " (%s)", sev);
-                  if (sd_stale)
-                    str_append_cstr(&md, " (STALE)");
-                  str_append_cstr(&md, "\n");
-                }
+      /* Subtask sub-plans: replay each subtask's journal for plan state */
+      {
+        DIR *sd = opendir(eff_dir);
+        struct dirent *se;
+        if (sd) {
+          while ((se = readdir(sd)) != NULL) {
+            if (strncmp(se->d_name, "subtask_", 8) != 0) continue;
+            char child_dir[NASH_PATH_MAX];
+            snprintf(child_dir, sizeof(child_dir), "%s/%s", eff_dir, se->d_name);
+            cJSON *sroot = plan_replay_journal_dir(child_dir);
+            if (!sroot) continue;
+            cJSON *ssteps = cJSON_GetObjectItem(sroot, "steps");
+            int sactive = json_int(sroot, "active_step", 0);
+            if (ssteps && cJSON_IsArray(ssteps)
+                && cJSON_GetArraySize(ssteps) > 0) {
+              str_appendf(&md, "   Subtask %s:\n", se->d_name + 8);
+              int sidx = 0;
+              cJSON *si;
+              cJSON_ArrayForEach(si, ssteps) {
+                sidx++;
+                int sd_done = cJSON_IsTrue(cJSON_GetObjectItem(si, "done"));
+                int sd_stale = cJSON_IsTrue(cJSON_GetObjectItem(si, "stale"));
+                const char *stxt = json_str(si, "text");
+                const char *sev = json_str(si, "evidence");
+                const char *sm;
+                if (sd_done && sd_stale) sm = "~";
+                else if (sd_done) sm = "x";
+                else if (sidx == sactive) sm = ">";
+                else sm = " ";
+                str_appendf(&md, "   [%s] %d. %s", sm, sidx,
+                            stxt ? stxt : "?");
+                if (sd_done && sev && sev[0])
+                  str_appendf(&md, " (%s)", sev);
+                if (sd_stale)
+                  str_append_cstr(&md, " (STALE)");
+                str_append_cstr(&md, "\n");
               }
-              cJSON_Delete(sroot);
             }
-            closedir(sd);
+            cJSON_Delete(sroot);
           }
+          closedir(sd);
         }
       }
       str_append_cstr(&md, "\n");

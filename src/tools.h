@@ -152,6 +152,10 @@ typedef struct {
   } modified_files[INFORM_MAX_FILES];
   int n_modified_files;
   int last_plan_check_step; /* step when last plan(check) ran; for per-step evidence */
+  /* In-memory staleness tracking for plan steps (replaces plan.json mutation).
+   * Bit N is set when plan step N+1 has stale evidence (file modified after
+   * verification).  Supports up to 64 steps. */
+  uint64_t stale_steps;
   /* Edit transaction: tracks save-points for rollback.
    * Auto-opens on first file_edit/file_write, cleared on rollback or
    * at react loop end. Only the FIRST pre-edit hash per path is kept
@@ -180,6 +184,11 @@ void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step);
 /* Evidence staleness: check if a modified file invalidates any plan step
  * evidence. Call after tool_track_modified_file() in file_edit/file_write. */
 void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path);
+
+/* Replay journal.jsonl entries for tool="plan" to reconstruct plan state.
+ * Returns a cJSON object with "steps" (array) and "active_step" (number),
+ * or NULL if no plan exists.  Caller owns the returned object. */
+cJSON *plan_replay_journal_dir(const char *session_dir);
 
 /* Edit transaction: record a save-point before modifying a file.
  * Only the FIRST pre-edit hash per path is kept (dedup).
