@@ -9,7 +9,6 @@
 #include "memory.h"
 #include "workspace.h"
 #include "journal.h"
-#include "goal.h"
 #include "store.h"
 #include "nash_log.h"
 #include "cJSON.h"

@@ -13,11 +13,6 @@ typedef struct {
   char *workspace;     /* workspace name for lazy session routing (NULL = global) */
   int lazy_created;    /* 0=directory not yet created, 1=created */
   pthread_mutex_t mtx; /* FIX CRIT2: thread-safe append/read */
-  /* Phase 3 (Recuris): Goal-annotated traces.
-   * Set via journal_set_serving_goal() before tool_journal() calls.
-   * Included in every journal entry while set. */
-  int serving_goal_id;     /* 0 = no active goal, >0 = goal ID */
-  char *serving_goal_text; /* goal content string (owned, or NULL) */
 } journal_t;
 
 journal_t *journal_new(const char *session_dir);
@@ -41,11 +36,6 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
                    cJSON *params, const char *ref,
                    size_t size, int lines, const char *error,
                    const char *tool_call_id, double start_ts);
-
-/* Phase 3 (Recuris): Set the currently serving goal for journal annotation.
- * Call before tool_journal() to annotate subsequent entries.
- * Pass goal_id=0 and text=NULL to clear. */
-void journal_set_serving_goal(journal_t *j, int goal_id, const char *text);
 
 /* Recursively unwrap nested JSON in a thought string.
  * Returns a heap-allocated clean thought, or NULL if no unwrapping was needed.

@@ -8,7 +8,6 @@
  */
 
 #include "ui_state_internal.h"
-#include "goal.h"
 #include "scratchpad.h"
 
 /* ── Local helpers ───────────────────────────────────────── */
@@ -237,41 +236,6 @@ static const char *extract_desc(const char *tool, cJSON *params) {
   /* Plan: don't show inline text — the full plan is rendered below */
   if (strcmp(tool, "plan") == 0)
     return "";
-  /* Goal: show op-specific description */
-  if (strcmp(tool, "goal") == 0) {
-    const char *op_s = json_str(params, "op");
-    if (!op_s) return "";
-    if (strcmp(op_s, "status") == 0)
-      return "";  /* full tree rendered in preview below */
-    int gid = json_int(params, "id", 0);
-    if (strcmp(op_s, "add") == 0) {
-      static char goal_desc[256];
-      const char *content_s = json_str(params, "content");
-      if (content_s) {
-        int clen = (int)strlen(content_s);
-        int trunc = (clen > 80);
-        if (trunc) clen = 80;
-        snprintf(goal_desc, sizeof(goal_desc), "add: %.*s%s",
-                 clen, content_s, trunc ? "..." : "");
-      } else {
-        snprintf(goal_desc, sizeof(goal_desc), "add");
-      }
-      return goal_desc;
-    }
-    /* activate, block, unblock, done, fail */
-    static char goal_op_desc[128];
-    if (strcmp(op_s, "done") == 0) {
-      const char *ev_s = json_str(params, "evidence");
-      if (ev_s)
-        snprintf(goal_op_desc, sizeof(goal_op_desc),
-                 "done G%d (evidence: %s)", gid, ev_s);
-      else
-        snprintf(goal_op_desc, sizeof(goal_op_desc), "done G%d", gid);
-    } else {
-      snprintf(goal_op_desc, sizeof(goal_op_desc), "%s G%d", op_s, gid);
-    }
-    return goal_op_desc;
-  }
   /* Truncate done result to first line, max 80 chars */
   if (strcmp(tool, "done") == 0 && res_s) {
     static char trunc_desc[128];
@@ -1321,9 +1285,8 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
          * Plan tool always shows full preview rendered as markdown.
          * file_edit always shows its diff preview. */
     int is_plan = (strcmp(si->tool, "plan") == 0);
-    int is_goal = (strcmp(si->tool, "goal") == 0);
     int is_file_edit = (strcmp(si->tool, "file_edit") == 0);
-    int show_preview = is_last || is_plan || is_goal || is_file_edit;
+    int show_preview = is_last || is_plan || is_file_edit;
     if (!show_preview && si->ref) {
       for (int ei = 0; ei < ui->expanded_count; ei++) {
         if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
@@ -1337,10 +1300,10 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
       char rpath[NASH_PATH_MAX];
       path_join(rpath, sizeof(rpath), eff_dir, si->ref);
 
-      if (is_plan || is_goal) {
-        /* Plan/Goal: read full file and render as markdown (no
-                 * code fences, no line limit) so numbered steps and
-                 * goal trees display with proper formatting. */
+      if (is_plan) {
+        /* Plan: read full file and render as markdown (no
+                 * code fences, no line limit) so numbered steps
+                 * display with proper formatting. */
         char *plan_text = slurp_file(rpath, NULL);
         if (plan_text) {
           str_append_cstr(&md, "\n");
@@ -1601,25 +1564,6 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
   }
 
-  /* Persistent goal summary - show current goal state at bottom of react view */
-  if (ui->current_react_loop == react_loop) {
-    goal_state_t gs;
-    goal_state_init(&gs);
-    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
-      char *goal_text = goal_format_text(&gs);
-      if (goal_text) {
-        str_append_cstr(&md, "\n---\n\n");
-        str_append_cstr(&md, "**Goals**\n\n");
-        str_append_cstr(&md, goal_text);
-        if (goal_text[0] &&
-            goal_text[strlen(goal_text) - 1] != '\n')
-          str_append_cstr(&md, "\n");
-        free(goal_text);
-      }
-    }
-    goal_state_free(&gs);
-  }
-
   /* Token generation statistics footer.
    * For the active loop, prefer live stats (updated during streaming).
    * For past loops, use stats reconstructed from journal log entries. */
@@ -1712,73 +1656,52 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
  *  ui_state_generate_view_md() parses it into ui->doc.
  * ═══════════════════════════════════════════════════════════ */
 
-/* ── F3: Working Memory (Goal + Plan dashboard) ─────────── */
+/* ── F3: Plan ────────────────────────────────────────────── */
 
 static char *generate_working_mem_md(ui_state_t *ui) {
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
                           : ui->session_dir;
   str_t md = str_new(4096);
-  str_append_cstr(&md, "# Working Memory\n\n");
+  str_append_cstr(&md, "# Plan\n\n");
 
-  /* Plan progress - load plan.json and render checkboxes */
+  /* Plan progress - load plan.json and render checkboxes with [>] active marker */
   {
     char ppath[NASH_PATH_MAX];
     snprintf(ppath, sizeof(ppath), "%s/plan.json", eff_dir);
-    cJSON *plan = slurp_json(ppath);
-    if (plan && cJSON_IsArray(plan) && cJSON_GetArraySize(plan) > 0) {
-      int total = cJSON_GetArraySize(plan);
+    cJSON *root = slurp_json(ppath);
+    cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
+    int active_step = root ? json_int(root, "active_step", 0) : 0;
+    if (steps && cJSON_IsArray(steps) && cJSON_GetArraySize(steps) > 0) {
+      int total = cJSON_GetArraySize(steps);
       int done = 0;
       cJSON *item;
-      cJSON_ArrayForEach(item, plan) {
+      cJSON_ArrayForEach(item, steps) {
         if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done++;
       }
       str_appendf(&md, "## Plan Progress (%d/%d)\n\n", done, total);
       int idx = 0;
-      cJSON_ArrayForEach(item, plan) {
+      cJSON_ArrayForEach(item, steps) {
         idx++;
         int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
+        int is_stale = cJSON_IsTrue(cJSON_GetObjectItem(item, "stale"));
         const char *text = json_str(item, "text");
         const char *evidence = json_str(item, "evidence");
-        str_appendf(&md, "%d. [%s] %s",
-                    idx, is_done ? "x" : " ",
-                    text ? text : "?");
+        const char *marker;
+        if (is_done && is_stale) marker = "~";
+        else if (is_done) marker = "x";
+        else if (idx == active_step) marker = ">";
+        else marker = " ";
+        str_appendf(&md, "%d. [%s] %s", idx, marker, text ? text : "?");
         if (is_done && evidence && evidence[0])
           str_appendf(&md, " (%s)", evidence);
+        if (is_stale)
+          str_append_cstr(&md, " (STALE)");
         str_append_cstr(&md, "\n");
       }
       str_append_cstr(&md, "\n");
     }
-    cJSON_Delete(plan);
-  }
-
-  /* Goals - single unified section from goals.json, with journal fallback */
-  {
-    goal_state_t gs;
-    goal_state_init(&gs);
-    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
-      str_append_cstr(&md, "## Goals\n\n");
-      char *goal_text = goal_format_text(&gs);
-      if (goal_text) {
-        str_append_cstr(&md, goal_text);
-        if (goal_text[0] && goal_text[strlen(goal_text) - 1] != '\n')
-          str_append_cstr(&md, "\n");
-        free(goal_text);
-      }
-      str_append_cstr(&md, "\n");
-
-      int unresolved = goal_count_unresolved(&gs, 0);
-      if (unresolved > 0)
-        str_appendf(&md, "*%d unresolved goal(s)*\n\n", unresolved);
-    } else if (ui->journal && ui->journal->serving_goal_id > 0) {
-      /* Fallback: goals.json unavailable but journal has an active goal */
-      str_append_cstr(&md, "## Goals\n\n");
-      str_appendf(&md, "[>] G%d: %s\n\n",
-                  ui->journal->serving_goal_id,
-                  ui->journal->serving_goal_text
-                    ? ui->journal->serving_goal_text : "(unknown)");
-    }
-    goal_state_free(&gs);
+    cJSON_Delete(root);
   }
 
   /* Scratchpad summary (section names + sizes, not full content) */
@@ -1862,7 +1785,7 @@ static char *generate_scratchpad_md(ui_state_t *ui) {
   return str_steal(&md);
 }
 
-/* ── F5: Timeline (goal-annotated journal trace) ────────── */
+/* ── F5: Timeline (journal trace) ───────────────────────── */
 
 static char *generate_timeline_md(ui_state_t *ui) {
   const char *eff_dir = ui->playbook_session_dir
@@ -1897,26 +1820,13 @@ static char *generate_timeline_md(ui_state_t *ui) {
     int step = json_int(entry, "step", 0);
     int react_loop = json_int(entry, "react_loop", 0);
 
-    /* Filter: only show goal ops, plan ops, query starts, done events,
+    /* Filter: only show plan ops, query starts, done events,
      * and context compaction markers */
     int show = 0;
     const char *event_desc = NULL;
     char desc_buf[512];
 
-    if (tool && strcmp(tool, "goal") == 0) {
-      show = 1;
-      cJSON *params = cJSON_GetObjectItem(entry, "params");
-      const char *op = params ? json_str(params, "op") : NULL;
-      const char *content = params ? json_str(params, "content") : NULL;
-      int gid = params ? json_int(params, "id", 0) : 0;
-      if (op) {
-        if (content && content[0])
-          snprintf(desc_buf, sizeof(desc_buf), "G%d %s: %s", gid, op, content);
-        else
-          snprintf(desc_buf, sizeof(desc_buf), "G%d %s", gid, op);
-        event_desc = desc_buf;
-      }
-    } else if (tool && strcmp(tool, "plan") == 0) {
+    if (tool && strcmp(tool, "plan") == 0) {
       show = 1;
       cJSON *params = cJSON_GetObjectItem(entry, "params");
       const char *op = params ? json_str(params, "op") : NULL;
@@ -1967,26 +1877,7 @@ static char *generate_timeline_md(ui_state_t *ui) {
   fclose(f);
 
   if (event_count == 0)
-    str_append_cstr(&md, "*No goal/plan events recorded*\n");
-
-  /* Unresolved goals summary */
-  {
-    goal_state_t gs;
-    goal_state_init(&gs);
-    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
-      int unresolved = goal_count_unresolved(&gs, 0);
-      if (unresolved > 0) {
-        str_append_cstr(&md, "\n---\n\n");
-        char *warn = goal_unresolved_warning(&gs);
-        if (warn) {
-          str_append_cstr(&md, warn);
-          str_append_cstr(&md, "\n");
-          free(warn);
-        }
-      }
-    }
-    goal_state_free(&gs);
-  }
+    str_append_cstr(&md, "*No plan events recorded*\n");
 
   return str_steal(&md);
 }
@@ -2043,7 +1934,7 @@ static char *generate_metrics_md(ui_state_t *ui) {
 
   /* Per-tool aggregate stats from journal.
    * Journal entries have: react_loop, step, ts(string), tool, params, ref,
-   * size, lines, failed, error, tc_id, serving_goal, goal_text.
+   * size, lines, failed, error, tc_id.
    * Token data lives in log entries with message matching
    * "[provider/complete] final stats: prompt_tokens=N ... completion_tokens=N".
    * We correlate log entries with tool calls by step number,

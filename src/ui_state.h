@@ -26,9 +26,9 @@ typedef enum {
 
 typedef enum {
   VIEW_STREAM = 0,  /* F2: current reactRX.md (default) */
-  VIEW_WORKING_MEM, /* F3: goal + plan dashboard */
+  VIEW_WORKING_MEM, /* F3: plan dashboard */
   VIEW_SCRATCHPAD,  /* F4: full scratchpad browser */
-  VIEW_TIMELINE,    /* F5: goal-annotated trace */
+  VIEW_TIMELINE,    /* F5: journal trace */
   VIEW_METRICS,     /* F6: token/performance stats */
   VIEW_MODE_COUNT
 } ui_view_mode_t;

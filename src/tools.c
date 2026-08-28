@@ -4,7 +4,6 @@
 #include "memory.h"
 #include "tui.h"
 #include "scratchpad.h"
-#include "goal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -678,7 +677,6 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "ref", alias);
 
   /* Warn if plan has incomplete or stale steps */
-  int plan_all_done = 0; /* set to 1 if plan exists and all steps checked */
   cJSON *plan_steps = plan_load(ctx);
   if (plan_steps) {
     int total = cJSON_GetArraySize(plan_steps);
@@ -688,7 +686,6 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
       if (json_bool(item, "done", 0)) done++;
       if (json_bool(item, "stale", 0)) stale_count++;
     }
-    if (done == total && total > 0) plan_all_done = 1;
     if (done < total || stale_count > 0) {
       str_t warn = str_new(256);
       if (done < total) {
@@ -720,43 +717,6 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
       str_free(&warn);
     }
     cJSON_Delete(plan_steps);
-  }
-
-  /* Auto-resolve goals when all plan steps are checked, then warn
-   * only if truly unresolved goals remain. */
-  {
-    goal_state_t gs;
-    goal_state_init(&gs);
-    if (goal_state_load(&gs, ctx->session_dir) == 0 && gs.count > 0) {
-      /* Auto-resolve: if all plan steps checked, mark goals done */
-      if (plan_all_done) {
-        struct timespec _ts;
-        clock_gettime(CLOCK_REALTIME, &_ts);
-        double now = (double)_ts.tv_sec + (double)_ts.tv_nsec / 1e9;
-        for (int i = 0; i < gs.count; i++) {
-          if (gs.goals[i].status == GOAL_ACTIVE ||
-              gs.goals[i].status == GOAL_PENDING)
-            goal_done(&gs.goals[i], "all plan steps completed",
-                      ctx->step, now);
-        }
-        goal_state_save(&gs, ctx->session_dir);
-      }
-      char *gw = goal_unresolved_warning(&gs);
-      if (gw) {
-        /* Append to existing warning or create new one */
-        cJSON *existing = cJSON_GetObjectItem(meta, "warning");
-        if (existing && cJSON_IsString(existing)) {
-          str_t combined = str_new(512);
-          str_appendf(&combined, "%s\n%s", existing->valuestring, gw);
-          cJSON_SetValuestring(existing, str_cstr(&combined));
-          str_free(&combined);
-        } else {
-          cJSON_AddStringToObject(meta, "warning", gw);
-        }
-        free(gw);
-      }
-    }
-    goal_state_free(&gs);
   }
 
   tools_inject_thought(ctx, params);
@@ -798,20 +758,51 @@ static cJSON *plan_load(const tool_ctx_t *ctx) {
   return steps; /* may be NULL if key missing */
 }
 
-/* Save plan steps array to plan.json.  steps is not consumed. */
-static void plan_save(const tool_ctx_t *ctx, const cJSON *steps) {
+/* Save plan steps array + active_step to plan.json.  steps is not consumed.
+ * active_step is 1-based (0 = no active step). */
+static void plan_save(const tool_ctx_t *ctx, const cJSON *steps, int active_step) {
   char path[NASH_PATH_MAX];
   plan_json_path(ctx, path, sizeof(path));
   cJSON *root = cJSON_CreateObject();
   cJSON_AddItemToObject(root, "steps", cJSON_Duplicate(steps, 1));
+  cJSON_AddNumberToObject(root, "active_step", active_step);
   dump_json(path, root);
   cJSON_Delete(root);
 }
 
+/* Load active_step from plan.json.  Returns 0 if not set. */
+static int plan_load_active(const tool_ctx_t *ctx) {
+  char path[NASH_PATH_MAX];
+  plan_json_path(ctx, path, sizeof(path));
+  cJSON *root = slurp_json(path);
+  if (!root) return 0;
+  int active = json_int(root, "active_step", 0);
+  cJSON_Delete(root);
+  return active;
+}
+
+/* Find the next unchecked step after step_num (1-based).
+ * Returns that step number, or 0 if all steps are checked. */
+static int plan_next_unchecked(const cJSON *steps, int after) {
+  int total = cJSON_GetArraySize(steps);
+  /* First look from after+1 to end */
+  for (int i = after; i < total; i++) {
+    cJSON *s = cJSON_GetArrayItem(steps, i);
+    if (!json_bool(s, "done", 0)) return i + 1;
+  }
+  /* Wrap around: check from beginning */
+  for (int i = 0; i < after && i < total; i++) {
+    cJSON *s = cJSON_GetArrayItem(steps, i);
+    if (!json_bool(s, "done", 0)) return i + 1;
+  }
+  return 0; /* all done */
+}
+
 /* Format plan state as human-readable text.
- * Format: [x] 1. step text (R0S5)  /  [ ] 2. step text
+ * Format: [x] 1. step text (R0S5)  /  [>] 2. step text  /  [ ] 3. step text
+ * active_step (1-based) marks the currently active step with [>].
  * Appends a progress summary line.  Caller must free() the result. */
-static char *plan_format_text(const cJSON *steps) {
+static char *plan_format_text(const cJSON *steps, int active_step) {
   str_t s = str_new(512);
   int total = 0, done = 0, stale = 0;
   cJSON *item;
@@ -836,6 +827,8 @@ static char *plan_format_text(const cJSON *steps) {
       } else {
         str_appendf(&s, "[x] %d. %s\n", total, text ? text : "");
       }
+    } else if (total == active_step) {
+      str_appendf(&s, "[>] %d. %s\n", total, text ? text : "");
     } else {
       str_appendf(&s, "[ ] %d. %s\n", total, text ? text : "");
     }
@@ -851,8 +844,9 @@ static char *plan_format_text(const cJSON *steps) {
 }
 
 /* Project plan state to scratchpad section "plan" at priority 1. */
-static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
-  char *text = plan_format_text(steps);
+static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
+                                       int active_step) {
+  char *text = plan_format_text(steps, active_step);
   scratchpad_write(&ctx->scratch, "plan", text, 1);
   scratchpad_save(&ctx->scratch, ctx->session_dir);
   free(text);
@@ -887,16 +881,18 @@ void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
   }
 
   if (changed) {
-    plan_save(ctx, steps);
-    plan_project_to_scratchpad(ctx, steps);
+    int active = plan_load_active(ctx);
+    plan_save(ctx, steps, active);
+    plan_project_to_scratchpad(ctx, steps, active);
   }
   cJSON_Delete(steps);
 }
 
 /* Store plan text in content-addressed store and return an alias.
  * Caller must free() the returned alias. */
-static char *plan_store_and_alias(tool_ctx_t *ctx, const cJSON *steps) {
-  char *text = plan_format_text(steps);
+static char *plan_store_and_alias(tool_ctx_t *ctx, const cJSON *steps,
+                                  int active_step) {
+  char *text = plan_format_text(steps, active_step);
   char *hash = store_save(ctx->store, text);
   char *alias = tool_register_alias(ctx, hash ? hash : "");
   free(text);
@@ -961,107 +957,11 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     }
 
     /* Save structured state to plan.json */
-    plan_save(ctx, steps);
+    plan_save(ctx, steps, 1);
 
     /* Project to scratchpad for prompt visibility */
-    plan_project_to_scratchpad(ctx, steps);
+    plan_project_to_scratchpad(ctx, steps, 1);
     cJSON_Delete(steps);
-
-    /* Auto-bridge: create + activate a goal from the user query when
-     * the first plan is created.  The goal() tool has been removed, so
-     * this is the sole mechanism that populates the goal infrastructure
-     * (F3 Working Memory, F5 Timeline, serving_goal journal annotation). */
-    {
-      goal_state_t gs;
-      goal_state_init(&gs);
-      goal_state_load(&gs, ctx->session_dir);
-      if (gs.count == 0) {
-        /* Extract the user query from journal.jsonl (tool="query", params.text) */
-        char *goal_content = NULL;
-        char jpath[PATH_MAX];
-        snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", ctx->session_dir);
-        size_t jlen = 0;
-        char *jdata = slurp_file(jpath, &jlen);
-        if (jdata) {
-          /* Scan for last tool="query" entry */
-          char *line = jdata;
-          while (line && *line) {
-            char *eol = strchr(line, '\n');
-            if (eol) *eol = '\0';
-            cJSON *entry = cJSON_Parse(line);
-            if (entry) {
-              const char *tool = json_str(entry, "tool");
-              if (tool && strcmp(tool, "query") == 0) {
-                cJSON *p = cJSON_GetObjectItem(entry, "params");
-                const char *qt = p ? json_str(p, "text") : NULL;
-                if (qt && qt[0]) {
-                  free(goal_content);
-                  goal_content = xstrdup(qt);
-                }
-              }
-              cJSON_Delete(entry);
-            }
-            line = eol ? eol + 1 : NULL;
-          }
-          free(jdata);
-        }
-        if (!goal_content)
-          goal_content = xstrdup("Task execution");
-
-        /* Truncate goal content to first line / max 200 chars so goals
-         * stay concise in the UI and scratchpad.  Multi-paragraph user
-         * queries should not become a single giant goal blob. */
-        {
-          char *nl = strchr(goal_content, '\n');
-          if (nl) *nl = '\0';
-          if (strlen(goal_content) > 200) {
-            /* Walk back to a UTF-8 character boundary to avoid
-             * splitting multi-byte sequences. A continuation byte
-             * has the pattern 10xxxxxx (0x80..0xBF). */
-            int cut = 197;
-            while (cut > 0 && ((unsigned char)goal_content[cut] & 0xC0) == 0x80)
-              cut--;
-            goal_content[cut++] = '.';
-            goal_content[cut++] = '.';
-            goal_content[cut++] = '.';
-            goal_content[cut] = '\0';
-          }
-        }
-
-        struct timespec _ts;
-        clock_gettime(CLOCK_REALTIME, &_ts);
-        double now = (double)_ts.tv_sec + (double)_ts.tv_nsec / 1e9;
-
-        int gid = goal_add(&gs, goal_content, 0, ctx->step, now);
-        if (gid > 0) {
-          goal_t *g = goal_find(&gs, gid);
-          if (g) goal_activate(g, ctx->step, now);
-          goal_state_save(&gs, ctx->session_dir);
-          char *gtext = goal_format_text(&gs);
-          if (gtext) {
-            scratchpad_write(&ctx->scratch, "goals", gtext, 1);
-            scratchpad_save(&ctx->scratch, ctx->session_dir);
-            free(gtext);
-          }
-          if (g && ctx->journal)
-            journal_set_serving_goal(ctx->journal, gid, g->content);
-        }
-        free(goal_content);
-      } else {
-        /* Re-plan: re-activate first goal if it was resolved, so the
-         * new plan doesn't inherit a stale DONE/FAILED status. */
-        goal_t *g = goal_find(&gs, 1);
-        if (g && (g->status == GOAL_DONE || g->status == GOAL_FAILED)) {
-          g->status = GOAL_ACTIVE;
-          g->resolved_ts = 0;
-          g->step_resolved = -1;
-          free(g->evidence);
-          g->evidence = NULL;
-          goal_state_save(&gs, ctx->session_dir);
-        }
-      }
-      goal_state_free(&gs);
-    }
 
     /* Store in content-addressed store for audit trail */
     char *hash = store_save(ctx->store, result);
@@ -1120,7 +1020,8 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", str_cstr(&s));
     str_free(&s);
 
-    char *alias = plan_store_and_alias(ctx, steps);
+    int cur_active = plan_load_active(ctx);
+    char *alias = plan_store_and_alias(ctx, steps, cur_active);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
@@ -1196,8 +1097,15 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       cJSON_DeleteItemFromObject(step, "stale");
     }
 
-    plan_save(ctx, steps);
-    plan_project_to_scratchpad(ctx, steps);
+    /* Compute new active step after check/uncheck */
+    int new_active;
+    if (checking)
+      new_active = plan_next_unchecked(steps, step_num);
+    else
+      new_active = plan_next_unchecked(steps, 0);
+
+    plan_save(ctx, steps, new_active);
+    plan_project_to_scratchpad(ctx, steps, new_active);
 
     /* Count completed */
     int done = 0;
@@ -1219,7 +1127,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
              step_num, checking ? "checked" : "unchecked", done, total);
     cJSON_AddStringToObject(meta, "status", status);
 
-    char *alias = plan_store_and_alias(ctx, steps);
+    char *alias = plan_store_and_alias(ctx, steps, new_active);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
 
     tools_inject_thought(ctx, params);
@@ -1462,8 +1370,9 @@ static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
         }
       }
       if (pchanged) {
-        plan_save(ctx, psteps);
-        plan_project_to_scratchpad(ctx, psteps);
+        int pactive = plan_load_active(ctx);
+        plan_save(ctx, psteps, pactive);
+        plan_project_to_scratchpad(ctx, psteps, pactive);
       }
       cJSON_Delete(psteps);
     }

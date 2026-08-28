@@ -822,7 +822,7 @@ static void render_bottom(ui_state_t *ui) {
   /* View mode indicator (only shown when not in default stream view) */
   if (ui->view_mode != VIEW_STREAM) {
     static const char *mode_labels[] = {
-      NULL, "F3:WM", "F4:Notes", "F5:Timeline", "F6:Metrics"
+      NULL, "F3:Plan", "F4:Notes", "F5:Timeline", "F6:Metrics"
     };
     if (ui->view_mode < VIEW_MODE_COUNT && mode_labels[ui->view_mode])
       slen += snprintf(status_line + slen, sizeof(status_line) - (size_t)slen,
