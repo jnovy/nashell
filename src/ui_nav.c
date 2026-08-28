@@ -565,6 +565,37 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
   ui->dirty = 1;
 }
 
+void ui_state_push_file(ui_state_t *ui, const char *filepath,
+                        const char *label) {
+  if (!ui || !filepath) return;
+
+  /* Push current view onto nav stack */
+  if (ui->nav_depth >= ui->nav_cap) {
+    int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+    if (safe_realloc((void **)&ui->nav_stack,
+                     (size_t)new_cap * sizeof(nav_entry_t))) return;
+    ui->nav_cap = new_cap;
+  }
+  nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
+  entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
+  entry->label = ui->current_label; /* transfer ownership */
+  ui->current_label = NULL;
+  entry->scroll_y = ui->scroll_y;
+  entry->scroll_x = ui->scroll_x;
+  entry->cursor_link = ui->cursor_link;
+  entry->saved_doc = NULL;
+  ui->nav_depth++;
+
+  /* Navigate to the existing file */
+  str_replace(&ui->current_filepath, filepath);
+  ui->current_label = label ? xstrdup(label) : NULL;
+  ui->scroll_y = 0;
+  ui->scroll_x = 0;
+  ui->cursor_link = 0;
+  ui_state_reload_file(ui);
+  ui->dirty = 1;
+}
+
 void ui_state_page_up(ui_state_t *ui) {
   if (!ui) return;
   /* Page-up while react loop is running → user takes scroll control */

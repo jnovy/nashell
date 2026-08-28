@@ -384,22 +384,14 @@ void ui_state_on_event(const react_event_t *ev, void *userdata) {
          * auto-scroll shows the completed result. */
       ui->user_scrolled = 0;
 
-      /* Auto-navigate to the done result (RXSY store ref) so the
-       * user sees the final answer immediately.  The result text
-       * is rendered as markdown in a synthetic .md file so it stays
-       * reloadable and shows the ref alias in the breadcrumb. */
-      if (ev->store_ref && ev->result) {
-        char ref_name[32];
-        snprintf(ref_name, sizeof(ref_name), "done-%s", ev->store_ref);
-        /* Build markdown: heading with ref alias + result text */
-        size_t rlen = strlen(ev->result);
-        size_t cap = rlen + 64;
-        char *md = malloc(cap);
-        if (md) {
-          snprintf(md, cap, "# %s\n\n%s", ev->store_ref, ev->result);
-          ui_state_push_content(ui, ref_name, md);
-          free(md);
-        }
+      /* Auto-navigate to the done result - open the RXSY ref file
+       * directly so the user sees the actual stored output rather
+       * than a synthetic copy. */
+      if (ev->store_ref) {
+        char ref_path[NASH_PATH_MAX];
+        path_join(ref_path, sizeof(ref_path),
+                  eff_session_dir, ev->store_ref);
+        ui_state_push_file(ui, ref_path, ev->store_ref);
       } else if (!viewing_react_file(ui, ui->current_react_loop,
                                      eff_session_dir)) {
         /* Fatal error (no store_ref) - fall back to reactRX.md */

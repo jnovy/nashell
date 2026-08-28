@@ -224,6 +224,12 @@ void ui_state_page_down(ui_state_t *ui);
  * navigates to it.  ESC naturally pops back to the previous view. */
 void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdown);
 
+/* Push an existing file onto the nav stack and navigate to it.
+ * Unlike push_content, does not write any file - the file must already exist.
+ * `label` is the breadcrumb label (copied internally). */
+void ui_state_push_file(ui_state_t *ui, const char *filepath,
+                        const char *label);
+
 /* ── Input editing ───────────────────────────────────────── */
 
 void ui_state_input_char(ui_state_t *ui, int ch);
