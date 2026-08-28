@@ -592,7 +592,28 @@ void ui_state_push_file(ui_state_t *ui, const char *filepath,
   ui->scroll_y = 0;
   ui->scroll_x = 0;
   ui->cursor_link = 0;
-  ui_state_reload_file(ui);
+
+  /* For non-.md files (e.g. store refs from DONE auto-navigation),
+   * read and wrap the content in a markdown heading so it renders
+   * properly - same approach as ui_state_enter(). */
+  int flen = (int)strlen(filepath);
+  if (flen < 3 || strcmp(filepath + flen - 3, ".md") != 0) {
+    char *raw = slurp_file(filepath, NULL);
+    if (!raw) raw = xstrdup("*Empty*\n");
+    const char *fname = strrchr(filepath, '/');
+    fname = fname ? fname + 1 : filepath;
+    str_t wrapped = str_new(strlen(raw) + 256);
+    str_appendf(&wrapped, "# %s\n\n", fname);
+    str_append_cstr(&wrapped, raw);
+    str_append_cstr(&wrapped, "\n");
+    free(raw);
+    char *md_source = str_steal(&wrapped);
+    md_doc_free(ui->doc);
+    ui->doc = md_parse(md_source);
+    free(md_source);
+  } else {
+    ui_state_reload_file(ui);
+  }
   ui->dirty = 1;
 }
 
