@@ -1731,10 +1731,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         tools_executed++;
       }
 
-      /* Plan-then-shed: after plan() executes, preamble injections
-             * (memory index, temporal, episodic, skills, etc.) have served
-             * their purpose — degrade to LOW so they shed first on eviction. */
-      if (strcmp(action_name, "plan") == 0) {
+      /* Plan-then-shed: on first plan(), degrade preamble injections
+             * to LOW and shed temporal/episodic messages. Only runs once -
+             * subsequent plan() calls must not re-shed mid-loop messages. */
+      if (strcmp(action_name, "plan") == 0 &&
+          !ctx->rt.preamble_consumed) {
         ctx->rt.preamble_consumed = 1;
         react_degrade_preamble(chat);
       }

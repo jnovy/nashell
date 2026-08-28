@@ -712,8 +712,6 @@ static inline void react_degrade_preamble(llm_chat_t *chat) {
   for (int i = 0; i < chat->n_msgs; i++) {
     switch (chat->msgs[i].msg_type) {
       case LLM_MSG_MEMORY_INDEX:
-      case LLM_MSG_TEMPORAL:
-      case LLM_MSG_EPISODIC:
       case LLM_MSG_SKILLS:
       case LLM_MSG_LESSONS:
       case LLM_MSG_STRATEGIES:
@@ -725,6 +723,15 @@ static inline void react_degrade_preamble(llm_chat_t *chat) {
         break;
     }
   }
+
+  /* Immediately shed temporal and episodic messages - these are injected
+   * once at context build and serve only initial planning. Memory hints
+   * are NOT shed here because they are also injected mid-loop by reactive
+   * retrieval, cycling breaker, and eviction (react.c:1615,2067,2292). */
+  llm_msg_type_t shed_types[] = {
+    LLM_MSG_TEMPORAL, LLM_MSG_EPISODIC
+  };
+  llm_chat_remove_by_types(chat, shed_types, 2);
 }
 
 #endif /* REACT_INTERNAL_H */
