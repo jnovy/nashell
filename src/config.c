@@ -676,6 +676,7 @@ void config_free(config_t *cfg) {
   free(cfg->searxng_url);
   free(cfg->telegram_bot_token);
   free(cfg->system_prompt_extra);
+  free(cfg->profile_default_reasoning_effort);
   free(cfg->belief_entropy.anchor_question);
   /* [device_control] strings */
   free(cfg->device_control.vnc_host);
@@ -890,6 +891,8 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
     p->vscore_exponent = -2.0f; /* -2 = inherit (0 and -1 are valid) */
     p->superseded_demotion = -2.0f;
     p->recency_bonus = -2.0f;
+    p->strip_sampling_params = -1; /* -1 = inherit */
+    /* default_reasoning_effort = NULL from memset */
 
     /* [client] subtable */
     toml_table_t *client_tbl = toml_table_in(root, "client");
@@ -907,6 +910,11 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
         if (v >= 0) p->top_k = v;
       }
       p->max_tokens = toml_int(client_tbl, "max_tokens", 0);
+      {
+        toml_datum_t d = toml_bool_in(client_tbl, "strip_sampling_params");
+        if (d.ok) p->strip_sampling_params = d.u.b ? 1 : 0;
+      }
+      p->default_reasoning_effort = toml_str(client_tbl, "default_reasoning_effort");
     }
 
     /* [react] subtable */
@@ -1075,6 +1083,7 @@ void config_free_model_profiles(config_t *cfg) {
     free(p->match);
     free(p->source_file);
     free(p->system_prompt_extra);
+    free(p->default_reasoning_effort);
     /* Unified Spec: free extended fields */
     free_string_array(p->tools_allow, p->n_tools_allow);
     free_string_array(p->tools_block, p->n_tools_block);
@@ -1113,6 +1122,10 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
   if (p->top_p >= 0) cfg->top_p = p->top_p;
   if (p->top_k >= 0) cfg->top_k = p->top_k;
   if (p->max_tokens > 0) cfg->max_tokens = p->max_tokens;
+  if (p->strip_sampling_params >= 0)
+    cfg->profile_strip_sampling_params = p->strip_sampling_params;
+  if (p->default_reasoning_effort)
+    str_replace(&cfg->profile_default_reasoning_effort, p->default_reasoning_effort);
 
   /* [react] limits overrides */
   if (p->max_react_steps > 0) cfg->max_react_steps = p->max_react_steps;

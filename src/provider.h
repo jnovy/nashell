@@ -39,6 +39,8 @@ typedef struct {
   int llm_timeout;         /* per-call wall-clock timeout in seconds (0=no limit) */
   int max_retries;         /* max retries on transient errors (0=use default 10) */
   int retry_base_sec;      /* initial backoff seconds (0=use default 10) */
+  int strip_sampling_params;              /* 1=strip temperature/top_p (reasoning models) */
+  const char *default_reasoning_effort;   /* fallback reasoning_effort if none explicit */
 } provider_config_t;
 
 /* ── Provider vtable ────────────────────────────────────────────── */

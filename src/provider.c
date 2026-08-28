@@ -226,6 +226,7 @@ provider_t *provider_create(const provider_config_t *cfg) {
   p->cfg.llm_timeout = cfg->llm_timeout;
   p->cfg.max_retries = cfg->max_retries;
   p->cfg.retry_base_sec = cfg->retry_base_sec;
+  p->cfg.strip_sampling_params = cfg->strip_sampling_params;
   /* Deep-copy all string fields so provider owns its own strings. */
   p->cfg.model_id = cfg->model_id ? xstrdup(cfg->model_id) : NULL;
   p->cfg.api_base = cfg->api_base ? xstrdup(cfg->api_base) : NULL;
@@ -233,6 +234,7 @@ provider_t *provider_create(const provider_config_t *cfg) {
   p->cfg.project_id = cfg->project_id ? xstrdup(cfg->project_id) : NULL;
   p->cfg.region = cfg->region ? xstrdup(cfg->region) : NULL;
   p->cfg.reasoning_effort = cfg->reasoning_effort ? xstrdup(cfg->reasoning_effort) : NULL;
+  p->cfg.default_reasoning_effort = cfg->default_reasoning_effort ? xstrdup(cfg->default_reasoning_effort) : NULL;
 
   /* Set defaults */
   if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
@@ -279,6 +281,7 @@ void provider_free(provider_t *p) {
   free((char *)p->cfg.project_id);
   free((char *)p->cfg.region);
   free((char *)p->cfg.reasoning_effort);
+  free((char *)p->cfg.default_reasoning_effort);
   free(p);
 }
 

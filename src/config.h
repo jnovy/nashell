@@ -167,6 +167,10 @@ typedef struct {
   char **tool_desc_names;  /* tool names to override */
   char **tool_desc_values; /* replacement descriptions */
   int n_tool_descs;
+
+  /* [client] model quirks - data-driven reasoning model support */
+  int strip_sampling_params;       /* -1=inherit, 1=strip temperature/top_p from requests */
+  char *default_reasoning_effort;  /* NULL=inherit, e.g. "none" for gpt-5.x */
 } model_profile_t;
 
 typedef struct {
@@ -403,6 +407,8 @@ typedef struct {
   int profile_enable_pruning;     /* -1 = not set */
   int profile_enable_compaction;  /* -1 = not set */
   int profile_enable_scoring;     /* -1 = not set */
+  int profile_strip_sampling_params;      /* -1 = not set */
+  char *profile_default_reasoning_effort; /* NULL = not set (owned) */
 
   /* [device_control] - GUI control via VNC/webcam/HID bridge.
      * See docs/design-device-control.md

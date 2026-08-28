@@ -342,6 +342,8 @@ static provider_t *create_role_provider(const config_t *cfg,
     .llm_timeout = cfg->llm_timeout,
     .max_retries = cfg->provider_max_retries,
     .retry_base_sec = cfg->provider_retry_base,
+    .strip_sampling_params = cfg->profile_strip_sampling_params,
+    .default_reasoning_effort = cfg->profile_default_reasoning_effort,
   };
   provider_t *p = provider_create(&pcfg);
   if (!p) {
@@ -959,6 +961,8 @@ int main(int argc, char **argv) {
     .llm_timeout = cfg->llm_timeout,
     .max_retries = cfg->provider_max_retries,
     .retry_base_sec = cfg->provider_retry_base,
+    .strip_sampling_params = cfg->profile_strip_sampling_params,
+    .default_reasoning_effort = cfg->profile_default_reasoning_effort,
   };
   provider_t *provider = provider_create(&pcfg);
 
