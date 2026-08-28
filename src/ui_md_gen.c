@@ -1721,15 +1721,6 @@ static char *generate_working_mem_md(ui_state_t *ui) {
   str_t md = str_new(4096);
   str_append_cstr(&md, "# Working Memory\n\n");
 
-  /* Active goal from journal */
-  if (ui->journal && ui->journal->serving_goal_id > 0) {
-    str_appendf(&md, "## Active Goal\n\n");
-    str_appendf(&md, "G%d: %s\n\n",
-                ui->journal->serving_goal_id,
-                ui->journal->serving_goal_text
-                  ? ui->journal->serving_goal_text : "(unknown)");
-  }
-
   /* Plan progress - load plan.json and render checkboxes */
   {
     char ppath[NASH_PATH_MAX];
@@ -1761,12 +1752,12 @@ static char *generate_working_mem_md(ui_state_t *ui) {
     cJSON_Delete(plan);
   }
 
-  /* Full goal tree */
+  /* Goals - single unified section from goals.json, with journal fallback */
   {
     goal_state_t gs;
     goal_state_init(&gs);
     if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
-      str_append_cstr(&md, "## Goal Tree\n\n");
+      str_append_cstr(&md, "## Goals\n\n");
       char *goal_text = goal_format_text(&gs);
       if (goal_text) {
         str_append_cstr(&md, goal_text);
@@ -1779,8 +1770,13 @@ static char *generate_working_mem_md(ui_state_t *ui) {
       int unresolved = goal_count_unresolved(&gs, 0);
       if (unresolved > 0)
         str_appendf(&md, "*%d unresolved goal(s)*\n\n", unresolved);
-    } else {
-      str_append_cstr(&md, "*No goals defined*\n\n");
+    } else if (ui->journal && ui->journal->serving_goal_id > 0) {
+      /* Fallback: goals.json unavailable but journal has an active goal */
+      str_append_cstr(&md, "## Goals\n\n");
+      str_appendf(&md, "[>] G%d: %s\n\n",
+                  ui->journal->serving_goal_id,
+                  ui->journal->serving_goal_text
+                    ? ui->journal->serving_goal_text : "(unknown)");
     }
     goal_state_free(&gs);
   }
@@ -2045,12 +2041,13 @@ static char *generate_metrics_md(ui_state_t *ui) {
     str_append_cstr(&md, "\n\n");
   }
 
-  /* Per-step token breakdown from journal.
+  /* Per-tool aggregate stats from journal.
    * Journal entries have: react_loop, step, ts(string), tool, params, ref,
    * size, lines, failed, error, tc_id, serving_goal, goal_text.
    * Token data lives in log entries with message matching
    * "[provider/complete] final stats: prompt_tokens=N ... completion_tokens=N".
-   * We correlate log entries with tool calls by step number. */
+   * We correlate log entries with tool calls by step number,
+   * then aggregate by tool name. */
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
                           : ui->session_dir;
@@ -2095,13 +2092,22 @@ static char *generate_metrics_md(ui_state_t *ui) {
       cJSON_Delete(entry);
     }
 
-    /* Second pass: render tool calls with correlated token data */
-    rewind(f);
-    str_append_cstr(&md, "## Per-Step Breakdown\n\n");
-    str_appendf(&md, "| Step | Tool | Size | Tokens | Gen |\n");
-    str_appendf(&md, "|------|------|------|--------|-----|\n");
-    int row_count = 0;
+    /* Second pass: aggregate tool calls by tool name */
+    typedef struct {
+      char name[64];
+      int calls;
+      long total_size;
+      long total_ptok;
+      long total_ctok;
+      double total_gen_speed;
+      int gen_count;       /* how many steps had gen_speed > 0 */
+    } tool_agg_t;
+    #define MAX_TOOLS 64
+    tool_agg_t tools[MAX_TOOLS];
+    memset(tools, 0, sizeof(tools));
+    int tool_count = 0;
 
+    rewind(f);
     while (fgets(line, sizeof(line), f)) {
       cJSON *entry = cJSON_Parse(line);
       if (!entry) continue;
@@ -2121,33 +2127,96 @@ static char *generate_metrics_md(ui_state_t *ui) {
         continue;
       }
 
-      int sz = json_int(entry, "size", 0);
-      char sz_buf[32];
-      if (sz >= 1000)
-        snprintf(sz_buf, sizeof(sz_buf), "%dK", sz / 1000);
-      else
-        snprintf(sz_buf, sizeof(sz_buf), "%d", sz);
-
-      char tok_buf[32] = "-";
-      char gen_buf[16] = "-";
-      if (step >= 0 && step < 256 && (step_tok[step].ptok > 0 ||
-                                      step_tok[step].ctok > 0)) {
-        snprintf(tok_buf, sizeof(tok_buf), "%d+%d",
-                 step_tok[step].ptok, step_tok[step].ctok);
-        if (step_tok[step].gen_speed > 0)
-          snprintf(gen_buf, sizeof(gen_buf), "%.0f t/s",
-                   step_tok[step].gen_speed);
+      /* Find or create aggregate slot for this tool */
+      int idx = -1;
+      for (int i = 0; i < tool_count; i++) {
+        if (strcmp(tools[i].name, tool) == 0) { idx = i; break; }
+      }
+      if (idx < 0 && tool_count < MAX_TOOLS) {
+        idx = tool_count++;
+        snprintf(tools[idx].name, sizeof(tools[idx].name), "%s", tool);
+      }
+      if (idx >= 0) {
+        tools[idx].calls++;
+        tools[idx].total_size += json_int(entry, "size", 0);
+        if (step >= 0 && step < 256) {
+          tools[idx].total_ptok += step_tok[step].ptok;
+          tools[idx].total_ctok += step_tok[step].ctok;
+          if (step_tok[step].gen_speed > 0) {
+            tools[idx].total_gen_speed += step_tok[step].gen_speed;
+            tools[idx].gen_count++;
+          }
+        }
       }
 
-      str_appendf(&md, "| %d | %s | %s | %s | %s |\n",
-                  step, tool, sz_buf, tok_buf, gen_buf);
-      row_count++;
       cJSON_Delete(entry);
     }
     fclose(f);
 
-    if (row_count == 0)
+    /* Sort by total tokens (prompt+completion) descending */
+    for (int i = 0; i < tool_count - 1; i++) {
+      for (int j = i + 1; j < tool_count; j++) {
+        long ti = tools[i].total_ptok + tools[i].total_ctok;
+        long tj = tools[j].total_ptok + tools[j].total_ctok;
+        if (tj > ti) {
+          tool_agg_t tmp = tools[i];
+          tools[i] = tools[j];
+          tools[j] = tmp;
+        }
+      }
+    }
+
+    /* Render per-tool aggregate table */
+    str_append_cstr(&md, "## Per-Tool Breakdown\n\n");
+    str_appendf(&md, "| Tool | Calls | Size | Tokens | Avg Gen |\n");
+    str_appendf(&md, "|------|-------|------|--------|---------|\n");
+
+    long grand_size = 0, grand_ptok = 0, grand_ctok = 0;
+    int grand_calls = 0;
+
+    for (int i = 0; i < tool_count; i++) {
+      tool_agg_t *t = &tools[i];
+      grand_calls += t->calls;
+      grand_size += t->total_size;
+      grand_ptok += t->total_ptok;
+      grand_ctok += t->total_ctok;
+
+      char sz_buf[32];
+      if (t->total_size >= 1000)
+        snprintf(sz_buf, sizeof(sz_buf), "%ldK", t->total_size / 1000);
+      else
+        snprintf(sz_buf, sizeof(sz_buf), "%ld", t->total_size);
+
+      char tok_buf[32] = "-";
+      if (t->total_ptok > 0 || t->total_ctok > 0)
+        snprintf(tok_buf, sizeof(tok_buf), "%ld+%ld",
+                 t->total_ptok, t->total_ctok);
+
+      char gen_buf[16] = "-";
+      if (t->gen_count > 0)
+        snprintf(gen_buf, sizeof(gen_buf), "%.0f t/s",
+                 t->total_gen_speed / t->gen_count);
+
+      str_appendf(&md, "| %s | %d | %s | %s | %s |\n",
+                  t->name, t->calls, sz_buf, tok_buf, gen_buf);
+    }
+
+    /* Totals row */
+    if (tool_count > 0) {
+      char gsz[32], gtok[32];
+      if (grand_size >= 1000)
+        snprintf(gsz, sizeof(gsz), "%ldK", grand_size / 1000);
+      else
+        snprintf(gsz, sizeof(gsz), "%ld", grand_size);
+      if (grand_ptok > 0 || grand_ctok > 0)
+        snprintf(gtok, sizeof(gtok), "%ld+%ld", grand_ptok, grand_ctok);
+      else
+        snprintf(gtok, sizeof(gtok), "-");
+      str_appendf(&md, "| **Total** | **%d** | **%s** | **%s** | ||\n",
+                  grand_calls, gsz, gtok);
+    } else {
       str_append_cstr(&md, "| - | *no tool calls yet* | - | - | - |\n");
+    }
     str_append_cstr(&md, "\n");
   }
 

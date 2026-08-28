@@ -915,6 +915,20 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
         if (!goal_content)
           goal_content = xstrdup("Task execution");
 
+        /* Truncate goal content to first line / max 200 chars so goals
+         * stay concise in the UI and scratchpad.  Multi-paragraph user
+         * queries should not become a single giant goal blob. */
+        {
+          char *nl = strchr(goal_content, '\n');
+          if (nl) *nl = '\0';
+          if (strlen(goal_content) > 200) {
+            goal_content[197] = '.';
+            goal_content[198] = '.';
+            goal_content[199] = '.';
+            goal_content[200] = '\0';
+          }
+        }
+
         struct timespec _ts;
         clock_gettime(CLOCK_REALTIME, &_ts);
         double now = (double)_ts.tv_sec + (double)_ts.tv_nsec / 1e9;
