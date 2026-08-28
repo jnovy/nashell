@@ -147,6 +147,20 @@ int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
 
 /* ── NULL Response Handling ────────────────────────────── */
 
+/* Journal a recovery/retry event so it appears in reactRX.md.
+ * Lightweight wrapper: creates a minimal server_error journal entry
+ * with just the recovery action message. */
+static void journal_recovery_event(react_ctx_t *ctx, int step,
+                                   const char *message) {
+  if (!ctx->tools->journal) return;
+  cJSON *params = cJSON_CreateObject();
+  cJSON_AddStringToObject(params, "error", message);
+  journal_append(ctx->tools->journal,
+                 ctx->tools->react_loop, step + 1, "server_error",
+                 params, NULL, 0, 0, message, NULL, 0);
+  cJSON_Delete(params);
+}
+
 /* Handle NULL response from LLM (HTTP 400/500/auth errors).
  * Returns: 0 = continue (retry), 1 = break (give up).
  * Modifies chat in-place for recovery. */
@@ -168,11 +182,11 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         if (srv_err) {
           char emsg[512];
           snprintf(emsg, sizeof(emsg),
-                   "LLM server error after recovery attempt — %s", srv_err);
+                   "LLM server error after recovery attempt - %s", srv_err);
           cJSON_AddStringToObject(err_params, "error", emsg);
         } else {
           cJSON_AddStringToObject(err_params, "error",
-                                  "LLM server error after recovery attempt — giving up");
+                                  "LLM server error after recovery attempt - giving up");
         }
       } else {
         if (srv_err) {
@@ -239,9 +253,10 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 
   /* Authentication error (HTTP 401/403) — can't be fixed by eviction */
   if (srv_err && (strstr(srv_err, "HTTP 401") || strstr(srv_err, "HTTP 403"))) {
-    ev.message = "Authentication failed — token expired or invalid, "
+    ev.message = "Authentication failed - token expired or invalid, "
                  "please re-authenticate (e.g. gcloud auth login)";
     react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, ev.message);
     return 1;
   }
 
@@ -249,23 +264,26 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
   if (srv_err && strstr(srv_err, "HTTP 400")) {
     (*total_400)++;
     if (*total_400 >= 6) {
-      ev.message = "HTTP 400 — context still too large after "
+      ev.message = "HTTP 400 - context still too large after "
                    "repeated eviction, giving up";
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, ev.message);
       return 1;
     }
     int n_evict = react_emergency_evict_and_reinject(ctx, chat);
     if (n_evict > 0) {
       char emsg[128];
       snprintf(emsg, sizeof(emsg),
-               "HTTP 400 — evicted %d messages to reduce context "
+               "HTTP 400 - evicted %d messages to reduce context "
                "(attempt %d/6)",
                n_evict, *total_400);
       ev.message = emsg;
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, emsg);
     } else {
-      ev.message = "HTTP 400 — no evictable messages remain, giving up";
+      ev.message = "HTTP 400 - no evictable messages remain, giving up";
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, ev.message);
       return 1;
     }
     *consecutive_null = 0;
@@ -288,11 +306,12 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       char mtmsg[256];
       snprintf(mtmsg, sizeof(mtmsg),
                "Thinking-only max-token exhaustion (%d/%d tokens, "
-               "context %d%%) — injecting hint and retrying",
+               "context %d%%) - injecting hint and retrying",
                stats->completion_tokens, ctx->provider->cfg.max_tokens,
                usage);
       ev.message = mtmsg;
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, mtmsg);
 
       llm_chat_add(chat, "user",
                    "Your previous attempt used all output tokens on internal "
@@ -308,21 +327,23 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       /* Context-overflow exhaustion — evict to make room */
       char mtmsg[256];
       snprintf(mtmsg, sizeof(mtmsg),
-               "Max-token exhaustion (%d/%d tokens, context %d%%) — "
+               "Max-token exhaustion (%d/%d tokens, context %d%%) - "
                "evicting context to recover",
                stats->completion_tokens, ctx->provider->cfg.max_tokens,
                usage);
       ev.message = mtmsg;
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, mtmsg);
 
       int n_evict = react_emergency_evict_and_reinject(ctx, chat);
       if (n_evict > 0) {
         (*consecutive_null)++;
         return 0;
       } else {
-        ev.message = "Max-token exhaustion — no evictable messages "
+        ev.message = "Max-token exhaustion - no evictable messages "
                      "remain, giving up";
         react_emit(on_event, userdata, &ev);
+        journal_recovery_event(ctx, step, ev.message);
         return 1;
       }
     }
@@ -330,8 +351,9 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 
   /* 5-tier retry strategy for HTTP 500 / NULL responses */
   if (*consecutive_null >= 6) {
-    ev.message = "LLM server error — all recovery tiers exhausted, giving up";
+    ev.message = "LLM server error - all recovery tiers exhausted, giving up";
     react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, ev.message);
     return 1;
   }
 
@@ -341,18 +363,20 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     int backoff_ms = *consecutive_null * 2000;
     char rmsg[128];
     snprintf(rmsg, sizeof(rmsg),
-             "LLM server error — plain retry %d/2 (backoff %dms)",
+             "LLM server error - plain retry %d/2 (backoff %dms)",
              *consecutive_null, backoff_ms);
     ev.message = rmsg;
     react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, rmsg);
     for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
       usleep(100000);
   } else if (*consecutive_null == 3) {
     /* Tier 1: Remove the last assistant+tool_result pair.
          * Walk backward to find the actual last tool_result, skipping
          * injected hint/summary messages. Then find its partner tool_call. */
-    ev.message = "LLM server error — removing last exchange and retrying (tier 1)";
+    ev.message = "LLM server error - removing last exchange and retrying (tier 1)";
     react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, ev.message);
     int kh = react_compute_keep_head(chat);
     int tr_idx = -1; /* last tool_result index */
     for (int i = chat->n_msgs - 1; i >= kh; i--) {
@@ -368,15 +392,16 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       if (remove_from < chat->n_msgs)
         llm_chat_remove_range(chat, remove_from, chat->n_msgs);
     } else if (chat->n_msgs > kh) {
-      /* No tool_result found — fall back to removing last message */
+      /* No tool_result found - fall back to removing last message */
       llm_chat_remove_range(chat, chat->n_msgs - 1, chat->n_msgs);
     }
   } else if (*consecutive_null == 4) {
     /* Tier 2: Reformulate scratchpad (strip code blocks) */
     int sp_idx = llm_chat_find_by_type(chat, LLM_MSG_SCRATCHPAD);
     if (sp_idx >= 0) {
-      ev.message = "LLM server error — stripping code blocks from scratchpad (tier 2)";
+      ev.message = "LLM server error - stripping code blocks from scratchpad (tier 2)";
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, ev.message);
       const char *src = chat->msgs[sp_idx].content;
       {
         const char *nl = strchr(src, '\n');
@@ -416,15 +441,17 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
         free(cleaned);
       }
     } else {
-      ev.message = "LLM server error — no scratchpad, skipping tier 2";
+      ev.message = "LLM server error - no scratchpad, skipping tier 2";
       react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, ev.message);
     }
   } else if (*consecutive_null == 5) {
     /* Tier 3: Strip scratchpad entirely (nuclear option) */
-    ev.message = "LLM server error — stripping scratchpad entirely (tier 3)";
+    ev.message = "LLM server error - stripping scratchpad entirely (tier 3)";
     react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, ev.message);
     llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-    /* Do NOT re-inject — this is a true strip, not a refresh. */
+    /* Do NOT re-inject - this is a true strip, not a refresh. */
   }
   return 0;
 }
