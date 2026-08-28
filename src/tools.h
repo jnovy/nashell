@@ -176,6 +176,10 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);
  * Call after successful file_edit or file_write. */
 void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step);
 
+/* Evidence staleness: check if a modified file invalidates any plan step
+ * evidence. Call after tool_track_modified_file() in file_edit/file_write. */
+void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path);
+
 /* Edit transaction: record a save-point before modifying a file.
  * Only the FIRST pre-edit hash per path is kept (dedup).
  * is_new_file: 1 = file did not exist before (rollback = delete). */

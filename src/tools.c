@@ -664,25 +664,41 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "result", result);
   cJSON_AddStringToObject(meta, "ref", alias);
 
-  /* Warn if plan has incomplete steps */
+  /* Warn if plan has incomplete or stale steps */
   cJSON *plan_steps = plan_load(ctx);
   if (plan_steps) {
     int total = cJSON_GetArraySize(plan_steps);
-    int done = 0;
+    int done = 0, stale_count = 0;
     cJSON *item;
     cJSON_ArrayForEach(item, plan_steps) {
       if (json_bool(item, "done", 0)) done++;
+      if (json_bool(item, "stale", 0)) stale_count++;
     }
-    if (done < total) {
+    if (done < total || stale_count > 0) {
       str_t warn = str_new(256);
-      str_appendf(&warn, "WARNING: %d/%d plan steps incomplete:",
-                  total - done, total);
-      int idx = 0;
-      cJSON_ArrayForEach(item, plan_steps) {
-        idx++;
-        if (!json_bool(item, "done", 0)) {
-          const char *t = json_str(item, "text");
-          str_appendf(&warn, " %d. %s;", idx, t ? t : "?");
+      if (done < total) {
+        str_appendf(&warn, "WARNING: %d/%d plan steps incomplete:",
+                    total - done, total);
+        int idx = 0;
+        cJSON_ArrayForEach(item, plan_steps) {
+          idx++;
+          if (!json_bool(item, "done", 0)) {
+            const char *t = json_str(item, "text");
+            str_appendf(&warn, " %d. %s;", idx, t ? t : "?");
+          }
+        }
+      }
+      if (stale_count > 0) {
+        if (done < total) str_append_cstr(&warn, "\n");
+        str_appendf(&warn, "WARNING: %d plan step(s) have stale evidence "
+                    "(files modified after verification):", stale_count);
+        int idx = 0;
+        cJSON_ArrayForEach(item, plan_steps) {
+          idx++;
+          if (json_bool(item, "stale", 0)) {
+            const char *t = json_str(item, "text");
+            str_appendf(&warn, " %d. %s;", idx, t ? t : "?");
+          }
         }
       }
       cJSON_AddStringToObject(meta, "warning", str_cstr(&warn));
@@ -768,25 +784,38 @@ static void plan_save(const tool_ctx_t *ctx, const cJSON *steps) {
  * Appends a progress summary line.  Caller must free() the result. */
 static char *plan_format_text(const cJSON *steps) {
   str_t s = str_new(512);
-  int total = 0, done = 0;
+  int total = 0, done = 0, stale = 0;
   cJSON *item;
   cJSON_ArrayForEach(item, steps) {
     total++;
     int is_done = json_bool(item, "done", 0);
+    int is_stale = json_bool(item, "stale", 0);
     const char *text = json_str(item, "text");
     const char *ev = json_str(item, "evidence");
     if (is_done) {
       done++;
-      if (ev && ev[0])
+      if (is_stale) {
+        stale++;
+        if (ev && ev[0])
+          str_appendf(&s, "[~] %d. %s (%s) (STALE - files changed since verification)\n",
+                      total, text ? text : "", ev);
+        else
+          str_appendf(&s, "[~] %d. %s (STALE - files changed since verification)\n",
+                      total, text ? text : "");
+      } else if (ev && ev[0]) {
         str_appendf(&s, "[x] %d. %s (%s)\n", total, text ? text : "", ev);
-      else
+      } else {
         str_appendf(&s, "[x] %d. %s\n", total, text ? text : "");
+      }
     } else {
       str_appendf(&s, "[ ] %d. %s\n", total, text ? text : "");
     }
   }
-  if (total > 0)
+  if (total > 0) {
     str_appendf(&s, "Progress: %d/%d complete", done, total);
+    if (stale > 0)
+      str_appendf(&s, " (%d stale)", stale);
+  }
   char *result = xstrdup(str_cstr(&s));
   str_free(&s);
   return result;
@@ -798,6 +827,40 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
   scratchpad_write(&ctx->scratch, "plan", text, 1);
   scratchpad_save(&ctx->scratch, ctx->session_dir);
   free(text);
+}
+
+/* Evidence staleness: when a file that was covered by plan step evidence
+ * is modified after verification, mark that step as stale.
+ * Called from tool_track_modified_file() on every file_edit/file_write. */
+void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
+  if (!ctx || !path) return;
+  cJSON *steps = plan_load(ctx);
+  if (!steps) return;
+
+  int changed = 0;
+  cJSON *step;
+  cJSON_ArrayForEach(step, steps) {
+    if (!json_bool(step, "done", 0)) continue;
+    if (json_bool(step, "stale", 0)) continue; /* already stale */
+    cJSON *paths = cJSON_GetObjectItem(step, "evidence_paths");
+    if (!paths || !cJSON_IsArray(paths)) continue;
+    cJSON *p;
+    cJSON_ArrayForEach(p, paths) {
+      if (cJSON_IsString(p) && p->valuestring &&
+          strcmp(p->valuestring, path) == 0) {
+        cJSON_DeleteItemFromObject(step, "stale");
+        cJSON_AddBoolToObject(step, "stale", 1);
+        changed = 1;
+        break;
+      }
+    }
+  }
+
+  if (changed) {
+    plan_save(ctx, steps);
+    plan_project_to_scratchpad(ctx, steps);
+  }
+  cJSON_Delete(steps);
 }
 
 /* Store plan text in content-addressed store and return an alias.
@@ -1058,11 +1121,26 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       cJSON_ReplaceItemInObject(step, "done", cJSON_CreateTrue());
       cJSON_DeleteItemFromObject(step, "evidence");
       cJSON_AddStringToObject(step, "evidence", evidence);
+      /* Evidence binding: record step number and tracked file paths
+       * so staleness can be detected if those files change later. */
+      cJSON_DeleteItemFromObject(step, "evidence_step");
+      cJSON_AddNumberToObject(step, "evidence_step", ctx->step);
+      cJSON_DeleteItemFromObject(step, "stale");
+      cJSON_AddBoolToObject(step, "stale", 0);
+      /* Snapshot all files modified so far as evidence_paths */
+      cJSON_DeleteItemFromObject(step, "evidence_paths");
+      cJSON *epaths = cJSON_CreateArray();
+      for (int i = 0; i < ctx->n_modified_files; i++)
+        cJSON_AddItemToArray(epaths, cJSON_CreateString(ctx->modified_files[i].path));
+      cJSON_AddItemToObject(step, "evidence_paths", epaths);
     } else {
       /* uncheck */
       cJSON_ReplaceItemInObject(step, "done", cJSON_CreateFalse());
       cJSON_DeleteItemFromObject(step, "evidence");
       cJSON_AddNullToObject(step, "evidence");
+      cJSON_DeleteItemFromObject(step, "evidence_step");
+      cJSON_DeleteItemFromObject(step, "evidence_paths");
+      cJSON_DeleteItemFromObject(step, "stale");
     }
 
     plan_save(ctx, steps);

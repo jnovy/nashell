@@ -340,6 +340,7 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(res.meta, "ref", alias);
 
   tool_track_modified_file(ctx, path, ctx->step);
+  plan_check_evidence_staleness(ctx, path);
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "file_write", params, alias,
                len, count_lines(content), NULL, NULL);
@@ -899,6 +900,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(res.meta, "post_ref", post_alias);
 
     tool_track_modified_file(ctx, path, ctx->step);
+    plan_check_evidence_staleness(ctx, path);
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "file_edit", params, diff_alias,
                  diff_len, 0, NULL, NULL);
