@@ -85,7 +85,9 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
     /* Plan-then-shed preamble: these inform planning but become
          * dead weight after plan() executes. Start NORMAL so they
          * survive initial eviction passes; react_degrade_preamble()
-         * downgrades them to LOW after plan(). */
+         * downgrades most to LOW after plan(), but TEMPORAL and
+         * EPISODIC are removed entirely (they serve only initial
+         * context and are not re-injected mid-loop). */
     case LLM_MSG_MEMORY_INDEX:
     case LLM_MSG_TEMPORAL:
     case LLM_MSG_EPISODIC:

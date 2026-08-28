@@ -17,6 +17,18 @@
 
 /* ── helpers ─────────────────────────────────────────── */
 
+/* Canonicalize a file path for consistent comparison.
+ * Uses realpath() for existing files; strips leading "./" otherwise.
+ * Returns a static buffer - NOT thread-safe, copy if needed. */
+static const char *canon_path(const char *path) {
+  static char buf[PATH_MAX];
+  if (!path) return "";
+  if (realpath(path, buf)) return buf;
+  /* File doesn't exist (yet/anymore) - strip leading "./" */
+  while (path[0] == '.' && path[1] == '/') path += 2;
+  return path;
+}
+
 /* Inject the current step's thought into a params cJSON before journal_append.
  * The thought is stored in ctx->thought by react.c before calling tool_execute.
  * Skip whitespace-only thoughts (e.g. "\n\n" emitted before tool calls). */
@@ -354,9 +366,10 @@ void tool_track_recalled_key(tool_ctx_t *ctx, const char *key) {
 
 void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step) {
   if (!ctx || !path) return;
+  const char *cpath = canon_path(path);
   /* Check if already tracked */
   for (int i = 0; i < ctx->n_modified_files; i++) {
-    if (strcmp(ctx->modified_files[i].path, path) == 0) {
+    if (strcmp(ctx->modified_files[i].path, cpath) == 0) {
       ctx->modified_files[i].last_step = step;
       ctx->modified_files[i].count++;
       return;
@@ -373,7 +386,7 @@ void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step) {
     ctx->modified_files[oldest] = ctx->modified_files[ctx->n_modified_files - 1];
     ctx->n_modified_files--;
   }
-  ctx->modified_files[ctx->n_modified_files].path = xstrdup(path);
+  ctx->modified_files[ctx->n_modified_files].path = xstrdup(cpath);
   ctx->modified_files[ctx->n_modified_files].last_step = step;
   ctx->modified_files[ctx->n_modified_files].count = 1;
   ctx->n_modified_files++;
@@ -665,6 +678,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "ref", alias);
 
   /* Warn if plan has incomplete or stale steps */
+  int plan_all_done = 0; /* set to 1 if plan exists and all steps checked */
   cJSON *plan_steps = plan_load(ctx);
   if (plan_steps) {
     int total = cJSON_GetArraySize(plan_steps);
@@ -674,6 +688,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
       if (json_bool(item, "done", 0)) done++;
       if (json_bool(item, "stale", 0)) stale_count++;
     }
+    if (done == total && total > 0) plan_all_done = 1;
     if (done < total || stale_count > 0) {
       str_t warn = str_new(256);
       if (done < total) {
@@ -707,11 +722,25 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
     cJSON_Delete(plan_steps);
   }
 
-  /* Warn if goals have unresolved items */
+  /* Auto-resolve goals when all plan steps are checked, then warn
+   * only if truly unresolved goals remain. */
   {
     goal_state_t gs;
     goal_state_init(&gs);
     if (goal_state_load(&gs, ctx->session_dir) == 0 && gs.count > 0) {
+      /* Auto-resolve: if all plan steps checked, mark goals done */
+      if (plan_all_done) {
+        struct timespec _ts;
+        clock_gettime(CLOCK_REALTIME, &_ts);
+        double now = (double)_ts.tv_sec + (double)_ts.tv_nsec / 1e9;
+        for (int i = 0; i < gs.count; i++) {
+          if (gs.goals[i].status == GOAL_ACTIVE ||
+              gs.goals[i].status == GOAL_PENDING)
+            goal_done(&gs.goals[i], "all plan steps completed",
+                      ctx->step, now);
+        }
+        goal_state_save(&gs, ctx->session_dir);
+      }
       char *gw = goal_unresolved_warning(&gs);
       if (gw) {
         /* Append to existing warning or create new one */
@@ -722,7 +751,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
           cJSON_SetValuestring(existing, str_cstr(&combined));
           str_free(&combined);
         } else {
-          cJSON_AddStringToObject(meta, "goal_warning", gw);
+          cJSON_AddStringToObject(meta, "warning", gw);
         }
         free(gw);
       }
@@ -834,6 +863,7 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps) {
  * Called from tool_track_modified_file() on every file_edit/file_write. */
 void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
   if (!ctx || !path) return;
+  const char *cpath = canon_path(path);
   cJSON *steps = plan_load(ctx);
   if (!steps) return;
 
@@ -847,7 +877,7 @@ void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
     cJSON *p;
     cJSON_ArrayForEach(p, paths) {
       if (cJSON_IsString(p) && p->valuestring &&
-          strcmp(p->valuestring, path) == 0) {
+          strcmp(p->valuestring, cpath) == 0) {
         cJSON_DeleteItemFromObject(step, "stale");
         cJSON_AddBoolToObject(step, "stale", 1);
         changed = 1;
@@ -985,10 +1015,16 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
           char *nl = strchr(goal_content, '\n');
           if (nl) *nl = '\0';
           if (strlen(goal_content) > 200) {
-            goal_content[197] = '.';
-            goal_content[198] = '.';
-            goal_content[199] = '.';
-            goal_content[200] = '\0';
+            /* Walk back to a UTF-8 character boundary to avoid
+             * splitting multi-byte sequences. A continuation byte
+             * has the pattern 10xxxxxx (0x80..0xBF). */
+            int cut = 197;
+            while (cut > 0 && ((unsigned char)goal_content[cut] & 0xC0) == 0x80)
+              cut--;
+            goal_content[cut++] = '.';
+            goal_content[cut++] = '.';
+            goal_content[cut++] = '.';
+            goal_content[cut] = '\0';
           }
         }
 
@@ -1011,6 +1047,18 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
             journal_set_serving_goal(ctx->journal, gid, g->content);
         }
         free(goal_content);
+      } else {
+        /* Re-plan: re-activate first goal if it was resolved, so the
+         * new plan doesn't inherit a stale DONE/FAILED status. */
+        goal_t *g = goal_find(&gs, 1);
+        if (g && (g->status == GOAL_DONE || g->status == GOAL_FAILED)) {
+          g->status = GOAL_ACTIVE;
+          g->resolved_ts = 0;
+          g->step_resolved = -1;
+          free(g->evidence);
+          g->evidence = NULL;
+          goal_state_save(&gs, ctx->session_dir);
+        }
       }
       goal_state_free(&gs);
     }
@@ -1127,12 +1175,17 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       cJSON_AddNumberToObject(step, "evidence_step", ctx->step);
       cJSON_DeleteItemFromObject(step, "stale");
       cJSON_AddBoolToObject(step, "stale", 0);
-      /* Snapshot all files modified so far as evidence_paths */
+      /* Snapshot only files modified since the last plan(check) call
+       * so each step's evidence_paths reflects its own work, not
+       * cumulative session state (fixes false-positive staleness). */
       cJSON_DeleteItemFromObject(step, "evidence_paths");
       cJSON *epaths = cJSON_CreateArray();
-      for (int i = 0; i < ctx->n_modified_files; i++)
-        cJSON_AddItemToArray(epaths, cJSON_CreateString(ctx->modified_files[i].path));
+      for (int i = 0; i < ctx->n_modified_files; i++) {
+        if (ctx->modified_files[i].last_step > ctx->last_plan_check_step)
+          cJSON_AddItemToArray(epaths, cJSON_CreateString(ctx->modified_files[i].path));
+      }
       cJSON_AddItemToObject(step, "evidence_paths", epaths);
+      ctx->last_plan_check_step = ctx->step;
     } else {
       /* uncheck */
       cJSON_ReplaceItemInObject(step, "done", cJSON_CreateFalse());
@@ -1394,6 +1447,35 @@ static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
   for (int i = 0; i < ctx->n_modified_files; i++)
     free(ctx->modified_files[i].path);
   ctx->n_modified_files = 0;
+
+  /* Clear plan staleness - files are restored so evidence is valid again */
+  {
+    cJSON *psteps = plan_load(ctx);
+    if (psteps) {
+      int pchanged = 0;
+      cJSON *pitem;
+      cJSON_ArrayForEach(pitem, psteps) {
+        if (json_bool(pitem, "stale", 0)) {
+          cJSON_DeleteItemFromObject(pitem, "stale");
+          cJSON_AddBoolToObject(pitem, "stale", 0);
+          pchanged = 1;
+        }
+      }
+      if (pchanged) {
+        plan_save(ctx, psteps);
+        plan_project_to_scratchpad(ctx, psteps);
+      }
+      cJSON_Delete(psteps);
+    }
+  }
+
+  /* Clear scratchpad staleness - tracked files are restored */
+  {
+    pthread_mutex_lock(&ctx->scratch.mtx);
+    for (int i = 0; i < ctx->scratch.count; i++)
+      ctx->scratch.sections[i].stale = 0;
+    pthread_mutex_unlock(&ctx->scratch.mtx);
+  }
 
   /* Build result summary */
   str_t summary = str_new(256);

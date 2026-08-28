@@ -151,6 +151,7 @@ typedef struct {
     int count;       /* total modifications to this file */
   } modified_files[INFORM_MAX_FILES];
   int n_modified_files;
+  int last_plan_check_step; /* step when last plan(check) ran; for per-step evidence */
   /* Edit transaction: tracks save-points for rollback.
    * Auto-opens on first file_edit/file_write, cleared on rollback or
    * at react loop end. Only the FIRST pre-edit hash per path is kept

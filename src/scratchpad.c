@@ -708,12 +708,16 @@ int scratchpad_set_tracked_paths(scratchpad_t *sp, const char *name,
 
 void scratchpad_check_staleness(scratchpad_t *sp, const char *path) {
   if (!path) return;
+  /* Strip leading "./" for consistent comparison */
+  while (path[0] == '.' && path[1] == '/') path += 2;
   pthread_mutex_lock(&sp->mtx);
   for (int i = 0; i < sp->count; i++) {
     scratchpad_section_t *s = &sp->sections[i];
     if (s->stale || s->n_tracked == 0) continue;
     for (int j = 0; j < s->n_tracked; j++) {
-      if (strcmp(s->tracked_paths[j], path) == 0) {
+      const char *tp = s->tracked_paths[j];
+      while (tp[0] == '.' && tp[1] == '/') tp += 2;
+      if (strcmp(tp, path) == 0) {
         s->stale = 1;
         s->dirty = 1;
         break;
