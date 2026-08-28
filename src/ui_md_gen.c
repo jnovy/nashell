@@ -1893,7 +1893,8 @@ static char *generate_timeline_md(ui_state_t *ui) {
 
     double ts = 0;
     cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
-    if (ts_j && ts_j->valuedouble > 0) ts = ts_j->valuedouble;
+    if (ts_j) ts = cJSON_IsString(ts_j) ? atof(ts_j->valuestring)
+                                         : ts_j->valuedouble;
     if (first_ts == 0 && ts > 0) first_ts = ts;
 
     const char *tool = json_str(entry, "tool");
@@ -1934,13 +1935,11 @@ static char *generate_timeline_md(ui_state_t *ui) {
     } else if (tool && strcmp(tool, "user_ask") == 0) {
       show = 1;
       event_desc = "user_ask";
-    }
-
-    /* Also show QUERY events (step 0 markers) */
-    const char *type = json_str(entry, "type");
-    if (type && strcmp(type, "query") == 0) {
+    } else if (tool && strcmp(tool, "query") == 0) {
+      /* Query events - tool is "query", text is in params.text */
       show = 1;
-      const char *q = json_str(entry, "query");
+      cJSON *params = cJSON_GetObjectItem(entry, "params");
+      const char *q = params ? json_str(params, "text") : NULL;
       if (q && q[0]) {
         size_t qlen = strlen(q);
         if (qlen > 80) {
@@ -1952,10 +1951,8 @@ static char *generate_timeline_md(ui_state_t *ui) {
       } else {
         event_desc = "Query started";
       }
-    }
-
-    /* Show context compaction markers */
-    if (type && strcmp(type, "compaction") == 0) {
+    } else if (tool && strcmp(tool, "compaction") == 0) {
+      /* Context compaction markers */
       show = 1;
       event_desc = "Context compacted";
     }
@@ -2048,7 +2045,12 @@ static char *generate_metrics_md(ui_state_t *ui) {
     str_append_cstr(&md, "\n\n");
   }
 
-  /* Per-step token breakdown from journal */
+  /* Per-step token breakdown from journal.
+   * Journal entries have: react_loop, step, ts(string), tool, params, ref,
+   * size, lines, failed, error, tc_id, serving_goal, goal_text.
+   * Token data lives in log entries with message matching
+   * "[provider/complete] final stats: prompt_tokens=N ... completion_tokens=N".
+   * We correlate log entries with tool calls by step number. */
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
                           : ui->session_dir;
@@ -2056,9 +2058,9 @@ static char *generate_metrics_md(ui_state_t *ui) {
   snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
   FILE *f = fopen(jpath, "r");
   if (f) {
-    str_append_cstr(&md, "## Per-Step Breakdown\n\n");
-    str_appendf(&md, "| Step | Tool | Tokens | Time |\n");
-    str_appendf(&md, "|------|------|--------|------|\n");
+    /* First pass: collect per-step token stats from provider log entries */
+    typedef struct { int ptok; int ctok; double gen_speed; } step_tokens_t;
+    step_tokens_t step_tok[256] = {{0}}; /* indexed by step, capped at 256 */
 
     char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
@@ -2071,25 +2073,81 @@ static char *generate_metrics_md(ui_state_t *ui) {
       }
       const char *tool = json_str(entry, "tool");
       int step = json_int(entry, "step", 0);
-      if (tool && step > 0) {
-        cJSON *usage = cJSON_GetObjectItem(entry, "usage");
-        int ptok = 0, ctok = 0;
-        if (usage) {
-          ptok = json_int(usage, "prompt_tokens", 0);
-          ctok = json_int(usage, "completion_tokens", 0);
-        }
-        double elapsed = 0;
-        cJSON *elapsed_j = cJSON_GetObjectItem(entry, "elapsed_ms");
-        if (elapsed_j) elapsed = elapsed_j->valuedouble / 1000.0;
-
-        if (ptok > 0 || ctok > 0 || elapsed > 0) {
-          str_appendf(&md, "| %d | %s | %d+%d | %.1fs |\n",
-                      step, tool, ptok, ctok, elapsed);
+      /* Parse provider/complete log messages for token stats */
+      if (tool && strcmp(tool, "log") == 0 && step >= 0 && step < 256) {
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+        const char *msg = params ? json_str(params, "message") : NULL;
+        if (msg && strstr(msg, "[provider/complete]")) {
+          int pt = 0, ct = 0;
+          double gs = 0;
+          const char *p;
+          if ((p = strstr(msg, "prompt_tokens=")) != NULL)
+            pt = atoi(p + 14);
+          if ((p = strstr(msg, "completion_tokens=")) != NULL)
+            ct = atoi(p + 18);
+          if ((p = strstr(msg, "gen=")) != NULL)
+            gs = atof(p + 4);
+          step_tok[step].ptok = pt;
+          step_tok[step].ctok = ct;
+          step_tok[step].gen_speed = gs;
         }
       }
       cJSON_Delete(entry);
     }
+
+    /* Second pass: render tool calls with correlated token data */
+    rewind(f);
+    str_append_cstr(&md, "## Per-Step Breakdown\n\n");
+    str_appendf(&md, "| Step | Tool | Size | Tokens | Gen |\n");
+    str_appendf(&md, "|------|------|------|--------|-----|\n");
+    int row_count = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+      cJSON *entry = cJSON_Parse(line);
+      if (!entry) continue;
+      int loop = json_int(entry, "react_loop", 0);
+      if (loop != ui->current_react_loop) {
+        cJSON_Delete(entry);
+        continue;
+      }
+      const char *tool = json_str(entry, "tool");
+      int step = json_int(entry, "step", 0);
+      /* Skip internal entries: log, system, ctx:*, spec, memory_context */
+      if (!tool || step < 1) { cJSON_Delete(entry); continue; }
+      if (strcmp(tool, "log") == 0 || strcmp(tool, "system") == 0 ||
+          strcmp(tool, "spec") == 0 || strcmp(tool, "memory_context") == 0 ||
+          strncmp(tool, "ctx:", 4) == 0) {
+        cJSON_Delete(entry);
+        continue;
+      }
+
+      int sz = json_int(entry, "size", 0);
+      char sz_buf[32];
+      if (sz >= 1000)
+        snprintf(sz_buf, sizeof(sz_buf), "%dK", sz / 1000);
+      else
+        snprintf(sz_buf, sizeof(sz_buf), "%d", sz);
+
+      char tok_buf[32] = "-";
+      char gen_buf[16] = "-";
+      if (step >= 0 && step < 256 && (step_tok[step].ptok > 0 ||
+                                      step_tok[step].ctok > 0)) {
+        snprintf(tok_buf, sizeof(tok_buf), "%d+%d",
+                 step_tok[step].ptok, step_tok[step].ctok);
+        if (step_tok[step].gen_speed > 0)
+          snprintf(gen_buf, sizeof(gen_buf), "%.0f t/s",
+                   step_tok[step].gen_speed);
+      }
+
+      str_appendf(&md, "| %d | %s | %s | %s | %s |\n",
+                  step, tool, sz_buf, tok_buf, gen_buf);
+      row_count++;
+      cJSON_Delete(entry);
+    }
     fclose(f);
+
+    if (row_count == 0)
+      str_append_cstr(&md, "| - | *no tool calls yet* | - | - | - |\n");
     str_append_cstr(&md, "\n");
   }
 
