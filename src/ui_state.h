@@ -22,6 +22,17 @@ typedef enum {
   STATUS_ERROR
 } ui_status_t;
 
+/* ── Display view modes (F-key switching) ────────────────── */
+
+typedef enum {
+  VIEW_STREAM = 0,  /* F2: current reactRX.md (default) */
+  VIEW_WORKING_MEM, /* F3: goal + plan dashboard */
+  VIEW_SCRATCHPAD,  /* F4: full scratchpad browser */
+  VIEW_TIMELINE,    /* F5: goal-annotated trace */
+  VIEW_METRICS,     /* F6: token/performance stats */
+  VIEW_MODE_COUNT
+} ui_view_mode_t;
+
 /* ── Navigation stack entry ──────────────────────────────── */
 
 typedef struct {
@@ -182,6 +193,11 @@ typedef struct {
   int needs_react_regen;   /* 1 = regenerate reactRX.md */
   int needs_session_regen; /* 1 = regenerate session.md */
   int needs_file_reload;   /* 1 = reload current_filepath */
+  int needs_view_regen;    /* 1 = regenerate current view mode content */
+
+  /* ── Display view mode (F2-F6 switching) ── */
+  ui_view_mode_t view_mode;                /* active display mode */
+  int view_scroll_y[VIEW_MODE_COUNT];      /* per-mode scroll position */
 
   /* ── Dirty flag + mutex ── */
   int dirty;
@@ -236,6 +252,15 @@ void ui_state_generate_session_md(ui_state_t *ui);
 /* Generate/update reactRX.md for a specific react loop.
  * Called by on_event as steps progress. */
 void ui_state_generate_react_md(ui_state_t *ui, int react_loop);
+
+/* ── View mode switching (F2-F6) ─────────────────────────── */
+
+/* Switch display mode, saving/restoring scroll position. */
+void ui_state_set_view_mode(ui_state_t *ui, ui_view_mode_t mode);
+
+/* Generate markdown for the active view mode (non-STREAM).
+ * Parses the result directly into ui->doc. */
+void ui_state_generate_view_md(ui_state_t *ui);
 
 /* ── Status & data updates ───────────────────────────────── */
 

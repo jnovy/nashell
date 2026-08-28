@@ -2658,7 +2658,10 @@ int main(int argc, char **argv) {
           if (do_session)
             ui_state_generate_session_md(ui);
           if (do_react || do_session || do_reload) {
-            ui_state_reload_file(ui);
+            if (ui->view_mode != VIEW_STREAM)
+              ui_state_generate_view_md(ui);
+            else
+              ui_state_reload_file(ui);
             /* Request deferred auto-scroll — only when viewing the
                          * active react loop's file, not when user navigated
                          * elsewhere (e.g. session.md, a different reactRX.md) */

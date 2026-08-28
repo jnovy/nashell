@@ -9,6 +9,7 @@
 
 #include "ui_state_internal.h"
 #include "goal.h"
+#include "scratchpad.h"
 
 /* ── Local helpers ───────────────────────────────────────── */
 
@@ -1702,4 +1703,422 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
            eff_dir, react_loop);
   write_md_file(rpath, md_str);
   free(md_str);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ *  View mode generators (F3-F6)
+ *
+ *  Each returns a malloc'd markdown string.  The dispatcher
+ *  ui_state_generate_view_md() parses it into ui->doc.
+ * ═══════════════════════════════════════════════════════════ */
+
+/* ── F3: Working Memory (Goal + Plan dashboard) ─────────── */
+
+static char *generate_working_mem_md(ui_state_t *ui) {
+  const char *eff_dir = ui->playbook_session_dir
+                          ? ui->playbook_session_dir
+                          : ui->session_dir;
+  str_t md = str_new(4096);
+  str_append_cstr(&md, "# Working Memory\n\n");
+
+  /* Active goal from journal */
+  if (ui->journal && ui->journal->serving_goal_id > 0) {
+    str_appendf(&md, "## Active Goal\n\n");
+    str_appendf(&md, "G%d: %s\n\n",
+                ui->journal->serving_goal_id,
+                ui->journal->serving_goal_text
+                  ? ui->journal->serving_goal_text : "(unknown)");
+  }
+
+  /* Plan progress - load plan.json and render checkboxes */
+  {
+    char ppath[NASH_PATH_MAX];
+    snprintf(ppath, sizeof(ppath), "%s/plan.json", eff_dir);
+    cJSON *plan = slurp_json(ppath);
+    if (plan && cJSON_IsArray(plan) && cJSON_GetArraySize(plan) > 0) {
+      int total = cJSON_GetArraySize(plan);
+      int done = 0;
+      cJSON *item;
+      cJSON_ArrayForEach(item, plan) {
+        if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done++;
+      }
+      str_appendf(&md, "## Plan Progress (%d/%d)\n\n", done, total);
+      int idx = 0;
+      cJSON_ArrayForEach(item, plan) {
+        idx++;
+        int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
+        const char *text = json_str(item, "text");
+        const char *evidence = json_str(item, "evidence");
+        str_appendf(&md, "%d. [%s] %s",
+                    idx, is_done ? "x" : " ",
+                    text ? text : "?");
+        if (is_done && evidence && evidence[0])
+          str_appendf(&md, " (%s)", evidence);
+        str_append_cstr(&md, "\n");
+      }
+      str_append_cstr(&md, "\n");
+    }
+    cJSON_Delete(plan);
+  }
+
+  /* Full goal tree */
+  {
+    goal_state_t gs;
+    goal_state_init(&gs);
+    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
+      str_append_cstr(&md, "## Goal Tree\n\n");
+      char *goal_text = goal_format_text(&gs);
+      if (goal_text) {
+        str_append_cstr(&md, goal_text);
+        if (goal_text[0] && goal_text[strlen(goal_text) - 1] != '\n')
+          str_append_cstr(&md, "\n");
+        free(goal_text);
+      }
+      str_append_cstr(&md, "\n");
+
+      int unresolved = goal_count_unresolved(&gs, 0);
+      if (unresolved > 0)
+        str_appendf(&md, "*%d unresolved goal(s)*\n\n", unresolved);
+    } else {
+      str_append_cstr(&md, "*No goals defined*\n\n");
+    }
+    goal_state_free(&gs);
+  }
+
+  /* Scratchpad summary (section names + sizes, not full content) */
+  {
+    scratchpad_t sp;
+    scratchpad_init(&sp);
+    if (scratchpad_load(&sp, eff_dir) == 0 && sp.count > 0) {
+      str_append_cstr(&md, "## Scratchpad Summary\n\n");
+      size_t total = scratchpad_total_size(&sp);
+      str_appendf(&md, "%d section(s), %.1fK chars total\n\n",
+                  sp.count, (double)total / 1024.0);
+      for (int i = 0; i < sp.count; i++) {
+        size_t slen = sp.sections[i].content
+                        ? strlen(sp.sections[i].content) : 0;
+        str_appendf(&md, "- **%s** (priority %d): %zuB\n",
+                    sp.sections[i].name ? sp.sections[i].name : "(unnamed)",
+                    sp.sections[i].priority, slen);
+      }
+      str_append_cstr(&md, "\n");
+    }
+    scratchpad_free(&sp);
+  }
+
+  /* Session stats summary */
+  if (ui->cum_llm_steps > 0) {
+    str_append_cstr(&md, "## Session Stats\n\n");
+    str_appendf(&md, "- Steps: %d/%d (react loop R%d)\n",
+                ui->current_step, ui->max_steps,
+                ui->current_react_loop);
+    str_appendf(&md, "- Prompt tokens: %d\n", ui->cum_prompt_tokens);
+    str_appendf(&md, "- Completion tokens: %d\n", ui->cum_completion_tokens);
+    if (ui->context_size > 0 && ui->context_used > 0) {
+      double pct = 100.0 * ui->context_used / ui->context_size;
+      str_appendf(&md, "- Context: %d%% (%dK / %dK)\n",
+                  (int)pct, ui->context_used / 1000,
+                  ui->context_size / 1000);
+    }
+    str_append_cstr(&md, "\n");
+  }
+
+  return str_steal(&md);
+}
+
+/* ── F4: Scratchpad (full content browser) ──────────────── */
+
+static char *generate_scratchpad_md(ui_state_t *ui) {
+  const char *eff_dir = ui->playbook_session_dir
+                          ? ui->playbook_session_dir
+                          : ui->session_dir;
+  str_t md = str_new(8192);
+
+  scratchpad_t sp;
+  scratchpad_init(&sp);
+  if (scratchpad_load(&sp, eff_dir) != 0 || sp.count == 0) {
+    str_append_cstr(&md, "# Scratchpad\n\n*No scratchpad data*\n");
+    scratchpad_free(&sp);
+    return str_steal(&md);
+  }
+
+  size_t total = scratchpad_total_size(&sp);
+  str_appendf(&md, "# Scratchpad (%d sections, %.1fK chars)\n\n",
+              sp.count, (double)total / 1024.0);
+
+  /* Render sections in priority order (already sorted by scratchpad_load) */
+  for (int i = 0; i < sp.count; i++) {
+    scratchpad_section_t *sec = &sp.sections[i];
+    str_appendf(&md, "## %s (priority %d)\n\n",
+                sec->name ? sec->name : "(unnamed)",
+                sec->priority);
+    if (sec->content && sec->content[0]) {
+      str_append_cstr(&md, sec->content);
+      if (sec->content[strlen(sec->content) - 1] != '\n')
+        str_append_cstr(&md, "\n");
+    } else {
+      str_append_cstr(&md, "*(empty)*\n");
+    }
+    str_append_cstr(&md, "\n");
+  }
+
+  scratchpad_free(&sp);
+  return str_steal(&md);
+}
+
+/* ── F5: Timeline (goal-annotated journal trace) ────────── */
+
+static char *generate_timeline_md(ui_state_t *ui) {
+  const char *eff_dir = ui->playbook_session_dir
+                          ? ui->playbook_session_dir
+                          : ui->session_dir;
+  str_t md = str_new(4096);
+  str_append_cstr(&md, "# Timeline\n\n");
+
+  char jpath[NASH_PATH_MAX];
+  snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
+  FILE *f = fopen(jpath, "r");
+  if (!f) {
+    str_append_cstr(&md, "*No journal data*\n");
+    return str_steal(&md);
+  }
+
+  char line[NASH_LINE_MAX];
+  double first_ts = 0;
+  int event_count = 0;
+
+  while (fgets(line, sizeof(line), f)) {
+    cJSON *entry = cJSON_Parse(line);
+    if (!entry) continue;
+
+    double ts = 0;
+    cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
+    if (ts_j && ts_j->valuedouble > 0) ts = ts_j->valuedouble;
+    if (first_ts == 0 && ts > 0) first_ts = ts;
+
+    const char *tool = json_str(entry, "tool");
+    int step = json_int(entry, "step", 0);
+    int react_loop = json_int(entry, "react_loop", 0);
+
+    /* Filter: only show goal ops, plan ops, query starts, done events,
+     * and context compaction markers */
+    int show = 0;
+    const char *event_desc = NULL;
+    char desc_buf[512];
+
+    if (tool && strcmp(tool, "goal") == 0) {
+      show = 1;
+      cJSON *params = cJSON_GetObjectItem(entry, "params");
+      const char *op = params ? json_str(params, "op") : NULL;
+      const char *content = params ? json_str(params, "content") : NULL;
+      int gid = params ? json_int(params, "id", 0) : 0;
+      if (op) {
+        if (content && content[0])
+          snprintf(desc_buf, sizeof(desc_buf), "G%d %s: %s", gid, op, content);
+        else
+          snprintf(desc_buf, sizeof(desc_buf), "G%d %s", gid, op);
+        event_desc = desc_buf;
+      }
+    } else if (tool && strcmp(tool, "plan") == 0) {
+      show = 1;
+      cJSON *params = cJSON_GetObjectItem(entry, "params");
+      const char *op = params ? json_str(params, "op") : NULL;
+      if (op)
+        snprintf(desc_buf, sizeof(desc_buf), "plan %s", op);
+      else
+        snprintf(desc_buf, sizeof(desc_buf), "plan update");
+      event_desc = desc_buf;
+    } else if (tool && strcmp(tool, "done") == 0) {
+      show = 1;
+      event_desc = "done() called";
+    } else if (tool && strcmp(tool, "user_ask") == 0) {
+      show = 1;
+      event_desc = "user_ask";
+    }
+
+    /* Also show QUERY events (step 0 markers) */
+    const char *type = json_str(entry, "type");
+    if (type && strcmp(type, "query") == 0) {
+      show = 1;
+      const char *q = json_str(entry, "query");
+      if (q && q[0]) {
+        size_t qlen = strlen(q);
+        if (qlen > 80) {
+          snprintf(desc_buf, sizeof(desc_buf), "Query: %.77s...", q);
+        } else {
+          snprintf(desc_buf, sizeof(desc_buf), "Query: %s", q);
+        }
+        event_desc = desc_buf;
+      } else {
+        event_desc = "Query started";
+      }
+    }
+
+    /* Show context compaction markers */
+    if (type && strcmp(type, "compaction") == 0) {
+      show = 1;
+      event_desc = "Context compacted";
+    }
+
+    if (show && event_desc) {
+      double elapsed = (ts > 0 && first_ts > 0) ? (ts - first_ts) : 0;
+      int mins = (int)(elapsed / 60);
+      int secs = (int)(elapsed) % 60;
+      str_appendf(&md, "`%02d:%02d`  R%d/S%d  %s\n\n",
+                  mins, secs, react_loop, step, event_desc);
+      event_count++;
+    }
+
+    cJSON_Delete(entry);
+  }
+  fclose(f);
+
+  if (event_count == 0)
+    str_append_cstr(&md, "*No goal/plan events recorded*\n");
+
+  /* Unresolved goals summary */
+  {
+    goal_state_t gs;
+    goal_state_init(&gs);
+    if (goal_state_load(&gs, eff_dir) == 0 && gs.count > 0) {
+      int unresolved = goal_count_unresolved(&gs, 0);
+      if (unresolved > 0) {
+        str_append_cstr(&md, "\n---\n\n");
+        char *warn = goal_unresolved_warning(&gs);
+        if (warn) {
+          str_append_cstr(&md, warn);
+          str_append_cstr(&md, "\n");
+          free(warn);
+        }
+      }
+    }
+    goal_state_free(&gs);
+  }
+
+  return str_steal(&md);
+}
+
+/* ── F6: Metrics (token/performance dashboard) ──────────── */
+
+static char *generate_metrics_md(ui_state_t *ui) {
+  str_t md = str_new(2048);
+  str_append_cstr(&md, "# Session Metrics\n\n");
+
+  /* Current react loop stats */
+  str_appendf(&md, "## React Loop R%d\n\n", ui->current_react_loop);
+
+  str_appendf(&md, "| Metric | Value |\n");
+  str_appendf(&md, "|--------|-------|\n");
+  str_appendf(&md, "| Steps | %d / %d |\n",
+              ui->current_step, ui->max_steps);
+  str_appendf(&md, "| Prompt tokens | %d |\n", ui->cum_prompt_tokens);
+  str_appendf(&md, "| Completion tokens | %d |\n", ui->cum_completion_tokens);
+  int total_tok = ui->cum_prompt_tokens + ui->cum_completion_tokens;
+  str_appendf(&md, "| Total tokens | %d |\n", total_tok);
+
+  if (ui->context_size > 0) {
+    double pct = ui->context_used > 0
+                   ? 100.0 * ui->context_used / ui->context_size
+                   : 0;
+    str_appendf(&md, "| Context usage | %d%% (%dK / %dK) |\n",
+                (int)pct, ui->context_used / 1000,
+                ui->context_size / 1000);
+  }
+
+  if (ui->cum_predicted_per_second > 0)
+    str_appendf(&md, "| Gen speed | %.1f t/s |\n",
+                ui->cum_predicted_per_second);
+  if (ui->cum_prompt_per_second > 0)
+    str_appendf(&md, "| Prompt speed | %.0f t/s |\n",
+                ui->cum_prompt_per_second);
+  if (ui->react_total_elapsed > 0) {
+    int mins = (int)(ui->react_total_elapsed / 60);
+    int secs = (int)(ui->react_total_elapsed) % 60;
+    str_appendf(&md, "| Wall time | %dm %ds |\n", mins, secs);
+  }
+  str_appendf(&md, "| LLM calls | %d |\n", ui->cum_llm_steps);
+  str_append_cstr(&md, "\n");
+
+  /* Model info */
+  if (ui->model_name && ui->model_name[0]) {
+    str_appendf(&md, "## Model\n\n");
+    str_appendf(&md, "**%s**", ui->model_name);
+    if (ui->context_size > 0)
+      str_appendf(&md, " (%dK context)", ui->context_size / 1000);
+    str_append_cstr(&md, "\n\n");
+  }
+
+  /* Per-step token breakdown from journal */
+  const char *eff_dir = ui->playbook_session_dir
+                          ? ui->playbook_session_dir
+                          : ui->session_dir;
+  char jpath[NASH_PATH_MAX];
+  snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
+  FILE *f = fopen(jpath, "r");
+  if (f) {
+    str_append_cstr(&md, "## Per-Step Breakdown\n\n");
+    str_appendf(&md, "| Step | Tool | Tokens | Time |\n");
+    str_appendf(&md, "|------|------|--------|------|\n");
+
+    char line[NASH_LINE_MAX];
+    while (fgets(line, sizeof(line), f)) {
+      cJSON *entry = cJSON_Parse(line);
+      if (!entry) continue;
+      int loop = json_int(entry, "react_loop", 0);
+      if (loop != ui->current_react_loop) {
+        cJSON_Delete(entry);
+        continue;
+      }
+      const char *tool = json_str(entry, "tool");
+      int step = json_int(entry, "step", 0);
+      if (tool && step > 0) {
+        cJSON *usage = cJSON_GetObjectItem(entry, "usage");
+        int ptok = 0, ctok = 0;
+        if (usage) {
+          ptok = json_int(usage, "prompt_tokens", 0);
+          ctok = json_int(usage, "completion_tokens", 0);
+        }
+        double elapsed = 0;
+        cJSON *elapsed_j = cJSON_GetObjectItem(entry, "elapsed_ms");
+        if (elapsed_j) elapsed = elapsed_j->valuedouble / 1000.0;
+
+        if (ptok > 0 || ctok > 0 || elapsed > 0) {
+          str_appendf(&md, "| %d | %s | %d+%d | %.1fs |\n",
+                      step, tool, ptok, ctok, elapsed);
+        }
+      }
+      cJSON_Delete(entry);
+    }
+    fclose(f);
+    str_append_cstr(&md, "\n");
+  }
+
+  return str_steal(&md);
+}
+
+/* ── Dispatcher: generate view-specific markdown ─────────── */
+
+void ui_state_generate_view_md(ui_state_t *ui) {
+  if (!ui || !ui->session_dir) return;
+
+  char *md_str = NULL;
+  switch (ui->view_mode) {
+    case VIEW_WORKING_MEM: md_str = generate_working_mem_md(ui); break;
+    case VIEW_SCRATCHPAD:  md_str = generate_scratchpad_md(ui);  break;
+    case VIEW_TIMELINE:    md_str = generate_timeline_md(ui);    break;
+    case VIEW_METRICS:     md_str = generate_metrics_md(ui);     break;
+    default: return; /* VIEW_STREAM uses file-based pipeline */
+  }
+
+  if (!md_str) return;
+
+  md_doc_free(ui->doc);
+  ui->doc = md_parse(md_str);
+  free(md_str);
+
+  /* Clamp cursor */
+  if (ui->doc && ui->cursor_link >= ui->doc->link_count)
+    ui->cursor_link = ui->doc->link_count > 0 ? ui->doc->link_count - 1 : 0;
+
+  ui->dirty = 1;
 }

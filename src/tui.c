@@ -819,6 +819,16 @@ static void render_bottom(ui_state_t *ui) {
     free(crumb);
   }
 
+  /* View mode indicator (only shown when not in default stream view) */
+  if (ui->view_mode != VIEW_STREAM) {
+    static const char *mode_labels[] = {
+      NULL, "F3:WM", "F4:Notes", "F5:Timeline", "F6:Metrics"
+    };
+    if (ui->view_mode < VIEW_MODE_COUNT && mode_labels[ui->view_mode])
+      slen += snprintf(status_line + slen, sizeof(status_line) - (size_t)slen,
+                       " | [%s]", mode_labels[ui->view_mode]);
+  }
+
   /* Right side: model │ ctx │ bg */
   if (ui->model_name && ui->model_name[0]) {
     slen += snprintf(status_line + slen, sizeof(status_line) - slen,
@@ -1302,6 +1312,13 @@ int tui_input(ui_state_t *ui, char **out_query) {
         ui_state_down(ui);
       }
       break;
+
+    /* ── F-key view mode switching ── */
+    case KEY_F(2): ui_state_set_view_mode(ui, VIEW_STREAM);      break;
+    case KEY_F(3): ui_state_set_view_mode(ui, VIEW_WORKING_MEM); break;
+    case KEY_F(4): ui_state_set_view_mode(ui, VIEW_SCRATCHPAD);  break;
+    case KEY_F(5): ui_state_set_view_mode(ui, VIEW_TIMELINE);    break;
+    case KEY_F(6): ui_state_set_view_mode(ui, VIEW_METRICS);     break;
 
     case KEY_PPAGE:
       ui_state_page_up(ui);

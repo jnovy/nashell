@@ -102,6 +102,31 @@ void ui_state_free(ui_state_t *ui) {
   free(ui);
 }
 
+/* ── View mode switching ─────────────────────────────────── */
+
+void ui_state_set_view_mode(ui_state_t *ui, ui_view_mode_t mode) {
+  if (!ui || mode < 0 || mode >= VIEW_MODE_COUNT) return;
+  if (ui->view_mode == mode && mode != VIEW_STREAM) {
+    /* Pressing same F-key again toggles back to stream */
+    mode = VIEW_STREAM;
+  }
+  /* Save current scroll position for the old mode */
+  ui->view_scroll_y[ui->view_mode] = ui->scroll_y;
+  /* Switch mode */
+  ui->view_mode = mode;
+  /* Restore scroll position for the new mode */
+  ui->scroll_y = ui->view_scroll_y[mode];
+  ui->cursor_link = 0;
+  if (mode == VIEW_STREAM) {
+    /* Returning to stream: reload the file-based content */
+    ui_state_reload_file(ui);
+  } else {
+    /* Non-stream mode: generate view-specific content */
+    ui_state_generate_view_md(ui);
+  }
+  ui->dirty = 1;
+}
+
 /* ── File reload ─────────────────────────────────────────── */
 
 void ui_state_reload_file(ui_state_t *ui) {
