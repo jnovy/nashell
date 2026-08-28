@@ -875,10 +875,9 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_Delete(steps);
 
     /* Auto-bridge: create + activate a goal from the user query when
-     * the first plan is created.  Models reliably call plan() but rarely
-     * call goal(), so this ensures the goal infrastructure (F3 Working
-     * Memory, F5 Timeline, serving_goal journal annotation) is populated
-     * without requiring any change to model behavior. */
+     * the first plan is created.  The goal() tool has been removed, so
+     * this is the sole mechanism that populates the goal infrastructure
+     * (F3 Working Memory, F5 Timeline, serving_goal journal annotation). */
     {
       goal_state_t gs;
       goal_state_init(&gs);

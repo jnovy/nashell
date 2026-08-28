@@ -1706,37 +1706,6 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
       }
 
-      /* Phase 4 (Recuris): Goal-aware write review.
-       * If structured goals exist but none is ACTIVE, inject a soft hint
-       * for state-changing tools (file_edit, file_write, shell_exec).
-       * Does NOT intercept -- just makes the model aware. */
-      if (strcmp(action_name, "file_edit") == 0 ||
-          strcmp(action_name, "file_write") == 0 ||
-          strcmp(action_name, "shell_exec") == 0) {
-        goal_state_t _gs;
-        goal_state_init(&_gs);
-        if (goal_state_load(&_gs, ctx->tools->session_dir) == 0 &&
-            _gs.count > 0) {
-          int has_active = 0;
-          for (int gi = 0; gi < _gs.count; gi++) {
-            if (_gs.goals[gi].status == GOAL_ACTIVE) {
-              has_active = 1;
-              break;
-            }
-          }
-          if (!has_active && goal_count_unresolved(&_gs, 0) > 0) {
-            llm_chat_add(chat, "user",
-              "[GOAL HINT] You have unresolved goals but none is ACTIVE. "
-              "Consider activating a goal before making changes, so "
-              "your work is tracked and journal entries are annotated.");
-            if (chat->n_msgs > 0)
-              chat->msgs[chat->n_msgs - 1].importance =
-                LLM_MSG_IMPORTANCE_LOW;
-          }
-        }
-        goal_state_free(&_gs);
-      }
-
       /* Normal execution — inject thought into tool_ctx for journal recording */
       ctx->tools->thought = thought;
       ctx->tools->on_event = on_event;

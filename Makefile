@@ -53,7 +53,6 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/tool_todo.c \
           src/todo_core.c \
           src/goal.c \
-          src/tool_goal.c \
           src/session_search.c \
           src/mailbox.c \
           src/telegram.c \
@@ -123,7 +122,6 @@ LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
           src/tool_todo.c \
           src/todo_core.c \
           src/goal.c \
-          src/tool_goal.c \
           src/session_search.c \
           src/mailbox.c \
           src/telegram.c \
