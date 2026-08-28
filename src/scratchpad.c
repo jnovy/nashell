@@ -22,6 +22,9 @@ static void scratchpad_reset(scratchpad_t *sp) {
   for (int i = 0; i < sp->count; i++) {
     free(sp->sections[i].name);
     free(sp->sections[i].content);
+    for (int j = 0; j < sp->sections[i].n_tracked; j++)
+      free(sp->sections[i].tracked_paths[j]);
+    free(sp->sections[i].tracked_paths);
   }
   free(sp->sections);
   sp->sections = NULL;
@@ -84,6 +87,14 @@ int scratchpad_write(scratchpad_t *sp, const char *name, const char *content, in
     str_replace(&sp->sections[idx].content, content);
     sp->sections[idx].priority = priority;
     sp->sections[idx].dirty = 1;
+    /* Reset staleness: new content invalidates prior tracking */
+    for (int j = 0; j < sp->sections[idx].n_tracked; j++)
+      free(sp->sections[idx].tracked_paths[j]);
+    free(sp->sections[idx].tracked_paths);
+    sp->sections[idx].tracked_paths = NULL;
+    sp->sections[idx].n_tracked = 0;
+    sp->sections[idx].last_verified_step = 0;
+    sp->sections[idx].stale = 0;
     pthread_mutex_unlock(&sp->mtx);
     return 0;
   }
@@ -156,6 +167,9 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
 
   free(sp->sections[idx].name);
   free(sp->sections[idx].content);
+  for (int j = 0; j < sp->sections[idx].n_tracked; j++)
+    free(sp->sections[idx].tracked_paths[j]);
+  free(sp->sections[idx].tracked_paths);
 
   /* Shift remaining sections down */
   for (int i = idx; i < sp->count - 1; i++)
@@ -190,6 +204,7 @@ char *scratchpad_serialize(scratchpad_t *sp) {
     sorted[i].name = xstrdup(sp->sections[i].name);
     sorted[i].content = xstrdup(sp->sections[i].content);
     sorted[i].priority = sp->sections[i].priority;
+    sorted[i].stale = sp->sections[i].stale;
   }
   pthread_mutex_unlock(&sp->mtx); /* safe — working on deep copies */
 
@@ -197,7 +212,11 @@ char *scratchpad_serialize(scratchpad_t *sp) {
 
   str_t out = str_new(2048);
   for (int i = 0; i < n; i++) {
-    str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
+    if (sorted[i].stale)
+      str_appendf(&out, "## %s [STALE - tracked files changed since last write]\n%s\n\n",
+                  sorted[i].name, sorted[i].content);
+    else
+      str_appendf(&out, "## %s\n%s\n\n", sorted[i].name, sorted[i].content);
   }
   for (int i = 0; i < n; i++) {
     free(sorted[i].name);
@@ -222,6 +241,7 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     sorted[i].name = xstrdup(sp->sections[i].name);
     sorted[i].content = xstrdup(sp->sections[i].content);
     sorted[i].priority = sp->sections[i].priority;
+    sorted[i].stale = sp->sections[i].stale;
   }
   pthread_mutex_unlock(&sp->mtx); /* safe — working on deep copies */
 
@@ -230,17 +250,21 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
   str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
   for (int i = 0; i < n; i++) {
     /* Calculate how much space this section needs */
-    size_t header_len = strlen(sorted[i].name) + 6; /* "## " + name + "\n" + trailing "\n\n" */
+    size_t stale_suffix = sorted[i].stale ? 48 : 0; /* " [STALE - tracked files changed since last write]" */
+    size_t header_len = strlen(sorted[i].name) + 6 + stale_suffix; /* "## " + name + stale + "\n" + trailing "\n\n" */
     size_t content_len = strlen(sorted[i].content);
     size_t section_total = header_len + content_len;
     size_t remaining = (max_chars > out.len) ? (max_chars - out.len) : 0;
 
     if (remaining < header_len + 20) {
-      /* Not enough room even for a header + minimal content — drop this and all lower-priority */
+      /* Not enough room even for a header + minimal content - drop this and all lower-priority */
       break;
     }
 
-    str_appendf(&out, "## %s\n", sorted[i].name);
+    if (sorted[i].stale)
+      str_appendf(&out, "## %s [STALE - tracked files changed since last write]\n", sorted[i].name);
+    else
+      str_appendf(&out, "## %s\n", sorted[i].name);
 
     if (section_total <= remaining) {
       /* Fits fully */
@@ -394,6 +418,15 @@ static void write_section_jsonl(FILE *f, const scratchpad_section_t *s) {
   cJSON_AddStringToObject(obj, "name", s->name);
   cJSON_AddNumberToObject(obj, "priority", s->priority);
   cJSON_AddStringToObject(obj, "content", s->content);
+  /* Persist staleness tracking fields if set */
+  if (s->n_tracked > 0) {
+    cJSON *arr = cJSON_AddArrayToObject(obj, "tracked_paths");
+    for (int i = 0; i < s->n_tracked; i++)
+      cJSON_AddItemToArray(arr, cJSON_CreateString(s->tracked_paths[i]));
+    cJSON_AddNumberToObject(obj, "last_verified_step", s->last_verified_step);
+    if (s->stale)
+      cJSON_AddTrueToObject(obj, "stale");
+  }
   char *line = cJSON_PrintUnformatted(obj);
   if (line) {
     fprintf(f, "%s\n", line);
@@ -483,6 +516,25 @@ int scratchpad_load(scratchpad_t *sp, const char *session_dir) {
       int pri = json_int(obj, "priority", 5);
       const char *content = json_str_or(obj, "content", "");
       scratchpad_write(sp, name, content, pri);
+      /* Restore staleness tracking fields (scratchpad_write resets them) */
+      cJSON *tp = cJSON_GetObjectItem(obj, "tracked_paths");
+      if (tp && cJSON_IsArray(tp)) {
+        int idx = scratchpad_find(sp, name);
+        if (idx >= 0) {
+          int nt = cJSON_GetArraySize(tp);
+          if (nt > 0) {
+            sp->sections[idx].tracked_paths = xcalloc((size_t)nt, sizeof(char *));
+            for (int ti = 0; ti < nt; ti++) {
+              cJSON *item = cJSON_GetArrayItem(tp, ti);
+              if (cJSON_IsString(item))
+                sp->sections[idx].tracked_paths[ti] = xstrdup(item->valuestring);
+            }
+            sp->sections[idx].n_tracked = nt;
+            sp->sections[idx].last_verified_step = json_int(obj, "last_verified_step", 0);
+            sp->sections[idx].stale = cJSON_IsTrue(cJSON_GetObjectItem(obj, "stale"));
+          }
+        }
+      }
     }
     cJSON_Delete(obj);
   }
@@ -612,10 +664,61 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
   }
 
   if (count == 0) {
-    /* Parsing found headers but extracted nothing — fallback */
+    /* Parsing found headers but extracted nothing - fallback */
     scratchpad_write(sp, fallback_name ? fallback_name : "pruned",
                      text, default_priority);
   }
 
   return 0;
+}
+
+/* ---- Working-memory staleness tracking (Phase 1) ---- */
+
+int scratchpad_set_tracked_paths(scratchpad_t *sp, const char *name,
+                                 const char **paths, int n_paths, int step) {
+  pthread_mutex_lock(&sp->mtx);
+  int idx = scratchpad_find(sp, name);
+  if (idx < 0) {
+    pthread_mutex_unlock(&sp->mtx);
+    return -1;
+  }
+  scratchpad_section_t *s = &sp->sections[idx];
+
+  /* Free old tracked paths */
+  for (int i = 0; i < s->n_tracked; i++)
+    free(s->tracked_paths[i]);
+  free(s->tracked_paths);
+
+  /* Copy new paths */
+  if (n_paths > 0 && paths) {
+    s->tracked_paths = xcalloc((size_t)n_paths, sizeof(char *));
+    for (int i = 0; i < n_paths; i++)
+      s->tracked_paths[i] = xstrdup(paths[i]);
+    s->n_tracked = n_paths;
+  } else {
+    s->tracked_paths = NULL;
+    s->n_tracked = 0;
+  }
+  s->last_verified_step = step;
+  s->stale = 0;
+  s->dirty = 1;
+  pthread_mutex_unlock(&sp->mtx);
+  return 0;
+}
+
+void scratchpad_check_staleness(scratchpad_t *sp, const char *path) {
+  if (!path) return;
+  pthread_mutex_lock(&sp->mtx);
+  for (int i = 0; i < sp->count; i++) {
+    scratchpad_section_t *s = &sp->sections[i];
+    if (s->stale || s->n_tracked == 0) continue;
+    for (int j = 0; j < s->n_tracked; j++) {
+      if (strcmp(s->tracked_paths[j], path) == 0) {
+        s->stale = 1;
+        s->dirty = 1;
+        break;
+      }
+    }
+  }
+  pthread_mutex_unlock(&sp->mtx);
 }

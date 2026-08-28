@@ -16,6 +16,11 @@ typedef struct {
   char *content; /* section content (owned) */
   int priority;  /* 1 = highest priority, 9 = lowest. Default: 5 */
   int dirty;     /* 1 if modified since last save (for JSONL append) */
+  /* Working-memory staleness tracking (Phase 1) */
+  char **tracked_paths; /* file paths this section tracks (owned array of owned strings) */
+  int n_tracked;        /* number of tracked paths */
+  int last_verified_step; /* step number when section was last written/verified (0 = unset) */
+  int stale;            /* 1 if a tracked file was modified after last_verified_step */
 } scratchpad_section_t;
 
 typedef struct {
@@ -81,5 +86,16 @@ void scratchpad_compact(scratchpad_t *sp, const char *session_dir);
  * default_priority is used when priority can't be determined from text. */
 int scratchpad_parse(scratchpad_t *sp, const char *text,
                      const char *fallback_name, int default_priority);
+
+/* Set tracked file paths for a section. Copies the paths array.
+ * Also sets last_verified_step and clears stale flag.
+ * Returns 0 on success, -1 if section not found. */
+int scratchpad_set_tracked_paths(scratchpad_t *sp, const char *name,
+                                 const char **paths, int n_paths, int step);
+
+/* Check if a modified file path makes any section stale.
+ * Called from tool_file_edit/tool_file_write after modifying a file.
+ * Marks sections as stale if they track the given path. */
+void scratchpad_check_staleness(scratchpad_t *sp, const char *path);
 
 #endif
