@@ -56,7 +56,9 @@ typedef struct {
   float chars_per_token; /* EMA-calibrated chars/token ratio */
   int enable_thinking;   /* thinking mode (0=off, 1=on) */
   int thinking_budget;   /* thinking token budget */
-  int preamble_consumed; /* 1 after plan() — degrade preamble importance to LOW */
+  int preamble_consumed; /* 1 after plan() - degrade preamble importance to LOW */
+  int plan_required;     /* 1 = plan() must be first tool (triage/config) */
+  int plan_satisfied;    /* 1 = plan() was called, enforcement satisfied */
 } react_runtime_t;
 
 typedef struct react_ctx_t {

@@ -1726,6 +1726,38 @@ static char *generate_working_mem_md(ui_state_t *ui) {
       plan_append_unlinked_subtasks(&md, eff_dir, links);
       cJSON_Delete(links);
       str_append_cstr(&md, "\n");
+
+      /* Archived (replaced) plans - shown as collapsed history */
+      cJSON *arch = cJSON_GetObjectItem(root, "archived_plans");
+      if (arch && cJSON_IsArray(arch) && cJSON_GetArraySize(arch) > 0) {
+        int n_arch = cJSON_GetArraySize(arch);
+        str_appendf(&md, "## Previous Plans (%d replaced)\n\n", n_arch);
+        for (int pi = n_arch - 1; pi >= 0; pi--) {
+          cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
+          if (!old_steps || !cJSON_IsArray(old_steps)) continue;
+          int old_total = cJSON_GetArraySize(old_steps);
+          int old_done = 0;
+          cJSON *os;
+          cJSON_ArrayForEach(os, old_steps) {
+            if (cJSON_IsTrue(cJSON_GetObjectItem(os, "done"))) old_done++;
+          }
+          str_appendf(&md, "Plan %d (%d/%d complete, replaced):\n",
+                      pi + 1, old_done, old_total);
+          int oi = 0;
+          cJSON_ArrayForEach(os, old_steps) {
+            oi++;
+            int od = cJSON_IsTrue(cJSON_GetObjectItem(os, "done"));
+            const char *ot = json_str(os, "text");
+            const char *oe = json_str(os, "evidence");
+            str_appendf(&md, "  %d. [%s] %s", oi, od ? "x" : " ",
+                        ot ? ot : "?");
+            if (od && oe && oe[0])
+              str_appendf(&md, " (%s)", oe);
+            str_append_cstr(&md, "\n");
+          }
+          str_append_cstr(&md, "\n");
+        }
+      }
     }
     cJSON_Delete(root);
   }

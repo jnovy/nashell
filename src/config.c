@@ -632,6 +632,18 @@ done_tools:
     if (pv.ok) cfg->prediction_verbose = pv.u.b ? 1 : 0;
   }
 
+  /* [plan] - plan-first enforcement */
+  toml_table_t *plan_tbl = toml_table_in(root, "plan");
+  if (plan_tbl) {
+    toml_datum_t pr = toml_string_in(plan_tbl, "require");
+    if (pr.ok) {
+      if (strcmp(pr.u.s, "always") == 0) cfg->plan_require = 1;
+      else if (strcmp(pr.u.s, "never") == 0) cfg->plan_require = 2;
+      /* else "auto" or anything else -> 0 (default) */
+      free(pr.u.s);
+    }
+  }
+
   toml_free(root);
   config_set_defaults(cfg);
   return cfg;

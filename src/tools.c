@@ -884,6 +884,7 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
   cJSON *steps = NULL;
   int active_step = 0;
+  cJSON *archived = cJSON_CreateArray(); /* collected replaced plans */
   char *line = data;
   while (*line) {
     char *eol = strchr(line, '\n');
@@ -904,6 +905,17 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
     cJSON *params = cJSON_GetObjectItem(entry, "params");
     if (!params) { cJSON_Delete(entry); line = eol ? eol + 1 : line + strlen(line); continue; }
 
+    /* Collect archived (replaced) plans */
+    const char *pop = json_str(params, "op");
+    if (pop && strcmp(pop, "archive") == 0) {
+      cJSON *old = cJSON_GetObjectItem(params, "old_steps");
+      if (old && cJSON_IsArray(old))
+        cJSON_AddItemToArray(archived, cJSON_Duplicate(old, 1));
+      cJSON_Delete(entry);
+      line = eol ? eol + 1 : line + strlen(line);
+      continue;
+    }
+
     plan_apply_entry(&steps, &active_step, params);
 
     cJSON_Delete(entry);
@@ -911,11 +923,18 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
   }
 
   free(data);
-  if (!steps) return NULL;
+  if (!steps) {
+    cJSON_Delete(archived);
+    return NULL;
+  }
 
   cJSON *root = cJSON_CreateObject();
   cJSON_AddItemToObject(root, "steps", steps);
   cJSON_AddNumberToObject(root, "active_step", active_step);
+  if (cJSON_GetArraySize(archived) > 0)
+    cJSON_AddItemToObject(root, "archived_plans", archived);
+  else
+    cJSON_Delete(archived);
   return root;
 }
 
@@ -1247,6 +1266,36 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
     if (stale_cnt > 0)
       str_appendf(&s, " (%d stale)", stale_cnt);
   }
+
+  /* Append archived (replaced) plans as condensed history.
+   * Shows what was tried before, preserving evidence refs. */
+  cJSON *root = plan_replay_journal_dir(ctx->session_dir);
+  if (root) {
+    cJSON *arch = cJSON_GetObjectItem(root, "archived_plans");
+    if (arch && cJSON_IsArray(arch)) {
+      int plan_num = cJSON_GetArraySize(arch);
+      for (int pi = plan_num - 1; pi >= 0; pi--) {
+        cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
+        if (!old_steps || !cJSON_IsArray(old_steps)) continue;
+        str_appendf(&s, "\n\nPrevious plan %d (replaced):\n", pi + 1);
+        int oi = 0;
+        cJSON *os;
+        cJSON_ArrayForEach(os, old_steps) {
+          oi++;
+          int od = json_bool(os, "done", 0);
+          const char *ot = json_str(os, "text");
+          const char *oe = json_str(os, "evidence");
+          str_appendf(&s, "  %s %d. %s",
+                      od ? "[x]" : "[ ]", oi, ot ? ot : "?");
+          if (od && oe && oe[0])
+            str_appendf(&s, " (%s)", oe);
+          str_append_cstr(&s, "\n");
+        }
+      }
+    }
+    cJSON_Delete(root);
+  }
+
   char *result = xstrdup(str_cstr(&s));
   str_free(&s);
   cJSON_Delete(links);
@@ -1390,6 +1439,20 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       return tools_make_error("No numbered steps found in plan text. "
                               "Use '1. step' format.");
     }
+
+    /* Archive old plan if one exists (replan support).
+     * Journal the old steps so plan_replay_journal_dir() can
+     * reconstruct the history of replaced plans for F3 display. */
+    cJSON *old_steps = plan_load(ctx);
+    if (old_steps && cJSON_GetArraySize(old_steps) > 0) {
+      cJSON *archive_params = cJSON_CreateObject();
+      cJSON_AddStringToObject(archive_params, "op", "archive");
+      cJSON_AddItemToObject(archive_params, "old_steps",
+                            cJSON_Duplicate(old_steps, 1));
+      tool_journal(ctx, "plan", archive_params, NULL, 0, 0, NULL, NULL);
+      cJSON_Delete(archive_params);
+    }
+    cJSON_Delete(old_steps);
 
     /* Reset in-memory staleness on plan create/replace */
     ctx->stale_steps = 0;

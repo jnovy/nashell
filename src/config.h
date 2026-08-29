@@ -420,6 +420,9 @@ typedef struct {
   int prediction_tracking;    /* 0=use default(on), 1=on, -1=off */
   int prediction_journal;     /* 0=use default(on), 1=on, -1=off */
   int prediction_verbose;     /* 0=off, 1=on */
+
+  /* [plan] - plan-first enforcement */
+  int plan_require;            /* 0=auto(default), 1=always, 2=never */
 } config_t;
 
 /* Load config from file. Returns defaults if file doesn't exist.

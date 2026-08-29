@@ -729,6 +729,37 @@ static int trig_cb(const mem_index_entry_t *entry, void *ud) {
   return 0;
 }
 
+/* ── plan-first triage ───────────────────────────────── */
+
+/* Classify a task as trivial or complex via a lightweight LLM call.
+ * Returns 1 if the task is complex (plan required), 0 if trivial.
+ * On error, returns 0 (fail open - don't require plan). */
+static int react_triage_task(react_ctx_t *ctx, const char *user_query) {
+  provider_t *p = ctx->planner_provider ? ctx->planner_provider : ctx->provider;
+  if (!p) return 0;
+
+  llm_chat_t *chat = llm_chat_new();
+  llm_chat_add(chat, "system",
+    "Classify this task. Reply with exactly one word: TRIVIAL or COMPLEX.\n"
+    "TRIVIAL = answerable in 1-3 tool calls (simple questions, lookups, "
+    "single small edits, status checks).\n"
+    "COMPLEX = requires reading multiple files, multi-step implementation, "
+    "debugging, refactoring, or any task needing a plan.");
+  llm_chat_add(chat, "user", user_query);
+
+  /* Save and override max_tokens for a minimal response */
+  int saved_max = p->cfg.max_tokens;
+  p->cfg.max_tokens = 16;
+  char *response = provider_complete(p, chat, NULL);
+  p->cfg.max_tokens = saved_max;
+  llm_chat_free(chat);
+
+  if (!response) return 0; /* fail open */
+  int complex = (strcasestr(response, "TRIVIAL") == NULL);
+  free(response);
+  return complex;
+}
+
 /* ── main react loop ─────────────────────────────────── */
 
 char *react_run(react_ctx_t *ctx, const char *user_query,
@@ -810,6 +841,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       free(spec_hash);
       free(spec_str);
     }
+  }
+
+  /* Plan-first triage: classify task complexity and enforce plan() if needed.
+   * Skip for checkpoint-restored sessions (plan state already in journal)
+   * and short tasks (max_steps <= 5 don't benefit from planning). */
+  if (!restored) {
+    int mode = ctx->tools->cfg ? ctx->tools->cfg->plan_require : 0;
+    if (mode == 1) {
+      ctx->rt.plan_required = 1;  /* always */
+    } else if (mode != 2 && (ctx->max_steps < 0 || ctx->max_steps > 5)) {
+      ctx->rt.plan_required = react_triage_task(ctx, user_query);
+    }
+    /* mode == 2 ("never"): plan_required stays 0 */
   }
 
   char *final_result = NULL;
@@ -1119,6 +1163,39 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       cJSON_Delete(action);
       free(response);
       continue;
+    }
+
+    /* Plan-first enforcement: if triage classified this as COMPLEX,
+     * reject non-plan tools until a plan exists. */
+    if (ctx->rt.plan_required && !ctx->rt.plan_satisfied) {
+      if (strcmp(action_name, "plan") != 0 &&
+          strcmp(action_name, "user_ask") != 0 &&
+          strcmp(action_name, "notes") != 0 &&
+          strcmp(action_name, "memory_search") != 0) {
+        char hint[512];
+        snprintf(hint, sizeof(hint),
+          "This task requires a plan before execution. "
+          "Call plan() first to outline your numbered steps (3-8 items), "
+          "then execute them. You attempted to call '%s' without a plan.",
+          action_name);
+        if (chat->last_tool_call_id) {
+          llm_chat_add_assistant_tool_call(chat, response,
+                                           chat->last_tool_calls_json);
+          llm_chat_add_tool_result(chat, chat->last_tool_call_id, hint);
+        } else {
+          llm_chat_add(chat, "assistant", response);
+          llm_chat_add(chat, "user", hint);
+        }
+        react_event_t ev = {0};
+        ev.react_loop = ctx->tools->react_loop;
+        ev.type = REACT_EVENT_WARNING;
+        ev.step = step + 1;
+        ev.message = "Plan-first: rejected tool call before plan";
+        react_emit(on_event, userdata, &ev);
+        cJSON_Delete(action);
+        free(response);
+        continue;
+      }
     }
 
     const char *desc = react_get_action_desc(action, action_name, thought);
@@ -1737,6 +1814,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       if (strcmp(action_name, "plan") == 0 &&
           !ctx->rt.preamble_consumed) {
         ctx->rt.preamble_consumed = 1;
+        ctx->rt.plan_satisfied = 1;
         react_degrade_preamble(chat);
       }
 
