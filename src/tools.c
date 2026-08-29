@@ -340,10 +340,10 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
   return xstrdup(alias_buf);
 }
 
-/* Format a ref alias for LLM-facing metadata: "$NASH_SESSION_DIR/R0S5".
+/* Format a ref alias for LLM-facing metadata (e.g. "R0S5").
  * Writes into buf (must be >= 64 bytes). Returns buf. */
 const char *tool_ref_path(const char *alias, char *buf, size_t bufsz) {
-  snprintf(buf, bufsz, "$NASH_SESSION_DIR/%s", alias);
+  snprintf(buf, bufsz, "%s", alias);
   return buf;
 }
 
@@ -1494,7 +1494,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       if (!evidence || !evidence[0]) {
         cJSON_Delete(steps);
         return tools_make_error("'evidence' required: provide a ref "
-                                "(e.g. $NASH_SESSION_DIR/R0S5) from a tool result that proves "
+                                "(e.g. R0S5) from a tool result that proves "
                                 "this step is complete.");
       }
       /* Strip $NASH_SESSION_DIR/ prefix if present - tool_ref_path()
@@ -1816,7 +1816,7 @@ static const tool_param_t plan_params[] = {
   TOOL_PARAM("op", "string", "Operation: add_item, done, check, uncheck, status", 1),
   TOOL_PARAM("text", "string", "Step description (for add_item)", 0),
   TOOL_PARAM("step", "integer", "Step number to check/uncheck (1-based)", 0),
-  TOOL_PARAM("evidence", "string", "Ref (e.g. $NASH_SESSION_DIR/R0S5) proving step completion", 0),
+  TOOL_PARAM("evidence", "string", "Ref (e.g. R0S5) proving step completion", 0),
   TOOL_PARAM("result", "string", "Numbered plan text (deprecated - use add_item)", 0),
   TOOL_PARAM_END};
 
@@ -1967,7 +1967,7 @@ static const tool_plugin_t core_plugins[] = {
            "Build and track an execution plan. Add steps one at a time with "
            "plan(op=\"add_item\", text=\"step description\"), then call "
            "plan(op=\"done\") when all steps are added. Track completion: "
-           "plan(op=\"check\", step=N, evidence=\"$NASH_SESSION_DIR/R0S5\") marks a step done with "
+           "plan(op=\"check\", step=N, evidence=\"R0S5\") marks a step done with "
            "proof, plan(op=\"uncheck\", step=N) reverts, plan(op=\"status\") shows "
            "progress. Incomplete steps trigger a warning when calling done.",
            plan_params, tool_plan),

@@ -344,7 +344,7 @@ char *create_session_dir(const char *nash_dir, const char *workspace) {
 
   /* Expose session paths as environment variables so that:
    * 1. Shell commands (shell_exec) can use $NASH_SESSION_DIR natively
-   * 2. The LLM can reference tool outputs as $NASH_SESSION_DIR/R0S5 */
+   * 2. The LLM can use $NASH_SESSION_DIR/<ref> in shell commands */
   setenv("NASH_SESSION_DIR", path, 1);
   setenv("NASH_TEMP_DIR", tmpdir, 1);
 

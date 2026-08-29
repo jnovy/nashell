@@ -47,7 +47,7 @@ static char *shorten_content(const char *content, size_t content_len,
 
   if (store_alias && store_alias[0]) {
     snprintf(marker, sizeof(marker),
-             "\n[... %d chars omitted - full content in $NASH_SESSION_DIR/%s ...]\n",
+             "\n[... %d chars omitted - full content in %s ...]\n",
              omitted, store_alias);
   } else {
     snprintf(marker, sizeof(marker),

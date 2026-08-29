@@ -257,7 +257,7 @@ int alias_scan_max_seq(const char *session_dir, int react_loop);
  * Caller must free the returned string. */
 char *tool_register_alias(tool_ctx_t *ctx, const char *hash);
 
-/* Format a ref alias for LLM-facing metadata: "$NASH_SESSION_DIR/R0S5".
+/* Format a ref alias for LLM-facing metadata (e.g. "R0S5").
  * Writes into buf (must be >= 64 bytes). Returns buf. */
 const char *tool_ref_path(const char *alias, char *buf, size_t bufsz);
 
