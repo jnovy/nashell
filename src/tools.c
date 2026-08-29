@@ -679,6 +679,17 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
   /* Warn if plan has incomplete or stale steps */
   cJSON *plan_steps = plan_load(ctx);
   if (plan_steps) {
+    /* Merge in-memory staleness bitmask into loaded steps so we catch
+     * stale evidence even if the journal write failed silently. */
+    int si = 0;
+    cJSON *sitem;
+    cJSON_ArrayForEach(sitem, plan_steps) {
+      si++;
+      if (si <= 64 && (ctx->stale_steps & ((uint64_t)1 << (si - 1)))) {
+        cJSON_DeleteItemFromObject(sitem, "stale");
+        cJSON_AddBoolToObject(sitem, "stale", 1);
+      }
+    }
     int total = cJSON_GetArraySize(plan_steps);
     int done = 0, stale_count = 0;
     cJSON *item;
@@ -778,6 +789,7 @@ static tool_result_t tool_user_ask_stub(tool_ctx_t *ctx, cJSON *params) {
 
 /* Forward declarations for plan_parse_steps (defined below) */
 static cJSON *plan_parse_steps(const char *text);
+static int plan_next_unchecked(const cJSON *steps, int after);
 
 /* Apply a single plan journal entry's params to the running plan state.
  * Shared by plan_replay_journal_dir() and plan_subtask_links() so the
@@ -817,19 +829,8 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
       }
       cJSON_DeleteItemFromObject(step, "stale");
       cJSON_AddBoolToObject(step, "stale", 0);
-      /* Compute next active */
-      int total = cJSON_GetArraySize(*steps);
-      *active_step = 0;
-      for (int i = step_num; i < total; i++) {
-        cJSON *s = cJSON_GetArrayItem(*steps, i);
-        if (!json_bool(s, "done", 0)) { *active_step = i + 1; break; }
-      }
-      if (*active_step == 0) {
-        for (int i = 0; i < step_num - 1 && i < total; i++) {
-          cJSON *s = cJSON_GetArrayItem(*steps, i);
-          if (!json_bool(s, "done", 0)) { *active_step = i + 1; break; }
-        }
-      }
+      /* Compute next active (unified with plan_next_unchecked) */
+      *active_step = plan_next_unchecked(*steps, step_num);
     }
   } else if (op && strcmp(op, "uncheck") == 0) {
     int step_num = json_int(params, "step", 0);
@@ -841,13 +842,22 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
       cJSON_DeleteItemFromObject(step, "evidence_step");
       cJSON_DeleteItemFromObject(step, "evidence_paths");
       cJSON_DeleteItemFromObject(step, "stale");
-      /* Recompute active */
-      int total = cJSON_GetArraySize(*steps);
-      *active_step = 0;
-      for (int i = 0; i < total; i++) {
-        cJSON *s = cJSON_GetArrayItem(*steps, i);
-        if (!json_bool(s, "done", 0)) { *active_step = i + 1; break; }
-      }
+      /* Recompute active (unified with plan_next_unchecked) */
+      *active_step = plan_next_unchecked(*steps, 0);
+    }
+  } else if (op && strcmp(op, "add_item") == 0) {
+    /* Incremental plan building: append a single step */
+    const char *text = json_str(params, "text");
+    if (text && text[0]) {
+      if (!*steps) *steps = cJSON_CreateArray();
+      cJSON *step = cJSON_CreateObject();
+      cJSON_AddStringToObject(step, "text", text);
+      cJSON_AddBoolToObject(step, "done", 0);
+      cJSON_AddNullToObject(step, "evidence");
+      cJSON_AddItemToArray(*steps, step);
+      /* Active step: first unchecked from beginning */
+      if (*active_step == 0)
+        *active_step = plan_next_unchecked(*steps, 0);
     }
   } else if (op && strcmp(op, "mark_stale") == 0) {
     /* Replay staleness: mark listed steps as stale */
@@ -873,8 +883,14 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
  * state.  Works with just a session_dir path so it can be called from both
  * tool code (via ctx->session_dir) and UI rendering code.
  *
- * Returns a cJSON object with "steps" (array) and "active_step" (number),
- * or NULL if no plan exists.  Caller owns the returned object. */
+ * Returns a cJSON object with "steps" (array), "active_step" (number),
+ * optionally "archived_plans" (array of step arrays), and
+ * "subtask_links" (object mapping child dir basename to parent step).
+ * Returns NULL if no plan exists.  Caller owns the returned object.
+ *
+ * Subtask links are computed in the same journal pass (previously done
+ * by a separate plan_subtask_links() function that re-parsed the entire
+ * journal independently). */
 cJSON *plan_replay_journal_dir(const char *session_dir) {
   char jpath[NASH_PATH_MAX];
   path_join(jpath, sizeof(jpath), session_dir, "journal.jsonl");
@@ -885,82 +901,7 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
   cJSON *steps = NULL;
   int active_step = 0;
   cJSON *archived = cJSON_CreateArray(); /* collected replaced plans */
-  char *line = data;
-  while (*line) {
-    char *eol = strchr(line, '\n');
-    if (eol) *eol = '\0';
-    if (*line == '\0') { if (eol) { line = eol + 1; continue; } else break; }
-
-    cJSON *entry = cJSON_Parse(line);
-    if (!entry) { line = eol ? eol + 1 : line + strlen(line); continue; }
-
-    const char *tool = json_str(entry, "tool");
-    int failed = json_bool(entry, "failed", 0);
-    if (!tool || strcmp(tool, "plan") != 0 || failed) {
-      cJSON_Delete(entry);
-      line = eol ? eol + 1 : line + strlen(line);
-      continue;
-    }
-
-    cJSON *params = cJSON_GetObjectItem(entry, "params");
-    if (!params) { cJSON_Delete(entry); line = eol ? eol + 1 : line + strlen(line); continue; }
-
-    /* Collect archived (replaced) plans */
-    const char *pop = json_str(params, "op");
-    if (pop && strcmp(pop, "archive") == 0) {
-      cJSON *old = cJSON_GetObjectItem(params, "old_steps");
-      if (old && cJSON_IsArray(old))
-        cJSON_AddItemToArray(archived, cJSON_Duplicate(old, 1));
-      cJSON_Delete(entry);
-      line = eol ? eol + 1 : line + strlen(line);
-      continue;
-    }
-
-    plan_apply_entry(&steps, &active_step, params);
-
-    cJSON_Delete(entry);
-    line = eol ? eol + 1 : line + strlen(line);
-  }
-
-  free(data);
-  if (!steps) {
-    cJSON_Delete(archived);
-    return NULL;
-  }
-
-  cJSON *root = cJSON_CreateObject();
-  cJSON_AddItemToObject(root, "steps", steps);
-  cJSON_AddNumberToObject(root, "active_step", active_step);
-  if (cJSON_GetArraySize(archived) > 0)
-    cJSON_AddItemToObject(root, "archived_plans", archived);
-  else
-    cJSON_Delete(archived);
-  return root;
-}
-
-/* Derive which parent plan step each subtask was spawned under, by
- * replaying the parent journal.  For every tool="subtask" entry, record
- * the plan active_step in effect at that point in the journal.  The
- * parent is blocked while the child runs, so the plan state at the
- * subtask entry equals the spawn-time state.
- *
- * Returns a cJSON object mapping child dir basename (e.g. "subtask_0")
- * to the parent step number, or NULL if the session has no journal.
- * Subtasks spawned before any plan exists (active_step == 0) are not
- * linked.  Caller owns the returned object.
- *
- * This replaces the old parent_link.json file: the link is now derived
- * from the journal, the single source of truth. */
-cJSON *plan_subtask_links(const char *session_dir) {
-  char jpath[NASH_PATH_MAX];
-  path_join(jpath, sizeof(jpath), session_dir, "journal.jsonl");
-  size_t len = 0;
-  char *data = slurp_file(jpath, &len);
-  if (!data || len == 0) { free(data); return NULL; }
-
-  cJSON *steps = NULL;
-  int active_step = 0;
-  cJSON *links = cJSON_CreateObject();
+  cJSON *links = cJSON_CreateObject();   /* subtask -> parent step links */
   char *line = data;
   while (*line) {
     char *eol = strchr(line, '\n');
@@ -976,8 +917,17 @@ cJSON *plan_subtask_links(const char *session_dir) {
 
     if (tool && params && !failed) {
       if (strcmp(tool, "plan") == 0) {
-        plan_apply_entry(&steps, &active_step, params);
+        /* Collect archived (replaced) plans */
+        const char *pop = json_str(params, "op");
+        if (pop && strcmp(pop, "archive") == 0) {
+          cJSON *old = cJSON_GetObjectItem(params, "old_steps");
+          if (old && cJSON_IsArray(old))
+            cJSON_AddItemToArray(archived, cJSON_Duplicate(old, 1));
+        } else {
+          plan_apply_entry(&steps, &active_step, params);
+        }
       } else if (strcmp(tool, "subtask") == 0) {
+        /* Track which parent step each subtask was spawned under */
         const char *child = json_str(params, "child_dir");
         if (child && child[0] && active_step > 0)
           cJSON_AddNumberToObject(links, child, active_step);
@@ -989,8 +939,32 @@ cJSON *plan_subtask_links(const char *session_dir) {
   }
 
   free(data);
-  cJSON_Delete(steps);
-  return links;
+  if (!steps) {
+    cJSON_Delete(archived);
+    cJSON_Delete(links);
+    return NULL;
+  }
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddItemToObject(root, "steps", steps);
+  cJSON_AddNumberToObject(root, "active_step", active_step);
+  if (cJSON_GetArraySize(archived) > 0)
+    cJSON_AddItemToObject(root, "archived_plans", archived);
+  else
+    cJSON_Delete(archived);
+  cJSON_AddItemToObject(root, "subtask_links", links);
+  return root;
+}
+
+/* Derive which parent plan step each subtask was spawned under.
+ * Thin wrapper around plan_replay_journal_dir() - extracts and
+ * returns only the "subtask_links" object.  Caller owns result. */
+cJSON *plan_subtask_links(const char *session_dir) {
+  cJSON *root = plan_replay_journal_dir(session_dir);
+  if (!root) return cJSON_CreateObject();
+  cJSON *links = cJSON_DetachItemFromObject(root, "subtask_links");
+  cJSON_Delete(root);
+  return links ? links : cJSON_CreateObject();
 }
 
 /* Load plan steps by replaying journal.  Returns cJSON array (caller owns)
@@ -1219,16 +1193,19 @@ void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
   plan_subtask_names_free(names, n);
 }
 
-/* Project plan state to scratchpad section "plan" at priority 1.
- * Subtask sub-plans are interleaved right after the parent step they
- * were spawned under (N.M sub-items); subtasks spawned before any plan
- * existed are appended after the main plan as "Subtask N:" blocks. */
-static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
-                                       int active_step) {
+/* Project plan state to scratchpad.  Takes the full replay root so that
+ * subtask links and archived plans are already available - no redundant
+ * journal replays.  Priority adapts: 1 for incomplete plans, 3 for
+ * fully-complete plans that are just an audit trail. */
+static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *root) {
+  const cJSON *steps = cJSON_GetObjectItemCaseSensitive(root, "steps");
+  int active_step = json_int(root, "active_step", 0);
+  const cJSON *links = cJSON_GetObjectItemCaseSensitive(root, "subtask_links");
+  const cJSON *arch = cJSON_GetObjectItemCaseSensitive(root, "archived_plans");
+
   /* Build plan text with subtask sub-plans interleaved */
   str_t s = str_new(512);
   int total = 0, done_cnt = 0, stale_cnt = 0;
-  cJSON *links = plan_subtask_links(ctx->session_dir);
   cJSON *item;
   cJSON_ArrayForEach(item, steps) {
     total++;
@@ -1267,40 +1244,36 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
       str_appendf(&s, " (%d stale)", stale_cnt);
   }
 
-  /* Append archived (replaced) plans as condensed history.
-   * Shows what was tried before, preserving evidence refs. */
-  cJSON *root = plan_replay_journal_dir(ctx->session_dir);
-  if (root) {
-    cJSON *arch = cJSON_GetObjectItem(root, "archived_plans");
-    if (arch && cJSON_IsArray(arch)) {
-      int plan_num = cJSON_GetArraySize(arch);
-      for (int pi = plan_num - 1; pi >= 0; pi--) {
-        cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
-        if (!old_steps || !cJSON_IsArray(old_steps)) continue;
-        str_appendf(&s, "\n\nPrevious plan %d (replaced):\n", pi + 1);
-        int oi = 0;
-        cJSON *os;
-        cJSON_ArrayForEach(os, old_steps) {
-          oi++;
-          int od = json_bool(os, "done", 0);
-          const char *ot = json_str(os, "text");
-          const char *oe = json_str(os, "evidence");
-          str_appendf(&s, "  %s %d. %s",
-                      od ? "[x]" : "[ ]", oi, ot ? ot : "?");
-          if (od && oe && oe[0])
-            str_appendf(&s, " (%s)", oe);
-          str_append_cstr(&s, "\n");
-        }
+  /* Append archived (replaced) plans as condensed history */
+  if (arch && cJSON_IsArray(arch)) {
+    int plan_num = cJSON_GetArraySize(arch);
+    for (int pi = plan_num - 1; pi >= 0; pi--) {
+      cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
+      if (!old_steps || !cJSON_IsArray(old_steps)) continue;
+      str_appendf(&s, "\n\nPrevious plan %d (replaced):\n", pi + 1);
+      int oi = 0;
+      cJSON *os;
+      cJSON_ArrayForEach(os, old_steps) {
+        oi++;
+        int od = json_bool(os, "done", 0);
+        const char *ot = json_str(os, "text");
+        const char *oe = json_str(os, "evidence");
+        str_appendf(&s, "  %s %d. %s",
+                    od ? "[x]" : "[ ]", oi, ot ? ot : "?");
+        if (od && oe && oe[0])
+          str_appendf(&s, " (%s)", oe);
+        str_append_cstr(&s, "\n");
       }
     }
-    cJSON_Delete(root);
   }
 
   char *result = xstrdup(str_cstr(&s));
   str_free(&s);
-  cJSON_Delete(links);
 
-  scratchpad_write(&ctx->scratch, "plan", result, 1);
+  /* Adaptive priority: incomplete plans get priority 1 (highest),
+   * fully-complete plans demote to priority 3 (audit trail only) */
+  int priority = (done_cnt < total) ? 1 : 3;
+  scratchpad_write(&ctx->scratch, "plan", result, priority);
   scratchpad_save(&ctx->scratch, ctx->session_dir);
   free(result);
 }
@@ -1309,12 +1282,15 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *steps,
  * is modified after verification, mark that step as stale.
  * Called from tool_track_modified_file() on every file_edit/file_write.
  * Staleness is tracked in-memory via ctx->stale_steps bitmask and merged
- * at display time.  No plan.json file is written. */
+ * at display time.  Uses a single journal replay for both detection and
+ * scratchpad projection. */
 void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
   if (!ctx || !path) return;
   const char *cpath = canon_path(path);
-  cJSON *steps = plan_load(ctx);
-  if (!steps) return;
+  cJSON *root = plan_replay_journal_dir(ctx->session_dir);
+  if (!root) return;
+  cJSON *steps = cJSON_GetObjectItem(root, "steps");
+  if (!steps) { cJSON_Delete(root); return; }
 
   int changed = 0;
   int idx = 0;
@@ -1339,37 +1315,28 @@ void plan_check_evidence_staleness(tool_ctx_t *ctx, const char *path) {
 
   if (changed) {
     /* Persist staleness to journal so it survives replay */
-    {
-      cJSON *jp = cJSON_CreateObject();
-      cJSON_AddStringToObject(jp, "op", "mark_stale");
-      cJSON *arr = cJSON_AddArrayToObject(jp, "stale_steps");
-      for (int i = 0; i < 64; i++) {
-        if (ctx->stale_steps & ((uint64_t)1 << i))
-          cJSON_AddItemToArray(arr, cJSON_CreateNumber(i + 1));
-      }
-      tool_journal(ctx, "plan", jp, NULL, 0, 0, NULL, NULL);
-      cJSON_Delete(jp);
+    cJSON *jp = cJSON_CreateObject();
+    cJSON_AddStringToObject(jp, "op", "mark_stale");
+    cJSON *arr = cJSON_AddArrayToObject(jp, "stale_steps");
+    for (int i = 0; i < 64; i++) {
+      if (ctx->stale_steps & ((uint64_t)1 << i))
+        cJSON_AddItemToArray(arr, cJSON_CreateNumber(i + 1));
     }
-    /* Re-project to scratchpad with staleness merged */
-    cJSON *root = plan_replay_journal_dir(ctx->session_dir);
-    if (root) {
-      cJSON *rsteps = cJSON_GetObjectItem(root, "steps");
-      int active = json_int(root, "active_step", 0);
-      /* Merge stale bits into steps for display */
-      int si = 0;
-      cJSON *s;
-      cJSON_ArrayForEach(s, rsteps) {
-        si++;
-        if (si <= 64 && (ctx->stale_steps & ((uint64_t)1 << (si - 1)))) {
-          cJSON_DeleteItemFromObject(s, "stale");
-          cJSON_AddBoolToObject(s, "stale", 1);
-        }
+    tool_journal(ctx, "plan", jp, NULL, 0, 0, NULL, NULL);
+    cJSON_Delete(jp);
+    /* Merge stale bits into already-loaded root for display */
+    int si = 0;
+    cJSON *s;
+    cJSON_ArrayForEach(s, steps) {
+      si++;
+      if (si <= 64 && (ctx->stale_steps & ((uint64_t)1 << (si - 1)))) {
+        cJSON_DeleteItemFromObject(s, "stale");
+        cJSON_AddBoolToObject(s, "stale", 1);
       }
-      plan_project_to_scratchpad(ctx, rsteps, active);
-      cJSON_Delete(root);
     }
+    plan_project_to_scratchpad(ctx, root);
   }
-  cJSON_Delete(steps);
+  cJSON_Delete(root);
 }
 
 /* Store plan text in content-addressed store and return an alias.
@@ -1458,7 +1425,13 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     ctx->stale_steps = 0;
 
     /* Project to scratchpad for prompt visibility */
-    plan_project_to_scratchpad(ctx, steps, 1);
+    {
+      cJSON *proj = cJSON_CreateObject();
+      cJSON_AddItemToObject(proj, "steps", cJSON_Duplicate(steps, 1));
+      cJSON_AddNumberToObject(proj, "active_step", 1);
+      plan_project_to_scratchpad(ctx, proj);
+      cJSON_Delete(proj);
+    }
     cJSON_Delete(steps);
 
     /* Store in content-addressed store for audit trail */
@@ -1480,16 +1453,17 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
   }
 
-  /* Op-based dispatch (check, uncheck, status) */
+  /* Op-based dispatch */
   if (!op || !op[0])
-    return tools_make_error("Provide either 'result' to create a plan, "
-                            "or 'op' (check/uncheck/status) to update it.");
+    return tools_make_error("Provide 'op' to use the plan tool. "
+                            "Use add_item to add steps, done to finalize, "
+                            "check/uncheck to track, or status to view.");
 
   cJSON *steps = plan_load(ctx);
 
   if (strcmp(op, "status") == 0) {
     if (!steps) return tools_make_error("No plan exists yet. "
-                                        "Create one with plan(result=\"...\").");
+                                        "Add steps with plan(op=\"add_item\", text=\"...\").");
     int total = cJSON_GetArraySize(steps);
     int done = 0;
     cJSON *item;
@@ -1532,7 +1506,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
 
   if (strcmp(op, "check") == 0 || strcmp(op, "uncheck") == 0) {
     if (!steps) return tools_make_error("No plan exists yet. "
-                                        "Create one with plan(result=\"...\").");
+                                        "Add steps with plan(op=\"add_item\", text=\"...\").");
     int step_num = json_int(params, "step", 0);
     int total = cJSON_GetArraySize(steps);
     if (step_num < 1 || step_num > total) {
@@ -1607,7 +1581,13 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     if (checking && step_num <= 64)
       ctx->stale_steps &= ~((uint64_t)1 << (step_num - 1));
 
-    plan_project_to_scratchpad(ctx, steps, new_active);
+    {
+      cJSON *proj = cJSON_CreateObject();
+      cJSON_AddItemToObject(proj, "steps", cJSON_Duplicate(steps, 1));
+      cJSON_AddNumberToObject(proj, "active_step", new_active);
+      plan_project_to_scratchpad(ctx, proj);
+      cJSON_Delete(proj);
+    }
 
     /* Count completed */
     int done = 0;
@@ -1648,8 +1628,60 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_result(1, meta, ref_copy);
   }
 
+  if (strcmp(op, "add_item") == 0) {
+    const char *text = json_str(params, "text");
+    if (!text || !text[0])
+      return tools_make_error("'text' required: provide the step description.");
+    if (!steps) steps = cJSON_CreateArray();
+    cJSON *step = cJSON_CreateObject();
+    cJSON_AddStringToObject(step, "text", text);
+    cJSON_AddBoolToObject(step, "done", 0);
+    cJSON_AddNullToObject(step, "evidence");
+    cJSON_AddItemToArray(steps, step);
+    int n = cJSON_GetArraySize(steps);
+    int new_active = plan_next_unchecked(steps, 0);
+
+    {
+      cJSON *proj = cJSON_CreateObject();
+      cJSON_AddItemToObject(proj, "steps", cJSON_Duplicate(steps, 1));
+      cJSON_AddNumberToObject(proj, "active_step", new_active);
+      plan_project_to_scratchpad(ctx, proj);
+      cJSON_Delete(proj);
+    }
+
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "step added");
+    cJSON_AddNumberToObject(meta, "step", n);
+    cJSON_AddStringToObject(meta, "text", text);
+    cJSON_AddNumberToObject(meta, "total", n);
+
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "plan", params, NULL, 0, n, NULL, NULL);
+    cJSON_Delete(steps);
+    return tools_make_result(1, meta, NULL);
+  }
+
+  if (strcmp(op, "done") == 0) {
+    /* Finalize planning phase - signal that plan is complete */
+    if (!steps || cJSON_GetArraySize(steps) == 0) {
+      cJSON_Delete(steps);
+      return tools_make_error("No plan steps exist. Add steps with "
+                              "plan(op=\"add_item\", text=\"...\") first.");
+    }
+    int n = cJSON_GetArraySize(steps);
+    cJSON *meta = cJSON_CreateObject();
+    cJSON_AddStringToObject(meta, "status", "plan finalized");
+    cJSON_AddNumberToObject(meta, "steps", n);
+
+    tools_inject_thought(ctx, params);
+    tool_journal(ctx, "plan", params, NULL, 0, n, NULL, NULL);
+    cJSON_Delete(steps);
+    return tools_make_result(1, meta, NULL);
+  }
+
   cJSON_Delete(steps);
-  return tools_make_error("Unknown op. Use 'check', 'uncheck', or 'status'.");
+  return tools_make_error("Unknown op. Use 'add_item', 'done', "
+                          "'check', 'uncheck', or 'status'.");
 }
 
 
@@ -1792,10 +1824,11 @@ static const tool_param_t done_params[] = {
   TOOL_PARAM_END};
 
 static const tool_param_t plan_params[] = {
-  TOOL_PARAM("result", "string", "Numbered plan: 1. step (tool)\n2. ...", 0),
-  TOOL_PARAM("op", "string", "Operation: check, uncheck, status (omit when creating a plan)", 0),
+  TOOL_PARAM("op", "string", "Operation: add_item, done, check, uncheck, status", 1),
+  TOOL_PARAM("text", "string", "Step description (for add_item)", 0),
   TOOL_PARAM("step", "integer", "Step number to check/uncheck (1-based)", 0),
   TOOL_PARAM("evidence", "string", "Ref alias (e.g. R0S5) proving step completion", 0),
+  TOOL_PARAM("result", "string", "Numbered plan text (deprecated - use add_item)", 0),
   TOOL_PARAM_END};
 
 static const tool_param_t user_ask_params[] = {
@@ -1871,9 +1904,7 @@ static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
   {
     cJSON *root = plan_replay_journal_dir(ctx->session_dir);
     if (root) {
-      cJSON *psteps = cJSON_GetObjectItem(root, "steps");
-      int pactive = json_int(root, "active_step", 0);
-      if (psteps) plan_project_to_scratchpad(ctx, psteps, pactive);
+      plan_project_to_scratchpad(ctx, root);
       cJSON_Delete(root);
     }
   }
@@ -1942,11 +1973,12 @@ static const tool_plugin_t core_plugins[] = {
            done_params, tool_done),
 
   TOOL_DEF("plan",
-           "Outline a numbered execution plan (3-8 steps) before starting work. "
-           "Tracks completion: use plan(op=\"check\", step=N, evidence=\"R0S5\") to mark "
-           "a step done with proof, plan(op=\"uncheck\", step=N) to revert, or "
-           "plan(op=\"status\") to see progress. Incomplete steps trigger a warning "
-           "when calling done.",
+           "Build and track an execution plan. Add steps one at a time with "
+           "plan(op=\"add_item\", text=\"step description\"), then call "
+           "plan(op=\"done\") when all steps are added. Track completion: "
+           "plan(op=\"check\", step=N, evidence=\"R0S5\") marks a step done with "
+           "proof, plan(op=\"uncheck\", step=N) reverts, plan(op=\"status\") shows "
+           "progress. Incomplete steps trigger a warning when calling done.",
            plan_params, tool_plan),
 
   TOOL_DEF("user_ask",

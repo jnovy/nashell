@@ -1175,8 +1175,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         char hint[512];
         snprintf(hint, sizeof(hint),
           "This task requires a plan before execution. "
-          "Call plan() first to outline your numbered steps (3-8 items), "
-          "then execute them. You attempted to call '%s' without a plan.",
+          "Add steps with plan(op=\"add_item\", text=\"...\") then call "
+          "plan(op=\"done\") to finalize. You attempted to call '%s' "
+          "without a plan.",
           action_name);
         if (chat->last_tool_call_id) {
           llm_chat_add_assistant_tool_call(chat, response,
@@ -1801,21 +1802,31 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       ctx->tools->thought = NULL;
 
       /* Hallucination guard: count real tool executions.
-             * "done", "plan", "notes", "user_ask" are meta-tools — don't count.
-             * Only tools that interact with the outside world count. */
+             * Meta-tools don't count toward the threshold. */
       if (strcmp(action_name, "plan") != 0 &&
-          strcmp(action_name, "notes") != 0) {
+          strcmp(action_name, "notes") != 0 &&
+          strcmp(action_name, "done") != 0 &&
+          strcmp(action_name, "user_ask") != 0 &&
+          strcmp(action_name, "todo") != 0) {
         tools_executed++;
       }
 
-      /* Plan-then-shed: on first plan(), degrade preamble injections
+      /* Plan-then-shed: on plan(op="done"), degrade preamble injections
              * to LOW and shed temporal/episodic messages. Only runs once -
-             * subsequent plan() calls must not re-shed mid-loop messages. */
+             * subsequent plan() calls must not re-shed mid-loop messages.
+             * Also triggers on any plan() call for backward compat with
+             * sessions using the old free-text result= API. */
       if (strcmp(action_name, "plan") == 0 &&
           !ctx->rt.preamble_consumed) {
-        ctx->rt.preamble_consumed = 1;
-        ctx->rt.plan_satisfied = 1;
-        react_degrade_preamble(chat);
+        /* Check if this is a plan-finalizing call: op="done" or result= (old API) */
+        const char *plan_op = action ? json_str(action, "op") : NULL;
+        const char *plan_result = action ? json_str(action, "result") : NULL;
+        if ((plan_op && strcmp(plan_op, "done") == 0) ||
+            (plan_result && plan_result[0])) {
+          ctx->rt.preamble_consumed = 1;
+          ctx->rt.plan_satisfied = 1;
+          react_degrade_preamble(chat);
+        }
       }
 
       /* Error budget: track total errors across the session */
