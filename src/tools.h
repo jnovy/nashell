@@ -200,6 +200,9 @@ cJSON *plan_subtask_links(const char *session_dir);
 /* Look up the parent step a subtask dir is linked to (0 = unlinked). */
 int plan_link_for(const cJSON *links, const char *child_name);
 
+/* Look up the ref alias recorded for a subtask link (NULL if none). */
+const char *plan_link_ref(const cJSON *links, const char *child_name);
+
 /* Collect subtask_N dir names from session_dir, sorted by numeric suffix.
  * Returns an array of xstrdup'd names; *out_n is set to the count.
  * Caller frees each name and the array via plan_subtask_names_free(). */

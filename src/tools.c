@@ -881,10 +881,20 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
       if (strcmp(tool, "plan") == 0) {
         plan_apply_entry(&steps, &active_step, params);
       } else if (strcmp(tool, "subtask") == 0) {
-        /* Track which parent step each subtask was spawned under */
+        /* Track which parent step each subtask was spawned under,
+         * plus the ref alias so the F3 plan view can show it. */
         const char *child = json_str(params, "child_dir");
-        if (child && child[0] && active_step > 0)
-          cJSON_AddNumberToObject(links, child, active_step);
+        const char *ref = json_str(entry, "ref");
+        if (child && child[0]) {
+          /* Replace any previous link for this child (subtask_0 may
+           * be spawned multiple times across react loops). */
+          cJSON_DeleteItemFromObject(links, child);
+          cJSON *link_obj = cJSON_CreateObject();
+          cJSON_AddNumberToObject(link_obj, "step", active_step);
+          if (ref && ref[0])
+            cJSON_AddStringToObject(link_obj, "ref", ref);
+          cJSON_AddItemToObject(links, child, link_obj);
+        }
       }
     }
 
@@ -997,12 +1007,25 @@ static char *plan_format_text(const cJSON *steps, int active_step) {
   return result;
 }
 
-/* Look up the parent step a subtask dir is linked to (0 = unlinked). */
+/* Look up the parent step a subtask dir is linked to (0 = unlinked).
+ * Handles both old format (plain number) and new format (object with
+ * "step" field) for backward compatibility with existing journals. */
 int plan_link_for(const cJSON *links, const char *child_name) {
   if (!links) return 0;
   cJSON *v = cJSON_GetObjectItem(links, child_name);
-  if (v && cJSON_IsNumber(v)) return (int)v->valuedouble;
+  if (!v) return 0;
+  if (cJSON_IsNumber(v)) return (int)v->valuedouble;
+  if (cJSON_IsObject(v)) return json_int(v, "step", 0);
   return 0;
+}
+
+/* Look up the ref alias recorded for a subtask link (NULL if none).
+ * Only available with new-format links (object with "ref" field). */
+const char *plan_link_ref(const cJSON *links, const char *child_name) {
+  if (!links) return NULL;
+  cJSON *v = cJSON_GetObjectItem(links, child_name);
+  if (!v || !cJSON_IsObject(v)) return NULL;
+  return json_str(v, "ref");
 }
 
 /* Collect subtask_N dir names from session_dir, sorted by numeric suffix
@@ -1087,7 +1110,8 @@ int plan_render_subtask_items(str_t *s, const char *session_dir,
 /* Append subtask sub-plan lines linked to parent_idx to str_t,
  * interleaved right after that parent step.  Renders those whose
  * journal-derived link matches parent_idx, as indented N.M items, in
- * numeric subtask order. */
+ * numeric subtask order.  Subtasks without a formal plan get a
+ * one-liner so they remain visible in the plan output. */
 void plan_append_subtask_steps(str_t *s, const char *session_dir,
                                int parent_idx, const cJSON *links) {
   int n = 0;
@@ -1096,15 +1120,25 @@ void plan_append_subtask_steps(str_t *s, const char *session_dir,
   int sub_start = 1;
   for (int i = 0; i < n; i++) {
     if (plan_link_for(links, names[i]) != parent_idx) continue;
-    sub_start += plan_render_subtask_items(s, session_dir, names[i],
-                                           parent_idx, sub_start);
+    int rendered = plan_render_subtask_items(s, session_dir, names[i],
+                                             parent_idx, sub_start);
+    if (rendered == 0) {
+      /* Subtask has no formal plan - show a one-liner with ref */
+      const char *ref = plan_link_ref(links, names[i]);
+      str_appendf(s, "  [%s]", names[i]);
+      if (ref && ref[0])
+        str_appendf(s, " (%s)", ref);
+      str_append_cstr(s, "\n");
+    }
+    sub_start += rendered;
   }
   plan_subtask_names_free(names, n);
 }
 
 /* Append subtask sub-plans that are NOT linked to any parent step
  * (spawned before a plan existed) to str_t, after the main plan.
- * Rendered as "  Subtask N:" blocks, in numeric subtask order. */
+ * Rendered as "  Subtask N:" blocks, in numeric subtask order.
+ * Subtasks without a formal plan get a one-liner with their ref. */
 void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
                                    const cJSON *links) {
   int n = 0;
@@ -1115,9 +1149,8 @@ void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
     char child_dir[NASH_PATH_MAX];
     snprintf(child_dir, sizeof(child_dir), "%s/%s", session_dir, names[i]);
     cJSON *sroot = plan_replay_journal_dir(child_dir);
-    if (!sroot) continue;
-    cJSON *ssteps = cJSON_GetObjectItem(sroot, "steps");
-    int sactive = json_int(sroot, "active_step", 0);
+    cJSON *ssteps = sroot ? cJSON_GetObjectItem(sroot, "steps") : NULL;
+    int sactive = sroot ? json_int(sroot, "active_step", 0) : 0;
     if (ssteps && cJSON_IsArray(ssteps) && cJSON_GetArraySize(ssteps) > 0) {
       str_appendf(s, "  Subtask %s:\n", names[i] + 8);
       int sidx = 0;
@@ -1136,8 +1169,15 @@ void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
           str_append_cstr(s, " (STALE)");
         str_append_cstr(s, "\n");
       }
+    } else {
+      /* Subtask has no formal plan - show a one-liner with ref */
+      const char *ref = plan_link_ref(links, names[i]);
+      str_appendf(s, "  [%s]", names[i]);
+      if (ref && ref[0])
+        str_appendf(s, " (%s)", ref);
+      str_append_cstr(s, "\n");
     }
-    cJSON_Delete(sroot);
+    if (sroot) cJSON_Delete(sroot);
   }
   plan_subtask_names_free(names, n);
 }

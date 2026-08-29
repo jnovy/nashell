@@ -16,6 +16,7 @@ extern cJSON *plan_replay_journal_dir(const char *session_dir);
 extern cJSON *plan_subtask_links(const char *session_dir);
 /* Shared plan helpers (defined in tools.c, declared in tools.h) */
 extern int plan_link_for(const cJSON *links, const char *child_name);
+extern const char *plan_link_ref(const cJSON *links, const char *child_name);
 extern char **plan_subtask_names(const char *session_dir, int *out_n);
 extern void plan_subtask_names_free(char **names, int n);
 extern int plan_render_subtask_items(str_t *s, const char *session_dir,
@@ -1803,7 +1804,24 @@ static void render_plan_level(str_t *md, const char *dir, int indent) {
             if (plan_link_for(links, snames[si]) != idx) continue;
             char child_dir[NASH_PATH_MAX];
             snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
-            render_plan_level(md, child_dir, indent + 4);
+            /* Check if child has a formal plan; if not, show a
+             * one-liner so the subtask is still visible. */
+            cJSON *croot = plan_replay_journal_dir(child_dir);
+            cJSON *csteps = croot ? cJSON_GetObjectItem(croot, "steps") : NULL;
+            int child_has_plan = (csteps && cJSON_IsArray(csteps) &&
+                                  cJSON_GetArraySize(csteps) > 0);
+            cJSON_Delete(croot);
+            if (child_has_plan) {
+              render_plan_level(md, child_dir, indent + 4);
+            } else {
+              const char *ref = plan_link_ref(links, snames[si]);
+              for (int sp = 0; sp < indent + 4; sp++)
+                str_append_cstr(md, " ");
+              str_appendf(md, "[%s]", snames[si]);
+              if (ref && ref[0])
+                str_appendf(md, " (%s)", ref);
+              str_append_cstr(md, "\n");
+            }
           }
           plan_subtask_names_free(snames, sn);
         }
@@ -1820,7 +1838,23 @@ static void render_plan_level(str_t *md, const char *dir, int indent) {
           if (plan_link_for(links, snames[si]) != 0) continue;
           char child_dir[NASH_PATH_MAX];
           snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
-          render_plan_level(md, child_dir, indent + 4);
+          /* Same as linked path: show one-liner if child has no plan */
+          cJSON *croot = plan_replay_journal_dir(child_dir);
+          cJSON *csteps = croot ? cJSON_GetObjectItem(croot, "steps") : NULL;
+          int child_has_plan = (csteps && cJSON_IsArray(csteps) &&
+                                cJSON_GetArraySize(csteps) > 0);
+          cJSON_Delete(croot);
+          if (child_has_plan) {
+            render_plan_level(md, child_dir, indent + 4);
+          } else {
+            const char *ref = plan_link_ref(links, snames[si]);
+            for (int sp = 0; sp < indent + 4; sp++)
+              str_append_cstr(md, " ");
+            str_appendf(md, "[%s]", snames[si]);
+            if (ref && ref[0])
+              str_appendf(md, " (%s)", ref);
+            str_append_cstr(md, "\n");
+          }
         }
         plan_subtask_names_free(snames, sn);
       }
