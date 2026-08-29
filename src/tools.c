@@ -795,20 +795,15 @@ static int plan_next_unchecked(const cJSON *steps, int after);
  * Shared by plan_replay_journal_dir() and plan_subtask_links() so the
  * state-update logic lives in one place.  *steps is replaced on
  * create/replace; *active_step is updated on every op.  op="status" is
- * read-only (no state change).  On plan replacement, old *steps are
- * moved into the archived array (if non-NULL) rather than deleted -
- * archives are derived from temporal flow, not stored in the journal. */
+ * read-only (no state change). */
 static void plan_apply_entry(cJSON **steps, int *active_step,
-                             cJSON *archived, const cJSON *params) {
+                             const cJSON *params) {
   const char *result_text = json_str(params, "result");
   const char *op = json_str(params, "op");
 
   if (result_text && result_text[0]) {
-    /* Plan create/replace: archive old steps (derived from temporal
-     * flow - no need to store archive data in the journal) */
-    if (*steps && archived)
-      cJSON_AddItemToArray(archived, *steps);
-    else if (*steps)
+    /* Plan create/replace */
+    if (*steps)
       cJSON_Delete(*steps);
     *steps = plan_parse_steps(result_text, NULL);
     *active_step = 1;
@@ -890,13 +885,8 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
  * tool code (via ctx->session_dir) and UI rendering code.
  *
  * Returns a cJSON object with "steps" (array), "active_step" (number),
- * optionally "archived_plans" (array of step arrays derived from the
- * temporal flow of plan create/replace entries), and "subtask_links"
- * (object mapping child dir basename to parent step).
- * Returns NULL if no plan exists.  Caller owns the returned object.
- *
- * Subtask links and archived plans are both computed in the same
- * journal pass - no archive data needs to be stored in the journal. */
+ * and "subtask_links" (object mapping child dir basename to parent step).
+ * Returns NULL if no plan exists.  Caller owns the returned object. */
 cJSON *plan_replay_journal_dir(const char *session_dir) {
   char jpath[NASH_PATH_MAX];
   path_join(jpath, sizeof(jpath), session_dir, "journal.jsonl");
@@ -906,7 +896,6 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
   cJSON *steps = NULL;
   int active_step = 0;
-  cJSON *archived = cJSON_CreateArray(); /* collected replaced plans */
   cJSON *links = cJSON_CreateObject();   /* subtask -> parent step links */
   char *line = data;
   while (*line) {
@@ -923,14 +912,7 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
     if (tool && params && !failed) {
       if (strcmp(tool, "plan") == 0) {
-        /* Archives are derived from temporal flow: when plan_apply_entry
-         * sees a new plan (result text), it snapshots the current steps
-         * into the archived array before replacing them.  No archive
-         * data needs to be stored in the journal - the journal entries
-         * themselves define the plan history.  Legacy op="archive" and
-         * "archived_steps" entries from older journals are harmless
-         * no-ops (plan_apply_entry ignores unknown ops). */
-        plan_apply_entry(&steps, &active_step, archived, params);
+        plan_apply_entry(&steps, &active_step, params);
       } else if (strcmp(tool, "subtask") == 0) {
         /* Track which parent step each subtask was spawned under */
         const char *child = json_str(params, "child_dir");
@@ -945,7 +927,6 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
   free(data);
   if (!steps) {
-    cJSON_Delete(archived);
     cJSON_Delete(links);
     return NULL;
   }
@@ -953,10 +934,6 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
   cJSON *root = cJSON_CreateObject();
   cJSON_AddItemToObject(root, "steps", steps);
   cJSON_AddNumberToObject(root, "active_step", active_step);
-  if (cJSON_GetArraySize(archived) > 0)
-    cJSON_AddItemToObject(root, "archived_plans", archived);
-  else
-    cJSON_Delete(archived);
   cJSON_AddItemToObject(root, "subtask_links", links);
   return root;
 }
@@ -1199,14 +1176,13 @@ void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
 }
 
 /* Project plan state to scratchpad.  Takes the full replay root so that
- * subtask links and archived plans are already available - no redundant
- * journal replays.  Priority adapts: 1 for incomplete plans, 3 for
- * fully-complete plans that are just an audit trail. */
+ * subtask links are already available - no redundant journal replays.
+ * Priority adapts: 1 for incomplete plans, 3 for fully-complete plans
+ * that are just an audit trail. */
 static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *root) {
   const cJSON *steps = cJSON_GetObjectItemCaseSensitive(root, "steps");
   int active_step = json_int(root, "active_step", 0);
   const cJSON *links = cJSON_GetObjectItemCaseSensitive(root, "subtask_links");
-  const cJSON *arch = cJSON_GetObjectItemCaseSensitive(root, "archived_plans");
 
   /* Build plan text with subtask sub-plans interleaved */
   str_t s = str_new(512);
@@ -1247,29 +1223,6 @@ static void plan_project_to_scratchpad(tool_ctx_t *ctx, const cJSON *root) {
     str_appendf(&s, "Progress: %d/%d complete", done_cnt, total);
     if (stale_cnt > 0)
       str_appendf(&s, " (%d stale)", stale_cnt);
-  }
-
-  /* Append archived (replaced) plans as condensed history */
-  if (arch && cJSON_IsArray(arch)) {
-    int plan_num = cJSON_GetArraySize(arch);
-    for (int pi = plan_num - 1; pi >= 0; pi--) {
-      cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
-      if (!old_steps || !cJSON_IsArray(old_steps)) continue;
-      str_appendf(&s, "\n\nPrevious plan %d (replaced):\n", pi + 1);
-      int oi = 0;
-      cJSON *os;
-      cJSON_ArrayForEach(os, old_steps) {
-        oi++;
-        int od = json_bool(os, "done", 0);
-        const char *ot = json_str(os, "text");
-        const char *oe = json_str(os, "evidence");
-        str_appendf(&s, "  %s %d. %s",
-                    od ? "[x]" : "[ ]", oi, ot ? ot : "?");
-        if (od && oe && oe[0])
-          str_appendf(&s, " (%s)", oe);
-        str_append_cstr(&s, "\n");
-      }
-    }
   }
 
   char *result = xstrdup(str_cstr(&s));
