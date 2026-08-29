@@ -1145,7 +1145,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
 
     /* Build link URI: subtask -> child reactR0.md, others -> ref#toolname */
-    char link_uri[256];
+    char link_uri[256] = "";
     if (si->child_dir)
       snprintf(link_uri, sizeof(link_uri), "%s/reactR0.md", si->child_dir);
     else if (si->ref)
@@ -1187,7 +1187,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 /* Helper: emit the tool header line (without any text content) */
 #define EMIT_TOOL_HEADER(with_elapsed) \
   do { \
-    if (si->ref) { \
+    if (link_uri[0]) { \
       str_appendf(&md, "%s %s [%s](%s)%s\n", \
                   time_col, ref_pad, \
                   tool_pad, link_uri, \
@@ -1203,7 +1203,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 /* Helper: emit the tool header with inline text */
 #define EMIT_TOOL_WITH_TEXT(text, with_elapsed) \
   do { \
-    if (si->ref) { \
+    if (link_uri[0]) { \
       str_appendf(&md, "%s %s [%s](%s) `%s`%s\n", \
                   time_col, ref_pad, \
                   tool_pad, link_uri, \
@@ -1219,7 +1219,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 /* Helper: emit the tool header with inline thought (plain text, no backticks) */
 #define EMIT_TOOL_WITH_THOUGHT(text, with_elapsed) \
   do { \
-    if (si->ref) { \
+    if (link_uri[0]) { \
       str_appendf(&md, "%s %s [%s](%s) %s%s\n", \
                   time_col, ref_pad, \
                   tool_pad, link_uri, \
@@ -1714,12 +1714,14 @@ static char **plan_ancestor_chain(const char *eff_dir, int *out_depth) {
   return chain;
 }
 
-/* Render a single plan level into md with the given indent prefix.
- * active_child_name: if non-NULL, the subtask_N basename that is the
- * "current" child - its sub-steps are rendered specially.
- * indent: number of leading spaces for each line (0 for root level). */
-static void render_plan_level(str_t *md, const char *dir, int indent,
-                              const char *active_child_name) {
+/* Render a plan level into md with the given indent prefix.
+ * indent: number of leading spaces for each line (0 for root level).
+ * Subtask plans are rendered recursively inline under the parent step
+ * that spawned them, indented by 4 additional spaces per nesting level.
+ * Traverses each subtask's journal to discover its plan and recurses. */
+static void render_plan_level(str_t *md, const char *dir, int indent) {
+  if (indent > 20) return;  /* recursion depth limit */
+
   cJSON *root = plan_replay_journal_dir(dir);
   cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
   int active_step = root ? json_int(root, "active_step", 0) : 0;
@@ -1759,31 +1761,35 @@ static void render_plan_level(str_t *md, const char *dir, int indent,
       str_append_cstr(md, " (STALE)");
     str_append_cstr(md, "\n");
 
-    /* Subtask sub-plans linked to this step (except the active child -
-     * that will be rendered by the caller at the next nesting level). */
-    if (active_child_name) {
-      /* Render non-active subtasks linked to this step */
+    /* Recursively render subtask plans linked to this step */
+    {
       int sn = 0;
       char **snames = plan_subtask_names(dir, &sn);
       if (snames) {
-        int sub_start = 1;
         for (int si = 0; si < sn; si++) {
           if (plan_link_for(links, snames[si]) != idx) continue;
-          if (strcmp(snames[si], active_child_name) == 0) continue;
-          sub_start += plan_render_subtask_items(md, dir, snames[si],
-                                                 idx, sub_start);
+          char child_dir[NASH_PATH_MAX];
+          snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
+          render_plan_level(md, child_dir, indent + 4);
         }
         plan_subtask_names_free(snames, sn);
       }
-    } else {
-      /* No active child - render all subtask sub-plans normally */
-      plan_append_subtask_steps(md, dir, idx, links);
     }
   }
 
   /* Unlinked subtask plans (spawned before a plan existed) */
-  if (!active_child_name) {
-    plan_append_unlinked_subtasks(md, dir, links);
+  {
+    int sn = 0;
+    char **snames = plan_subtask_names(dir, &sn);
+    if (snames) {
+      for (int si = 0; si < sn; si++) {
+        if (plan_link_for(links, snames[si]) != 0) continue;
+        char child_dir[NASH_PATH_MAX];
+        snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
+        render_plan_level(md, child_dir, indent + 4);
+      }
+      plan_subtask_names_free(snames, sn);
+    }
   }
   cJSON_Delete(links);
 
@@ -1797,58 +1803,17 @@ static char *generate_working_mem_md(ui_state_t *ui) {
   str_t md = str_new(4096);
   str_append_cstr(&md, "# Plan\n\n");
 
-  /* Build ancestor chain: root -> ... -> subtask_N (current) */
+  /* Build ancestor chain to find root session dir, then render the
+   * full plan hierarchy recursively from root.  render_plan_level
+   * traverses each subtask's journal and inlines its plan steps
+   * under the parent step that spawned it, indented by depth. */
   {
     int depth = 0;
     char **chain = plan_ancestor_chain(eff_dir, &depth);
 
-    if (depth > 1) {
-      /* Inside a subtask - render full hierarchy from root down */
-      for (int lvl = 0; lvl < depth; lvl++) {
-        /* Determine which child subtask is "active" at this level
-         * (i.e. the next level in the chain) */
-        const char *active_child = NULL;
-        char active_child_base[256] = {0};
-        if (lvl < depth - 1) {
-          /* chain[lvl+1] is the active child dir */
-          char *tmp = xstrdup(chain[lvl + 1]);
-          char *b = basename(tmp);
-          snprintf(active_child_base, sizeof(active_child_base), "%s", b);
-          free(tmp);
-          active_child = active_child_base;
-        }
-
-        if (lvl == 0) {
-          /* Root level - render with full header */
-          render_plan_level(&md, chain[lvl], 0, active_child);
-          str_append_cstr(&md, "\n");
-        } else {
-          /* Nested subtask level - find which parent step links to us */
-          char *my_base_tmp = xstrdup(chain[lvl]);
-          char *my_base = basename(my_base_tmp);
-          cJSON *parent_links = plan_subtask_links(chain[lvl - 1]);
-          int parent_step = plan_link_for(parent_links, my_base);
-          cJSON_Delete(parent_links);
-
-          int indent = lvl * 2;
-          if (parent_step > 0) {
-            for (int sp = 0; sp < indent; sp++) str_append_cstr(&md, " ");
-            str_appendf(&md, "--- %s (step %d) ---\n", my_base, parent_step);
-          } else {
-            for (int sp = 0; sp < indent; sp++) str_append_cstr(&md, " ");
-            str_appendf(&md, "--- %s ---\n", my_base);
-          }
-          free(my_base_tmp);
-
-          render_plan_level(&md, chain[lvl], indent, active_child);
-          str_append_cstr(&md, "\n");
-        }
-      }
-    } else {
-      /* Top-level session - render single plan as before */
-      render_plan_level(&md, eff_dir, 0, NULL);
-      str_append_cstr(&md, "\n");
-    }
+    /* Always render from root - recursion handles all subtask levels */
+    render_plan_level(&md, chain[0], 0);
+    str_append_cstr(&md, "\n");
 
     for (int i = 0; i < depth; i++) free(chain[i]);
     free(chain);
