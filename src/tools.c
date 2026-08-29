@@ -1637,16 +1637,21 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       cJSON_Delete(proj);
     }
 
+    char *alias = plan_store_and_alias(ctx, steps, new_active);
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "step added");
     cJSON_AddNumberToObject(meta, "step", n);
     cJSON_AddStringToObject(meta, "text", text);
     cJSON_AddNumberToObject(meta, "total", n);
+    if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
     tools_inject_thought(ctx, params);
-    tool_journal(ctx, "plan", params, NULL, 0, n, NULL, NULL);
+    tool_journal(ctx, "plan", params, alias, 0, n, NULL, NULL);
     cJSON_Delete(steps);
-    return tools_make_result(1, meta, NULL);
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
+    free(alias);
+    return tools_make_result(1, meta, ref_copy);
   }
 
   if (strcmp(op, "done") == 0) {
@@ -1657,14 +1662,20 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
                               "plan(op=\"add_item\", text=\"...\") first.");
     }
     int n = cJSON_GetArraySize(steps);
+    int cur_active = plan_next_unchecked(steps, 0);
+    char *alias = plan_store_and_alias(ctx, steps, cur_active);
+
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "plan finalized");
     cJSON_AddNumberToObject(meta, "steps", n);
+    if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
     tools_inject_thought(ctx, params);
-    tool_journal(ctx, "plan", params, NULL, 0, n, NULL, NULL);
+    tool_journal(ctx, "plan", params, alias, 0, n, NULL, NULL);
     cJSON_Delete(steps);
-    return tools_make_result(1, meta, NULL);
+    char *ref_copy = alias ? xstrdup(alias) : NULL;
+    free(alias);
+    return tools_make_result(1, meta, ref_copy);
   }
 
   cJSON_Delete(steps);
