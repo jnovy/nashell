@@ -1517,8 +1517,15 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
                                 "(e.g. $NASH_SESSION_DIR/R0S5) from a tool result that proves "
                                 "this step is complete.");
       }
+      /* Strip $NASH_SESSION_DIR/ prefix if present - tool_ref_path()
+       * formats refs with this prefix for display, so the LLM may pass
+       * either "$NASH_SESSION_DIR/R0S5" or bare "R0S5". */
+      const char *prefix = "$NASH_SESSION_DIR/";
+      const char *ev_alias = evidence;
+      if (strncmp(evidence, prefix, strlen(prefix)) == 0)
+        ev_alias = evidence + strlen(prefix);
       /* Validate evidence ref exists */
-      const char *resolved = alias_map_lookup(ctx->aliases, evidence);
+      const char *resolved = alias_map_lookup(ctx->aliases, ev_alias);
       if (!resolved) {
         cJSON_Delete(steps);
         char err[256];
