@@ -250,9 +250,24 @@ static const char *extract_desc(const char *tool, cJSON *params) {
       snprintf(psum_desc, sizeof(psum_desc), "no predictions");
     return psum_desc;
   }
-  /* Plan: don't show inline text — the full plan is rendered below */
-  if (strcmp(tool, "plan") == 0)
+  /* Plan: add_item shows a compact inline description;
+   * other plan ops show nothing inline (full plan rendered below). */
+  if (strcmp(tool, "plan") == 0) {
+    const char *op = json_str(params, "op");
+    if (op && strcmp(op, "add_item") == 0) {
+      static char plan_desc[256];
+      const char *text_s = json_str(params, "text");
+      if (text_s && text_s[0]) {
+        int tlen = (int)strlen(text_s);
+        int trunc = (tlen > 120);
+        if (trunc) tlen = 120;
+        snprintf(plan_desc, sizeof(plan_desc), "%.*s%s",
+                 tlen, text_s, trunc ? "..." : "");
+        return plan_desc;
+      }
+    }
     return "";
+  }
   /* Truncate done result to first line, max 80 chars */
   if (strcmp(tool, "done") == 0 && res_s) {
     static char trunc_desc[128];
@@ -1299,11 +1314,14 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     free(desc_clean);
 
     /* Preview: show for last step or explicitly expanded steps.
-         * Plan tool always shows full preview rendered as markdown.
+         * Plan tool shows full preview rendered as markdown, except
+         * add_item which uses a compact inline description instead.
          * file_edit always shows its diff preview. */
-    int is_plan = (strcmp(si->tool, "plan") == 0);
+    int is_plan_add = (strcmp(si->tool, "plan") == 0 &&
+                       si->desc && si->desc[0]);
+    int is_plan = (strcmp(si->tool, "plan") == 0 && !is_plan_add);
     int is_file_edit = (strcmp(si->tool, "file_edit") == 0);
-    int show_preview = is_last || is_plan || is_file_edit;
+    int show_preview = (is_last && !is_plan_add) || is_plan || is_file_edit;
     if (!show_preview && si->ref) {
       for (int ei = 0; ei < ui->expanded_count; ei++) {
         if (strcmp(ui->expanded_uris[ei], si->ref) == 0) {
