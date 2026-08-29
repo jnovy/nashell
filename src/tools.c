@@ -1656,9 +1656,12 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "plan", params, alias, 0, n, NULL, NULL);
     cJSON_Delete(steps);
-    char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
-    return tools_make_result(1, meta, ref_copy);
+    /* Pass NULL store_ref: the full plan is already in the scratchpad
+     * via plan_project_to_scratchpad().  Returning only the meta JSON
+     * (step number + text) avoids dumping the entire plan into
+     * reactRX.md on every add_item call. */
+    return tools_make_result(1, meta, NULL);
   }
 
   if (strcmp(op, "done") == 0) {
