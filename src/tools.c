@@ -507,74 +507,11 @@ void tool_fire_ledger_free(tool_ctx_t *ctx) {
 
 /* ── shell_exec ──────────────────────────────────────── */
 
-/* Resolve ref aliases (R0S1, R2S14, ...) in a shell command string to their
- * full store paths so that e.g. `head -n10 R0S3` works in the shell.
- * Returns a malloc'd string with substitutions, or NULL if nothing to resolve. */
-static char *shell_resolve_aliases(tool_ctx_t *ctx, const char *cmd) {
-  if (!ctx || !cmd) return NULL;
-
-  str_t resolved = str_new(strlen(cmd) + 256);
-  const char *p = cmd;
-  int any = 0;
-
-  while (*p) {
-    /* Look for R followed by digit */
-    if (*p == 'R' && p[1] >= '0' && p[1] <= '9') {
-      /* Extract potential alias: R<digits>S<digits> */
-      const char *start = p;
-      p++; /* skip R */
-      while (*p >= '0' && *p <= '9')
-        p++;
-      if (*p == 'S' && p[1] >= '0' && p[1] <= '9') {
-        p++; /* skip S */
-        while (*p >= '0' && *p <= '9')
-          p++;
-        /* Check word boundary: next char must not be alnum/underscore */
-        if (!*p || !isalnum((unsigned char)*p)) {
-          /* Extract alias token */
-          size_t alen = (size_t)(p - start);
-          char alias[32];
-          if (alen < sizeof(alias)) {
-            memcpy(alias, start, alen);
-            alias[alen] = '\0';
-            char *path = tool_resolve_alias(ctx, alias);
-            if (path) {
-              str_append_cstr(&resolved, path);
-              free(path);
-              any = 1;
-              continue;
-            }
-          }
-        }
-        /* Not a valid alias — copy the token literally */
-        str_append(&resolved, start, (size_t)(p - start));
-      } else {
-        /* No 'S' — copy literally */
-        str_append(&resolved, start, (size_t)(p - start));
-      }
-    } else {
-      str_append(&resolved, p, 1);
-      p++;
-    }
-  }
-
-  if (!any) {
-    str_free(&resolved);
-    return NULL;
-  }
-  /* Take ownership of the buffer */
-  char *result = resolved.data;
-  resolved.data = NULL;
-  return result;
-}
-
 static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   const char *command = json_str(params, "command");
   if (!command || !command[0])
     return tools_make_error("shell_exec requires a non-empty 'command' string. "
                             "Provide the shell command to execute.");
-  char *resolved_cmd = shell_resolve_aliases(ctx, command);
-  if (resolved_cmd) command = resolved_cmd;
 
   str_t out = str_new(4096);
   char *argv[] = {"sh", "-c", (char *)command, NULL};
@@ -682,7 +619,6 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   free(alias);
   str_free(&out);
   free(hash);
-  free(resolved_cmd);
   return tools_make_result(exit_code == 0, meta, ref_copy);
 }
 
@@ -1969,7 +1905,9 @@ static const tool_plugin_t core_plugins[] = {
            "Re-analyze stored output (grep/head/tail on the ref) instead of "
            "re-running the command. Do not file_write to ref paths. "
            "For stored refs, shell_exec (grep/head/tail on the ref) avoids loading large "
-           "outputs into context.",
+           "outputs into context. "
+           "Use $NASH_SESSION_DIR/<ref> paths in shell commands (e.g. "
+           "grep pattern $NASH_SESSION_DIR/R0S3).",
            shell_exec_params, tool_shell_exec),
 
   TOOL_DEF("done",
@@ -2225,7 +2163,8 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
                   "shell_exec (grep/head/tail on the ref) for large ones.\n"
                   "- You MUST read the ref if you need to see what a command produced "
                   "or what a file contains.\n"
-                  "- Ref aliases also work as $NASH_SESSION_DIR/<alias> paths in shell commands.\n");
+                  "- Ref aliases also work as $NASH_SESSION_DIR/<alias> paths in shell commands.\n"
+                  "- Do not file_write to ref paths.\n");
 
   str_append_cstr(&s,
                   "\nRules:\n"
