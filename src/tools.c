@@ -777,8 +777,12 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
       cJSON_ReplaceItemInObject(step, "done", cJSON_CreateTrue());
       const char *evidence = json_str(params, "evidence");
       if (evidence) {
+        /* Strip $NASH_SESSION_DIR/ prefix if present */
+        const char *ev_val = evidence;
+        if (strncmp(evidence, "$NASH_SESSION_DIR/", 18) == 0)
+          ev_val = evidence + 18;
         cJSON_DeleteItemFromObject(step, "evidence");
-        cJSON_AddStringToObject(step, "evidence", evidence);
+        cJSON_AddStringToObject(step, "evidence", ev_val);
       }
       /* Restore evidence_paths if recorded in journal params */
       cJSON *ep = cJSON_GetObjectItem(params, "evidence_paths");
@@ -1472,7 +1476,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       }
       cJSON_ReplaceItemInObject(step, "done", cJSON_CreateTrue());
       cJSON_DeleteItemFromObject(step, "evidence");
-      cJSON_AddStringToObject(step, "evidence", evidence);
+      cJSON_AddStringToObject(step, "evidence", ev_alias);
       /* Evidence binding: record step number and tracked file paths
        * so staleness can be detected if those files change later. */
       cJSON_DeleteItemFromObject(step, "evidence_step");

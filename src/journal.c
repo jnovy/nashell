@@ -161,7 +161,24 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   cJSON_AddNumberToObject(entry, "step", step);
   cJSON_AddStringToObject(entry, "ts", ts);
   cJSON_AddStringToObject(entry, "tool", tool);
-  if (params) cJSON_AddItemToObject(entry, "params", cJSON_Duplicate(params, 1));
+  if (params) {
+    cJSON *dup = cJSON_Duplicate(params, 1);
+    /* Strip $NASH_SESSION_DIR/ prefix from path-like string values.
+     * Models sometimes emit full "$NASH_SESSION_DIR/R0S5" in path or
+     * evidence fields; normalize to bare relative refs ("R0S5"). */
+    cJSON *item = NULL;
+    cJSON_ArrayForEach(item, dup) {
+      if (cJSON_IsString(item) && item->valuestring &&
+          strncmp(item->valuestring, "$NASH_SESSION_DIR/", 18) == 0) {
+        char *stripped = strdup(item->valuestring + 18);
+        if (stripped) {
+          free(item->valuestring);
+          item->valuestring = stripped;
+        }
+      }
+    }
+    cJSON_AddItemToObject(entry, "params", dup);
+  }
   if (ref) cJSON_AddStringToObject(entry, "ref", ref);
   cJSON_AddNumberToObject(entry, "size", (double)size);
   cJSON_AddNumberToObject(entry, "lines", lines);
