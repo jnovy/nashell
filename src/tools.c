@@ -62,12 +62,31 @@ static int tool_filter_allows(const tool_filter_t *f, const char *name) {
   return 1;
 }
 
-/* Resolve a tool path: step alias → store path, store/ prefix → session-relative.
+/* Resolve a tool path: $NASH_SESSION_DIR/ prefix, $NASH_TEMP_DIR/ prefix,
+ * legacy step alias (R0S5), or store/ prefix -> session-relative.
  * Writes resolved path into resolved_buf (size NASH_PATH_MAX).
  * Returns the path to use (may be the original, resolved alias, or resolved_buf).
  * *resolved_out is set to the alias resolution (caller must free if non-NULL). */
 const char *tools_resolve_path(tool_ctx_t *ctx, const char *path,
                                char *resolved_buf, char **resolved_out) {
+  *resolved_out = NULL;
+
+  /* Expand $NASH_SESSION_DIR/ prefix */
+  if (strncmp(path, "$NASH_SESSION_DIR/", 18) == 0 && ctx->session_dir) {
+    path_join(resolved_buf, NASH_PATH_MAX, ctx->session_dir, path + 18);
+    return resolved_buf;
+  }
+
+  /* Expand $NASH_TEMP_DIR/ prefix */
+  if (strncmp(path, "$NASH_TEMP_DIR/", 15) == 0) {
+    const char *tmpdir = getenv("NASH_TEMP_DIR");
+    if (tmpdir) {
+      path_join(resolved_buf, NASH_PATH_MAX, tmpdir, path + 15);
+      return resolved_buf;
+    }
+  }
+
+  /* Legacy: bare RxSx alias (backward compat) */
   *resolved_out = tool_resolve_alias(ctx, path);
   if (*resolved_out) path = *resolved_out;
 
@@ -321,7 +340,14 @@ char *tool_register_alias(tool_ctx_t *ctx, const char *hash) {
   return xstrdup(alias_buf);
 }
 
-/* Returns heap-allocated path string — caller MUST free.
+/* Format a ref alias for LLM-facing metadata: "$NASH_SESSION_DIR/R0S5".
+ * Writes into buf (must be >= 64 bytes). Returns buf. */
+const char *tool_ref_path(const char *alias, char *buf, size_t bufsz) {
+  snprintf(buf, bufsz, "$NASH_SESSION_DIR/%s", alias);
+  return buf;
+}
+
+/* Returns heap-allocated path string - caller MUST free.
  * Returns NULL if alias doesn't resolve. */
 char *tool_resolve_alias(tool_ctx_t *ctx, const char *alias) {
   /* Check if it looks like an alias: R1S1, R1S2, R2S1, ... */
@@ -581,14 +607,15 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddNumberToObject(meta, "exit_code", exit_code);
   cJSON_AddNumberToObject(meta, "chars", (double)out.len);
   cJSON_AddNumberToObject(meta, "lines", out.data ? count_lines(out.data) : 0);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
   cJSON_AddNumberToObject(meta, "elapsed_ms", (double)elapsed_ms);
   if (elapsed_ms > 10000) {
     char hint[256];
+    char _ref2[64];
     snprintf(hint, sizeof(hint),
              "This command took %lds. Output is saved at \"%s\". "
              "Re-analyze that instead of re-running the command.",
-             elapsed_ms / 1000, alias);
+             elapsed_ms / 1000, tool_ref_path(alias, _ref2, sizeof(_ref2)));
     cJSON_AddStringToObject(meta, "slow_hint", hint);
   }
 
@@ -674,7 +701,7 @@ static tool_result_t tool_done(tool_ctx_t *ctx, cJSON *params) {
 
   cJSON *meta = cJSON_CreateObject();
   cJSON_AddStringToObject(meta, "result", result);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Warn if plan has incomplete or stale steps */
   cJSON *plan_steps = plan_load(ctx);
@@ -1394,7 +1421,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON *meta = cJSON_CreateObject();
     cJSON_AddStringToObject(meta, "status", "plan saved to scratchpad");
     cJSON_AddNumberToObject(meta, "steps", n);
-    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
     if (total_lines > n) {
       char drop_warn[128];
       snprintf(drop_warn, sizeof(drop_warn),
@@ -1455,7 +1482,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
 
     int cur_active = plan_load_active(ctx);
     char *alias = plan_store_and_alias(ctx, steps, cur_active);
-    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "plan", params, alias, 0, done, NULL, NULL);
@@ -1486,8 +1513,8 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       const char *evidence = json_str(params, "evidence");
       if (!evidence || !evidence[0]) {
         cJSON_Delete(steps);
-        return tools_make_error("'evidence' required: provide a ref alias "
-                                "(e.g. R0S5) from a tool result that proves "
+        return tools_make_error("'evidence' required: provide a ref "
+                                "(e.g. $NASH_SESSION_DIR/R0S5) from a tool result that proves "
                                 "this step is complete.");
       }
       /* Validate evidence ref exists */
@@ -1571,7 +1598,7 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", status);
 
     char *alias = plan_store_and_alias(ctx, steps, new_active);
-    if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
     /* Enrich params with evidence_paths and evidence_step so the journal
      * entry is self-contained for replay (no plan.json needed). */
@@ -1788,7 +1815,7 @@ static const tool_param_t plan_params[] = {
   TOOL_PARAM("op", "string", "Operation: add_item, done, check, uncheck, status", 1),
   TOOL_PARAM("text", "string", "Step description (for add_item)", 0),
   TOOL_PARAM("step", "integer", "Step number to check/uncheck (1-based)", 0),
-  TOOL_PARAM("evidence", "string", "Ref alias (e.g. R0S5) proving step completion", 0),
+  TOOL_PARAM("evidence", "string", "Ref (e.g. $NASH_SESSION_DIR/R0S5) proving step completion", 0),
   TOOL_PARAM("result", "string", "Numbered plan text (deprecated - use add_item)", 0),
   TOOL_PARAM_END};
 
@@ -1920,7 +1947,7 @@ static const tool_plugin_t core_plugins[] = {
            "Output is stored at a ref (e.g. R0S3) that resolves to a file path. "
            "Re-analyze stored output (grep/head/tail on the ref) instead of "
            "re-running the command. Do not file_write to ref paths. "
-           "For stored refs, shell_exec (grep/head/tail) avoids loading large "
+           "For stored refs, shell_exec (grep/head/tail on the ref) avoids loading large "
            "outputs into context.",
            shell_exec_params, tool_shell_exec),
 
@@ -1937,7 +1964,7 @@ static const tool_plugin_t core_plugins[] = {
            "Build and track an execution plan. Add steps one at a time with "
            "plan(op=\"add_item\", text=\"step description\"), then call "
            "plan(op=\"done\") when all steps are added. Track completion: "
-           "plan(op=\"check\", step=N, evidence=\"R0S5\") marks a step done with "
+           "plan(op=\"check\", step=N, evidence=\"$NASH_SESSION_DIR/R0S5\") marks a step done with "
            "proof, plan(op=\"uncheck\", step=N) reverts, plan(op=\"status\") shows "
            "progress. Incomplete steps trigger a warning when calling done.",
            plan_params, tool_plan),
@@ -2176,7 +2203,8 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
                   "- Ref aliases resolve to file paths. Use file_read for small outputs, or "
                   "shell_exec (grep/head/tail on the ref) for large ones.\n"
                   "- You MUST read the ref if you need to see what a command produced "
-                  "or what a file contains.\n");
+                  "or what a file contains.\n"
+                  "- Ref aliases also work as $NASH_SESSION_DIR/<alias> paths in shell commands.\n");
 
   str_append_cstr(&s,
                   "\nRules:\n"

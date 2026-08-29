@@ -290,7 +290,7 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddNumberToObject(meta, "chars", (double)store_len);
   cJSON_AddNumberToObject(meta, "lines", count_lines(store_data));
   if (content_type) cJSON_AddStringToObject(meta, "content_type", content_type);
-  if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+  if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
   if (extracted)
     cJSON_AddNumberToObject(meta, "original_chars", (double)body.len);
   /* Notify model when response was truncated by web_write_cb's 512KB cap */
@@ -357,7 +357,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "query", query);
   cJSON_AddNumberToObject(meta, "results", result_count);
   cJSON_AddNumberToObject(meta, "chars", (double)strlen(results_text));
-  if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+  if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "web_search",

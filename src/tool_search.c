@@ -79,7 +79,7 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "path", path_j && path_j->valuestring ? path_j->valuestring : ".");
   cJSON_AddNumberToObject(meta, "matches", matches);
   cJSON_AddNumberToObject(meta, "chars", (double)out.len);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "grep_search", params, alias,
@@ -201,7 +201,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
     if (strcmp(search_path, ".") != 0)
       cJSON_AddStringToObject(meta, "path", search_path);
     cJSON_AddNumberToObject(meta, "matches", matches);
-    cJSON_AddStringToObject(meta, "ref", alias);
+    { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "glob_search", params, alias,
@@ -273,7 +273,7 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
   if (strcmp(search_path, ".") != 0)
     cJSON_AddStringToObject(meta, "path", search_path);
   cJSON_AddNumberToObject(meta, "matches", matches);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "glob_search", params, alias,

@@ -23,11 +23,12 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
   struct stat st;
   if (stat(path, &st) != 0) {
     char msg[4224];
-    /* Detect store ref aliases (R<digit>S<digit>) and add a hint */
-    if (orig_path[0] == 'R' && orig_path[1] >= '0' && orig_path[1] <= '9')
+    /* Detect store ref paths ($NASH_SESSION_DIR/RxSx or bare RxSx) and add a hint */
+    if ((orig_path[0] == 'R' && orig_path[1] >= '0' && orig_path[1] <= '9') ||
+        strncmp(orig_path, "$NASH_SESSION_DIR/", 18) == 0)
       snprintf(msg, sizeof(msg),
                "cannot stat '%.4095s': %s. "
-               "This looks like a store ref alias -- "
+               "This looks like a store ref -- "
                "re-run the original command to regenerate it.",
                path, strerror(errno));
     else
@@ -152,7 +153,7 @@ tool_result_t tool_file_read(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddNumberToObject(meta, "lines", total_lines);
   }
   cJSON_AddNumberToObject(meta, "chars", (double)display_len);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Compute max inline chars: % of context window, or fixed limit fallback.
      * file_read_context_pct (default 10) caps inline content to N% of the
@@ -337,7 +338,7 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
   tool_result_t res = tool_result_ok();
   cJSON_AddStringToObject(res.meta, "path", path);
   cJSON_AddNumberToObject(res.meta, "bytes", (double)len);
-  cJSON_AddStringToObject(res.meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(res.meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   tool_track_modified_file(ctx, path, ctx->step);
   plan_check_evidence_staleness(ctx, path);

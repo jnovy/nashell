@@ -282,7 +282,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(meta, "status", "subtask completed");
   cJSON_AddStringToObject(meta, "result", result);
   cJSON_AddNumberToObject(meta, "depth", depth + 1);
-  if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+  if (alias) { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Store child_dir basename in params so TUI can build reactR0.md link */
   char child_basename[64];

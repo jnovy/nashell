@@ -241,7 +241,7 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
   if (use_regex) cJSON_AddBoolToObject(meta, "regex", 1);
   if (days > 0) cJSON_AddNumberToObject(meta, "days", days);
   cJSON_AddNumberToObject(meta, "chars", (double)out.len);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Include preview for small results */
   if (out.len > 0 && out.len < 500) {

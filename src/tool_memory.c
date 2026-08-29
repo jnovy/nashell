@@ -650,7 +650,7 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
 
   tool_result_t res = tool_result_ok();
   cJSON_AddStringToObject(res.meta, "key", key);
-  if (alias) cJSON_AddStringToObject(res.meta, "ref", alias);
+  if (alias) { char _ref[64]; cJSON_AddStringToObject(res.meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Surface contradiction warning if detected */
   if (contradiction_warn && contradiction_warn[0])
@@ -874,7 +874,7 @@ finish:;
     cJSON_AddNumberToObject(meta, "sessions", ses_count);
   if (total_lexical_matches > 0)
     cJSON_AddNumberToObject(meta, "lexical_matches", total_lexical_matches);
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   tools_inject_thought(ctx, params);
   tool_journal(ctx, "memory_search",

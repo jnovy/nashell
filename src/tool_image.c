@@ -416,7 +416,7 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddNumberToObject(meta, "image_size", (double)img_len);
   cJSON_AddStringToObject(meta, "question", question);
   cJSON_AddNumberToObject(meta, "chars", (double)strlen(analysis));
-  cJSON_AddStringToObject(meta, "ref", alias);
+  { char _ref[64]; cJSON_AddStringToObject(meta, "ref", tool_ref_path(alias, _ref, sizeof(_ref))); }
 
   /* Include analysis text inline if small enough */
   if (strlen(analysis) <= 50000) {
