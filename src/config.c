@@ -74,6 +74,14 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
   if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
   if (cfg->file_read_context_pct <= 0) cfg->file_read_context_pct = 10;
+  /* Lewis half-life working view defaults.
+   * view_enabled: -1 or 0 (unset) -> 1 (on by default).
+   * User can disable via view_enabled = false in config. */
+  if (cfg->view_enabled <= 0) cfg->view_enabled = 1;
+  if (cfg->view_keep_full <= 0) cfg->view_keep_full = 4;
+  if (cfg->view_base_cap <= 0) cfg->view_base_cap = 4000;
+  if (cfg->view_min_cap <= 0) cfg->view_min_cap = 200;
+  if (cfg->view_activation_pct <= 0) cfg->view_activation_pct = 50;
   if (cfg->prune_min_score <= 0) cfg->prune_min_score = 0.35;
   if (cfg->prune_min_evidence <= 0) cfg->prune_min_evidence = 3;
   if (cfg->consolidation_threshold <= 0) cfg->consolidation_threshold = 0.82f;
@@ -431,6 +439,12 @@ config_t *config_load(const char *path) {
     }
     cfg->file_read_max_inline = toml_int(limits, "file_read_max_inline", -1);
     cfg->file_read_context_pct = toml_int(limits, "file_read_context_pct", -1);
+    /* Lewis half-life working view */
+    cfg->view_enabled = toml_int(limits, "view_enabled", -1);
+    cfg->view_keep_full = toml_int(limits, "view_keep_full", -1);
+    cfg->view_base_cap = toml_int(limits, "view_base_cap", -1);
+    cfg->view_min_cap = toml_int(limits, "view_min_cap", -1);
+    cfg->view_activation_pct = toml_int(limits, "view_activation_pct", -1);
     cfg->prune_min_score = toml_dbl(limits, "prune_min_score", 0);
     cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
     cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);

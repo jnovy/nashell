@@ -240,6 +240,13 @@ typedef struct {
   int file_read_max_inline;       /* max chars for file_read content inline */
   int file_read_context_pct;      /* max % of context window for file_read inline (0=use file_read_max_inline) */
 
+  /* [view] Lewis half-life working view (arXiv:2608.26218) */
+  int view_enabled;               /* 1 = build shortened view before provider call (default 1) */
+  int view_keep_full;             /* newest N tool results stay at full length (default 4) */
+  int view_base_cap;              /* max chars for first shortening tier (default 4000) */
+  int view_min_cap;               /* floor cap - never shorten below this (default 200) */
+  int view_activation_pct;        /* activate when prompt > this % of budget (default 50) */
+
   /* Self-Harness tunable surfaces (P3) — exposed for automated harness evolution.
      * These parameters can be tuned by the self-harness loop and validated via
      * the regression gate (--validate-harness compare). */

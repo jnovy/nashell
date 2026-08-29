@@ -1,4 +1,5 @@
 #include "react_internal.h"
+#include "react_view.h"
 #include "compress.h"
 #include "harness_metrics.h"
 #include <strings.h> /* strcasestr */
@@ -959,10 +960,35 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * no other thread reads them between here and provider_complete_stream(). */
     active_provider->cfg.enable_thinking = ctx->rt.enable_thinking;
     active_provider->cfg.thinking_budget = ctx->rt.thinking_budget;
-    char *response = provider_complete_stream(active_provider, chat, &stats,
+
+    /* Lewis half-life working view (arXiv:2608.26218):
+     * Build an ephemeral view that progressively shortens older tool
+     * results. The full record (chat) is never modified. */
+    view_policy_t vpol = view_policy_defaults();
+    vpol.context_budget = react_context_budget(ctx);
+    if (ctx->tools->cfg) {
+      vpol.enabled = ctx->tools->cfg->view_enabled;
+      vpol.keep_full = ctx->tools->cfg->view_keep_full;
+      vpol.base_cap = ctx->tools->cfg->view_base_cap;
+      vpol.min_cap = ctx->tools->cfg->view_min_cap;
+      vpol.activation_pct = ctx->tools->cfg->view_activation_pct;
+    }
+    view_stats_t vstats = {0};
+    llm_chat_t *view = view_build(chat, &vpol, &vstats);
+    llm_chat_t *prompt = view ? view : chat;
+
+    char *response = provider_complete_stream(active_provider, prompt, &stats,
                                               on_event ? react_stream_token_cb : NULL, &sctx,
                                               max_resp, rep_thresh,
                                               on_event ? react_progress_cb : NULL, &sctx);
+    if (vstats.activated) {
+      nash_log("view: record=%ld view=%ld shortened=%d (%.0f%% reduction)",
+               vstats.record_chars, vstats.view_chars, vstats.msgs_shortened,
+               vstats.record_chars > 0
+                 ? 100.0 * (1.0 - (double)vstats.view_chars / (double)vstats.record_chars)
+                 : 0.0);
+    }
+    view_free(view);
 
     if (!response) {
       /* If the HTTP call was aborted because of a pause request
