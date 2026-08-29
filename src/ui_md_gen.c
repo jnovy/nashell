@@ -1964,26 +1964,6 @@ static char *generate_working_mem_md(ui_state_t *ui) {
 
 /* ── F4: Scratchpad (full content browser) ──────────────── */
 
-/* Append content to str_t, stripping literal "$NASH_SESSION_DIR/" prefixes
- * so the UI shows clean ref aliases (e.g. "R0S5" instead of
- * "$NASH_SESSION_DIR/R0S5"). */
-static void append_stripped_session_dir(str_t *out, const char *content) {
-  static const char prefix[] = "$NASH_SESSION_DIR/";
-  static const size_t pfx_len = sizeof(prefix) - 1; /* 18 */
-  const char *p = content;
-  for (;;) {
-    const char *hit = strstr(p, prefix);
-    if (!hit) {
-      str_append_cstr(out, p);
-      return;
-    }
-    /* Append everything before the hit */
-    if (hit > p)
-      str_append(out, p, (size_t)(hit - p));
-    p = hit + pfx_len; /* skip the prefix, keep the ref alias */
-  }
-}
-
 static char *generate_scratchpad_md(ui_state_t *ui) {
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
@@ -2009,7 +1989,7 @@ static char *generate_scratchpad_md(ui_state_t *ui) {
                 sec->name ? sec->name : "(unnamed)",
                 sec->priority);
     if (sec->content && sec->content[0]) {
-      append_stripped_session_dir(&md, sec->content);
+      str_append_cstr(&md, sec->content);
       if (sec->content[strlen(sec->content) - 1] != '\n')
         str_append_cstr(&md, "\n");
     } else {
