@@ -788,7 +788,7 @@ static tool_result_t tool_user_ask_stub(tool_ctx_t *ctx, cJSON *params) {
 /* ── plan ──────────────────────────────────────────────── */
 
 /* Forward declarations for plan_parse_steps (defined below) */
-static cJSON *plan_parse_steps(const char *text);
+static cJSON *plan_parse_steps(const char *text, int *out_total_lines);
 static int plan_next_unchecked(const cJSON *steps, int after);
 
 /* Apply a single plan journal entry's params to the running plan state.
@@ -804,7 +804,7 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
   if (result_text && result_text[0]) {
     /* Plan create/replace: parse fresh steps */
     if (*steps) cJSON_Delete(*steps);
-    *steps = plan_parse_steps(result_text);
+    *steps = plan_parse_steps(result_text, NULL);
     *active_step = 1;
   } else if (op && strcmp(op, "check") == 0) {
     int step_num = json_int(params, "step", 0);
@@ -917,13 +917,23 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
     if (tool && params && !failed) {
       if (strcmp(tool, "plan") == 0) {
-        /* Collect archived (replaced) plans */
+        /* Collect archived (replaced) plans.
+         * Legacy journals have a separate op="archive" entry; newer
+         * journals embed "archived_steps" in the create entry itself
+         * (atomic replacement - single journal write). */
         const char *pop = json_str(params, "op");
         if (pop && strcmp(pop, "archive") == 0) {
+          /* Legacy: separate archive entry */
           cJSON *old = cJSON_GetObjectItem(params, "old_steps");
           if (old && cJSON_IsArray(old))
             cJSON_AddItemToArray(archived, cJSON_Duplicate(old, 1));
         } else {
+          /* Atomic: archived_steps embedded in create entry */
+          cJSON *arch_steps = cJSON_GetObjectItem(params,
+                                                  "archived_steps");
+          if (arch_steps && cJSON_IsArray(arch_steps))
+            cJSON_AddItemToArray(archived,
+                                 cJSON_Duplicate(arch_steps, 1));
           plan_apply_entry(&steps, &active_step, params);
         }
       } else if (strcmp(tool, "subtask") == 0) {
@@ -1351,13 +1361,17 @@ static char *plan_store_and_alias(tool_ctx_t *ctx, const cJSON *steps,
   return alias;
 }
 
-/* Parse numbered steps from plan text into a cJSON array of step objects. */
-static cJSON *plan_parse_steps(const char *text) {
+/* Parse numbered steps from plan text into a cJSON array of step objects.
+ * If out_total_lines is non-NULL, it receives the count of non-empty input
+ * lines so callers can detect (and warn about) silently dropped content. */
+static cJSON *plan_parse_steps(const char *text, int *out_total_lines) {
   cJSON *steps = cJSON_CreateArray();
+  int total_lines = 0;
   const char *p = text;
   while (*p) {
     while (*p == ' ' || *p == '\t') p++;
     if (*p >= '1' && *p <= '9') {
+      total_lines++;
       /* Skip number and punctuation (e.g. "1. ") */
       const char *line_start = p;
       while (*p && *p != '.' && *p != ')' && *p != ' ' && *p != '\n') p++;
@@ -1386,10 +1400,14 @@ static cJSON *plan_parse_steps(const char *text) {
       free(step_text);
       p = end;
     } else {
+      /* Non-numbered line - count if non-empty */
+      const char *ls = p;
       while (*p && *p != '\n') p++;
+      if (p > ls) total_lines++;
     }
     if (*p == '\n') p++;
   }
+  if (out_total_lines) *out_total_lines = total_lines;
   return steps;
 }
 
@@ -1399,7 +1417,8 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
 
   /* If "result" is provided, this is a plan create/replace (backward compat) */
   if (result && result[0]) {
-    cJSON *steps = plan_parse_steps(result);
+    int total_lines = 0;
+    cJSON *steps = plan_parse_steps(result, &total_lines);
     int n = cJSON_GetArraySize(steps);
     if (n == 0) {
       cJSON_Delete(steps);
@@ -1407,17 +1426,14 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
                               "Use '1. step' format.");
     }
 
-    /* Archive old plan if one exists (replan support).
-     * Journal the old steps so plan_replay_journal_dir() can
-     * reconstruct the history of replaced plans for F3 display. */
+    /* Embed archived steps into the create params for atomic
+     * replacement (single journal write).  plan_replay_journal_dir()
+     * extracts "archived_steps" during replay.  This replaces the
+     * legacy two-write pattern (separate archive + create entries). */
     cJSON *old_steps = plan_load(ctx);
     if (old_steps && cJSON_GetArraySize(old_steps) > 0) {
-      cJSON *archive_params = cJSON_CreateObject();
-      cJSON_AddStringToObject(archive_params, "op", "archive");
-      cJSON_AddItemToObject(archive_params, "old_steps",
+      cJSON_AddItemToObject(params, "archived_steps",
                             cJSON_Duplicate(old_steps, 1));
-      tool_journal(ctx, "plan", archive_params, NULL, 0, 0, NULL, NULL);
-      cJSON_Delete(archive_params);
     }
     cJSON_Delete(old_steps);
 
@@ -1442,6 +1458,14 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
     cJSON_AddStringToObject(meta, "status", "plan saved to scratchpad");
     cJSON_AddNumberToObject(meta, "steps", n);
     if (alias) cJSON_AddStringToObject(meta, "ref", alias);
+    if (total_lines > n) {
+      char drop_warn[128];
+      snprintf(drop_warn, sizeof(drop_warn),
+               "Parsed %d of %d non-empty lines as steps. "
+               "%d line(s) dropped (not numbered '1.' format).",
+               n, total_lines, total_lines - n);
+      cJSON_AddStringToObject(meta, "warning", drop_warn);
+    }
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "plan",
