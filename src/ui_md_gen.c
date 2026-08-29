@@ -1366,6 +1366,39 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     }
   }
 
+  /* In-flight subtask indicator: show subtask dirs that exist on disk
+   * but haven't been journaled yet (subtask tool_journal() only fires
+   * after react_run() completes in tool_subtask.c).  Without this,
+   * the parent's reactRX.md appears empty while a subtask runs. */
+  {
+    int sn = 0;
+    char **snames = plan_subtask_names(eff_dir, &sn);
+    if (snames) {
+      for (int si = 0; si < sn; si++) {
+        /* Skip subtasks already shown as completed journal entries */
+        int already_shown = 0;
+        for (int j = 0; j < nsteps; j++) {
+          if (steps[j].child_dir &&
+              strcmp(steps[j].child_dir, snames[si]) == 0) {
+            already_shown = 1;
+            break;
+          }
+        }
+        if (!already_shown) {
+          /* Check that the subtask dir has a journal (is active/ran) */
+          char sjpath[NASH_PATH_MAX];
+          snprintf(sjpath, sizeof(sjpath), "%s/%s/journal.jsonl",
+                   eff_dir, snames[si]);
+          if (access(sjpath, F_OK) == 0) {
+            str_appendf(&md, "~> [%s](%s/reactR0.md) running...\n",
+                        snames[si], snames[si]);
+          }
+        }
+      }
+      plan_subtask_names_free(snames, sn);
+    }
+  }
+
   /* Streaming indicator if actively running — show live progress */
   if (ui->status == STATUS_RUNNING &&
       ui->current_react_loop == react_loop) {
@@ -1725,49 +1758,66 @@ static void render_plan_level(str_t *md, const char *dir, int indent) {
   cJSON *root = plan_replay_journal_dir(dir);
   cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
   int active_step = root ? json_int(root, "active_step", 0) : 0;
-  if (!steps || !cJSON_IsArray(steps) || cJSON_GetArraySize(steps) == 0) {
-    cJSON_Delete(root);
-    return;
-  }
-  int total = cJSON_GetArraySize(steps);
-  int done_count = 0;
-  cJSON *item;
-  cJSON_ArrayForEach(item, steps) {
-    if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done_count++;
-  }
-  /* Header - only at root level (indent==0) */
-  if (indent == 0)
-    str_appendf(md, "## Plan Progress (%d/%d)\n\n", done_count, total);
+  int has_steps = (steps && cJSON_IsArray(steps) &&
+                   cJSON_GetArraySize(steps) > 0);
 
-  cJSON *links = plan_subtask_links(dir);
-  int idx = 0;
-  cJSON_ArrayForEach(item, steps) {
-    idx++;
-    int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
-    int is_stale = cJSON_IsTrue(cJSON_GetObjectItem(item, "stale"));
-    const char *text = json_str(item, "text");
-    const char *evidence = json_str(item, "evidence");
-    const char *marker;
-    if (is_done && is_stale) marker = "~";
-    else if (is_done) marker = "x";
-    else if (idx == active_step) marker = ">";
-    else marker = " ";
-    /* Indent */
-    for (int sp = 0; sp < indent; sp++) str_append_cstr(md, " ");
-    str_appendf(md, "%d. [%s] %s", idx, marker, text ? text : "?");
-    if (is_done && evidence && evidence[0])
-      str_appendf(md, " (%s)", evidence);
-    if (is_stale)
-      str_append_cstr(md, " (STALE)");
-    str_append_cstr(md, "\n");
+  if (has_steps) {
+    int total = cJSON_GetArraySize(steps);
+    int done_count = 0;
+    cJSON *item;
+    cJSON_ArrayForEach(item, steps) {
+      if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done_count++;
+    }
+    /* Header - only at root level (indent==0) */
+    if (indent == 0)
+      str_appendf(md, "## Plan Progress (%d/%d)\n\n", done_count, total);
 
-    /* Recursively render subtask plans linked to this step */
+    cJSON *links = plan_subtask_links(dir);
+    int idx = 0;
+    cJSON_ArrayForEach(item, steps) {
+      idx++;
+      int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
+      int is_stale = cJSON_IsTrue(cJSON_GetObjectItem(item, "stale"));
+      const char *text = json_str(item, "text");
+      const char *evidence = json_str(item, "evidence");
+      const char *marker;
+      if (is_done && is_stale) marker = "~";
+      else if (is_done) marker = "x";
+      else if (idx == active_step) marker = ">";
+      else marker = " ";
+      /* Indent */
+      for (int sp = 0; sp < indent; sp++) str_append_cstr(md, " ");
+      str_appendf(md, "%d. [%s] %s", idx, marker, text ? text : "?");
+      if (is_done && evidence && evidence[0])
+        str_appendf(md, " (%s)", evidence);
+      if (is_stale)
+        str_append_cstr(md, " (STALE)");
+      str_append_cstr(md, "\n");
+
+      /* Recursively render subtask plans linked to this step */
+      {
+        int sn = 0;
+        char **snames = plan_subtask_names(dir, &sn);
+        if (snames) {
+          for (int si = 0; si < sn; si++) {
+            if (plan_link_for(links, snames[si]) != idx) continue;
+            char child_dir[NASH_PATH_MAX];
+            snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
+            render_plan_level(md, child_dir, indent + 4);
+          }
+          plan_subtask_names_free(snames, sn);
+        }
+      }
+    }
+
+    /* Unlinked subtask plans (spawned before a plan existed, or
+     * in-flight subtasks whose completion hasn't been journaled yet) */
     {
       int sn = 0;
       char **snames = plan_subtask_names(dir, &sn);
       if (snames) {
         for (int si = 0; si < sn; si++) {
-          if (plan_link_for(links, snames[si]) != idx) continue;
+          if (plan_link_for(links, snames[si]) != 0) continue;
           char child_dir[NASH_PATH_MAX];
           snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
           render_plan_level(md, child_dir, indent + 4);
@@ -1775,23 +1825,23 @@ static void render_plan_level(str_t *md, const char *dir, int indent) {
         plan_subtask_names_free(snames, sn);
       }
     }
-  }
-
-  /* Unlinked subtask plans (spawned before a plan existed) */
-  {
+    cJSON_Delete(links);
+  } else {
+    /* No plan steps at this level - still check for subtask dirs
+     * that may have their own plans (e.g. in-flight subtasks whose
+     * parent hasn't journaled them yet, or subtasks spawned at a
+     * level that never created a formal plan). */
     int sn = 0;
     char **snames = plan_subtask_names(dir, &sn);
     if (snames) {
       for (int si = 0; si < sn; si++) {
-        if (plan_link_for(links, snames[si]) != 0) continue;
         char child_dir[NASH_PATH_MAX];
         snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
-        render_plan_level(md, child_dir, indent + 4);
+        render_plan_level(md, child_dir, indent);
       }
       plan_subtask_names_free(snames, sn);
     }
   }
-  cJSON_Delete(links);
 
   cJSON_Delete(root);
 }
