@@ -795,15 +795,21 @@ static int plan_next_unchecked(const cJSON *steps, int after);
  * Shared by plan_replay_journal_dir() and plan_subtask_links() so the
  * state-update logic lives in one place.  *steps is replaced on
  * create/replace; *active_step is updated on every op.  op="status" is
- * read-only (no state change). */
+ * read-only (no state change).  On plan replacement, old *steps are
+ * moved into the archived array (if non-NULL) rather than deleted -
+ * archives are derived from temporal flow, not stored in the journal. */
 static void plan_apply_entry(cJSON **steps, int *active_step,
-                             const cJSON *params) {
+                             cJSON *archived, const cJSON *params) {
   const char *result_text = json_str(params, "result");
   const char *op = json_str(params, "op");
 
   if (result_text && result_text[0]) {
-    /* Plan create/replace: parse fresh steps */
-    if (*steps) cJSON_Delete(*steps);
+    /* Plan create/replace: archive old steps (derived from temporal
+     * flow - no need to store archive data in the journal) */
+    if (*steps && archived)
+      cJSON_AddItemToArray(archived, *steps);
+    else if (*steps)
+      cJSON_Delete(*steps);
     *steps = plan_parse_steps(result_text, NULL);
     *active_step = 1;
   } else if (op && strcmp(op, "check") == 0) {
@@ -884,13 +890,13 @@ static void plan_apply_entry(cJSON **steps, int *active_step,
  * tool code (via ctx->session_dir) and UI rendering code.
  *
  * Returns a cJSON object with "steps" (array), "active_step" (number),
- * optionally "archived_plans" (array of step arrays), and
- * "subtask_links" (object mapping child dir basename to parent step).
+ * optionally "archived_plans" (array of step arrays derived from the
+ * temporal flow of plan create/replace entries), and "subtask_links"
+ * (object mapping child dir basename to parent step).
  * Returns NULL if no plan exists.  Caller owns the returned object.
  *
- * Subtask links are computed in the same journal pass (previously done
- * by a separate plan_subtask_links() function that re-parsed the entire
- * journal independently). */
+ * Subtask links and archived plans are both computed in the same
+ * journal pass - no archive data needs to be stored in the journal. */
 cJSON *plan_replay_journal_dir(const char *session_dir) {
   char jpath[NASH_PATH_MAX];
   path_join(jpath, sizeof(jpath), session_dir, "journal.jsonl");
@@ -917,25 +923,14 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 
     if (tool && params && !failed) {
       if (strcmp(tool, "plan") == 0) {
-        /* Collect archived (replaced) plans.
-         * Legacy journals have a separate op="archive" entry; newer
-         * journals embed "archived_steps" in the create entry itself
-         * (atomic replacement - single journal write). */
-        const char *pop = json_str(params, "op");
-        if (pop && strcmp(pop, "archive") == 0) {
-          /* Legacy: separate archive entry */
-          cJSON *old = cJSON_GetObjectItem(params, "old_steps");
-          if (old && cJSON_IsArray(old))
-            cJSON_AddItemToArray(archived, cJSON_Duplicate(old, 1));
-        } else {
-          /* Atomic: archived_steps embedded in create entry */
-          cJSON *arch_steps = cJSON_GetObjectItem(params,
-                                                  "archived_steps");
-          if (arch_steps && cJSON_IsArray(arch_steps))
-            cJSON_AddItemToArray(archived,
-                                 cJSON_Duplicate(arch_steps, 1));
-          plan_apply_entry(&steps, &active_step, params);
-        }
+        /* Archives are derived from temporal flow: when plan_apply_entry
+         * sees a new plan (result text), it snapshots the current steps
+         * into the archived array before replacing them.  No archive
+         * data needs to be stored in the journal - the journal entries
+         * themselves define the plan history.  Legacy op="archive" and
+         * "archived_steps" entries from older journals are harmless
+         * no-ops (plan_apply_entry ignores unknown ops). */
+        plan_apply_entry(&steps, &active_step, archived, params);
       } else if (strcmp(tool, "subtask") == 0) {
         /* Track which parent step each subtask was spawned under */
         const char *child = json_str(params, "child_dir");
@@ -1425,17 +1420,6 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
       return tools_make_error("No numbered steps found in plan text. "
                               "Use '1. step' format.");
     }
-
-    /* Embed archived steps into the create params for atomic
-     * replacement (single journal write).  plan_replay_journal_dir()
-     * extracts "archived_steps" during replay.  This replaces the
-     * legacy two-write pattern (separate archive + create entries). */
-    cJSON *old_steps = plan_load(ctx);
-    if (old_steps && cJSON_GetArraySize(old_steps) > 0) {
-      cJSON_AddItemToObject(params, "archived_steps",
-                            cJSON_Duplicate(old_steps, 1));
-    }
-    cJSON_Delete(old_steps);
 
     /* Reset in-memory staleness on plan create/replace */
     ctx->stale_steps = 0;
