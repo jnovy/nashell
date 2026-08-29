@@ -1676,6 +1676,154 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 /* f3_* helpers removed - now using shared plan_link_for(), plan_subtask_names(),
  * plan_subtask_names_free(), plan_render_subtask_items() from tools.c */
 
+/* Build an ancestor chain from root session dir down to eff_dir.
+ * chain[0] = root session dir, chain[depth-1] = eff_dir.
+ * Returns xstrdup'd array (caller frees each entry + array).
+ * If eff_dir is not inside a subtask, *out_depth = 1 and chain[0] = eff_dir. */
+static char **plan_ancestor_chain(const char *eff_dir, int *out_depth) {
+  /* Collect dirs bottom-up: walk dirname while basename starts with "subtask_" */
+  char **rev = NULL;
+  int n = 0, cap = 0;
+  char *cur = xstrdup(eff_dir);
+  for (;;) {
+    if (n == cap) {
+      cap = cap ? cap * 2 : 4;
+      char **tmp = xmalloc((size_t)cap * sizeof(char *));
+      if (rev) { memcpy(tmp, rev, (size_t)n * sizeof(char *)); free(rev); }
+      rev = tmp;
+    }
+    rev[n++] = cur;
+    /* Check if cur's basename starts with "subtask_" */
+    char *tmp_path = xstrdup(cur);
+    char *base = basename(tmp_path);
+    int is_subtask = (strncmp(base, "subtask_", 8) == 0);
+    free(tmp_path);
+    if (!is_subtask) break;
+    /* Go up one level */
+    char *tmp_path2 = xstrdup(cur);
+    char *parent = dirname(tmp_path2);
+    cur = xstrdup(parent);
+    free(tmp_path2);
+  }
+  /* Reverse to get root-first order */
+  char **chain = xmalloc((size_t)n * sizeof(char *));
+  for (int i = 0; i < n; i++)
+    chain[i] = rev[n - 1 - i];
+  free(rev);
+  *out_depth = n;
+  return chain;
+}
+
+/* Render a single plan level into md with the given indent prefix.
+ * active_child_name: if non-NULL, the subtask_N basename that is the
+ * "current" child - its sub-steps are rendered specially.
+ * indent: number of leading spaces for each line (0 for root level). */
+static void render_plan_level(str_t *md, const char *dir, int indent,
+                              const char *active_child_name) {
+  cJSON *root = plan_replay_journal_dir(dir);
+  cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
+  int active_step = root ? json_int(root, "active_step", 0) : 0;
+  if (!steps || !cJSON_IsArray(steps) || cJSON_GetArraySize(steps) == 0) {
+    cJSON_Delete(root);
+    return;
+  }
+  int total = cJSON_GetArraySize(steps);
+  int done_count = 0;
+  cJSON *item;
+  cJSON_ArrayForEach(item, steps) {
+    if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done_count++;
+  }
+  /* Header - only at root level (indent==0) */
+  if (indent == 0)
+    str_appendf(md, "## Plan Progress (%d/%d)\n\n", done_count, total);
+
+  cJSON *links = plan_subtask_links(dir);
+  int idx = 0;
+  cJSON_ArrayForEach(item, steps) {
+    idx++;
+    int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
+    int is_stale = cJSON_IsTrue(cJSON_GetObjectItem(item, "stale"));
+    const char *text = json_str(item, "text");
+    const char *evidence = json_str(item, "evidence");
+    const char *marker;
+    if (is_done && is_stale) marker = "~";
+    else if (is_done) marker = "x";
+    else if (idx == active_step) marker = ">";
+    else marker = " ";
+    /* Indent */
+    for (int sp = 0; sp < indent; sp++) str_append_cstr(md, " ");
+    str_appendf(md, "%d. [%s] %s", idx, marker, text ? text : "?");
+    if (is_done && evidence && evidence[0])
+      str_appendf(md, " (%s)", evidence);
+    if (is_stale)
+      str_append_cstr(md, " (STALE)");
+    str_append_cstr(md, "\n");
+
+    /* Subtask sub-plans linked to this step (except the active child -
+     * that will be rendered by the caller at the next nesting level). */
+    if (active_child_name) {
+      /* Render non-active subtasks linked to this step */
+      int sn = 0;
+      char **snames = plan_subtask_names(dir, &sn);
+      if (snames) {
+        int sub_start = 1;
+        for (int si = 0; si < sn; si++) {
+          if (plan_link_for(links, snames[si]) != idx) continue;
+          if (strcmp(snames[si], active_child_name) == 0) continue;
+          sub_start += plan_render_subtask_items(md, dir, snames[si],
+                                                 idx, sub_start);
+        }
+        plan_subtask_names_free(snames, sn);
+      }
+    } else {
+      /* No active child - render all subtask sub-plans normally */
+      plan_append_subtask_steps(md, dir, idx, links);
+    }
+  }
+
+  /* Unlinked subtask plans (spawned before a plan existed) */
+  if (!active_child_name) {
+    plan_append_unlinked_subtasks(md, dir, links);
+  }
+  cJSON_Delete(links);
+
+  /* Archived (replaced) plans - only at root level */
+  if (indent == 0) {
+    cJSON *arch = cJSON_GetObjectItem(root, "archived_plans");
+    if (arch && cJSON_IsArray(arch) && cJSON_GetArraySize(arch) > 0) {
+      int n_arch = cJSON_GetArraySize(arch);
+      str_append_cstr(md, "\n");
+      str_appendf(md, "## Previous Plans (%d replaced)\n\n", n_arch);
+      for (int pi = n_arch - 1; pi >= 0; pi--) {
+        cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
+        if (!old_steps || !cJSON_IsArray(old_steps)) continue;
+        int old_total = cJSON_GetArraySize(old_steps);
+        int old_done = 0;
+        cJSON *os;
+        cJSON_ArrayForEach(os, old_steps) {
+          if (cJSON_IsTrue(cJSON_GetObjectItem(os, "done"))) old_done++;
+        }
+        str_appendf(md, "Plan %d (%d/%d complete, replaced):\n",
+                    pi + 1, old_done, old_total);
+        int oi = 0;
+        cJSON_ArrayForEach(os, old_steps) {
+          oi++;
+          int od = cJSON_IsTrue(cJSON_GetObjectItem(os, "done"));
+          const char *ot = json_str(os, "text");
+          const char *oe = json_str(os, "evidence");
+          str_appendf(md, "  %d. [%s] %s", oi, od ? "x" : " ",
+                      ot ? ot : "?");
+          if (od && oe && oe[0])
+            str_appendf(md, " (%s)", oe);
+          str_append_cstr(md, "\n");
+        }
+        str_append_cstr(md, "\n");
+      }
+    }
+  }
+  cJSON_Delete(root);
+}
+
 static char *generate_working_mem_md(ui_state_t *ui) {
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
@@ -1683,83 +1831,61 @@ static char *generate_working_mem_md(ui_state_t *ui) {
   str_t md = str_new(4096);
   str_append_cstr(&md, "# Plan\n\n");
 
-  /* Plan progress - replay journal.jsonl to reconstruct plan state */
+  /* Build ancestor chain: root -> ... -> subtask_N (current) */
   {
-    cJSON *root = plan_replay_journal_dir(eff_dir);
-    cJSON *steps = root ? cJSON_GetObjectItem(root, "steps") : NULL;
-    int active_step = root ? json_int(root, "active_step", 0) : 0;
-    if (steps && cJSON_IsArray(steps) && cJSON_GetArraySize(steps) > 0) {
-      int total = cJSON_GetArraySize(steps);
-      int done = 0;
-      cJSON *item;
-      cJSON_ArrayForEach(item, steps) {
-        if (cJSON_IsTrue(cJSON_GetObjectItem(item, "done"))) done++;
-      }
-      str_appendf(&md, "## Plan Progress (%d/%d)\n\n", done, total);
-      /* Subtask -> parent step links, derived from the journal */
-      cJSON *links = plan_subtask_links(eff_dir);
-      int idx = 0;
-      cJSON_ArrayForEach(item, steps) {
-        idx++;
-        int is_done = cJSON_IsTrue(cJSON_GetObjectItem(item, "done"));
-        int is_stale = cJSON_IsTrue(cJSON_GetObjectItem(item, "stale"));
-        const char *text = json_str(item, "text");
-        const char *evidence = json_str(item, "evidence");
-        const char *marker;
-        if (is_done && is_stale) marker = "~";
-        else if (is_done) marker = "x";
-        else if (idx == active_step) marker = ">";
-        else marker = " ";
-        str_appendf(&md, "%d. [%s] %s", idx, marker, text ? text : "?");
-        if (is_done && evidence && evidence[0])
-          str_appendf(&md, " (%s)", evidence);
-        if (is_stale)
-          str_append_cstr(&md, " (STALE)");
-        str_append_cstr(&md, "\n");
+    int depth = 0;
+    char **chain = plan_ancestor_chain(eff_dir, &depth);
 
-        /* Subtask sub-plans linked to this step: N.M sub-items */
-        plan_append_subtask_steps(&md, eff_dir, idx, links);
-      }
+    if (depth > 1) {
+      /* Inside a subtask - render full hierarchy from root down */
+      for (int lvl = 0; lvl < depth; lvl++) {
+        /* Determine which child subtask is "active" at this level
+         * (i.e. the next level in the chain) */
+        const char *active_child = NULL;
+        char active_child_base[256] = {0};
+        if (lvl < depth - 1) {
+          /* chain[lvl+1] is the active child dir */
+          char *tmp = xstrdup(chain[lvl + 1]);
+          char *b = basename(tmp);
+          snprintf(active_child_base, sizeof(active_child_base), "%s", b);
+          free(tmp);
+          active_child = active_child_base;
+        }
 
-      /* Subtask sub-plans with no parent link (no plan at spawn):
-       * appended after the main plan as "Subtask N:" blocks */
-      plan_append_unlinked_subtasks(&md, eff_dir, links);
-      cJSON_Delete(links);
-      str_append_cstr(&md, "\n");
+        if (lvl == 0) {
+          /* Root level - render with full header */
+          render_plan_level(&md, chain[lvl], 0, active_child);
+          str_append_cstr(&md, "\n");
+        } else {
+          /* Nested subtask level - find which parent step links to us */
+          char *my_base_tmp = xstrdup(chain[lvl]);
+          char *my_base = basename(my_base_tmp);
+          cJSON *parent_links = plan_subtask_links(chain[lvl - 1]);
+          int parent_step = plan_link_for(parent_links, my_base);
+          cJSON_Delete(parent_links);
 
-      /* Archived (replaced) plans - shown as collapsed history */
-      cJSON *arch = cJSON_GetObjectItem(root, "archived_plans");
-      if (arch && cJSON_IsArray(arch) && cJSON_GetArraySize(arch) > 0) {
-        int n_arch = cJSON_GetArraySize(arch);
-        str_appendf(&md, "## Previous Plans (%d replaced)\n\n", n_arch);
-        for (int pi = n_arch - 1; pi >= 0; pi--) {
-          cJSON *old_steps = cJSON_GetArrayItem(arch, pi);
-          if (!old_steps || !cJSON_IsArray(old_steps)) continue;
-          int old_total = cJSON_GetArraySize(old_steps);
-          int old_done = 0;
-          cJSON *os;
-          cJSON_ArrayForEach(os, old_steps) {
-            if (cJSON_IsTrue(cJSON_GetObjectItem(os, "done"))) old_done++;
+          int indent = lvl * 2;
+          if (parent_step > 0) {
+            for (int sp = 0; sp < indent; sp++) str_append_cstr(&md, " ");
+            str_appendf(&md, "--- %s (step %d) ---\n", my_base, parent_step);
+          } else {
+            for (int sp = 0; sp < indent; sp++) str_append_cstr(&md, " ");
+            str_appendf(&md, "--- %s ---\n", my_base);
           }
-          str_appendf(&md, "Plan %d (%d/%d complete, replaced):\n",
-                      pi + 1, old_done, old_total);
-          int oi = 0;
-          cJSON_ArrayForEach(os, old_steps) {
-            oi++;
-            int od = cJSON_IsTrue(cJSON_GetObjectItem(os, "done"));
-            const char *ot = json_str(os, "text");
-            const char *oe = json_str(os, "evidence");
-            str_appendf(&md, "  %d. [%s] %s", oi, od ? "x" : " ",
-                        ot ? ot : "?");
-            if (od && oe && oe[0])
-              str_appendf(&md, " (%s)", oe);
-            str_append_cstr(&md, "\n");
-          }
+          free(my_base_tmp);
+
+          render_plan_level(&md, chain[lvl], indent, active_child);
           str_append_cstr(&md, "\n");
         }
       }
+    } else {
+      /* Top-level session - render single plan as before */
+      render_plan_level(&md, eff_dir, 0, NULL);
+      str_append_cstr(&md, "\n");
     }
-    cJSON_Delete(root);
+
+    for (int i = 0; i < depth; i++) free(chain[i]);
+    free(chain);
   }
 
   /* Scratchpad summary (section names + sizes, not full content) */
