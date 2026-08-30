@@ -378,6 +378,26 @@ static void session_init_tools(tool_ctx_t *tools, store_t *store,
   scratchpad_init(&tools->scratch);
   if (session_dir) {
     scratchpad_load(&tools->scratch, session_dir);
+    /* Ensure NASH_SESSION_DIR is always set for shell_exec commands.
+     * create_session_dir() sets this for new sessions, but resumed
+     * sessions (--session or CWD detection) bypass create_session_dir
+     * entirely, leaving the env var unset. Without it, shell commands
+     * using $NASH_SESSION_DIR/R0Sxx resolve to just /R0Sxx. */
+    setenv("NASH_SESSION_DIR", session_dir, 1);
+    /* Also set NASH_TEMP_DIR: extract epoch from session_dir basename
+     * and reconstruct the /tmp/.nash/ path. */
+    const char *epoch = strrchr(session_dir, '/');
+    if (epoch) {
+      epoch++; /* skip the '/' */
+      const char *ws_name = (ws && ws->name) ? ws->name : NULL;
+      char tmpdir[1088];
+      if (ws_name && ws_name[0])
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s/%s", ws_name, epoch);
+      else
+        snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
+      mkdir_p(tmpdir, 0755);
+      setenv("NASH_TEMP_DIR", tmpdir, 1);
+    }
   }
   tools->tool_filter = build_profile_tool_filter(cfg);
   tool_apply_default_blocks(&tools->tool_filter);

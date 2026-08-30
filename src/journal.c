@@ -114,6 +114,23 @@ static int journal_create_lazy_session(journal_t *j) {
   snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", path);
   j->path = xstrdup(jpath);
   j->lazy_created = 1;
+
+  /* Expose session path so shell_exec $NASH_SESSION_DIR/R0Sxx works.
+   * create_session_dir() does this for eager sessions; lazy sessions
+   * must do it here when the directory actually materializes. */
+  setenv("NASH_SESSION_DIR", path, 1);
+  {
+    char epoch[64];
+    snprintf(epoch, sizeof(epoch), "%ld.%05ld",
+             (long)tp.tv_sec, tp.tv_nsec / 10000);
+    char tmpdir[1088];
+    if (j->workspace && j->workspace[0])
+      snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s/%s", j->workspace, epoch);
+    else
+      snprintf(tmpdir, sizeof(tmpdir), "/tmp/.nash/%s", epoch);
+    mkdir_p(tmpdir, 0755);
+    setenv("NASH_TEMP_DIR", tmpdir, 1);
+  }
   return 0;
 }
 
