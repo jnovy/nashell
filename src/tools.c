@@ -2,6 +2,7 @@
 #include "tool_plugin.h"
 #include "subprocess.h"
 #include "memory.h"
+#include "predict.h"
 #include "tui.h"
 #include "scratchpad.h"
 #include <stdio.h>
@@ -55,6 +56,33 @@ void tool_journal_with_content(tool_ctx_t *ctx, const char *tool_name,
     *store_ref_out = alias ? xstrdup(alias) : NULL;
   free(alias);
   free(hash);
+}
+
+void tool_ctx_reset_query(tool_ctx_t *ctx) {
+  /* Free recalled keys */
+  for (int i = 0; i < ctx->n_recalled_keys; i++)
+    free(ctx->recalled_keys[i]);
+  free(ctx->recalled_keys);
+  ctx->recalled_keys = NULL;
+  ctx->n_recalled_keys = 0;
+  ctx->recalled_keys_cap = 0;
+
+  /* Free modified-files tracking (INFORM) */
+  for (int i = 0; i < ctx->n_modified_files; i++)
+    free(ctx->modified_files[i].path);
+  ctx->n_modified_files = 0;
+
+  /* Free edit transaction save-points */
+  tool_txn_clear(ctx);
+
+  /* Free fire ledger */
+  tool_fire_ledger_free(ctx);
+
+  /* Free prediction tracker */
+  if (ctx->predict) {
+    predict_tracker_free(ctx->predict);
+    ctx->predict = NULL;
+  }
 }
 
 /* tools_make_result() and tools_make_error() are static inline in

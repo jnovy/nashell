@@ -2653,30 +2653,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   /* Don't free last_query/last_result here — the caller (main.c) manages them.
      * They are set after each react_run() call and used to inject previous context. */
 
-  /* Reset recalled keys for next query (each task is independent) */
-  for (int i = 0; i < ctx->tools->n_recalled_keys; i++)
-    free(ctx->tools->recalled_keys[i]);
-  free(ctx->tools->recalled_keys);
-  ctx->tools->recalled_keys = NULL;
-  ctx->tools->n_recalled_keys = 0;
-  ctx->tools->recalled_keys_cap = 0;
-
-  /* Free modified-files tracking (INFORM) */
-  for (int i = 0; i < ctx->tools->n_modified_files; i++)
-    free(ctx->tools->modified_files[i].path);
-  ctx->tools->n_modified_files = 0;
-
-  /* Free edit transaction save-points */
-  tool_txn_clear(ctx->tools);
-
-  /* Free fire ledger (full cleanup, not just reset) */
-  tool_fire_ledger_free(ctx->tools);
-
-  /* Free prediction tracker */
-  if (ctx->tools->predict) {
-    predict_tracker_free(ctx->tools->predict);
-    ctx->tools->predict = NULL;
-  }
+  /* Reset per-query transient state in tool_ctx (recalled_keys, modified_files,
+   * txn_edits, fire_ledger, predict tracker). This was previously inlined here
+   * but belongs in the tool layer, not the react layer. */
+  tool_ctx_reset_query(ctx->tools);
 
   cycle_window_free(&cw);
   return final_result;

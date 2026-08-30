@@ -249,6 +249,12 @@ void tool_fire_ledger_add(tool_ctx_t *ctx, const char *key);
 void tool_fire_ledger_reset(tool_ctx_t *ctx);
 void tool_fire_ledger_free(tool_ctx_t *ctx);
 
+/* Reset per-query transient state in tool_ctx_t.
+ * Called at end of each react_run() to free recalled_keys, modified_files,
+ * txn_edits, fire_ledger, and predict tracker. Keeps session-level state
+ * (aliases, scratch, config pointers) intact. */
+void tool_ctx_reset_query(tool_ctx_t *ctx);
+
 /* Scan session_dir for existing R<loop>S<N> symlinks and return the
  * highest sequence number found, or -1 if none exist. */
 int alias_scan_max_seq(const char *session_dir, int react_loop);
