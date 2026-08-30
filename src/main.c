@@ -1325,6 +1325,725 @@ static int run_daemon(nash_ctx_t *ctx, int telegram_mode, int matrix_mode,
   return 0;
 }
 
+/* -- Interactive TUI mode ------------------------------------------
+ * Full ncurses session: persistent journal, inference threads,
+ * playbook support, tree branching, slash commands.
+ * Returns 0 always (TUI always exits cleanly). */
+static int run_tui(nash_ctx_t *ctx, const char *query,
+                   const char *session_dir_arg,
+                   int agent_tui_mode, const char *agent_target_id,
+                   char *agent_arguments)
+{
+  /* Detect existing session: --session arg, or CWD with journal.jsonl */
+  char *session_dir = NULL;
+  if (session_dir_arg) {
+    char jpath[4112];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
+    if (access(jpath, F_OK) == 0) {
+      session_dir = xstrdup(session_dir_arg);
+    } else {
+      fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
+    }
+  }
+  if (!session_dir) {
+    char cwd[NASH_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd))) {
+      char jpath[4112];
+      snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
+      if (access(jpath, F_OK) == 0) {
+        session_dir = xstrdup(cwd);
+      }
+    }
+  }
+
+  /* Interactive TUI needs session_dir immediately for journal display,
+   * so always create it eagerly (lazy sessions break TUI rendering). */
+  if (!session_dir) {
+    session_dir = create_session_dir(ctx->nash_dir, ctx->cfg->workspace);
+  }
+  journal_t *journal = journal_new(session_dir);
+  tool_ctx_t tools;
+  session_init_tools(&tools, ctx->shared_store, journal, ctx->memory,
+                     ctx->ws, session_dir, ctx->cfg, ctx->provider);
+  react_ctx_t react;
+  session_init_react(&react, ctx->provider, g_planner_provider, g_reflection_provider, &tools, ctx->cfg);
+
+  /* Initialize logging subsystem for TUI error routing */
+  nash_log_init(journal, ctx->shared_store);
+  nash_log_set_tools(&tools);
+
+  /* Create UI state and initialize TUI */
+  ui_state_t *ui = ui_state_new(session_dir, ctx->shared_store);
+  ui->nash_dir = xstrdup(ctx->nash_dir); /* for /? cross-session search */
+  if (ctx->ws && ctx->ws->name)
+    ui->workspace_name = xstrdup(ctx->ws->name); /* for status bar breadcrumb */
+  /* Pass model name + context info for nashell-style status bar */
+  if (ctx->server_model)
+    ui->model_name = xstrdup(ctx->server_model);
+  ui->context_size = ctx->context_size;
+  ui->context_used = 0;
+  ui->pause_flag = &react.pause_requested;                   /* Space -> pause react loop */
+  ui->abort_flag = ctx->provider ? &ctx->provider->abort_retry : NULL; /* abort in-progress HTTP call */
+  ui->bg_jobs = 0;
+  /* Show dream reminder in status bar if threshold exceeded */
+  if (ctx->cfg->dream_reminder_threshold > 0 && ctx->dream_new_count >= ctx->cfg->dream_reminder_threshold) {
+    char dream_msg[256];
+    snprintf(dream_msg, sizeof(dream_msg),
+             "[!] %d new memories -- /dream to consolidate", ctx->dream_new_count);
+    ui_state_set_status(ui, STATUS_READY, dream_msg);
+  } else {
+    ui_state_set_status(ui, STATUS_READY, "Ready");
+  }
+  /* Set banner text for main pane */
+  char *banner = build_banner_string(ctx->cfg, ctx->props_json, ctx->nash_dir, session_dir, ctx->matched_profile_file);
+  ui_state_set_banner(ui, banner);
+  free(banner);
+
+  /* Initialize TUI BEFORE loading journal, so visible_rows is set
+   * correctly for autoscroll calculations in rebuild_md(). */
+  tui_init();
+  nash_log_set_ui(ui);          /* enable TUI error routing */
+  ui->visible_rows = LINES - 4; /* terminal height minus chrome (top/bottom bars) */
+
+  /* Install SIGINT handler so Ctrl-C pauses the react loop instead
+   * of killing the process.  Uses sigaction (not signal) for
+   * portable behavior; no SA_RESTART so blocking calls get EINTR. */
+  {
+    struct sigaction sa_int;
+    memset(&sa_int, 0, sizeof(sa_int));
+    sa_int.sa_handler = tui_sigint_handler;
+    sigemptyset(&sa_int.sa_mask);
+    sa_int.sa_flags = 0;
+    sigaction(SIGINT, &sa_int, NULL);
+  }
+
+  /* Load existing journal entries into UI state */
+  ui_state_load_journal(ui, journal);
+
+  tui_render(ui);
+
+  /* Wrapper event callback: updates ViewModel + redraws TUI */
+  /* We use a struct to pass both ui and tui context */
+
+  /* Main TUI event loop */
+  int running = 1;
+  /* State machine: 0=idle (main thread only), 1=inference running,
+   * 3=playbook running. Values 1 and 3 mean infer_tid is joinable.
+   * FIX #13: Made atomic for defense in depth -- currently only the
+   * main thread reads/writes, but atomic_int prevents data races
+   * if future code accesses it from another thread. */
+  atomic_int inferring = INFER_IDLE;
+  pthread_t infer_tid;
+  /* Thread-shared args: static lifetime so they survive across loop
+   * iterations.  Thread ownership contract:
+   *   Written by main thread BEFORE pthread_create (happens-before).
+   *   Read by inference thread during react_run.
+   *   .done is atomic_int -- polled by main thread, set by infer thread.
+   *   Main thread only touches these again AFTER pthread_join. */
+  static infer_args_t iargs;
+  static playbook_args_t pargs_tui;
+  char *pending_redirect = NULL; /* stashed query when user types during inference */
+
+  /* Auto-dispatch agent when launched via --agent ID (interactive TUI mode) */
+  if (agent_tui_mode) {
+    char agent_cmd[1024];
+    snprintf(agent_cmd, sizeof(agent_cmd), "/agent run %s%s%s",
+             agent_target_id,
+             agent_arguments ? " " : "",
+             agent_arguments ? agent_arguments : "");
+    char *auto_cmd = xstrdup(agent_cmd);
+    command_ctx_t cmd_ctx = {
+      .session_dir = session_dir,
+      .nash_dir = ctx->nash_dir,
+      .tools = &tools,
+      .react = &react,
+      .ui = ui,
+      .journal = journal,
+      .provider = ctx->provider,
+      .consolidation_provider = g_consolidation_provider,
+      .cfg = ctx->cfg,
+      .store = ctx->shared_store,
+      .memory = ctx->memory,
+      .ws = ctx->ws,
+      .server_model = ctx->server_model,
+      .inferring = &inferring,
+      .infer_tid = &infer_tid,
+      .pargs = &pargs_tui,
+    };
+    command_dispatch(&cmd_ctx, &auto_cmd);
+    free(auto_cmd); /* in case dispatch didn't consume it */
+    free(agent_arguments);
+    agent_arguments = NULL;
+  }
+
+  /* Auto-dispatch -p/--query: submit the query immediately in the TUI.
+   * This gives the user the full ncurses display while the query runs.
+   * Unlike headless mode, the user can scroll, interact, and even
+   * submit follow-up queries after the initial one completes. */
+  if (query && !agent_tui_mode) {
+    char *final_query = xstrdup(query);
+    pthread_mutex_lock(&ui->mtx);
+    ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+    ui_state_add_query(ui, query);
+    ui->current_react_loop = tools.react_loop;
+    pthread_mutex_unlock(&ui->mtx);
+    tui_render(ui);
+    iargs = (infer_args_t){
+      .react = &react,
+      .query = final_query,
+      .ui = ui,
+      .result = NULL,
+      .done = 0,
+    };
+    if (ctx->provider)
+      ctx->provider->abort_retry = 0;
+    route_query_to_outbox(ctx->nash_dir, final_query,
+                          ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL, 1);
+    if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
+      atomic_store(&inferring, INFER_REACT);
+    } else {
+      nash_log("[main] failed to create inference thread");
+      free(final_query);
+      ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
+    }
+    tui_render(ui);
+  }
+
+  while (running) {
+    /* Check if playbook thread completed */
+    if (atomic_load(&inferring) == INFER_PLAYBOOK && atomic_load(&pargs_tui.done)) {
+      pthread_join(infer_tid, NULL);
+
+      /* Log to agent history if this was an /agent run */
+      if (pargs_tui.agent_id) {
+        int dur = (int)(time(NULL) - pargs_tui.agent_start_time);
+        const char *status = pargs_tui.playbook_ok ? "ok" : "fail";
+        agent_entry_t tmp_agent = {.id = pargs_tui.agent_id};
+        agent_history_append(pargs_tui.nash_dir, &tmp_agent,
+                             dur, status, NULL);
+        agent_queue_update_run(pargs_tui.nash_dir,
+                               pargs_tui.agent_id,
+                               pargs_tui.agent_start_time,
+                               dur, status);
+        if (pargs_tui.last_session_dir)
+          agent_save_result(pargs_tui.nash_dir,
+                            pargs_tui.agent_id,
+                            pargs_tui.last_session_dir);
+        free(pargs_tui.agent_id);
+        pargs_tui.agent_id = NULL;
+        free(pargs_tui.workspace_override);
+        pargs_tui.workspace_override = NULL;
+        workspace_free(pargs_tui.agent_ws);
+        pargs_tui.agent_ws = NULL;
+      }
+
+      /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+      route_to_outbox(ctx->nash_dir, pargs_tui.result_text,
+                      ctx->ws && ctx->ws->name ? ctx->ws->name : NULL,
+                      pargs_tui.playbook ? pargs_tui.playbook->name : NULL);
+
+      pthread_mutex_lock(&ui->mtx);
+      if (pargs_tui.playbook_ok) {
+        char done_msg[256];
+        snprintf(done_msg, sizeof(done_msg), "Playbook '%s' complete (%d passes)",
+                 pargs_tui.playbook->name, pargs_tui.playbook->n_passes);
+        ui_state_set_status(ui, STATUS_DONE, done_msg);
+      } else {
+        ui_state_set_status(ui, STATUS_ERROR, "Playbook failed");
+      }
+      /* Agent finished -- clear gates so session.md regen resumes.
+       * The user stays on the agent's reactRX.md until they press
+       * Escape, but session.md must be regenerable for when they do. */
+      ui->agent_view = 0;
+      ui->agent_running = 0;
+      ui_state_generate_session_md(ui);
+      pthread_mutex_unlock(&ui->mtx);
+      free(pargs_tui.result_text);
+      pargs_tui.result_text = NULL;
+      free(pargs_tui.last_session_dir);
+      pargs_tui.last_session_dir = NULL;
+      playbook_free(pargs_tui.playbook);
+      pargs_tui.playbook = NULL;
+      atomic_store(&inferring, INFER_IDLE);
+      tui_render(ui);
+    }
+
+    /* Check if playbook worker is waiting for user to continue (inter-pass pause) */
+    if (atomic_load(&inferring) == INFER_PLAYBOOK &&
+        atomic_load(&pargs_tui.waiting_for_user)) {
+      char pause_msg[256];
+      snprintf(pause_msg, sizeof(pause_msg), "Paused before pass: %s (press Enter to continue)",
+               pargs_tui.inter_pass_message ? pargs_tui.inter_pass_message : "next");
+      ui_locked_set_status(ui, STATUS_READY, pause_msg);
+    }
+
+    /* Check if inference thread is paused and waiting for redirect.
+     * Update status bar so user knows they can type a new query. */
+    if (atomic_load(&inferring) == INFER_REACT && atomic_load(&react.pause_waiting) &&
+        ui->status != STATUS_READY) {
+      ui_locked_set_status(ui, STATUS_READY,
+                           "Paused (type query to redirect, Space to resume)");
+    }
+
+    /* Check if inference thread completed */
+    if (atomic_load(&inferring) == INFER_REACT && atomic_load(&iargs.done)) {
+      pthread_join(infer_tid, NULL);
+      atomic_store(&inferring, INFER_IDLE);
+      tools.react_loop++; /* increment for next query */
+      /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
+      memory_prune(ctx->memory, ctx->cfg->prune_min_score, ctx->cfg->prune_min_evidence);
+      char *result = iargs.result;
+      /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+      route_to_outbox(ctx->nash_dir, result,
+                      ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL);
+      pthread_mutex_lock(&ui->mtx);
+      if (result) {
+        ui_state_set_status(ui, STATUS_DONE, "Done");
+        /* Refresh journal view to show completed query */
+        ui_state_load_journal(ui, journal);
+      } else if (atomic_load(&react.pause_requested) && !pending_redirect) {
+        /* FIX #3: Only enter pause path if no redirect is pending.
+         * Race condition: if user types while inference is finishing,
+         * the main thread may set pause_requested=1 after the inference
+         * thread has already completed (TOCTOU on iargs.done).
+         * When pending_redirect is set, the user intended to start a
+         * new query, not pause -- so skip the pause path and let the
+         * redirect be dispatched on the next iteration (line 1201). */
+        atomic_store(&react.pause_requested, 0); /* reset for next run */
+        react.paused = 1;
+        ui_state_set_status(ui, STATUS_READY,
+                            "Paused (Space to resume, type query to redirect)");
+      } else {
+        /* Clear stale pause_requested if redirect will take over */
+        atomic_store(&react.pause_requested, 0);
+        if (pending_redirect) {
+          ui_state_set_status(ui, STATUS_READY, "Redirecting...");
+        } else if (ui->status != STATUS_ERROR) {
+          /* Only set generic "No result" if a more descriptive
+           * error wasn't already surfaced by REACT_EVENT_ERROR */
+          ui_state_set_status(ui, STATUS_ERROR, "No result");
+        }
+      }
+      pthread_mutex_unlock(&ui->mtx);
+      tui_render(ui);
+      if (react.last_query) free(react.last_query);
+      if (react.last_result) free(react.last_result);
+      react.last_query = xstrdup(iargs.query);
+      react.last_result = result ? xstrdup(result) : NULL;
+      free(result);
+      free(iargs.query);
+      iargs.query = NULL;
+      pthread_mutex_lock(&ui->mtx);
+      ui_state_load_journal(ui, journal);
+      /* Only reset to Ready on success.  On error (result==NULL)
+       * preserve the STATUS_ERROR so the user actually sees it. */
+      if (react.last_result)
+        ui_state_set_status(ui, STATUS_READY, "Ready");
+      pthread_mutex_unlock(&ui->mtx);
+      tui_render(ui);
+    }
+    char *submitted_query = NULL;
+    int rc = tui_input(ui, &submitted_query);
+
+    if (rc == -1) {
+      /* Quit requested */
+      running = 0;
+      break;
+    }
+
+    /* Ctrl-C: SIGINT handler set g_sigint_received.
+     * Always terminate gracefully - log to journal and exit.
+     * If inference is running, abort it first. */
+    if (g_sigint_received) {
+      g_sigint_received = 0;
+      if (atomic_load(&inferring)) {
+        /* Log the Ctrl-C interruption to the journal */
+        journal_append(journal,
+                       react.tools->react_loop, react.tools->step,
+                       "user_interrupt", NULL, NULL,
+                       0, 0, NULL, NULL, 0.0);
+        /* Abort inference so shutdown can join the thread */
+        atomic_store(&react.pause_requested, 1);
+        if (ctx->provider) ctx->provider->abort_retry = 1;
+        ui_locked_set_status(ui, STATUS_READY, "Interrupted (Ctrl-C)");
+        tui_render(ui);
+      }
+      /* Terminate regardless of whether inference was running */
+      running = 0;
+      break;
+    }
+
+    /* Auto-dispatch stashed redirect: when inference was paused
+     * by user input (pending_redirect != NULL) and either:
+     * (a) the thread has joined (!inferring), or
+     * (b) the thread is paused and waiting on the condvar.
+     * In both cases, inject the stashed query immediately. */
+    if (!submitted_query && pending_redirect &&
+        (!atomic_load(&inferring) || atomic_load(&react.pause_waiting))) {
+      submitted_query = pending_redirect;
+      pending_redirect = NULL;
+    }
+
+    if (submitted_query) {
+      /* Check if inference thread is waiting for user_ask answer */
+      if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
+        /* Pass the user's answer to the waiting react loop.
+         * All writes to shared state (user_ask_answer, user_ask_pending)
+         * are done inside the mutex to ensure proper happens-before
+         * ordering with the inference thread's condvar wait. */
+        pthread_mutex_lock(&react.user_ask_mutex);
+        free(react.user_ask_answer);
+        react.user_ask_answer = submitted_query;
+        submitted_query = NULL;                   /* ownership transferred */
+        atomic_store(&react.user_ask_pending, 0); /* unblock the react loop */
+        pthread_cond_signal(&react.user_ask_cond);
+        pthread_mutex_unlock(&react.user_ask_mutex);
+        ui_locked_set_status(ui, STATUS_RUNNING, "Running...");
+        continue;
+      }
+
+      /* Check if playbook worker is waiting for inter-pass user confirmation */
+      if (atomic_load(&inferring) == INFER_PLAYBOOK &&
+          atomic_load(&pargs_tui.waiting_for_user)) {
+        free(submitted_query);
+        submitted_query = NULL;
+        atomic_store(&pargs_tui.waiting_for_user, 0);
+        ui_locked_set_status(ui, STATUS_RUNNING, "Continuing...");
+        continue;
+      }
+
+      /* Check if inference thread is paused and waiting for redirect */
+      if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
+        /* Pass the user's redirect query to the waiting react loop.
+         * This preserves the full chat context (no new react_run). */
+        pthread_mutex_lock(&react.pause_mutex);
+        free(react.pause_query);
+        react.pause_query = submitted_query;
+        submitted_query = NULL; /* ownership transferred */
+        pthread_cond_signal(&react.pause_cond);
+        pthread_mutex_unlock(&react.pause_mutex);
+        ui_locked_set_status(ui, STATUS_RUNNING, "Resuming...");
+        continue;
+      }
+
+      /* Handle exit/quit commands */
+      if (strcmp(submitted_query, "quit") == 0 ||
+          strcmp(submitted_query, "exit") == 0 ||
+          strcmp(submitted_query, "/quit") == 0 ||
+          strcmp(submitted_query, "/exit") == 0) {
+        free(submitted_query);
+        running = 0;
+        break;
+      }
+
+      /* FIX #4: Guard slash commands that access shared inference state.
+       * During inference, only user_ask, exit/quit, and regular queries
+       * (which get stashed as pending_redirect) are safe. Slash commands
+       * may read shared state written by the inference thread without
+       * synchronization. Defer them until inference completes. */
+      if (atomic_load(&inferring) && submitted_query[0] == '/' && strncmp(submitted_query, "/quit", 5) != 0 && strncmp(submitted_query, "/exit", 5) != 0) {
+        /* Stash as pending_redirect -- will execute after join */
+        free(pending_redirect);
+        pending_redirect = submitted_query;
+        submitted_query = NULL;
+        atomic_store(&react.pause_requested, 1);
+        ctx->provider->abort_retry = 1; /* wake provider_sleep early */
+        ui_locked_set_status(ui, STATUS_RUNNING,
+                             "Pausing to handle command...");
+        continue;
+      }
+
+      /* Dispatch slash commands via command_dispatch */
+      {
+        command_ctx_t cmd_ctx = {
+          .session_dir = session_dir,
+          .nash_dir = ctx->nash_dir,
+          .tools = &tools,
+          .react = &react,
+          .ui = ui,
+          .journal = journal,
+          .provider = ctx->provider,
+          .consolidation_provider = g_consolidation_provider,
+          .cfg = ctx->cfg,
+          .store = ctx->shared_store,
+          .memory = ctx->memory,
+          .ws = ctx->ws,
+          .server_model = ctx->server_model,
+          .inferring = &inferring,
+          .infer_tid = &infer_tid,
+          .pargs = &pargs_tui,
+        };
+        if (command_dispatch(&cmd_ctx, &submitted_query) == CMD_CONTINUE) {
+          continue;
+        }
+      }
+      /* submitted_query may have been modified by /continue */
+
+      /* If paused, any query (typed or Space-resume) clears the paused flag.
+       * checkpoint_restore will inject the query into restored context. */
+      if (react.paused) {
+        react.paused = 0;
+      }
+
+      /* Regular query -- spawn inference in background thread */
+      if (atomic_load(&inferring)) {
+        /* User typed while inference is running -- auto-pause and
+         * stash the query.  When the react loop breaks at the next
+         * step boundary the stashed query is dispatched immediately,
+         * eliminating the two-step "Space then type" dance. */
+        free(pending_redirect); /* replace any earlier stash */
+        pending_redirect = submitted_query;
+        submitted_query = NULL; /* ownership transferred */
+        atomic_store(&react.pause_requested, 1);
+        ctx->provider->abort_retry = 1; /* wake provider_sleep early */
+        ui_locked_set_status(ui, STATUS_RUNNING,
+                             "Pausing after current step...");
+        continue;
+      }
+      /* -- Tree branching: determine parent_loop -- */
+      int parent_loop = -1; /* default: root */
+      if (tools.react_loop > 0) {
+        int viewed_loop = -1;
+        pthread_mutex_lock(&ui->mtx);
+        const char *viewing = ui->current_filepath;
+        if (viewing) {
+          /* Find last '/' or use full string */
+          const char *base = strrchr(viewing, '/');
+          base = base ? base + 1 : viewing;
+          sscanf(base, "reactR%d.md", &viewed_loop);
+        }
+        pthread_mutex_unlock(&ui->mtx);
+        if (viewed_loop >= 0) {
+          parent_loop = viewed_loop;
+        } else {
+          /* Viewing session.md or something else -> linear follow-up */
+          parent_loop = tools.react_loop - 1;
+        }
+      }
+      react.parent_loop = parent_loop;
+
+      /* If branching (parent != latest completed loop), override
+       * result.md so [PREVIOUS RESULT] matches the branch point.
+       * Scratchpad filtering is done non-destructively in react.c
+       * at injection time (using parent_loop + journal ancestor chain). */
+      int is_branch = (parent_loop >= 0 &&
+                       parent_loop != tools.react_loop - 1);
+      if (is_branch) {
+        /* Override result.md with parent's result from scratchpad */
+        char sec_name[32];
+        snprintf(sec_name, sizeof(sec_name), "R%d_result", parent_loop);
+        int idx = scratchpad_find(&tools.scratch, sec_name);
+        if (idx >= 0) {
+          char rpath[NASH_PATH_MAX];
+          snprintf(rpath, sizeof(rpath), "%s/result.md", session_dir);
+          write_file(rpath, tools.scratch.sections[idx].content,
+                     strlen(tools.scratch.sections[idx].content));
+        }
+      }
+
+      /* Build the final query string -- add branch context hint if branching */
+      char *final_query;
+      if (is_branch) {
+        /* Find parent's query text from journal for context */
+        char parent_query_text[256] = "";
+        char jpath2[NASH_PATH_MAX];
+        snprintf(jpath2, sizeof(jpath2), "%s/journal.jsonl", session_dir);
+        struct {
+          int target_loop;
+          char *buf;
+        } pq_ctx = {parent_loop, parent_query_text};
+        jsonl_iterate(jpath2, find_parent_query_cb, &pq_ctx);
+        size_t fqlen = strlen(submitted_query) + 512;
+        final_query = xmalloc(fqlen);
+        if (final_query) {
+          snprintf(final_query, fqlen,
+                   "[Branched from R%d: \"%s\"]\n%s",
+                   parent_loop, parent_query_text, submitted_query);
+        } else {
+          final_query = xstrdup(submitted_query);
+        }
+      } else {
+        final_query = xstrdup(submitted_query);
+      }
+
+      pthread_mutex_lock(&ui->mtx);
+      ui_state_set_status(ui, STATUS_RUNNING, "Running...");
+      ui_state_add_query(ui, submitted_query);
+      ui->current_react_loop = tools.react_loop;
+      pthread_mutex_unlock(&ui->mtx);
+      tui_render(ui);
+      iargs = (infer_args_t){
+        .react = &react,
+        .query = final_query,
+        .ui = ui,
+        .result = NULL,
+        .done = 0,
+      };
+      ctx->provider->abort_retry = 0; /* reset before new inference */
+      /* Snapshot the file the user is viewing so the LLM gets
+       * context about what the user is looking at. */
+      free(react.tui_viewing_file);
+      react.tui_viewing_file = ui->current_filepath
+                                 ? xstrdup(ui->current_filepath)
+                                 : NULL;
+      free(submitted_query); /* strdup'd into final_query; ui_state_add_query also strdup'd */
+      /* Forward query to bridge for session threading */
+      route_query_to_outbox(ctx->nash_dir, final_query,
+                            ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL,
+                            tools.react_loop == 0 ? 1 : 0);
+      if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
+        atomic_store(&inferring, INFER_REACT);
+      } else {
+        nash_log("[main] failed to create inference thread");
+        free(final_query);
+        ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
+      }
+      tui_render(ui);
+    }
+
+    /* Always render if dirty */
+    if (ui->dirty) tui_render(ui);
+
+    /* -- Deferred regeneration ------------------------------------
+     * The inference thread's event handler sets needs_*_regen
+     * flags instead of doing expensive file I/O under the mutex.
+     * We perform the generation here on the main thread, keeping
+     * mutex hold time bounded to short in-memory operations.
+     *
+     * Throttled to 100ms intervals to avoid redundant work when
+     * multiple events fire in rapid succession. */
+    if (atomic_load(&inferring)) {
+      static struct timespec last_refresh = {0, 0};
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      long elapsed_ms = (now.tv_sec - last_refresh.tv_sec) * 1000 + (now.tv_nsec - last_refresh.tv_nsec) / 1000000;
+      if (elapsed_ms >= 100) {
+        last_refresh = now;
+        /* Snapshot and clear the deferred flags under mutex.
+         * The file I/O (generate + reload) is done here on the
+         * main thread.  The key fix is that the INFERENCE thread's
+         * event handler no longer does expensive I/O under the
+         * mutex -- it just sets these flags.  So even though we
+         * hold the mutex during generation, the inference thread
+         * is only blocked for its fast in-memory flag/state updates,
+         * not the other way around (which caused the TUI freeze). */
+        pthread_mutex_lock(&ui->mtx);
+        int do_react = ui->needs_react_regen;
+        int do_session = ui->needs_session_regen;
+        int do_reload = ui->needs_file_reload;
+        int cur_loop = ui->current_react_loop;
+        /* Force periodic regen while inference is active so
+         * the spinner, elapsed-time counter, and progress
+         * indicators stay live.  Previously this only fired
+         * during tool_executing, leaving the spinner frozen
+         * during prompt processing, between token arrivals,
+         * and between last token and TOOL_START. */
+        if (ui->status == STATUS_RUNNING)
+          do_react = 1;
+        ui->needs_react_regen = 0;
+        ui->needs_session_regen = 0;
+        ui->needs_file_reload = 0;
+
+        if (do_react)
+          ui_state_generate_react_md(ui, cur_loop);
+        if (do_session)
+          ui_state_generate_session_md(ui);
+        if (do_react || do_session || do_reload) {
+          if (ui->view_mode != VIEW_STREAM)
+            ui_state_generate_view_md(ui);
+          else
+            ui_state_reload_file(ui);
+          /* Request deferred auto-scroll -- only when viewing the
+           * active react loop's file, not when user navigated
+           * elsewhere (e.g. session.md, a different reactRX.md) */
+          if (ui->doc && !ui->user_scrolled) {
+            const char *fp = ui->current_filepath;
+            if (fp) {
+              char expect[64];
+              snprintf(expect, sizeof(expect), "reactR%d.md", cur_loop);
+              const char *base = strrchr(fp, '/');
+              base = base ? base + 1 : fp;
+              if (strcmp(base, expect) == 0) {
+                /* For playbook per-pass mode, also verify
+                 * we're in the correct session directory */
+                int path_ok = 1;
+                if (ui->playbook_session_dir) {
+                  char full[4096];
+                  path_join(full, sizeof(full),
+                            ui->playbook_session_dir, expect);
+                  path_ok = (strcmp(fp, full) == 0);
+                }
+                if (path_ok)
+                  ui->needs_auto_scroll = 1;
+              }
+            }
+          }
+          ui->dirty = 1;
+        }
+        pthread_mutex_unlock(&ui->mtx);
+        tui_render(ui);
+      }
+    }
+    /* TODO(perf): Replace busy-wait with poll/select + eventfd for proper wake-up signaling */
+    {
+      struct timespec ts = {0, 50000000};
+      nanosleep(&ts, NULL);
+    } /* 50ms */
+  }
+
+  /* If inference thread is paused on condvar, wake it up so it can exit.
+   * Send a "quit" redirect that will cause the loop to take one more step
+   * and then exit naturally (or we just signal to unblock it). */
+  if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
+    pthread_mutex_lock(&react.pause_mutex);
+    str_replace(&react.pause_query, "quit");
+    atomic_store(&react.pause_requested, 0); /* clear so loop doesn't re-pause */
+    pthread_cond_signal(&react.pause_cond);
+    pthread_mutex_unlock(&react.pause_mutex);
+  }
+  /* If inference thread is paused on user_ask condvar, unblock it too */
+  if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
+    pthread_mutex_lock(&react.user_ask_mutex);
+    str_replace(&react.user_ask_answer, "(quit)");
+    atomic_store(&react.user_ask_pending, 0);
+    pthread_cond_signal(&react.user_ask_cond);
+    pthread_mutex_unlock(&react.user_ask_mutex);
+  }
+  if (atomic_load(&inferring)) {
+    /* Clear g_tui_active BEFORE joining so the inference thread's
+     * escape hatches fire: react_wait_for_redirect breaks out of
+     * its condvar wait (react.c), and the curl progress callback
+     * aborts any in-flight HTTP request (provider.c).  Without
+     * this, the thread can hang in a condvar wait or curl call
+     * after Ctrl-C, causing pthread_join to block forever. */
+    atomic_store(&g_tui_active, 0);
+    pthread_join(infer_tid, NULL);
+    atomic_store(&inferring, INFER_IDLE);
+    free(iargs.result);
+    free(iargs.query);
+  }
+  free(pending_redirect); /* clean up any un-dispatched redirect */
+  tui_shutdown();
+  nash_log_set_ui(NULL); /* disable TUI error routing */
+  ui_state_free(ui);
+
+  /* Save scratchpad */
+  if (tools.scratch.count > 0) {
+    scratchpad_save(&tools.scratch, session_dir);
+  }
+  session_cleanup(&tools, &react, journal);
+  /* Remove session directory if it's empty (no work was done) */
+  if (session_dir && is_dir_empty(session_dir)) {
+    rmdir(session_dir);
+  }
+  if (session_dir) free(session_dir);
+
+  printf("Bye.\n");
+  web_search_cleanup();  /* tear down auto-started SearXNG container */
+  tool_plugin_cleanup(); /* dlclose any loaded external plugins */
+  return 0;
+}
+
 int main(int argc, char **argv) {
   /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -2109,715 +2828,11 @@ int main(int argc, char **argv) {
     return rc;
   }
 
-  /* Interactive TUI mode — ONE session for ALL queries */
+  /* Interactive TUI mode -- ONE session for ALL queries */
   {
-    /* Detect existing session: --session arg, or CWD with journal.jsonl */
-    char *session_dir = NULL;
-    if (session_dir_arg) {
-      char jpath[4112];
-      snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
-      if (access(jpath, F_OK) == 0) {
-        session_dir = xstrdup(session_dir_arg);
-      } else {
-        fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
-      }
-    }
-    if (!session_dir) {
-      char cwd[NASH_PATH_MAX];
-      if (getcwd(cwd, sizeof(cwd))) {
-        char jpath[4112];
-        snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", cwd);
-        if (access(jpath, F_OK) == 0) {
-          session_dir = xstrdup(cwd);
-        }
-      }
-    }
-
-    /* Interactive TUI needs session_dir immediately for journal display,
-         * so always create it eagerly (lazy sessions break TUI rendering). */
-    if (!session_dir) {
-      session_dir = create_session_dir(nash_dir, cfg->workspace);
-    }
-    journal_t *journal = journal_new(session_dir);
-    tool_ctx_t tools;
-    session_init_tools(&tools, shared_store, journal, memory,
-                       ws, session_dir, cfg, provider);
-    react_ctx_t react;
-    session_init_react(&react, provider, g_planner_provider, g_reflection_provider, &tools, cfg);
-
-    /* Initialize logging subsystem for TUI error routing */
-    nash_log_init(journal, shared_store);
-    nash_log_set_tools(&tools);
-
-    /* Create UI state and initialize TUI */
-    ui_state_t *ui = ui_state_new(session_dir, shared_store);
-    ui->nash_dir = xstrdup(nash_dir); /* for /? cross-session search */
-    if (ws && ws->name)
-      ui->workspace_name = xstrdup(ws->name); /* for status bar breadcrumb */
-    /* Pass model name + context info for nashell-style status bar */
-    if (server_model)
-      ui->model_name = xstrdup(server_model);
-    ui->context_size = context_size;
-    ui->context_used = 0;
-    ui->pause_flag = &react.pause_requested;                   /* Space → pause react loop */
-    ui->abort_flag = provider ? &provider->abort_retry : NULL; /* abort in-progress HTTP call */
-    ui->bg_jobs = 0;
-    /* Show dream reminder in status bar if threshold exceeded */
-    if (cfg->dream_reminder_threshold > 0 && dream_new_count >= cfg->dream_reminder_threshold) {
-      char dream_msg[256];
-      snprintf(dream_msg, sizeof(dream_msg),
-               "⚠ %d new memories — /dream to consolidate", dream_new_count);
-      ui_state_set_status(ui, STATUS_READY, dream_msg);
-    } else {
-      ui_state_set_status(ui, STATUS_READY, "Ready");
-    }
-    /* Set banner text for main pane */
-    char *banner = build_banner_string(cfg, props_json, nash_dir, session_dir, matched_profile_file);
-    ui_state_set_banner(ui, banner);
-    free(banner);
-
-    /* Initialize TUI BEFORE loading journal, so visible_rows is set
-         * correctly for autoscroll calculations in rebuild_md(). */
-    tui_init();
-    nash_log_set_ui(ui);          /* enable TUI error routing */
-    ui->visible_rows = LINES - 4; /* terminal height minus chrome (top/bottom bars) */
-
-    /* Install SIGINT handler so Ctrl-C pauses the react loop instead
-     * of killing the process.  Uses sigaction (not signal) for
-     * portable behavior; no SA_RESTART so blocking calls get EINTR. */
-    {
-      struct sigaction sa_int;
-      memset(&sa_int, 0, sizeof(sa_int));
-      sa_int.sa_handler = tui_sigint_handler;
-      sigemptyset(&sa_int.sa_mask);
-      sa_int.sa_flags = 0;
-      sigaction(SIGINT, &sa_int, NULL);
-    }
-
-    /* Load existing journal entries into UI state */
-    ui_state_load_journal(ui, journal);
-
-    tui_render(ui);
-
-    /* Wrapper event callback: updates ViewModel + redraws TUI */
-    /* We use a struct to pass both ui and tui context */
-
-    /* Main TUI event loop */
-    int running = 1;
-    /* State machine: 0=idle (main thread only), 1=inference running,
-         * 3=playbook running. Values 1 and 3 mean infer_tid is joinable.
-         * FIX #13: Made atomic for defense in depth — currently only the
-         * main thread reads/writes, but atomic_int prevents data races
-         * if future code accesses it from another thread. */
-    atomic_int inferring = INFER_IDLE;
-    pthread_t infer_tid;
-    /* Thread-shared args: static lifetime so they survive across loop
-         * iterations.  Thread ownership contract:
-         *   Written by main thread BEFORE pthread_create (happens-before).
-         *   Read by inference thread during react_run.
-         *   .done is atomic_int — polled by main thread, set by infer thread.
-         *   Main thread only touches these again AFTER pthread_join. */
-    static infer_args_t iargs;
-    static playbook_args_t pargs_tui;
-    char *pending_redirect = NULL; /* stashed query when user types during inference */
-
-    /* Auto-dispatch agent when launched via --agent ID (interactive TUI mode) */
-    if (agent_tui_mode) {
-      char agent_cmd[1024];
-      snprintf(agent_cmd, sizeof(agent_cmd), "/agent run %s%s%s",
-               agent_target_id,
-               agent_arguments ? " " : "",
-               agent_arguments ? agent_arguments : "");
-      char *auto_cmd = xstrdup(agent_cmd);
-      command_ctx_t cmd_ctx = {
-        .session_dir = session_dir,
-        .nash_dir = nash_dir,
-        .tools = &tools,
-        .react = &react,
-        .ui = ui,
-        .journal = journal,
-        .provider = provider,
-        .consolidation_provider = g_consolidation_provider,
-        .cfg = cfg,
-        .store = shared_store,
-        .memory = memory,
-        .ws = ws,
-        .server_model = server_model,
-        .inferring = &inferring,
-        .infer_tid = &infer_tid,
-        .pargs = &pargs_tui,
-      };
-      command_dispatch(&cmd_ctx, &auto_cmd);
-      free(auto_cmd); /* in case dispatch didn't consume it */
-      free(agent_arguments);
-      agent_arguments = NULL;
-    }
-
-    /* Auto-dispatch -p/--query: submit the query immediately in the TUI.
-     * This gives the user the full ncurses display while the query runs.
-     * Unlike headless mode, the user can scroll, interact, and even
-     * submit follow-up queries after the initial one completes. */
-    if (query && !agent_tui_mode) {
-      char *final_query = xstrdup(query);
-      pthread_mutex_lock(&ui->mtx);
-      ui_state_set_status(ui, STATUS_RUNNING, "Running...");
-      ui_state_add_query(ui, query);
-      ui->current_react_loop = tools.react_loop;
-      pthread_mutex_unlock(&ui->mtx);
-      tui_render(ui);
-      iargs = (infer_args_t){
-        .react = &react,
-        .query = final_query,
-        .ui = ui,
-        .result = NULL,
-        .done = 0,
-      };
-      if (provider)
-        provider->abort_retry = 0;
-      route_query_to_outbox(nash_dir, final_query,
-                            ws && ws->name ? ws->name : NULL, NULL, 1);
-      if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
-        atomic_store(&inferring, INFER_REACT);
-      } else {
-        nash_log("[main] failed to create inference thread");
-        free(final_query);
-        ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
-      }
-      tui_render(ui);
-    }
-
-    while (running) {
-      /* Check if playbook thread completed */
-      if (atomic_load(&inferring) == INFER_PLAYBOOK && atomic_load(&pargs_tui.done)) {
-        pthread_join(infer_tid, NULL);
-
-        /* Log to agent history if this was an /agent run */
-        if (pargs_tui.agent_id) {
-          int dur = (int)(time(NULL) - pargs_tui.agent_start_time);
-          const char *status = pargs_tui.playbook_ok ? "ok" : "fail";
-          agent_entry_t tmp_agent = {.id = pargs_tui.agent_id};
-          agent_history_append(pargs_tui.nash_dir, &tmp_agent,
-                               dur, status, NULL);
-          agent_queue_update_run(pargs_tui.nash_dir,
-                                 pargs_tui.agent_id,
-                                 pargs_tui.agent_start_time,
-                                 dur, status);
-          if (pargs_tui.last_session_dir)
-            agent_save_result(pargs_tui.nash_dir,
-                              pargs_tui.agent_id,
-                              pargs_tui.last_session_dir);
-          free(pargs_tui.agent_id);
-          pargs_tui.agent_id = NULL;
-          free(pargs_tui.workspace_override);
-          pargs_tui.workspace_override = NULL;
-          workspace_free(pargs_tui.agent_ws);
-          pargs_tui.agent_ws = NULL;
-        }
-
-        /* Route result to outbox if a daemon (--matrix/--telegram) is running */
-        route_to_outbox(nash_dir, pargs_tui.result_text,
-                        ws && ws->name ? ws->name : NULL,
-                        pargs_tui.playbook ? pargs_tui.playbook->name : NULL);
-
-        pthread_mutex_lock(&ui->mtx);
-        if (pargs_tui.playbook_ok) {
-          char done_msg[256];
-          snprintf(done_msg, sizeof(done_msg), "Playbook '%s' complete (%d passes)",
-                   pargs_tui.playbook->name, pargs_tui.playbook->n_passes);
-          ui_state_set_status(ui, STATUS_DONE, done_msg);
-        } else {
-          ui_state_set_status(ui, STATUS_ERROR, "Playbook failed");
-        }
-        /* Agent finished — clear gates so session.md regen resumes.
-                 * The user stays on the agent's reactRX.md until they press
-                 * Escape, but session.md must be regenerable for when they do. */
-        ui->agent_view = 0;
-        ui->agent_running = 0;
-        ui_state_generate_session_md(ui);
-        pthread_mutex_unlock(&ui->mtx);
-        free(pargs_tui.result_text);
-        pargs_tui.result_text = NULL;
-        free(pargs_tui.last_session_dir);
-        pargs_tui.last_session_dir = NULL;
-        playbook_free(pargs_tui.playbook);
-        pargs_tui.playbook = NULL;
-        atomic_store(&inferring, INFER_IDLE);
-        tui_render(ui);
-      }
-
-      /* Check if playbook worker is waiting for user to continue (inter-pass pause) */
-      if (atomic_load(&inferring) == INFER_PLAYBOOK &&
-          atomic_load(&pargs_tui.waiting_for_user)) {
-        char pause_msg[256];
-        snprintf(pause_msg, sizeof(pause_msg), "Paused before pass: %s (press Enter to continue)",
-                 pargs_tui.inter_pass_message ? pargs_tui.inter_pass_message : "next");
-        ui_locked_set_status(ui, STATUS_READY, pause_msg);
-      }
-
-      /* Check if inference thread is paused and waiting for redirect.
-             * Update status bar so user knows they can type a new query. */
-      if (atomic_load(&inferring) == INFER_REACT && atomic_load(&react.pause_waiting) &&
-          ui->status != STATUS_READY) {
-        ui_locked_set_status(ui, STATUS_READY,
-                             "Paused (type query to redirect, Space to resume)");
-      }
-
-      /* Check if inference thread completed */
-      if (atomic_load(&inferring) == INFER_REACT && atomic_load(&iargs.done)) {
-        pthread_join(infer_tid, NULL);
-        atomic_store(&inferring, INFER_IDLE);
-        tools.react_loop++; /* increment for next query */
-        /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
-        memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
-        char *result = iargs.result;
-        /* Route result to outbox if a daemon (--matrix/--telegram) is running */
-        route_to_outbox(nash_dir, result,
-                        ws && ws->name ? ws->name : NULL, NULL);
-        pthread_mutex_lock(&ui->mtx);
-        if (result) {
-          ui_state_set_status(ui, STATUS_DONE, "Done");
-          /* Refresh journal view to show completed query */
-          ui_state_load_journal(ui, journal);
-        } else if (atomic_load(&react.pause_requested) && !pending_redirect) {
-          /* FIX #3: Only enter pause path if no redirect is pending.
-                     * Race condition: if user types while inference is finishing,
-                     * the main thread may set pause_requested=1 after the inference
-                     * thread has already completed (TOCTOU on iargs.done).
-                     * When pending_redirect is set, the user intended to start a
-                     * new query, not pause — so skip the pause path and let the
-                     * redirect be dispatched on the next iteration (line 1201). */
-          atomic_store(&react.pause_requested, 0); /* reset for next run */
-          react.paused = 1;
-          ui_state_set_status(ui, STATUS_READY,
-                              "Paused (Space to resume, type query to redirect)");
-        } else {
-          /* Clear stale pause_requested if redirect will take over */
-          atomic_store(&react.pause_requested, 0);
-          if (pending_redirect) {
-            ui_state_set_status(ui, STATUS_READY, "Redirecting...");
-          } else if (ui->status != STATUS_ERROR) {
-            /* Only set generic "No result" if a more descriptive
-                         * error wasn't already surfaced by REACT_EVENT_ERROR */
-            ui_state_set_status(ui, STATUS_ERROR, "No result");
-          }
-        }
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
-        if (react.last_query) free(react.last_query);
-        if (react.last_result) free(react.last_result);
-        react.last_query = xstrdup(iargs.query);
-        react.last_result = result ? xstrdup(result) : NULL;
-        free(result);
-        free(iargs.query);
-        iargs.query = NULL;
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_load_journal(ui, journal);
-        /* Only reset to Ready on success.  On error (result==NULL)
-                 * preserve the STATUS_ERROR so the user actually sees it. */
-        if (react.last_result)
-          ui_state_set_status(ui, STATUS_READY, "Ready");
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
-      }
-      char *submitted_query = NULL;
-      int rc = tui_input(ui, &submitted_query);
-
-      if (rc == -1) {
-        /* Quit requested */
-        running = 0;
-        break;
-      }
-
-      /* Ctrl-C: SIGINT handler set g_sigint_received.
-       * Always terminate gracefully - log to journal and exit.
-       * If inference is running, abort it first. */
-      if (g_sigint_received) {
-        g_sigint_received = 0;
-        if (atomic_load(&inferring)) {
-          /* Log the Ctrl-C interruption to the journal */
-          journal_append(journal,
-                         react.tools->react_loop, react.tools->step,
-                         "user_interrupt", NULL, NULL,
-                         0, 0, NULL, NULL, 0.0);
-          /* Abort inference so shutdown can join the thread */
-          atomic_store(&react.pause_requested, 1);
-          if (provider) provider->abort_retry = 1;
-          ui_locked_set_status(ui, STATUS_READY, "Interrupted (Ctrl-C)");
-          tui_render(ui);
-        }
-        /* Terminate regardless of whether inference was running */
-        running = 0;
-        break;
-      }
-
-      /* Auto-dispatch stashed redirect: when inference was paused
-             * by user input (pending_redirect != NULL) and either:
-             * (a) the thread has joined (!inferring), or
-             * (b) the thread is paused and waiting on the condvar.
-             * In both cases, inject the stashed query immediately. */
-      if (!submitted_query && pending_redirect &&
-          (!atomic_load(&inferring) || atomic_load(&react.pause_waiting))) {
-        submitted_query = pending_redirect;
-        pending_redirect = NULL;
-      }
-
-      if (submitted_query) {
-        /* Check if inference thread is waiting for user_ask answer */
-        if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
-          /* Pass the user's answer to the waiting react loop.
-                     * All writes to shared state (user_ask_answer, user_ask_pending)
-                     * are done inside the mutex to ensure proper happens-before
-                     * ordering with the inference thread's condvar wait. */
-          pthread_mutex_lock(&react.user_ask_mutex);
-          free(react.user_ask_answer);
-          react.user_ask_answer = submitted_query;
-          submitted_query = NULL;                   /* ownership transferred */
-          atomic_store(&react.user_ask_pending, 0); /* unblock the react loop */
-          pthread_cond_signal(&react.user_ask_cond);
-          pthread_mutex_unlock(&react.user_ask_mutex);
-          ui_locked_set_status(ui, STATUS_RUNNING, "Running...");
-          continue;
-        }
-
-        /* Check if playbook worker is waiting for inter-pass user confirmation */
-        if (atomic_load(&inferring) == INFER_PLAYBOOK &&
-            atomic_load(&pargs_tui.waiting_for_user)) {
-          free(submitted_query);
-          submitted_query = NULL;
-          atomic_store(&pargs_tui.waiting_for_user, 0);
-          ui_locked_set_status(ui, STATUS_RUNNING, "Continuing...");
-          continue;
-        }
-
-        /* Check if inference thread is paused and waiting for redirect */
-        if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
-          /* Pass the user's redirect query to the waiting react loop.
-                     * This preserves the full chat context (no new react_run). */
-          pthread_mutex_lock(&react.pause_mutex);
-          free(react.pause_query);
-          react.pause_query = submitted_query;
-          submitted_query = NULL; /* ownership transferred */
-          pthread_cond_signal(&react.pause_cond);
-          pthread_mutex_unlock(&react.pause_mutex);
-          ui_locked_set_status(ui, STATUS_RUNNING, "Resuming...");
-          continue;
-        }
-
-        /* Handle exit/quit commands */
-        if (strcmp(submitted_query, "quit") == 0 ||
-            strcmp(submitted_query, "exit") == 0 ||
-            strcmp(submitted_query, "/quit") == 0 ||
-            strcmp(submitted_query, "/exit") == 0) {
-          free(submitted_query);
-          running = 0;
-          break;
-        }
-
-        /* FIX #4: Guard slash commands that access shared inference state.
-                 * During inference, only user_ask, exit/quit, and regular queries
-                 * (which get stashed as pending_redirect) are safe. Slash commands
-                 * may read shared state written by the inference thread without
-                 * synchronization. Defer them until inference completes. */
-        if (atomic_load(&inferring) && submitted_query[0] == '/' && strncmp(submitted_query, "/quit", 5) != 0 && strncmp(submitted_query, "/exit", 5) != 0) {
-          /* Stash as pending_redirect — will execute after join */
-          free(pending_redirect);
-          pending_redirect = submitted_query;
-          submitted_query = NULL;
-          atomic_store(&react.pause_requested, 1);
-          provider->abort_retry = 1; /* wake provider_sleep early */
-          ui_locked_set_status(ui, STATUS_RUNNING,
-                               "Pausing to handle command…");
-          continue;
-        }
-
-        /* Dispatch slash commands via command_dispatch */
-        {
-          command_ctx_t cmd_ctx = {
-            .session_dir = session_dir,
-            .nash_dir = nash_dir,
-            .tools = &tools,
-            .react = &react,
-            .ui = ui,
-            .journal = journal,
-            .provider = provider,
-            .consolidation_provider = g_consolidation_provider,
-            .cfg = cfg,
-            .store = shared_store,
-            .memory = memory,
-            .ws = ws,
-            .server_model = server_model,
-            .inferring = &inferring,
-            .infer_tid = &infer_tid,
-            .pargs = &pargs_tui,
-          };
-          if (command_dispatch(&cmd_ctx, &submitted_query) == CMD_CONTINUE) {
-            continue;
-          }
-        }
-        /* submitted_query may have been modified by /continue */
-
-        /* If paused, any query (typed or Space-resume) clears the paused flag.
-                 * checkpoint_restore will inject the query into restored context. */
-        if (react.paused) {
-          react.paused = 0;
-        }
-
-        /* Regular query — spawn inference in background thread */
-        if (atomic_load(&inferring)) {
-          /* User typed while inference is running — auto-pause and
-                     * stash the query.  When the react loop breaks at the next
-                     * step boundary the stashed query is dispatched immediately,
-                     * eliminating the two-step "Space then type" dance. */
-          free(pending_redirect); /* replace any earlier stash */
-          pending_redirect = submitted_query;
-          submitted_query = NULL; /* ownership transferred */
-          atomic_store(&react.pause_requested, 1);
-          provider->abort_retry = 1; /* wake provider_sleep early */
-          ui_locked_set_status(ui, STATUS_RUNNING,
-                               "Pausing after current step…");
-          continue;
-        }
-        /* ── Tree branching: determine parent_loop ── */
-        int parent_loop = -1; /* default: root */
-        if (tools.react_loop > 0) {
-          int viewed_loop = -1;
-          pthread_mutex_lock(&ui->mtx);
-          const char *viewing = ui->current_filepath;
-          if (viewing) {
-            /* Find last '/' or use full string */
-            const char *base = strrchr(viewing, '/');
-            base = base ? base + 1 : viewing;
-            sscanf(base, "reactR%d.md", &viewed_loop);
-          }
-          pthread_mutex_unlock(&ui->mtx);
-          if (viewed_loop >= 0) {
-            parent_loop = viewed_loop;
-          } else {
-            /* Viewing session.md or something else → linear follow-up */
-            parent_loop = tools.react_loop - 1;
-          }
-        }
-        react.parent_loop = parent_loop;
-
-        /* If branching (parent != latest completed loop), override
-                 * result.md so [PREVIOUS RESULT] matches the branch point.
-                 * Scratchpad filtering is done non-destructively in react.c
-                 * at injection time (using parent_loop + journal ancestor chain). */
-        int is_branch = (parent_loop >= 0 &&
-                         parent_loop != tools.react_loop - 1);
-        if (is_branch) {
-          /* Override result.md with parent's result from scratchpad */
-          char sec_name[32];
-          snprintf(sec_name, sizeof(sec_name), "R%d_result", parent_loop);
-          int idx = scratchpad_find(&tools.scratch, sec_name);
-          if (idx >= 0) {
-            char rpath[NASH_PATH_MAX];
-            snprintf(rpath, sizeof(rpath), "%s/result.md", session_dir);
-            write_file(rpath, tools.scratch.sections[idx].content,
-                       strlen(tools.scratch.sections[idx].content));
-          }
-        }
-
-        /* Build the final query string — add branch context hint if branching */
-        char *final_query;
-        if (is_branch) {
-          /* Find parent's query text from journal for context */
-          char parent_query_text[256] = "";
-          char jpath2[NASH_PATH_MAX];
-          snprintf(jpath2, sizeof(jpath2), "%s/journal.jsonl", session_dir);
-          struct {
-            int target_loop;
-            char *buf;
-          } pq_ctx = {parent_loop, parent_query_text};
-          jsonl_iterate(jpath2, find_parent_query_cb, &pq_ctx);
-          size_t fqlen = strlen(submitted_query) + 512;
-          final_query = xmalloc(fqlen);
-          if (final_query) {
-            snprintf(final_query, fqlen,
-                     "[Branched from R%d: \"%s\"]\n%s",
-                     parent_loop, parent_query_text, submitted_query);
-          } else {
-            final_query = xstrdup(submitted_query);
-          }
-        } else {
-          final_query = xstrdup(submitted_query);
-        }
-
-        pthread_mutex_lock(&ui->mtx);
-        ui_state_set_status(ui, STATUS_RUNNING, "Running...");
-        ui_state_add_query(ui, submitted_query);
-        ui->current_react_loop = tools.react_loop;
-        pthread_mutex_unlock(&ui->mtx);
-        tui_render(ui);
-        iargs = (infer_args_t){
-          .react = &react,
-          .query = final_query,
-          .ui = ui,
-          .result = NULL,
-          .done = 0,
-        };
-        provider->abort_retry = 0; /* reset before new inference */
-        /* Snapshot the file the user is viewing so the LLM gets
-                 * context about what the user is looking at. */
-        free(react.tui_viewing_file);
-        react.tui_viewing_file = ui->current_filepath
-                                   ? xstrdup(ui->current_filepath)
-                                   : NULL;
-        free(submitted_query); /* strdup'd into final_query; ui_state_add_query also strdup'd */
-        /* Forward query to bridge for session threading */
-        route_query_to_outbox(nash_dir, final_query,
-                              ws && ws->name ? ws->name : NULL, NULL,
-                              tools.react_loop == 0 ? 1 : 0);
-        if (pthread_create(&infer_tid, NULL, infer_worker, &iargs) == 0) {
-          atomic_store(&inferring, INFER_REACT);
-        } else {
-          nash_log("[main] failed to create inference thread");
-          free(final_query);
-          ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
-        }
-        tui_render(ui);
-      }
-
-      /* Always render if dirty */
-      if (ui->dirty) tui_render(ui);
-
-      /* ── Deferred regeneration ─────────────────────────────
-             * The inference thread's event handler sets needs_*_regen
-             * flags instead of doing expensive file I/O under the mutex.
-             * We perform the generation here on the main thread, keeping
-             * mutex hold time bounded to short in-memory operations.
-             *
-             * Throttled to 100ms intervals to avoid redundant work when
-             * multiple events fire in rapid succession. */
-      if (atomic_load(&inferring)) {
-        static struct timespec last_refresh = {0, 0};
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        long elapsed_ms = (now.tv_sec - last_refresh.tv_sec) * 1000 + (now.tv_nsec - last_refresh.tv_nsec) / 1000000;
-        if (elapsed_ms >= 100) {
-          last_refresh = now;
-          /* Snapshot and clear the deferred flags under mutex.
-                     * The file I/O (generate + reload) is done here on the
-                     * main thread.  The key fix is that the INFERENCE thread's
-                     * event handler no longer does expensive I/O under the
-                     * mutex — it just sets these flags.  So even though we
-                     * hold the mutex during generation, the inference thread
-                     * is only blocked for its fast in-memory flag/state updates,
-                     * not the other way around (which caused the TUI freeze). */
-          pthread_mutex_lock(&ui->mtx);
-          int do_react = ui->needs_react_regen;
-          int do_session = ui->needs_session_regen;
-          int do_reload = ui->needs_file_reload;
-          int cur_loop = ui->current_react_loop;
-          /* Force periodic regen while inference is active so
-                     * the spinner, elapsed-time counter, and progress
-                     * indicators stay live.  Previously this only fired
-                     * during tool_executing, leaving the spinner frozen
-                     * during prompt processing, between token arrivals,
-                     * and between last token and TOOL_START. */
-          if (ui->status == STATUS_RUNNING)
-            do_react = 1;
-          ui->needs_react_regen = 0;
-          ui->needs_session_regen = 0;
-          ui->needs_file_reload = 0;
-
-          if (do_react)
-            ui_state_generate_react_md(ui, cur_loop);
-          if (do_session)
-            ui_state_generate_session_md(ui);
-          if (do_react || do_session || do_reload) {
-            if (ui->view_mode != VIEW_STREAM)
-              ui_state_generate_view_md(ui);
-            else
-              ui_state_reload_file(ui);
-            /* Request deferred auto-scroll — only when viewing the
-                         * active react loop's file, not when user navigated
-                         * elsewhere (e.g. session.md, a different reactRX.md) */
-            if (ui->doc && !ui->user_scrolled) {
-              const char *fp = ui->current_filepath;
-              if (fp) {
-                char expect[64];
-                snprintf(expect, sizeof(expect), "reactR%d.md", cur_loop);
-                const char *base = strrchr(fp, '/');
-                base = base ? base + 1 : fp;
-                if (strcmp(base, expect) == 0) {
-                  /* For playbook per-pass mode, also verify
-                                     * we're in the correct session directory */
-                  int path_ok = 1;
-                  if (ui->playbook_session_dir) {
-                    char full[4096];
-                    path_join(full, sizeof(full),
-                              ui->playbook_session_dir, expect);
-                    path_ok = (strcmp(fp, full) == 0);
-                  }
-                  if (path_ok)
-                    ui->needs_auto_scroll = 1;
-                }
-              }
-            }
-            ui->dirty = 1;
-          }
-          pthread_mutex_unlock(&ui->mtx);
-          tui_render(ui);
-        }
-      }
-      /* TODO(perf): Replace busy-wait with poll/select + eventfd for proper wake-up signaling */
-      {
-        struct timespec ts = {0, 50000000};
-        nanosleep(&ts, NULL);
-      } /* 50ms */
-    }
-
-    /* If inference thread is paused on condvar, wake it up so it can exit.
-         * Send a "quit" redirect that will cause the loop to take one more step
-         * and then exit naturally (or we just signal to unblock it). */
-    if (atomic_load(&inferring) && atomic_load(&react.pause_waiting)) {
-      pthread_mutex_lock(&react.pause_mutex);
-      str_replace(&react.pause_query, "quit");
-      atomic_store(&react.pause_requested, 0); /* clear so loop doesn't re-pause */
-      pthread_cond_signal(&react.pause_cond);
-      pthread_mutex_unlock(&react.pause_mutex);
-    }
-    /* If inference thread is paused on user_ask condvar, unblock it too */
-    if (atomic_load(&inferring) && atomic_load(&react.user_ask_pending)) {
-      pthread_mutex_lock(&react.user_ask_mutex);
-      str_replace(&react.user_ask_answer, "(quit)");
-      atomic_store(&react.user_ask_pending, 0);
-      pthread_cond_signal(&react.user_ask_cond);
-      pthread_mutex_unlock(&react.user_ask_mutex);
-    }
-    if (atomic_load(&inferring)) {
-      /* Clear g_tui_active BEFORE joining so the inference thread's
-       * escape hatches fire: react_wait_for_redirect breaks out of
-       * its condvar wait (react.c), and the curl progress callback
-       * aborts any in-flight HTTP request (provider.c).  Without
-       * this, the thread can hang in a condvar wait or curl call
-       * after Ctrl-C, causing pthread_join to block forever. */
-      atomic_store(&g_tui_active, 0);
-      pthread_join(infer_tid, NULL);
-      atomic_store(&inferring, INFER_IDLE);
-      free(iargs.result);
-      free(iargs.query);
-    }
-    free(pending_redirect); /* clean up any un-dispatched redirect */
-    tui_shutdown();
-    nash_log_set_ui(NULL); /* disable TUI error routing */
-    ui_state_free(ui);
-
-    /* Save scratchpad */
-    if (tools.scratch.count > 0) {
-      scratchpad_save(&tools.scratch, session_dir);
-    }
-    session_cleanup(&tools, &react, journal);
-    /* Remove session directory if it's empty (no work was done) */
-    if (session_dir && is_dir_empty(session_dir)) {
-      rmdir(session_dir);
-    }
-    if (session_dir) free(session_dir);
+    int rc = run_tui(&ctx, query, session_dir_arg,
+                     agent_tui_mode, agent_target_id, agent_arguments);
+    nash_ctx_free(&ctx);
+    return rc;
   }
-  printf("Bye.\n");
-  web_search_cleanup();  /* tear down auto-started SearXNG container */
-  tool_plugin_cleanup(); /* dlclose any loaded external plugins */
-  nash_ctx_free(&ctx);
-  return 0;
 }
