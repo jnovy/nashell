@@ -898,6 +898,12 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
   char *query_text = NULL;
   char line[NASH_LINE_MAX];
 
+  /* Collect child_dir names from subtask entries across ALL react loops.
+   * Used by the in-flight subtask indicator to avoid showing completed
+   * subtasks from prior loops as "running..." in the current loop. */
+  char **all_child_dirs = NULL;
+  int n_all_child_dirs = 0, cap_all_child_dirs = 0;
+
   /* Local accumulators for per-loop stats reconstructed from journal.
    * These allow the stats footer to display for ANY react loop,
    * not just the currently-active one. */
@@ -911,6 +917,25 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
 
     int loop = json_int(entry, "react_loop", 0);
     const char *tool = json_str(entry, "tool");
+
+    /* Track subtask child_dirs from ALL loops (not just current) so
+     * the in-flight indicator knows which subtasks already completed. */
+    if (tool && strcmp(tool, "subtask") == 0) {
+      cJSON *params = cJSON_GetObjectItem(entry, "params");
+      const char *cd = params ? json_str(params, "child_dir") : NULL;
+      if (cd) {
+        if (n_all_child_dirs >= cap_all_child_dirs) {
+          cap_all_child_dirs = cap_all_child_dirs ? cap_all_child_dirs * 2 : 8;
+          char **tmp = xmalloc((size_t)cap_all_child_dirs * sizeof(char *));
+          if (all_child_dirs) {
+            memcpy(tmp, all_child_dirs, (size_t)n_all_child_dirs * sizeof(char *));
+            free(all_child_dirs);
+          }
+          all_child_dirs = tmp;
+        }
+        all_child_dirs[n_all_child_dirs++] = xstrdup(cd);
+      }
+    }
 
     if (loop != react_loop || !tool) {
       cJSON_Delete(entry);
@@ -1394,11 +1419,13 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
     char **snames = plan_subtask_names(eff_dir, &sn);
     if (snames) {
       for (int si = 0; si < sn; si++) {
-        /* Skip subtasks already shown as completed journal entries */
+        /* Skip subtasks already journaled in ANY react loop (not just
+         * current).  Without this, completed subtasks from prior loops
+         * show as "running..." in subsequent loops because the current
+         * loop's steps[] has no child_dir entries for them. */
         int already_shown = 0;
-        for (int j = 0; j < nsteps; j++) {
-          if (steps[j].child_dir &&
-              strcmp(steps[j].child_dir, snames[si]) == 0) {
+        for (int j = 0; j < n_all_child_dirs; j++) {
+          if (strcmp(all_child_dirs[j], snames[si]) == 0) {
             already_shown = 1;
             break;
           }
@@ -1708,6 +1735,9 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
   }
   free(steps);
   free(query_text);
+  for (int i = 0; i < n_all_child_dirs; i++)
+    free(all_child_dirs[i]);
+  free(all_child_dirs);
 
   char *md_str = str_steal(&md);
   char rpath[NASH_PATH_MAX];
