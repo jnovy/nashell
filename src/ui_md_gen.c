@@ -1835,46 +1835,77 @@ static void render_plan_level(str_t *md, const char *dir, int indent) {
               const char *ref = plan_link_ref(links, snames[si]);
               for (int sp = 0; sp < indent + 4; sp++)
                 str_append_cstr(md, " ");
-              str_appendf(md, "[%s]", snames[si]);
+              str_appendf(md, "[%s](%s/reactR0.md)", snames[si], child_dir);
               if (ref && ref[0])
-                str_appendf(md, " (%s)", ref);
+                str_appendf(md, " [%s](%s#subtask)", ref, ref);
               str_append_cstr(md, "\n");
             }
           }
           plan_subtask_names_free(snames, sn);
         }
       }
+
+      /* Render unlinked subtasks under the active step so in-flight
+       * subtasks appear where they logically belong, not at the end. */
+      if (idx == active_step) {
+        int usn = 0;
+        char **unames = plan_subtask_names(dir, &usn);
+        if (unames) {
+          for (int ui = 0; ui < usn; ui++) {
+            if (plan_link_for(links, unames[ui]) != 0) continue;
+            char uchild_dir[NASH_PATH_MAX];
+            snprintf(uchild_dir, sizeof(uchild_dir), "%s/%s", dir, unames[ui]);
+            cJSON *ucroot = plan_replay_journal_dir(uchild_dir);
+            cJSON *ucsteps = ucroot ? cJSON_GetObjectItem(ucroot, "steps") : NULL;
+            int uchild_has_plan = (ucsteps && cJSON_IsArray(ucsteps) &&
+                                   cJSON_GetArraySize(ucsteps) > 0);
+            cJSON_Delete(ucroot);
+            if (uchild_has_plan) {
+              render_plan_level(md, uchild_dir, indent + 4);
+            } else {
+              const char *ref = plan_link_ref(links, unames[ui]);
+              for (int sp = 0; sp < indent + 4; sp++)
+                str_append_cstr(md, " ");
+              str_appendf(md, "[%s](%s/reactR0.md)", unames[ui], uchild_dir);
+              if (ref && ref[0])
+                str_appendf(md, " [%s](%s#subtask)", ref, ref);
+              str_append_cstr(md, "\n");
+            }
+          }
+          plan_subtask_names_free(unames, usn);
+        }
+      }
     }
 
-    /* Unlinked subtask plans (spawned before a plan existed, or
-     * in-flight subtasks whose completion hasn't been journaled yet) */
-    {
-      int sn = 0;
-      char **snames = plan_subtask_names(dir, &sn);
-      if (snames) {
-        for (int si = 0; si < sn; si++) {
-          if (plan_link_for(links, snames[si]) != 0) continue;
-          char child_dir[NASH_PATH_MAX];
-          snprintf(child_dir, sizeof(child_dir), "%s/%s", dir, snames[si]);
-          /* Same as linked path: show one-liner if child has no plan */
-          cJSON *croot = plan_replay_journal_dir(child_dir);
-          cJSON *csteps = croot ? cJSON_GetObjectItem(croot, "steps") : NULL;
-          int child_has_plan = (csteps && cJSON_IsArray(csteps) &&
-                                cJSON_GetArraySize(csteps) > 0);
-          cJSON_Delete(croot);
-          if (child_has_plan) {
-            render_plan_level(md, child_dir, indent + 4);
+    /* Fallback: if active_step is 0 (all steps done), render any
+     * remaining unlinked subtasks after the last step so they are
+     * still visible rather than silently dropped. */
+    if (active_step == 0) {
+      int usn = 0;
+      char **unames = plan_subtask_names(dir, &usn);
+      if (unames) {
+        for (int ui = 0; ui < usn; ui++) {
+          if (plan_link_for(links, unames[ui]) != 0) continue;
+          char uchild_dir[NASH_PATH_MAX];
+          snprintf(uchild_dir, sizeof(uchild_dir), "%s/%s", dir, unames[ui]);
+          cJSON *ucroot = plan_replay_journal_dir(uchild_dir);
+          cJSON *ucsteps = ucroot ? cJSON_GetObjectItem(ucroot, "steps") : NULL;
+          int uchild_has_plan = (ucsteps && cJSON_IsArray(ucsteps) &&
+                                 cJSON_GetArraySize(ucsteps) > 0);
+          cJSON_Delete(ucroot);
+          if (uchild_has_plan) {
+            render_plan_level(md, uchild_dir, indent + 4);
           } else {
-            const char *ref = plan_link_ref(links, snames[si]);
+            const char *ref = plan_link_ref(links, unames[ui]);
             for (int sp = 0; sp < indent + 4; sp++)
               str_append_cstr(md, " ");
-            str_appendf(md, "[%s]", snames[si]);
+            str_appendf(md, "[%s](%s/reactR0.md)", unames[ui], uchild_dir);
             if (ref && ref[0])
-              str_appendf(md, " (%s)", ref);
+              str_appendf(md, " [%s](%s#subtask)", ref, ref);
             str_append_cstr(md, "\n");
           }
         }
-        plan_subtask_names_free(snames, sn);
+        plan_subtask_names_free(unames, usn);
       }
     }
     cJSON_Delete(links);
