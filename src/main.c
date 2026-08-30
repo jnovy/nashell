@@ -301,7 +301,7 @@ static void *infer_worker(void *arg) {
 /* session_idx is set after session_init_tools by the caller or globally */
 static session_index_t *g_session_idx = NULL;
 
-/* Role-based provider routing — file-scope statics so cleanup_globals can free them.
+/* Role-based provider routing -- file-scope statics so nash_ctx_free can free them.
  * NULL = not configured (use default provider for that role). */
 static provider_t *g_planner_provider = NULL;
 static provider_t *g_reflection_provider = NULL;
@@ -429,32 +429,50 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
   journal_free(journal);
 }
 
-/* Unified cleanup for global resources.
- * Replaces 8+ duplicated cleanup sequences across early-return paths.
- * All _free functions handle NULL safely. */
-static void cleanup_globals(store_t *shared_store, workspace_t *ws,
-                            provider_t *provider, char *nash_dir,
-                            char *props_json, char *server_model,
-                            config_t *cfg) {
-  session_index_free(g_session_idx);
+/* Shared state created by main()'s setup section, passed to mode runners.
+ * Bundles the 10+ loose variables that every mode needs.  Initialized in
+ * two stages: first after provider/model-info, then after store/ws/memory.
+ * nash_ctx_free() handles NULL fields safely, so partial init is fine. */
+typedef struct {
+  config_t       *cfg;
+  char           *nash_dir;
+  provider_t     *provider;
+  store_t        *shared_store;
+  workspace_t    *ws;
+  memory_t       *memory;           /* ws->global shortcut */
+  char           *server_model;
+  char           *props_json;
+  int             context_size;
+  session_index_t *session_idx;
+  int             dream_new_count;
+  const char     *matched_profile_file;
+  char            config_path[NASH_PATH_MAX]; /* for daemon bridge init */
+} nash_ctx_t;
+
+/* Unified cleanup for global resources via nash_ctx_t.
+ * All _free functions handle NULL safely, so partial init is fine. */
+static void nash_ctx_free(nash_ctx_t *ctx) {
+  if (!ctx) return;
+  session_index_free(ctx->session_idx);
+  ctx->session_idx = NULL;
   g_session_idx = NULL;
-  store_free(shared_store);
-  workspace_free(ws);
+  store_free(ctx->shared_store);
+  workspace_free(ctx->ws);
   /* Free role providers (if different from main provider) */
-  if (g_planner_provider && g_planner_provider != provider)
+  if (g_planner_provider && g_planner_provider != ctx->provider)
     provider_free(g_planner_provider);
-  if (g_reflection_provider && g_reflection_provider != provider)
+  if (g_reflection_provider && g_reflection_provider != ctx->provider)
     provider_free(g_reflection_provider);
-  if (g_consolidation_provider && g_consolidation_provider != provider)
+  if (g_consolidation_provider && g_consolidation_provider != ctx->provider)
     provider_free(g_consolidation_provider);
   g_planner_provider = NULL;
   g_reflection_provider = NULL;
   g_consolidation_provider = NULL;
-  provider_free(provider);
-  free(nash_dir);
-  free(props_json);
-  free(server_model);
-  config_free(cfg);
+  provider_free(ctx->provider);
+  free(ctx->nash_dir);
+  free(ctx->props_json);
+  free(ctx->server_model);
+  config_free(ctx->cfg);
 }
 
 /* ---- Background session chunk backfill thread -------------------------
@@ -1162,20 +1180,24 @@ int main(int argc, char **argv) {
     }
   }
 
+  /* ── Initialize nash_ctx (stage 1: provider/model fields) ──
+   * Remaining fields (shared_store, ws, memory, session_idx, dream_new_count)
+   * are filled in after creation below.  nash_ctx_free handles NULL safely. */
+  nash_ctx_t ctx = {
+    .cfg = cfg,
+    .nash_dir = nash_dir,
+    .provider = provider,
+    .server_model = server_model,
+    .props_json = props_json,
+    .context_size = context_size,
+    .matched_profile_file = matched_profile_file,
+  };
+  memcpy(ctx.config_path, config_path, sizeof(ctx.config_path));
+
   /* ── Spec mode: dump resolved config and exit ── */
   if (spec_mode) {
     config_dump_spec(cfg, stdout, matched_profile_file);
-    if (g_planner_provider && g_planner_provider != provider)
-      provider_free(g_planner_provider);
-    if (g_reflection_provider && g_reflection_provider != provider)
-      provider_free(g_reflection_provider);
-    if (g_consolidation_provider && g_consolidation_provider != provider)
-      provider_free(g_consolidation_provider);
-    provider_free(provider);
-    free(nash_dir);
-    free(props_json);
-    free(server_model);
-    config_free(cfg);
+    nash_ctx_free(&ctx);
     return 0;
   }
 
@@ -1328,6 +1350,13 @@ int main(int argc, char **argv) {
     }
   }
 
+  /* ── Initialize nash_ctx (stage 2: store/ws/memory/session fields) ── */
+  ctx.shared_store = shared_store;
+  ctx.ws = ws;
+  ctx.memory = memory;
+  ctx.session_idx = session_idx;
+  ctx.dream_new_count = dream_new_count;
+
   /* ── Regression test mode: --regression ── */
   if (regression_mode) {
     /* Create regression directory and seed query bank */
@@ -1340,7 +1369,7 @@ int main(int argc, char **argv) {
     query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
     if (!banks || n_banks == 0) {
       fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
 
@@ -1379,7 +1408,7 @@ int main(int argc, char **argv) {
 
     regression_free_report(report);
     regression_free_banks(banks, n_banks);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return exit_code;
   }
 
@@ -1389,7 +1418,7 @@ int main(int argc, char **argv) {
     if (rounds < 0) {
       fprintf(stderr, "[optimize] invalid budget '%s' — use light, medium, heavy, or a number\n",
               optimize_budget);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
 
@@ -1403,7 +1432,7 @@ int main(int argc, char **argv) {
     query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
     if (!banks || n_banks == 0) {
       fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
 
@@ -1481,7 +1510,7 @@ int main(int argc, char **argv) {
     regression_free_banks(banks, n_banks);
     if (reflection_provider != provider)
       provider_free(reflection_provider);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return 0;
   }
 
@@ -1497,7 +1526,7 @@ int main(int argc, char **argv) {
     playbook_t *pb = playbook_load(pb_path);
     if (!pb) {
       fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
     fprintf(stderr, "Validating playbook '%s' (%d passes) from %s\n",
@@ -1506,7 +1535,7 @@ int main(int argc, char **argv) {
     int rc = playbook_validate(pb, errbuf, sizeof(errbuf));
     fprintf(stderr, "%s", errbuf);
     playbook_free(pb);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return rc == 0 ? 0 : 1;
   }
 
@@ -1523,7 +1552,7 @@ int main(int argc, char **argv) {
     playbook_t *pb = playbook_load(pb_path);
     if (!pb) {
       fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
 
@@ -1533,7 +1562,7 @@ int main(int argc, char **argv) {
       if (playbook_validate(pb, vbuf, sizeof(vbuf)) != 0) {
         fprintf(stderr, "[play] Playbook validation failed:\n%s", vbuf);
         playbook_free(pb);
-        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+        nash_ctx_free(&ctx);
         return 1;
       }
     }
@@ -1569,7 +1598,7 @@ int main(int argc, char **argv) {
     free(pargs.result_text);
     free(pargs.last_session_dir);
     playbook_free(pb);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return ok ? 0 : 1;
   }
 
@@ -1605,7 +1634,7 @@ int main(int argc, char **argv) {
     if (!q) {
       fprintf(stderr, "[agent] error: scan failed\n");
       free(agent_arguments);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
     agent_queue_load(q, nash_dir);
@@ -1615,7 +1644,7 @@ int main(int argc, char **argv) {
       agent_queue_print(q, stdout);
       agent_queue_free(q);
       free(agent_arguments);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 0;
     }
 
@@ -1639,7 +1668,7 @@ int main(int argc, char **argv) {
       if (n == 0) fprintf(stderr, "  (no agent definitions due)\n");
       agent_queue_free(q);
       free(agent_arguments);
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 0;
     }
 
@@ -1656,7 +1685,7 @@ int main(int argc, char **argv) {
                                agent_arguments,
                                &shutdown_requested, mbox);
     free(agent_arguments);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return n_fail > 0 ? 1 : 0;
   }
 
@@ -1664,13 +1693,13 @@ int main(int argc, char **argv) {
   if (daemon_mode) {
     /* Prevent multiple daemons sharing the same mailbox/room */
     if (daemon_lock_acquire(nash_dir) != 0) {
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
     char mbox_dir[NASH_PATH_MAX];
     if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
       fprintf(stderr, "[error] failed to initialize mailbox\n");
-      cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+      nash_ctx_free(&ctx);
       return 1;
     }
     fprintf(stderr, "[daemon] nash mailbox daemon started\n");
@@ -1701,7 +1730,7 @@ int main(int argc, char **argv) {
         if (telegram_setup(&tg_ctx) != 0) {
           fprintf(stderr, "[telegram] setup failed, exiting\n");
           telegram_free(&tg_ctx);
-          cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+          nash_ctx_free(&ctx);
           return 1;
         }
       }
@@ -1725,7 +1754,7 @@ int main(int argc, char **argv) {
         if (matrix_setup(&mx_ctx) != 0) {
           fprintf(stderr, "[matrix] setup failed, exiting\n");
           matrix_free(&mx_ctx);
-          cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+          nash_ctx_free(&ctx);
           return 1;
         }
       }
@@ -1939,7 +1968,7 @@ int main(int argc, char **argv) {
     }
     daemon_lock_release();
     web_search_cleanup();
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return 0;
   }
 
@@ -1987,7 +2016,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "[error] failed to initialize mailbox\n");
         session_cleanup(&tools, &react, journal);
         if (session_dir) free(session_dir);
-        cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+        nash_ctx_free(&ctx);
         return 1;
       }
       mailbox_ctx_t mbox = {
@@ -2036,7 +2065,7 @@ int main(int argc, char **argv) {
       rmdir(session_dir);
     }
     if (session_dir) free(session_dir);
-    cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+    nash_ctx_free(&ctx);
     return have_result ? 0 : 1;
   }
 
@@ -2749,6 +2778,6 @@ int main(int argc, char **argv) {
   printf("Bye.\n");
   web_search_cleanup();  /* tear down auto-started SearXNG container */
   tool_plugin_cleanup(); /* dlclose any loaded external plugins */
-  cleanup_globals(shared_store, ws, provider, nash_dir, props_json, server_model, cfg);
+  nash_ctx_free(&ctx);
   return 0;
 }
