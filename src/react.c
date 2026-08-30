@@ -6,6 +6,8 @@
 #include "tui.h"     /* g_tui_active -- for condvar timeout escape hatch */
 #include "tools_internal.h"
 #include "tool_plugin.h" /* tool_plugin_run_cleanups */
+#include <sys/stat.h>   /* mkdir */
+#include <errno.h>      /* EEXIST */
 
 /* Constant moved from react_internal.h (used only here). */
 #define REACT_SP_BM25_BUDGET 500
@@ -732,6 +734,156 @@ static int trig_cb(const mem_index_entry_t *entry, void *ud) {
 
 /* ── plan-first triage ───────────────────────────────── */
 
+/* Summarize a truncated LLM response via a lightweight ephemeral call.
+ * Returns a concise summary (caller frees) or NULL on failure.
+ * Used by the truncation recovery handler (Phase 1) to replace raw
+ * truncated output with a useful summary that preserves key decisions. */
+static char *react_summarize_truncated(react_ctx_t *ctx, const char *response) {
+  provider_t *p = ctx->planner_provider ? ctx->planner_provider : ctx->provider;
+  if (!p) return NULL;
+
+  /* Take tail of response (last ~8000 chars) to stay within input budget */
+  const char *tail = response;
+  size_t len = strlen(response);
+  if (len > 8000) tail = response + len - 8000;
+
+  llm_chat_t *sum_chat = llm_chat_new();
+  if (ctx->current_query) {
+    char sys[1024];
+    snprintf(sys, sizeof(sys),
+      "Extract the key decisions, partial results, code fragments, and "
+      "next steps from this truncated LLM output. Be concise (under 500 "
+      "words). Preserve exact file paths, line numbers, variable names, "
+      "and any concrete data. Omit repeated/garbled content.\n\n"
+      "Original task: %.400s", ctx->current_query);
+    llm_chat_add(sum_chat, "system", sys);
+  } else {
+    llm_chat_add(sum_chat, "system",
+      "Extract the key decisions, partial results, code fragments, and "
+      "next steps from this truncated LLM output. Be concise (under 500 "
+      "words). Preserve exact file paths, line numbers, variable names, "
+      "and any concrete data. Omit repeated/garbled content.");
+  }
+  llm_chat_add(sum_chat, "user", tail);
+
+  int saved_max = p->cfg.max_tokens;
+  p->cfg.max_tokens = 1024;
+  char *summary = provider_complete(p, sum_chat, NULL);
+  p->cfg.max_tokens = saved_max;
+  llm_chat_free(sum_chat);
+
+  return summary; /* NULL on failure - caller falls back to current behavior */
+}
+
+/* Spawn a fresh child react loop with only the original query (no history,
+ * no scratchpad, no accumulated context) to escape cycling anchoring.
+ * Returns the child's result (caller frees) or NULL on failure/depth guard.
+ * Only fires from root loops (not subtasks) to prevent recursion. */
+static char *react_fresh_perspective(react_ctx_t *ctx, const char *query,
+                                     react_event_fn on_event, void *userdata) {
+  /* Depth guard: don't spawn from within a subtask */
+  if (ctx->parent_loop >= 0) return NULL;
+  if (!ctx->provider || !query || !query[0]) return NULL;
+
+  /* Create child session directory under parent's session */
+  char child_dir[4096];
+  snprintf(child_dir, sizeof(child_dir), "%s/fresh_perspective",
+           ctx->tools->session_dir);
+  if (mkdir(child_dir, 0755) != 0 && errno != EEXIST)
+    return NULL;
+
+  journal_t *child_journal = journal_new(child_dir);
+  if (!child_journal) return NULL;
+
+  /* Minimal child tool context (follows tool_subtask.c pattern) */
+  tool_ctx_t child_tools = {
+    .store = ctx->tools->store,
+    .journal = child_journal,
+    .memory = ctx->tools->memory,
+    .ws = ctx->tools->ws,
+    .cfg = ctx->tools->cfg,
+    .session_dir = child_dir,
+    .session_lock_fd = -1,
+    .provider = ctx->provider,
+    .react_loop = 0,
+    .aliases = alias_map_new(),
+    .last_notes_step = -1,
+    .session_idx = ctx->tools->session_idx,
+  };
+  scratchpad_init(&child_tools.scratch);
+
+  /* Block user_ask and subtask in child */
+  const char *blocked[] = {"user_ask", "subtask"};
+  tool_filter_t child_filter = {
+    .blocked = blocked,
+    .n_blocked = 2,
+  };
+  child_tools.tool_filter = child_filter;
+
+  /* Capped steps: max(15, parent_max_steps/2) */
+  int child_max = ctx->max_steps > 0 ? ctx->max_steps / 2 : 15;
+  if (child_max < 15) child_max = 15;
+
+  react_ctx_t child_react = {
+    .provider = ctx->provider,
+    .tools = &child_tools,
+    .max_steps = child_max,
+    .verbose = 0,
+    .flags = REACT_FLAGS_BARE,
+    .parent_loop = ctx->tools->react_loop,
+    .headless = 1,
+  };
+
+  pthread_mutex_init(&child_react.user_ask_mutex, NULL);
+  pthread_cond_init(&child_react.user_ask_cond, NULL);
+  child_react.pause_owner = ctx->pause_owner ? ctx->pause_owner : ctx;
+  child_tools.react_ctx = &child_react;
+
+  /* Enrich query with fresh-perspective instructions */
+  char *enriched = NULL;
+  asprintf(&enriched,
+    "[FRESH PERSPECTIVE - you are an independent agent with no prior context]\n"
+    "A previous agent got stuck on this task. You have a clean slate.\n"
+    "Solve it from scratch, trying a different approach if the obvious one\n"
+    "seems like it might fail.\n\n%s", query);
+
+  /* Forward parent events so TUI shows progress */
+  char *result = react_run(&child_react, enriched ? enriched : query,
+                           on_event, userdata);
+
+  /* Restore parent TUI context */
+  if (on_event) {
+    react_event_t restore = {0};
+    restore.type = REACT_EVENT_STEP_START;
+    restore.session_dir = ctx->tools->session_dir;
+    restore.react_loop = ctx->tools->react_loop;
+    restore.step = 0;
+    restore.max_steps = 0;
+    restore.pass_index = -1;
+    on_event(&restore, userdata);
+  }
+
+  /* Cleanup child resources */
+  pthread_mutex_destroy(&child_react.user_ask_mutex);
+  pthread_cond_destroy(&child_react.user_ask_cond);
+  free(child_react.user_ask_question);
+  free(child_react.user_ask_answer);
+  scratchpad_free(&child_tools.scratch);
+  alias_map_free(child_tools.aliases);
+  tool_free_deferred_consolidations(&child_tools);
+  for (int i = 0; i < child_tools.n_recalled_keys; i++)
+    free(child_tools.recalled_keys[i]);
+  free(child_tools.recalled_keys);
+  tool_fire_ledger_free(&child_tools);
+  for (int i = 0; i < child_tools.n_modified_files; i++)
+    free(child_tools.modified_files[i].path);
+  child_tools.n_modified_files = 0;
+  journal_free(child_journal);
+  free(enriched);
+
+  return result;
+}
+
 /* Classify a task as trivial or complex via a lightweight LLM call.
  * Returns 1 if the task is complex (plan required), 0 if trivial.
  * On error, returns 0 (fail open - don't require plan). */
@@ -769,6 +921,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
 
   /* Reset per-loop state */
   ctx->user_ask_used = 0;
+  ctx->current_query = user_query;
 
   /* Initialize mutable runtime state from provider config.
      * These values may be modified during the loop without violating
@@ -851,8 +1004,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     int mode = ctx->tools->cfg ? ctx->tools->cfg->plan_require : 0;
     if (mode == 1) {
       ctx->rt.plan_required = 1;  /* always */
+      ctx->rt.brainstorm_required = 1;
     } else if (mode != 2 && (ctx->max_steps < 0 || ctx->max_steps > 5)) {
       ctx->rt.plan_required = react_triage_task(ctx, user_query);
+      ctx->rt.brainstorm_required = ctx->rt.plan_required;
     }
     /* mode == 2 ("never"): plan_required stays 0 */
   }
@@ -1017,26 +1172,47 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                           (step_end.tv_nsec - step_start.tv_nsec) / 1e9;
 
     /* Output truncation recovery: detect when the model hit max_tokens
-         * and the response was truncated. Common when the model tries to
-         * write a very large file in one call. Inject a recovery instruction
-         * telling the model to split its work into smaller chunks.
-         * Borrowed from nashell's __MAX_TOKENS__ handler. */
+         * and the response was truncated. Summarize the truncated output
+         * via an ephemeral LLM call to extract key decisions and partial
+         * results, replacing the raw garbage with a compact summary.
+         * Falls back to split-instruction if summarization fails. */
     if (stats.completion_tokens > 0 && ctx->provider &&
         ctx->provider->cfg.max_tokens > 0 &&
         stats.completion_tokens >= ctx->provider->cfg.max_tokens) {
-      /* The response was truncated — don't try to parse it as JSON */
-      llm_chat_add(chat, "assistant", response);
-      llm_chat_add(chat, "user",
-                   "Your response was truncated because it exceeded the maximum "
-                   "output length. You MUST split your work into smaller steps:\n"
-                   "- For file_write: write the first ~100 lines, then use "
-                   "file_edit to append subsequent sections.\n"
-                   "- For done: summarize key findings concisely rather than "
-                   "including full file contents.\n"
-                   "- For shell_exec: run the command once; output is stored at a "
-                   "ref you can re-analyze with grep/head/tail.\n"
-                   "Retry your last action with a smaller scope.");
-      /* Recovery instructions are important guidance — NORMAL */
+      char *summary = react_summarize_truncated(ctx, response);
+      int summarized = (summary && summary[0]);
+      if (summarized) {
+        /* Summarization succeeded - inject summary instead of raw response */
+        llm_chat_add(chat, "assistant", summary);
+        llm_chat_add(chat, "user",
+                     "Your previous response was truncated. Above is a summary "
+                     "of what you produced. Continue from where you left off, "
+                     "working in smaller chunks.\n"
+                     "- For file_write: write ~100 lines at a time, then use "
+                     "file_edit to append subsequent sections.\n"
+                     "- For done: summarize key findings concisely.\n"
+                     "- For shell_exec: output is stored at a ref you can "
+                     "re-analyze with grep/head/tail.");
+        /* Store summary in scratchpad for persistence */
+        scratchpad_write(&ctx->tools->scratch, "auto_truncation_summary",
+                         summary, 3);
+        scratchpad_save(&ctx->tools->scratch, ctx->tools->session_dir);
+      } else {
+        /* Summarization failed - fall back to raw response + split instruction */
+        llm_chat_add(chat, "assistant", response);
+        llm_chat_add(chat, "user",
+                     "Your response was truncated because it exceeded the maximum "
+                     "output length. You MUST split your work into smaller steps:\n"
+                     "- For file_write: write the first ~100 lines, then use "
+                     "file_edit to append subsequent sections.\n"
+                     "- For done: summarize key findings concisely rather than "
+                     "including full file contents.\n"
+                     "- For shell_exec: run the command once; output is stored at a "
+                     "ref you can re-analyze with grep/head/tail.\n"
+                     "Retry your last action with a smaller scope.");
+      }
+      free(summary);
+      /* Recovery instructions are important guidance - NORMAL */
       if (chat->n_msgs >= 2) {
         chat->msgs[chat->n_msgs - 2].importance = LLM_MSG_IMPORTANCE_NORMAL;
         chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
@@ -1046,7 +1222,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       ev.react_loop = ctx->tools->react_loop;
       ev.type = REACT_EVENT_WARNING;
       ev.step = step + 1;
-      ev.message = "Output truncated at max_tokens — injected split instruction";
+      ev.message = summarized ? "Output truncated - summarized and continuing"
+                              : "Output truncated at max_tokens - injected split instruction";
       react_emit(on_event, userdata, &ev);
 
       free(response);
@@ -1191,20 +1368,37 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       continue;
     }
 
-    /* Plan-first enforcement: if triage classified this as COMPLEX,
-     * reject non-plan tools until a plan exists. */
+    /* Brainstorm + plan enforcement: if triage classified as COMPLEX,
+     * require brainstorm (notes) before plan, then plan before execution.
+     * Two phases: PHASE 1 = brainstorm via notes, PHASE 2 = plan. */
     if (ctx->rt.plan_required && !ctx->rt.plan_satisfied) {
       if (strcmp(action_name, "plan") != 0 &&
           strcmp(action_name, "user_ask") != 0 &&
           strcmp(action_name, "notes") != 0 &&
           strcmp(action_name, "memory_search") != 0) {
-        char hint[512];
-        snprintf(hint, sizeof(hint),
-          "This task requires a plan before execution. "
-          "Add steps with plan(op=\"add_item\", text=\"...\") then call "
-          "plan(op=\"done\") to finalize. You attempted to call '%s' "
-          "without a plan.",
-          action_name);
+        char hint[1024];
+        if (ctx->rt.brainstorm_required && !ctx->rt.brainstorm_satisfied) {
+          snprintf(hint, sizeof(hint),
+            "This task requires structured planning before execution.\n\n"
+            "PHASE 1 - BRAINSTORM (required before plan):\n"
+            "Write to notes(section='brainstorm') with:\n"
+            "(1) What makes this task hard - the core difficulty\n"
+            "(2) 2-3 candidate approaches with tradeoffs\n"
+            "(3) Pitfalls, edge cases, or constraints to watch for\n"
+            "Do NOT write code or make changes yet.\n\n"
+            "PHASE 2 - PLAN (after brainstorm):\n"
+            "Use plan(op='add_item', text='...') to build your execution plan, "
+            "informed by your brainstorm analysis. Then plan(op='done').\n\n"
+            "You attempted to call '%s' without brainstorming or planning.",
+            action_name);
+        } else {
+          snprintf(hint, sizeof(hint),
+            "This task requires a plan before execution. "
+            "Add steps with plan(op=\"add_item\", text=\"...\") then call "
+            "plan(op=\"done\") to finalize. You attempted to call '%s' "
+            "without a plan.",
+            action_name);
+        }
         if (chat->last_tool_call_id) {
           llm_chat_add_assistant_tool_call(chat, response,
                                            chat->last_tool_calls_json);
@@ -1217,7 +1411,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         ev.react_loop = ctx->tools->react_loop;
         ev.type = REACT_EVENT_WARNING;
         ev.step = step + 1;
-        ev.message = "Plan-first: rejected tool call before plan";
+        ev.message = ctx->rt.brainstorm_satisfied
+                       ? "Plan-first: rejected tool call before plan"
+                       : "Brainstorm-first: rejected tool call before brainstorm";
         react_emit(on_event, userdata, &ev);
         cJSON_Delete(action);
         free(response);
@@ -1726,6 +1922,33 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
           }
           memory_results_free(&cy_mem);
         }
+
+        /* Fresh perspective: spawn independent child to escape anchoring.
+         * Only on first Stage 2 refusal (repeat_count==2) and only from
+         * root loops (depth guard inside react_fresh_perspective). */
+        if (repeat_count == 2 && ctx->current_query) {
+          char *fresh = react_fresh_perspective(ctx, ctx->current_query,
+                                                on_event, userdata);
+          if (fresh && fresh[0]) {
+            char *hint = NULL;
+            asprintf(&hint,
+              "[FRESH PERSPECTIVE - independent attempt at the same task "
+              "with no prior context]\n%s", fresh);
+            if (hint) {
+              llm_chat_add_typed(chat, "user", hint,
+                                 LLM_MSG_MEMORY_HINT);
+              if (chat->n_msgs > 0)
+                chat->msgs[chat->n_msgs - 1].importance =
+                  LLM_MSG_IMPORTANCE_HIGH;
+              free(hint);
+            }
+            journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                           step + 1, "fresh_perspective", NULL, NULL,
+                           strlen(fresh), 0,
+                           "spawned fresh perspective on cycling", NULL, 0);
+          }
+          free(fresh);
+        }
       }
     } else {
       /* Emit tool-start event so frontends can show what's about to run */
@@ -1852,6 +2075,19 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
           ctx->rt.preamble_consumed = 1;
           ctx->rt.plan_satisfied = 1;
           react_degrade_preamble(chat);
+        }
+      }
+
+      /* Brainstorm detection: when notes(op="write") is called with a
+       * section name containing "brainstorm", mark the brainstorm phase
+       * as satisfied so the enforcement gate advances to PHASE 2 (plan). */
+      if (ctx->rt.brainstorm_required && !ctx->rt.brainstorm_satisfied &&
+          strcmp(action_name, "notes") == 0) {
+        const char *notes_op = action ? json_str(action, "op") : NULL;
+        const char *notes_sec = action ? json_str(action, "section") : NULL;
+        if (notes_op && strcmp(notes_op, "write") == 0 &&
+            notes_sec && strcasestr(notes_sec, "brainstorm")) {
+          ctx->rt.brainstorm_satisfied = 1;
         }
       }
 
@@ -2658,6 +2894,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
    * but belongs in the tool layer, not the react layer. */
   tool_ctx_reset_query(ctx->tools);
 
+  ctx->current_query = NULL;
   cycle_window_free(&cw);
   return final_result;
 }

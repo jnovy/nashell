@@ -142,6 +142,13 @@ int provider_api_fetch_model_info(provider_t *p, int *context_size,
  * Returns the cached string (do NOT free). */
 const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...);
 
+/* Clone a provider with a modified temperature.
+ * If strip_sampling_params is set or temperature matches, returns the
+ * original provider unchanged (*owned_out = 0).
+ * Otherwise creates a new provider (*owned_out = 1, caller must free). */
+provider_t *provider_clone_with_temperature(provider_t *p, float temperature,
+                                            int *owned_out);
+
 /* ── High-level API (uses vtable internally) ────────────────────── */
 
 /* Non-streaming chat completion. Returns response string (caller frees). */

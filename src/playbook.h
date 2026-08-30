@@ -36,9 +36,11 @@ typedef struct {
   int n_tools_allow;
   char **tools_block; /* NULL = inherit */
   int n_tools_block;
+  /* Sampling override */
+  float temperature;  /* -1.0f = inherit from provider */
 } pb_react_overrides_t;
 
-#define PB_REACT_INHERIT {0, -1, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0}
+#define PB_REACT_INHERIT {0, -1, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0, -1.0f}
 
 /* Pass type: LLM react loop (default) or shell script (no LLM). */
 typedef enum {

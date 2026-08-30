@@ -59,6 +59,12 @@ static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t 
   if ((n = yaml_get(react_node, "enable_scoring")))
     ro->enable_scoring = yaml_bool(n, -1);
 
+  /* Sampling temperature override */
+  if ((n = yaml_get(react_node, "temperature"))) {
+    const char *ts = yaml_str(n);
+    if (ts) ro->temperature = strtof(ts, NULL);
+  }
+
   /* Tool filter */
   yaml_node_t *tools = yaml_get(react_node, "tools");
   if (tools) {
@@ -1038,6 +1044,20 @@ void *playbook_worker(void *arg) {
       if (pa->consolidation_provider && pb->name && strcmp(pb->name, "dream") == 0)
         pass_provider = pa->consolidation_provider;
 
+      /* Per-pass temperature override: cascade pass -> playbook default.
+       * Uses provider_clone_with_temperature which returns the original
+       * provider (owned=0) when strip_sampling_params or no change needed. */
+      int pass_provider_owned = 0;
+      {
+        float temp = pb->passes[pass].react.temperature;
+        if (temp < 0 && pb->react_defaults.temperature >= 0)
+          temp = pb->react_defaults.temperature;
+        if (temp >= 0) {
+          pass_provider = provider_clone_with_temperature(
+            pass_provider, temp, &pass_provider_owned);
+        }
+      }
+
       react_ctx_t pass_react = {
         .provider = pass_provider,
         .tools = &pass_tools,
@@ -1294,6 +1314,7 @@ void *playbook_worker(void *arg) {
          * For PB_SCRATCH_SHARED: already moved back to shared_scratch
          * (struct zeroed by scratchpad_move), so this is a no-op.
          * For PB_SCRATCH_ISOLATED: sections must be freed here. */
+      if (pass_provider_owned) provider_free(pass_provider);
       scratchpad_free(&pass_tools.scratch);
       alias_map_free(pass_tools.aliases);
       session_lock_release(pass_tools.session_lock_fd);

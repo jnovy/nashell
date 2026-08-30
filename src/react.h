@@ -59,6 +59,8 @@ typedef struct {
   int preamble_consumed; /* 1 after plan() - degrade preamble importance to LOW */
   int plan_required;     /* 1 = plan() must be first tool (triage/config) */
   int plan_satisfied;    /* 1 = plan() was called, enforcement satisfied */
+  int brainstorm_required;  /* 1 = brainstorm phase needed (complex task) */
+  int brainstorm_satisfied; /* 1 = notes(section='brainstorm') was written */
 } react_runtime_t;
 
 typedef struct react_ctx_t {
@@ -122,6 +124,12 @@ typedef struct react_ctx_t {
   /* [INIT-ONLY] Agent deadline (0 = no deadline).
      * If set, the react loop aborts when time(NULL) >= deadline. */
   time_t deadline;
+
+  /* [INFER-ONLY] Current user query, set at top of react_run().
+     * Used by truncation summarizer (Phase 1) and fresh-perspective
+     * escape (Phase 2) to access the original query deep in the loop.
+     * Read-only during react_run(); cleared to NULL at exit. */
+  const char *current_query;
 } react_ctx_t;
 
 /* Run the react loop for a user query.

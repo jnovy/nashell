@@ -282,6 +282,27 @@ void provider_free(provider_t *p) {
   free(p);
 }
 
+/* ── Provider cloning ────────────────────────────────────────────── */
+
+provider_t *provider_clone_with_temperature(provider_t *p, float temperature,
+                                            int *owned_out) {
+  *owned_out = 0;
+  if (!p) return NULL;
+  /* Reasoning models reject non-default temperature (strip_sampling_params) */
+  if (p->cfg.strip_sampling_params) return p;
+  /* No change needed if temperature matches current */
+  if (fabsf(p->cfg.temperature - temperature) < 0.001f) return p;
+
+  provider_config_t cfg = p->cfg; /* shallow copy */
+  cfg.temperature = temperature;
+  provider_t *cloned = provider_new(&cfg);
+  if (cloned) {
+    *owned_out = 1;
+    return cloned;
+  }
+  return p; /* fall back to original on failure */
+}
+
 /* ── Shared tool registry -> provider-specific JSON ──────────────── */
 
 /* Recursively add "additionalProperties": false to all objects (OpenAI strict mode) */

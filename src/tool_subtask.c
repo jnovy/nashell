@@ -46,6 +46,14 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   TOOL_REQ_STR(params, "query", query);
   TOOL_OPT_STR(params, "context", context_level);
 
+  /* Optional temperature override for the child's provider */
+  double temp_override = -1.0;
+  {
+    cJSON *temp_node = cJSON_GetObjectItem(params, "temperature");
+    if (temp_node && cJSON_IsNumber(temp_node))
+      temp_override = temp_node->valuedouble;
+  }
+
   /* Parse context inheritance level:
    *   "minimal"  - query only (no scratchpad, no memory)
    *   "standard" - scratchpad + INFORM (default, current behavior)
@@ -151,9 +159,17 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
      * except user_ask, and subtask at depth limit). */
   child_tools.tool_filter = child_filter;
 
+  /* ── Temperature override: clone provider if needed ──── */
+  provider_t *child_provider = ctx->provider;
+  int child_provider_owned = 0;
+  if (temp_override >= 0) {
+    child_provider = provider_clone_with_temperature(
+      ctx->provider, (float)temp_override, &child_provider_owned);
+  }
+
   /* ── Create child react context ───────────────────────── */
   react_ctx_t child_react = {
-    .provider = ctx->provider,      /* shared */
+    .provider = child_provider,     /* owned or shared */
     .tools = &child_tools,          /* own */
     .max_steps = max_steps,         /* capped */
     .verbose = 0,                   /* quiet — parent handles UI */
@@ -248,6 +264,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   }
 
   /* ── Cleanup child resources ──────────────────────────── */
+  if (child_provider_owned) provider_free(child_provider);
   pthread_mutex_destroy(&child_react.user_ask_mutex);
   pthread_cond_destroy(&child_react.user_ask_cond);
   /* pause_mutex/cond/query belong to parent (via pause_owner) - not ours */
@@ -311,6 +328,10 @@ static const tool_param_t subtask_params[] = {
     "\"standard\" = inherits scratchpad (default), "
     "\"rich\" = inherits scratchpad + memory injection (for implementation tasks needing prior decisions)",
     0, context_enum),
+  TOOL_PARAM("temperature", "number",
+    "Override temperature for this subtask (0.0-1.0). "
+    "Higher = more creative, lower = more precise. "
+    "Ignored for reasoning models. Default: inherit from parent.", 0),
   TOOL_PARAM_END};
 
 static const tool_plugin_t subtask_plugin =
