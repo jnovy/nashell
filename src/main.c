@@ -49,6 +49,8 @@
 #include "commands_internal.h"
 #include "agents.h"
 #include "setup.h"
+#include "fswatch.h"
+#include <poll.h>
 
 /* (load_legacy_scratchpad removed — legacy format handled by scratchpad_parse) */
 
@@ -1345,6 +1347,22 @@ static int run_daemon(nash_ctx_t *ctx, int telegram_mode, int matrix_mode,
   return 0;
 }
 
+/* -- fswatch callback: track external file modifications -----------
+ * Invoked from the TUI main loop when inotify detects a file change
+ * that was NOT made through Nash's own file_edit/file_write tools.
+ * Feeds into the same modified_files tracking used by [SESSION STATE]. */
+static void fswatch_on_change(const char *path, int event, void *userdata) {
+  tool_ctx_t *tools = (tool_ctx_t *)userdata;
+  if (!tools || !path) return;
+  /* Only track modify/create events (not deletes or renames) */
+  if (!(event & (FSW_MODIFY | FSW_CREATE))) return;
+  /* Skip directories - we only care about file content changes */
+  struct stat st;
+  if (stat(path, &st) != 0 || S_ISDIR(st.st_mode)) return;
+  tool_track_modified_file(tools, path, tools->step);
+  plan_check_evidence_staleness(tools, path);
+}
+
 /* -- Interactive TUI mode ------------------------------------------
  * Full ncurses session: persistent journal, inference threads,
  * playbook support, tree branching, slash commands.
@@ -1527,6 +1545,17 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
       ui_locked_set_status(ui, STATUS_READY, "Error: thread creation failed");
     }
     tui_render(ui);
+  }
+
+  /* Initialize filesystem watcher for external change detection.
+   * On Linux this uses inotify; on other platforms it's a no-op.
+   * The callback feeds into the same modified_files tracking that
+   * file_edit/file_write use, so the LLM sees external changes too. */
+  fswatch_t *fswatcher = fswatch_init(fswatch_on_change, &tools);
+  if (fswatcher) {
+    char cwd[NASH_PATH_MAX];
+    if (getcwd(cwd, sizeof(cwd)))
+      fswatch_add(fswatcher, cwd, 1); /* recursive */
   }
 
   while (running) {
@@ -2004,12 +2033,25 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         tui_render(ui);
       }
     }
-    /* TODO(perf): Replace busy-wait with poll/select + eventfd for proper wake-up signaling */
+    /* Use fswatch fd for efficient wake-up instead of busy-wait.
+     * On Linux: poll on inotify fd with 50ms timeout.
+     * On other platforms: fall back to nanosleep (fswatch_fd returns -1). */
     {
-      struct timespec ts = {0, 50000000};
-      nanosleep(&ts, NULL);
-    } /* 50ms */
+      int wfd = fswatcher ? fswatch_fd(fswatcher) : -1;
+      if (wfd >= 0) {
+        struct pollfd pfd = {.fd = wfd, .events = POLLIN};
+        poll(&pfd, 1, 50); /* 50ms timeout */
+        if (pfd.revents & POLLIN)
+          fswatch_drain(fswatcher);
+      } else {
+        struct timespec ts = {0, 50000000};
+        nanosleep(&ts, NULL); /* 50ms fallback */
+      }
+    }
   }
+
+  /* Clean up filesystem watcher */
+  fswatch_free(fswatcher);
 
   /* If inference thread is paused on condvar, wake it up so it can exit.
    * Send a "quit" redirect that will cause the loop to take one more step

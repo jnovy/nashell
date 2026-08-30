@@ -74,7 +74,9 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/tool_plugin.c \
           src/setup.c \
           src/predict.c \
-          src/harness_metrics.c
+          src/harness_metrics.c \
+          src/fswatch_linux.c \
+          src/fswatch_noop.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
@@ -118,7 +120,8 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_predict tests/test_harness_metrics \
            tests/test_workspace tests/test_subtask_context \
            tests/test_plan_tracking \
-           tests/test_onnx_embed
+           tests/test_onnx_embed \
+           tests/test_fswatch
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
