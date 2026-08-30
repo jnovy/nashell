@@ -27,16 +27,12 @@
  * The registry rejects mismatched versions to prevent ABI crashes. */
 #define TOOL_PLUGIN_ABI_VERSION 3
 
-/* Capability flags (for future Phase 2 context narrowing) */
-#define TOOL_CAP_STORE (1u << 0)
-#define TOOL_CAP_CONFIG (1u << 1)
+/* Capability flags (for future Phase 2 context narrowing).
+ * Only flags actually used in code/tests are defined here.
+ * Add new flags as needed when Phase 2 is implemented. */
+#define TOOL_CAP_STORE    (1u << 0)
 #define TOOL_CAP_PROVIDER (1u << 2)
-#define TOOL_CAP_MEMORY (1u << 3)
-#define TOOL_CAP_WORKSPACE (1u << 4)
-#define TOOL_CAP_SCRATCHPAD (1u << 5)
-#define TOOL_CAP_SESSION (1u << 6)
-#define TOOL_CAP_EVENTS (1u << 7)
-#define TOOL_CAP_CORE (1u << 31)
+#define TOOL_CAP_CORE     (1u << 31)
 
 /* Tool result: metadata JSON + optional stored content hash.
  * Defined here (not tools.h) so external plugins can use it

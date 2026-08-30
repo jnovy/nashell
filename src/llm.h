@@ -4,22 +4,7 @@
 #include "cJSON.h"
 #include <stdarg.h>
 
-/* Configuration for the LLM endpoint */
-typedef struct {
-  const char *api_base;      /* e.g. "http://localhost:8080" */
-  const char *model;         /* e.g. "qwen3.6-35b-a3b" */
-  int max_tokens;            /* max completion tokens */
-  float temperature;         /* sampling temperature */
-  int context_size;          /* server's n_ctx (0 = unknown, fetched via /props) */
-  int enable_thinking;       /* 0=off, 1=on — set per-request by thinking mode */
-  int thinking_budget;       /* -1=unrestricted, 0=none, N>0=max thinking tokens */
-  char *last_error;          /* populated on LLM error — server message, curl error, etc.
-                                * Caller should free after reading. Set by provider_complete/stream. */
-  char *last_error_response; /* raw server response body on error (for post-mortem).
-                                * Contains the full JSON with error details + offset info. */
-  char *last_error_request;  /* raw request body that triggered the error.
-                                * The JSON we sent — shows exactly what was malformed. */
-} llm_config_t;
+/* llm_config_t removed - provider_t is the single source of truth. */
 
 /* Belief Entropy probe result — see MMPO [arXiv:2605.30159]
  * ℋ_BE(m_t) = H(y | m_t, q) — entropy of response to anchor question q

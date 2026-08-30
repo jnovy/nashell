@@ -1034,9 +1034,7 @@ int main(int argc, char **argv) {
     }
   }
 
-  /* llm_config_t removed — provider_t is the single source of truth. */
-
-  /* ── Role-based provider routing ──
+  /* -- Role-based provider routing --
      * Create separate providers for planner/reflection/consolidation roles
      * if configured in [routing]. Skip if the role points to the same
      * named provider as [routing].default (avoid duplicate provider_t). */
