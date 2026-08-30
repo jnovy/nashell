@@ -5,7 +5,7 @@
 #include "react_event.h"
 #include "journal.h"
 #include "store.h"
-#include "md_render.h"
+#include "md_doc.h"
 #include <stddef.h>
 #include <stdatomic.h>
 #include <time.h>

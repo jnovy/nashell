@@ -15,7 +15,7 @@
 #include "tui.h"
 #include "nash_limits.h"
 #include "nash_log.h"
-#include "md_render.h"
+#include "md_doc.h"
 #include "journal.h"
 #include "str.h"
 #include "cJSON.h"
