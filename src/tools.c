@@ -2240,14 +2240,6 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
     str_append_cstr(&s, "You are an autonomous coding agent. Solve the user's task step by step "
                         "using the available tools.\n");
 
-  str_appendf(&s, "\nNow is %s. CWD: %s\n", timebuf, cwdbuf);
-
-  str_appendf(&s,
-              "\nTemporary directory: %s\n"
-              "Use for scratch files, build artifacts, and intermediate outputs. "
-              "Pre-created; cleaned on reboot.\n",
-              tmpdir);
-
   str_append_cstr(&s,
                   "\nStore-and-reference pattern:\n"
                   "- Most tool outputs are stored to disk. You see only metadata with a ref "
@@ -2289,6 +2281,18 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
                   "- Before each tool call, mentally predict what the tool will return.\n"
                   "- If your prediction suggests the action won't achieve your goal, "
                   "refine the action before executing.\n");
+
+  /* Dynamic per-session context - placed LAST so the static prefix above
+   * is eligible for prefix-cache reuse (Anthropic, OpenAI, Google, vLLM).
+   * See XPerf (arXiv:2608.20370): timestamp at prompt start destroyed
+   * nearly all prefix-cache hits; moving it to the tail restored ~30%. */
+  str_appendf(&s, "\nNow is %s. CWD: %s\n", timebuf, cwdbuf);
+
+  str_appendf(&s,
+              "\nTemporary directory: %s\n"
+              "Use for scratch files, build artifacts, and intermediate outputs. "
+              "Pre-created; cleaned on reboot.\n",
+              tmpdir);
 
   return str_steal(&s);
 }
