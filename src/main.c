@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <sys/file.h>
 #include <fcntl.h>
+#include <ncurses.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 

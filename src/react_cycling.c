@@ -7,6 +7,32 @@
 
 #include "react_internal.h"
 
+/* ── Functions moved from react_internal.h (static inline -> regular) ── */
+
+/* Free all heap-allocated strings in a cycle window. */
+void cycle_window_free(cycle_window_t *cw) {
+  for (int i = 0; i < CYCLE_WINDOW_SIZE; i++) {
+    free(cw->sigs[i]);
+    free(cw->results[i]);
+    free(cw->refs[i]);
+  }
+  memset(cw, 0, sizeof(*cw));
+}
+
+/* Reset cycle window (e.g. after eviction invalidates cached results).
+ * Preserves amplification counters across resets. */
+void cycle_window_reset(cycle_window_t *cw) {
+  long tb = cw->tokens_baseline;
+  long tt = cw->tokens_total;
+  int cs = cw->cycling_steps;
+  int tr = cw->total_recoveries;
+  cycle_window_free(cw);
+  cw->tokens_baseline = tb;
+  cw->tokens_total = tt;
+  cw->cycling_steps = cs;
+  cw->total_recoveries = tr;
+}
+
 /* Push a new signature into the window. Returns the slot index used. */
 int cycle_window_push(cycle_window_t *cw, const char *sig,
                       const char *result_json, const char *ref,

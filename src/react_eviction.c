@@ -50,6 +50,166 @@
  * REACT_COMPRESS_MIN_CHARS   → pol.compress_min_chars
  */
 
+/* ── Functions moved from react_internal.h (static inline -> regular) ── */
+
+/* Compute eviction policy from config. Call once at start of eviction. */
+eviction_policy_t react_eviction_policy(const config_t *cfg) {
+  eviction_policy_t p = {0};
+  p.trigger_pct = cfg ? cfg->context_eviction_pct : 70;
+  p.floor_pct = cfg ? cfg->eviction_floor_pct : 20;
+  p.sp_budget_pct = cfg ? cfg->scratchpad_budget_pct : 15;
+  p.breadcrumb_pct = cfg ? cfg->breadcrumb_budget_pct : 5;
+  p.compress_min_len = cfg ? cfg->compress_min_length : 800;
+
+  /* Hysteresis */
+  p.hysteresis_gap = p.trigger_pct / 5;
+  if (p.hysteresis_gap < 5) p.hysteresis_gap = 5;
+  p.target_pct = p.trigger_pct - p.hysteresis_gap;
+  p.warn_gap = p.hysteresis_gap / 2;
+  if (p.warn_gap < 3) p.warn_gap = 3;
+  p.emergency_target_pct = p.trigger_pct + 10;
+  if (p.emergency_target_pct > 95) p.emergency_target_pct = 95;
+
+  /* Scratchpad budget chain */
+  p.sp_max_remaining_pct = p.sp_budget_pct * 8 / 3; /* ~2.67x */
+  p.sp_min_chars = 2048;
+  p.sp_shrink_min = p.sp_min_chars / 4; /* 512 */
+  p.sp_fallback = 8192;
+
+  /* Breadcrumb budget chain */
+  p.bc_index_pct = p.breadcrumb_pct * 2 / 5;
+  p.bc_summary_pct = p.breadcrumb_pct - p.bc_index_pct;
+  p.summary_per_msg_min = 200;
+  p.summary_per_msg_max = p.summary_per_msg_min * 5; /* 1000 */
+
+  /* Compression chain */
+  p.compress_min_chars = p.compress_min_len / 2; /* 400 */
+  p.compress_min_units = 4;
+
+  p.floor_min_chars = 7000; /* ~2000 tokens at 3.5 cpt - anti-pattern minimum */
+  return p;
+}
+
+/* Compute eviction target_pct from config. */
+int react_eviction_target_pct(const config_t *cfg) {
+  eviction_policy_t pol = react_eviction_policy(cfg);
+  return pol.target_pct;
+}
+
+/* Compute total chars in head (messages before evict_start). */
+long react_head_chars(const llm_chat_t *chat, int evict_start) {
+  long hc = 0;
+  for (int i = 0; i < evict_start && i < chat->n_msgs; i++)
+    hc += (long)chat->msgs[i].content_len;
+  return hc;
+}
+
+/* Compute total chars in tail (messages at or after evict_end). */
+long react_tail_chars(const llm_chat_t *chat, int evict_end) {
+  long tc = 0;
+  for (int i = evict_end; i < chat->n_msgs; i++)
+    tc += (long)chat->msgs[i].content_len;
+  return tc;
+}
+
+/* Shared floor calculation for progressive and emergency eviction. */
+long react_calc_floor_chars_pol(const llm_chat_t *chat,
+                                int evict_start, int evict_end,
+                                long context_budget,
+                                long known_head_chars,
+                                long known_tail_chars,
+                                const eviction_policy_t *pol) {
+  long head_chars = (known_head_chars >= 0)
+                      ? known_head_chars
+                      : react_head_chars(chat, evict_start);
+  long tail_chars = (known_tail_chars >= 0)
+                      ? known_tail_chars
+                      : react_tail_chars(chat, evict_end);
+  long base = (context_budget > 0)
+                ? context_budget - head_chars - tail_chars
+                : react_calc_total_chars(chat) - head_chars - tail_chars;
+  long floor = base * pol->floor_pct / 100;
+  return floor < pol->floor_min_chars ? pol->floor_min_chars : floor;
+}
+
+/* Compute scratchpad budget using the dual-cap policy. */
+size_t react_scratchpad_budget_pol(long context_budget,
+                                   long current_chars,
+                                   size_t min_budget,
+                                   const eviction_policy_t *pol) {
+  if (context_budget <= 0)
+    return (size_t)pol->sp_fallback;
+  size_t abs_cap = (size_t)(context_budget * pol->sp_budget_pct / 100);
+  long remaining = context_budget - current_chars;
+  if (remaining < 0) remaining = 0;
+  size_t rel_cap = (size_t)(remaining * pol->sp_max_remaining_pct / 100);
+  size_t budget = abs_cap < rel_cap ? abs_cap : rel_cap;
+  return budget < min_budget ? min_budget : budget;
+}
+
+/* Convenience wrapper using default policy from config. */
+size_t react_scratchpad_budget(long context_budget,
+                               long current_chars,
+                               size_t min_budget) {
+  eviction_policy_t pol = react_eviction_policy(NULL);
+  return react_scratchpad_budget_pol(context_budget, current_chars,
+                                     min_budget, &pol);
+}
+
+/* Format and inject a "[SCRATCHPAD]\n..." message at position pos. */
+long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
+                                 const char *sp_content) {
+  if (!sp_content || !sp_content[0]) return 0;
+  size_t slen = strlen(sp_content);
+  size_t total = REACT_SP_PREFIX_LEN + slen + 1;
+  char *sp_msg = malloc(total);
+  if (!sp_msg) return 0;
+  snprintf(sp_msg, total, "%s%s", REACT_SP_PREFIX, sp_content);
+  llm_chat_insert_typed(chat, pos, "user", sp_msg, LLM_MSG_SCRATCHPAD);
+  long injected = (long)(total - 1);
+  free(sp_msg);
+  return injected;
+}
+
+/* Format a "[SCRATCHPAD]\n..." string without inserting into chat. */
+char *react_format_scratchpad_msg(const char *content) {
+  if (!content || !content[0]) return NULL;
+  size_t clen = strlen(content);
+  size_t total = REACT_SP_PREFIX_LEN + clen + 1;
+  char *msg = malloc(total);
+  if (!msg) return NULL;
+  snprintf(msg, total, "%s%s", REACT_SP_PREFIX, content);
+  return msg;
+}
+
+/* Pair-safe boundary adjustment for eviction ranges. */
+void evict_adjust_boundaries(const llm_chat_t *chat,
+                             int *evict_start, int *evict_end) {
+  /* Adjust evict_end: pull back if a tool_result sits just outside
+     * the range (its tool_call partner would be inside) or if a tool_call
+     * sits at the boundary edge (its result would be outside). */
+  while (*evict_end > *evict_start + 1) {
+    if (*evict_end < chat->n_msgs &&
+        chat->msgs[*evict_end].tool_call_id) {
+      (*evict_end)--;
+      continue;
+    }
+    if (*evict_end - 1 >= *evict_start &&
+        chat->msgs[*evict_end - 1].tool_calls_json) {
+      (*evict_end)--;
+      continue;
+    }
+    break;
+  }
+  /* Adjust evict_start: advance past orphaned tool_results whose
+     * tool_call partner is in the protected keep_head zone. */
+  while (*evict_start < *evict_end &&
+         chat->msgs[*evict_start].tool_call_id &&
+         (*evict_start == 0 ||
+          !chat->msgs[*evict_start - 1].tool_calls_json))
+    (*evict_start)++;
+}
+
 /* ── Comparison functions for qsort ───────────────────── */
 
 /* Safe three-way comparison macro — avoids overflow from subtraction. */
