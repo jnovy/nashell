@@ -121,7 +121,6 @@ void provider_local_init(provider_t *p) {
   p->build_headers = local_build_headers;
   p->build_request = local_build_request;
   p->parse_response = parse_openai_response; /* shared OpenAI-format parser */
-  p->parse_sse_event = NULL;                 /* uses shared OpenAI SSE parser */
   p->get_endpoint = local_get_endpoint;
   p->build_tools = local_build_tools;
   p->fetch_model_info = local_fetch_model_info;

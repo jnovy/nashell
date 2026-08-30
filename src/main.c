@@ -309,7 +309,7 @@ static provider_t *g_consolidation_provider = NULL;
 
 /* Create a provider_t from a named [routing] role.
  * Looks up the role_name in cfg->named_providers, builds a provider_config_t
- * from its TOML config + global sampling settings, and returns provider_create().
+ * from its TOML config + global sampling settings, and returns provider_new().
  * Returns NULL if role_name is NULL or creation fails. */
 static provider_t *create_role_provider(const config_t *cfg,
                                         const char *role_name,
@@ -346,7 +346,7 @@ static provider_t *create_role_provider(const config_t *cfg,
     .strip_sampling_params = cfg->profile_strip_sampling_params,
     .default_reasoning_effort = cfg->profile_default_reasoning_effort,
   };
-  provider_t *p = provider_create(&pcfg);
+  provider_t *p = provider_new(&pcfg);
   if (!p) {
     fprintf(stderr, "[routing] failed to create %s provider '%s'\n",
             role_label, role_name);
@@ -757,7 +757,7 @@ static int run_optimize(nash_ctx_t *ctx, const char *budget,
         .thinking_budget = -1,
         .llm_timeout = ctx->cfg->llm_timeout,
       };
-      reflection_provider = provider_create(&rpcfg);
+      reflection_provider = provider_new(&rpcfg);
       if (!reflection_provider) {
         fprintf(stderr, "[optimize] failed to create reflection provider '%s'\n",
                 reflect_model_arg);
@@ -2506,7 +2506,7 @@ int main(int argc, char **argv) {
     .strip_sampling_params = cfg->profile_strip_sampling_params,
     .default_reasoning_effort = cfg->profile_default_reasoning_effort,
   };
-  provider_t *provider = provider_create(&pcfg);
+  provider_t *provider = provider_new(&pcfg);
 
   /* SECURITY: scrub credential env vars now that provider has copied the key.
      * Prevents API keys from leaking to child processes (shell_exec, git). */
@@ -2546,7 +2546,7 @@ int main(int argc, char **argv) {
       cfg->provider.context_size = context_size;
   }
   if (provider && server_model) {
-    free((char *)provider->cfg.model_id);           /* free the copy made by provider_create */
+    free((char *)provider->cfg.model_id);           /* free the copy made by provider_new */
     provider->cfg.model_id = xstrdup(server_model); /* replace with server-reported model */
   }
 

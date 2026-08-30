@@ -2017,7 +2017,7 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
               /* Store as a direct key - we'll set a synthetic env var.
                              * SECURITY: env vars are inherited by child processes
                              * (shell_exec, git).  Call config_scrub_credential_env()
-                             * after provider_create() to limit the exposure window. */
+                             * after provider_new() to limit the exposure window. */
               char env_name[128];
               snprintf(env_name, sizeof(env_name),
                        "NASH_CRED_%s_API_KEY", key);
@@ -2046,7 +2046,7 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
 
 void config_scrub_credential_env(const config_t *cfg) {
   /* SECURITY: Remove credential env vars set by config_load_credentials().
-     * Call this after all provider_create() calls that need these vars.
+     * Call this after all provider_new() calls that need these vars.
      * Providers copy the key at init time, so the env var is not needed
      * after creation.  This prevents leaking API keys to child processes
      * (shell_exec, git) and via /proc/PID/environ.

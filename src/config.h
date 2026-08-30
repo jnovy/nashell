@@ -501,7 +501,7 @@ int config_resolve_provider(const config_t *cfg, const char *override_name,
 int config_load_credentials(config_t *cfg, const char *nash_dir);
 
 /* SECURITY: Remove NASH_CRED_* env vars set by config_load_credentials().
- * Call after provider_create() to prevent API keys from leaking to child
+ * Call after provider_new() to prevent API keys from leaking to child
  * processes (shell_exec, git) and /proc/PID/environ.
  * Only scrubs synthetic NASH_CRED_* vars, not user-set env vars. */
 void config_scrub_credential_env(const config_t *cfg);

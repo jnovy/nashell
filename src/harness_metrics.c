@@ -4,6 +4,7 @@
 #include "harness_metrics.h"
 #include "cJSON.h"
 #include "nash_log.h"
+#include "str.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,8 +21,7 @@
 
 harness_metrics_t *harness_metrics_load(const char *nash_dir)
 {
-    harness_metrics_t *m = calloc(1, sizeof(*m));
-    if (!m) return NULL;
+    harness_metrics_t *m = xcalloc(1, sizeof(*m));
     m->version = 1;
 
     if (!nash_dir) return m;
@@ -41,8 +41,7 @@ harness_metrics_t *harness_metrics_load(const char *nash_dir)
         return m;
     }
 
-    char *buf = malloc(sz + 1);
-    if (!buf) { fclose(f); return m; }
+    char *buf = xmalloc(sz + 1);
     size_t nr = fread(buf, 1, sz, f);
     fclose(f);
     buf[nr] = '\0';

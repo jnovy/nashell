@@ -465,7 +465,11 @@ void tool_track_modified_file(tool_ctx_t *ctx, const char *path, int step) {
 void tool_txn_record(tool_ctx_t *ctx, const char *path,
                      const char *pre_hash, int is_new_file) {
   if (!ctx || !path) return;
-  if (ctx->txn_n_edits >= TXN_MAX_EDITS) return; /* silent cap */
+  if (ctx->txn_n_edits >= TXN_MAX_EDITS) {
+    nash_log("[tools] rollback transaction full (%d edits) - new edits not tracked",
+             TXN_MAX_EDITS);
+    return;
+  }
   /* Dedup: only keep the FIRST pre-edit hash per path so rollback
    * restores to the true original state, not an intermediate. */
   for (int i = 0; i < ctx->txn_n_edits; i++) {

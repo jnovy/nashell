@@ -1139,7 +1139,7 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
         .max_retries = cfg->provider_max_retries,
         .retry_base_sec = cfg->provider_retry_base,
       };
-      active_provider = provider_create(&apcfg);
+      active_provider = provider_new(&apcfg);
       if (!active_provider) {
         fprintf(stderr, "[agent] ✗ failed to create provider '%s' for %s\n",
                 a->provider_name, a->id);

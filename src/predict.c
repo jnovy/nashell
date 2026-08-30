@@ -42,7 +42,7 @@ const char *predict_outcome_name(predict_outcome_t outcome)
 
 predict_tracker_t *predict_tracker_new(void)
 {
-    predict_tracker_t *pt = calloc(1, sizeof(*pt));
+    predict_tracker_t *pt = xcalloc(1, sizeof(*pt));
     return pt;
 }
 

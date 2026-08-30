@@ -769,8 +769,7 @@ int journal_check_required_tools(journal_t *j, int react_loop,
   if (!j || n_required <= 0 || !required) return 0;
 
   /* Bit vector: seen[i] = 1 when required[i] found in journal */
-  int *seen = calloc((size_t)n_required, sizeof(int));
-  if (!seen) return n_required;
+  int *seen = xcalloc((size_t)n_required, sizeof(int));
 
   pthread_mutex_lock(&j->mtx);
   if (!j->path) {
@@ -822,8 +821,8 @@ int journal_check_required_tools(journal_t *j, int react_loop,
       if (!seen[i])
         len += strlen(required[i]) + 2; /* ", " */
     }
-    char *buf = malloc(len + 1);
-    if (buf) {
+    char *buf = xmalloc(len + 1);
+    {
       buf[0] = '\0';
       int first = 1;
       for (int i = 0; i < n_required; i++) {

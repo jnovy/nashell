@@ -13,8 +13,7 @@
 #include <errno.h>
 #include <poll.h>
 
-/* Forward declaration of headless_on_event from frontend_headless.c */
-extern void headless_on_event(const react_event_t *ev, void *userdata);
+#include "frontend_headless.h"
 
 
 /* ── Helpers ──────────────────────────────────────────── */

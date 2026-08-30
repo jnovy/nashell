@@ -230,6 +230,14 @@ static inline void *xcalloc(size_t n, size_t size) {
   }
   return p;
 }
+static inline void *xrealloc(void *ptr, size_t size) {
+  void *p = realloc(ptr, size);
+  if (!p && size) {
+    fprintf(stderr, "xrealloc(%zu): out of memory\n", size);
+    abort();
+  }
+  return p;
+}
 static inline char *xstrdup(const char *s) {
   char *p = strdup(s);
   if (!p) {

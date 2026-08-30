@@ -57,4 +57,9 @@ typedef struct {
  * with inference dispatch using the modified query. */
 int command_dispatch(command_ctx_t *ctx, char **submitted_query);
 
+/* Set to 1 when a PATH positional arg is given on the CLI or /cwd command.
+ * Controls whether repo map is injected (default off without PATH).
+ * Weak definition in commands.c allows test binaries to link without main.c. */
+extern int g_path_given;
+
 #endif /* COMMANDS_H */

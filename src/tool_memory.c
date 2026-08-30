@@ -248,7 +248,7 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
 
   /* FIX CRIT#2: Deep-copy string fields to prevent dangling pointers if
      * the original provider is freed/modified concurrently (e.g. model switch
-     * during playbook pass). provider_create() strdup's its input, but the
+     * during playbook pass). provider_new() strdup's its input, but the
      * input itself must be valid at the time of the call.
      * FIX MED#10: Inherit llm_timeout to prevent indefinite blocking.
      *
@@ -273,8 +273,8 @@ char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
   cons_cfg.enable_thinking = 0;
   cons_cfg.thinking_budget = 0;
   if (cons_cfg.llm_timeout == 0) cons_cfg.llm_timeout = 120; /* FIX MED#10: default 2min timeout */
-  provider_t *cons_provider = provider_create(&cons_cfg);
-  /* Free our temporary strdup'd copies (provider_create strdup's again) */
+  provider_t *cons_provider = provider_new(&cons_cfg);
+  /* Free our temporary strdup'd copies (provider_new strdup's again) */
   free((void *)cons_cfg.model_id);
   free((void *)cons_cfg.api_base);
   free((void *)cons_cfg.api_key_env);

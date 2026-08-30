@@ -162,8 +162,7 @@ long react_inject_scratchpad_msg(llm_chat_t *chat, int pos,
   if (!sp_content || !sp_content[0]) return 0;
   size_t slen = strlen(sp_content);
   size_t total = REACT_SP_PREFIX_LEN + slen + 1;
-  char *sp_msg = malloc(total);
-  if (!sp_msg) return 0;
+  char *sp_msg = xmalloc(total);
   snprintf(sp_msg, total, "%s%s", REACT_SP_PREFIX, sp_content);
   llm_chat_insert_typed(chat, pos, "user", sp_msg, LLM_MSG_SCRATCHPAD);
   long injected = (long)(total - 1);
@@ -176,8 +175,7 @@ char *react_format_scratchpad_msg(const char *content) {
   if (!content || !content[0]) return NULL;
   size_t clen = strlen(content);
   size_t total = REACT_SP_PREFIX_LEN + clen + 1;
-  char *msg = malloc(total);
-  if (!msg) return NULL;
+  char *msg = xmalloc(total);
   snprintf(msg, total, "%s%s", REACT_SP_PREFIX, content);
   return msg;
 }

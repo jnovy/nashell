@@ -86,64 +86,13 @@ all: $(LIB_REAL) $(BIN)
 
 # Header dependencies -- ALL .o files depend on ALL headers.
 # This is conservative but safe: changing any header recompiles everything.
-# For a 15-file project this adds <1s to rebuilds.
 HDRS    = $(wildcard src/*.h)
 
 src/%.o: src/%.c $(HDRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Library objects (everything except main.c for linking with tests)
-LIB_SRC = src/str.c src/cJSON.c src/journal.c src/store.c \
-          src/llm.c src/tools.c src/react.c src/react_context.c \
-          src/react_checkpoint.c \
-          src/react_reflection.c \
-          src/react_error.c src/react_eviction.c \
-          src/react_cycling.c \
-          src/react_view.c \
-          src/config.c src/toml.c \
-          src/provider.c src/provider_local.c \
-          src/provider_openai.c src/provider_anthropic.c \
-          src/frontend_headless.c src/ui_state.c src/ui_md_gen.c src/ui_nav.c src/ui_event.c \
-          src/tui.c src/md_render.c src/memory.c src/mem_git.c \
-          src/md_diff.c src/md_osc8.c \
-          src/workspace.c \
-          src/embedding.c src/embedding_onnx.c \
-          src/nash_log.c \
-          src/yaml_parse.c src/playbook.c \
-          src/regression.c src/postmortem.c \
-          src/prompt_optimize.c \
-          src/scratchpad.c \
-          src/session_index.c \
-          src/tool_file.c \
-          src/tool_search.c \
-          src/tool_notes.c \
-          src/tool_memory.c \
-          src/tool_web.c \
-          src/tool_image.c \
-          src/tool_todo.c \
-          src/todo_core.c \
-          src/session_search.c \
-          src/mailbox.c \
-          src/telegram.c \
-          src/md_html.c \
-          src/matrix.c \
-          src/compress.c \
-          src/html_extract.c \
-          src/searxng.c \
-          src/banner.c \
-          src/commands.c \
-          src/cmd_todo.c \
-          src/cmd_agents.c \
-          src/cmd_tool.c \
-          src/agents.c \
-          src/repomap.c \
-          src/tool_subtask.c \
-          src/completion.c \
-          src/subprocess.c \
-          src/tool_plugin.c \
-          src/setup.c \
-          src/predict.c \
-          src/harness_metrics.c
+LIB_SRC = $(filter-out src/main.c, $(SRC))
 LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Shared library: everything except main.c
@@ -168,7 +117,8 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_cycling tests/test_rollback \
            tests/test_predict tests/test_harness_metrics \
            tests/test_workspace tests/test_subtask_context \
-           tests/test_plan_tracking
+           tests/test_plan_tracking \
+           tests/test_onnx_embed
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \

@@ -168,11 +168,7 @@ const char *provider_cache_endpoint(provider_t *p, const char *fmt, ...) {
   return p->_cached_endpoint;
 }
 
-/* ── Forward declarations for provider constructors ─────────────── */
-
-extern void provider_local_init(provider_t *p);
-extern void provider_openai_init(provider_t *p);
-extern void provider_anthropic_init(provider_t *p);
+#include "provider_internal.h"
 
 /* ── Provider type string conversion ────────────────────────────── */
 
@@ -206,7 +202,7 @@ const char *provider_type_to_str(provider_type_t t) {
 
 /* ── Provider lifecycle ─────────────────────────────────────────── */
 
-provider_t *provider_create(const provider_config_t *cfg) {
+provider_t *provider_new(const provider_config_t *cfg) {
   provider_t *p = xcalloc(1, sizeof(*p));
 
   p->type = cfg->type;
@@ -275,7 +271,7 @@ void provider_free(provider_t *p) {
   free(p->last_error);
   free(p->last_error_request);
   free(p->last_error_response);
-  /* Free all deep-copied string fields from provider_create */
+  /* Free all deep-copied string fields from provider_new */
   free((char *)p->cfg.model_id);
   free((char *)p->cfg.api_base);
   free((char *)p->cfg.api_key_env);

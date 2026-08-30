@@ -21,6 +21,7 @@
  * buffers were allocated by view_build (shortened != original). */
 
 #include "react_view.h"
+#include "str.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,9 +57,7 @@ static char *shorten_content(const char *content, size_t content_len,
 
   size_t marker_len = strlen(marker);
   size_t new_len = (size_t)half + marker_len + (size_t)half;
-  char *shortened = malloc(new_len + 1);
-  if (!shortened)
-    return NULL;
+  char *shortened = xmalloc(new_len + 1);
 
   memcpy(shortened, content, (size_t)half);
   memcpy(shortened + half, marker, marker_len);
@@ -102,8 +101,7 @@ llm_chat_t *view_build(const llm_chat_t *record, const view_policy_t *policy,
   /* Count tool-result messages from tail, assigning age indices.
    * age 0 = newest tool result, age 1 = second newest, etc. */
   int n = record->n_msgs;
-  int *tool_age = calloc((size_t)n, sizeof(int));
-  if (!tool_age) return NULL;
+  int *tool_age = xcalloc((size_t)n, sizeof(int));
 
   for (int i = 0; i < n; i++)
     tool_age[i] = -1;
@@ -126,22 +124,13 @@ llm_chat_t *view_build(const llm_chat_t *record, const view_policy_t *policy,
   }
 
   /* Allocate the view chat struct */
-  llm_chat_t *view = calloc(1, sizeof(llm_chat_t));
-  if (!view) {
-    free(tool_age);
-    return NULL;
-  }
+  llm_chat_t *view = xcalloc(1, sizeof(llm_chat_t));
 
   /* Combined allocation: n llm_msg_t structs + n char* original pointers.
    * This lets view_free identify which content buffers to free. */
   size_t msgs_bytes = sizeof(llm_msg_t) * (size_t)n;
   size_t orig_bytes = sizeof(char *) * (size_t)n;
-  view->msgs = malloc(msgs_bytes + orig_bytes);
-  if (!view->msgs) {
-    free(view);
-    free(tool_age);
-    return NULL;
-  }
+  view->msgs = xmalloc(msgs_bytes + orig_bytes);
   view->n_msgs = n;
   view->cap_msgs = n;
 

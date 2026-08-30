@@ -803,7 +803,6 @@ void provider_anthropic_init(provider_t *p) {
   p->build_headers = anthropic_build_headers;
   p->build_request = anthropic_build_request;
   p->parse_response = anthropic_parse_response;
-  p->parse_sse_event = NULL; /* uses shared Anthropic SSE parser in provider.c */
   p->get_endpoint = anthropic_get_endpoint;
   p->build_tools = anthropic_build_tools_vtable;
   p->fetch_model_info = anthropic_fetch_model_info;

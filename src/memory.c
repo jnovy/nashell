@@ -1833,8 +1833,7 @@ static char **gc_refs_collect_modified_paths(memory_t *m, const char **deleted_k
     if (modified && ie->path) {
       if (n_paths >= paths_cap) {
         int new_cap = paths_cap ? paths_cap * 2 : 8;
-        char **tmp = realloc(paths, sizeof(char *) * (size_t)new_cap);
-        if (!tmp) continue; /* skip this path on OOM */
+        char **tmp = xrealloc(paths, sizeof(char *) * (size_t)new_cap);
         paths = tmp;
         paths_cap = new_cap;
       }

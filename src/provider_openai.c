@@ -116,7 +116,6 @@ void provider_openai_init(provider_t *p) {
   p->build_headers = openai_build_headers;
   p->build_request = openai_build_request;
   p->parse_response = parse_openai_response; /* shared OpenAI-format parser */
-  p->parse_sse_event = NULL;                 /* uses shared OpenAI SSE parser */
   p->get_endpoint = openai_get_endpoint;
   p->build_tools = openai_build_tools_vtable;
   p->fetch_model_info = openai_fetch_model_info;

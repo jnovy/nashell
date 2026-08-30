@@ -85,7 +85,6 @@ static int cmd_cwd(command_ctx_t *ctx, const char *dir) {
     return CMD_CONTINUE;
   }
   /* Enable repo map for subsequent queries (same as CLI PATH arg) */
-  extern int g_path_given;
   g_path_given = 1;
   /* Show success with resolved path */
   char resolved[NASH_PATH_MAX];

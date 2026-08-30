@@ -76,11 +76,6 @@ struct provider {
   char *(*parse_response)(provider_t *p, const char *response_json,
                           llm_chat_t *chat, llm_stats_t *stats);
 
-  /* Parse one SSE data line during streaming.
-     * Extracts content deltas and tool_call chunks.
-     * Called by the shared SSE line processor. */
-  void (*parse_sse_event)(provider_t *p, cJSON *data, void *sse_state);
-
   /* Get the API endpoint URL for chat completions.
      * Returns static string (do NOT free). */
   const char *(*get_endpoint)(provider_t *p);
@@ -120,7 +115,7 @@ struct provider {
 
 /* Create a provider from configuration.
  * Returns NULL on invalid config. Caller must call provider_free(). */
-provider_t *provider_create(const provider_config_t *cfg);
+provider_t *provider_new(const provider_config_t *cfg);
 
 /* Free provider and all resources */
 void provider_free(provider_t *p);

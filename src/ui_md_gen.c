@@ -10,22 +10,7 @@
 #include "ui_state_internal.h"
 #include "scratchpad.h"
 
-/* Replay journal.jsonl to reconstruct plan state (defined in tools.c) */
-extern cJSON *plan_replay_journal_dir(const char *session_dir);
-/* Derive subtask -> parent plan step links from the journal (tools.c) */
-extern cJSON *plan_subtask_links(const char *session_dir);
-/* Shared plan helpers (defined in tools.c, declared in tools.h) */
-extern int plan_link_for(const cJSON *links, const char *child_name);
-extern const char *plan_link_ref(const cJSON *links, const char *child_name);
-extern char **plan_subtask_names(const char *session_dir, int *out_n);
-extern void plan_subtask_names_free(char **names, int n);
-extern int plan_render_subtask_items(str_t *s, const char *session_dir,
-                                     const char *child_name,
-                                     int parent_idx, int sub_start);
-extern void plan_append_subtask_steps(str_t *s, const char *session_dir,
-                                      int parent_idx, const cJSON *links);
-extern void plan_append_unlinked_subtasks(str_t *s, const char *session_dir,
-                                          const cJSON *links);
+#include "tools.h"
 
 /* ── Local helpers ───────────────────────────────────────── */
 
