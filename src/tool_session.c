@@ -48,25 +48,14 @@ tool_result_t tool_session_search(tool_ctx_t *ctx, cJSON *params) {
       "session_search requires at least one of 'query' (semantic) "
       "or 'pattern' (lexical). Provide both for fused search.");
 
-  int max_results = DEFAULT_MAX_RESULTS;
-  cJSON *max_j = cJSON_GetObjectItem(params, "max_results");
-  if (max_j && cJSON_IsNumber(max_j)) {
-    max_results = max_j->valueint;
-    if (max_results < 1) max_results = 1;
-    if (max_results > ABSOLUTE_MAX_RESULTS) max_results = ABSOLUTE_MAX_RESULTS;
-  }
+  TOOL_OPT_INT(params, "max_results", max_results, DEFAULT_MAX_RESULTS);
+  if (max_results < 1) max_results = 1;
+  if (max_results > ABSOLUTE_MAX_RESULTS) max_results = ABSOLUTE_MAX_RESULTS;
 
-  int days = 0;
-  cJSON *days_j = cJSON_GetObjectItem(params, "days");
-  if (days_j && cJSON_IsNumber(days_j)) {
-    days = days_j->valueint;
-    if (days < 1) days = 1;
-  }
+  TOOL_OPT_INT(params, "days", days, 0);
+  if (days < 0) days = 0;
 
-  int use_regex = 0;
-  cJSON *regex_j = cJSON_GetObjectItem(params, "regex");
-  if (regex_j && cJSON_IsTrue(regex_j))
-    use_regex = 1;
+  TOOL_OPT_BOOL(params, "regex", use_regex, 0);
 
   /* Derive sessions_dir from session_dir (parent directory) */
   char sessions_dir[NASH_PATH_MAX] = {0};

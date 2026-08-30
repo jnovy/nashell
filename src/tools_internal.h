@@ -56,6 +56,43 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
                       ? var##_j_->valuestring \
                       : NULL
 
+/* Integer parameter extraction.
+ * TOOL_REQ_INT returns an error if the param is missing or not a number.
+ * TOOL_OPT_INT uses the provided default if the param is absent.
+ *
+ * Usage:
+ *   TOOL_REQ_INT(params, "index", idx);       // declares int idx
+ *   TOOL_OPT_INT(params, "max_results", max, 20); // declares int max
+ */
+#define TOOL_REQ_INT(params, name, var) \
+  cJSON *var##_j_ = cJSON_GetObjectItem((params), (name)); \
+  if (!var##_j_ || !cJSON_IsNumber(var##_j_)) \
+    return tools_make_error(name " is required and must be a number"); \
+  int var = var##_j_->valueint
+
+#define TOOL_OPT_INT(params, name, var, dflt) \
+  cJSON *var##_j_ = cJSON_GetObjectItem((params), (name)); \
+  int var = (var##_j_ && cJSON_IsNumber(var##_j_)) \
+              ? var##_j_->valueint \
+              : (dflt)
+
+/* Boolean parameter extraction.
+ * TOOL_OPT_BOOL defaults to the provided value if absent.
+ * cJSON represents bools as cJSON_True/cJSON_False; also accepts
+ * numeric 0/1 for compatibility with models that send integers.
+ *
+ * Usage:
+ *   TOOL_OPT_BOOL(params, "regex", use_regex, 0); // declares int use_regex
+ */
+#define TOOL_OPT_BOOL(params, name, var, dflt) \
+  cJSON *var##_j_ = cJSON_GetObjectItem((params), (name)); \
+  int var = (var##_j_) \
+              ? (cJSON_IsBool(var##_j_) ? (var##_j_->type == cJSON_True) \
+                                        : (cJSON_IsNumber(var##_j_) \
+                                           ? (var##_j_->valueint != 0) \
+                                           : (dflt))) \
+              : (dflt)
+
 /* Build a success result with {"status":"ok"} and optional extra fields.
  * Caller can cJSON_AddXToObject(meta, ...) before returning. */
 static inline tool_result_t tool_result_ok(void) {

@@ -125,10 +125,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
     /* ── DONE ── */
   } else if (strcmp(op, "done") == 0) {
-    cJSON *idx_j = cJSON_GetObjectItem(params, "index");
-    if (!idx_j || !cJSON_IsNumber(idx_j))
-      return tools_make_error("'done' requires 'index' (integer)");
-    int idx = (int)cJSON_GetNumberValue(idx_j);
+    TOOL_REQ_INT(params, "index", idx);
 
     char **lines;
     int count = todo_load(fpath, &lines);
@@ -155,10 +152,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
     /* ── REMOVE ── */
   } else if (strcmp(op, "remove") == 0) {
-    cJSON *idx_j = cJSON_GetObjectItem(params, "index");
-    if (!idx_j || !cJSON_IsNumber(idx_j))
-      return tools_make_error("'remove' requires 'index' (integer)");
-    int idx = (int)cJSON_GetNumberValue(idx_j);
+    TOOL_REQ_INT(params, "index", idx);
 
     char **lines;
     int count = todo_load(fpath, &lines);
