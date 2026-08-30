@@ -523,6 +523,94 @@ static int find_parent_query_cb(cJSON *entry, void *user_data) {
   return 0;
 }
 
+/* -- Workspace context pool for daemon mode ---------------------------------
+ * Maintains a pool of workspace sessions keyed by workspace name.
+ * Each workspace has its own session_dir, journal, tool_ctx, react_ctx.
+ * Tasks arriving with X-Workspace headers are routed to the
+ * appropriate workspace slot.  Slots are lazily created on first
+ * message to a workspace.
+ *
+ * When no workspace is specified (legacy or global), the default
+ * slot (index 0, ws_name from cfg->workspace) is used.
+ */
+#define DAEMON_MAX_WS_SLOTS 16
+typedef struct {
+  char *name;           /* workspace name (NULL = global) */
+  workspace_t *ws;
+  memory_t *mem;        /* ws->global shortcut */
+  char *session_dir;
+  journal_t *journal;
+  tool_ctx_t tools;
+  react_ctx_t react;
+  int active;           /* 1 = initialized */
+  time_t last_used;     /* monotonic timestamp for LRU eviction */
+} daemon_ws_slot_t;
+
+/* Clean up a single daemon workspace slot (save scratchpad, free session).
+ * Does NOT free s->ws or s->name -- caller handles those when needed. */
+static void daemon_slot_cleanup(daemon_ws_slot_t *s) {
+  if (!s->active) return;
+  if (s->tools.scratch.count > 0)
+    scratchpad_save(&s->tools.scratch, s->session_dir);
+  free(s->react.last_query);
+  s->react.last_query = NULL;
+  free(s->react.last_result);
+  s->react.last_result = NULL;
+  session_cleanup(&s->tools, &s->react, s->journal);
+  if (is_dir_empty(s->session_dir))
+    rmdir(s->session_dir);
+  free(s->session_dir);
+  s->session_dir = NULL;
+  s->active = 0;
+}
+
+/* Re-initialize a slot with a fresh session (after cleanup). */
+static void daemon_slot_reinit(daemon_ws_slot_t *s,
+                               const char *nash_dir,
+                               store_t *shared_store,
+                               config_t *cfg,
+                               provider_t *provider) {
+  s->session_dir = create_session_dir(nash_dir, s->name);
+  s->journal = journal_new(s->session_dir);
+  session_init_tools(&s->tools, shared_store, s->journal,
+                     s->mem, s->ws, s->session_dir, cfg, provider);
+  session_init_react(&s->react, provider, g_planner_provider,
+                     g_reflection_provider, &s->tools, cfg);
+  s->active = 1;
+}
+
+/* Create a brand-new workspace slot (workspace_new + session init). */
+static void daemon_slot_init_new(daemon_ws_slot_t *s,
+                                 const char *ws_name,
+                                 const char *nash_dir,
+                                 const char *server_model,
+                                 store_t *shared_store,
+                                 config_t *cfg,
+                                 provider_t *provider) {
+  s->name = ws_name ? xstrdup(ws_name) : NULL;
+  int ws_iso = cfg->workspace_isolated || (cfg->workspace_global_recall == 0);
+  double gw = cfg->workspace_global_weight;
+  s->ws = workspace_new(nash_dir, s->name, ws_iso, gw);
+  s->mem = s->ws ? s->ws->global : NULL;
+  if (server_model && s->mem)
+    s->mem->model = xstrdup(server_model);
+  if (server_model && s->ws && s->ws->workspace)
+    s->ws->workspace->model = xstrdup(server_model);
+  workspace_set_recall_config(s->ws, cfg->recall_min_score,
+                              cfg->recall_blend_semantic,
+                              cfg->recall_blend_substring,
+                              cfg->vscore_exponent,
+                              cfg->superseded_demotion,
+                              cfg->recency_bonus);
+  s->session_dir = create_session_dir(nash_dir, s->name);
+  s->journal = journal_new(s->session_dir);
+  session_init_tools(&s->tools, shared_store, s->journal,
+                     s->mem, s->ws, s->session_dir, cfg, provider);
+  session_init_react(&s->react, provider, g_planner_provider,
+                     g_reflection_provider, &s->tools, cfg);
+  s->active = 1;
+}
+
 int main(int argc, char **argv) {
   /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -1650,29 +1738,7 @@ int main(int argc, char **argv) {
       }
     }
 
-/* ── Workspace context pool for daemon mode ────────────────────
-         * Maintains a pool of workspace sessions keyed by workspace name.
-         * Each workspace has its own session_dir, journal, tool_ctx, react_ctx.
-         * Tasks arriving with X-Workspace headers are routed to the
-         * appropriate workspace slot.  Slots are lazily created on first
-         * message to a workspace.
-         *
-         * When no workspace is specified (legacy or global), the default
-         * slot (index 0, ws_name from cfg->workspace) is used.
-         */
-#define DAEMON_MAX_WS_SLOTS 16
-    typedef struct {
-      char *name; /* workspace name (NULL = global) */
-      workspace_t *ws;
-      memory_t *mem; /* ws->global shortcut */
-      char *session_dir;
-      journal_t *journal;
-      tool_ctx_t tools;
-      react_ctx_t react;
-      int active;       /* 1 = initialized */
-      time_t last_used; /* monotonic timestamp for LRU eviction */
-    } daemon_ws_slot_t;
-
+    /* Workspace pool (daemon_ws_slot_t defined at file scope above) */
     daemon_ws_slot_t ws_pool[DAEMON_MAX_WS_SLOTS];
     memset(ws_pool, 0, sizeof(ws_pool));
     int ws_pool_count = 0;
@@ -1707,23 +1773,8 @@ int main(int argc, char **argv) {
           /* Reset all active slots */
           for (int si = 0; si < ws_pool_count; si++) {
             daemon_ws_slot_t *s = &ws_pool[si];
-            if (!s->active) continue;
-            if (s->tools.scratch.count > 0)
-              scratchpad_save(&s->tools.scratch, s->session_dir);
-            free(s->react.last_query);
-            s->react.last_query = NULL;
-            free(s->react.last_result);
-            s->react.last_result = NULL;
-            session_cleanup(&s->tools, &s->react, s->journal);
-            if (is_dir_empty(s->session_dir))
-              rmdir(s->session_dir);
-            free(s->session_dir);
-            s->session_dir = create_session_dir(nash_dir, s->name);
-            s->journal = journal_new(s->session_dir);
-            session_init_tools(&s->tools, shared_store, s->journal,
-                               s->mem, s->ws, s->session_dir,
-                               cfg, provider);
-            session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
+            daemon_slot_cleanup(s);
+            daemon_slot_reinit(s, nash_dir, shared_store, cfg, provider);
             fprintf(stderr, "[daemon] reset slot '%s': %s\n",
                     s->name ? s->name : "global", s->session_dir);
           }
@@ -1757,23 +1808,8 @@ int main(int argc, char **argv) {
           fprintf(stderr, "\n[daemon] === session reset (during wait) ===\n");
           for (int si = 0; si < ws_pool_count; si++) {
             daemon_ws_slot_t *s = &ws_pool[si];
-            if (!s->active) continue;
-            if (s->tools.scratch.count > 0)
-              scratchpad_save(&s->tools.scratch, s->session_dir);
-            free(s->react.last_query);
-            s->react.last_query = NULL;
-            free(s->react.last_result);
-            s->react.last_result = NULL;
-            session_cleanup(&s->tools, &s->react, s->journal);
-            if (is_dir_empty(s->session_dir))
-              rmdir(s->session_dir);
-            free(s->session_dir);
-            s->session_dir = create_session_dir(nash_dir, s->name);
-            s->journal = journal_new(s->session_dir);
-            session_init_tools(&s->tools, shared_store, s->journal,
-                               s->mem, s->ws, s->session_dir,
-                               cfg, provider);
-            session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
+            daemon_slot_cleanup(s);
+            daemon_slot_reinit(s, nash_dir, shared_store, cfg, provider);
           }
         }
       }
@@ -1814,45 +1850,15 @@ int main(int argc, char **argv) {
           s = &ws_pool[lru];
           fprintf(stderr, "[daemon] evicting LRU workspace slot '%s'\n",
                   s->name ? s->name : "global");
-          /* Clean up evicted slot (mirrors shutdown cleanup) */
-          if (s->tools.scratch.count > 0)
-            scratchpad_save(&s->tools.scratch, s->session_dir);
-          free(s->react.last_query);
-          s->react.last_query = NULL;
-          free(s->react.last_result);
-          s->react.last_result = NULL;
-          session_cleanup(&s->tools, &s->react, s->journal);
-          if (is_dir_empty(s->session_dir))
-            rmdir(s->session_dir);
-          free(s->session_dir);
+          /* Clean up evicted slot */
+          daemon_slot_cleanup(s);
           if (s->ws)
             workspace_free(s->ws);
           free(s->name);
           memset(s, 0, sizeof(*s));
         }
-        s->name = task_ws ? xstrdup(task_ws) : NULL;
-        int ws_iso = cfg->workspace_isolated ||
-                     (cfg->workspace_global_recall == 0);
-        double gw = cfg->workspace_global_weight;
-        s->ws = workspace_new(nash_dir, s->name, ws_iso, gw);
-        s->mem = s->ws ? s->ws->global : NULL;
-        if (server_model && s->mem)
-          s->mem->model = xstrdup(server_model);
-        if (server_model && s->ws && s->ws->workspace)
-          s->ws->workspace->model = xstrdup(server_model);
-        workspace_set_recall_config(s->ws, cfg->recall_min_score,
-                                    cfg->recall_blend_semantic,
-                                    cfg->recall_blend_substring,
-                                    cfg->vscore_exponent,
-                                    cfg->superseded_demotion,
-                                    cfg->recency_bonus);
-        s->session_dir = create_session_dir(nash_dir, s->name);
-        s->journal = journal_new(s->session_dir);
-        session_init_tools(&s->tools, shared_store, s->journal,
-                           s->mem, s->ws, s->session_dir,
-                           cfg, provider);
-        session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
-        s->active = 1;
+        daemon_slot_init_new(s, task_ws, nash_dir, server_model,
+                             shared_store, cfg, provider);
         slot = s;
         fprintf(stderr, "[daemon] created workspace slot '%s': %s\n",
                 s->name ? s->name : "global", s->session_dir);
@@ -1912,22 +1918,12 @@ int main(int argc, char **argv) {
       mailbox_task_free(task);
     }
 
-    /* Graceful shutdown — cleanup all workspace slots */
+    /* Graceful shutdown -- cleanup all workspace slots */
     fprintf(stderr, "[daemon] shutting down...\n");
     for (int si = 0; si < ws_pool_count; si++) {
       daemon_ws_slot_t *s = &ws_pool[si];
-      if (!s->active) continue;
-      if (s->tools.scratch.count > 0)
-        scratchpad_save(&s->tools.scratch, s->session_dir);
-      free(s->react.last_query);
-      s->react.last_query = NULL;
-      free(s->react.last_result);
-      s->react.last_result = NULL;
-      session_cleanup(&s->tools, &s->react, s->journal);
-      if (is_dir_empty(s->session_dir))
-        rmdir(s->session_dir);
-      free(s->session_dir);
-      /* Don't free ws_pool[0].ws — it's the shared 'ws' freed later */
+      daemon_slot_cleanup(s);
+      /* Don't free ws_pool[0].ws -- it's the shared 'ws' freed later */
       if (si > 0 && s->ws) {
         workspace_free(s->ws);
       }
