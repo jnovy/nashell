@@ -2253,7 +2253,10 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
                   "- You MUST read the ref if you need to see what a command produced "
                   "or what a file contains.\n"
                   "- Ref aliases also work as $NASH_SESSION_DIR/<alias> paths in shell commands.\n"
-                  "- Do not file_write to ref paths.\n");
+                  "- Do not file_write to ref paths.\n"
+                  "- Never manually construct ref file paths. Refs are NOT in the "
+                  "temporary directory. Use bare ref names (R0S3) for tools, "
+                  "$NASH_SESSION_DIR/R0S3 for shell commands.\n");
 
   str_append_cstr(&s,
                   "\nRules:\n"
