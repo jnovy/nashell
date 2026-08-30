@@ -40,6 +40,23 @@ void tools_inject_thought(tool_ctx_t *ctx, cJSON *params) {
   cJSON_AddStringToObject(params, "thought", ctx->thought);
 }
 
+void tool_journal_with_content(tool_ctx_t *ctx, const char *tool_name,
+                               cJSON *params, const char *content,
+                               size_t size, int lines, char **store_ref_out) {
+  char *hash = NULL;
+  char *alias = NULL;
+  if (content) {
+    hash = store_save(ctx->store, content);
+    alias = tool_register_alias(ctx, hash ? hash : "");
+  }
+  tools_inject_thought(ctx, params);
+  tool_journal(ctx, tool_name, params, alias, size, lines, NULL, NULL);
+  if (store_ref_out)
+    *store_ref_out = alias ? xstrdup(alias) : NULL;
+  free(alias);
+  free(hash);
+}
+
 /* tools_make_result() and tools_make_error() are static inline in
  * tool_plugin.h -- available to all tool files and external plugins. */
 

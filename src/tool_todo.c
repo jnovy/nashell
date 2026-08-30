@@ -75,13 +75,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
       cJSON_AddStringToObject(res.meta, "workspace", ctx->ws->name);
 
     /* Audit trail */
-    char *hash = store_save(ctx->store, line);
-    char *alias = tool_register_alias(ctx, hash ? hash : "");
-    tools_inject_thought(ctx, params);
-    tool_journal(ctx, "todo",
-                 params, alias, strlen(line), 0, NULL, NULL);
-    free(alias);
-    free(hash);
+    tool_journal_with_content(ctx, "todo", params, line, strlen(line), 0, NULL);
     return res;
 
     /* ── LIST ── */
@@ -110,15 +104,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
     else
       cJSON_AddStringToObject(meta, "items", "(no items)");
 
-    char *hash = store_save(ctx->store, out.data);
-    char *alias = tool_register_alias(ctx, hash ? hash : "");
-    tools_inject_thought(ctx, params);
-    tool_journal(ctx, "todo",
-                 params, alias, out.len, count, NULL, NULL);
-
-    char *ref_copy = xstrdup(alias);
-    free(alias);
-    free(hash);
+    char *ref_copy = NULL;
+    tool_journal_with_content(ctx, "todo", params, out.data, out.len, count, &ref_copy);
     todo_free_lines(lines, count);
     str_free(&out);
     return tools_make_result(1, meta, ref_copy);
@@ -140,13 +127,8 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
     tool_result_t res = tool_result_ok();
     cJSON_AddStringToObject(res.meta, "item", lines[idx - 1]);
 
-    char *hash = store_save(ctx->store, lines[idx - 1]);
-    char *alias = tool_register_alias(ctx, hash ? hash : "");
-    tools_inject_thought(ctx, params);
-    tool_journal(ctx, "todo",
-                 params, alias, strlen(lines[idx - 1]), 0, NULL, NULL);
-    free(alias);
-    free(hash);
+    tool_journal_with_content(ctx, "todo", params, lines[idx - 1],
+                               strlen(lines[idx - 1]), 0, NULL);
     todo_free_lines(lines, count);
     return res;
 
@@ -170,13 +152,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
     tool_result_t res = tool_result_ok();
     cJSON_AddStringToObject(res.meta, "removed", removed);
 
-    char *hash = store_save(ctx->store, removed);
-    char *alias = tool_register_alias(ctx, hash ? hash : "");
-    tools_inject_thought(ctx, params);
-    tool_journal(ctx, "todo",
-                 params, alias, strlen(removed), 0, NULL, NULL);
-    free(alias);
-    free(hash);
+    tool_journal_with_content(ctx, "todo", params, removed, strlen(removed), 0, NULL);
     free(removed);
     todo_free_lines(lines, count);
     return res;
@@ -197,13 +173,7 @@ tool_result_t tool_todo(tool_ctx_t *ctx, cJSON *params) {
 
     char info[128];
     snprintf(info, sizeof(info), "purged %d completed items, %d remaining", purged, kept);
-    char *hash = store_save(ctx->store, info);
-    char *alias = tool_register_alias(ctx, hash ? hash : "");
-    tools_inject_thought(ctx, params);
-    tool_journal(ctx, "todo",
-                 params, alias, strlen(info), 0, NULL, NULL);
-    free(alias);
-    free(hash);
+    tool_journal_with_content(ctx, "todo", params, info, strlen(info), 0, NULL);
     todo_free_lines(lines, kept);
     return res;
 

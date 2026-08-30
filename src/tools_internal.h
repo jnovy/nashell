@@ -124,6 +124,14 @@ tool_result_t tools_memory_key_op(tool_ctx_t *ctx, cJSON *params,
 char *tools_memory_try_consolidate(tool_ctx_t *ctx, const char *new_key,
                                    const char *new_value, memory_t *target);
 
+/* Store content, register alias, inject thought, and journal in one call.
+ * Eliminates the repeated 6-line boilerplate in tool handlers.
+ * If store_ref_out is non-NULL, sets it to the alias string (caller owns).
+ * content may be NULL (degenerate case: journals with NULL ref). */
+void tool_journal_with_content(tool_ctx_t *ctx, const char *tool_name,
+                               cJSON *params, const char *content,
+                               size_t size, int lines, char **store_ref_out);
+
 /* Tool handler declarations are no longer needed here -- each tool_*.c file
  * self-registers its handlers via TOOL_PLUGIN_REGISTER() constructors.
  * Only cross-file helpers (above) remain. */
