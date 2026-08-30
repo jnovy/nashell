@@ -964,6 +964,367 @@ static int run_headless(nash_ctx_t *ctx, const char *query,
   return have_result ? 0 : 1;
 }
 
+static int run_agent(nash_ctx_t *ctx, const char *target_id,
+                     char *arguments, int dry_run, int due_flag,
+                     int list_flag) {
+  /* Default to listing agents when no sub-command given */
+  if (!due_flag && !list_flag && !dry_run && !target_id) {
+    list_flag = 1;
+  }
+
+  /* Acquire lock (separate from daemon lock -- uses agent.lock) */
+  {
+    char lock_path[NASH_PATH_MAX];
+    snprintf(lock_path, sizeof(lock_path), "%s/agent", ctx->nash_dir);
+    mkdir(lock_path, 0755);
+  }
+
+  /* Install signal handlers for graceful shutdown */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = shutdown_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sigaction(SIGTERM, &sa, NULL);
+  sigaction(SIGINT, &sa, NULL);
+
+  /* Scan + schedule */
+  agent_queue_t *q = agent_scan(ctx->nash_dir);
+  if (!q) {
+    fprintf(stderr, "[agent] error: scan failed\n");
+    free(arguments);
+    return 1;
+  }
+  agent_queue_load(q, ctx->nash_dir);
+  agent_queue_schedule(q, time(NULL));
+
+  if (list_flag) {
+    agent_queue_print(q, stdout);
+    agent_queue_free(q);
+    free(arguments);
+    return 0;
+  }
+
+  if (dry_run) {
+    fprintf(stderr, "[agent] DRY RUN -- would execute:\n");
+    int n = 0;
+    for (int i = 0; i < q->n_agents; i++) {
+      if (!q->agents[i].is_due) continue;
+      n++;
+      char tstr[32] = "never run";
+      if (q->agents[i].last_run > 0) {
+        int ago = (int)(time(NULL) - q->agents[i].last_run);
+        if (ago < 3600)
+          snprintf(tstr, sizeof(tstr), "%dm ago", ago / 60);
+        else
+          snprintf(tstr, sizeof(tstr), "%dh ago", ago / 3600);
+      }
+      fprintf(stderr, "  %d. %-40s (due: %s, timeout: %ds)\n",
+              n, q->agents[i].id, tstr, q->agents[i].timeout);
+    }
+    if (n == 0) fprintf(stderr, "  (no agent definitions due)\n");
+    agent_queue_free(q);
+    free(arguments);
+    return 0;
+  }
+
+  /* Execute agents (re-scans internally to own the queue) */
+  agent_queue_free(q);
+  /* If a daemon (--matrix/--telegram) is running, route agent results
+   * through its mailbox outbox so the bridge can deliver them. */
+  char mbox_dir[NASH_PATH_MAX];
+  const char *mbox = NULL;
+  if (mailbox_init(ctx->nash_dir, mbox_dir, sizeof(mbox_dir)) == 0)
+    mbox = mbox_dir;
+  int n_fail = agent_run_due(ctx->nash_dir, ctx->shared_store, ctx->cfg,
+                             ctx->provider, ctx->server_model, target_id,
+                             arguments,
+                             &shutdown_requested, mbox);
+  free(arguments);
+  return n_fail > 0 ? 1 : 0;
+}
+
+static int run_daemon(nash_ctx_t *ctx, int telegram_mode, int matrix_mode,
+                      int mailbox_timeout) {
+  /* Prevent multiple daemons sharing the same mailbox/room */
+  if (daemon_lock_acquire(ctx->nash_dir) != 0) {
+    return 1;
+  }
+  char mbox_dir[NASH_PATH_MAX];
+  if (mailbox_init(ctx->nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
+    fprintf(stderr, "[error] failed to initialize mailbox\n");
+    return 1;
+  }
+  fprintf(stderr, "[daemon] nash mailbox daemon started\n");
+  fprintf(stderr, "[daemon] inbox: %s/inbox/  (drop task_* files here)\n", mbox_dir);
+  fprintf(stderr, "[daemon] outbox: %s/outbox/ (results appear here)\n", mbox_dir);
+
+  /* Install signal handlers for graceful daemon shutdown.
+   * SIGTERM/SIGINT set shutdown_requested; the loop checks it
+   * each iteration so in-progress tasks complete before exit.
+   * Use sigaction WITHOUT SA_RESTART so that blocking calls
+   * (fgets, poll, read) return with EINTR on Ctrl-C. */
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = shutdown_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0; /* no SA_RESTART -- let syscalls fail with EINTR */
+  sigaction(SIGTERM, &sa, NULL);
+  sigaction(SIGINT, &sa, NULL);
+
+  /* Telegram bridge: start thread that bridges mailbox <-> Telegram API */
+  pthread_t tg_thread;
+  int tg_started = 0;
+  telegram_ctx_t tg_ctx;
+  if (telegram_mode) {
+    telegram_init(&tg_ctx, ctx->config_path, ctx->nash_dir, mbox_dir, &shutdown_requested);
+    if (!tg_ctx.bot_token || !tg_ctx.chat_id) {
+      /* No config -- run interactive setup */
+      if (telegram_setup(&tg_ctx) != 0) {
+        fprintf(stderr, "[telegram] setup failed, exiting\n");
+        telegram_free(&tg_ctx);
+        return 1;
+      }
+    }
+    if (pthread_create(&tg_thread, NULL, telegram_run, &tg_ctx) != 0) {
+      fprintf(stderr, "[telegram] failed to create bridge thread\n");
+      telegram_free(&tg_ctx);
+    } else {
+      tg_started = 1;
+      fprintf(stderr, "[telegram] bot bridge active -- send messages to your bot\n");
+    }
+  }
+
+  /* Matrix bridge: start thread that bridges mailbox <-> Matrix API */
+  pthread_t mx_thread;
+  int mx_started = 0;
+  matrix_ctx_t mx_ctx;
+  if (matrix_mode) {
+    matrix_init(&mx_ctx, ctx->config_path, ctx->nash_dir, mbox_dir, &shutdown_requested);
+    if (!mx_ctx.access_token || !mx_ctx.room_id) {
+      /* No config -- run interactive setup */
+      if (matrix_setup(&mx_ctx) != 0) {
+        fprintf(stderr, "[matrix] setup failed, exiting\n");
+        matrix_free(&mx_ctx);
+        return 1;
+      }
+    }
+    if (pthread_create(&mx_thread, NULL, matrix_run, &mx_ctx) != 0) {
+      fprintf(stderr, "[matrix] failed to create bridge thread\n");
+      matrix_free(&mx_ctx);
+    } else {
+      mx_started = 1;
+      fprintf(stderr, "[matrix] bot bridge active -- send messages to the Matrix room\n");
+    }
+  }
+
+  /* Workspace pool (daemon_ws_slot_t defined at file scope above) */
+  daemon_ws_slot_t ws_pool[DAEMON_MAX_WS_SLOTS];
+  memset(ws_pool, 0, sizeof(ws_pool));
+  int ws_pool_count = 0;
+
+  /* Initialize default slot (from cfg->workspace or global) */
+  {
+    daemon_ws_slot_t *s = &ws_pool[0];
+    s->name = ctx->cfg->workspace ? xstrdup(ctx->cfg->workspace) : NULL;
+    s->ws = ctx->ws; /* reuse the ws already created during shared setup */
+    s->mem = ctx->ws ? ctx->ws->global : NULL;
+    s->session_dir = create_session_dir(ctx->nash_dir, ctx->cfg->workspace);
+    s->journal = journal_new(s->session_dir);
+    session_init_tools(&s->tools, ctx->shared_store, s->journal, s->mem,
+                       s->ws, s->session_dir, ctx->cfg, ctx->provider);
+    session_init_react(&s->react, ctx->provider, g_planner_provider,
+                       g_reflection_provider, &s->tools, ctx->cfg);
+    s->active = 1;
+    s->last_used = time(NULL);
+    ws_pool_count = 1;
+    fprintf(stderr, "[daemon] default session: %s (workspace: %s)\n",
+            s->session_dir, s->name ? s->name : "global");
+  }
+
+  while (!shutdown_requested) {
+    /* -- Check for session reset command (cmd_new in inbox) ---- */
+    {
+      char cmd_path[NASH_PATH_MAX];
+      snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
+      if (access(cmd_path, F_OK) == 0) {
+        unlink(cmd_path);
+        fprintf(stderr, "\n[daemon] === session reset (all slots) ===\n");
+
+        /* Reset all active slots */
+        for (int si = 0; si < ws_pool_count; si++) {
+          daemon_ws_slot_t *s = &ws_pool[si];
+          daemon_slot_cleanup(s);
+          daemon_slot_reinit(s, ctx->nash_dir, ctx->shared_store,
+                             ctx->cfg, ctx->provider);
+          fprintf(stderr, "[daemon] reset slot '%s': %s\n",
+                  s->name ? s->name : "global", s->session_dir);
+        }
+        continue;
+      }
+    }
+
+    /* Wait for next task (with workspace metadata).
+     * Timeout allows periodic agent scheduling checks. */
+    mailbox_task_t *task = mailbox_wait_task_ex(mbox_dir, 60);
+    if (!task) {
+      if (shutdown_requested) break;
+      char cmd_chk[NASH_PATH_MAX];
+      snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
+      if (access(cmd_chk, F_OK) != 0) {
+        /* No command pending -- check for due agents */
+        agent_run_due(ctx->nash_dir, ctx->shared_store, ctx->cfg,
+                      ctx->provider, ctx->server_model,
+                      NULL, NULL,
+                      &shutdown_requested, mbox_dir);
+      }
+      continue;
+    }
+
+    /* Check again for session reset (may have arrived while waiting) */
+    {
+      char cmd_path[NASH_PATH_MAX];
+      snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
+      if (access(cmd_path, F_OK) == 0) {
+        unlink(cmd_path);
+        fprintf(stderr, "\n[daemon] === session reset (during wait) ===\n");
+        for (int si = 0; si < ws_pool_count; si++) {
+          daemon_ws_slot_t *s = &ws_pool[si];
+          daemon_slot_cleanup(s);
+          daemon_slot_reinit(s, ctx->nash_dir, ctx->shared_store,
+                             ctx->cfg, ctx->provider);
+        }
+      }
+    }
+
+    /* Find or create workspace slot for this task */
+    const char *task_ws = task->workspace; /* NULL = default */
+    daemon_ws_slot_t *slot = NULL;
+
+    /* Look for existing slot */
+    for (int si = 0; si < ws_pool_count; si++) {
+      daemon_ws_slot_t *s = &ws_pool[si];
+      if (!s->active) continue;
+      /* Match: both NULL (global), or same name */
+      if (!task_ws && !s->name) {
+        slot = s;
+        break;
+      }
+      if (task_ws && s->name && strcmp(task_ws, s->name) == 0) {
+        slot = s;
+        break;
+      }
+    }
+
+    /* Create new slot if needed -- evict LRU when pool is full */
+    if (!slot) {
+      daemon_ws_slot_t *s;
+      if (ws_pool_count < DAEMON_MAX_WS_SLOTS) {
+        s = &ws_pool[ws_pool_count];
+        ws_pool_count++;
+      } else {
+        /* Evict least-recently-used slot (skip slot 0 = default) */
+        int lru = 1;
+        for (int ei = 2; ei < ws_pool_count; ei++) {
+          if (ws_pool[ei].active &&
+              ws_pool[ei].last_used < ws_pool[lru].last_used)
+            lru = ei;
+        }
+        s = &ws_pool[lru];
+        fprintf(stderr, "[daemon] evicting LRU workspace slot '%s'\n",
+                s->name ? s->name : "global");
+        /* Clean up evicted slot */
+        daemon_slot_cleanup(s);
+        if (s->ws)
+          workspace_free(s->ws);
+        free(s->name);
+        memset(s, 0, sizeof(*s));
+      }
+      daemon_slot_init_new(s, task_ws, ctx->nash_dir, ctx->server_model,
+                           ctx->shared_store, ctx->cfg, ctx->provider);
+      slot = s;
+      fprintf(stderr, "[daemon] created workspace slot '%s': %s\n",
+              s->name ? s->name : "global", s->session_dir);
+    }
+
+    slot->last_used = time(NULL);
+
+    fprintf(stderr, "\n[daemon] === task: %s (R%d, ws=%s) ===\n",
+            task->task_id ? task->task_id : "unknown",
+            slot->tools.react_loop,
+            slot->name ? slot->name : "global");
+    fprintf(stderr, "[daemon] query: %.200s%s\n", task->query,
+            strlen(task->query) > 200 ? "..." : "");
+
+    mailbox_ctx_t mbox = {
+      .react_ctx = &slot->react,
+      .mailbox_dir = mbox_dir,
+      .session_dir = slot->session_dir,
+      .timeout_sec = mailbox_timeout,
+    };
+
+    char *result = react_run(&slot->react, task->query,
+                             mailbox_on_event, &mbox);
+
+    /* Write result to outbox (with route token for bridge routing) */
+    if (task->task_id) {
+      mailbox_write_result_routed(mbox_dir, task->task_id,
+                                  result, task->route_token,
+                                  task->workspace, task->query);
+    }
+
+    if (result) {
+      fprintf(stderr, "[daemon] task %s completed (R%d)\n",
+              task->task_id ? task->task_id : "unknown",
+              slot->tools.react_loop);
+      printf("%s\n", result);
+    } else {
+      fprintf(stderr, "[daemon] task %s failed (no result)\n",
+              task->task_id ? task->task_id : "unknown");
+    }
+
+    /* Propagate context to next react loop (like TUI does) */
+    free(slot->react.last_query);
+    free(slot->react.last_result);
+    slot->react.last_query = xstrdup(task->query);
+    slot->react.last_result = result ? xstrdup(result) : NULL;
+    slot->tools.react_loop++;
+
+    /* Tier 1 dreaming */
+    memory_prune(slot->mem, ctx->cfg->prune_min_score,
+                 ctx->cfg->prune_min_evidence);
+    if (slot->ws && slot->ws->workspace)
+      memory_prune(slot->ws->workspace, ctx->cfg->prune_min_score,
+                   ctx->cfg->prune_min_evidence);
+
+    free(result);
+    mailbox_task_free(task);
+  }
+
+  /* Graceful shutdown -- cleanup all workspace slots */
+  fprintf(stderr, "[daemon] shutting down...\n");
+  for (int si = 0; si < ws_pool_count; si++) {
+    daemon_ws_slot_t *s = &ws_pool[si];
+    daemon_slot_cleanup(s);
+    /* Don't free ws_pool[0].ws -- it's the shared 'ws' freed later */
+    if (si > 0 && s->ws) {
+      workspace_free(s->ws);
+    }
+    free(s->name);
+  }
+  if (tg_started) {
+    pthread_join(tg_thread, NULL);
+    telegram_free(&tg_ctx);
+  }
+  if (mx_started) {
+    pthread_join(mx_thread, NULL);
+    matrix_free(&mx_ctx);
+  }
+  daemon_lock_release();
+  web_search_cleanup();
+  return 0;
+}
+
 int main(int argc, char **argv) {
   /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -1727,368 +2088,16 @@ int main(int argc, char **argv) {
   int agent_tui_mode = (agents_mode && agent_target_id &&
                         !agents_due && !agents_dry_run && isatty(STDOUT_FILENO));
   if (agents_mode && !agent_tui_mode) {
-    /* Default to listing agents when no sub-command given */
-    if (!agents_due && !agents_list && !agents_dry_run && !agent_target_id) {
-      agents_list = 1;
-    }
-
-    /* Acquire lock (separate from daemon lock -- uses agent.lock) */
-    {
-      char lock_path[NASH_PATH_MAX];
-      snprintf(lock_path, sizeof(lock_path), "%s/agent", nash_dir);
-      mkdir(lock_path, 0755);
-    }
-
-    /* Install signal handlers for graceful shutdown */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = shutdown_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    /* Scan + schedule */
-    agent_queue_t *q = agent_scan(nash_dir);
-    if (!q) {
-      fprintf(stderr, "[agent] error: scan failed\n");
-      free(agent_arguments);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-    agent_queue_load(q, nash_dir);
-    agent_queue_schedule(q, time(NULL));
-
-    if (agents_list) {
-      agent_queue_print(q, stdout);
-      agent_queue_free(q);
-      free(agent_arguments);
-      nash_ctx_free(&ctx);
-      return 0;
-    }
-
-    if (agents_dry_run) {
-      fprintf(stderr, "[agent] DRY RUN -- would execute:\n");
-      int n = 0;
-      for (int i = 0; i < q->n_agents; i++) {
-        if (!q->agents[i].is_due) continue;
-        n++;
-        char tstr[32] = "never run";
-        if (q->agents[i].last_run > 0) {
-          int ago = (int)(time(NULL) - q->agents[i].last_run);
-          if (ago < 3600)
-            snprintf(tstr, sizeof(tstr), "%dm ago", ago / 60);
-          else
-            snprintf(tstr, sizeof(tstr), "%dh ago", ago / 3600);
-        }
-        fprintf(stderr, "  %d. %-40s (due: %s, timeout: %ds)\n",
-                n, q->agents[i].id, tstr, q->agents[i].timeout);
-      }
-      if (n == 0) fprintf(stderr, "  (no agent definitions due)\n");
-      agent_queue_free(q);
-      free(agent_arguments);
-      nash_ctx_free(&ctx);
-      return 0;
-    }
-
-    /* Execute agents (re-scans internally to own the queue) */
-    agent_queue_free(q);
-    /* If a daemon (--matrix/--telegram) is running, route agent results
-         * through its mailbox outbox so the bridge can deliver them. */
-    char mbox_dir[NASH_PATH_MAX];
-    const char *mbox = NULL;
-    if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) == 0)
-      mbox = mbox_dir;
-    int n_fail = agent_run_due(nash_dir, shared_store, cfg, provider,
-                               server_model, agent_target_id,
-                               agent_arguments,
-                               &shutdown_requested, mbox);
-    free(agent_arguments);
+    int rc = run_agent(&ctx, agent_target_id, agent_arguments,
+                       agents_dry_run, agents_due, agents_list);
     nash_ctx_free(&ctx);
-    return n_fail > 0 ? 1 : 0;
+    return rc;
   }
 
-  /* Daemon mode: watch mailbox inbox for tasks, process them sequentially */
   if (daemon_mode) {
-    /* Prevent multiple daemons sharing the same mailbox/room */
-    if (daemon_lock_acquire(nash_dir) != 0) {
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-    char mbox_dir[NASH_PATH_MAX];
-    if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
-      fprintf(stderr, "[error] failed to initialize mailbox\n");
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-    fprintf(stderr, "[daemon] nash mailbox daemon started\n");
-    fprintf(stderr, "[daemon] inbox: %s/inbox/  (drop task_* files here)\n", mbox_dir);
-    fprintf(stderr, "[daemon] outbox: %s/outbox/ (results appear here)\n", mbox_dir);
-
-    /* FIX #6: Install signal handlers for graceful daemon shutdown.
-         * SIGTERM/SIGINT set shutdown_requested; the loop checks it
-         * each iteration so in-progress tasks complete before exit.
-         * Use sigaction WITHOUT SA_RESTART so that blocking calls
-         * (fgets, poll, read) return with EINTR on Ctrl-C. */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = shutdown_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0; /* no SA_RESTART — let syscalls fail with EINTR */
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-
-    /* Telegram bridge: start thread that bridges mailbox ↔ Telegram API */
-    pthread_t tg_thread;
-    int tg_started = 0;
-    telegram_ctx_t tg_ctx;
-    if (telegram_mode) {
-      telegram_init(&tg_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
-      if (!tg_ctx.bot_token || !tg_ctx.chat_id) {
-        /* No config — run interactive setup */
-        if (telegram_setup(&tg_ctx) != 0) {
-          fprintf(stderr, "[telegram] setup failed, exiting\n");
-          telegram_free(&tg_ctx);
-          nash_ctx_free(&ctx);
-          return 1;
-        }
-      }
-      if (pthread_create(&tg_thread, NULL, telegram_run, &tg_ctx) != 0) {
-        fprintf(stderr, "[telegram] failed to create bridge thread\n");
-        telegram_free(&tg_ctx);
-      } else {
-        tg_started = 1;
-        fprintf(stderr, "[telegram] bot bridge active — send messages to your bot\n");
-      }
-    }
-
-    /* Matrix bridge: start thread that bridges mailbox ↔ Matrix API */
-    pthread_t mx_thread;
-    int mx_started = 0;
-    matrix_ctx_t mx_ctx;
-    if (matrix_mode) {
-      matrix_init(&mx_ctx, config_path, nash_dir, mbox_dir, &shutdown_requested);
-      if (!mx_ctx.access_token || !mx_ctx.room_id) {
-        /* No config — run interactive setup */
-        if (matrix_setup(&mx_ctx) != 0) {
-          fprintf(stderr, "[matrix] setup failed, exiting\n");
-          matrix_free(&mx_ctx);
-          nash_ctx_free(&ctx);
-          return 1;
-        }
-      }
-      if (pthread_create(&mx_thread, NULL, matrix_run, &mx_ctx) != 0) {
-        fprintf(stderr, "[matrix] failed to create bridge thread\n");
-        matrix_free(&mx_ctx);
-      } else {
-        mx_started = 1;
-        fprintf(stderr, "[matrix] bot bridge active — send messages to the Matrix room\n");
-      }
-    }
-
-    /* Workspace pool (daemon_ws_slot_t defined at file scope above) */
-    daemon_ws_slot_t ws_pool[DAEMON_MAX_WS_SLOTS];
-    memset(ws_pool, 0, sizeof(ws_pool));
-    int ws_pool_count = 0;
-
-    /* Initialize default slot (from cfg->workspace or global) */
-    {
-      daemon_ws_slot_t *s = &ws_pool[0];
-      s->name = cfg->workspace ? xstrdup(cfg->workspace) : NULL;
-      s->ws = ws; /* reuse the ws already created at L655 */
-      s->mem = ws ? ws->global : NULL;
-      s->session_dir = create_session_dir(nash_dir, cfg->workspace);
-      s->journal = journal_new(s->session_dir);
-      session_init_tools(&s->tools, shared_store, s->journal, s->mem,
-                         s->ws, s->session_dir, cfg, provider);
-      session_init_react(&s->react, provider, g_planner_provider, g_reflection_provider, &s->tools, cfg);
-      s->active = 1;
-      s->last_used = time(NULL);
-      ws_pool_count = 1;
-      fprintf(stderr, "[daemon] default session: %s (workspace: %s)\n",
-              s->session_dir, s->name ? s->name : "global");
-    }
-
-    while (!shutdown_requested) {
-      /* ── Check for session reset command (cmd_new in inbox) ──── */
-      {
-        char cmd_path[NASH_PATH_MAX];
-        snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
-        if (access(cmd_path, F_OK) == 0) {
-          unlink(cmd_path);
-          fprintf(stderr, "\n[daemon] === session reset (all slots) ===\n");
-
-          /* Reset all active slots */
-          for (int si = 0; si < ws_pool_count; si++) {
-            daemon_ws_slot_t *s = &ws_pool[si];
-            daemon_slot_cleanup(s);
-            daemon_slot_reinit(s, nash_dir, shared_store, cfg, provider);
-            fprintf(stderr, "[daemon] reset slot '%s': %s\n",
-                    s->name ? s->name : "global", s->session_dir);
-          }
-          continue;
-        }
-      }
-
-      /* Wait for next task (with workspace metadata).
-             * Timeout allows periodic agent scheduling checks. */
-      mailbox_task_t *task = mailbox_wait_task_ex(mbox_dir, 60);
-      if (!task) {
-        if (shutdown_requested) break;
-        char cmd_chk[NASH_PATH_MAX];
-        snprintf(cmd_chk, sizeof(cmd_chk), "%s/inbox/cmd_new", mbox_dir);
-        if (access(cmd_chk, F_OK) != 0) {
-          /* No command pending -- check for due agents */
-          agent_run_due(nash_dir, shared_store, cfg,
-                        provider, server_model,
-                        NULL, NULL,
-                        &shutdown_requested, mbox_dir);
-        }
-        continue;
-      }
-
-      /* Check again for session reset (may have arrived while waiting) */
-      {
-        char cmd_path[NASH_PATH_MAX];
-        snprintf(cmd_path, sizeof(cmd_path), "%s/inbox/cmd_new", mbox_dir);
-        if (access(cmd_path, F_OK) == 0) {
-          unlink(cmd_path);
-          fprintf(stderr, "\n[daemon] === session reset (during wait) ===\n");
-          for (int si = 0; si < ws_pool_count; si++) {
-            daemon_ws_slot_t *s = &ws_pool[si];
-            daemon_slot_cleanup(s);
-            daemon_slot_reinit(s, nash_dir, shared_store, cfg, provider);
-          }
-        }
-      }
-
-      /* Find or create workspace slot for this task */
-      const char *task_ws = task->workspace; /* NULL = default */
-      daemon_ws_slot_t *slot = NULL;
-
-      /* Look for existing slot */
-      for (int si = 0; si < ws_pool_count; si++) {
-        daemon_ws_slot_t *s = &ws_pool[si];
-        if (!s->active) continue;
-        /* Match: both NULL (global), or same name */
-        if (!task_ws && !s->name) {
-          slot = s;
-          break;
-        }
-        if (task_ws && s->name && strcmp(task_ws, s->name) == 0) {
-          slot = s;
-          break;
-        }
-      }
-
-      /* Create new slot if needed — evict LRU when pool is full */
-      if (!slot) {
-        daemon_ws_slot_t *s;
-        if (ws_pool_count < DAEMON_MAX_WS_SLOTS) {
-          s = &ws_pool[ws_pool_count];
-          ws_pool_count++;
-        } else {
-          /* Evict least-recently-used slot (skip slot 0 = default) */
-          int lru = 1;
-          for (int ei = 2; ei < ws_pool_count; ei++) {
-            if (ws_pool[ei].active &&
-                ws_pool[ei].last_used < ws_pool[lru].last_used)
-              lru = ei;
-          }
-          s = &ws_pool[lru];
-          fprintf(stderr, "[daemon] evicting LRU workspace slot '%s'\n",
-                  s->name ? s->name : "global");
-          /* Clean up evicted slot */
-          daemon_slot_cleanup(s);
-          if (s->ws)
-            workspace_free(s->ws);
-          free(s->name);
-          memset(s, 0, sizeof(*s));
-        }
-        daemon_slot_init_new(s, task_ws, nash_dir, server_model,
-                             shared_store, cfg, provider);
-        slot = s;
-        fprintf(stderr, "[daemon] created workspace slot '%s': %s\n",
-                s->name ? s->name : "global", s->session_dir);
-      }
-
-      slot->last_used = time(NULL);
-
-      fprintf(stderr, "\n[daemon] === task: %s (R%d, ws=%s) ===\n",
-              task->task_id ? task->task_id : "unknown",
-              slot->tools.react_loop,
-              slot->name ? slot->name : "global");
-      fprintf(stderr, "[daemon] query: %.200s%s\n", task->query,
-              strlen(task->query) > 200 ? "..." : "");
-
-      mailbox_ctx_t mbox = {
-        .react_ctx = &slot->react,
-        .mailbox_dir = mbox_dir,
-        .session_dir = slot->session_dir,
-        .timeout_sec = mailbox_timeout,
-      };
-
-      char *result = react_run(&slot->react, task->query,
-                               mailbox_on_event, &mbox);
-
-      /* Write result to outbox (with route token for bridge routing) */
-      if (task->task_id) {
-        mailbox_write_result_routed(mbox_dir, task->task_id,
-                                    result, task->route_token,
-                                    task->workspace, task->query);
-      }
-
-      if (result) {
-        fprintf(stderr, "[daemon] task %s completed (R%d)\n",
-                task->task_id ? task->task_id : "unknown",
-                slot->tools.react_loop);
-        printf("%s\n", result);
-      } else {
-        fprintf(stderr, "[daemon] task %s failed (no result)\n",
-                task->task_id ? task->task_id : "unknown");
-      }
-
-      /* Propagate context to next react loop (like TUI does) */
-      free(slot->react.last_query);
-      free(slot->react.last_result);
-      slot->react.last_query = xstrdup(task->query);
-      slot->react.last_result = result ? xstrdup(result) : NULL;
-      slot->tools.react_loop++;
-
-      /* Tier 1 dreaming */
-      memory_prune(slot->mem, cfg->prune_min_score,
-                   cfg->prune_min_evidence);
-      if (slot->ws && slot->ws->workspace)
-        memory_prune(slot->ws->workspace, cfg->prune_min_score,
-                     cfg->prune_min_evidence);
-
-      free(result);
-      mailbox_task_free(task);
-    }
-
-    /* Graceful shutdown -- cleanup all workspace slots */
-    fprintf(stderr, "[daemon] shutting down...\n");
-    for (int si = 0; si < ws_pool_count; si++) {
-      daemon_ws_slot_t *s = &ws_pool[si];
-      daemon_slot_cleanup(s);
-      /* Don't free ws_pool[0].ws -- it's the shared 'ws' freed later */
-      if (si > 0 && s->ws) {
-        workspace_free(s->ws);
-      }
-      free(s->name);
-    }
-    if (tg_started) {
-      pthread_join(tg_thread, NULL);
-      telegram_free(&tg_ctx);
-    }
-    if (mx_started) {
-      pthread_join(mx_thread, NULL);
-      matrix_free(&mx_ctx);
-    }
-    daemon_lock_release();
-    web_search_cleanup();
+    int rc = run_daemon(&ctx, telegram_mode, matrix_mode, mailbox_timeout);
     nash_ctx_free(&ctx);
-    return 0;
+    return rc;
   }
 
   /* One-shot headless mode (only when no terminal available, or mailbox mode).
