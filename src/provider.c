@@ -1,4 +1,5 @@
 #include "provider.h"
+#include "provider_openai_common.h"
 #include "llm.h"
 #include "tools.h"
 #include "tool_plugin.h"

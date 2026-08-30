@@ -6,6 +6,7 @@
  */
 
 #include "provider.h"
+#include "provider_openai_common.h"
 #include "str.h"
 #include "cJSON.h"
 #include <curl/curl.h>
