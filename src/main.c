@@ -629,6 +629,341 @@ static void daemon_slot_init_new(daemon_ws_slot_t *s,
   s->active = 1;
 }
 
+/* ---- Mode runners --------------------------------------------------------
+ * Each run_*() function implements one of the mutually exclusive execution
+ * modes.  They receive shared state via nash_ctx_t* and mode-specific
+ * parameters.  They return the process exit code.  The caller (main())
+ * is responsible for calling nash_ctx_free() after the runner returns. */
+
+static int run_regression(nash_ctx_t *ctx, int split,
+                          const char *validate_harness) {
+  /* Create regression directory and seed query bank */
+  char regression_dir[NASH_PATH_MAX];
+  snprintf(regression_dir, sizeof(regression_dir), "%s/regression", ctx->nash_dir);
+  regression_write_seed(regression_dir);
+
+  /* Load query banks */
+  int n_banks = 0;
+  query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
+  if (!banks || n_banks == 0) {
+    fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
+    return 1;
+  }
+
+  fprintf(stderr, "[regression] loaded %d query banks\n", n_banks);
+
+  /* Run tests */
+  regression_report_t *report = regression_run(
+    banks, n_banks, split,
+    ctx->provider, ctx->cfg, ctx->memory, ctx->shared_store, ctx->nash_dir);
+
+  regression_print_report(report);
+
+  int exit_code = 0;
+
+  /* Handle --validate-harness */
+  if (validate_harness) {
+    char baseline_path[NASH_PATH_MAX];
+    snprintf(baseline_path, sizeof(baseline_path),
+             "%s/regression/baseline.json", ctx->nash_dir);
+
+    if (strcmp(validate_harness, "baseline") == 0) {
+      regression_save_report(report, baseline_path);
+      fprintf(stderr, "[regression] baseline saved: %s\n", baseline_path);
+    } else if (strcmp(validate_harness, "compare") == 0) {
+      regression_report_t *baseline = regression_load_report(baseline_path);
+      if (!baseline) {
+        fprintf(stderr, "[regression] no baseline found at %s\n", baseline_path);
+        fprintf(stderr, "[regression] run with --validate-harness baseline first\n");
+        exit_code = 2;
+      } else {
+        exit_code = (int)regression_compare(baseline, report);
+        regression_free_report(baseline);
+      }
+    }
+  }
+
+  regression_free_report(report);
+  regression_free_banks(banks, n_banks);
+  return exit_code;
+}
+
+static int run_optimize(nash_ctx_t *ctx, const char *budget,
+                        const char *reflect_model_arg, int epochs,
+                        int edit_budget, int split) {
+  int rounds = optimize_parse_budget(budget);
+  if (rounds < 0) {
+    fprintf(stderr, "[optimize] invalid budget '%s' -- use light, medium, heavy, or a number\n",
+            budget);
+    return 1;
+  }
+
+  /* Create regression directory and seed query banks */
+  char regression_dir[NASH_PATH_MAX];
+  snprintf(regression_dir, sizeof(regression_dir), "%s/regression", ctx->nash_dir);
+  regression_write_seed(regression_dir);
+
+  /* Load query banks */
+  int n_banks = 0;
+  query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
+  if (!banks || n_banks == 0) {
+    fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
+    return 1;
+  }
+
+  /* Create reflection provider (same as student by default) */
+  provider_t *reflection_provider = ctx->provider;
+  if (reflect_model_arg) {
+    /* Parse reflect-model as "provider/model" e.g. "anthropic/claude-opus-4-6" */
+    char *slash = strchr(reflect_model_arg, '/');
+    if (slash) {
+      char ptype[64];
+      snprintf(ptype, sizeof(ptype), "%.*s", (int)(slash - reflect_model_arg), reflect_model_arg);
+      const char *rmodel = slash + 1;
+      provider_config_t rpcfg = {
+        .type = provider_type_from_str(ptype),
+        .model_id = rmodel,
+        .api_base = ctx->cfg->provider.api_base,
+        .api_key_env = ctx->cfg->provider.api_key_env,
+        .project_id = ctx->cfg->provider.project_id,
+        .region = ctx->cfg->provider.region,
+        .context_size = ctx->cfg->provider.context_size,
+        .chars_per_token = ctx->cfg->provider.chars_per_token,
+        .max_tokens = ctx->cfg->max_tokens,
+        .temperature = 0.7f, /* slightly creative for reflection */
+        .top_p = 1.0f,       /* disabled for reflection */
+        .top_k = 0,          /* disabled for reflection */
+        .enable_thinking = 0,
+        .thinking_budget = -1,
+        .llm_timeout = ctx->cfg->llm_timeout,
+      };
+      reflection_provider = provider_create(&rpcfg);
+      if (!reflection_provider) {
+        fprintf(stderr, "[optimize] failed to create reflection provider '%s'\n",
+                reflect_model_arg);
+        reflection_provider = ctx->provider; /* fallback to student */
+      }
+    } else {
+      fprintf(stderr, "[optimize] --reflect-model format: provider/model (e.g. anthropic/claude-opus-4-6)\n");
+      fprintf(stderr, "[optimize] using student model as reflection model\n");
+    }
+  }
+
+  /* Find model profile path for writing results */
+  const char *profile_path = NULL;
+  char profile_path_buf[NASH_PATH_MAX * 2];
+  if (ctx->server_model) {
+    const model_profile_t *profile = config_match_model(ctx->cfg, ctx->server_model);
+    if (profile && profile->source_file) {
+      snprintf(profile_path_buf, sizeof(profile_path_buf),
+               "%s/models/%s", ctx->nash_dir, profile->source_file);
+      profile_path = profile_path_buf;
+    }
+  }
+
+  /* Configure and run optimization */
+  optimize_config_t opt = {
+    .max_rounds = rounds,
+    .proposal_width = 2, /* Self-Harness K=2: two parallel proposals per round */
+    .student = ctx->provider,
+    .reflection = reflection_provider,
+    .profile_path = profile_path,
+    .split_filter = split,
+    .verbose = 1,
+    /* SkillOpt extensions [arXiv:2605.23904v2] */
+    .n_epochs = epochs,
+    .edit_budget_init = edit_budget,
+    .edit_budget_floor = edit_budget > 2 ? 2 : 1,
+    .minibatch_size = 0, /* 0 = all-at-once (default) */
+  };
+
+  prompt_candidate_t best = optimize_run(
+    &opt, banks, n_banks, ctx->cfg, ctx->memory, ctx->shared_store, ctx->nash_dir);
+
+  /* Cleanup */
+  optimize_free_candidate(&best);
+  regression_free_banks(banks, n_banks);
+  if (reflection_provider != ctx->provider)
+    provider_free(reflection_provider);
+  return 0;
+}
+
+static int run_validate_playbook(nash_ctx_t *ctx, const char *playbook_name) {
+  char pb_path[NASH_PATH_MAX];
+  if (strchr(playbook_name, '/') || strchr(playbook_name, '.')) {
+    snprintf(pb_path, sizeof(pb_path), "%s", playbook_name);
+  } else {
+    snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml",
+             ctx->nash_dir, playbook_name);
+  }
+  playbook_t *pb = playbook_load(pb_path);
+  if (!pb) {
+    fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
+    return 1;
+  }
+  fprintf(stderr, "Validating playbook '%s' (%d passes) from %s\n",
+          pb->name, pb->n_passes, pb_path);
+  char errbuf[4096];
+  int rc = playbook_validate(pb, errbuf, sizeof(errbuf));
+  fprintf(stderr, "%s", errbuf);
+  playbook_free(pb);
+  return rc == 0 ? 0 : 1;
+}
+
+static int run_headless_playbook(nash_ctx_t *ctx, const char *play_arg) {
+  /* Resolve playbook path */
+  char pb_path[NASH_PATH_MAX];
+  if (strchr(play_arg, '/') || strchr(play_arg, '.')) {
+    snprintf(pb_path, sizeof(pb_path), "%s", play_arg);
+  } else {
+    playbook_resolve(play_arg, ctx->nash_dir, pb_path, sizeof(pb_path));
+  }
+
+  playbook_t *pb = playbook_load(pb_path);
+  if (!pb) {
+    fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
+    return 1;
+  }
+
+  /* Validate before running */
+  {
+    char vbuf[4096];
+    if (playbook_validate(pb, vbuf, sizeof(vbuf)) != 0) {
+      fprintf(stderr, "[play] Playbook validation failed:\n%s", vbuf);
+      playbook_free(pb);
+      return 1;
+    }
+  }
+
+  fprintf(stderr, "[play] Running playbook '%s' (%d passes)\n",
+          pb->name, pb->n_passes);
+
+  playbook_args_t pargs = {
+    .playbook = pb,
+    .nash_dir = ctx->nash_dir,
+    .store = ctx->shared_store,
+    .memory = ctx->memory,
+    .cfg = ctx->cfg,
+    .provider = ctx->provider,
+    .consolidation_provider = g_consolidation_provider,
+    .server_model = ctx->server_model,
+    .ui = NULL, /* headless -- no TUI */
+    .playbook_ok = 0,
+    .done = 0,
+  };
+
+  /* Run synchronously (no thread needed in headless mode) */
+  playbook_worker(&pargs);
+
+  int ok = pargs.playbook_ok;
+  fprintf(stderr, "[play] Playbook '%s' %s\n",
+          pb->name, ok ? "completed successfully" : "FAILED");
+
+  /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+  route_to_outbox(ctx->nash_dir, pargs.result_text,
+                  ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, pb->name);
+
+  free(pargs.result_text);
+  free(pargs.last_session_dir);
+  playbook_free(pb);
+  return ok ? 0 : 1;
+}
+
+static int run_headless(nash_ctx_t *ctx, const char *query,
+                        const char *session_dir_arg, int mailbox_mode,
+                        int mailbox_timeout) {
+  /* Detect existing session: --session arg, or CWD with journal.jsonl */
+  char *session_dir = NULL;
+  int lazy_session = 0;
+  if (session_dir_arg) {
+    char jpath[4112];
+    snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
+    if (access(jpath, F_OK) == 0) {
+      session_dir = xstrdup(session_dir_arg);
+    } else {
+      fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
+    }
+  }
+  /* NOTE: Do NOT auto-detect session from CWD in headless mode.
+       * When a parent nash spawns a child via shell_exec("nash -p ..."),
+       * the child inherits the parent's CWD (which IS a session dir with
+       * journal.jsonl), causing the child to hijack the parent's session:
+       * loading its checkpoint, writing to its journal, and corrupting
+       * the parent's state.  Only explicit --session should be honored. */
+  journal_t *journal;
+  if (!session_dir) {
+    /* Lazy session: directory created on first journal_append */
+    journal = journal_new_lazy(ctx->nash_dir, ctx->cfg->workspace);
+    lazy_session = 1;
+  } else {
+    journal = journal_new(session_dir);
+  }
+  tool_ctx_t tools;
+  session_init_tools(&tools, ctx->shared_store, journal, ctx->memory,
+                     ctx->ws, session_dir, ctx->cfg, ctx->provider);
+  react_ctx_t react;
+  session_init_react(&react, ctx->provider, g_planner_provider,
+                     g_reflection_provider, &tools, ctx->cfg);
+
+  /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
+  char *result;
+  if (mailbox_mode) {
+    char mbox_dir[NASH_PATH_MAX];
+    if (mailbox_init(ctx->nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
+      fprintf(stderr, "[error] failed to initialize mailbox\n");
+      session_cleanup(&tools, &react, journal);
+      if (session_dir) free(session_dir);
+      return 1;
+    }
+    mailbox_ctx_t mbox = {
+      .react_ctx = &react,
+      .mailbox_dir = mbox_dir,
+      .session_dir = session_dir,
+      .timeout_sec = mailbox_timeout,
+    };
+    fprintf(stderr, "[mailbox] enabled -- questions in %s/outbox/, answers in %s/inbox/\n",
+            mbox_dir, mbox_dir);
+    /* Forward query to bridge before processing */
+    route_query_to_outbox(ctx->nash_dir, query,
+                          ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL, 1);
+    result = react_run(&react, query, mailbox_on_event, &mbox);
+  } else {
+    /* Forward query to bridge before processing */
+    route_query_to_outbox(ctx->nash_dir, query,
+                          ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL, 1);
+    result = react_run(&react, query, headless_on_event, NULL);
+  }
+  /* Resolve session_dir from journal for lazy sessions.
+       * journal_session_dir returns internal pointer -- must strdup
+       * because journal_free() will free the original. */
+  if (lazy_session) {
+    const char *jsd = journal_session_dir(journal);
+    session_dir = jsd ? xstrdup(jsd) : NULL;
+  }
+  /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
+  memory_prune(ctx->memory, ctx->cfg->prune_min_score, ctx->cfg->prune_min_evidence);
+  int have_result = (result != NULL);
+  /* Route result to outbox if a daemon (--matrix/--telegram) is running */
+  route_to_outbox(ctx->nash_dir, result,
+                  ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL);
+  if (result) {
+    printf("%s\n", result);
+    free(result);
+  }
+  /* Save scratchpad if session was created */
+  if (session_dir && tools.scratch.count > 0) {
+    scratchpad_save(&tools.scratch, session_dir);
+  }
+  tools.react_loop++; /* increment for next query */
+  session_cleanup(&tools, &react, journal);
+  /* Remove session directory if it's empty (no work was done) */
+  if (session_dir && is_dir_empty(session_dir)) {
+    rmdir(session_dir);
+  }
+  if (session_dir) free(session_dir);
+  return have_result ? 0 : 1;
+}
+
 int main(int argc, char **argv) {
   /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -1359,247 +1694,31 @@ int main(int argc, char **argv) {
 
   /* ── Regression test mode: --regression ── */
   if (regression_mode) {
-    /* Create regression directory and seed query bank */
-    char regression_dir[NASH_PATH_MAX];
-    snprintf(regression_dir, sizeof(regression_dir), "%s/regression", nash_dir);
-    regression_write_seed(regression_dir);
-
-    /* Load query banks */
-    int n_banks = 0;
-    query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
-    if (!banks || n_banks == 0) {
-      fprintf(stderr, "[regression] no query banks found in %s\n", regression_dir);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-
-    fprintf(stderr, "[regression] loaded %d query banks\n", n_banks);
-
-    /* Run tests */
-    regression_report_t *report = regression_run(
-      banks, n_banks, regression_split,
-      provider, cfg, memory, shared_store, nash_dir);
-
-    regression_print_report(report);
-
-    int exit_code = 0;
-
-    /* Handle --validate-harness */
-    if (validate_harness) {
-      char baseline_path[NASH_PATH_MAX];
-      snprintf(baseline_path, sizeof(baseline_path),
-               "%s/regression/baseline.json", nash_dir);
-
-      if (strcmp(validate_harness, "baseline") == 0) {
-        regression_save_report(report, baseline_path);
-        fprintf(stderr, "[regression] baseline saved: %s\n", baseline_path);
-      } else if (strcmp(validate_harness, "compare") == 0) {
-        regression_report_t *baseline = regression_load_report(baseline_path);
-        if (!baseline) {
-          fprintf(stderr, "[regression] no baseline found at %s\n", baseline_path);
-          fprintf(stderr, "[regression] run with --validate-harness baseline first\n");
-          exit_code = 2;
-        } else {
-          exit_code = (int)regression_compare(baseline, report);
-          regression_free_report(baseline);
-        }
-      }
-    }
-
-    regression_free_report(report);
-    regression_free_banks(banks, n_banks);
+    int rc = run_regression(&ctx, regression_split, validate_harness);
     nash_ctx_free(&ctx);
-    return exit_code;
+    return rc;
   }
 
   /* ── GEPA Prompt Optimization mode: --optimize BUDGET ── */
   if (optimize_budget) {
-    int rounds = optimize_parse_budget(optimize_budget);
-    if (rounds < 0) {
-      fprintf(stderr, "[optimize] invalid budget '%s' — use light, medium, heavy, or a number\n",
-              optimize_budget);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-
-    /* Create regression directory and seed query banks */
-    char regression_dir[NASH_PATH_MAX];
-    snprintf(regression_dir, sizeof(regression_dir), "%s/regression", nash_dir);
-    regression_write_seed(regression_dir);
-
-    /* Load query banks */
-    int n_banks = 0;
-    query_bank_t *banks = regression_load_banks(regression_dir, &n_banks);
-    if (!banks || n_banks == 0) {
-      fprintf(stderr, "[optimize] no query banks found in %s\n", regression_dir);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-
-    /* Create reflection provider (same as student by default) */
-    provider_t *reflection_provider = provider;
-    if (reflect_model_arg) {
-      /* Parse reflect-model as "provider/model" e.g. "anthropic/claude-opus-4-6" */
-      char *slash = strchr(reflect_model_arg, '/');
-      if (slash) {
-        char ptype[64];
-        snprintf(ptype, sizeof(ptype), "%.*s", (int)(slash - reflect_model_arg), reflect_model_arg);
-        const char *rmodel = slash + 1;
-        provider_config_t rpcfg = {
-          .type = provider_type_from_str(ptype),
-          .model_id = rmodel,
-          .api_base = cfg->provider.api_base,
-          .api_key_env = cfg->provider.api_key_env,
-          .project_id = cfg->provider.project_id,
-          .region = cfg->provider.region,
-          .context_size = cfg->provider.context_size,
-          .chars_per_token = cfg->provider.chars_per_token,
-          .max_tokens = cfg->max_tokens,
-          .temperature = 0.7f, /* slightly creative for reflection */
-          .top_p = 1.0f,       /* disabled for reflection */
-          .top_k = 0,          /* disabled for reflection */
-          .enable_thinking = 0,
-          .thinking_budget = -1,
-          .llm_timeout = cfg->llm_timeout,
-        };
-        reflection_provider = provider_create(&rpcfg);
-        if (!reflection_provider) {
-          fprintf(stderr, "[optimize] failed to create reflection provider '%s'\n",
-                  reflect_model_arg);
-          reflection_provider = provider; /* fallback to student */
-        }
-      } else {
-        fprintf(stderr, "[optimize] --reflect-model format: provider/model (e.g. anthropic/claude-opus-4-6)\n");
-        fprintf(stderr, "[optimize] using student model as reflection model\n");
-      }
-    }
-
-    /* Find model profile path for writing results */
-    const char *profile_path = NULL;
-    char profile_path_buf[NASH_PATH_MAX * 2];
-    if (server_model) {
-      const model_profile_t *profile = config_match_model(cfg, server_model);
-      if (profile && profile->source_file) {
-        snprintf(profile_path_buf, sizeof(profile_path_buf),
-                 "%s/models/%s", nash_dir, profile->source_file);
-        profile_path = profile_path_buf;
-      }
-    }
-
-    /* Configure and run optimization */
-    optimize_config_t opt = {
-      .max_rounds = rounds,
-      .proposal_width = 2, /* Self-Harness K=2: two parallel proposals per round */
-      .student = provider,
-      .reflection = reflection_provider,
-      .profile_path = profile_path,
-      .split_filter = regression_split,
-      .verbose = 1,
-      /* SkillOpt extensions [arXiv:2605.23904v2] */
-      .n_epochs = optimize_epochs,
-      .edit_budget_init = optimize_edit_budget,
-      .edit_budget_floor = optimize_edit_budget > 2 ? 2 : 1,
-      .minibatch_size = 0, /* 0 = all-at-once (default) */
-    };
-
-    prompt_candidate_t best = optimize_run(
-      &opt, banks, n_banks, cfg, memory, shared_store, nash_dir);
-
-    /* Cleanup */
-    optimize_free_candidate(&best);
-    regression_free_banks(banks, n_banks);
-    if (reflection_provider != provider)
-      provider_free(reflection_provider);
+    int rc = run_optimize(&ctx, optimize_budget, reflect_model_arg,
+                          optimize_epochs, optimize_edit_budget, regression_split);
     nash_ctx_free(&ctx);
-    return 0;
+    return rc;
   }
 
   /* Validate playbook mode: --validate-playbook NAME */
   if (validate_playbook_arg) {
-    char pb_path[NASH_PATH_MAX];
-    if (strchr(validate_playbook_arg, '/') || strchr(validate_playbook_arg, '.')) {
-      snprintf(pb_path, sizeof(pb_path), "%s", validate_playbook_arg);
-    } else {
-      snprintf(pb_path, sizeof(pb_path), "%s/playbooks/%s.yaml",
-               nash_dir, validate_playbook_arg);
-    }
-    playbook_t *pb = playbook_load(pb_path);
-    if (!pb) {
-      fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-    fprintf(stderr, "Validating playbook '%s' (%d passes) from %s\n",
-            pb->name, pb->n_passes, pb_path);
-    char errbuf[4096];
-    int rc = playbook_validate(pb, errbuf, sizeof(errbuf));
-    fprintf(stderr, "%s", errbuf);
-    playbook_free(pb);
+    int rc = run_validate_playbook(&ctx, validate_playbook_arg);
     nash_ctx_free(&ctx);
-    return rc == 0 ? 0 : 1;
+    return rc;
   }
 
   /* Headless playbook mode: --play NAME */
   if (play_arg) {
-    /* Resolve playbook path */
-    char pb_path[NASH_PATH_MAX];
-    if (strchr(play_arg, '/') || strchr(play_arg, '.')) {
-      snprintf(pb_path, sizeof(pb_path), "%s", play_arg);
-    } else {
-      playbook_resolve(play_arg, nash_dir, pb_path, sizeof(pb_path));
-    }
-
-    playbook_t *pb = playbook_load(pb_path);
-    if (!pb) {
-      fprintf(stderr, "Error: cannot load playbook '%s'\n", pb_path);
-      nash_ctx_free(&ctx);
-      return 1;
-    }
-
-    /* Validate before running */
-    {
-      char vbuf[4096];
-      if (playbook_validate(pb, vbuf, sizeof(vbuf)) != 0) {
-        fprintf(stderr, "[play] Playbook validation failed:\n%s", vbuf);
-        playbook_free(pb);
-        nash_ctx_free(&ctx);
-        return 1;
-      }
-    }
-
-    fprintf(stderr, "[play] Running playbook '%s' (%d passes)\n",
-            pb->name, pb->n_passes);
-
-    playbook_args_t pargs = {
-      .playbook = pb,
-      .nash_dir = nash_dir,
-      .store = shared_store,
-      .memory = memory,
-      .cfg = cfg,
-      .provider = provider,
-      .consolidation_provider = g_consolidation_provider,
-      .server_model = server_model,
-      .ui = NULL, /* headless — no TUI */
-      .playbook_ok = 0,
-      .done = 0,
-    };
-
-    /* Run synchronously (no thread needed in headless mode) */
-    playbook_worker(&pargs);
-
-    int ok = pargs.playbook_ok;
-    fprintf(stderr, "[play] Playbook '%s' %s\n",
-            pb->name, ok ? "completed successfully" : "FAILED");
-
-    /* Route result to outbox if a daemon (--matrix/--telegram) is running */
-    route_to_outbox(nash_dir, pargs.result_text,
-                    ws && ws->name ? ws->name : NULL, pb->name);
-
-    free(pargs.result_text);
-    free(pargs.last_session_dir);
-    playbook_free(pb);
+    int rc = run_headless_playbook(&ctx, play_arg);
     nash_ctx_free(&ctx);
-    return ok ? 0 : 1;
+    return rc;
   }
 
   /* Agent mode: scan workspaces, build calendar, run agents.
@@ -1976,97 +2095,9 @@ int main(int argc, char **argv) {
    * When a terminal IS available, fall through to the interactive TUI
    * and auto-submit the query there for a full-fledged display. */
   if (query && (!isatty(STDERR_FILENO) || mailbox_mode)) {
-    /* Detect existing session: --session arg, or CWD with journal.jsonl */
-    char *session_dir = NULL;
-    int lazy_session = 0;
-    if (session_dir_arg) {
-      char jpath[4112];
-      snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", session_dir_arg);
-      if (access(jpath, F_OK) == 0) {
-        session_dir = xstrdup(session_dir_arg);
-      } else {
-        fprintf(stderr, "[warn] %s has no journal.jsonl, creating new session\n", session_dir_arg);
-      }
-    }
-    /* NOTE: Do NOT auto-detect session from CWD in headless mode.
-         * When a parent nash spawns a child via shell_exec("nash -p ..."),
-         * the child inherits the parent's CWD (which IS a session dir with
-         * journal.jsonl), causing the child to hijack the parent's session:
-         * loading its checkpoint, writing to its journal, and corrupting
-         * the parent's state.  Only explicit --session should be honored. */
-    journal_t *journal;
-    if (!session_dir) {
-      /* Lazy session: directory created on first journal_append */
-      journal = journal_new_lazy(nash_dir, cfg->workspace);
-      lazy_session = 1;
-    } else {
-      journal = journal_new(session_dir);
-    }
-    tool_ctx_t tools;
-    session_init_tools(&tools, shared_store, journal, memory,
-                       ws, session_dir, cfg, provider);
-    react_ctx_t react;
-    session_init_react(&react, provider, g_planner_provider, g_reflection_provider, &tools, cfg);
-
-    /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
-    char *result;
-    if (mailbox_mode) {
-      char mbox_dir[NASH_PATH_MAX];
-      if (mailbox_init(nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
-        fprintf(stderr, "[error] failed to initialize mailbox\n");
-        session_cleanup(&tools, &react, journal);
-        if (session_dir) free(session_dir);
-        nash_ctx_free(&ctx);
-        return 1;
-      }
-      mailbox_ctx_t mbox = {
-        .react_ctx = &react,
-        .mailbox_dir = mbox_dir,
-        .session_dir = session_dir,
-        .timeout_sec = mailbox_timeout,
-      };
-      fprintf(stderr, "[mailbox] enabled — questions in %s/outbox/, answers in %s/inbox/\n",
-              mbox_dir, mbox_dir);
-      /* Forward query to bridge before processing */
-      route_query_to_outbox(nash_dir, query,
-                            ws && ws->name ? ws->name : NULL, NULL, 1);
-      result = react_run(&react, query, mailbox_on_event, &mbox);
-    } else {
-      /* Forward query to bridge before processing */
-      route_query_to_outbox(nash_dir, query,
-                            ws && ws->name ? ws->name : NULL, NULL, 1);
-      result = react_run(&react, query, headless_on_event, NULL);
-    }
-    /* Resolve session_dir from journal for lazy sessions.
-         * journal_session_dir returns internal pointer — must strdup
-         * because journal_free() will free the original. */
-    if (lazy_session) {
-      const char *jsd = journal_session_dir(journal);
-      session_dir = jsd ? xstrdup(jsd) : NULL;
-    }
-    /* Tier 1 dreaming: deterministic Bayesian pruning after every react loop */
-    memory_prune(memory, cfg->prune_min_score, cfg->prune_min_evidence);
-    int have_result = (result != NULL);
-    /* Route result to outbox if a daemon (--matrix/--telegram) is running */
-    route_to_outbox(nash_dir, result,
-                    ws && ws->name ? ws->name : NULL, NULL);
-    if (result) {
-      printf("%s\n", result);
-      free(result);
-    }
-    /* Save scratchpad if session was created */
-    if (session_dir && tools.scratch.count > 0) {
-      scratchpad_save(&tools.scratch, session_dir);
-    }
-    tools.react_loop++; /* increment for next query */
-    session_cleanup(&tools, &react, journal);
-    /* Remove session directory if it's empty (no work was done) */
-    if (session_dir && is_dir_empty(session_dir)) {
-      rmdir(session_dir);
-    }
-    if (session_dir) free(session_dir);
+    int rc = run_headless(&ctx, query, session_dir_arg, mailbox_mode, mailbox_timeout);
     nash_ctx_free(&ctx);
-    return have_result ? 0 : 1;
+    return rc;
   }
 
   /* Interactive TUI mode — ONE session for ALL queries */
