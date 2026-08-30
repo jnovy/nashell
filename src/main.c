@@ -27,7 +27,7 @@
 #include "react.h"
 #include "store.h"
 #include "journal.h"
-#include "frontend_tui.h"
+#include "frontend_headless.h"
 #include "nash_limits.h"
 #include "memory.h"
 #include "workspace.h"
@@ -2009,7 +2009,7 @@ int main(int argc, char **argv) {
       /* Forward query to bridge before processing */
       route_query_to_outbox(nash_dir, query,
                             ws && ws->name ? ws->name : NULL, NULL, 1);
-      result = react_run(&react, query, tui_on_event, NULL);
+      result = react_run(&react, query, headless_on_event, NULL);
     }
     /* Resolve session_dir from journal for lazy sessions.
          * journal_session_dir returns internal pointer — must strdup

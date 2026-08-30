@@ -13,8 +13,8 @@
 #include <errno.h>
 #include <poll.h>
 
-/* Forward declaration of tui_on_event from frontend_tui.c */
-extern void tui_on_event(const react_event_t *ev, void *userdata);
+/* Forward declaration of headless_on_event from frontend_headless.c */
+extern void headless_on_event(const react_event_t *ev, void *userdata);
 
 
 /* ── Helpers ──────────────────────────────────────────── */
@@ -445,7 +445,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
 }
 
 
-/* ── Event handler (wraps tui_on_event) ───────────────── */
+/* -- Event handler (wraps headless_on_event) ------------------------------ */
 
 void mailbox_on_event(const react_event_t *ev, void *userdata) {
   mailbox_ctx_t *mbox = (mailbox_ctx_t *)userdata;
@@ -471,7 +471,7 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
         nash_log("[mailbox] user_ask: no react context to deliver answer");
         free(answer);
       }
-      return; /* Don't pass to tui_on_event */
+      return; /* Don't pass to headless_on_event */
     }
 
     case REACT_EVENT_DONE: {
@@ -504,9 +504,9 @@ void mailbox_on_event(const react_event_t *ev, void *userdata) {
       break;
   }
 
-  /* Pass all events (except intercepted USER_ASK) to tui_on_event
+  /* Pass all events (except intercepted USER_ASK) to headless_on_event
      * for terminal output */
-  tui_on_event(ev, (void *)mbox->session_dir);
+  headless_on_event(ev, (void *)mbox->session_dir);
 }
 
 

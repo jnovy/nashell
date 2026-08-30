@@ -44,7 +44,7 @@ typedef struct {
 int mailbox_init(const char *nash_dir, char *mailbox_dir_out, size_t out_size);
 
 /* Event handler for headless mode with mailbox support.
- * Wraps tui_on_event but intercepts USER_ASK to use the mailbox.
+ * Wraps headless_on_event but intercepts USER_ASK to use the mailbox.
  * userdata must be a mailbox_ctx_t*. */
 void mailbox_on_event(const react_event_t *ev, void *userdata);
 

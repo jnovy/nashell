@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 
-/* ── Simple TUI frontend ─────────────────────────────── */
+/* -- Headless ANSI stderr frontend ---------------------------------------- */
 /* Reproduces the original terminal output via react events */
 
 static void read_and_print_store_file(const char *session_dir, const char *ref) {
@@ -33,7 +33,7 @@ static void read_and_print_store_file(const char *session_dir, const char *ref) 
   fclose(f);
 }
 
-void tui_on_event(const react_event_t *ev, void *userdata) {
+void headless_on_event(const react_event_t *ev, void *userdata) {
   const char *session_dir = (const char *)userdata;
   /* Track whether streaming content is a JSON action object.
      * 0=undecided, 1=suppress (JSON), -1=show (text).
@@ -64,12 +64,12 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
     case REACT_EVENT_LLM_TOKEN:
       /* Streaming: print tokens as they arrive.
          * Suppress raw JSON action objects (e.g. {"thought":"","action":...})
-         * that local models emit — the user doesn't need to see the raw JSON.
+         * that local models emit -- the user doesn't need to see the raw JSON.
          * We detect whether the first non-whitespace char is '{' and suppress
          * all subsequent tokens for that step. */
       if (ev->token) {
         if (suppress_json_stream == 0) {
-          /* First meaningful token — decide based on content */
+          /* First meaningful token -- decide based on content */
           const char *p = ev->token;
           while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')
             p++;
@@ -103,7 +103,7 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
           else
             snprintf(ctx_str, sizeof(ctx_str), " | ctx <1%%");
         }
-        snprintf(stats_buf, sizeof(stats_buf), " [%d→%d tok%s%s%s]",
+        snprintf(stats_buf, sizeof(stats_buf), " [%d->%d tok%s%s%s]",
                  ev->stats.prompt_tokens, ev->stats.completion_tokens,
                  pp_str, gen_str, ctx_str);
       }
@@ -147,12 +147,12 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
             if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
               tc = ws.ws_col;
           }
-          int meta_avail = tc - 4; /* "  → " prefix = 4 display cols */
+          int meta_avail = tc - 5; /* "  -> " prefix = 5 display cols */
           if (meta_avail < 10) meta_avail = 10;
           if (meta_len <= meta_avail) {
-            fprintf(stderr, "  → %s\n", meta_str);
+            fprintf(stderr, "  -> %s\n", meta_str);
           } else {
-            fprintf(stderr, "  →\n  %s\n", meta_str);
+            fprintf(stderr, "  ->\n  %s\n", meta_str);
           }
           free(meta_str);
         }
@@ -173,10 +173,10 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
       break;
 
     case REACT_EVENT_USER_ASK:
-      /* In headless mode, user_ask can't work — print question and provide empty answer.
+      /* In headless mode, user_ask can't work -- print question and provide empty answer.
          * The react loop will receive "" as the answer and continue. */
       fprintf(stderr, "\n[user_ask] %s\n", ev->message ? ev->message : "?");
-      fprintf(stderr, "[user_ask] headless mode — cannot prompt user, returning empty answer\n");
+      fprintf(stderr, "[user_ask] headless mode -- cannot prompt user, returning empty answer\n");
       break;
 
     case REACT_EVENT_PROMPT_PROGRESS:
@@ -209,7 +209,7 @@ void tui_on_event(const react_event_t *ev, void *userdata) {
         }
         char _tdur[32];
         fmt_duration(ev->total_elapsed, _tdur, sizeof(_tdur));
-        fprintf(stderr, "[%d→%d tok%s%s%s | total %s]\n",
+        fprintf(stderr, "[%d->%d tok%s%s%s | total %s]\n",
                 ev->stats.prompt_tokens, ev->stats.completion_tokens,
                 pp_str, gen_str, ctx_str, _tdur);
       }

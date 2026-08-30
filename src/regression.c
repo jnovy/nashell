@@ -17,7 +17,7 @@
 #include "cJSON.h"
 #include "nash_limits.h"
 #include "nash_log.h"
-#include "frontend_tui.h"
+#include "frontend_headless.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -463,7 +463,7 @@ static query_result_t run_single_query(const test_query_t *tq,
     .parent_loop = -1,
   };
 
-  char *result = react_run(&react, tq->query, tui_on_event, NULL);
+  char *result = react_run(&react, tq->query, headless_on_event, NULL);
   int have_result = (result != NULL);
 
   /* Get journal path for analysis */

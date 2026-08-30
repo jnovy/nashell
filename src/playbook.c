@@ -11,7 +11,7 @@
 #include "nash_limits.h"
 #include "nash_log.h"
 #include "str.h"
-#include "frontend_tui.h"
+#include "frontend_headless.h"
 #include "tool_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -789,7 +789,7 @@ static void pb_event_cb(const react_event_t *ev, void *userdata) {
   pb_event_ctx_t *ctx = (pb_event_ctx_t *)userdata;
   if (!ctx || !ctx->ui) {
     /* Headless mode: print events to stderr */
-    tui_on_event(ev, NULL);
+    headless_on_event(ev, NULL);
     return;
   }
   /* Shallow-copy and enrich with provenance */
