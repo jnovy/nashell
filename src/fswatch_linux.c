@@ -87,10 +87,19 @@ static int watch_dir(fswatch_t *w, const char *dir) {
   return 0;
 }
 
+/* Max recursion depth to prevent infinite loops from filesystem cycles
+ * (e.g. self-referential directory trees, symlink loops). */
+#define WATCH_MAX_DEPTH 20
+
 /* Recursively add watches for dir and all subdirectories.
  * Skips hidden directories (starting with '.') to avoid watching
- * .git, .cache, node_modules internals, etc. */
-static int watch_recursive(fswatch_t *w, const char *dir) {
+ * .git, .cache, node_modules internals, etc.
+ * Uses lstat() to avoid following symlinks and enforces a depth
+ * limit to guard against filesystem cycles. */
+static int watch_recursive(fswatch_t *w, const char *dir, int depth) {
+  if (depth > WATCH_MAX_DEPTH)
+    return 0;
+
   if (watch_dir(w, dir) < 0)
     return -1;
 
@@ -107,13 +116,13 @@ static int watch_recursive(fswatch_t *w, const char *dir) {
     if (n < 0 || (size_t)n >= sizeof(path)) continue;
 
     struct stat st;
-    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+    if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
       /* Skip common large directories that are rarely relevant */
       if (strcmp(ent->d_name, "node_modules") == 0) continue;
       if (strcmp(ent->d_name, "__pycache__") == 0) continue;
       if (strcmp(ent->d_name, "vendor") == 0) continue;
 
-      watch_recursive(w, path);
+      watch_recursive(w, path, depth + 1);
     }
   }
   closedir(d);
@@ -157,7 +166,7 @@ int fswatch_add(fswatch_t *w, const char *path, int recursive) {
   if (stat(resolved, &st) < 0) return -1;
 
   if (S_ISDIR(st.st_mode) && recursive)
-    return watch_recursive(w, resolved);
+    return watch_recursive(w, resolved, 0);
   else
     return watch_dir(w, resolved);
 }
@@ -218,7 +227,7 @@ int fswatch_drain(fswatch_t *w) {
                 strcmp(ev->name, "node_modules") != 0 &&
                 strcmp(ev->name, "__pycache__") != 0 &&
                 strcmp(ev->name, "vendor") != 0) {
-              watch_recursive(w, fullpath);
+              watch_recursive(w, fullpath, 0);
             }
           }
 
