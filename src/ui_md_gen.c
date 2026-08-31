@@ -2246,7 +2246,7 @@ static char *generate_metrics_md(ui_state_t *ui) {
       cJSON_Delete(entry);
     }
 
-    /* Second pass: aggregate tool calls by tool name */
+    /* Second pass: aggregate tool calls by tool name + collect modified files */
     typedef struct {
       char name[64];
       int calls;
@@ -2260,6 +2260,16 @@ static char *generate_metrics_md(ui_state_t *ui) {
     tool_agg_t tools[MAX_TOOLS];
     memset(tools, 0, sizeof(tools));
     int tool_count = 0;
+
+    typedef struct {
+      char path[512];
+      int last_step;
+      int count;
+    } mod_file_t;
+    #define MAX_MOD_FILES 64
+    mod_file_t mod_files[MAX_MOD_FILES];
+    memset(mod_files, 0, sizeof(mod_files));
+    int mod_file_count = 0;
 
     rewind(f);
     while (fgets(line, sizeof(line), f)) {
@@ -2299,6 +2309,29 @@ static char *generate_metrics_md(ui_state_t *ui) {
           if (step_tok[step].gen_speed > 0) {
             tools[idx].total_gen_speed += step_tok[step].gen_speed;
             tools[idx].gen_count++;
+          }
+        }
+      }
+
+      /* Collect modified files from file_write/file_edit entries */
+      if (strcmp(tool, "file_write") == 0 || strcmp(tool, "file_edit") == 0) {
+        cJSON *params = cJSON_GetObjectItem(entry, "params");
+        const char *fpath = params ? json_str(params, "path") : NULL;
+        if (fpath && fpath[0]) {
+          int midx = -1;
+          for (int i = 0; i < mod_file_count; i++) {
+            if (strcmp(mod_files[i].path, fpath) == 0) { midx = i; break; }
+          }
+          if (midx >= 0) {
+            mod_files[midx].count++;
+            if (step > mod_files[midx].last_step)
+              mod_files[midx].last_step = step;
+          } else if (mod_file_count < MAX_MOD_FILES) {
+            midx = mod_file_count++;
+            snprintf(mod_files[midx].path, sizeof(mod_files[midx].path),
+                     "%s", fpath);
+            mod_files[midx].last_step = step;
+            mod_files[midx].count = 1;
           }
         }
       }
@@ -2372,6 +2405,39 @@ static char *generate_metrics_md(ui_state_t *ui) {
       str_append_cstr(&md, "| - | *no tool calls yet* | - | - | - |\n");
     }
     str_append_cstr(&md, "\n");
+
+    /* Modified files section */
+    if (mod_file_count > 0) {
+      /* Sort by last_step descending (most recently modified first) */
+      for (int i = 0; i < mod_file_count - 1; i++) {
+        for (int j = i + 1; j < mod_file_count; j++) {
+          if (mod_files[j].last_step > mod_files[i].last_step) {
+            mod_file_t tmp = mod_files[i];
+            mod_files[i] = mod_files[j];
+            mod_files[j] = tmp;
+          }
+        }
+      }
+
+      str_append_cstr(&md, "## Modified Files\n\n");
+      str_append_cstr(&md, "| File | Edits | Last Step |\n");
+      str_append_cstr(&md, "|------|-------|-----------|\n");
+
+      for (int i = 0; i < mod_file_count; i++) {
+        /* Show dir/basename for context */
+        const char *display = mod_files[i].path;
+        const char *slash = strrchr(display, '/');
+        if (slash && slash != display) {
+          const char *prev = slash - 1;
+          while (prev > display && *prev != '/') prev--;
+          if (*prev == '/') prev++;
+          display = prev;
+        }
+        str_appendf(&md, "| %s | %d | %d |\n",
+                    display, mod_files[i].count, mod_files[i].last_step);
+      }
+      str_append_cstr(&md, "\n");
+    }
   }
 
   return str_steal(&md);
