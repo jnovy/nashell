@@ -33,10 +33,18 @@ struct fswatch {
   fswatch_cb cb;      /* user callback */
   void *userdata;     /* callback userdata */
   wd_entry_t *wds;    /* linked list of wd -> path mappings */
+  int watch_count;    /* number of active watches */
+  int limit_warned;   /* 1 if we already logged the watch-limit warning */
 };
 
 /* inotify event mask for directories */
 #define WATCH_MASK (IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_MOVED_FROM)
+
+/* Hard ceiling on inotify watches.  Prevents thrashing when the workspace
+ * is a large tree (e.g. $HOME with millions of files).  Each watch costs
+ * roughly 1 KB of kernel memory, so 65536 watches use about 64 MB - negligible
+ * on modern systems where max_user_watches is typically 500k+. */
+#define WATCH_MAX_WATCHES 65536
 
 /* Look up the directory path for a watch descriptor */
 static const char *wd_lookup(fswatch_t *w, int wd) {
@@ -62,6 +70,7 @@ static void wd_add(fswatch_t *w, int wd, const char *dir) {
   e->dir = strdup(dir);
   e->next = w->wds;
   w->wds = e;
+  w->watch_count++;
 }
 
 /* Remove a wd entry (called on IN_IGNORED / dir removal) */
@@ -73,31 +82,46 @@ static void wd_remove(fswatch_t *w, int wd) {
       *pp = victim->next;
       free(victim->dir);
       free(victim);
+      w->watch_count--;
       return;
     }
     pp = &(*pp)->next;
   }
 }
 
-/* Add an inotify watch for a single directory */
+/* Add an inotify watch for a single directory.
+ * Returns 0 on success, -1 on error, 1 if the watch limit was reached. */
 static int watch_dir(fswatch_t *w, const char *dir) {
+  if (w->watch_count >= WATCH_MAX_WATCHES) {
+    if (!w->limit_warned) {
+      fprintf(stderr, "[fswatch] watch limit reached (%d); "
+              "deeper directories will not be monitored\n",
+              WATCH_MAX_WATCHES);
+      w->limit_warned = 1;
+    }
+    return 1;
+  }
   int wd = inotify_add_watch(w->ifd, dir, WATCH_MASK);
   if (wd < 0) return -1;
   wd_add(w, wd, dir);
   return 0;
 }
 
-/* Max recursion depth to prevent infinite loops from filesystem cycles
- * (e.g. self-referential directory trees, symlink loops). */
-#define WATCH_MAX_DEPTH 20
+/* Max recursion depth.  Keeps the initial scan bounded even when the
+ * tree is very deep (e.g. workspace set to $HOME). */
+#define WATCH_MAX_DEPTH 8
 
 /* Recursively add watches for dir and all subdirectories.
  * Skips hidden directories (starting with '.') to avoid watching
- * .git, .cache, node_modules internals, etc.
- * Uses lstat() to avoid following symlinks and enforces a depth
- * limit to guard against filesystem cycles. */
+ * .git, .cache, and other dot-prefixed trees.
+ * Uses lstat() to avoid following symlinks.  Bounded by both a
+ * depth limit (WATCH_MAX_DEPTH) and a total watch count ceiling
+ * (WATCH_MAX_WATCHES) so that large workspaces like $HOME do not
+ * cause scan thrashing or exhaust inotify resources. */
 static int watch_recursive(fswatch_t *w, const char *dir, int depth) {
   if (depth > WATCH_MAX_DEPTH)
+    return 0;
+  if (w->watch_count >= WATCH_MAX_WATCHES)
     return 0;
 
   if (watch_dir(w, dir) < 0)
@@ -108,8 +132,11 @@ static int watch_recursive(fswatch_t *w, const char *dir, int depth) {
 
   struct dirent *ent;
   while ((ent = readdir(d)) != NULL) {
-    /* Skip . and .. */
+    /* Skip hidden directories (. / .. and dot-prefixed) */
     if (ent->d_name[0] == '.') continue;
+
+    /* Stop scanning if we have hit the watch ceiling */
+    if (w->watch_count >= WATCH_MAX_WATCHES) break;
 
     char path[PATH_MAX];
     int n = snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
@@ -117,11 +144,6 @@ static int watch_recursive(fswatch_t *w, const char *dir, int depth) {
 
     struct stat st;
     if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-      /* Skip common large directories that are rarely relevant */
-      if (strcmp(ent->d_name, "node_modules") == 0) continue;
-      if (strcmp(ent->d_name, "__pycache__") == 0) continue;
-      if (strcmp(ent->d_name, "vendor") == 0) continue;
-
       watch_recursive(w, path, depth + 1);
     }
   }
@@ -220,13 +242,11 @@ int fswatch_drain(fswatch_t *w) {
         if (n > 0 && (size_t)n < sizeof(fullpath)) {
           int fsw_ev = mask_to_fsw(ev->mask);
 
-          /* If a new subdirectory was created, add a recursive watch */
+          /* If a new subdirectory was created, add a recursive watch.
+           * Hidden dirs are skipped; the watch count ceiling and depth
+           * limit inside watch_recursive prevent runaway growth. */
           if ((ev->mask & IN_CREATE) && (ev->mask & IN_ISDIR)) {
-            /* Skip hidden dirs and common noise dirs */
-            if (ev->name[0] != '.' &&
-                strcmp(ev->name, "node_modules") != 0 &&
-                strcmp(ev->name, "__pycache__") != 0 &&
-                strcmp(ev->name, "vendor") != 0) {
+            if (ev->name[0] != '.') {
               watch_recursive(w, fullpath, 0);
             }
           }
