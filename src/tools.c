@@ -2277,6 +2277,14 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
                   "HACK = works but wrong approach.\n");
 
   str_append_cstr(&s,
+                  "\nAlgorithm sketch before code:\n"
+                  "- For tasks involving algorithm implementation, mathematical logic, "
+                  "or multi-step data transformations, write pseudocode in "
+                  "notes(section='pseudocode') before writing real code.\n"
+                  "- This catches logic errors cheaply and prevents implementing "
+                  "a different algorithm than intended.\n");
+
+  str_append_cstr(&s,
                   "\nPredict before acting:\n"
                   "- Before each tool call, mentally predict what the tool will return.\n"
                   "- If your prediction suggests the action won't achieve your goal, "

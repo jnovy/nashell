@@ -1385,6 +1385,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
             "(1) What makes this task hard - the core difficulty\n"
             "(2) 2-3 candidate approaches with tradeoffs\n"
             "(3) Pitfalls, edge cases, or constraints to watch for\n"
+            "(4) For algorithm/implementation tasks: pseudocode or step-by-step logic sketch\n"
             "Do NOT write code or make changes yet.\n\n"
             "PHASE 2 - PLAN (after brainstorm):\n"
             "Use plan(op='add_item', text='...') to build your execution plan, "
