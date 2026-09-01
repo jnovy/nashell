@@ -295,7 +295,7 @@ static void finish_paste(ui_state_t *ui) {
 /* Expand [clipboardN] tokens in a string, returning a new malloc'd string.
  * Caller must free the result. */
 static char *expand_clipboard_tokens(const char *input, int input_len) {
-  if (clip_count == 0) return strndup(input, (size_t)input_len);
+  if (clip_count == 0) return xstrndup(input, (size_t)input_len);
 
   /* Count actual occurrences of each token to size the buffer correctly */
   size_t cap = (size_t)input_len + 1;

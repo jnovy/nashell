@@ -1154,6 +1154,10 @@ embed_multi_vec_t embed_multi_vec_load(const char *path) {
 
   /* Read all float data */
   size_t total_floats = (size_t)dim * (size_t)n_chunks;
+  if (total_floats > SIZE_MAX / sizeof(float)) {
+    fclose(f);
+    return result;
+  }
   result.data = xmalloc(sizeof(float) * total_floats);
 
   if (fread(result.data, sizeof(float), total_floats, f) != total_floats) {

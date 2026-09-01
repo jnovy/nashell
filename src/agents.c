@@ -992,7 +992,7 @@ playbook_t *agent_prepare_playbook(const agent_entry_t *a,
      *   3 base vars + 1 {{arguments}} (always) + n {{argN}} tokens */
   int n_extra = 3 + 1 + n_arg_tokens;
   int new_nvars = pb->n_vars + n_extra;
-  if (safe_realloc((void **)&pb->var_keys, (size_t)new_nvars * sizeof(char *)) |
+  if (safe_realloc((void **)&pb->var_keys, (size_t)new_nvars * sizeof(char *)) ||
       safe_realloc((void **)&pb->var_values, (size_t)new_nvars * sizeof(char *))) {
     for (int ti2 = 0; ti2 < n_arg_tokens; ti2++)
       free(arg_tokens[ti2]);

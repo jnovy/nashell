@@ -11,6 +11,7 @@
 #ifdef __linux__
 
 #include "fswatch.h"
+#include "str.h"
 #include <sys/inotify.h>
 #include <dirent.h>
 #include <errno.h>
@@ -67,14 +68,14 @@ static void wd_add(fswatch_t *w, int wd, const char *dir) {
   for (wd_entry_t *e = w->wds; e; e = e->next) {
     if (e->wd == wd) {
       free(e->dir);
-      e->dir = strdup(dir);
+      e->dir = xstrdup(dir);
       return;
     }
   }
   wd_entry_t *e = malloc(sizeof(*e));
   if (!e) return;
   e->wd = wd;
-  e->dir = strdup(dir);
+  e->dir = xstrdup(dir);
   e->next = w->wds;
   w->wds = e;
   w->watch_count++;

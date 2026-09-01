@@ -700,8 +700,8 @@ md_doc_t *md_parse(const char *source) {
             doc->link_cap = new_cap;
           }
           md_link_t *lk = &doc->links[doc->link_count++];
-          lk->text = strndup(text_start, (size_t)(text_end - text_start));
-          lk->uri = strndup(uri_start, (size_t)(uri_end - uri_start));
+          lk->text = xstrndup(text_start, (size_t)(text_end - text_start));
+          lk->uri = xstrndup(uri_start, (size_t)(uri_end - uri_start));
           lk->doc_line = line_num;
           lk->render_line = -1; /* set during md_render() */
           p = uri_end + 1;
@@ -1148,7 +1148,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
         while (tag_len > 0 && tag[tag_len - 1] == '`')
           tag_len--;
         if (tag_len > 0) {
-          code_lang = strndup(tag, tag_len);
+          code_lang = xstrndup(tag, tag_len);
         } else {
           code_lang = NULL;
         }

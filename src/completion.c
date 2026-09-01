@@ -47,7 +47,7 @@ static char *longest_common_prefix(char **arr, int count) {
       j++;
     len = j;
   }
-  return strndup(arr[0], (size_t)len);
+  return xstrndup(arr[0], (size_t)len);
 }
 
 /* ── Command tree definition ─────────────────────────────── */

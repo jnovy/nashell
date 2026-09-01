@@ -556,13 +556,13 @@ char *mailbox_parse_headers(char *content, char **workspace_out,
 
         if (klen == 11 && strncmp(p, "X-Workspace", 11) == 0) {
           if (workspace_out && vlen > 0)
-            *workspace_out = strndup(val, vlen);
+            *workspace_out = xstrndup(val, vlen);
         } else if (klen == 13 && strncmp(p, "X-Route-Token", 13) == 0) {
           if (route_token_out && vlen > 0)
-            *route_token_out = strndup(val, vlen);
+            *route_token_out = xstrndup(val, vlen);
         } else if (klen == 12 && strncmp(p, "X-User-Query", 12) == 0) {
           if (user_query_out && vlen > 0)
-            *user_query_out = strndup(val, vlen);
+            *user_query_out = xstrndup(val, vlen);
         }
       }
     } else {
@@ -717,22 +717,22 @@ char *mailbox_parse_headers_full(char *content, char **workspace_out,
 
         if (klen == 11 && strncmp(p, "X-Workspace", 11) == 0) {
           if (workspace_out && vlen > 0)
-            *workspace_out = strndup(val, vlen);
+            *workspace_out = xstrndup(val, vlen);
         } else if (klen == 13 && strncmp(p, "X-Route-Token", 13) == 0) {
           if (route_token_out && vlen > 0)
-            *route_token_out = strndup(val, vlen);
+            *route_token_out = xstrndup(val, vlen);
         } else if (klen == 12 && strncmp(p, "X-User-Query", 12) == 0) {
           if (user_query_out && vlen > 0)
-            *user_query_out = strndup(val, vlen);
+            *user_query_out = xstrndup(val, vlen);
         } else if (klen == 15 && strncmp(p, "X-Thread-Action", 15) == 0) {
           if (thread_action_out && vlen > 0)
-            *thread_action_out = strndup(val, vlen);
+            *thread_action_out = xstrndup(val, vlen);
         } else if (klen == 8 && strncmp(p, "X-Source", 8) == 0) {
           if (source_out && vlen > 0)
-            *source_out = strndup(val, vlen);
+            *source_out = xstrndup(val, vlen);
         } else if (klen == 12 && strncmp(p, "X-Agent-Name", 12) == 0) {
           if (agent_name_out && vlen > 0)
-            *agent_name_out = strndup(val, vlen);
+            *agent_name_out = xstrndup(val, vlen);
         }
       }
     } else {

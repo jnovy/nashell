@@ -1460,7 +1460,7 @@ void ui_state_generate_react_md(ui_state_t *ui, int react_loop) {
         /* after = "action: description" -- split on ": " */
         const char *sep = strstr(after, ": ");
         if (sep) {
-          tool_name_buf = strndup(after, (size_t)(sep - after));
+          tool_name_buf = xstrndup(after, (size_t)(sep - after));
           tool_name = tool_name_buf ? tool_name_buf : after;
           tool_args = sep + 2;
         } else {

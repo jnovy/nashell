@@ -1389,12 +1389,12 @@ static cJSON *plan_parse_steps(const char *text, int *out_total_lines) {
       while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) trim--;
       char *step_text;
       if (trim > p) {
-        step_text = strndup(p, (size_t)(trim - p));
+        step_text = xstrndup(p, (size_t)(trim - p));
       } else {
         /* fallback: use entire line */
         const char *le = line_start;
         while (*le && *le != '\n') le++;
-        step_text = strndup(line_start, (size_t)(le - line_start));
+        step_text = xstrndup(line_start, (size_t)(le - line_start));
       }
       cJSON *step = cJSON_CreateObject();
       cJSON_AddStringToObject(step, "text", step_text);

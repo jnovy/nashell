@@ -250,13 +250,21 @@ static inline char *xstrdup(const char *s) {
 static inline char *xstrdupz(const char *s) {
   return xstrdup(s ? s : "");
 }
+static inline char *xstrndup(const char *s, size_t n) {
+  char *p = strndup(s, n);
+  if (!p) {
+    fprintf(stderr, "xstrndup: out of memory\n");
+    abort();
+  }
+  return p;
+}
 
 /* ── String replacement helper ───────────────────────────────────────
- * Frees *dst, then sets *dst = strdup(src) (or NULL if src is NULL).
+ * Frees *dst, then sets *dst = xstrdup(src) (or NULL if src is NULL).
  * Eliminates the common free(x); x = strdup(y); two-liner. */
 static inline void str_replace(char **dst, const char *src) {
   free(*dst);
-  *dst = src ? strdup(src) : NULL;
+  *dst = src ? xstrdup(src) : NULL;
 }
 
 /* ── Dynamic array push macro ────────────────────────────────────────

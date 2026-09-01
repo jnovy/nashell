@@ -634,7 +634,7 @@ char *react_extract_llm_text_output(const char *raw) {
     /* Find closing ``` */
     const char *end = strstr(start, "```");
     if (end) {
-      return strndup(start, end - start);
+      return xstrndup(start, end - start);
     }
     /* No closing fence — return everything after opening */
     return xstrdup(start);

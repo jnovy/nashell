@@ -1268,6 +1268,15 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
       return NULL;
     }
 
+    if (!p->build_headers) {
+      nash_log("[provider] build_headers not set");
+      str_replace(&p->last_error, "Provider missing build_headers");
+      curl_easy_cleanup(curl);
+      free(req_body);
+      free(endpoint);
+      str_free(&response);
+      return NULL;
+    }
     struct curl_slist *headers = p->build_headers(p);
     if (!headers) {
       nash_log("[provider] build_headers failed (missing credentials?)");
@@ -1599,6 +1608,13 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
       goto cleanup;
     }
 
+    if (!p->build_headers) {
+      nash_log("[provider] build_headers not set");
+      str_replace(&p->last_error, "Provider missing build_headers");
+      curl_easy_cleanup(curl);
+      free(req_body);
+      goto cleanup;
+    }
     struct curl_slist *headers = p->build_headers(p);
     if (!headers) {
       nash_log("[provider] build_headers failed (missing credentials?)");
@@ -1832,7 +1848,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     free(p->last_error_response);
     p->last_error_response = (st.raw_body.len <= 8192)
                                ? xstrdup(str_cstr(&st.raw_body))
-                               : strndup(str_cstr(&st.raw_body), 8192);
+                               : xstrndup(str_cstr(&st.raw_body), 8192);
   }
 
 cleanup:

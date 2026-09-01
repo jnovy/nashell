@@ -368,7 +368,7 @@ static int tg_config_load_simple(telegram_ctx_t *ctx, const char *path) {
 
     if (klen == 9 && strncmp(p, "bot_token", 9) == 0) {
       free(ctx->bot_token);
-      ctx->bot_token = strndup(val, vlen);
+      ctx->bot_token = xstrndup(val, vlen);
     } else if (klen == 7 && strncmp(p, "chat_id", 7) == 0) {
       char tmp[64];
       size_t cplen = vlen < sizeof(tmp) - 1 ? vlen : sizeof(tmp) - 1;

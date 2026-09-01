@@ -1322,17 +1322,21 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
             }
           }
           if (valid_count > 0 && dim > 0) {
-            query_mv.data = xmalloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
-            query_mv.dim = dim;
-            query_mv.n_chunks = valid_count;
-            int vi = 0;
-            for (int ci = 0; ci < out_count; ci++) {
-              if (!vecs[ci].data || vecs[ci].dim != dim) continue;
-              memcpy(query_mv.data + vi * dim,
-                     vecs[ci].data, sizeof(float) * (size_t)dim);
-              vi++;
+            size_t alloc_sz = sizeof(float) * (size_t)dim;
+            if ((size_t)valid_count <= SIZE_MAX / alloc_sz) {
+              alloc_sz *= (size_t)valid_count;
+              query_mv.data = xmalloc(alloc_sz);
+              query_mv.dim = dim;
+              query_mv.n_chunks = valid_count;
+              int vi = 0;
+              for (int ci = 0; ci < out_count; ci++) {
+                if (!vecs[ci].data || vecs[ci].dim != dim) continue;
+                memcpy(query_mv.data + vi * dim,
+                       vecs[ci].data, sizeof(float) * (size_t)dim);
+                vi++;
+              }
+              has_semantic = 1;
             }
-            has_semantic = 1;
           }
           for (int ci = 0; ci < out_count; ci++)
             embed_vec_free(&vecs[ci]);
@@ -2683,7 +2687,15 @@ int memory_embed_entry(memory_t *m, const char *key, const char *value) {
   embed_multi_vec_t mv;
   mv.dim = dim;
   mv.n_chunks = valid_count;
-  mv.data = xmalloc(sizeof(float) * (size_t)dim * (size_t)valid_count);
+  size_t emb_alloc = sizeof(float) * (size_t)dim;
+  if ((size_t)valid_count > SIZE_MAX / emb_alloc) {
+    for (int i = 0; i < out_count; i++)
+      embed_vec_free(&vecs[i]);
+    free(vecs);
+    return -1;
+  }
+  emb_alloc *= (size_t)valid_count;
+  mv.data = xmalloc(emb_alloc);
 
   int idx = 0;
   for (int i = 0; i < out_count; i++) {

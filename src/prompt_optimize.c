@@ -66,7 +66,7 @@ static char *extract_text_from_response(const char *raw) {
       start++;
     if (*start == '\n') start++;
     const char *end = strstr(start, "\n```");
-    if (end) return strndup(start, end - start);
+    if (end) return xstrndup(start, end - start);
   }
 
   return xstrdup(raw);
@@ -1758,7 +1758,7 @@ int optimize_generate_lessons(provider_t *reflection_lm,
       continue;
     }
 
-    char *value = strndup(p, body_len);
+    char *value = xstrndup(p, body_len);
 
     /* Build key: lesson:opt-<slug> */
     char key[192];
@@ -1829,14 +1829,14 @@ char *optimize_parse_proposal(const char *raw_text,
     while (end > start && (end[-1] == '\n' || end[-1] == ' '))
       end--;
     if (end > start)
-      prompt_text = strndup(start, end - start);
+      prompt_text = xstrndup(start, end - start);
   } else {
     /* No prompt section marker — everything before tool section is prompt */
     const char *end = tool_section;
     while (end > raw_text && (end[-1] == '\n' || end[-1] == ' '))
       end--;
     if (end > raw_text)
-      prompt_text = strndup(raw_text, end - raw_text);
+      prompt_text = xstrndup(raw_text, end - raw_text);
   }
 
   /* Parse tool descriptions */
@@ -1860,7 +1860,7 @@ char *optimize_parse_proposal(const char *raw_text,
       const char *name_end = strchr(p, ']');
       if (!name_end) break;
 
-      char *name = strndup(p, name_end - p);
+      char *name = xstrndup(p, name_end - p);
       p = name_end + 1;
       while (*p == ' ')
         p++;
@@ -1889,7 +1889,7 @@ char *optimize_parse_proposal(const char *raw_text,
           cap = new_cap;
         }
         names[n] = name;
-        descs[n] = strndup(p, desc_end - p);
+        descs[n] = xstrndup(p, desc_end - p);
         n++;
       } else {
         free(name);
@@ -2018,7 +2018,7 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
             break;
           cap = new_cap;
         }
-        m.expect_fix[m.n_expect_fix++] = strndup(start, end - start);
+        m.expect_fix[m.n_expect_fix++] = xstrndup(start, end - start);
       }
     }
   }
@@ -2051,7 +2051,7 @@ manifest_entry_t optimize_parse_manifest(const char *proposal_text) {
             break;
           cap = new_cap;
         }
-        m.at_risk[m.n_at_risk++] = strndup(start, end - start);
+        m.at_risk[m.n_at_risk++] = xstrndup(start, end - start);
       }
     }
   }

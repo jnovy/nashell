@@ -187,7 +187,7 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
     cJSON_ArrayForEach(item, dup) {
       if (cJSON_IsString(item) && item->valuestring &&
           strncmp(item->valuestring, "$NASH_SESSION_DIR/", 18) == 0) {
-        char *stripped = strdup(item->valuestring + 18);
+        char *stripped = xstrdup(item->valuestring + 18);
         if (stripped) {
           free(item->valuestring);
           item->valuestring = stripped;

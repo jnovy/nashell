@@ -275,7 +275,7 @@ void predict_store_evicted_crc(predict_tracker_t *pt, uint32_t crc,
 void predict_store_injected_key(predict_tracker_t *pt, const char *key)
 {
     if (!pt || !key || pt->n_injected >= PREDICT_MAX_INJECTED) return;
-    pt->injected_keys[pt->n_injected] = strdup(key);
+    pt->injected_keys[pt->n_injected] = xstrdup(key);
     pt->n_injected++;
 }
 

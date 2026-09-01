@@ -484,6 +484,7 @@ static int ms_parse_args(const char *input, ms_args_t *args) {
         if (tok) {
           args->days = atoi(tok);
           if (args->days < 0) args->days = 0;
+          if (args->days > 3650) args->days = 3650;
         }
       } else {
         /* Unknown flag — treat from flag_start as bare word */
