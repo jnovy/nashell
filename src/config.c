@@ -174,6 +174,8 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->recency_bonus < 0) cfg->recency_bonus = 0.0f;
   if (cfg->failure_bias <= 0) cfg->failure_bias = 1.3f;
   if (cfg->tool_retry_limit <= 0) cfg->tool_retry_limit = 3;
+  if (cfg->subtask_max_depth <= 0) cfg->subtask_max_depth = 3;
+  if (cfg->subtask_max_depth > 5) cfg->subtask_max_depth = 5;
   /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
   /* max_react_steps: -1 = unlimited (default). Positive = hard limit.
      * Backward compat: old configs had 0 = unlimited. Migrate 0 → -1
@@ -505,6 +507,8 @@ config_t *config_load(const char *path) {
     }
     cfg->tool_retry_limit = toml_int(limits, "tool_retry_limit", -1);
     cfg->checkpoint_frequency = toml_int(limits, "checkpoint_frequency", 0);
+    int sd = toml_int(limits, "subtask_max_depth", -1);
+    if (sd >= 0) cfg->subtask_max_depth = sd;
   }
 
   /* [paths] */
@@ -1476,6 +1480,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "file_read_context_pct = %d\n", cfg->file_read_context_pct);
   fprintf(out, "scratchpad_max = %d\n", cfg->scratchpad_max);
   fprintf(out, "checkpoint_frequency = %d\n", cfg->checkpoint_frequency);
+  fprintf(out, "subtask_max_depth = %d\n", cfg->subtask_max_depth);
   fprintf(out, "prune_min_score = %.2f\n", cfg->prune_min_score);
   fprintf(out, "prune_min_evidence = %d\n", cfg->prune_min_evidence);
   fprintf(out, "consolidation_threshold = %.2f\n", cfg->consolidation_threshold);
@@ -1874,6 +1879,8 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     if (v >= 0) cfg->scratchpad_max = v;
     v = toml_int(limits, "checkpoint_frequency", -1);
     if (v >= 0) cfg->checkpoint_frequency = v;
+    v = toml_int(limits, "subtask_max_depth", -1);
+    if (v >= 0) cfg->subtask_max_depth = v;
     {
       double d = toml_dbl(limits, "prune_min_score", 0);
       if (d > 0) cfg->prune_min_score = d;
@@ -2199,6 +2206,7 @@ int config_write_default(const char *path) {
     "failure_bias = 1.3           # scoring boost for failure-derived memories (1.0 = disabled)\n"
     "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
     "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
+    "subtask_max_depth = 3        # max subtask nesting depth (1-5, default 3)\n"
     "\n"
     "# Belief Entropy — forward-looking memory quality signal.\n"
     "# Based on MMPO [arXiv:2605.30159]: measures how clearly the current\n"

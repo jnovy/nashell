@@ -21,8 +21,9 @@
 /* Global counter for unique subtask directory names */
 static atomic_int subtask_counter = 0;
 
-/* Maximum nesting depth (prevents unbounded recursion) */
-#define SUBTASK_MAX_DEPTH 3
+/* Maximum nesting depth - now configurable via subtask_max_depth config knob.
+ * Compile-time absolute cap to prevent misconfiguration. */
+#define SUBTASK_MAX_DEPTH_CAP 5
 
 /* ── Subtask event forwarding (mirrors playbook.c pb_event_cb pattern) ── */
 typedef struct {
@@ -57,17 +58,21 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   /* Parse context inheritance level:
    *   "minimal"  - query only (no scratchpad, no memory)
    *   "standard" - scratchpad + INFORM (default, current behavior)
-   *   "rich"     - scratchpad + INFORM + memory injection */
-  enum { CTX_MINIMAL, CTX_STANDARD, CTX_RICH } ctx_mode = CTX_STANDARD;
+   *   "rich"     - scratchpad + INFORM + memory injection
+   *   "critic"   - like rich, plus a critic system prompt that instructs
+   *                the child to find flaws rather than solve the problem */
+  enum { CTX_MINIMAL, CTX_STANDARD, CTX_RICH, CTX_CRITIC } ctx_mode = CTX_STANDARD;
   if (context_level) {
     if (strcmp(context_level, "minimal") == 0)
       ctx_mode = CTX_MINIMAL;
     else if (strcmp(context_level, "rich") == 0)
       ctx_mode = CTX_RICH;
+    else if (strcmp(context_level, "critic") == 0)
+      ctx_mode = CTX_CRITIC;
     else if (strcmp(context_level, "standard") != 0) {
       char err[128];
       snprintf(err, sizeof(err),
-               "Invalid context level \"%s\" - must be minimal, standard, or rich",
+               "Invalid context level \"%s\" - must be minimal, standard, rich, or critic",
                context_level);
       return tools_make_error(err);
     }
@@ -92,12 +97,15 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
       p += 9;
     }
   }
-  if (depth >= SUBTASK_MAX_DEPTH) {
+  int max_depth = ctx->cfg->subtask_max_depth;
+  if (max_depth > SUBTASK_MAX_DEPTH_CAP) max_depth = SUBTASK_MAX_DEPTH_CAP;
+  if (max_depth < 1) max_depth = 1;
+  if (depth >= max_depth) {
     char err[128];
     snprintf(err, sizeof(err),
              "Sub-task nesting limit reached (depth %d >= %d). "
              "Solve this directly instead of spawning another sub-task.",
-             depth, SUBTASK_MAX_DEPTH);
+             depth, max_depth);
     return tools_make_error(err);
   }
 
@@ -152,7 +160,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   const char *blocked_tools[] = {"user_ask", "subtask"}; /* prevent recursion via filter too */
   tool_filter_t child_filter = {
     .blocked = blocked_tools,
-    .n_blocked = (depth + 1 >= SUBTASK_MAX_DEPTH) ? 2 : 1, /* block subtask at max depth-1 */
+    .n_blocked = (depth + 1 >= max_depth) ? 2 : 1, /* block subtask at max depth-1 */
   };
   /* If parent already has a filter, we only add our blocks.
      * For simplicity, just use our filter (subtask inherits all tools
@@ -177,12 +185,29 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     .parent_loop = ctx->react_loop, /* DAG edge to parent */
   };
 
-  /* "rich" context: enable memory injection + compaction for the child.
+  /* "rich" and "critic" context: enable memory injection + compaction.
    * This lets the child access workspace memory (lessons, skills, strategies)
-   * which is useful for implementation subtasks that need prior decisions. */
-  if (ctx_mode == CTX_RICH) {
+   * which is useful for implementation subtasks that need prior decisions.
+   * "critic" additionally sets a system prompt that instructs the child
+   * to find flaws rather than solve the problem (Meta^n depth-4+ pattern). */
+  if (ctx_mode == CTX_RICH || ctx_mode == CTX_CRITIC) {
     child_react.flags.inject_memory = 1;
     child_react.flags.enable_compaction = 1;
+  }
+  if (ctx_mode == CTX_CRITIC) {
+    static const char critic_prompt[] =
+      "You are a CRITIC. Your job is to find flaws, risks, and blind spots "
+      "in the approach described in your query.\n"
+      "\n"
+      "Rules:\n"
+      "- Do NOT solve the problem yourself.\n"
+      "- Identify what is wrong, incomplete, or risky in the current solution.\n"
+      "- Point out unstated assumptions that could break.\n"
+      "- Suggest specific alternative strategies if the current one is flawed.\n"
+      "- Rank issues by severity (critical > important > minor).\n"
+      "- Be concrete: cite file:line, variable names, exact conditions.\n";
+    child_react.custom_system_prompt = critic_prompt;
+    child_react.system_prompt_replace = 0; /* append to base */
   }
 
   /* Initialize user_ask mutex/cond (react_run may reference them) */
@@ -318,7 +343,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
 
 /* ── plugin registration ──────────────────────────────── */
 
-static const char *context_enum[] = {"minimal", "standard", "rich", NULL};
+static const char *context_enum[] = {"minimal", "standard", "rich", "critic", NULL};
 
 static const tool_param_t subtask_params[] = {
   TOOL_PARAM("query", "string", "Task description for the sub-task to solve", 1),
@@ -326,7 +351,8 @@ static const tool_param_t subtask_params[] = {
     "Context inheritance level: "
     "\"minimal\" = query only (no scratchpad, no memory - best for search/analysis), "
     "\"standard\" = inherits scratchpad (default), "
-    "\"rich\" = inherits scratchpad + memory injection (for implementation tasks needing prior decisions)",
+    "\"rich\" = inherits scratchpad + memory injection (for implementation tasks needing prior decisions), "
+    "\"critic\" = like rich, plus a critic system prompt (finds flaws instead of solving)",
     0, context_enum),
   TOOL_PARAM("temperature", "number",
     "Override temperature for this subtask (0.0-1.0). "
@@ -336,6 +362,6 @@ static const tool_param_t subtask_params[] = {
 
 static const tool_plugin_t subtask_plugin =
   TOOL_DEF("subtask",
-           "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps. Use context=\"minimal\" for search/analysis (no parent noise), context=\"rich\" for implementation needing memory.",
+           "Spawn an isolated sub-task with its own context. The child runs a full react loop in isolation and returns only the final result -- the parent's context grows by exactly 2 messages regardless of how many steps the child took. Use for self-contained sub-problems (searching, analyzing, building) that would otherwise bloat the parent's context with intermediate steps. Use context=\"minimal\" for search/analysis (no parent noise), context=\"rich\" for implementation needing memory, context=\"critic\" for reviewing/critiquing an approach.",
            subtask_params, tool_subtask);
 TOOL_PLUGIN_REGISTER(subtask_plugin)

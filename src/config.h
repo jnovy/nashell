@@ -264,6 +264,7 @@ typedef struct {
 
   int tool_retry_limit;         /* max consecutive errors on same tool before forced strategy switch (default 3) */
   int checkpoint_frequency;     /* save checkpoint every N steps (0 = every step, default 0) */
+  int subtask_max_depth;        /* max subtask nesting depth (default 3, max 5). 0 = disallow subtasks. */
   /* Memory pruning (Bayesian validation scoring) */
   double prune_min_score;        /* validation score threshold (default 0.35) */
   int prune_min_evidence;        /* minimum recalls before pruning (default 3) */

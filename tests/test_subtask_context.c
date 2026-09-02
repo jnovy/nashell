@@ -15,10 +15,14 @@
 #include "../src/journal.h"
 #include "../src/scratchpad.h"
 #include "../src/react.h"
+#include "../src/config.h"
 #include "../src/cJSON.h"
 
 /* Provide globals defined in main.c (not linked into tests) */
 int g_path_given = 0;
+
+/* Static config for tests that reach the depth guard (needs cfg->subtask_max_depth) */
+static config_t test_cfg;
 
 /* ---- Helper: create a minimal tool_ctx_t for subtask calls ---- */
 typedef struct {
@@ -45,6 +49,7 @@ static test_env_t make_test_env(void) {
   env.ctx.store = env.store;
   env.ctx.journal = env.journal;
   env.ctx.session_dir = env.tmpdir;
+  env.ctx.cfg = &test_cfg;
   env.ctx.react_loop = 0;
   env.ctx.step = 0;
   env.ctx.aliases = alias_map_new();
@@ -93,11 +98,12 @@ static void test_context_param_in_schema(void) {
   ASSERT_EQ(ctx_param->required, 0); /* optional */
   ASSERT_NOT_NULL(ctx_param->enum_values);
 
-  /* Verify enum values are exactly: minimal, standard, rich */
+  /* Verify enum values are exactly: minimal, standard, rich, critic */
   ASSERT_STR_EQ(ctx_param->enum_values[0], "minimal");
   ASSERT_STR_EQ(ctx_param->enum_values[1], "standard");
   ASSERT_STR_EQ(ctx_param->enum_values[2], "rich");
-  ASSERT_NULL(ctx_param->enum_values[3]); /* NULL-terminated */
+  ASSERT_STR_EQ(ctx_param->enum_values[3], "critic");
+  ASSERT_NULL(ctx_param->enum_values[4]); /* NULL-terminated */
 }
 
 /* ── Test 2: Schema generates correct JSON ──────────── */
@@ -120,13 +126,14 @@ static void test_context_param_json_schema(void) {
   ASSERT_NOT_NULL(type_j);
   ASSERT_STR_EQ(type_j->valuestring, "string");
 
-  /* Should have enum array with 3 values */
+  /* Should have enum array with 4 values */
   cJSON *enum_j = cJSON_GetObjectItem(ctx_prop, "enum");
   ASSERT_NOT_NULL(enum_j);
-  ASSERT_EQ(cJSON_GetArraySize(enum_j), 3);
+  ASSERT_EQ(cJSON_GetArraySize(enum_j), 4);
   ASSERT_STR_EQ(cJSON_GetArrayItem(enum_j, 0)->valuestring, "minimal");
   ASSERT_STR_EQ(cJSON_GetArrayItem(enum_j, 1)->valuestring, "standard");
   ASSERT_STR_EQ(cJSON_GetArrayItem(enum_j, 2)->valuestring, "rich");
+  ASSERT_STR_EQ(cJSON_GetArrayItem(enum_j, 3)->valuestring, "critic");
 
   /* "context" should NOT be in required array */
   cJSON *required = cJSON_GetObjectItem(schema, "required");
@@ -298,6 +305,7 @@ static void test_depth_guard_with_context(void) {
   ctx.store = store;
   ctx.journal = journal;
   ctx.session_dir = deep_dir;
+  ctx.cfg = &test_cfg;
   ctx.react_loop = 0;
   ctx.step = 0;
   ctx.aliases = alias_map_new();
@@ -330,6 +338,10 @@ static void test_depth_guard_with_context(void) {
 /* ── main ─────────────────────────────────────────────── */
 int main(void) {
   printf("test_subtask_context:\n");
+
+  /* Initialize test config with defaults */
+  memset(&test_cfg, 0, sizeof(test_cfg));
+  config_set_defaults(&test_cfg);
 
   RUN_TEST(test_context_param_in_schema);
   RUN_TEST(test_context_param_json_schema);
