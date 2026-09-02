@@ -941,7 +941,7 @@ static void test_superseded_hard_exclusion(void) {
   memory_t *m = memory_new(dir);
 
   /* Lower min_score so demoted entries still appear */
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.3f, 0.0f, 1.3f);
 
   /* Store two entries with very similar content */
   memory_store(m, "fact:version-old", "the software version is 1.0", 0, NULL, NULL, 0, NULL, 0);
@@ -959,7 +959,7 @@ static void test_superseded_hard_exclusion(void) {
   memory_results_free(&results);
 
   /* Set demotion to 0.0 for hard exclusion */
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.0f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.3f, 0.0f, 0.0f, 1.3f);
 
   results = memory_query(m, "version", 10);
   found_old = 0;
@@ -1297,7 +1297,7 @@ static void test_superseded_chain(void) {
   memory_t *m = memory_new(dir);
 
   /* Low min_score to see demoted entries */
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f, 1.3f);
 
   memory_store(m, "fact:version-v1", "the software version is 1.0", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "fact:version-v2", "the software version is 2.0", 0, NULL, NULL, 0, NULL, 0);
@@ -1337,7 +1337,7 @@ static void test_superseded_chain(void) {
   memory_results_free(&results);
 
   /* With hard exclusion, only v3 should appear */
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.0f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.0f, 0.0f, 1.3f);
   results = memory_query(m, "version", 10);
   count_version = 0;
   int found_v3 = 0;
@@ -1367,7 +1367,7 @@ static void test_superseded_negative_demotion(void) {
   memory_set_supersedes(m, "fact:neg-new", "fact:neg-old");
 
   /* Set negative demotion - should behave like hard exclusion */
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, -0.5f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, -0.5f, 0.0f, 1.3f);
 
   memory_results_t results = memory_query(m, "negdemo", 10);
   int found_old = 0;
@@ -1436,7 +1436,7 @@ static void test_edge_boost_supersedes_no_boost(void) {
   char *dir = make_test_dir();
   memory_t *m = memory_new(dir);
 
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f, 1.3f);
 
   /* Source: key contains "zsup-source" - query matches key via fast path */
   memory_store(m, "lesson:zsup-source", "source info about zsup", 0, NULL, NULL, 0, NULL, 0);
@@ -1475,7 +1475,7 @@ static void test_edge_boost_contradicts_suppresses(void) {
   char *dir = make_test_dir();
   memory_t *m = memory_new(dir);
 
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f, 1.3f);
 
   /* Source key contains "zcontra" - query "zcontra" will match key via
    * fast path: strcasestr(key, query) -> YES -> score = 3.0+/4.0 = 0.75+ */
@@ -1513,7 +1513,7 @@ static void test_edge_boost_updates_stronger(void) {
   char *dir = make_test_dir();
   memory_t *m = memory_new(dir);
 
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f, 1.3f);
 
   /* Source: key contains "zupd-main" - query matches key via fast path */
   memory_store(m, "lesson:zupd-main", "main info about zupd", 0, NULL, NULL, 0, NULL, 0);
@@ -1550,7 +1550,7 @@ static void test_edge_boost_depends(void) {
   char *dir = make_test_dir();
   memory_t *m = memory_new(dir);
 
-  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5f, 0.5f, 0.0f, 0.3f, 0.0f, 1.3f);
 
   /* Source: key contains "zdep-app" - query matches key via fast path */
   memory_store(m, "lesson:zdep-app", "main info about zdep", 0, NULL, NULL, 0, NULL, 0);

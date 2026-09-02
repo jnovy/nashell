@@ -641,7 +641,8 @@ static void daemon_slot_init_new(daemon_ws_slot_t *s,
                               cfg->recall_blend_substring,
                               cfg->vscore_exponent,
                               cfg->superseded_demotion,
-                              cfg->recency_bonus);
+                              cfg->recency_bonus,
+                              cfg->failure_bias);
   s->session_dir = create_session_dir(nash_dir, s->name);
   s->journal = journal_new(s->session_dir);
   session_init_tools(&s->tools, shared_store, s->journal,
@@ -2714,7 +2715,8 @@ int main(int argc, char **argv) {
                               cfg->recall_blend_substring,
                               cfg->vscore_exponent,
                               cfg->superseded_demotion,
-                              cfg->recency_bonus);
+                              cfg->recency_bonus,
+                              cfg->failure_bias);
 
   /* Prune stale memories at startup */
   int pruned = workspace_prune(ws,

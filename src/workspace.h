@@ -43,7 +43,7 @@ int workspace_init_embeddings(workspace_t *ws, const char *type,
 void workspace_set_recall_config(workspace_t *ws, double min_score,
                                  float blend_semantic, float blend_substring,
                                  float vscore_exp, float superseded_demotion,
-                                 float recency_bonus);
+                                 float recency_bonus, float failure_bias);
 
 /* Recall: search workspace memory first, then merge global results
  * (with global_weight discount). Returns unified sorted results.
@@ -98,6 +98,9 @@ int workspace_set_validity(workspace_t *ws, const char *key, const char *validit
 
 /* Set basis (evidence description) on the memory that contains key. */
 int workspace_set_basis(workspace_t *ws, const char *key, const char *basis);
+
+/* Set outcome tag on the memory that contains key. */
+int workspace_set_outcome(workspace_t *ws, const char *key, int outcome);
 
 /* Deferred git: defer/flush on both layers. */
 void workspace_git_defer(workspace_t *ws);

@@ -118,16 +118,18 @@ int workspace_init_embeddings(workspace_t *ws, const char *type,
 void workspace_set_recall_config(workspace_t *ws, double min_score,
                                  float blend_semantic, float blend_substring,
                                  float vscore_exp, float superseded_demotion,
-                                 float recency_bonus) {
+                                 float recency_bonus, float failure_bias) {
   if (!ws) return;
   if (ws->global)
     memory_set_recall_config(ws->global, min_score,
                              blend_semantic, blend_substring, vscore_exp,
-                             superseded_demotion, recency_bonus);
+                             superseded_demotion, recency_bonus,
+                             failure_bias);
   if (ws->workspace)
     memory_set_recall_config(ws->workspace, min_score,
                              blend_semantic, blend_substring, vscore_exp,
-                             superseded_demotion, recency_bonus);
+                             superseded_demotion, recency_bonus,
+                             failure_bias);
 }
 
 /* ── recall (the core merging operation) ─────────────── */
@@ -499,6 +501,12 @@ int workspace_set_basis(workspace_t *ws, const char *key, const char *basis) {
   memory_t *m = workspace_find_memory(ws, key);
   if (!m) return -1;
   return memory_set_basis(m, key, basis);
+}
+
+int workspace_set_outcome(workspace_t *ws, const char *key, int outcome) {
+  memory_t *m = workspace_find_memory(ws, key);
+  if (!m) return -1;
+  return memory_set_outcome(m, key, outcome);
 }
 
 /* ── git defer/flush ─────────────────────────────────── */

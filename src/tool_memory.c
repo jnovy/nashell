@@ -583,6 +583,20 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
       memory_set_basis(ctx->memory, key, basis_str);
   }
 
+  /* Outcome tagging for failure-biased recall (Meta^n WS1) */
+  TOOL_OPT_STR(params, "outcome", outcome_str);
+  if (outcome_str) {
+    int outcome_val = 0; /* MEM_OUTCOME_UNKNOWN */
+    if (strcmp(outcome_str, "success") == 0) outcome_val = 1;
+    else if (strcmp(outcome_str, "failure") == 0) outcome_val = 2;
+    if (outcome_val > 0) {
+      if (ctx->ws)
+        workspace_set_outcome(ctx->ws, key, outcome_val);
+      else
+        memory_set_outcome(ctx->memory, key, outcome_val);
+    }
+  }
+
   /* Belief Entropy probe  - compute ℋ_BE for the new memory entry.
      * Only runs when enabled in config AND provider is local (has /completion).
      * The probe is lightweight (~30 tokens) and non-blocking on failure. */
@@ -923,6 +937,7 @@ static const tool_param_t memory_store_params[] = {
   TOOL_PARAM("global", "boolean", "Store in global memory instead of workspace (default: false)", 0),
   TOOL_PARAM("validity", "string", "Temporal validity class: persistent (default, never stale), volatile (always re-verify), session (expires after session), expires_when:description (shows advisory hint about what event would invalidate this fact - never auto-expires)", 0),
   TOOL_PARAM("basis", "string", "Evidence supporting this memory (e.g. 'confirmed by querying API with 7 positive results'). Displayed at recall to help judge trustworthiness.", 0),
+  TOOL_PARAM("outcome", "string", "Session outcome that produced this memory: unknown (default), success, or failure. Failure-derived memories get scoring boost during recall.", 0),
   TOOL_PARAM_END};
 
 static const tool_param_t memory_search_params[] = {

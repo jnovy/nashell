@@ -148,6 +148,7 @@ static void mem_index_entry_deep_copy(mem_index_entry_t *dst,
   dst->supersedes = src->supersedes ? xstrdup(src->supersedes) : NULL;
   dst->version = src->version;
   dst->superseded_at = src->superseded_at;
+  dst->outcome = src->outcome;
   dst->validity = src->validity ? xstrdup(src->validity) : NULL;
   dst->basis = src->basis ? xstrdup(src->basis) : NULL;
   dst->gen = src->gen;
@@ -330,6 +331,9 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   else
     ie->superseded_at = json_num(entry, "superseded_at", 0);
 
+  /* Outcome tagging (Meta^n failure-biased injection) */
+  ie->outcome = json_int(entry, "outcome", 0);
+
   /* Temporal validity and evidence basis */
   const char *val_s = json_str(entry, "validity");
   ie->validity = val_s ? xstrdup(val_s) : NULL;
@@ -487,7 +491,7 @@ void memory_free(memory_t *m) {
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus) {
+                              float recency_bonus, float failure_bias) {
   if (!m) return;
   /* FIX BUG-22: Acquire mutex so these writes are atomic with respect to
      * memory_query() which reads these fields under the same lock. */
@@ -498,6 +502,7 @@ void memory_set_recall_config(memory_t *m, double min_score,
   m->vscore_exponent = vscore_exp;
   m->superseded_demotion = superseded_demotion;
   m->recency_bonus = recency_bonus;
+  m->failure_bias = failure_bias;
   pthread_mutex_unlock(&m->mtx);
 }
 
@@ -561,6 +566,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
   char *old_supersedes = NULL;
   int old_version = 0;
   double old_superseded_at = 0.0;
+  int old_outcome = 0;
   char *old_validity = NULL;
   char *old_basis = NULL;
   char **old_triggers = NULL;
@@ -592,6 +598,7 @@ int memory_store(memory_t *m, const char *key, const char *value,
         old_superseded_at = atof(sa_s2);
       else
         old_superseded_at = json_num(old, "superseded_at", 0);
+      old_outcome = json_int(old, "outcome", 0);
       /* Preserve validity and basis from old entry */
       const char *ov2 = json_str(old, "validity");
       if (ov2) old_validity = xstrdup(ov2);
@@ -756,6 +763,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
     snprintf(sa_ts, sizeof(sa_ts), "%.5f", old_superseded_at);
     cJSON_AddStringToObject(entry, "superseded_at", sa_ts);
   }
+
+  /* Preserve outcome from old entry.
+     * New values are set by the caller via memory_set_outcome(). */
+  if (old_outcome > 0)
+    cJSON_AddNumberToObject(entry, "outcome", old_outcome);
 
   /* Temporal validity and evidence basis - preserve from old entry.
      * New values are set by the caller via memory_set_validity/basis(). */
@@ -1081,6 +1093,7 @@ static double score_entry_hybrid(const char *key, const char *value,
                                  double superseded_at, double created_at,
                                  float superseded_demotion,
                                  float recency_bonus,
+                                 float failure_bias, int outcome,
                                  double *out_relevance,
                                  double *out_importance) {
   double relevance;
@@ -1146,6 +1159,37 @@ static double score_entry_hybrid(const char *key, const char *value,
      * importance is still computed and exposed via memory_entry_t for
      * diagnostics (test_memory_context) but doesn't affect ranking. */
   double composite = relevance;
+
+  /* Failure-biased scoring (Meta^n WS1, arXiv 2608.24735).
+     * Memories derived from failures get a scoring boost during recall.
+     * Meta^n shows Omega a 3:1 failure-to-success trace ratio because
+     * failures contain more actionable signal for avoiding repeated mistakes.
+     *
+     * Two signals are combined:
+     *  1. Key-prefix heuristic: anti-pattern: and lesson: keys are likely
+     *     failure-derived, so they get an automatic boost.
+     *  2. Explicit outcome tag: entries tagged with outcome=FAILURE get
+     *     at least failure_bias multiplier regardless of key prefix.
+     *     Entries tagged outcome=SUCCESS get no boost even if prefix
+     *     would normally qualify.
+     *
+     * failure_bias default=1.3, 1.0=disabled. */
+  if (failure_bias > 1.0f) {
+    double boost = 1.0;
+    /* Key-prefix heuristic */
+    if (strncmp(key, "anti-pattern:", 13) == 0)
+      boost = (double)failure_bias * 1.1;
+    else if (strncmp(key, "lesson:", 7) == 0)
+      boost = (double)failure_bias * 0.9;
+    /* Explicit outcome overrides */
+    if (outcome == MEM_OUTCOME_FAILURE) {
+      double fb = (double)failure_bias;
+      if (fb > boost) boost = fb;
+    } else if (outcome == MEM_OUTCOME_SUCCESS) {
+      boost = 1.0;
+    }
+    composite *= boost;
+  }
 
   /* Superseded entry demotion (SodaMem arXiv 2608.08055).
      * When entry B supersedes entry A, A is demoted because B contains
@@ -1387,6 +1431,7 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                                   ie->superseded_at, ie->created_at,
                                   m->superseded_demotion,
                                   m->recency_bonus,
+                                  m->failure_bias, ie->outcome,
                                   &out_rel, &out_imp);
 
     /* Type filtering */
@@ -2540,6 +2585,42 @@ int memory_set_basis(memory_t *m, const char *key, const char *basis) {
   {
     mem_index_entry_t *ie = mem_index_find(&m->idx, key);
     if (ie) str_replace(&ie->basis, basis);
+  }
+
+  pthread_mutex_unlock(&m->mtx);
+  return 0;
+}
+
+int memory_set_outcome(memory_t *m, const char *key, int outcome) {
+  if (!m || !key) return -1;
+  if (outcome < 0 || outcome > 2) return -1;
+  pthread_mutex_lock(&m->mtx);
+
+  cJSON *entry = memory_load_entry_json(m, key);
+  if (!entry) {
+    pthread_mutex_unlock(&m->mtx);
+    return -1;
+  }
+
+  cJSON *v = cJSON_GetObjectItem(entry, "outcome");
+  if (v)
+    cJSON_SetNumberValue(v, outcome);
+  else
+    cJSON_AddNumberToObject(entry, "outcome", outcome);
+
+  /* Write back */
+  char fname[512];
+  key_to_path(key, ".json", fname, sizeof(fname));
+  char path[NASH_PATH_MAX];
+  path_join(path, sizeof(path), m->dir, fname);
+
+  dump_json(path, entry);
+  cJSON_Delete(entry);
+
+  /* Update in-memory index */
+  {
+    mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+    if (ie) ie->outcome = outcome;
   }
 
   pthread_mutex_unlock(&m->mtx);

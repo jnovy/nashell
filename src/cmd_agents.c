@@ -270,7 +270,8 @@ static int cmd_agents_run(command_ctx_t *ctx, const char *id) {
                                   ctx->cfg->recall_blend_substring,
                                   ctx->cfg->vscore_exponent,
                                   ctx->cfg->superseded_demotion,
-                                  ctx->cfg->recency_bonus);
+                                  ctx->cfg->recency_bonus,
+                                  ctx->cfg->failure_bias);
       if (ctx->cfg->embedding.type &&
           strcmp(ctx->cfg->embedding.type, "none") != 0)
         workspace_init_embeddings(agent_ws, ctx->cfg->embedding.type,

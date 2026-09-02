@@ -42,6 +42,15 @@ typedef enum {
   MEM_EDGE_DEPENDS = 4,      /* this entry requires ref'd entry (+0.4 boost) */
 } mem_edge_type_t;
 
+/* Outcome tagging for failure-biased memory injection (Meta^n WS1).
+ * Memories derived from failures get scoring boost during recall,
+ * implementing Meta^n's 3:1 failure-to-success trace ratio. */
+typedef enum {
+  MEM_OUTCOME_UNKNOWN = 0,  /* default - no outcome signal */
+  MEM_OUTCOME_SUCCESS = 1,  /* derived from a successful session */
+  MEM_OUTCOME_FAILURE = 2,  /* derived from a failed/struggled session */
+} mem_outcome_t;
+
 typedef struct {
   char *key;         /* memory key (owned) */
   char *description; /* first sentence/line of value (owned, ≤250 chars) */
@@ -66,6 +75,7 @@ typedef struct {
   int n_triggers;        /* 0 = no triggers, purely semantic recall */
   uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
   double superseded_at;  /* epoch when this entry was superseded by another, 0.0 = active */
+  int outcome;           /* MEM_OUTCOME_* - session outcome that produced this memory */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -96,6 +106,9 @@ typedef struct {
   float vscore_exponent;        /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
   float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3) */
   float recency_bonus;          /* soft temporal bonus for recent entries (default 0.0 = disabled) */
+  float failure_bias;            /* scoring boost for failure-derived memories (default 1.3, 1.0=disabled).
+                                  * Meta^n WS1: anti-pattern: keys get bias*1.1, lesson: keys get bias*0.9.
+                                  * Entries with outcome=FAILURE get at least this multiplier. */
 
   /* Guard against recursive consolidation — set during
      * memory_try_consolidate to prevent consolidation→store→consolidation loops.
@@ -201,7 +214,8 @@ void memory_free(memory_t *m);
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus);
+                              float recency_bonus, float failure_bias);
+int memory_set_outcome(memory_t *m, const char *key, int outcome);
 
 /* Convert a memory key to a filesystem path component.
  * Replaces ':' and '/' with '_', appends ext (e.g. ".json").

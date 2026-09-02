@@ -260,6 +260,7 @@ typedef struct {
                                     * with actual misses (vscore=0.33 → ×0.72). */
   float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3). */
   float recency_bonus;          /* soft temporal bonus for recent entries (default 0.0 = disabled). */
+  float failure_bias;           /* scoring boost for failure-derived memories (default 1.3). 1.0 = disabled. */
 
   int tool_retry_limit;         /* max consecutive errors on same tool before forced strategy switch (default 3) */
   int checkpoint_frequency;     /* save checkpoint every N steps (0 = every step, default 0) */

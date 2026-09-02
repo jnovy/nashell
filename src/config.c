@@ -63,7 +63,7 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->max_skills_per_query <= 0) cfg->max_skills_per_query = 2;
   if (cfg->max_lessons_per_query <= 0) cfg->max_lessons_per_query = 2;
   if (cfg->max_strategies_per_query <= 0) cfg->max_strategies_per_query = 1;
-  if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 1;
+  if (cfg->max_antipatterns_per_query <= 0) cfg->max_antipatterns_per_query = 2;
   /* skill_full_disclosure: 0 = progressive disclosure (default via calloc),
      * 1 = full text. No need for sentinel — calloc zero = desired default. */
   if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
@@ -172,6 +172,7 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->vscore_exponent < 0) cfg->vscore_exponent = 0.3f;
   if (cfg->superseded_demotion < 0) cfg->superseded_demotion = 0.3f;
   if (cfg->recency_bonus < 0) cfg->recency_bonus = 0.0f;
+  if (cfg->failure_bias <= 0) cfg->failure_bias = 1.3f;
   if (cfg->tool_retry_limit <= 0) cfg->tool_retry_limit = 3;
   /* checkpoint_frequency: 0 = every step (default), so no sentinel needed */
   /* max_react_steps: -1 = unlimited (default). Positive = hard limit.
@@ -263,6 +264,7 @@ config_t *config_load(const char *path) {
   cfg->vscore_exponent = -1.0f; /* sentinel: 0 is valid (disables vscore) */
   cfg->superseded_demotion = -1.0f;
   cfg->recency_bonus = -1.0f;
+  cfg->failure_bias = -1.0f;
   /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
   cfg->profile_inject_memory = -1;
   cfg->profile_inject_prev_result = -1;
@@ -496,6 +498,10 @@ config_t *config_load(const char *path) {
     {
       double v = toml_dbl(limits, "recency_bonus", -1);
       if (v >= 0) cfg->recency_bonus = (float)v;
+    }
+    {
+      double v = toml_dbl(limits, "failure_bias", -1);
+      if (v >= 0) cfg->failure_bias = (float)v;
     }
     cfg->tool_retry_limit = toml_int(limits, "tool_retry_limit", -1);
     cfg->checkpoint_frequency = toml_int(limits, "checkpoint_frequency", 0);
@@ -1366,6 +1372,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "vscore_exponent = %.1f\n", cfg->vscore_exponent);
   fprintf(out, "superseded_demotion = %.1f\n", cfg->superseded_demotion);
   fprintf(out, "recency_bonus = %.1f\n", cfg->recency_bonus);
+  fprintf(out, "failure_bias = %.1f\n", cfg->failure_bias);
   fprintf(out, "memory_index_max = %d\n", cfg->memory_index_max);
   fprintf(out, "max_skills_per_query = %d\n", cfg->max_skills_per_query);
   fprintf(out, "max_lessons_per_query = %d\n", cfg->max_lessons_per_query);
@@ -1714,6 +1721,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     {
       double vs = toml_dbl(mem, "recency_bonus", -1);
       if (vs >= 0) cfg->recency_bonus = (float)vs;
+    }
+    {
+      double vs = toml_dbl(mem, "failure_bias", -1);
+      if (vs >= 0) cfg->failure_bias = (float)vs;
     }
     v = toml_int(mem, "memory_index_max", 0);
     if (v > 0) cfg->memory_index_max = v;
@@ -2158,7 +2169,7 @@ int config_write_default(const char *path) {
     "max_skills_per_query = 2     # max skill memories loaded per query\n"
     "max_lessons_per_query = 2    # max lesson memories loaded per query\n"
     "max_strategies_per_query = 1 # max strategy memories loaded per query\n"
-    "max_antipatterns_per_query = 1 # max anti-pattern memories loaded per query\n"
+    "max_antipatterns_per_query = 2 # max anti-pattern memories loaded per query\n"
     "max_reflection_steps = 4     # max LLM steps for post-task reflection\n"
     "reflection_gate = \"user_ask\"  # when to reflect: \"user_ask\" (only after asking user),\n"
     "                              #   \"always\" (after every task), \"never\" (disable)\n"
@@ -2185,6 +2196,7 @@ int config_write_default(const char *path) {
     "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
     "superseded_demotion = 0.3    # multiplicative penalty for superseded entries (0.0-1.0)\n"
     "recency_bonus = 0.0          # soft temporal bonus for recent entries (0.0 = disabled)\n"
+    "failure_bias = 1.3           # scoring boost for failure-derived memories (1.0 = disabled)\n"
     "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
     "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"
     "\n"
