@@ -126,6 +126,8 @@ static void mem_index_entry_free(mem_index_entry_t *e) {
   free(e->supersedes);
   free(e->validity);
   free(e->basis);
+  free(e->code);
+  free(e->code_language);
   memset(e, 0, sizeof(*e));
 }
 
@@ -151,6 +153,8 @@ static void mem_index_entry_deep_copy(mem_index_entry_t *dst,
   dst->outcome = src->outcome;
   dst->validity = src->validity ? xstrdup(src->validity) : NULL;
   dst->basis = src->basis ? xstrdup(src->basis) : NULL;
+  dst->code = src->code ? xstrdup(src->code) : NULL;
+  dst->code_language = src->code_language ? xstrdup(src->code_language) : NULL;
   dst->gen = src->gen;
   dst->n_refs = src->n_refs;
   if (src->refs && src->n_refs > 0) {
@@ -339,6 +343,12 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   ie->validity = val_s ? xstrdup(val_s) : NULL;
   const char *bas_s = json_str(entry, "basis");
   ie->basis = bas_s ? xstrdup(bas_s) : NULL;
+
+  /* Executable code snippet (Meta^n WS6) */
+  const char *code_s = json_str(entry, "code");
+  ie->code = code_s ? xstrdup(code_s) : NULL;
+  const char *clang_s = json_str(entry, "code_language");
+  ie->code_language = clang_s ? xstrdup(clang_s) : NULL;
 
   /* Copy refs */
   cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
@@ -569,6 +579,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
   int old_outcome = 0;
   char *old_validity = NULL;
   char *old_basis = NULL;
+  char *old_code = NULL;
+  char *old_code_language = NULL;
   char **old_triggers = NULL;
   int n_old_triggers = 0;
   int *old_ref_types = NULL;
@@ -604,6 +616,11 @@ int memory_store(memory_t *m, const char *key, const char *value,
       if (ov2) old_validity = xstrdup(ov2);
       const char *ob2 = json_str(old, "basis");
       if (ob2) old_basis = xstrdup(ob2);
+      /* Preserve code snippet from old entry */
+      const char *oc2 = json_str(old, "code");
+      if (oc2) old_code = xstrdup(oc2);
+      const char *ocl2 = json_str(old, "code_language");
+      if (ocl2) old_code_language = xstrdup(ocl2);
       /* Preserve triggers if caller did not provide new ones */
       if (!triggers) {
         cJSON *ot = cJSON_GetObjectItem(old, "triggers");
@@ -778,6 +795,17 @@ int memory_store(memory_t *m, const char *key, const char *value,
   if (old_basis) {
     cJSON_AddStringToObject(entry, "basis", old_basis);
     free(old_basis);
+  }
+
+  /* Executable code snippet - preserve from old entry.
+   * New values are set by the caller via memory_set_code(). */
+  if (old_code) {
+    cJSON_AddStringToObject(entry, "code", old_code);
+    free(old_code);
+  }
+  if (old_code_language) {
+    cJSON_AddStringToObject(entry, "code_language", old_code_language);
+    free(old_code_language);
   }
 
   dump_json(path, entry);
@@ -1586,6 +1614,8 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     e->superseded_at = ie->superseded_at;
     e->validity = ie->validity ? xstrdup(ie->validity) : NULL;
     e->basis = ie->basis ? xstrdup(ie->basis) : NULL;
+    e->code = ie->code ? xstrdup(ie->code) : NULL;
+    e->code_language = ie->code_language ? xstrdup(ie->code_language) : NULL;
     e->journal_ref = NULL; /* loaded on demand if needed */
 
     /* Copy refs from index */
@@ -2052,6 +2082,8 @@ void memory_results_free(memory_results_t *r) {
     free(r->entries[i].supersedes);
     free(r->entries[i].validity);
     free(r->entries[i].basis);
+    free(r->entries[i].code);
+    free(r->entries[i].code_language);
   }
   free(r->entries);
   r->entries = NULL;
@@ -2621,6 +2653,61 @@ int memory_set_outcome(memory_t *m, const char *key, int outcome) {
   {
     mem_index_entry_t *ie = mem_index_find(&m->idx, key);
     if (ie) ie->outcome = outcome;
+  }
+
+  pthread_mutex_unlock(&m->mtx);
+  return 0;
+}
+
+int memory_set_code(memory_t *m, const char *key,
+                    const char *code, const char *language) {
+  if (!m || !key) return -1;
+  pthread_mutex_lock(&m->mtx);
+
+  cJSON *entry = memory_load_entry_json(m, key);
+  if (!entry) {
+    pthread_mutex_unlock(&m->mtx);
+    return -1;
+  }
+
+  /* Set or update code field */
+  if (code) {
+    cJSON *c = cJSON_GetObjectItem(entry, "code");
+    if (c)
+      cJSON_SetValuestring(c, code);
+    else
+      cJSON_AddStringToObject(entry, "code", code);
+  } else {
+    cJSON_DeleteItemFromObject(entry, "code");
+  }
+
+  /* Set or update code_language field */
+  if (language) {
+    cJSON *cl = cJSON_GetObjectItem(entry, "code_language");
+    if (cl)
+      cJSON_SetValuestring(cl, language);
+    else
+      cJSON_AddStringToObject(entry, "code_language", language);
+  } else {
+    cJSON_DeleteItemFromObject(entry, "code_language");
+  }
+
+  /* Write back */
+  char fname[512];
+  key_to_path(key, ".json", fname, sizeof(fname));
+  char path[NASH_PATH_MAX];
+  path_join(path, sizeof(path), m->dir, fname);
+
+  dump_json(path, entry);
+  cJSON_Delete(entry);
+
+  /* Update in-memory index */
+  {
+    mem_index_entry_t *ie = mem_index_find(&m->idx, key);
+    if (ie) {
+      str_replace(&ie->code, code);
+      str_replace(&ie->code_language, language);
+    }
   }
 
   pthread_mutex_unlock(&m->mtx);

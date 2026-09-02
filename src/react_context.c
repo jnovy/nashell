@@ -102,6 +102,16 @@ static void inject_memory_type(llm_chat_t *chat, tool_ctx_t *tools,
       if (all->entries[j].basis && all->entries[j].basis[0]) {
         str_appendf(&msg, "  basis: %s\n", all->entries[j].basis);
       }
+      /* Code snippet injection: show in full mode only (Meta^n WS6).
+       * In summary mode, code is omitted to save context tokens;
+       * the agent can load it via memory_search(key=...). */
+      if (!summary_only && all->entries[j].code &&
+          all->entries[j].code[0]) {
+        str_appendf(&msg, "```%s\n%s\n```\n",
+                    all->entries[j].code_language
+                      ? all->entries[j].code_language : "",
+                    all->entries[j].code);
+      }
       tool_track_recalled_key(tools, all->entries[j].key);
       tool_fire_ledger_add(tools, all->entries[j].key);
       if (tools->predict) {

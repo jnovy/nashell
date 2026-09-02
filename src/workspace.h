@@ -102,6 +102,10 @@ int workspace_set_basis(workspace_t *ws, const char *key, const char *basis);
 /* Set outcome tag on the memory that contains key. */
 int workspace_set_outcome(workspace_t *ws, const char *key, int outcome);
 
+/* Set executable code snippet on the memory that contains key (Meta^n WS6). */
+int workspace_set_code(workspace_t *ws, const char *key,
+                       const char *code, const char *language);
+
 /* Deferred git: defer/flush on both layers. */
 void workspace_git_defer(workspace_t *ws);
 void workspace_git_flush(workspace_t *ws, const char *msg);

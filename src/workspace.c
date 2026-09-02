@@ -509,6 +509,13 @@ int workspace_set_outcome(workspace_t *ws, const char *key, int outcome) {
   return memory_set_outcome(m, key, outcome);
 }
 
+int workspace_set_code(workspace_t *ws, const char *key,
+                       const char *code, const char *language) {
+  memory_t *m = workspace_find_memory(ws, key);
+  if (!m) return -1;
+  return memory_set_code(m, key, code, language);
+}
+
 /* ── git defer/flush ─────────────────────────────────── */
 
 void workspace_git_defer(workspace_t *ws) {

@@ -76,6 +76,8 @@ typedef struct {
   uint64_t gen;          /* FIX BUG-7: monotonic generation counter, incremented on every value update */
   double superseded_at;  /* epoch when this entry was superseded by another, 0.0 = active */
   int outcome;           /* MEM_OUTCOME_* - session outcome that produced this memory */
+  char *code;            /* optional executable code snippet (owned, NULL = none) */
+  char *code_language;   /* language tag for code (e.g. "python", "bash") (owned, NULL = none) */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -197,6 +199,8 @@ typedef struct {
   char *basis;      /* evidence basis for this memory (NULL = none) */
   char **triggers;  /* content-match patterns for cue-anchored injection (owned, NULL = none) */
   int n_triggers;   /* 0 = no triggers, purely semantic recall */
+  char *code;       /* optional executable code snippet (owned, NULL = none) */
+  char *code_language; /* language tag for code (e.g. "python", "bash") (owned, NULL = none) */
   int is_global;    /* 1 if entry came from global layer, 0 if workspace-local */
 } memory_entry_t;
 
@@ -216,6 +220,14 @@ void memory_set_recall_config(memory_t *m, double min_score,
                               float vscore_exp, float superseded_demotion,
                               float recency_bonus, float failure_bias);
 int memory_set_outcome(memory_t *m, const char *key, int outcome);
+
+/* Set executable code snippet on a memory entry.
+ * Stores a reusable code block alongside the text value (Meta^n WS6).
+ * Updates both on-disk JSON and in-memory index.
+ * Either code or language can be NULL to clear that field.
+ * Returns 0 on success, -1 if key not found. */
+int memory_set_code(memory_t *m, const char *key,
+                    const char *code, const char *language);
 
 /* Convert a memory key to a filesystem path component.
  * Replaces ':' and '/' with '_', appends ext (e.g. ".json").

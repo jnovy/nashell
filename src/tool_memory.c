@@ -597,6 +597,16 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     }
   }
 
+  /* Executable code snippet (Meta^n WS6) */
+  TOOL_OPT_STR(params, "code", code_str);
+  TOOL_OPT_STR(params, "code_language", code_lang_str);
+  if (code_str) {
+    if (ctx->ws)
+      workspace_set_code(ctx->ws, key, code_str, code_lang_str);
+    else
+      memory_set_code(ctx->memory, key, code_str, code_lang_str);
+  }
+
   /* Belief Entropy probe  - compute ℋ_BE for the new memory entry.
      * Only runs when enabled in config AND provider is local (has /completion).
      * The probe is lightweight (~30 tokens) and non-blocking on failure. */
@@ -726,7 +736,13 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
                                 ? memory_find(target_mem, key)
                                 : NULL;
       if (ie && ie->value) {
-        str_appendf(&out, "[MEMORY -- %s]\n%s\n\n", ie->key, ie->value);
+        str_appendf(&out, "[MEMORY -- %s]\n%s\n", ie->key, ie->value);
+        if (ie->code && ie->code[0]) {
+          str_appendf(&out, "\n```%s\n%s\n```\n",
+                      ie->code_language ? ie->code_language : "",
+                      ie->code);
+        }
+        str_appendf(&out, "\n");
         tool_track_recalled_key(ctx, ie->key);
         tool_fire_ledger_add(ctx, ie->key);
         mem_count = 1;
@@ -798,7 +814,13 @@ tool_result_t tool_memory_search(tool_ctx_t *ctx, cJSON *params) {
         /* Emit memory result (>= means memory wins ties  - intentional:
                  * curated memory is higher quality than raw session logs) */
         memory_entry_t *e = &mem_results.entries[mi];
-        str_appendf(&out, "[MEMORY -- %s]\n%s\n\n", e->key, e->value);
+        str_appendf(&out, "[MEMORY -- %s]\n%s\n", e->key, e->value);
+        if (e->code && e->code[0]) {
+          str_appendf(&out, "\n```%s\n%s\n```\n",
+                      e->code_language ? e->code_language : "",
+                      e->code);
+        }
+        str_appendf(&out, "\n");
         tool_track_recalled_key(ctx, e->key);
         tool_fire_ledger_add(ctx, e->key);
         mi++;
@@ -938,6 +960,8 @@ static const tool_param_t memory_store_params[] = {
   TOOL_PARAM("validity", "string", "Temporal validity class: persistent (default, never stale), volatile (always re-verify), session (expires after session), expires_when:description (shows advisory hint about what event would invalidate this fact - never auto-expires)", 0),
   TOOL_PARAM("basis", "string", "Evidence supporting this memory (e.g. 'confirmed by querying API with 7 positive results'). Displayed at recall to help judge trustworthiness.", 0),
   TOOL_PARAM("outcome", "string", "Session outcome that produced this memory: unknown (default), success, or failure. Failure-derived memories get scoring boost during recall.", 0),
+  TOOL_PARAM("code", "string", "Optional executable code snippet to store alongside the memory value. Shown as a fenced code block on recall. Use for proven templates, shell functions, or reusable patterns.", 0),
+  TOOL_PARAM("code_language", "string", "Language tag for the code snippet (e.g. python, bash, c). Used for syntax highlighting in fenced code blocks.", 0),
   TOOL_PARAM_END};
 
 static const tool_param_t memory_search_params[] = {
