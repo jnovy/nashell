@@ -202,9 +202,15 @@ playbook_t *playbook_load(const char *path) {
       else
         pb->passes[i].on_error = PB_ON_ERROR_ABORT;
 
-      /* Early pipeline stop: substring match on pass result */
+      /* Early pipeline stop: substring match on pass result (deprecated) */
       const char *sw = yaml_str(yaml_get(pass, "stop_when"));
       pb->passes[i].stop_when = sw ? xstrdup(sw) : NULL;
+
+      /* Pre-pass conditions (Meta^n convergence-driven depth, arXiv 2608.24735) */
+      const char *ski = yaml_str(yaml_get(pass, "skip_if"));
+      pb->passes[i].skip_if = ski ? xstrdup(ski) : NULL;
+      const char *fin = yaml_str(yaml_get(pass, "finish_if"));
+      pb->passes[i].finish_if = fin ? xstrdup(fin) : NULL;
 
       /* Mandatory tool verification (SIGIL, arxiv 2607.27309) */
       yaml_node_t *req_tools = yaml_get(pass, "required_tools");
@@ -251,6 +257,8 @@ void playbook_free(playbook_t *pb) {
     free(pb->passes[i].system_prompt);
     free_string_array(pb->passes[i].required_tools, pb->passes[i].n_required_tools);
     free(pb->passes[i].stop_when);
+    free(pb->passes[i].skip_if);
+    free(pb->passes[i].finish_if);
     free_react_overrides(&pb->passes[i].react);
   }
   free(pb->passes);
@@ -955,6 +963,48 @@ void *playbook_worker(void *arg) {
         }
       }
 
+      /* Pre-pass condition: finish_if ends entire pipeline with success */
+      if (pb->passes[pass].finish_if && prev_result &&
+          strstr(prev_result, pb->passes[pass].finish_if)) {
+        fprintf(stderr,
+                "[play] pass %d/%d ('%s'): finish_if matched "
+                "('%s'), ending playbook (success)\n",
+                pass + 1, pb->n_passes, pb->passes[pass].label,
+                pb->passes[pass].finish_if);
+        if (run_log) {
+          struct timespec fi_tp;
+          clock_gettime(CLOCK_REALTIME, &fi_tp);
+          fprintf(run_log,
+                  "{\"e\":\"finish_if\",\"i\":%d,\"pat\":\"%s\","
+                  "\"ts\":%ld.%05ld}\n",
+                  pass, pb->passes[pass].finish_if,
+                  (long)fi_tp.tv_sec, fi_tp.tv_nsec / 10000);
+          fflush(run_log);
+        }
+        break; /* playbook_ok stays 1 (success) */
+      }
+
+      /* Pre-pass condition: skip_if skips this pass, continues to next */
+      if (pb->passes[pass].skip_if && prev_result &&
+          strstr(prev_result, pb->passes[pass].skip_if)) {
+        fprintf(stderr,
+                "[play] pass %d/%d ('%s'): skip_if matched "
+                "('%s'), skipping pass\n",
+                pass + 1, pb->n_passes, pb->passes[pass].label,
+                pb->passes[pass].skip_if);
+        if (run_log) {
+          struct timespec si_tp;
+          clock_gettime(CLOCK_REALTIME, &si_tp);
+          fprintf(run_log,
+                  "{\"e\":\"skip_if\",\"i\":%d,\"pat\":\"%s\","
+                  "\"ts\":%ld.%05ld}\n",
+                  pass, pb->passes[pass].skip_if,
+                  (long)si_tp.tv_sec, si_tp.tv_nsec / 10000);
+          fflush(run_log);
+        }
+        continue;
+      }
+
       /* Expand template */
       const char *mdir = cur_mem ? memory_dir(cur_mem) : "";
       const char *model = pa->server_model ? pa->server_model : "unknown";
@@ -1325,12 +1375,14 @@ void *playbook_worker(void *arg) {
         break;
       }
 
-      /* stop_when: clean early pipeline termination on substring match */
+      /* stop_when (DEPRECATED - use finish_if on the next pass instead):
+       * clean early pipeline termination on substring match */
       if (pb->passes[pass].stop_when && prev_result &&
           strstr(prev_result, pb->passes[pass].stop_when)) {
         fprintf(stderr,
                 "[play] pass %d/%d ('%s'): stop_when matched "
-                "('%s'), ending playbook (success)\n",
+                "('%s'), ending playbook (success) "
+                "[deprecated: use finish_if on next pass]\n",
                 pass + 1, pb->n_passes, pb->passes[pass].label,
                 pb->passes[pass].stop_when);
         if (run_log) {

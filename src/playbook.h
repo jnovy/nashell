@@ -73,8 +73,17 @@ typedef struct {
   int n_required_tools;
   /* Early pipeline termination: if the pass result contains this
    * substring, the playbook stops cleanly (success, not failure).
-   * NULL = disabled (default). */
+   * NULL = disabled (default).
+   * DEPRECATED: use finish_if on the next pass instead. */
   char *stop_when;
+  /* Pre-pass condition: if prev_result contains this substring,
+   * skip this pass and continue to the next one.
+   * NULL = disabled (default). */
+  char *skip_if;
+  /* Pre-pass condition: if prev_result contains this substring,
+   * end the entire pipeline with success (no more passes run).
+   * NULL = disabled (default). */
+  char *finish_if;
 } pb_pass_t;
 
 typedef struct {
