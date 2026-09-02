@@ -57,7 +57,7 @@ eviction_policy_t react_eviction_policy(const config_t *cfg) {
   eviction_policy_t p = {0};
   p.trigger_pct = cfg ? cfg->context_eviction_pct : 70;
   p.floor_pct = cfg ? cfg->eviction_floor_pct : 20;
-  p.sp_budget_pct = cfg ? cfg->scratchpad_budget_pct : 15;
+  p.sp_budget_pct = cfg ? cfg->scratchpad_budget_pct : 20;
   p.breadcrumb_pct = cfg ? cfg->breadcrumb_budget_pct : 5;
   p.compress_min_len = cfg ? cfg->compress_min_length : 800;
 

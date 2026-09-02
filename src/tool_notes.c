@@ -13,12 +13,35 @@ static void scratchpad_persist(tool_ctx_t *ctx) {
   scratchpad_save(&ctx->scratch, ctx->session_dir);
 }
 
+/* Infer section priority from name when not explicitly provided.
+ * High-value conditioning sections get higher priority (lower number);
+ * machine-generated or expendable sections get lower priority. */
+static int infer_priority_from_name(const char *name) {
+  if (!name) return 5;
+  /* Priority 2: core conditioning - key analysis and action plans */
+  if (strcmp(name, "findings") == 0 || strcmp(name, "plan") == 0 ||
+      strcmp(name, "pseudocode") == 0)
+    return 2;
+  /* Priority 3: open questions that need attention */
+  if (strcmp(name, "unresolved") == 0)
+    return 3;
+  /* Priority 6: secondary/negative signal */
+  if (strcmp(name, "brainstorm") == 0 || strcmp(name, "rejected") == 0)
+    return 6;
+  /* Priority 7: machine-generated, expendable */
+  if (strncmp(name, "auto_", 5) == 0 || strncmp(name, "auto-", 5) == 0)
+    return 7;
+  /* Default: middle priority */
+  return 5;
+}
+
 tool_result_t tool_notes(tool_ctx_t *ctx, cJSON *params) {
   TOOL_REQ_STR(params, "op", op);
   TOOL_OPT_STR(params, "section", section);
   TOOL_OPT_STR(params, "content", content);
   cJSON *priority_j = cJSON_GetObjectItem(params, "priority");
-  int priority = priority_j ? (int)cJSON_GetNumberValue(priority_j) : 5;
+  int priority = priority_j ? (int)cJSON_GetNumberValue(priority_j)
+                            : infer_priority_from_name(section);
 
   if (strcmp(op, "write") == 0) {
     if (!section) return tools_make_error("'write' requires 'section' parameter");

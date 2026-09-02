@@ -1,6 +1,7 @@
 #include "scratchpad.h"
 #include "str.h"
 #include "nash_limits.h"
+#include "nash_log.h"
 #include "cJSON.h"
 #include <stdlib.h>
 #include <string.h>
@@ -146,13 +147,10 @@ int scratchpad_append(scratchpad_t *sp, const char *name, const char *content, i
   return 0;
 }
 
-int scratchpad_clear(scratchpad_t *sp, const char *name) {
-  pthread_mutex_lock(&sp->mtx); /* FIX CRIT2 */
+/* Internal clear without locking - caller must hold sp->mtx. */
+static int scratchpad_clear_unlocked(scratchpad_t *sp, const char *name) {
   int idx = scratchpad_find(sp, name);
-  if (idx < 0) {
-    pthread_mutex_unlock(&sp->mtx);
-    return -1;
-  }
+  if (idx < 0) return -1;
 
   /* Track cleared name for JSONL op:clear on next save */
   if (sp->n_cleared >= sp->cleared_cap) {
@@ -175,8 +173,14 @@ int scratchpad_clear(scratchpad_t *sp, const char *name) {
   for (int i = idx; i < sp->count - 1; i++)
     sp->sections[i] = sp->sections[i + 1];
   sp->count--;
-  pthread_mutex_unlock(&sp->mtx);
   return 0;
+}
+
+int scratchpad_clear(scratchpad_t *sp, const char *name) {
+  pthread_mutex_lock(&sp->mtx); /* FIX CRIT2 */
+  int rc = scratchpad_clear_unlocked(sp, name);
+  pthread_mutex_unlock(&sp->mtx);
+  return rc;
 }
 
 /* Compare sections by priority for qsort (lower priority number = first).
@@ -226,6 +230,12 @@ char *scratchpad_serialize(scratchpad_t *sp) {
   return str_steal(&out);
 }
 
+/* Extract the first line of text (up to newline or end). */
+static size_t first_line_len(const char *s) {
+  const char *nl = strchr(s, '\n');
+  return nl ? (size_t)(nl - s) : strlen(s);
+}
+
 char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
   pthread_mutex_lock(&sp->mtx); /* FIX CRIT2 */
   if (sp->count == 0) {
@@ -243,41 +253,73 @@ char *scratchpad_serialize_budget(scratchpad_t *sp, size_t max_chars) {
     sorted[i].priority = sp->sections[i].priority;
     sorted[i].stale = sp->sections[i].stale;
   }
-  pthread_mutex_unlock(&sp->mtx); /* safe — working on deep copies */
+  pthread_mutex_unlock(&sp->mtx); /* safe - working on deep copies */
 
   qsort(sorted, (size_t)n, sizeof(scratchpad_section_t), section_cmp);
 
-  str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
+  /* Graduated compression (Meta^n / GDN-2 Matryoshka principle):
+   * Compute budget ratio to determine compression tier.
+   *   Tier 1 (ratio >= 0.7): full content for all sections
+   *   Tier 2 (0.3 <= ratio < 0.7): low-priority (7-9) compressed to first line
+   *   Tier 3 (ratio < 0.3): only priority 1-3 survive; rest omitted */
+  size_t total_size = 0;
   for (int i = 0; i < n; i++) {
+    total_size += strlen(sorted[i].name) + 6 + strlen(sorted[i].content);
+    if (sorted[i].stale) total_size += 48;
+  }
+  double ratio = total_size > 0 ? (double)max_chars / (double)total_size : 1.0;
+
+  str_t out = str_new(max_chars > 4096 ? 4096 : max_chars);
+  int compressed_count = 0;
+  for (int i = 0; i < n; i++) {
+    /* Tier 3: drop sections with priority > 3 when severely budget-constrained */
+    if (ratio < 0.3 && sorted[i].priority > 3) {
+      compressed_count++;
+      continue;
+    }
+
     /* Calculate how much space this section needs */
-    size_t stale_suffix = sorted[i].stale ? 48 : 0; /* " [STALE - tracked files changed since last write]" */
-    size_t header_len = strlen(sorted[i].name) + 6 + stale_suffix; /* "## " + name + stale + "\n" + trailing "\n\n" */
+    size_t stale_suffix = sorted[i].stale ? 48 : 0;
+    size_t header_len = strlen(sorted[i].name) + 6 + stale_suffix;
     size_t content_len = strlen(sorted[i].content);
     size_t section_total = header_len + content_len;
     size_t remaining = (max_chars > out.len) ? (max_chars - out.len) : 0;
 
     if (remaining < header_len + 20) {
-      /* Not enough room even for a header + minimal content - drop this and all lower-priority */
+      /* Not enough room even for a header + minimal content - drop remaining */
+      compressed_count += n - i;
       break;
     }
 
+    /* Emit header */
     if (sorted[i].stale)
       str_appendf(&out, "## %s [STALE - tracked files changed since last write]\n", sorted[i].name);
     else
       str_appendf(&out, "## %s\n", sorted[i].name);
 
-    if (section_total <= remaining) {
+    /* Tier 2: compress low-priority (7-9) to first-line summary */
+    if (ratio < 0.7 && sorted[i].priority >= 7 && content_len > 0) {
+      size_t flen = first_line_len(sorted[i].content);
+      if (flen > 0) str_append(&out, sorted[i].content, flen);
+      str_append_cstr(&out, "\n[summarized]");
+    } else if (section_total <= remaining) {
       /* Fits fully */
       str_append_cstr(&out, sorted[i].content);
     } else {
       /* Truncate content to fit budget (defensive: guard against underflow).
-             * Clamp to UTF-8 boundary to avoid splitting multi-byte chars. */
+       * Clamp to UTF-8 boundary to avoid splitting multi-byte chars. */
       size_t avail = (remaining > header_len + 12) ? (remaining - header_len - 12) : 0;
       avail = utf8_clamp(sorted[i].content, avail);
       if (avail > 0) str_append(&out, sorted[i].content, avail);
       str_append_cstr(&out, "\n[truncated]");
     }
     str_append_cstr(&out, "\n\n");
+  }
+
+  /* Append omission notice for Tier 3 dropped sections */
+  if (compressed_count > 0) {
+    str_appendf(&out, "[compressed: %d low-priority section%s omitted]\n",
+                compressed_count, compressed_count == 1 ? "" : "s");
   }
 
   for (int i = 0; i < n; i++) {
@@ -711,18 +753,30 @@ void scratchpad_check_staleness(scratchpad_t *sp, const char *path) {
   /* Strip leading "./" for consistent comparison */
   while (path[0] == '.' && path[1] == '/') path += 2;
   pthread_mutex_lock(&sp->mtx);
-  for (int i = 0; i < sp->count; i++) {
+  /* Collect names of sections to clear. Cannot clear during iteration
+   * because scratchpad_clear_unlocked shifts the sections array. */
+  char *to_clear[SCRATCHPAD_INIT_CAP];
+  int n_clear = 0;
+  for (int i = 0; i < sp->count && n_clear < SCRATCHPAD_INIT_CAP; i++) {
     scratchpad_section_t *s = &sp->sections[i];
-    if (s->stale || s->n_tracked == 0) continue;
+    if (s->n_tracked == 0) continue;
     for (int j = 0; j < s->n_tracked; j++) {
       const char *tp = s->tracked_paths[j];
       while (tp[0] == '.' && tp[1] == '/') tp += 2;
       if (strcmp(tp, path) == 0) {
-        s->stale = 1;
-        s->dirty = 1;
+        to_clear[n_clear++] = xstrdup(s->name);
         break;
       }
     }
+  }
+  /* Auto-remove stale sections - stale cached analysis is worse than
+   * no analysis. The agent can re-read the modified file and recreate
+   * the section with fresh, accurate content. */
+  for (int i = 0; i < n_clear; i++) {
+    nash_log("[scratchpad] auto-cleared stale section '%s' "
+             "(tracked file '%s' changed)", to_clear[i], path);
+    scratchpad_clear_unlocked(sp, to_clear[i]);
+    free(to_clear[i]);
   }
   pthread_mutex_unlock(&sp->mtx);
 }

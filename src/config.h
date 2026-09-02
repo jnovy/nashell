@@ -230,7 +230,7 @@ typedef struct {
                                   * Based on arXiv:2604.08224 §4.3.3 Progressive Disclosure. */
   int context_eviction_pct;       /* context usage % that triggers eviction */
   int eviction_floor_pct;         /* min retained context as % of non-head budget (default 20) */
-  int scratchpad_budget_pct;      /* scratchpad as % of context budget (default 15) */
+  int scratchpad_budget_pct;      /* scratchpad as % of context budget (default 20) */
   int breadcrumb_budget_pct;      /* combined breadcrumb budget as % of context (default 5) */
   int compress_min_length;        /* min message size (chars) for BM25 compression (default 800) */
   int max_reflection_steps;       /* max steps in post-task reflection */

@@ -68,7 +68,7 @@ void config_set_defaults(config_t *cfg) {
      * 1 = full text. No need for sentinel — calloc zero = desired default. */
   if (cfg->context_eviction_pct <= 0) cfg->context_eviction_pct = 70;
   if (cfg->eviction_floor_pct <= 0) cfg->eviction_floor_pct = 20;
-  if (cfg->scratchpad_budget_pct <= 0) cfg->scratchpad_budget_pct = 15;
+  if (cfg->scratchpad_budget_pct <= 0) cfg->scratchpad_budget_pct = 20;
   if (cfg->breadcrumb_budget_pct <= 0) cfg->breadcrumb_budget_pct = 5;
   if (cfg->compress_min_length <= 0) cfg->compress_min_length = 800;
   if (cfg->max_reflection_steps <= 0) cfg->max_reflection_steps = 4;
@@ -2158,7 +2158,7 @@ int config_write_default(const char *path) {
     "max_react_steps = -1         # max steps per react loop (-1 = unlimited)\n"
     "context_eviction_pct = 70    # context usage %% that triggers message eviction\n"
     "eviction_floor_pct = 20      # min retained context as %% of non-head budget\n"
-    "scratchpad_budget_pct = 15   # scratchpad as %% of context budget\n"
+    "scratchpad_budget_pct = 20   # scratchpad as %% of context budget\n"
     "breadcrumb_budget_pct = 5    # combined breadcrumb budget as %% of context\n"
     "compress_min_length = 800    # min message size (chars) for BM25 compression\n"
     "file_read_max_inline = 50000 # max chars returned inline by file_read (50KB)\n"

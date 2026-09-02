@@ -170,16 +170,17 @@ static void test_calc_floor_chars_minimum(void) {
 static void test_scratchpad_budget(void) {
   /* Normal case: budget is min(abs_cap, rel_cap) */
   size_t budget = react_scratchpad_budget(100000, 50000, 2048);
-  /* abs_cap = 100000 * 15 / 100 = 15000 */
-  /* remaining = 50000, rel_cap = 50000 * 40 / 100 = 20000 */
-  /* min(15000, 20000) = 15000 */
-  ASSERT_EQ((int)budget, 15000);
+  /* abs_cap = 100000 * 20 / 100 = 20000 */
+  /* remaining = 50000, sp_max_remaining_pct = 20*8/3 = 53 */
+  /* rel_cap = 50000 * 53 / 100 = 26500 */
+  /* min(20000, 26500) = 20000 */
+  ASSERT_EQ((int)budget, 20000);
 
   /* High usage: remaining is small */
   budget = react_scratchpad_budget(100000, 95000, 2048);
-  /* abs_cap = 15000, remaining = 5000, rel_cap = 2000 */
-  /* min(15000, 2000) = 2000, but min_budget = 2048, so 2048 */
-  ASSERT_EQ((int)budget, 2048);
+  /* abs_cap = 20000, remaining = 5000, rel_cap = 5000 * 53 / 100 = 2650 */
+  /* min(20000, 2650) = 2650, min_budget = 2048, so 2650 */
+  ASSERT_EQ((int)budget, 2650);
 
   /* No budget → fallback */
   budget = react_scratchpad_budget(0, 5000, 2048);
