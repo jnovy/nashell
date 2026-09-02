@@ -1749,9 +1749,11 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
               _uh = (_uh ^ (unsigned char)*_p) * 16777619u;
         }
       }
+      SIG_CLAMP_POS();
       sig_pos += snprintf(sig + sig_pos, sig_cap - (size_t)sig_pos,
                           "%08x:", _uh);
     }
+#undef SIG_CLAMP_POS
 #undef SIG_HASH_FIELD
 
     /* Sliding-window cycle detection: push into window, then check

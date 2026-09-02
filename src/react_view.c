@@ -41,6 +41,10 @@ static char *shorten_content(const char *content, size_t content_len,
 
   int half = cap / 2;
   if (half < 50) half = 50;
+  /* Guard: if content is shorter than 2*half, skip shortening to avoid
+   * reading past the end of the content buffer. */
+  if ((int)content_len < 2 * half)
+    return NULL;
 
   char marker[256];
   int omitted = (int)content_len - 2 * half;

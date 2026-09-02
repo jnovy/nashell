@@ -13,6 +13,7 @@
 #include <time.h>
 #include <errno.h>
 #include <signal.h>
+#include <execinfo.h>
 #include <sys/file.h>
 #include <fcntl.h>
 #include <ncurses.h>
@@ -2109,6 +2110,42 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
   return 0;
 }
 
+/* Crash handler: print backtrace to stderr and to ~/.nash/crash.log
+ * on SIGSEGV/SIGABRT/SIGBUS. Only uses async-signal-safe functions
+ * (write, backtrace, backtrace_symbols_fd, _exit). */
+static void crash_handler(int sig) {
+  const char *name = sig == SIGSEGV ? "SIGSEGV"
+                   : sig == SIGABRT ? "SIGABRT"
+                   : sig == SIGBUS  ? "SIGBUS"
+                   : "unknown signal";
+  char hdr[128];
+  int n = snprintf(hdr, sizeof(hdr),
+                   "\n=== nash crash: %s (signal %d) ===\n", name, sig);
+  if (n > 0) write(STDERR_FILENO, hdr, (size_t)n);
+
+  void *frames[64];
+  int depth = backtrace(frames, 64);
+  backtrace_symbols_fd(frames, depth, STDERR_FILENO);
+
+  /* Also write to ~/.nash/crash.log for post-mortem */
+  const char *home = getenv("HOME");
+  if (home) {
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.nash/crash.log", home);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+      write(fd, hdr, (size_t)n);
+      backtrace_symbols_fd(frames, depth, fd);
+      write(fd, "\n", 1);
+      close(fd);
+    }
+  }
+
+  /* Re-raise with default handler to get proper exit status */
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
 int main(int argc, char **argv) {
   /* FIX: Ignore SIGPIPE globally. Without this, broken pipe from curl
      * (e.g., LLM server drops connection mid-stream) or from popen/write
@@ -2116,6 +2153,17 @@ int main(int argc, char **argv) {
      * curl sets CURLOPT_NOSIGNAL by default in multi-threaded code, but
      * our popen calls (gcloud auth) and direct pipe I/O are unprotected. */
   signal(SIGPIPE, SIG_IGN);
+
+  /* Install crash handler for post-mortem diagnosis */
+  {
+    struct sigaction sa_crash;
+    memset(&sa_crash, 0, sizeof(sa_crash));
+    sa_crash.sa_handler = crash_handler;
+    sa_crash.sa_flags = SA_RESETHAND; /* one-shot to avoid recursive crash */
+    sigaction(SIGSEGV, &sa_crash, NULL);
+    sigaction(SIGABRT, &sa_crash, NULL);
+    sigaction(SIGBUS, &sa_crash, NULL);
+  }
 
   /* Sort plugin-registered tools by name for deterministic ordering.
      * Constructors run before main() in undefined order across TUs. */
