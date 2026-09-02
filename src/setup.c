@@ -662,7 +662,7 @@ static int write_config_toml(const char *nash_dir,
   /* Client defaults */
   fprintf(f, "[client]\n");
   fprintf(f, "temperature = 0.7\n");
-  fprintf(f, "max_tokens = 16384\n");
+  fprintf(f, "max_tokens = 32768\n");
   fprintf(f, "stream = true\n");
   fprintf(f, "\n");
 

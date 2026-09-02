@@ -235,7 +235,7 @@ provider_t *provider_new(const provider_config_t *cfg) {
 
   /* Set defaults */
   if (p->cfg.chars_per_token <= 0) p->cfg.chars_per_token = 3.5f;
-  if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 16384;
+  if (p->cfg.max_tokens <= 0) p->cfg.max_tokens = 32768;
   if (p->cfg.temperature < 0) p->cfg.temperature = 0.7f;
   if (p->cfg.top_p < 0) p->cfg.top_p = 1.0f;
   if (p->cfg.top_k < 0) p->cfg.top_k = 0;

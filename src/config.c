@@ -39,7 +39,7 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->temperature < 0) cfg->temperature = 0.7f;
   if (cfg->top_p < 0) cfg->top_p = 1.0f; /* 1.0 = disabled (no nucleus filtering) */
   if (cfg->top_k < 0) cfg->top_k = 0;    /* 0 = disabled (no top-k filtering) */
-  if (cfg->max_tokens == 0) cfg->max_tokens = 16384;
+  if (cfg->max_tokens == 0) cfg->max_tokens = 32768;
   /* Replace -1 (sentinel for "not set in config") with actual defaults.
      * -1 comes from TOML parsing when the field is absent.
      * 0 comes from calloc when no config file exists at all.

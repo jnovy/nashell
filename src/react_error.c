@@ -322,6 +322,19 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       if (chat->n_msgs > 0)
         chat->msgs[chat->n_msgs - 1].importance =
           LLM_MSG_IMPORTANCE_NORMAL;
+
+      /* Escalate max_tokens to give more room for thinking + output */
+      int cur_mt = ctx->provider->cfg.max_tokens;
+      int new_mt = cur_mt * 2;
+      if (new_mt > 128000) new_mt = 128000;
+      if (new_mt > cur_mt) {
+        ctx->provider->cfg.max_tokens = new_mt;
+        snprintf(mtmsg, sizeof(mtmsg),
+                 "Escalated max_tokens %d -> %d", cur_mt, new_mt);
+        ev.message = mtmsg;
+        react_emit(on_event, userdata, &ev);
+        journal_recovery_event(ctx, step, mtmsg);
+      }
       /* Fall through to 5-tier retry for backoff/escalation */
     } else {
       /* Context-overflow exhaustion — evict to make room */
