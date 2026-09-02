@@ -654,12 +654,25 @@ static void render_main(ui_state_t *ui) {
   int cols = getmaxx(win_main);
   ui->visible_cols = cols; /* tell ui_state how wide the main pane is */
 
-  werase(win_main);
-
   if (ui->doc) {
     int focus = (ui->focus == FOCUS_JOURNAL);
     md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
               ui->cursor_link, focus);
+
+    /* Clamp scroll_y to valid range after md_render sets total_lines.
+     * Content can shrink (e.g., markdown regeneration produces fewer
+     * wrapped lines) while user_scrolled=1, leaving scroll_y past
+     * the end.  Re-render if we had to clamp. */
+    {
+      int vis = rows > 0 ? rows : 20;
+      int max_scroll = ui->doc->total_lines - vis;
+      if (max_scroll < 0) max_scroll = 0;
+      if (ui->scroll_y > max_scroll) {
+        ui->scroll_y = max_scroll;
+        md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
+                  ui->cursor_link, focus);
+      }
+    }
 
     /* Deferred auto-scroll: now that md_render() has set doc->total_lines
          * and link render_lines, we can compute the correct scroll_y.
@@ -696,12 +709,13 @@ static void render_main(ui_state_t *ui) {
         ui->scroll_y = max_scroll;
       }
 
-      /* Re-render with corrected scroll position */
-      werase(win_main);
+      /* Re-render with corrected scroll position (md_render does its
+       * own werase, so no explicit clear needed here). */
       md_render(win_main, ui->doc, ui->scroll_y, ui->scroll_x,
                 ui->cursor_link, focus);
     }
   } else {
+    werase(win_main);
     wattron(win_main, COLOR_PAIR(C_DIM));
     mvwaddstr(win_main, 0, 0, "  Loading...");
     wattroff(win_main, COLOR_PAIR(C_DIM));
@@ -1002,20 +1016,21 @@ void tui_render(ui_state_t *ui) {
   /* Set cursor visibility based on focus */
   curs_set(ui->focus == FOCUS_QUERY ? 1 : 0);
 
-  /* Single doupdate() flushes ALL window changes to terminal at once.
-     * This is ncurses' built-in double-buffer: all changes are computed
-     * in memory, then written to the terminal in one batch. */
+  /* If OSC8 hyperlinks are pending, use synchronized update mode
+   * (DEC private mode 2026) to batch doupdate() and the direct-stdout
+   * OSC8 flush into one atomic terminal update.  This avoids
+   * desynchronizing ncurses' physical screen model and eliminates the
+   * forced full redraw on the next frame.  Terminals that do not
+   * support mode 2026 silently ignore the escape sequences. */
+  if (md_osc8_count > 0)
+    printf("\033[?2026h");  /* begin synchronized update */
+
   doupdate();
 
-  /* Emit deferred OSC 8 hyperlink sequences directly to stdout.
-     * Must happen AFTER doupdate() since ncurses' waddch cannot pass
-     * ESC bytes to the terminal (renders them as ^[ caret notation). */
   if (md_osc8_count > 0) {
     md_osc8_flush(win_main, getbegy(win_main));
-    /* OSC8 flush writes directly to stdout, desynchronizing ncurses'
-     * physical screen model. Force full redraw on the next frame so
-     * ncurses rewrites the affected cells correctly. */
-    panes_resized = 1;
+    printf("\033[?2026l");  /* end synchronized update */
+    fflush(stdout);
   }
 
   ui->dirty = 0;

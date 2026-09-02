@@ -1950,7 +1950,9 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
       tui_render(ui);
     }
 
-    /* Always render if dirty */
+    /* Intentional unsynchronized read of ui->dirty -- tui_render()
+     * re-checks dirty under the mutex, so worst case is one extra
+     * no-op call or a single-iteration (50 ms) delayed render. */
     if (ui->dirty) tui_render(ui);
 
     /* -- Deferred regeneration ------------------------------------
