@@ -15,6 +15,10 @@ endif
 # plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
 LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl $(ORT_LDFLAGS)
 
+# AddressSanitizer for heap corruption detection
+CFLAGS  += -fsanitize=address -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=address
+
 # Default data directory (playbooks, etc.) -- /usr/share/nash for installed builds
 NASH_DATADIR ?= /usr/share/nash
 CFLAGS  += -DNASH_DATADIR='"$(NASH_DATADIR)"'
