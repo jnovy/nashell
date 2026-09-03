@@ -286,7 +286,11 @@ int memory_delete(memory_t *m, const char *key);
  * Returns the number of entries actually deleted (keys that existed). */
 int memory_delete_batch(memory_t *m, const char **keys, int n_keys);
 
-/* Free a memory_results_t */
+/* Free all owned fields of a single memory_entry_t (does not free the struct itself).
+ * Zeroes the struct after freeing. Safe to call on a zero-initialized entry. */
+void memory_entry_free(memory_entry_t *e);
+
+/* Free a memory_results_t (frees all entries, then the array) */
 void memory_results_free(memory_results_t *r);
 
 /* Prune low-value memories based on Bayesian validation scoring.

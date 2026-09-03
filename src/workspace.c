@@ -223,20 +223,7 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
       if (!merged.entries[j].key) continue;
       if (strcmp(merged.entries[i].key, merged.entries[j].key) == 0) {
         /* Free the duplicate (lower-scored) entry */
-        free(merged.entries[j].key);
-        free(merged.entries[j].value);
-        free(merged.entries[j].description);
-        free(merged.entries[j].journal_ref);
-        free(merged.entries[j].supersedes);
-        for (int r = 0; r < merged.entries[j].n_refs; r++)
-          free(merged.entries[j].refs[r]);
-        free(merged.entries[j].refs);
-        for (int t = 0; t < merged.entries[j].n_triggers; t++)
-          free(merged.entries[j].triggers[t]);
-        free(merged.entries[j].triggers);
-        for (int t = 0; t < merged.entries[j].n_tags; t++)
-          free(merged.entries[j].tags[t]);
-        free(merged.entries[j].tags);
+        memory_entry_free(&merged.entries[j]);
         /* Shift remaining entries down */
         memmove(&merged.entries[j], &merged.entries[j + 1],
                 (size_t)(merged.count - j - 1) * sizeof(memory_entry_t));
@@ -274,28 +261,8 @@ memory_results_t workspace_recall(workspace_t *ws, const char *query,
   /* Truncate to max_results */
   if (merged.count > max_results) {
     /* Free excess entries */
-    for (int i = max_results; i < merged.count; i++) {
-      free(merged.entries[i].key);
-      free(merged.entries[i].value);
-      free(merged.entries[i].description);
-      free(merged.entries[i].journal_ref);
-      free(merged.entries[i].supersedes);
-      if (merged.entries[i].tags) {
-        for (int t = 0; t < merged.entries[i].n_tags; t++)
-          free(merged.entries[i].tags[t]);
-        free(merged.entries[i].tags);
-      }
-      if (merged.entries[i].refs) {
-        for (int r = 0; r < merged.entries[i].n_refs; r++)
-          free(merged.entries[i].refs[r]);
-        free(merged.entries[i].refs);
-      }
-      if (merged.entries[i].triggers) {
-        for (int t = 0; t < merged.entries[i].n_triggers; t++)
-          free(merged.entries[i].triggers[t]);
-        free(merged.entries[i].triggers);
-      }
-    }
+    for (int i = max_results; i < merged.count; i++)
+      memory_entry_free(&merged.entries[i]);
     merged.count = max_results;
   }
 

@@ -2060,31 +2060,33 @@ int memory_delete_batch(memory_t *m, const char **keys, int n_keys) {
 
 /* ── free results ────────────────────────────────────── */
 
+void memory_entry_free(memory_entry_t *e) {
+  if (!e) return;
+  free(e->key);
+  free(e->value);
+  free(e->description);
+  free(e->journal_ref);
+  for (int t = 0; t < e->n_tags; t++)
+    free(e->tags[t]);
+  free(e->tags);
+  for (int r = 0; r < e->n_refs; r++)
+    free(e->refs[r]);
+  free(e->refs);
+  for (int t = 0; t < e->n_triggers; t++)
+    free(e->triggers[t]);
+  free(e->triggers);
+  free(e->supersedes);
+  free(e->validity);
+  free(e->basis);
+  free(e->code);
+  free(e->code_language);
+  memset(e, 0, sizeof(*e));
+}
+
 void memory_results_free(memory_results_t *r) {
   if (!r || !r->entries) return;
-  for (int i = 0; i < r->count; i++) {
-    free(r->entries[i].key);
-    free(r->entries[i].value);
-    free(r->entries[i].description);
-    free(r->entries[i].journal_ref);
-    for (int t = 0; t < r->entries[i].n_tags; t++)
-      free(r->entries[i].tags[t]);
-    free(r->entries[i].tags);
-    /* Free refs (inter-memory relationship links) */
-    for (int ri = 0; ri < r->entries[i].n_refs; ri++)
-      free(r->entries[i].refs[ri]);
-    free(r->entries[i].refs);
-    /* Free triggers (cue-anchored content-match patterns) */
-    for (int ti = 0; ti < r->entries[i].n_triggers; ti++)
-      free(r->entries[i].triggers[ti]);
-    free(r->entries[i].triggers);
-    /* P2: Free lineage fields */
-    free(r->entries[i].supersedes);
-    free(r->entries[i].validity);
-    free(r->entries[i].basis);
-    free(r->entries[i].code);
-    free(r->entries[i].code_language);
-  }
+  for (int i = 0; i < r->count; i++)
+    memory_entry_free(&r->entries[i]);
   free(r->entries);
   r->entries = NULL;
   r->count = 0;
