@@ -91,7 +91,7 @@ static void runtime_block_remove(tool_filter_t *tf, const char *name) {
 /* Free all runtime blocked entries (for reset). */
 static void runtime_block_clear(tool_filter_t *tf) {
   if (!tf->blocked_owned) {
-    /* Not owned — just clear the pointers without freeing */
+    /* Not owned - just clear the pointers without freeing */
     tf->blocked = NULL;
     tf->n_blocked = 0;
     tf->blocked_owned = 1; /* now we own (empty) */
@@ -103,6 +103,12 @@ static void runtime_block_clear(tool_filter_t *tf) {
   free((void *)tf->blocked);
   tf->blocked = NULL;
   tf->n_blocked = 0;
+}
+
+/* Free all heap-owned memory in a tool_filter_t (shutdown cleanup). */
+void tool_filter_free(tool_filter_t *tf) {
+  if (!tf) return;
+  runtime_block_clear(tf);
 }
 
 /* ── Apply default-off blocks ─────────────────────────────── */

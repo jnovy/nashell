@@ -441,6 +441,7 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
   tool_free_deferred_consolidations(tools);
   scratchpad_free(&tools->scratch);
   alias_map_free(tools->aliases);
+  tool_filter_free(&tools->tool_filter);
   free(tools->last_spec_hash);
   tools->last_spec_hash = NULL;
   free(react->last_query);
