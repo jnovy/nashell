@@ -19,13 +19,14 @@ jobs:
             gcc make pkgconfig \
             libcurl-devel openssl-devel readline-devel \
             ncurses-devel utf8proc-devel onnxruntime-devel \
+            libasan \
             git
 
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Build
-        run: make -j$(nproc)
+        run: make -j$(nproc) SANITIZE=1
 
       - name: Run unit tests
         run: make test
