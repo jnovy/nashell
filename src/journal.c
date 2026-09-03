@@ -12,6 +12,13 @@
 #include <sys/file.h> /* flock */
 #include <unistd.h>   /* fdatasync, fileno */
 
+/* Crash handler state: updated by journal_append() so the crash handler
+ * (SIGSEGV/SIGABRT/SIGBUS) in main.c can write a signal_death entry
+ * using only async-signal-safe I/O.  Declared extern in journal.h. */
+char g_crash_journal_path[512];
+volatile sig_atomic_t g_crash_react_loop = 0;
+volatile sig_atomic_t g_crash_step = 0;
+
 /* Recursively unwrap nested JSON in a thought string.
  * The LLM sometimes echoes its own previous response as a thought,
  * producing double- or triple-nested JSON like:

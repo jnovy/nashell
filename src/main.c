@@ -71,14 +71,9 @@ static void tui_sigint_handler(int sig) {
   g_sigint_received = 1;
 }
 
-/* Crash handler journal path: set when a session starts so the crash
- * handler can write a signal_death entry using async-signal-safe I/O.
- * Also tracks the react_loop/step at crash time for the journal entry.
- * Non-static: journal_append() updates these on every write so the
- * crash handler always has current values.  Declared extern in journal.h. */
-char g_crash_journal_path[512];
-volatile sig_atomic_t g_crash_react_loop = 0;
-volatile sig_atomic_t g_crash_step = 0;
+/* Crash handler state: defined in journal.c (part of libnash.so) so that
+ * test binaries linking against -lnash can resolve these symbols.
+ * Declared extern in journal.h. */
 
 /* ── Daemon lock file ────────────────────────────────────────────────────────
  * Prevent multiple daemon/matrix/telegram instances from running
