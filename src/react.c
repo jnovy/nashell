@@ -875,6 +875,7 @@ static char *react_fresh_perspective(react_ctx_t *ctx, const char *query,
     free(child_tools.recalled_keys[i]);
   free(child_tools.recalled_keys);
   tool_fire_ledger_free(&child_tools);
+  free(child_tools.last_spec_hash);
   for (int i = 0; i < child_tools.n_modified_files; i++)
     free(child_tools.modified_files[i].path);
   child_tools.n_modified_files = 0;

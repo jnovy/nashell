@@ -442,6 +442,10 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
   react->pause_query = NULL;
   free(react->tui_viewing_file);
   react->tui_viewing_file = NULL;
+  free(react->user_ask_answer);
+  react->user_ask_answer = NULL;
+  free(react->user_ask_question);
+  react->user_ask_question = NULL;
   tool_ctx_reset_query(tools);
   tool_free_deferred_consolidations(tools);
   scratchpad_free(&tools->scratch);
@@ -1754,6 +1758,7 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         tui_render(ui);
       }
       /* Terminate regardless of whether inference was running */
+      free(submitted_query);
       running = 0;
       break;
     }
