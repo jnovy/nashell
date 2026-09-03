@@ -306,6 +306,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   for (int i = 0; i < child_tools.n_modified_files; i++)
     free(child_tools.modified_files[i].path);
   child_tools.n_modified_files = 0;
+  free(child_tools.last_spec_hash);
   journal_free(child_journal);
   free(enriched_query); /* subtask preamble (NULL-safe) */
   /* child_dir is stack-allocated, no free needed */
