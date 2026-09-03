@@ -1252,6 +1252,7 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     free(endpoint);
     return NULL;
   }
+  utf8_sanitize_inplace(req_body);
 
   str_t response = str_new(4096);
   cJSON *resp = NULL;
@@ -1548,6 +1549,7 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
                             "(message conversion failed)");
     return NULL;
   }
+  utf8_sanitize_inplace(req_body);
 
   /* Set up SSE state */
   provider_sse_state_t st = {

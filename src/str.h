@@ -151,6 +151,12 @@ int utf8_truncate(char *dst, const char *src, int max_bytes);
  * a complete UTF-8 character boundary. */
 size_t utf8_clamp(const char *s, size_t max_bytes);
 
+/* Sanitize a string in-place so it contains only valid UTF-8.
+ * Invalid bytes (orphan continuations, truncated sequences, overlong
+ * encodings, surrogates, codepoints > U+10FFFF) are replaced with '?'.
+ * Safe to call with NULL (no-op). */
+void utf8_sanitize_inplace(char *s);
+
 /* Return the byte length of the UTF-8 character starting at *p.
  * Returns 1 for ASCII/invalid bytes, 2-4 for valid multi-byte sequences. */
 int utf8_char_len(const char *p);

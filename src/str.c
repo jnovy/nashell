@@ -282,6 +282,72 @@ size_t utf8_clamp(const char *s, size_t max_bytes) {
   return cut;
 }
 
+/* ── UTF-8 sanitization ────────────────────────────────────────── */
+
+/* Sanitize a string in-place so it contains only valid UTF-8.
+ * Invalid bytes are replaced with '?'.  Checks for:
+ *   - orphan continuation bytes (0x80-0xBF without a lead byte)
+ *   - truncated sequences (lead byte without enough continuations)
+ *   - overlong encodings (e.g. 0xC0 0x80 for U+0000)
+ *   - surrogates (U+D800..U+DFFF)
+ *   - codepoints above U+10FFFF
+ *   - invalid lead bytes (0xFE, 0xFF)
+ * Safe to call with NULL (no-op). */
+void utf8_sanitize_inplace(char *s) {
+  if (!s) return;
+  unsigned char *p = (unsigned char *)s;
+  while (*p) {
+    if (*p < 0x80) {
+      /* ASCII - always valid */
+      p++;
+      continue;
+    }
+
+    int expected;
+    uint32_t cp;
+    uint32_t min_cp;
+
+    if ((*p & 0xE0) == 0xC0) {
+      expected = 2;
+      cp = *p & 0x1F;
+      min_cp = 0x80;
+    } else if ((*p & 0xF0) == 0xE0) {
+      expected = 3;
+      cp = *p & 0x0F;
+      min_cp = 0x800;
+    } else if ((*p & 0xF8) == 0xF0) {
+      expected = 4;
+      cp = *p & 0x07;
+      min_cp = 0x10000;
+    } else {
+      /* Orphan continuation byte (0x80-0xBF) or invalid byte (0xFE-0xFF) */
+      *p++ = '?';
+      continue;
+    }
+
+    /* Check that all continuation bytes are present and valid */
+    int ok = 1;
+    for (int i = 1; i < expected; i++) {
+      if ((p[i] & 0xC0) != 0x80) {
+        ok = 0;
+        break;
+      }
+      cp = (cp << 6) | (p[i] & 0x3F);
+    }
+
+    if (!ok || cp < min_cp ||
+        (cp >= 0xD800 && cp <= 0xDFFF) ||
+        cp > 0x10FFFF) {
+      /* Replace only the lead byte; continuation bytes will be caught
+       * individually on subsequent iterations if they are orphaned. */
+      *p++ = '?';
+      continue;
+    }
+
+    p += expected;
+  }
+}
+
 /* ── file I/O ───────────────────────────────────────────────────── */
 
 int mkdir_p(const char *path, mode_t mode) {
