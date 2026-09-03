@@ -157,7 +157,7 @@ Memory recall uses a composite scoring function that blends two signals:
 
 ```
 relevance = semantic_similarity * blend_semantic + substring_match * blend_substring
-composite = relevance
+composite = relevance * failure_boost
 final_score = composite * pow(vscore, vscore_exponent)
 ```
 
@@ -194,6 +194,20 @@ The scoring research foundations:
 - **MemFail** [arXiv:2605.26667] -- diagnostic benchmark showing that injecting weakly-relevant memories *hurts* performance. Bayesian scoring provides the data-driven signal to identify which memories are genuinely useful.
 - **Generative Agents** [Park et al., 2023] -- composite scoring (recency x importance x relevance) as the foundation for memory retrieval ranking.
 - **Memory Survey** [arXiv:2404.13501] -- comprehensive survey identifying five critical memory operations, including validation/reflection as essential for memory quality.
+- **Meta^n** [arXiv:2608.24735] -- failure-biased memory injection for agentic systems.
+
+### Failure-Biased Memory Injection
+
+Memories derived from failures receive a scoring boost so the agent is more likely to recall what went wrong. The `failure_bias` config parameter (default: 1.3, set to 1.0 to disable) controls the `failure_boost` multiplier in the scoring formula above.
+
+Two signals determine the boost:
+
+1. **Key-prefix heuristic** - memory keys starting with `anti-pattern:` receive `failure_bias * 1.1` boost; keys starting with `lesson:` receive `failure_bias * 0.9` boost. Other prefixes get no heuristic boost.
+2. **Explicit outcome tag** - the `outcome` parameter on `memory_store` (values: `success`, `failure`, `unknown`) overrides the heuristic. `outcome=failure` guarantees at least `failure_bias` as the multiplier. `outcome=success` suppresses any boost (multiplier = 1.0) even if the key prefix would otherwise qualify.
+
+The rationale is asymmetric: forgetting a success costs little (you just re-derive), but forgetting a failure costs a lot (you repeat the mistake). The default 1.3x boost means failure-derived memories score 30% higher than equally-relevant neutral memories.
+
+Config: `failure_bias` in `[memory]` section.
 
 ### Superseded-Entry Demotion
 
@@ -395,6 +409,21 @@ The production API endpoint is https://api.example.com/v2
   [MAY BE INVALID IF: API endpoint changes after migration]
 ```
 
+Entries with attached code snippets render them as fenced code blocks:
+
+```
+--- skill:python-retry-pattern (5d ago, 41 recalls, confidence: 92%) ---
+Exponential backoff with jitter for transient HTTP errors
+  ```python
+  import time, random
+  def retry(fn, max_retries=3):
+      for i in range(max_retries):
+          try: return fn()
+          except Exception:
+              time.sleep(2**i + random.random())
+  ```
+```
+
 Recency is computed from the `created_at` timestamp. Confidence uses the Beta posterior mean: `(hits + 1) / (hits + misses + 2) x 100%`. Recall count is the raw `recall_hits` value. When a `basis` is set, it appears below the content. When `expires_when:` validity is set, the advisory hint appears as `[MAY BE INVALID IF: ...]`.
 
 This implements the key finding from [arXiv:2605.15184](https://arxiv.org/abs/2605.15184) that **rendering IS retrieval** -- how memories are presented to the model matters as much as which ones are retrieved. The metadata helps the model weight recalled knowledge appropriately ("this has been recalled 327 times with 95% confidence" vs. "this was created yesterday with no validation").
@@ -440,6 +469,34 @@ memory_store(
 ```
 
 The basis is displayed at recall time so the model can judge trustworthiness. It is pure metadata -- no logic is applied to it. Basis is preserved across memory updates (key changes preserve existing basis if not re-specified).
+
+### Executable Code Snippets
+
+The `code` parameter on `memory_store` attaches an executable code snippet alongside the memory value. The `code_language` parameter provides a language tag (e.g., `python`, `bash`, `c`) for syntax highlighting. These are stored as metadata and rendered as fenced code blocks on recall.
+
+```
+memory_store(
+    key="skill:python-retry-pattern",
+    value="Exponential backoff with jitter for transient HTTP errors",
+    code="import time, random\ndef retry(fn, max_retries=3):\n    for i in range(max_retries):\n        try: return fn()\n        except Exception:\n            time.sleep(2**i + random.random())",
+    code_language="python"
+)
+```
+
+Code snippets are ideal for storing proven templates, shell one-liners, or reusable patterns that the agent can copy directly into future sessions.
+
+### Session Outcome Tagging
+
+The `outcome` parameter on `memory_store` records whether the memory was derived from a successful or failed session. Accepted values: `success`, `failure`, `unknown` (default). This tag feeds into [failure-biased memory injection](#failure-biased-memory-injection) -- memories tagged `outcome=failure` receive a scoring boost during recall to prevent repeating mistakes.
+
+```
+memory_store(
+    key="anti-pattern:recursive-glob",
+    value="Never use ** glob on large repos - causes 30s+ hangs",
+    outcome="failure",
+    basis="discovered after 3 timeouts in session 2026-08-15"
+)
+```
 
 ### Stale Markers in Recall
 
@@ -511,6 +568,16 @@ Nash supports **workspace-based memory isolation** to prevent cross-contaminatio
 **Promotion/demotion:** `memory_promote` moves an entry from workspace -> global (for universally useful lessons). `memory_demote` moves from global -> current workspace.
 
 **Backward compatible:** With no workspace configured, nash behaves exactly as before -- global-only mode with a single memory pool.
+
+### Generic Skills Layer
+
+Some memories are domain-agnostic patterns useful across any workspace -- for example, "large C file refactoring" or "debugging segfaults with AddressSanitizer". These are called **generic skills** and live in the global memory layer.
+
+When a workspace has few memories of its own (below the sparsity threshold), generic skills receive a **sparsity-aware boost** during recall scoring. This ensures new or lightly-used workspaces still benefit from the agent's accumulated cross-domain knowledge rather than starting from scratch. As the workspace accumulates its own memories, the boost tapers off and workspace-specific entries naturally dominate.
+
+Generic skills that are recalled repeatedly within a single workspace can be **promoted** to workspace-specific entries (via `memory_promote`/`memory_demote` or automatic promotion after repeated use). This allows generic knowledge to specialize over time.
+
+Config: `generic_skill_boost` in `[memory]` section (default multiplier applied to generic skills when workspace memory count is below sparsity threshold; set to 1.0 to disable).
 
 ---
 

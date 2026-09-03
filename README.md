@@ -90,18 +90,18 @@ See [Building & Usage](docs/building.md) for full build instructions, dependenci
 
 | Document | Description |
 |----------|-------------|
-| [Memory Architecture](docs/memory.md) | Four-tier memory system, Bayesian scoring, embeddings, pruning, dreaming, reactive retrieval, workspaces |
-| [ReAct Loop & Tools](docs/react-loop.md) | ReAct loop, 20 built-in tools, plugin registry, error recovery |
+| [Memory Architecture](docs/memory.md) | Four-tier memory system, Bayesian scoring, failure-biased injection, code snippets, generic skills, embeddings, workspaces |
+| [ReAct Loop & Tools](docs/react-loop.md) | ReAct loop, 20 built-in tools, brainstorm gate, cut-off summarizer, fresh-perspective escape, error recovery |
 | [Custom Tool Plugins](docs/plugins.md) | External `.so` plugin API, ABI versioning, lifecycle hooks, examples |
 | [Multi-Provider Support](docs/providers.md) | Local, OpenAI, Anthropic, Vertex AI provider configuration |
-| [Context Management](docs/context-management.md) | Thinking mode, Harness-1 eviction, scratchpad architecture |
-| [TUI](docs/tui.md) | Terminal interface, slash commands, tree branching, SearXNG search |
-| [Playbooks](docs/playbooks.md) | YAML multi-pass workflows, standalone mode, custom system prompts |
+| [Context Management](docs/context-management.md) | Thinking mode, Harness-1 eviction, scratchpad architecture, tracked-file staleness detection |
+| [TUI](docs/tui.md) | Terminal interface, slash commands, tree branching, SearXNG search, fswatch file change detection |
+| [Playbooks](docs/playbooks.md) | YAML multi-pass workflows, skip_if/finish_if conditions, standalone mode, custom system prompts |
 | [Agents](docs/agents.md) | Cron-scheduled autonomous tasks, three-tier discovery, sensitivity gating, workspace binding |
 | [Self-Harness](docs/self-harness.md) | Postmortem analysis, regression testing, prompt optimization |
 | [Model Profiles & Spec](docs/model-profiles.md) | Per-model overrides, unified spec export/import |
 | [Configuration & Sessions](docs/configuration.md) | config.toml reference, session structure, checkpoint/resume |
-| [Building & Usage](docs/building.md) | Dependencies, build, run, CLI reference, testing |
+| [Building & Usage](docs/building.md) | Dependencies, build, run, AddressSanitizer, CLI reference, testing |
 | [Research Foundations](docs/research.md) | papers influencing the design |
 | [Session Threading (Design)](docs/design-session-threading.md) | Matrix/Telegram bridge session threading design |
 

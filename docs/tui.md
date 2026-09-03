@@ -122,3 +122,42 @@ The `user_ask` tool allows the LLM to pause inference and ask the user a clarify
 4. The react loop resumes with the answer injected into context
 
 This enables the agent to resolve ambiguities rather than guessing, particularly useful for tasks with underspecified requirements.
+
+## File Change Detection (fswatch)
+
+Nash uses Linux inotify to monitor the working directory for external file
+modifications - edits made outside of nash (e.g., in another editor or by a
+build system). When changes are detected, the modified files are recorded in
+the same `modified_files` tracking that `file_edit` and `file_write` use, so
+the agent sees external changes exactly like its own edits.
+
+The implementation is a thin platform abstraction (`fswatch.h`) with two
+backends:
+
+- **Linux** (`fswatch_linux.c`) - uses inotify for efficient kernel-level
+  notification with no polling overhead
+- **Other platforms** (`fswatch_noop.c`) - no-op fallback; the feature is
+  silently unavailable
+
+Key design points:
+
+- **Recursive directory monitoring** - `fswatch_add()` watches the workspace
+  root and all subdirectories, spawning a background pthread for the initial
+  directory scan so the TUI is not blocked on large trees
+- **Watch count ceiling** - capped at 65536 inotify watches
+  (`WATCH_MAX_WATCHES`) to prevent resource exhaustion on large repositories
+- **Depth limit** - recursive scanning stops at 8 levels deep
+  (`WATCH_MAX_DEPTH`) to keep the initial scan bounded
+- **Hidden directories skipped** - dotfiles and directories like `.git` are
+  excluded from watching
+- **Pollable file descriptor** - `fswatch_fd()` returns an fd usable with
+  `poll()`/`select()`, integrated into the TUI main loop for efficient
+  wake-up instead of busy-waiting
+- **Event types** - four bitmask flags: `FSW_MODIFY`, `FSW_CREATE`,
+  `FSW_DELETE`, `FSW_RENAME`
+
+The TUI main loop calls `fswatch_drain()` when the inotify fd becomes
+readable, which invokes the callback for each pending event. The callback
+filters out directory events (only file content changes are tracked) and
+feeds changes into the session's `modified_files` array (up to
+`INFORM_MAX_FILES` = 32 entries).

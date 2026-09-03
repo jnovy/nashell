@@ -114,6 +114,30 @@ This replaces the previous `<!-- priority:X -->` HTML comment format, which was 
 - **Clean round-trip** -- the LLM sees clean markdown without priority markers. When pruning output is parsed back, section names match and priorities are preserved from JSONL metadata.
 - **Legacy fallback** -- existing `scratchpad.md` files load via the legacy parser. New saves always use JSONL. Gradual migration with no flag day.
 
+### Tracked Files and Staleness Detection
+
+The `notes()` tool's `write` operation accepts an optional `tracked_files` parameter -- an array of file paths that the section's content depends on. When any tracked file is later modified via `file_edit` or `file_write`, the scratchpad section is automatically marked **[STALE]** in the rendered output.
+
+This solves a common failure mode: the agent reads a file, saves analysis to the scratchpad, then edits the file -- but the scratchpad still contains the old analysis. Without staleness detection, the agent may act on outdated cached observations.
+
+Usage:
+
+```
+notes(op="write", section="analysis", content="foo() at line 42 returns NULL...",
+      tracked_files=["src/foo.c", "src/foo.h"])
+```
+
+When `src/foo.c` is later modified by a `file_edit` call, the scratchpad renders:
+
+```
+## analysis [STALE]
+foo() at line 42 returns NULL...
+```
+
+The **[STALE]** marker is a visual signal only -- it does not delete or alter the section content. The agent can then decide to re-read the file and update its analysis, or clear the section if it is no longer relevant.
+
+Implementation: `file_edit` and `file_write` tool handlers call back into the scratchpad module after a successful write, checking each section's tracked file list against the modified path. Matching is by exact path string comparison.
+
 ### Context Eviction -- Recoverability-Aware + Lossless Breadcrumbs
 
 When context usage exceeds the eviction threshold (default 70%), nash uses a **multi-pass progressive eviction** pipeline inspired by two research papers:
@@ -166,6 +190,18 @@ Files modified this session:
 ```
 
 The block shows the file basename, the last step number that modified it, and the total modification count. It is regenerated each step (zero context growth) and only injected when there are modified files. This prevents wasted re-reads and blind retries when the model forgets what it changed earlier in the session.
+
+### Cut-off Summarizer
+
+When a model response is truncated due to `max_tokens` limits, valuable reasoning state can be lost mid-sentence. The cut-off summarizer detects this condition and recovers automatically:
+
+1. **Detection** -- after each LLM response, the finish reason is checked. If it is `length` (max_tokens reached) rather than `stop` or `tool_use`, the response was truncated.
+2. **Summarization** -- the truncated partial response is sent to the LLM with a prompt asking it to summarize the key points, decisions, and any tool calls that were being formulated.
+3. **Re-injection** -- the summary is injected back into the context as a high-importance message, and the react loop continues from where the agent left off.
+
+This prevents a common failure mode where the agent loses its chain of thought after a long reasoning block hits the token ceiling. Instead of silently dropping the truncated content (or worse, re-deriving it from scratch), the summarizer preserves the essential reasoning state in compressed form.
+
+The summarizer is triggered at most once per step to avoid infinite loops. If the summary itself is truncated, the raw truncated text is kept as-is rather than recursing.
 
 ---
 

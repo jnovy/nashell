@@ -30,6 +30,8 @@ model_id = "gpt-4o"
 # api_key_env = "OPENAI_API_KEY"          # or set in credentials.toml
 # context_size = 200000                   # context window (0 = auto)
 # chars_per_token = 3.5                   # chars per token ratio
+# temperature = 0.7                       # per-provider temperature override
+# max_tokens = 16384                      # per-provider max tokens override
 
 [thinking]
 mode = "yes"                              # yes | no | on | off
@@ -47,6 +49,8 @@ max_react_steps = 0                       # 0 = unlimited
 llm_timeout = 300                         # seconds per LLM call
 provider_max_retries = 10                 # max HTTP retries for LLM provider
 provider_retry_base = 10                  # base delay (seconds) between retries
+max_tokens = 32768                        # max tokens per LLM request (escalated on thinking exhaustion)
+subtask_max_depth = 3                     # max nesting depth for subtask spawning (1-5)
 
 [memory]
 recall_min_score = 0.15                   # normalized [0, 1] threshold
@@ -65,6 +69,8 @@ recall_blend_substring = 0.6              # substring match weight (grep-favorin
 dream_reminder_threshold = 50            # new entries before dream reminder
 superseded_demotion = 0.3                 # score multiplier for superseded entries (0.0-1.0)
 recency_bonus = 0.0                       # soft temporal bonus for recent entries (0.0 = disabled)
+failure_bias = 1.3                        # multiplier for failure-derived memories (1.0 = disabled)
+generic_skill_boost = 1.5                 # boost for generic skills in sparse workspaces (1.0 = disabled)
 
 # Error-triggered reactive retrieval
 error_recall_min_length = 10

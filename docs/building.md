@@ -23,6 +23,65 @@ sudo make install    # installs to /usr/local (binary, library, headers, playboo
 
 The shared library uses standard soname versioning: `libnash.so` -> `libnash.so.0` -> `libnash.so.<version>`. A `nash-devel` RPM subpackage is available for plugin development, providing headers and the linker symlink.
 
+## AddressSanitizer (ASAN)
+
+The default build enables AddressSanitizer for detecting heap corruption,
+buffer overflows, use-after-free, and other memory errors. The Makefile
+appends the flags unconditionally:
+
+```makefile
+CFLAGS  += -fsanitize=address -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=address
+```
+
+`-fno-omit-frame-pointer` preserves stack frames so ASAN reports include
+readable backtraces.
+
+### Performance impact
+
+ASAN adds roughly 2-3x memory overhead and slows execution by about 2x.
+This is acceptable during development but should be disabled for
+production or benchmarking builds.
+
+### Disabling ASAN
+
+There is no toggle variable -- comment out or remove the two lines in the
+Makefile (lines 19-20), or override the flags on the command line:
+
+```bash
+# Build without ASAN by resetting the sanitizer flags
+make CFLAGS="-Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC \
+  -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE" \
+  LDFLAGS="-rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl"
+```
+
+### Runtime tuning with ASAN_OPTIONS
+
+ASAN behavior can be adjusted at runtime via the `ASAN_OPTIONS`
+environment variable (colon-separated key=value pairs):
+
+```bash
+# Example: disable leak detection, increase malloc context depth
+export ASAN_OPTIONS=detect_leaks=0:malloc_context_size=30
+
+# Example: abort on first error (useful for debugger attachment)
+export ASAN_OPTIONS=abort_on_error=1:halt_on_error=1
+
+# Example: log to file instead of stderr
+export ASAN_OPTIONS=log_path=/tmp/nash-asan.log
+```
+
+Common options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `detect_leaks` | `1` | Enable LeakSanitizer (set `0` to disable) |
+| `abort_on_error` | `0` | Call `abort()` on error (allows core dumps) |
+| `halt_on_error` | `0` | Stop after the first error |
+| `malloc_context_size` | `30` | Stack frames captured per allocation |
+| `log_path` | (stderr) | Write reports to a file prefix |
+| `suppressions` | (none) | Path to a suppression file |
+
 ## Run
 
 ```bash

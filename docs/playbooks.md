@@ -33,6 +33,7 @@ Features:
 - **Custom system prompts** -- per-pass `system_prompt` with append or replace modes
 - **Standalone mode** -- suppress all host-local context for portable, self-contained agents
 - **Required tools gate** -- per-pass `required_tools` list verifies that specified tools were actually invoked after a pass completes; catches the "call narrated, not made" failure mode where the model describes tool usage without executing it (inspired by [SIGIL, arXiv:2607.27309](https://arxiv.org/abs/2607.27309))
+- **Pre-pass conditions** -- `skip_if` and `finish_if` conditions evaluated before a pass starts, enabling conditional skip or early termination without invoking the LLM
 
 Bundled playbooks: `dream`, `reflect`, `digest`, `health`, `prune`, `retrospect`, `self-harness`
 
@@ -130,6 +131,33 @@ When running in headless mode (agents, `--play`, `-p`), the base system prompt a
 - **Result routing** -- adjusted to reflect that results go to `result.md` / mailbox, not a user's screen
 
 This happens automatically -- no YAML configuration needed. It prevents the LLM from attempting to call `user_ask` in headless contexts where no user is present to respond.
+
+## Pre-Pass Conditions
+
+Each pass can define conditions that are evaluated before the LLM is invoked for that pass. This allows passes to be conditionally skipped or the entire playbook to finish early based on the outcome of prior passes.
+
+**`skip_if`** -- A condition evaluated before a pass starts. If the condition is met (the previous pass's output matches the condition text), the entire pass is skipped and execution continues with the next pass.
+
+**`finish_if`** -- A condition evaluated before a pass starts. If the condition is met, the entire playbook finishes early and no remaining passes are executed.
+
+Both conditions are checked as pre-pass checks before the LLM is invoked, so skipped passes incur no API cost.
+
+```yaml
+passes:
+  - name: "check-changes"
+    prompt: "Check if any files changed"
+  - name: "deep-analysis"
+    prompt: "Analyze the changes in detail"
+    skip_if: "no files were modified"
+  - name: "report"
+    prompt: "Generate summary report"
+    finish_if: "no issues found"
+```
+
+In this example:
+- The first pass checks for file changes.
+- The second pass (`deep-analysis`) is skipped if the first pass determined that no files were modified.
+- The third pass (`report`) causes the playbook to finish early if no issues were found, preventing any subsequent passes from running.
 
 ## Playbook Run Logs
 
