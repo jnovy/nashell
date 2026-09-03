@@ -173,6 +173,9 @@ static int scratchpad_clear_unlocked(scratchpad_t *sp, const char *name) {
   for (int i = idx; i < sp->count - 1; i++)
     sp->sections[i] = sp->sections[i + 1];
   sp->count--;
+  /* Zero the vacated slot to prevent stale pointers from being reused
+   * when a new section is later created at this index (UAF fix). */
+  memset(&sp->sections[sp->count], 0, sizeof(scratchpad_section_t));
   return 0;
 }
 
