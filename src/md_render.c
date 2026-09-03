@@ -109,10 +109,11 @@ static void apply_attr_to_segs(inline_seg_t *segs, int n, int new_attr) {
 /* Copy a source line to a fixed-size buffer (NUL-terminated).
  * Item 6: extracted from main loop and table row loop.
  * Item 8: uses LINE_BUF_SIZE constant. */
-static void copy_to_buf(char *buf, size_t buf_size, const char *src, int len) {
+static int copy_to_buf(char *buf, size_t buf_size, const char *src, int len) {
   int copy_len = len < (int)buf_size - 1 ? len : (int)buf_size - 1;
   memcpy(buf, src, copy_len);
   buf[copy_len] = '\0';
+  return copy_len;
 }
 
 /* Expand tab characters to spaces in-place (8-column tab stops).
@@ -122,6 +123,9 @@ static void copy_to_buf(char *buf, size_t buf_size, const char *src, int len) {
  * causing the column tracker to undercount.  The padding loop then overwrites
  * the rightmost characters with spaces. */
 static int expand_tabs(char *buf, int len, int buf_size) {
+  /* Clamp len to buffer bounds - callers may pass unclamped source length */
+  if (len >= buf_size)
+    len = buf_size - 1;
   /* First pass: count expanded size to see if we need to expand */
   int col = 0, has_tab = 0;
   for (int i = 0; i < len; i++) {
@@ -936,7 +940,7 @@ static int render_table(WINDOW *win, const char *src, int num_rows,
 
     /* Item 6+8: use copy_to_buf with LINE_BUF_SIZE */
     char tbuf[LINE_BUF_SIZE];
-    copy_to_buf(tbuf, sizeof(tbuf), trow, trow_len);
+    trow_len = copy_to_buf(tbuf, sizeof(tbuf), trow, trow_len);
 
     int vis_line = *render_line - scroll_y;
     int visible = (vis_line >= 0 && vis_line < rows);
@@ -1131,7 +1135,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
 
     /* Item 6+8: use copy_to_buf with LINE_BUF_SIZE */
     char line_buf[LINE_BUF_SIZE];
-    copy_to_buf(line_buf, sizeof(line_buf), src, line_len);
+    line_len = copy_to_buf(line_buf, sizeof(line_buf), src, line_len);
 
     /* Code block fence toggle — handle BEFORE visibility check
          * so in_code_block state is always correct, and skip render_line++
@@ -1223,7 +1227,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int pl = (int)(pe - ps);
               if (pl <= 0) break;
               char tb[LINE_BUF_SIZE];
-              copy_to_buf(tb, sizeof(tb), ps, pl);
+              pl = copy_to_buf(tb, sizeof(tb), ps, pl);
               if (is_diff_line(tb, pl) != -1) break;
               del_idx++;
               bp = ps;
@@ -1236,7 +1240,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
             if (nl <= 0) break;
             char tb[LINE_BUF_SIZE];
-            copy_to_buf(tb, sizeof(tb), scan, nl);
+            nl = copy_to_buf(tb, sizeof(tb), scan, nl);
             if (is_diff_line(tb, nl) != -1) break;
             scan = ne ? ne + 1 : scan + nl;
           }
@@ -1248,7 +1252,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
             if (nl <= 0) break;
             char tb[LINE_BUF_SIZE];
-            copy_to_buf(tb, sizeof(tb), scan, nl);
+            nl = copy_to_buf(tb, sizeof(tb), scan, nl);
             if (is_diff_line(tb, nl) != 1) break;
             plus_skip--;
             scan = ne ? ne + 1 : scan + nl;
@@ -1258,7 +1262,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
             int nl = ne ? (int)(ne - scan) : (int)strlen(scan);
             if (nl > 0) {
               char pair_buf[LINE_BUF_SIZE];
-              copy_to_buf(pair_buf, sizeof(pair_buf), scan, nl);
+              nl = copy_to_buf(pair_buf, sizeof(pair_buf), scan, nl);
               nl = expand_tabs(pair_buf, nl, sizeof(pair_buf));
               if (is_diff_line(pair_buf, nl) == 1) {
                 int a_len, b_len;
@@ -1288,7 +1292,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int pl = (int)(pe - ps);
               if (pl <= 0) break;
               char tb[LINE_BUF_SIZE];
-              copy_to_buf(tb, sizeof(tb), ps, pl);
+              pl = copy_to_buf(tb, sizeof(tb), ps, pl);
               if (is_diff_line(tb, pl) != 1) break;
               add_idx++;
               first_plus = ps;
@@ -1308,7 +1312,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int pl = (int)(pe - ps);
               if (pl <= 0) break;
               char tb[LINE_BUF_SIZE];
-              copy_to_buf(tb, sizeof(tb), ps, pl);
+              pl = copy_to_buf(tb, sizeof(tb), ps, pl);
               if (is_diff_line(tb, pl) != -1) break;
               del_count++;
               first_del = ps;
@@ -1331,7 +1335,7 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
               int nl = ne ? (int)(ne - tp) : (int)strlen(tp);
               if (nl > 0) {
                 char pair_buf[LINE_BUF_SIZE];
-                copy_to_buf(pair_buf, sizeof(pair_buf), tp, nl);
+                nl = copy_to_buf(pair_buf, sizeof(pair_buf), tp, nl);
                 nl = expand_tabs(pair_buf, nl, sizeof(pair_buf));
                 if (is_diff_line(pair_buf, nl) == -1) {
                   int a_len, b_len;
