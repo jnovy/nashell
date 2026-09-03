@@ -125,6 +125,13 @@ typedef struct react_ctx_t {
      * If set, the react loop aborts when time(NULL) >= deadline. */
   time_t deadline;
 
+  /* [INIT-ONLY] External shutdown flag (NULL = not monitored).
+     * Points to a volatile sig_atomic_t set by a signal handler.
+     * When *shutdown_flag becomes non-zero, the react loop saves a
+     * checkpoint and breaks cleanly.  Used by headless mode for
+     * graceful SIGINT/SIGTERM handling. */
+  volatile sig_atomic_t *shutdown_flag;
+
   /* [INFER-ONLY] Current user query, set at top of react_run().
      * Used by truncation summarizer (Phase 1) and fresh-perspective
      * escape (Phase 2) to access the original query deep in the loop.

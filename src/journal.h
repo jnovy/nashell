@@ -3,7 +3,15 @@
 
 #include "cJSON.h"
 #include <stddef.h>
+#include <signal.h>
 #include <pthread.h>
+
+/* Crash handler state: updated by journal_append() so the crash handler
+ * (SIGSEGV/SIGABRT/SIGBUS) can write a signal_death entry to the active
+ * journal using only async-signal-safe I/O.  Defined in main.c. */
+extern char g_crash_journal_path[512];
+extern volatile sig_atomic_t g_crash_react_loop;
+extern volatile sig_atomic_t g_crash_step;
 
 /* Journal handle — wraps the path to journal.jsonl */
 typedef struct {

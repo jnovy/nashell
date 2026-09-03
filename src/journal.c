@@ -159,6 +159,15 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   /* Exclusive lock for writes — prevents torn reads from TUI thread */
   flock(fileno(f), LOCK_EX);
 
+  /* Update crash handler state so it can write to the correct journal.
+   * These are read by crash_handler() using async-signal-safe I/O. */
+  if (g_crash_journal_path[0] == '\0' && j->path) {
+    snprintf(g_crash_journal_path, sizeof(g_crash_journal_path),
+             "%s", j->path);
+  }
+  g_crash_react_loop = react_loop;
+  g_crash_step = step;
+
   /* Unix epoch timestamp with microsecond precision.
      * When start_ts > 0, use the pre-captured tool start time instead of
      * current time so the journal reflects when the tool began executing. */

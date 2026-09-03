@@ -71,6 +71,15 @@ static void tui_sigint_handler(int sig) {
   g_sigint_received = 1;
 }
 
+/* Crash handler journal path: set when a session starts so the crash
+ * handler can write a signal_death entry using async-signal-safe I/O.
+ * Also tracks the react_loop/step at crash time for the journal entry.
+ * Non-static: journal_append() updates these on every write so the
+ * crash handler always has current values.  Declared extern in journal.h. */
+char g_crash_journal_path[512];
+volatile sig_atomic_t g_crash_react_loop = 0;
+volatile sig_atomic_t g_crash_step = 0;
+
 /* ── Daemon lock file ────────────────────────────────────────────────────────
  * Prevent multiple daemon/matrix/telegram instances from running
  * simultaneously.  Each would poll the same Matrix/Telegram room,
@@ -931,6 +940,21 @@ static int run_headless(nash_ctx_t *ctx, const char *query,
   session_init_react(&react, ctx->provider, g_planner_provider,
                      g_reflection_provider, &tools, ctx->cfg);
 
+  /* Install SIGINT/SIGTERM handler for graceful shutdown.
+   * Without this, signals terminate immediately with no journal entry,
+   * making it impossible to distinguish interrupted sessions from crashes. */
+  shutdown_requested = 0;
+  react.shutdown_flag = &shutdown_requested;
+  {
+    struct sigaction sa_shut;
+    memset(&sa_shut, 0, sizeof(sa_shut));
+    sa_shut.sa_handler = shutdown_handler;
+    sigemptyset(&sa_shut.sa_mask);
+    sa_shut.sa_flags = 0;
+    sigaction(SIGINT, &sa_shut, NULL);
+    sigaction(SIGTERM, &sa_shut, NULL);
+  }
+
   /* Mailbox mode: use mailbox_on_event to handle user_ask via files */
   char *result;
   if (mailbox_mode) {
@@ -959,6 +983,19 @@ static int run_headless(nash_ctx_t *ctx, const char *query,
                           ctx->ws && ctx->ws->name ? ctx->ws->name : NULL, NULL, 1);
     result = react_run(&react, query, headless_on_event, NULL);
   }
+  /* Log signal termination to journal so interrupted sessions are
+   * clearly distinguishable from crashes in post-mortem analysis. */
+  if (shutdown_requested) {
+    cJSON *sig_params = cJSON_CreateObject();
+    cJSON_AddStringToObject(sig_params, "reason", "signal_received");
+    cJSON_AddStringToObject(sig_params, "signal", "SIGINT/SIGTERM");
+    journal_append(journal, tools.react_loop, tools.step,
+                   "session_interrupted", sig_params, NULL, 0, 0,
+                   NULL, NULL, 0);
+    cJSON_Delete(sig_params);
+    fprintf(stderr, "\n[nash] interrupted by signal, session state saved\n");
+  }
+
   /* Resolve session_dir from journal for lazy sessions.
        * journal_session_dir returns internal pointer -- must strdup
        * because journal_free() will free the original. */
@@ -2143,9 +2180,28 @@ static void crash_handler(int sig) {
     }
   }
 
-  /* Exit immediately without re-raising to avoid core dumps.
-   * 128 + sig is the standard exit code convention for signal death. */
-  _exit(128 + sig);
+  /* Write a signal_death entry to the active journal using only
+   * async-signal-safe functions (open, write, close, snprintf). */
+  if (g_crash_journal_path[0]) {
+    char jentry[512];
+    int jn = snprintf(jentry, sizeof(jentry),
+      "{\"react_loop\":%d,\"step\":%d,\"tool\":\"signal_death\","
+      "\"params\":{\"signal\":\"%s\",\"signum\":%d}}\n",
+      (int)g_crash_react_loop, (int)g_crash_step, name, sig);
+    if (jn > 0 && jn < (int)sizeof(jentry)) {
+      int jfd = open(g_crash_journal_path, O_WRONLY | O_APPEND);
+      if (jfd >= 0) {
+        write(jfd, jentry, (size_t)jn);
+        close(jfd);
+      }
+    }
+  }
+
+  /* Re-raise the signal with default handler so the kernel generates
+   * a core dump for post-mortem analysis.  SA_RESETHAND already
+   * restored SIG_DFL on entry, so raise() will produce the core. */
+  raise(sig);
+  _exit(128 + sig); /* fallback if raise() somehow returns */
 }
 
 int main(int argc, char **argv) {

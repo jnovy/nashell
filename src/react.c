@@ -1056,6 +1056,13 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
     if (ctx->deadline > 0 && time(NULL) >= ctx->deadline)
       break;
 
+    /* Check external shutdown flag (headless SIGINT/SIGTERM) */
+    if (ctx->shutdown_flag && *ctx->shutdown_flag) {
+      react_checkpoint_save(ctx, step, user_query,
+                            chat->last_tool_call_id);
+      break;
+    }
+
     /* Error budget exhausted on previous step — model had one grace step
          * to call done().  If it didn't, force termination now. */
     if (error_budget_exhausted)
