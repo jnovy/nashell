@@ -438,6 +438,7 @@ static void session_cleanup(tool_ctx_t *tools, react_ctx_t *react,
   react->pause_query = NULL;
   free(react->tui_viewing_file);
   react->tui_viewing_file = NULL;
+  tool_ctx_reset_query(tools);
   tool_free_deferred_consolidations(tools);
   scratchpad_free(&tools->scratch);
   alias_map_free(tools->aliases);

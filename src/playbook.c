@@ -1365,6 +1365,10 @@ void *playbook_worker(void *arg) {
          * (struct zeroed by scratchpad_move), so this is a no-op.
          * For PB_SCRATCH_ISOLATED: sections must be freed here. */
       if (pass_provider_owned) provider_free(pass_provider);
+      tool_ctx_reset_query(&pass_tools);
+      tool_free_deferred_consolidations(&pass_tools);
+      free(pass_tools.last_spec_hash);
+      pass_tools.last_spec_hash = NULL;
       scratchpad_free(&pass_tools.scratch);
       alias_map_free(pass_tools.aliases);
       session_lock_release(pass_tools.session_lock_fd);
