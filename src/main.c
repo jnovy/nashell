@@ -2141,9 +2141,9 @@ static void crash_handler(int sig) {
     }
   }
 
-  /* Re-raise with default handler to get proper exit status */
-  signal(sig, SIG_DFL);
-  raise(sig);
+  /* Exit immediately without re-raising to avoid core dumps.
+   * 128 + sig is the standard exit code convention for signal death. */
+  _exit(128 + sig);
 }
 
 int main(int argc, char **argv) {
