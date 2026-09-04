@@ -2175,6 +2175,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
           free(ut_ref);
           free(ut_alias);
           cJSON_Delete(ut_data);
+          free(sig);
           continue; /* retry — model gets another chance */
         }
       }
