@@ -42,54 +42,90 @@ static const char *get_anthropic_api_key(const provider_config_t *cfg) {
   return getenv(env_name);
 }
 
-/* Get OAuth2 access token for Vertex AI via gcloud CLI.
+/* Try a gcloud auth command to get an OAuth2 access token.
+ * Returns 1 on success (token stored in *token_out), 0 on failure.
+ * Caller must str_free(token_out) on success. */
+static int try_gcloud_token(const char *label, char *const argv[],
+                            str_t *token_out) {
+  subprocess_result_t r = subprocess_run(argv, NULL, 15, 4096, 0, 0, token_out);
+
+  if (r.timed_out) {
+    nash_log("[provider/vertex] %s timed out after 15s", label);
+    str_clear(token_out);
+    return 0;
+  }
+
+  if (r.exit_code != 0) {
+    nash_log("[provider/vertex] %s failed (exit %d)", label, r.exit_code);
+    str_clear(token_out);
+    return 0;
+  }
+
+  while (token_out->len > 0 &&
+         (token_out->data[token_out->len - 1] == '\n' ||
+          token_out->data[token_out->len - 1] == '\r'))
+    token_out->data[--token_out->len] = '\0';
+
+  if (token_out->len == 0) {
+    nash_log("[provider/vertex] %s returned empty token", label);
+    return 0;
+  }
+
+  return 1;
+}
+
+/* Get OAuth2 access token for Vertex AI.
+ * Tries multiple credential sources in order:
+ *   1. CLOUDSDK_AUTH_ACCESS_TOKEN env var (pre-set token)
+ *   2. gcloud auth print-access-token (user credentials)
+ *   3. gcloud auth application-default print-access-token (ADC)
  * Caches token and refreshes when expired.
- * FIX: Uses fork/exec with 15s timeout instead of popen() which can
+ * Uses fork/exec with 15s timeout instead of popen() which can
  * block forever if gcloud hangs (network issues, auth dialog, etc.).
- * This runs on the inference thread — a hang here freezes the TUI. */
+ * This runs on the inference thread - a hang here freezes the TUI. */
 static const char *get_vertex_token(provider_t *p) {
   time_t now = time(NULL);
 
-  /* Return cached token if still valid (refresh 2 min before expiry) */
   if (p->_cached_auth_token && p->_auth_token_expiry > now + 120) {
     return p->_cached_auth_token;
   }
 
-  /* Get fresh token via subprocess with 15s timeout */
-  char *const argv[] = {"gcloud", "auth", "print-access-token", NULL};
+  /* Source 1: explicit token from environment */
+  const char *env_token = getenv("CLOUDSDK_AUTH_ACCESS_TOKEN");
+  if (env_token && env_token[0]) {
+    str_replace(&p->_cached_auth_token, env_token);
+    p->_auth_token_expiry = now + 600;
+    nash_log("[provider/vertex] using token from CLOUDSDK_AUTH_ACCESS_TOKEN");
+    return p->_cached_auth_token;
+  }
+
   str_t out = str_new(256);
-  subprocess_result_t r = subprocess_run(argv, NULL, 15, 4096, 0, 0, &out);
 
-  if (r.timed_out) {
-    nash_log("[provider/vertex] gcloud auth timed out after 15s");
+  /* Source 2: user credentials */
+  char *const argv_user[] = {"gcloud", "auth", "print-access-token", NULL};
+  if (try_gcloud_token("gcloud auth print-access-token", argv_user, &out)) {
+    str_replace(&p->_cached_auth_token, out.data);
+    p->_auth_token_expiry = now + 600;
     str_free(&out);
-    return NULL;
+    return p->_cached_auth_token;
   }
 
-  if (r.exit_code != 0) {
-    if (r.exit_code == 127)
-      nash_log("[provider/vertex] gcloud auth failed (exit %d) - gcloud CLI not installed", r.exit_code);
-    else
-      nash_log("[provider/vertex] gcloud auth failed (exit %d) - try: gcloud auth login", r.exit_code);
+  /* Source 3: Application Default Credentials (ADC) */
+  char *const argv_adc[] = {"gcloud", "auth", "application-default",
+                            "print-access-token", NULL};
+  if (try_gcloud_token("gcloud auth application-default print-access-token",
+                       argv_adc, &out)) {
+    nash_log("[provider/vertex] using Application Default Credentials");
+    str_replace(&p->_cached_auth_token, out.data);
+    p->_auth_token_expiry = now + 600;
     str_free(&out);
-    return NULL;
+    return p->_cached_auth_token;
   }
 
-  /* Strip trailing newline */
-  while (out.len > 0 && (out.data[out.len - 1] == '\n' || out.data[out.len - 1] == '\r'))
-    out.data[--out.len] = '\0';
-
-  if (out.len == 0) {
-    nash_log("[provider/vertex] gcloud auth returned empty token");
-    str_free(&out);
-    return NULL;
-  }
-
-  str_replace(&p->_cached_auth_token, out.data);
-  p->_auth_token_expiry = now + 600; /* refresh every 10 min to avoid stale tokens */
+  nash_log("[provider/vertex] all auth methods failed - "
+           "try: gcloud auth application-default login");
   str_free(&out);
-
-  return p->_cached_auth_token;
+  return NULL;
 }
 
 
