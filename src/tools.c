@@ -1083,6 +1083,7 @@ const char *plan_link_ref(const cJSON *links, const char *child_name) {
  * and the array); *out_n is set to the count.  Returns NULL if the
  * directory cannot be opened. */
 char **plan_subtask_names(const char *session_dir, int *out_n) {
+  if (!session_dir) { *out_n = 0; return NULL; }
   DIR *d = opendir(session_dir);
   if (!d) { *out_n = 0; return NULL; }
   struct dirent *ent;

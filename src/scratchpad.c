@@ -460,9 +460,9 @@ static int scratchpad_load_legacy(scratchpad_t *sp, const char *session_dir) {
  * Used by both scratchpad_save (append dirty) and scratchpad_compact (full snapshot). */
 static void write_section_jsonl(FILE *f, const scratchpad_section_t *s) {
   cJSON *obj = cJSON_CreateObject();
-  cJSON_AddStringToObject(obj, "name", s->name);
+  cJSON_AddStringToObject(obj, "name", s->name ? s->name : "");
   cJSON_AddNumberToObject(obj, "priority", s->priority);
-  cJSON_AddStringToObject(obj, "content", s->content);
+  cJSON_AddStringToObject(obj, "content", s->content ? s->content : "");
   /* Persist staleness tracking fields if set */
   if (s->n_tracked > 0) {
     cJSON *arr = cJSON_AddArrayToObject(obj, "tracked_paths");

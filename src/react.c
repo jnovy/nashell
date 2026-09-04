@@ -1144,6 +1144,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                                               on_event ? react_stream_token_cb : NULL, &sctx,
                                               max_resp, rep_thresh,
                                               on_event ? react_progress_cb : NULL, &sctx);
+    active_provider->tool_filter = NULL;
     if (vstats.activated) {
       nash_log("view: record=%ld view=%ld shortened=%d (%.0f%% reduction)",
                vstats.record_chars, vstats.view_chars, vstats.msgs_shortened,
@@ -2842,6 +2843,10 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
      * max-steps exhaustion, and error bail-outs.
      * Each plugin's cleanup is a no-op if it wasn't activated. */
   tool_plugin_run_cleanups(ctx->tools->session_dir);
+
+  ctx->provider->tool_filter = NULL;
+  if (ctx->planner_provider)
+    ctx->planner_provider->tool_filter = NULL;
 
   llm_chat_free(chat);
 
