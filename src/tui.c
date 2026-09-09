@@ -773,16 +773,19 @@ static void render_bottom(ui_state_t *ui) {
      * Layout: [icon][status_text] [model_name │ ctx XX% │ 📡 bg:N]
      * Colors: dark blue text (#232637), status-colored bg */
 
-  /* Build status line content */
-  char status_line[1024];
-  int slen = 0;
+  /* Build status line from three independent parts so that the left
+   * (icon + task) and right (model + ctx) sections are always visible.
+   * The middle section (breadcrumb + view mode) is truncated from the
+   * LEFT when the terminal is too narrow to fit everything. */
+  char left_buf[512], mid_buf[512], right_buf[512];
+  int llen = 0, mlen = 0, rlen = 0;
 
   /* Status icon + text + select color pair */
   const char *icon;
   int status_pair;
   switch (ui->status) {
     case STATUS_RUNNING:
-      icon = "⟳";
+      icon = "\xe2\x9f\xb3";  /* U+27F3 */
       status_pair = CP_STATUS_RUNNING;
       break;
     case STATUS_AWAITING_INPUT:
@@ -790,11 +793,11 @@ static void render_bottom(ui_state_t *ui) {
       status_pair = CP_STATUS_AWAIT;
       break;
     case STATUS_DONE:
-      icon = "✓";
+      icon = "\xe2\x9c\x93";  /* U+2713 */
       status_pair = CP_STATUS_DONE;
       break;
     case STATUS_ERROR:
-      icon = "✗";
+      icon = "\xe2\x9c\x97";  /* U+2717 */
       status_pair = CP_STATUS_ERROR;
       break;
     default:
@@ -803,32 +806,33 @@ static void render_bottom(ui_state_t *ui) {
       break;
   }
 
-  slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+  /* ---- LEFT: icon + status_text + search ---- */
+  llen += snprintf(left_buf + llen, sizeof(left_buf) - llen,
                    "%s ", icon);
   if (ui->status_text && ui->status_text[0]) {
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+    llen += snprintf(left_buf + llen, sizeof(left_buf) - llen,
                      "%s", ui->status_text);
   }
 
   /* In-page search match count (? prefix) */
   if (ui->page_search_term && ui->page_search_term[0]) {
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                     " │ ?%s: %d/%d",
+    llen += snprintf(left_buf + llen, sizeof(left_buf) - llen,
+                     " \xe2\x94\x82 ?%s: %d/%d",
                      ui->page_search_term,
                      ui->page_search_total > 0 ? ui->page_search_current + 1 : 0,
                      ui->page_search_total);
   }
 
-  /* Breadcrumb path (shows current file in nav stack) */
+  /* ---- MIDDLE: breadcrumb + view mode ---- */
   {
     char *crumb = ui_state_breadcrumb(ui);
     if (crumb && crumb[0]) {
       if (ui->workspace_name && ui->workspace_name[0])
-        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                         " │ %s %s", ui->workspace_name, crumb);
+        mlen += snprintf(mid_buf + mlen, sizeof(mid_buf) - mlen,
+                         " \xe2\x94\x82 %s %s", ui->workspace_name, crumb);
       else
-        slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                         " │ %s", crumb);
+        mlen += snprintf(mid_buf + mlen, sizeof(mid_buf) - mlen,
+                         " \xe2\x94\x82 %s", crumb);
     }
     free(crumb);
   }
@@ -839,33 +843,102 @@ static void render_bottom(ui_state_t *ui) {
       NULL, "F3:Plan", "F4:Notes", "F5:Timeline", "F6:Metrics"
     };
     if (ui->view_mode < VIEW_MODE_COUNT && mode_labels[ui->view_mode])
-      slen += snprintf(status_line + slen, sizeof(status_line) - (size_t)slen,
+      mlen += snprintf(mid_buf + mlen, sizeof(mid_buf) - (size_t)mlen,
                        " | [%s]", mode_labels[ui->view_mode]);
   }
 
-  /* Right side: model │ ctx │ bg */
+  /* ---- RIGHT: model + ctx + bg ---- */
   if (ui->model_name && ui->model_name[0]) {
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                     " │");
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+    rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
+                     " \xe2\x94\x82");
+    rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
                      " %s", ui->model_name);
   }
   if (ui->context_size > 0 && ui->context_used > 0) {
     double ctx_pct = 100.0 * ui->context_used / ui->context_size;
     if (ctx_pct >= 1.0)
-      slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                       " │ ctx %d%%", (int)ctx_pct);
+      rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
+                       " \xe2\x94\x82 ctx %d%%", (int)ctx_pct);
     else
-      slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                       " │ ctx <1%%");
+      rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
+                       " \xe2\x94\x82 ctx <1%%");
   } else if (ui->context_size > 0) {
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                     " │ ctx 0%%");
+    rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
+                     " \xe2\x94\x82 ctx 0%%");
   }
   if (ui->bg_jobs > 0) {
-    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
-                     " │ bg:%d", ui->bg_jobs);
+    rlen += snprintf(right_buf + rlen, sizeof(right_buf) - rlen,
+                     " \xe2\x94\x82 bg:%d", ui->bg_jobs);
   }
+
+  /* ---- Assemble: truncate middle from LEFT if needed ---- */
+  int left_w  = utf8_display_width(left_buf,  llen);
+  int right_w = utf8_display_width(right_buf, rlen);
+  int mid_w   = utf8_display_width(mid_buf,   mlen);
+  int avail   = cols - left_w - right_w;
+
+  /* Pointer into mid_buf for the portion we will actually show */
+  const char *mid_show = mid_buf;
+  int mid_show_len = mlen;
+  char trunc_mid[512];
+
+  if (mlen > 0 && mid_w > avail) {
+    /* Drop leftmost breadcrumb segments at " > " boundaries until it
+     * fits.  We skip the leading " | " prefix (4 display cols) which
+     * is part of every non-empty middle section, then look for " > "
+     * separators in the breadcrumb portion. */
+    const char *best = NULL;
+    const char *p = mid_buf;
+    /* Walk forward looking for " > " separators */
+    while ((p = strstr(p, " > ")) != NULL) {
+      p += 3; /* skip past " > " */
+      /* Measure from this point to end */
+      int tail_bytes = mlen - (int)(p - mid_buf);
+      /* We will prepend " | .." to the remaining tail */
+      int tail_w = utf8_display_width(p, tail_bytes);
+      /* " | .." = 5 display cols + tail */
+      if (tail_w + 5 <= avail) {
+        best = p;
+        break;  /* First match from the left keeps the most segments */
+      }
+    }
+    if (best) {
+      /* Build truncated middle: " | .." + remaining breadcrumb */
+      int tlen = snprintf(trunc_mid, sizeof(trunc_mid),
+                          " \xe2\x94\x82 ..%s", best);
+      mid_show = trunc_mid;
+      mid_show_len = tlen;
+    } else if (avail <= 0) {
+      /* No room at all for middle section */
+      mid_show = "";
+      mid_show_len = 0;
+    }
+    /* else: even single segment doesn't fit with prefix, show as much
+     * as possible (ncurses will truncate at edge, but right_buf is
+     * written separately so it stays visible) */
+  }
+
+  /* Build final status line.  We write left + middle into the line
+   * string, then position the right part so it ends at the last
+   * column.  This way the right part is always visible. */
+  char status_line[1024];
+  int slen = 0;
+  slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                   "%s", left_buf);
+  if (mid_show_len > 0)
+    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                     "%s", mid_show);
+
+  /* Pad with spaces so right section is flush-right */
+  int cur_w = utf8_display_width(status_line, slen);
+  int pad = cols - cur_w - right_w;
+  for (int i = 0; i < pad && slen < (int)sizeof(status_line) - 1; i++)
+    status_line[slen++] = ' ';
+  status_line[slen] = '\0';
+
+  if (rlen > 0)
+    slen += snprintf(status_line + slen, sizeof(status_line) - slen,
+                     "%s", right_buf);
 
   /* Status bar: dark blue text (#232637), status-colored bg */
   render_ncurses_row(win_bottom, 0, cols, status_pair, status_line);
