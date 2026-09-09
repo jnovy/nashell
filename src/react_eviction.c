@@ -19,6 +19,7 @@
 #include "compress.h"
 #include "embedding.h"
 #include "repomap.h"
+#include <errno.h>
 
 /* ── Algorithm-internal constants (stable, not policy-configurable) ── */
 /* Score formula coefficients now in react_internal.h (shared with emergency scorer). */
@@ -288,6 +289,67 @@ void evict_free_partner_map(evict_partner_map_t *map) {
   map->n_msgs = 0;
 }
 
+/* ── Eviction Archive ─────────────────────────── */
+
+/* Archive marked messages to session_dir/evicted.jsonl before freeing.
+ * Best-effort: failures are logged but never block eviction.
+ * Each line is a JSON object with message metadata + full content,
+ * enabling future resurrection of evicted context without re-running tools.
+ *
+ * Format per line:
+ *   {"mi":<idx>,"role":"...","tool_name":"...","tool_path":"...",
+ *    "alias":"R0S5","len":<N>,"content":"..."}  */
+static void evict_archive_marked(const llm_chat_t *chat, int evict_start,
+                                 const int *evict_mark, int n_evictable,
+                                 const char *session_dir) {
+  if (!session_dir) return;
+
+  char path[NASH_PATH_MAX];
+  snprintf(path, sizeof(path), "%s/evicted.jsonl", session_dir);
+  FILE *fp = fopen(path, "a");
+  if (!fp) {
+    nash_log("[eviction] WARNING: cannot open %s for archival: %s",
+             path, strerror(errno));
+    return;
+  }
+
+  int archived = 0;
+  for (int i = 0; i < n_evictable; i++) {
+    if (!evict_mark[i]) continue;
+    int mi = evict_start + i;
+    const llm_msg_t *msg = &chat->msgs[mi];
+    if (!msg->content || !msg->content_len) continue;
+    /* Skip system messages - they contain prompts, not recoverable content */
+    if (msg->role && strcmp(msg->role, "system") == 0) continue;
+
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddNumberToObject(obj, "mi", mi);
+    if (msg->role)
+      cJSON_AddStringToObject(obj, "role", msg->role);
+    if (msg->tool_name)
+      cJSON_AddStringToObject(obj, "tool_name", msg->tool_name);
+    if (msg->tool_path)
+      cJSON_AddStringToObject(obj, "tool_path", msg->tool_path);
+    if (msg->store_alias)
+      cJSON_AddStringToObject(obj, "alias", msg->store_alias);
+    cJSON_AddNumberToObject(obj, "len", (double)msg->content_len);
+    cJSON_AddStringToObject(obj, "content", msg->content);
+
+    char *line = cJSON_PrintUnformatted(obj);
+    if (line) {
+      fputs(line, fp);
+      fputc('\n', fp);
+      free(line);
+      archived++;
+    }
+    cJSON_Delete(obj);
+  }
+
+  fclose(fp);
+  if (archived > 0)
+    nash_log("[eviction] archived %d messages to %s", archived, path);
+}
+
 /* ── Shared Mark-Sweep Helper ─────────────────── */
 
 /* Remove messages marked for eviction via O(n) single-pass compaction.
@@ -296,7 +358,8 @@ void evict_free_partner_map(evict_partner_map_t *map) {
  * for k removals. Single forward-pass compaction achieves O(n) total.
  * Shared between progressive and emergency eviction paths.
  *
- * Behavior: Two phases:
+ * Behavior: Three phases:
+ *   0. Archive marked messages to evicted.jsonl (if session_dir non-NULL)
  *   1. Free marked messages' fields, update chat->total_chars
  *   2. Compact: slide surviving messages forward within evictable region,
  *      then memmove tail (post-evict_end) into place
@@ -304,11 +367,15 @@ void evict_free_partner_map(evict_partner_map_t *map) {
  * tool_call_id references invalidated by index shifts.
  * Returns number of messages removed. */
 int evict_sweep_marked(llm_chat_t *chat, int evict_start,
-                       const int *evict_mark, int n_evictable) {
+                       const int *evict_mark, int n_evictable,
+                       const char *session_dir) {
   int removed = 0;
   int evict_end = evict_start + n_evictable;
 
-  /* Free marked messages and update total_chars */
+  /* Phase 0: Archive full content before freeing */
+  evict_archive_marked(chat, evict_start, evict_mark, n_evictable, session_dir);
+
+  /* Phase 1: Free marked messages and update total_chars */
   for (int i = 0; i < n_evictable; i++) {
     if (evict_mark[i]) {
       int mi = evict_start + i;
@@ -319,7 +386,7 @@ int evict_sweep_marked(llm_chat_t *chat, int evict_start,
   }
 
   if (removed > 0) {
-    /* Single-pass compaction within evictable region */
+    /* Phase 2: Single-pass compaction within evictable region */
     int dst = evict_start;
     for (int src = evict_start; src < evict_end; src++) {
       if (!evict_mark[src - evict_start]) {
@@ -590,7 +657,8 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
          * just stripped. Using react_emergency_evict_and_reinject would re-inject
          * SP (skip_sp=0), defeating Strategy 1's strip. */
     n_emergency = react_emergency_evict(chat, context_budget, target_pct,
-                                        ctx->tools->cfg);
+                                        ctx->tools->cfg,
+                                        ctx->tools->session_dir);
     react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
                                        context_budget, target_pct,
                                        /*skip_sp=*/1);
@@ -607,7 +675,8 @@ int evict_finalize(react_ctx_t *ctx, llm_chat_t *chat,
                "at target %d%% — retrying with aggressive target %d%%",
                target_pct, aggressive_pct);
       n_emergency = react_emergency_evict(chat, context_budget,
-                                          aggressive_pct, ctx->tools->cfg);
+                                          aggressive_pct, ctx->tools->cfg,
+                                          ctx->tools->session_dir);
       if (n_emergency > 0) {
         react_inject_emergency_breadcrumbs(ctx, chat, n_emergency,
                                            context_budget, aggressive_pct,
@@ -1760,7 +1829,8 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
                                      bc_index_cap, bc_summary_cap);
 
     /* Use shared sweep helper */
-    evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
+    evict_sweep_marked(chat, evict_start, evict_mark, n_evictable,
+                       ctx->tools->session_dir);
   }
 
   free(evict_mark);

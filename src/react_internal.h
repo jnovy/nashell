@@ -333,9 +333,12 @@ void evict_adjust_boundaries(const llm_chat_t *chat,
                              int *evict_start, int *evict_end);
 
 /* Mark-sweep helper — removes marked messages in reverse order
- * and recovers tool threading.  Returns the number of messages removed. */
+ * and recovers tool threading.  Returns the number of messages removed.
+ * session_dir: if non-NULL, archives evicted message content to
+ * session_dir/evicted.jsonl before freeing (full-content resurrection). */
 int evict_sweep_marked(llm_chat_t *chat, int evict_start,
-                       const int *evict_mark, int n_evictable);
+                       const int *evict_mark, int n_evictable,
+                       const char *session_dir);
 
 /* Generic mark-candidates — scores all evictable messages using
  * a caller-supplied scoring function, sorts by score ascending (lowest =
@@ -475,7 +478,7 @@ void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
  * (preventing immediate re-trigger).  Targets budget, not current usage.
  * Pair-safe — removes tool_call/tool_result pairs together. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
-                          const config_t *cfg);
+                          const config_t *cfg, const char *session_dir);
 
 /* Shared emergency breadcrumb + scratchpad injection.
  * Injects breadcrumb summary + MEMORY_HINT + scratchpad (budget-guarded).

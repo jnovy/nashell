@@ -35,7 +35,7 @@ static int evict_score_emergency(const llm_chat_t *chat, int mi, int ri,
  * Explicit target_pct prevents emergency eviction from leaving usage above
  * the trigger threshold. */
 int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
-                          const config_t *cfg) {
+                          const config_t *cfg, const char *session_dir) {
   /* Use caller-supplied config to respect user-configured floor_pct. */
   eviction_policy_t pol = react_eviction_policy(cfg);
   int eff_target = (target_pct > 0) ? target_pct : pol.emergency_target_pct;
@@ -128,7 +128,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
   evict_free_partner_map(&pmap);
 
   /* Shared sweep helper */
-  int removed = evict_sweep_marked(chat, evict_start, evict_mark, n_evictable);
+  int removed = evict_sweep_marked(chat, evict_start, evict_mark, n_evictable,
+                                   session_dir);
   free(evict_mark);
   return removed;
 }
@@ -138,7 +139,8 @@ int react_emergency_evict(llm_chat_t *chat, long context_budget, int target_pct,
 int react_emergency_evict_and_reinject(react_ctx_t *ctx, llm_chat_t *chat) {
   long cb = react_context_budget(ctx);
   int target_pct = react_eviction_target_pct(ctx->tools->cfg);
-  int n_evict = react_emergency_evict(chat, cb, target_pct, ctx->tools->cfg);
+  int n_evict = react_emergency_evict(chat, cb, target_pct, ctx->tools->cfg,
+                                      ctx->tools->session_dir);
   /* Budget-guarded breadcrumb + hint + scratchpad injection. */
   react_inject_emergency_breadcrumbs(ctx, chat, n_evict, cb, target_pct,
                                      /*skip_sp=*/0);
