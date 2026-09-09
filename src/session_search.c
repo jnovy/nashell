@@ -1,9 +1,10 @@
 /* session_search.c — Unified episodic search: fused semantic + lexical scoring.
  *
- * Three-phase pipeline:
- *   Phase 1: Semantic heat map (in-memory, O(sessions × chunks))
+ * Four-phase pipeline:
+ *   Phase 1: Semantic heat map (in-memory, O(sessions x chunks))
  *   Phase 2: Lexical heat map  (targeted disk I/O on top semantic hits)
  *   Phase 3: Score fusion + confidence assignment
+ *   Phase 4: Temporal re-ranking (coherence + anchor propagation)
  *
  * v4.3: Multi-match per session — collects ALL lexical matches with
  * R{loop}S{step} [tool] attribution.  Subsumes session_grep.
@@ -24,6 +25,7 @@
 #include <dirent.h>
 #include <time.h>
 #include <math.h>
+#include <limits.h>
 
 /* Maximum line length we'll read from journal.jsonl */
 #define SS_JLINE_MAX NASH_LINE_MAX
@@ -642,6 +644,106 @@ static void phase_fusion(scored_session_t *scored, int n,
 
 
 /* ══════════════════════════════════════════════════════════
+ *  Phase 4: Temporal re-ranking
+ *
+ *  Two sub-phases boost scores based on temporal structure:
+ *
+ *  4A — Within-session coherence: sessions with lexical matches
+ *       clustered in a narrow step range score higher than those
+ *       with matches scattered across the entire session.
+ *
+ *  4B — Cross-session anchor propagation: sessions temporally
+ *       adjacent (same day) to high-scoring "anchor" sessions
+ *       receive a score boost, surfacing context that clusters
+ *       in time even when it uses different vocabulary.
+ *
+ *  Research basis: MemForest [arXiv:2609.08273] AGPR retrieval.
+ * ══════════════════════════════════════════════════════════ */
+
+/* Tuning constants */
+#define SS_COHERENCE_WEIGHT   0.15  /* max 15% boost from match clustering */
+#define SS_ADJACENCY_WEIGHT   0.20  /* max 20% boost from anchor proximity */
+#define SS_ADJACENCY_WINDOW   86400.0  /* 1 day in seconds */
+#define SS_DECAY_HALFLIFE     14400.0  /* 4 hours — exp decay for proximity */
+
+static void phase_temporal_rerank(scored_session_t *scored, int n) {
+  if (n < 2) return;
+
+  /* ── 4A: Within-session temporal coherence ── */
+  for (int i = 0; i < n; i++) {
+    if (scored[i].n_matches < 2) continue;
+
+    /* Find min/max step among matches with valid step numbers */
+    int min_step = INT_MAX, max_step = INT_MIN;
+    int valid = 0;
+    for (int j = 0; j < scored[i].n_matches; j++) {
+      int s = scored[i].matches[j].step;
+      if (s < 0) continue; /* -1 = no attribution (e.g. session.md matches) */
+      if (s < min_step) min_step = s;
+      if (s > max_step) max_step = s;
+      valid++;
+    }
+    if (valid < 2 || max_step <= min_step) continue;
+
+    /* density = how tightly packed the matches are in step-space.
+     * E.g. 5 matches in steps 40-44 => density = 5/5 = 1.0 (perfect)
+     *       5 matches in steps 10-100 => density = 5/91 ~ 0.05 */
+    double span = (double)(max_step - min_step + 1);
+    double density = (double)valid / span;
+    if (density > 1.0) density = 1.0;
+
+    scored[i].composite *= (1.0 + SS_COHERENCE_WEIGHT * density);
+  }
+
+  /* ── 4B: Cross-session anchor propagation ── */
+
+  /* Identify anchor threshold: top 25% of sessions by current composite,
+   * but at least SS_THRESH_HIGH to avoid anchoring on garbage */
+  double anchor_thresh = SS_THRESH_HIGH;
+  {
+    /* Find the composite score at the 25th-percentile boundary.
+     * We don't want to sort here (that happens later), so scan linearly. */
+    int n_above_min = 0;
+    double sum_above = 0.0;
+    for (int i = 0; i < n; i++) {
+      if (scored[i].composite >= SS_THRESH_MIN) {
+        sum_above += scored[i].composite;
+        n_above_min++;
+      }
+    }
+    if (n_above_min > 0) {
+      double mean = sum_above / n_above_min;
+      /* Anchors = sessions above mean. More robust than percentile
+       * without sorting. */
+      if (mean > anchor_thresh) anchor_thresh = mean;
+    }
+  }
+
+  /* Boost non-anchor sessions that are temporally close to anchors */
+  for (int i = 0; i < n; i++) {
+    if (scored[i].composite >= anchor_thresh) continue; /* is an anchor */
+    if (scored[i].composite < SS_THRESH_MIN) continue;  /* too low to bother */
+
+    double best_boost = 0.0;
+    for (int a = 0; a < n; a++) {
+      if (scored[a].composite < anchor_thresh) continue; /* not an anchor */
+      if (a == i) continue;
+
+      double dt = fabs(scored[i].timestamp - scored[a].timestamp);
+      if (dt > SS_ADJACENCY_WINDOW) continue; /* too far apart */
+
+      /* Exponential decay: boost is strongest for same-hour sessions */
+      double decay = exp(-dt / SS_DECAY_HALFLIFE);
+      double boost = SS_ADJACENCY_WEIGHT * scored[a].composite * decay;
+      if (boost > best_boost) best_boost = boost;
+    }
+    if (best_boost > 0.0)
+      scored[i].composite *= (1.0 + best_boost);
+  }
+}
+
+
+/* ══════════════════════════════════════════════════════════
  *  Public API
  * ══════════════════════════════════════════════════════════ */
 
@@ -710,6 +812,9 @@ ss_results_t session_search(
 
   /* ── Phase 3: Fusion ── */
   phase_fusion(scored, n_scored, has_semantic, has_lexical);
+
+  /* ── Phase 4: Temporal re-ranking ── */
+  phase_temporal_rerank(scored, n_scored);
 
   /* Sort by composite score descending */
   if (n_scored > 1)
