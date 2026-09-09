@@ -178,6 +178,10 @@ typedef struct {
   int agent_running;   /* 1 = playbook worker is active (don't clear agent_view on Esc) */
   char *current_label; /* breadcrumb label for current view (NULL = use filepath) */
 
+  /* ── Forward navigation (breadcrumb '>' key) ── */
+  char *forward_filepath; /* saved child path when navigating back with '<' */
+  char *forward_label;    /* saved child label */
+
   /* ── Tab-completion state ── */
   char **completion_candidates; /* current candidate list (NULL when inactive) */
   int completion_count;         /* number of candidates */
@@ -216,6 +220,7 @@ void ui_state_up(ui_state_t *ui);
 void ui_state_down(ui_state_t *ui);
 void ui_state_enter(ui_state_t *ui); /* follow .md link or toggle step */
 void ui_state_back(ui_state_t *ui);  /* pop nav stack (Esc) */
+void ui_state_forward(ui_state_t *ui); /* push forward in breadcrumb ('>') */
 void ui_state_page_up(ui_state_t *ui);
 void ui_state_page_down(ui_state_t *ui);
 

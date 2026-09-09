@@ -80,6 +80,8 @@ static int paste_len = 0;
 #define NC_CT_SEARCH_FG 37  /* #1E2030 (30,32,48)  — dark text on highlight */
 #define NC_CT_SEARCH_BG 38  /* #F9E2AF (249,226,175) — yellow/amber background */
 #define NC_CT_SEARCH_CUR 39 /* #FAB387 (250,179,135) — orange bg for current */
+/* Breadcrumb highlight */
+#define NC_CRUMB_HL_BG 42   /* #000000 (0,0,0) — black background */
 
 /* Color pair numbers for status/input rows */
 #define CP_STATUS_READY 8   /* status bar: fg=#232637, bg=#B4B9C8 */
@@ -97,6 +99,8 @@ static int paste_len = 0;
 /* Search highlight color pairs */
 #define CP_SEARCH_MATCH 17   /* search match: bg=yellow, fg=dark */
 #define CP_SEARCH_CURRENT 18 /* current match: bg=orange, fg=dark */
+/* Breadcrumb highlight: light text on black background */
+#define CP_CRUMB_HL 21       /* breadcrumb active: fg=#DCE1F0, bg=#000000 */
 
 /* ── True-color registration ─────────────────────────── */
 
@@ -140,6 +144,8 @@ static void init_true_colors(void) {
   init_color(NC_CT_SEARCH_FG, 30 * 1000 / 255, 32 * 1000 / 255, 48 * 1000 / 255);
   init_color(NC_CT_SEARCH_BG, 249 * 1000 / 255, 226 * 1000 / 255, 175 * 1000 / 255);
   init_color(NC_CT_SEARCH_CUR, 250 * 1000 / 255, 179 * 1000 / 255, 135 * 1000 / 255);
+  /* Breadcrumb highlight background (black) */
+  init_color(NC_CRUMB_HL_BG, 0, 0, 0);
 
   /* Create color pairs combining bg + fg */
   init_pair(CP_STATUS_READY, NC_STATUS_BG, NC_STATUS_READY);
@@ -149,6 +155,8 @@ static void init_true_colors(void) {
   init_pair(CP_STATUS_ERROR, NC_STATUS_BG, NC_STATUS_ERR);
   init_pair(CP_INPUT_ACTIVE, NC_INPUT_FG, NC_INPUT_BG);
   init_pair(CP_INPUT_DIM, NC_INPUT_DIM, NC_INPUT_BG);
+  /* Breadcrumb highlight: light text on black */
+  init_pair(CP_CRUMB_HL, NC_CT_WHITE, NC_CRUMB_HL_BG);
   /* Content pairs: fg on transparent/default bg */
   init_pair(C_NORMAL, NC_CT_NORMAL, -1);
   init_pair(C_SUCCESS, NC_CT_GREEN, -1);
@@ -824,19 +832,41 @@ static void render_bottom(ui_state_t *ui) {
   }
 
   /* ---- MIDDLE: breadcrumb + view mode ---- */
+  /* Track the byte range of the last breadcrumb segment (the currently
+   * viewed file) so we can highlight it after rendering. */
+  int last_seg_byte = -1; /* byte offset in mid_buf where last segment starts */
   {
     char *crumb = ui_state_breadcrumb(ui);
     if (crumb && crumb[0]) {
-      if (ui->workspace_name && ui->workspace_name[0])
+      /* Find the last " > " separator to locate the active segment */
+      const char *last_sep = NULL;
+      const char *sp = crumb;
+      while ((sp = strstr(sp, " > ")) != NULL) {
+        last_sep = sp;
+        sp += 3;
+      }
+      int prefix_len; /* byte length of " | " or " | ws " prefix */
+      if (ui->workspace_name && ui->workspace_name[0]) {
         mlen += snprintf(mid_buf + mlen, sizeof(mid_buf) - mlen,
                          " \xe2\x94\x82 %s %s", ui->workspace_name, crumb);
-      else
+        /* prefix = " | ws " = 5 bytes (pipe is 3 UTF-8) + ws_len + 1 space */
+        prefix_len = 3 + 3 + (int)strlen(ui->workspace_name) + 1;
+      } else {
         mlen += snprintf(mid_buf + mlen, sizeof(mid_buf) - mlen,
                          " \xe2\x94\x82 %s", crumb);
+        prefix_len = 3 + 3; /* " " + pipe(3 bytes) + " " = 5 bytes for " | " */
+      }
+      if (last_sep) {
+        /* Last segment starts after the last " > " in crumb,
+         * which maps to prefix_len + (last_sep + 3 - crumb) in mid_buf */
+        last_seg_byte = prefix_len + (int)(last_sep + 3 - crumb);
+      } else {
+        /* No separator - entire crumb is the single segment */
+        last_seg_byte = prefix_len;
+      }
     }
     free(crumb);
   }
-
   /* View mode indicator (only shown when not in default stream view) */
   if (ui->view_mode != VIEW_STREAM) {
     static const char *mode_labels[] = {
@@ -942,6 +972,61 @@ static void render_bottom(ui_state_t *ui) {
 
   /* Status bar: dark blue text (#232637), status-colored bg */
   render_ncurses_row(win_bottom, 0, cols, status_pair, status_line);
+
+  /* ── Highlight the active breadcrumb segment (current file) ── */
+  if (mid_show_len > 0 && last_seg_byte >= 0) {
+    /* Find the last segment in mid_show.  When truncation occurred,
+     * mid_show points to trunc_mid which may differ from mid_buf,
+     * so we re-locate the last " > " in mid_show. */
+    const char *seg_start = NULL;
+    int seg_end_byte = mid_show_len; /* default: end of mid_show */
+
+    /* If view mode was appended, its suffix is at the end of
+     * mid_show.  Find " | [" to locate view mode start. */
+    const char *vmode = strstr(mid_show, " | [");
+    if (vmode)
+      seg_end_byte = (int)(vmode - mid_show);
+
+    /* Find last " > " separator in mid_show[0..seg_end_byte] */
+    const char *last_sep = NULL;
+    const char *sp = mid_show;
+    while ((sp = strstr(sp, " > ")) != NULL) {
+      if ((int)(sp - mid_show) < seg_end_byte)
+        last_sep = sp;
+      sp += 3;
+    }
+    if (last_sep)
+      seg_start = last_sep + 3; /* after " > " */
+    else {
+      /* No separator - find the segment after prefix (" | " or " | ..") */
+      const char *pipe = strstr(mid_show, "\xe2\x94\x82");
+      if (pipe) {
+        seg_start = pipe + 3; /* skip pipe UTF-8 (3 bytes) */
+        if (*seg_start == ' ') seg_start++; /* skip space after pipe */
+        /* If truncated with "..", skip past that */
+        if (seg_start[0] == '.' && seg_start[1] == '.')
+          seg_start += 2;
+        /* If workspace name present, skip it + space */
+        if (ui->workspace_name && ui->workspace_name[0]) {
+          size_t wlen = strlen(ui->workspace_name);
+          if (strncmp(seg_start, ui->workspace_name, wlen) == 0)
+            seg_start += wlen + 1; /* +1 for space after ws name */
+        }
+      }
+    }
+    if (seg_start && seg_start >= mid_show &&
+        (int)(seg_start - mid_show) < seg_end_byte) {
+      int seg_byte_len = seg_end_byte - (int)(seg_start - mid_show);
+      /* Calculate display column: left_w + display width of mid_show
+       * up to seg_start */
+      int pre_seg_bytes = (int)(seg_start - mid_show);
+      int hl_col = left_w + utf8_display_width(mid_show, pre_seg_bytes);
+      int hl_len = utf8_display_width(seg_start, seg_byte_len);
+      if (hl_col >= 0 && hl_len > 0 && hl_col + hl_len <= cols)
+        mvwchgat(win_bottom, 0, hl_col, hl_len, A_BOLD,
+                 (short)CP_CRUMB_HL, NULL);
+    }
+  }
 
   /* ── Row 1+: Input prompt (nashell-style) ──
      * Layout: [>][▌cursor or input text]
@@ -1703,6 +1788,20 @@ int tui_input(ui_state_t *ui, char **out_query) {
         break;
       }
       /* fall through to typing in query */
+      goto handle_default;
+
+    case '<':
+      if (ui->focus == FOCUS_JOURNAL && ui->nav_depth > 0) {
+        ui_state_back(ui);
+        break;
+      }
+      goto handle_default;
+
+    case '>':
+      if (ui->focus == FOCUS_JOURNAL && ui->forward_filepath) {
+        ui_state_forward(ui);
+        break;
+      }
       goto handle_default;
 
     case 'c':

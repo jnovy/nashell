@@ -82,6 +82,8 @@ void ui_state_free(ui_state_t *ui) {
   free(ui->nash_dir);
   free(ui->workspace_name);
   free(ui->current_label);
+  free(ui->forward_filepath);
+  free(ui->forward_label);
   for (int i = 0; i < ui->nav_depth; i++) {
     free(ui->nav_stack[i].filepath);
     free(ui->nav_stack[i].label);

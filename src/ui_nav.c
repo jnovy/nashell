@@ -196,6 +196,12 @@ void ui_state_enter(ui_state_t *ui) {
     }
     ui->nav_depth++;
 
+    /* Invalidate forward history - user chose a new path */
+    free(ui->forward_filepath);
+    ui->forward_filepath = NULL;
+    free(ui->forward_label);
+    ui->forward_label = NULL;
+
     /* Resolve URI relative to current file's directory */
     char new_path[NASH_PATH_MAX + NASH_PATH_MAX];
     if (uri[0] == '/') {
@@ -467,10 +473,13 @@ void ui_state_back(ui_state_t *ui) {
       ui->playbook_session_dir = NULL;
     }
 
-    free(ui->current_filepath);
+    /* Save current view as forward target so '>' can return here */
+    free(ui->forward_filepath);
+    ui->forward_filepath = ui->current_filepath; /* transfer ownership */
     ui->current_filepath = entry->filepath;
     entry->filepath = NULL;
-    free(ui->current_label);
+    free(ui->forward_label);
+    ui->forward_label = ui->current_label; /* transfer ownership */
     ui->current_label = entry->label; /* restore ownership */
     entry->label = NULL;
     ui->scroll_y = entry->scroll_y;
@@ -499,6 +508,42 @@ void ui_state_back(ui_state_t *ui) {
       ui_state_reload_file(ui);
     }
   }
+  ui->dirty = 1;
+}
+
+void ui_state_forward(ui_state_t *ui) {
+  if (!ui) return;
+  if (!ui->forward_filepath) return;
+
+  /* Push current view onto nav stack (same pattern as ui_state_enter) */
+  if (ui->nav_depth >= ui->nav_cap) {
+    int new_cap = ui->nav_cap ? ui->nav_cap * 2 : 16;
+    if (safe_realloc((void **)&ui->nav_stack,
+                     (size_t)new_cap * sizeof(nav_entry_t))) return;
+    ui->nav_cap = new_cap;
+  }
+  nav_entry_t *entry = &ui->nav_stack[ui->nav_depth];
+  entry->filepath = ui->current_filepath ? xstrdup(ui->current_filepath) : NULL;
+  entry->label = ui->current_label;
+  ui->current_label = NULL;
+  entry->scroll_y = ui->scroll_y;
+  entry->scroll_x = ui->scroll_x;
+  entry->cursor_link = ui->cursor_link;
+  entry->saved_doc = NULL;
+  ui->nav_depth++;
+
+  /* Navigate to the saved forward target */
+  free(ui->current_filepath);
+  ui->current_filepath = ui->forward_filepath;
+  ui->forward_filepath = NULL;
+  free(ui->current_label);
+  ui->current_label = ui->forward_label;
+  ui->forward_label = NULL;
+  ui->scroll_y = 0;
+  ui->scroll_x = 0;
+  ui->cursor_link = 0;
+  ui->search_active = 0;
+  ui_state_reload_file(ui);
   ui->dirty = 1;
 }
 
@@ -554,6 +599,9 @@ void ui_state_push_content(ui_state_t *ui, const char *name, const char *markdow
   entry->cursor_link = ui->cursor_link;
   entry->saved_doc = NULL;
   ui->nav_depth++;
+  /* Invalidate forward history */
+  free(ui->forward_filepath); ui->forward_filepath = NULL;
+  free(ui->forward_label); ui->forward_label = NULL;
 
   /* 3. Navigate to the new file */
   str_replace(&ui->current_filepath, path);
@@ -585,6 +633,9 @@ void ui_state_push_file(ui_state_t *ui, const char *filepath,
   entry->cursor_link = ui->cursor_link;
   entry->saved_doc = NULL;
   ui->nav_depth++;
+  /* Invalidate forward history */
+  free(ui->forward_filepath); ui->forward_filepath = NULL;
+  free(ui->forward_label); ui->forward_label = NULL;
 
   /* Navigate to the existing file */
   str_replace(&ui->current_filepath, filepath);
