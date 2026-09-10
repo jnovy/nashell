@@ -34,6 +34,22 @@
 #define TOOL_CAP_PROVIDER (1u << 2)
 #define TOOL_CAP_CORE     (1u << 31)
 
+/* Tool failure status classification (Paper 6 - Silent Failures).
+ * Granular status codes so the harness can inject appropriate warnings
+ * and the model does not misinterpret tool failures as data absence.
+ * Default value 0 (TOOL_STATUS_SUCCESS) ensures backward compatibility -
+ * existing code that omits the status field works unchanged. */
+typedef enum {
+  TOOL_STATUS_SUCCESS = 0,    /* normal success */
+  TOOL_STATUS_ERROR,          /* generic/unclassified error */
+  TOOL_STATUS_TIMEOUT,        /* operation timed out */
+  TOOL_STATUS_AUTH_FAILURE,   /* 401/403 or auth-related error */
+  TOOL_STATUS_RATE_LIMITED,   /* 429 or rate limit */
+  TOOL_STATUS_PARTIAL,        /* partial/truncated data returned */
+  TOOL_STATUS_NOT_FOUND,      /* 404 or resource not found */
+  TOOL_STATUS_SERVER_ERROR,   /* 500+ server-side error */
+} tool_status_t;
+
 /* Tool result: metadata JSON + optional stored content hash.
  * Defined here (not tools.h) so external plugins can use it
  * without pulling in nash internals. */
@@ -42,6 +58,9 @@ typedef struct {
   char *store_ref; /* hash in shared store (caller frees) */
   int success;     /* 1 = ok, 0 = error */
   int importance;  /* 0=low, 1=normal, 2=high, 3=critical (Harness-1 S3.2) */
+  int status;      /* tool_status_t - granular failure classification.
+                    * Defaults to 0 (TOOL_STATUS_SUCCESS).  Set by tool
+                    * handlers or auto-classified by the react loop. */
 } tool_result_t;
 
 /* Convenience helpers for building tool results.
@@ -51,10 +70,22 @@ static inline tool_result_t tools_make_result(int success, cJSON *meta, char *re
   return (tool_result_t){.meta = meta, .store_ref = ref, .success = success};
 }
 
+static inline tool_result_t tools_make_result_status(int success, cJSON *meta,
+                                                     char *ref, int status) {
+  return (tool_result_t){.meta = meta, .store_ref = ref,
+                         .success = success, .status = status};
+}
+
 static inline tool_result_t tools_make_error(const char *msg) {
   cJSON *m = cJSON_CreateObject();
   cJSON_AddStringToObject(m, "error", msg);
   return tools_make_result(0, m, NULL);
+}
+
+static inline tool_result_t tools_make_error_status(const char *msg, int status) {
+  cJSON *m = cJSON_CreateObject();
+  cJSON_AddStringToObject(m, "error", msg);
+  return tools_make_result_status(0, m, NULL, status);
 }
 
 /* Parameter descriptor for a single tool parameter.

@@ -668,6 +668,78 @@ static int react_tool_importance(const char *tool_name, int success) {
   return LLM_MSG_IMPORTANCE_NORMAL;
 }
 
+/* ── Tool failure classification (Paper 6 - Silent Failures) ── */
+
+/* Auto-classify an unclassified tool failure based on metadata content.
+ * Called when a tool handler returns success=0 but status=TOOL_STATUS_SUCCESS
+ * (i.e., the handler did not set a specific status code). */
+static int react_classify_failure(const char *tool_name, cJSON *meta) {
+  if (!meta) return TOOL_STATUS_ERROR;
+
+  /* Check http_code field (web_fetch, web_search) */
+  cJSON *code_item = cJSON_GetObjectItem(meta, "http_code");
+  if (code_item && cJSON_IsNumber(code_item)) {
+    int code = (int)code_item->valuedouble;
+    if (code == 401 || code == 403) return TOOL_STATUS_AUTH_FAILURE;
+    if (code == 404) return TOOL_STATUS_NOT_FOUND;
+    if (code == 429) return TOOL_STATUS_RATE_LIMITED;
+    if (code >= 500) return TOOL_STATUS_SERVER_ERROR;
+  }
+
+  /* Check error text for patterns */
+  cJSON *err_item = cJSON_GetObjectItem(meta, "error");
+  if (err_item && cJSON_IsString(err_item) && err_item->valuestring) {
+    const char *err = err_item->valuestring;
+    if (strcasestr(err, "timeout") || strstr(err, "TIMEDOUT"))
+      return TOOL_STATUS_TIMEOUT;
+    if (strcasestr(err, "rate limit") || strstr(err, "429"))
+      return TOOL_STATUS_RATE_LIMITED;
+    if (strcasestr(err, "denied") || strcasestr(err, "forbidden") ||
+        strstr(err, "403") || strstr(err, "401"))
+      return TOOL_STATUS_AUTH_FAILURE;
+  }
+
+  /* Check truncated field */
+  if (cJSON_GetObjectItem(meta, "truncated"))
+    return TOOL_STATUS_PARTIAL;
+
+  return TOOL_STATUS_ERROR;
+}
+
+/* Return a harness-level warning message for a given failure status.
+ * Returns a static string (do not free).  Returns NULL for statuses
+ * that do not need a warning (SUCCESS, NOT_FOUND). */
+static const char *react_failure_warning(int status) {
+  switch (status) {
+  case TOOL_STATUS_TIMEOUT:
+    return "[TOOL FAILURE: TIMEOUT] This tool call timed out. "
+           "The data was NOT retrieved. "
+           "Do not treat missing data as evidence of absence.";
+  case TOOL_STATUS_AUTH_FAILURE:
+    return "[TOOL FAILURE: AUTH/FORBIDDEN] Access was denied (HTTP 401/403). "
+           "The resource may exist but requires authentication. "
+           "Do not treat this as 'page not found' or 'no data'.";
+  case TOOL_STATUS_RATE_LIMITED:
+    return "[TOOL FAILURE: RATE LIMITED] Request was rate-limited (HTTP 429). "
+           "The data exists but could not be retrieved now. "
+           "Retry after a delay or use a different approach.";
+  case TOOL_STATUS_SERVER_ERROR:
+    return "[TOOL FAILURE: SERVER ERROR] The server returned an error (HTTP 5xx). "
+           "This is a server-side problem, not absence of data. "
+           "Do not treat this as evidence that the resource does not exist.";
+  case TOOL_STATUS_PARTIAL:
+    return "[TOOL FAILURE: PARTIAL DATA] Response was truncated or incomplete. "
+           "The returned data may be missing important content. "
+           "Do not assume you have seen all available information.";
+  case TOOL_STATUS_ERROR:
+    return "[TOOL FAILURE] This tool call failed. "
+           "The result reflects an error, NOT absence of data. "
+           "Do not treat missing data as negative evidence.";
+  default:
+    return NULL; /* SUCCESS, NOT_FOUND: no warning needed */
+  }
+}
+
 /* Find tool index in plugin registry by name (for diversity tracking).
  * Returns -1 if not found or index >= 32 (bitmask limit). */
 static int react_tool_index(const char *name) {
@@ -2106,6 +2178,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       /* Error budget: track total errors across the session */
       if (!tr.success) total_errors++;
 
+      /* Paper 6 - Silent Failures: auto-classify unclassified failures
+       * and record in the failure tracker for pattern detection. */
+      if (!tr.success && tr.status == TOOL_STATUS_SUCCESS) {
+        tr.status = react_classify_failure(action_name, tr.meta);
+      }
+      if (tr.status != TOOL_STATUS_SUCCESS) {
+        tool_failure_record(ctx->tools, action_name, tr.status);
+      }
+
       /* Unknown tool recovery: if the model generated a garbled tool name
              * (e.g., "shell_execshell_exec"), don't send the raw error back —
              * instead inject a corrective message and let the model retry.
@@ -2234,12 +2315,36 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       repeat_count = 0;
     }
     free(sig);
-    size_t result_len = strlen(meta_str) + 128;
+
+    /* Paper 6 - Silent Failures: build warning prefix for non-success results.
+     * The warning is prepended to the result message so the model sees it
+     * co-located with the failed result, not as a separate message. */
+    const char *fail_warn = NULL;
+    char *pattern_warn = NULL;
+    if (tr.status != TOOL_STATUS_SUCCESS) {
+      fail_warn = react_failure_warning(tr.status);
+      pattern_warn = tool_failure_pattern(ctx->tools, action_name);
+    }
+    size_t warn_len = (fail_warn ? strlen(fail_warn) + 1 : 0) +
+                      (pattern_warn ? strlen(pattern_warn) + 1 : 0);
+
+    size_t result_len = strlen(meta_str) + warn_len + 128;
     char *result_msg = xmalloc(result_len);
     char _dur[32];
     fmt_duration(total_elapsed, _dur, sizeof(_dur));
-    snprintf(result_msg, result_len, "%s\n[step %d | %s]",
-             meta_str, step + 1, _dur);
+    if (fail_warn || pattern_warn) {
+      int pos = 0;
+      if (fail_warn)
+        pos += snprintf(result_msg + pos, result_len - pos, "%s\n", fail_warn);
+      if (pattern_warn)
+        pos += snprintf(result_msg + pos, result_len - pos, "%s\n", pattern_warn);
+      snprintf(result_msg + pos, result_len - pos, "%s\n[step %d | %s]",
+               meta_str, step + 1, _dur);
+    } else {
+      snprintf(result_msg, result_len, "%s\n[step %d | %s]",
+               meta_str, step + 1, _dur);
+    }
+    free(pattern_warn);
 
     /* Harness-1 §3.2: Assign importance to tool result messages */
     int tool_imp = react_tool_importance(action_name, tr.success);

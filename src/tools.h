@@ -172,7 +172,27 @@ typedef struct {
   /* Decision observability: prediction tracking for harness evolution.
    * NULL when prediction_tracking is disabled. */
   predict_tracker_t *predict;
+
+  /* Tool failure tracking (Paper 6 - Silent Failures).
+   * Ring buffer of recent tool failures.  Used to detect patterns
+   * (e.g., consecutive web_fetch failures indicating network issues)
+   * and inject harness-level warnings into the model context. */
+#define TOOL_FAILURE_WINDOW 16
+  struct {
+    char tool_name[32]; /* which tool failed */
+    int status;         /* tool_status_t classification */
+  } failure_history[TOOL_FAILURE_WINDOW];
+  int failure_head;     /* next write position in ring buffer */
+  int failure_count;    /* total failures recorded (may exceed WINDOW) */
 } tool_ctx_t;
+
+/* Tool failure tracking (Paper 6 - Silent Failures).
+ * Record a non-success tool result in the failure ring buffer. */
+void tool_failure_record(tool_ctx_t *ctx, const char *tool_name, int status);
+
+/* Check for failure patterns: returns heap-allocated warning string if
+ * N of last M calls to the same tool failed, or NULL.  Caller frees. */
+char *tool_failure_pattern(tool_ctx_t *ctx, const char *tool_name);
 
 /* Track a recalled memory key for post-task validation scoring */
 void tool_track_recalled_key(tool_ctx_t *ctx, const char *key);

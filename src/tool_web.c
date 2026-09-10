@@ -260,7 +260,13 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
     snprintf(msg, sizeof(msg), "fetch failed: %s", curl_easy_strerror(res));
     str_free(&body);
     free(content_type);
-    return tools_make_error(msg);
+    /* Classify curl failure for harness warning injection */
+    int status = TOOL_STATUS_ERROR;
+    if (res == CURLE_OPERATION_TIMEDOUT)
+      status = TOOL_STATUS_TIMEOUT;
+    else if (res == CURLE_LOGIN_DENIED)
+      status = TOOL_STATUS_AUTH_FAILURE;
+    return tools_make_error_status(msg, status);
   }
 
   /* For HTML content, extract text to save context tokens */
@@ -310,8 +316,26 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
   free(hash);
   free(extracted);
   free(content_type);
+
+  /* Classify HTTP status for harness warning injection */
+  int ok = (http_code >= 200 && http_code < 400);
+  int status = TOOL_STATUS_SUCCESS;
+  if (!ok) {
+    if (http_code == 401 || http_code == 403)
+      status = TOOL_STATUS_AUTH_FAILURE;
+    else if (http_code == 404)
+      status = TOOL_STATUS_NOT_FOUND;
+    else if (http_code == 429)
+      status = TOOL_STATUS_RATE_LIMITED;
+    else if (http_code >= 500)
+      status = TOOL_STATUS_SERVER_ERROR;
+    else
+      status = TOOL_STATUS_ERROR;
+  } else if (body.len >= 512000) {
+    status = TOOL_STATUS_PARTIAL;
+  }
   str_free(&body);
-  return tools_make_result(http_code >= 200 && http_code < 400, meta, ref_copy);
+  return tools_make_result_status(ok, meta, ref_copy, status);
 }
 
 /* ── web_search ────────────────────────────────────────── */

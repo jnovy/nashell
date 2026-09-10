@@ -2201,6 +2201,45 @@ void tool_result_free(tool_result_t *r) {
   r->store_ref = NULL;
 }
 
+/* ── tool failure tracking (Paper 6 - Silent Failures) ── */
+
+void tool_failure_record(tool_ctx_t *ctx, const char *tool_name, int status) {
+  if (!ctx || !tool_name) return;
+  int idx = ctx->failure_head % TOOL_FAILURE_WINDOW;
+  snprintf(ctx->failure_history[idx].tool_name,
+           sizeof(ctx->failure_history[idx].tool_name),
+           "%s", tool_name);
+  ctx->failure_history[idx].status = status;
+  ctx->failure_head = (ctx->failure_head + 1) % TOOL_FAILURE_WINDOW;
+  ctx->failure_count++;
+}
+
+char *tool_failure_pattern(tool_ctx_t *ctx, const char *tool_name) {
+  if (!ctx || !tool_name || ctx->failure_count == 0) return NULL;
+
+  /* Count how many of the last TOOL_FAILURE_WINDOW entries match this tool */
+  int window = ctx->failure_count < TOOL_FAILURE_WINDOW
+                 ? ctx->failure_count
+                 : TOOL_FAILURE_WINDOW;
+  int matches = 0;
+  for (int i = 0; i < window; i++) {
+    int idx = (ctx->failure_head - 1 - i + TOOL_FAILURE_WINDOW) % TOOL_FAILURE_WINDOW;
+    if (strcmp(ctx->failure_history[idx].tool_name, tool_name) == 0)
+      matches++;
+  }
+
+  /* Threshold: 3+ failures for the same tool in the window */
+  if (matches < 3) return NULL;
+
+  char *msg = malloc(256);
+  if (!msg) return NULL;
+  snprintf(msg, 256,
+           "[TOOL PATTERN] %d of last %d %s calls failed "
+           "- possible network or service issue.",
+           matches, window, tool_name);
+  return msg;
+}
+
 /* ── system prompt ───────────────────────────────────── */
 
 char *tools_system_prompt(const char *session_dir, const char *workspace, int headless) {
