@@ -127,7 +127,8 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_workspace tests/test_subtask_context \
            tests/test_plan_tracking \
            tests/test_onnx_embed \
-           tests/test_fswatch
+           tests/test_fswatch \
+           tests/test_tool_failure
 
 # Sample plugin shared objects for dlopen testing
 SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
