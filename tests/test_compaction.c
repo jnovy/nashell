@@ -339,7 +339,7 @@ static void test_sweep_basic(void) {
   long removed_chars = (long)chat->msgs[2].content_len +
                        (long)chat->msgs[4].content_len;
 
-  int removed = evict_sweep_marked(chat, keep_head, mark, n_evictable);
+  int removed = evict_sweep_marked(chat, keep_head, mark, n_evictable, NULL);
   ASSERT_EQ(removed, 2);
   ASSERT_EQ(chat->n_msgs, n_before - 2);
 
@@ -358,7 +358,7 @@ static void test_sweep_none_marked(void) {
   int n_evictable = 4;
   int *mark = calloc((size_t)n_evictable, sizeof(int));
 
-  int removed = evict_sweep_marked(chat, 2, mark, n_evictable);
+  int removed = evict_sweep_marked(chat, 2, mark, n_evictable, NULL);
   ASSERT_EQ(removed, 0);
   ASSERT_EQ(chat->n_msgs, n_before);
   ASSERT_EQ((int)react_calc_total_chars(chat), (int)chars_before);
@@ -378,7 +378,7 @@ static void test_sweep_all_marked(void) {
   for (int i = 0; i < n_evictable; i++)
     mark[i] = 1;
 
-  int removed = evict_sweep_marked(chat, keep_head, mark, n_evictable);
+  int removed = evict_sweep_marked(chat, keep_head, mark, n_evictable, NULL);
   ASSERT_EQ(removed, n_evictable);
   ASSERT_EQ(chat->n_msgs, n_before - n_evictable);
 
@@ -588,7 +588,7 @@ static void test_emergency_evict_basic(void) {
   long context_budget = total / 2;
   int n_before = chat->n_msgs;
 
-  int removed = react_emergency_evict(chat, context_budget, 60, NULL);
+  int removed = react_emergency_evict(chat, context_budget, 60, NULL, NULL);
   ASSERT(removed > 0);
   ASSERT(chat->n_msgs < n_before);
 
@@ -606,7 +606,7 @@ static void test_emergency_evict_respects_target(void) {
   long context_budget = total; /* exactly at 100% */
 
   /* Evict to 50% */
-  int removed = react_emergency_evict(chat, context_budget, 50, NULL);
+  int removed = react_emergency_evict(chat, context_budget, 50, NULL, NULL);
   ASSERT(removed > 0);
 
   /* Usage should be around or below 50% (floor may prevent exact) */
@@ -623,7 +623,7 @@ static void test_emergency_evict_default_target(void) {
   long total = react_calc_total_chars(chat);
   long context_budget = total / 2; /* 200% usage */
 
-  int removed = react_emergency_evict(chat, context_budget, 0, NULL);
+  int removed = react_emergency_evict(chat, context_budget, 0, NULL, NULL);
   ASSERT(removed > 0);
 
   /* Should target 80% (REACT_EMERGENCY_TARGET_PCT) */
@@ -637,9 +637,9 @@ static void test_emergency_evict_default_target(void) {
 static void test_emergency_evict_already_below_target(void) {
   llm_chat_t *chat = make_test_chat(3, 100);
   long total = react_calc_total_chars(chat);
-  long context_budget = total * 3; /* 33% usage — well below any target */
+  long context_budget = total * 3; /* 33% usage - well below any target */
 
-  int removed = react_emergency_evict(chat, context_budget, 80, NULL);
+  int removed = react_emergency_evict(chat, context_budget, 80, NULL, NULL);
   ASSERT_EQ(removed, 0); /* Nothing to evict */
 
   llm_chat_free(chat);
@@ -657,7 +657,7 @@ static void test_emergency_evict_preserves_critical(void) {
       critical_count++;
   }
 
-  react_emergency_evict(chat, context_budget, 60, NULL);
+  react_emergency_evict(chat, context_budget, 60, NULL, NULL);
 
   /* Count CRITICAL messages after eviction — should be same */
   int critical_after = 0;
@@ -799,7 +799,7 @@ static void test_sweep_preserves_unpaired_tools(void) {
   int *mark = calloc((size_t)n_evictable, sizeof(int));
   mark[0] = 1; /* only tool_call at idx 1 */
 
-  int removed = evict_sweep_marked(chat, evict_start, mark, n_evictable);
+  int removed = evict_sweep_marked(chat, evict_start, mark, n_evictable, NULL);
   ASSERT_EQ(removed, 1);
   ASSERT_EQ(chat->n_msgs, n_before - 1);
 
@@ -852,7 +852,7 @@ static void test_realistic_eviction_scenario(void) {
   long budget = total_before / 2;
 
   /* Emergency evict to 60% of budget */
-  int removed = react_emergency_evict(chat, budget, 60, NULL);
+  int removed = react_emergency_evict(chat, budget, 60, NULL, NULL);
   ASSERT(removed > 0);
   ASSERT(chat->n_msgs < n_before);
 
