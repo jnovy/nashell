@@ -674,6 +674,7 @@ static int react_tool_importance(const char *tool_name, int success) {
  * Called when a tool handler returns success=0 but status=TOOL_STATUS_SUCCESS
  * (i.e., the handler did not set a specific status code). */
 static int react_classify_failure(const char *tool_name, cJSON *meta) {
+  (void)tool_name;
   if (!meta) return TOOL_STATUS_ERROR;
 
   /* Check http_code field (web_fetch, web_search) */

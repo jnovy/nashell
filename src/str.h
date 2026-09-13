@@ -330,19 +330,19 @@ struct cJSON *cjson_msg(const char *role, const char *content);
  * Eliminates the common GetObjectItem + type-check + valuestring pattern. */
 
 /* Return string value for key, or NULL if missing/wrong type. */
-const char *json_str(struct cJSON *obj, const char *key);
+const char *json_str(const struct cJSON *obj, const char *key);
 
 /* Return string value for key, or dflt if missing/wrong type. */
-const char *json_str_or(struct cJSON *obj, const char *key, const char *dflt);
+const char *json_str_or(const struct cJSON *obj, const char *key, const char *dflt);
 
 /* Return int value for key, or dflt if missing/wrong type. */
-int json_int(struct cJSON *obj, const char *key, int dflt);
+int json_int(const struct cJSON *obj, const char *key, int dflt);
 
 /* Return double value for key, or dflt if missing/wrong type. */
-double json_num(struct cJSON *obj, const char *key, double dflt);
+double json_num(const struct cJSON *obj, const char *key, double dflt);
 
 /* Return boolean value for key, or dflt if missing/wrong type. */
-int json_bool(struct cJSON *obj, const char *key, int dflt);
+int json_bool(const struct cJSON *obj, const char *key, int dflt);
 
 /* ── dump_json (mirror of slurp_json) ────────────────────────────────
  * Pretty-print a cJSON object to a file.  Combines cJSON_Print +

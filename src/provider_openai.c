@@ -40,7 +40,7 @@ static char *openai_build_request(provider_t *p, llm_chat_t *chat, int stream) {
                                          "max_completion_tokens", PROVIDER_OPENAI);
 
   /* Model quirks driven by model profile data (strip_sampling_params,
-   * default_reasoning_effort) loaded from ~/.nash/models/*.toml.
+   * default_reasoning_effort) loaded from ~/.nash/models/ .toml files.
    * No hardcoded model-name checks needed here. */
   if (p->cfg.strip_sampling_params) {
     /* Reasoning models only accept temperature=1 (default).

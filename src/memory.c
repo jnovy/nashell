@@ -995,7 +995,8 @@ int memory_seed_defaults(memory_t *m, const char *datadir) {
 
     /* Read the JSON file */
     char src_path[NASH_PATH_MAX];
-    snprintf(src_path, sizeof(src_path), "%s/%s", skills_dir, ent->d_name);
+    int n = snprintf(src_path, sizeof(src_path), "%s/%s", skills_dir, ent->d_name);
+    if (n < 0 || (size_t)n >= sizeof(src_path)) continue;
 
     FILE *fp = fopen(src_path, "r");
     if (!fp) continue;

@@ -851,31 +851,31 @@ cJSON *cjson_msg(const char *role, const char *content) {
 
 /* ── cJSON extraction helpers ────────────────────────────────────────── */
 
-const char *json_str(cJSON *obj, const char *key) {
-  cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+const char *json_str(const cJSON *obj, const char *key) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
   if (item && cJSON_IsString(item)) return item->valuestring;
   return NULL;
 }
 
-const char *json_str_or(cJSON *obj, const char *key, const char *dflt) {
+const char *json_str_or(const cJSON *obj, const char *key, const char *dflt) {
   const char *v = json_str(obj, key);
   return v ? v : dflt;
 }
 
-int json_int(cJSON *obj, const char *key, int dflt) {
-  cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+int json_int(const cJSON *obj, const char *key, int dflt) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
   if (item && cJSON_IsNumber(item)) return item->valueint;
   return dflt;
 }
 
-double json_num(cJSON *obj, const char *key, double dflt) {
-  cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+double json_num(const cJSON *obj, const char *key, double dflt) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
   if (item && cJSON_IsNumber(item)) return item->valuedouble;
   return dflt;
 }
 
-int json_bool(cJSON *obj, const char *key, int dflt) {
-  cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
+int json_bool(const cJSON *obj, const char *key, int dflt) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(obj, key);
   if (item && cJSON_IsBool(item)) return cJSON_IsTrue(item) ? 1 : 0;
   return dflt;
 }

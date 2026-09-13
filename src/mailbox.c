@@ -287,7 +287,8 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
       /* Atomically claim the task by renaming to a .claimed suffix.
        * If rename fails (ENOENT), another consumer already took it. */
       char claimed[NASH_PATH_MAX];
-      snprintf(claimed, sizeof(claimed), "%s.claimed", path);
+      if ((size_t)snprintf(claimed, sizeof(claimed), "%s.claimed", path) >= sizeof(claimed))
+        continue;
       if (rename(path, claimed) != 0) continue;
       char *query = read_file(claimed);
       if (query) {
@@ -367,7 +368,8 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
             usleep(50000);
             /* Atomically claim the task by renaming to .claimed */
             char claimed2[NASH_PATH_MAX];
-            snprintf(claimed2, sizeof(claimed2), "%s.claimed", path);
+            if ((size_t)snprintf(claimed2, sizeof(claimed2), "%s.claimed", path) >= sizeof(claimed2))
+              continue;
             if (rename(path, claimed2) != 0) continue;
             char *query = read_file(claimed2);
             if (query) {
@@ -418,7 +420,8 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
           continue;
         /* Atomically claim the task by renaming to .claimed */
         char claimed3[NASH_PATH_MAX];
-        snprintf(claimed3, sizeof(claimed3), "%s.claimed", path);
+        if ((size_t)snprintf(claimed3, sizeof(claimed3), "%s.claimed", path) >= sizeof(claimed3))
+          continue;
         if (rename(path, claimed3) != 0) continue;
         char *query = read_file(claimed3);
         if (query) {
