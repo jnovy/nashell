@@ -2118,6 +2118,16 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
         }
       }
 
+      /* Abort check: skip tool execution if user submitted a new query.
+       * This avoids starting a potentially long tool (shell_exec, web_fetch)
+       * when we already know we need to redirect. */
+      if (react_should_abort(ctx)) {
+        free(sig);
+        cJSON_Delete(action);
+        free(response);
+        continue; /* top-of-loop will enter react_wait_for_redirect */
+      }
+
       /* Normal execution — inject thought into tool_ctx for journal recording */
       ctx->tools->thought = thought;
       ctx->tools->on_event = on_event;

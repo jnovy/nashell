@@ -1,6 +1,7 @@
 #include "tools_internal.h"
 #include "tool_plugin.h"
 #include "subprocess.h"
+#include "react.h"
 #include "memory.h"
 #include "predict.h"
 #include "tui.h"
@@ -572,12 +573,17 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
   struct timespec t_start, t_end;
   clock_gettime(CLOCK_MONOTONIC, &t_start);
+  atomic_int *shell_abort = ctx->react_ctx ? &ctx->react_ctx->pause_requested
+                                           : NULL;
   subprocess_result_t r = subprocess_run(argv, NULL, timeout, max_out, 0,
-                                         SUBPROCESS_PIPE_STDERR, &out);
+                                         SUBPROCESS_PIPE_STDERR, &out,
+                                         shell_abort);
   clock_gettime(CLOCK_MONOTONIC, &t_end);
   long elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000L +
                     (t_end.tv_nsec - t_start.tv_nsec) / 1000000L;
-  if (r.timed_out)
+  if (r.aborted)
+    str_appendf(&out, "\n[ABORTED: user submitted new query]\n");
+  else if (r.timed_out)
     str_appendf(&out, "\n[TIMEOUT: killed after %ds]\n", timeout);
   else if (r.output_capped)
     str_appendf(&out, "\n[OUTPUT CAPPED at %d bytes]\n", max_out);

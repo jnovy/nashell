@@ -2,6 +2,7 @@
 #include "tool_plugin.h"
 #include "html_extract.h"
 #include "searxng.h"
+#include "react.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -167,6 +168,17 @@ static size_t utf8_sanitize(char *buf, size_t len) {
   return len;
 }
 
+/* Curl progress callback for aborting web_fetch on user redirect.
+ * Returns non-zero to abort the transfer when pause_requested is set. */
+static int web_abort_cb(void *clientp,
+                       curl_off_t dltotal, curl_off_t dlnow,
+                       curl_off_t ultotal, curl_off_t ulnow) {
+  (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
+  atomic_int *flag = (atomic_int *)clientp;
+  if (flag && atomic_load(flag)) return 1; /* abort */
+  return 0;
+}
+
 static size_t web_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
   str_t *buf = userdata;
   if (size > 0 && nmemb > SIZE_MAX / size) return 0; /* overflow guard */
@@ -242,6 +254,12 @@ tool_result_t tool_web_fetch(tool_ctx_t *ctx, cJSON *params) {
                        : 30L;
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, web_timeout);
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "nash/1.0");
+  /* Abort transfer when user submits a new query (pause_requested) */
+  if (ctx->react_ctx) {
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, web_abort_cb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx->react_ctx->pause_requested);
+  }
 
   CURLcode res = curl_easy_perform(curl);
   long http_code = 0;

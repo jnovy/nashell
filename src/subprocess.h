@@ -1,6 +1,7 @@
 #ifndef SUBPROCESS_H
 #define SUBPROCESS_H
 
+#include <stdatomic.h>
 #include "str.h"
 
 /* ── Unified subprocess execution ─────────────────────────────────
@@ -23,6 +24,7 @@ typedef struct {
   int exit_code;     /* >=0 from WEXITSTATUS, -1 on error, -2 on timeout */
   int timed_out;     /* 1 if killed by timeout */
   int output_capped; /* 1 if hit max_bytes or max_lines */
+  int aborted;       /* 1 if killed by external abort_flag */
   int line_count;    /* number of newlines in output */
 } subprocess_result_t;
 
@@ -35,6 +37,8 @@ typedef struct {
  * max_lines:   output line cap (0 = no limit)
  * flags:       SUBPROCESS_PIPE_STDERR or 0
  * out:         must point to an initialized str_t; output is appended
+ * abort_flag:  if non-NULL, checked every 100ms; when set to non-zero
+ *              the child is killed and result.aborted=1 (NULL = ignore)
  *
  * Returns a subprocess_result_t with exit_code, timed_out, etc. */
 subprocess_result_t subprocess_run(char *const argv[],
@@ -43,7 +47,8 @@ subprocess_result_t subprocess_run(char *const argv[],
                                    int max_bytes,
                                    int max_lines,
                                    unsigned flags,
-                                   str_t *out);
+                                   str_t *out,
+                                   atomic_int *abort_flag);
 
 /* Run a command silently (no output capture).
  *

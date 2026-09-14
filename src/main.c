@@ -1839,7 +1839,7 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         atomic_store(&react.pause_requested, 1);
         ctx->provider->abort_retry = 1; /* wake provider_sleep early */
         ui_locked_set_status(ui, STATUS_RUNNING,
-                             "Pausing to handle command...");
+                             "Aborting to handle command...");
         continue;
       }
 
@@ -1887,7 +1887,7 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         atomic_store(&react.pause_requested, 1);
         ctx->provider->abort_retry = 1; /* wake provider_sleep early */
         ui_locked_set_status(ui, STATUS_RUNNING,
-                             "Pausing after current step...");
+                             "Aborting current step...");
         continue;
       }
       /* -- Tree branching: determine parent_loop -- */

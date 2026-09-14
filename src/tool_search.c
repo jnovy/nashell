@@ -1,6 +1,7 @@
 #include "tools_internal.h"
 #include "tool_plugin.h"
 #include "subprocess.h"
+#include "react.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,9 +41,12 @@ tool_result_t tool_grep_search(tool_ctx_t *ctx, cJSON *params) {
   int grep_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
   int grep_max = ctx->cfg ? ctx->cfg->shell_max_output : 512000;
   str_t out = str_new(4096);
+  atomic_int *grep_abort = ctx->react_ctx ? &ctx->react_ctx->pause_requested
+                                          : NULL;
   subprocess_result_t r = subprocess_run(argv, NULL, grep_timeout,
                                          grep_max, 0,
-                                         SUBPROCESS_PIPE_STDERR, &out);
+                                         SUBPROCESS_PIPE_STDERR, &out,
+                                         grep_abort);
   if (r.output_capped)
     str_append_cstr(&out, "\n... [output truncated at limit]\n");
 
@@ -229,6 +233,8 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
   int glob_timeout = ctx->cfg ? ctx->cfg->grep_timeout : 60;
   str_t out = str_new(4096);
   subprocess_result_t r;
+  atomic_int *glob_abort = ctx->react_ctx ? &ctx->react_ctx->pause_requested
+                                         : NULL;
 
   if (recursive) {
     char *const argv[] = {
@@ -237,7 +243,8 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
       "!", "-path", "*/node_modules/*",
       "!", "-path", "*/__pycache__/*",
       "!", "-name", "*.o", NULL};
-    r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out);
+    r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out,
+                       glob_abort);
   } else {
     char *const argv[] = {
       "find", full_path, "-maxdepth", "1",
@@ -246,7 +253,8 @@ tool_result_t tool_glob_search(tool_ctx_t *ctx, cJSON *params) {
       "!", "-path", "*/node_modules/*",
       "!", "-path", "*/__pycache__/*",
       "!", "-name", "*.o", NULL};
-    r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out);
+    r = subprocess_run(argv, NULL, glob_timeout, 0, 200, 0, &out,
+                       glob_abort);
   }
 
   /* Truncate to 200 lines if we overshot */

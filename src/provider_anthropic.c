@@ -47,7 +47,8 @@ static const char *get_anthropic_api_key(const provider_config_t *cfg) {
  * Caller must str_free(token_out) on success. */
 static int try_gcloud_token(const char *label, char *const argv[],
                             str_t *token_out) {
-  subprocess_result_t r = subprocess_run(argv, NULL, 15, 4096, 0, 0, token_out);
+  subprocess_result_t r = subprocess_run(argv, NULL, 15, 4096, 0, 0, token_out,
+                                         NULL);
 
   if (r.timed_out) {
     nash_log("[provider/vertex] %s timed out after 15s", label);

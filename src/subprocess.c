@@ -111,7 +111,8 @@ subprocess_result_t subprocess_run(char *const argv[],
                                    int max_bytes,
                                    int max_lines,
                                    unsigned flags,
-                                   str_t *out) {
+                                   str_t *out,
+                                   atomic_int *abort_flag) {
   subprocess_result_t r = {.exit_code = -1};
 
   int pipefd[2];
@@ -152,6 +153,12 @@ subprocess_result_t subprocess_run(char *const argv[],
         r.timed_out = 1;
         break;
       }
+    }
+
+    /* Check external abort flag (user submitted new query) */
+    if (abort_flag && atomic_load(abort_flag)) {
+      r.aborted = 1;
+      break;
     }
 
     /* Check caps */
@@ -241,11 +248,11 @@ subprocess_result_t subprocess_run(char *const argv[],
 
   close(pipefd[0]);
 
-  /* Kill if we broke out early (timeout or cap) */
-  if (r.timed_out || r.output_capped) {
+  /* Kill if we broke out early (timeout, cap, or abort) */
+  if (r.timed_out || r.output_capped || r.aborted) {
     int status;
     kill_and_reap(pid, &status);
-    r.exit_code = r.timed_out ? -2 : 0; /* output was capped but command was OK */
+    r.exit_code = (r.timed_out || r.aborted) ? -2 : 0;
     return r;
   }
 
