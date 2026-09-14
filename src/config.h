@@ -273,6 +273,11 @@ typedef struct {
                                      * in IR literature; model-specific. */
   float dedup_threshold;         /* MaxSim cosine threshold for reflection
                                      * deduplication (default 0.90). Higher = stricter. */
+  float dedup_pre_check_threshold; /* similarity threshold for blocking
+                                     * duplicate memory_store (default 0.85).
+                                     * Pre-store gate: if a different-key entry
+                                     * exceeds this, the store is blocked and an
+                                     * advisory returned. Bypass with supersedes. */
 
   /* P0: Memory recall quality gate — score threshold for injection.
      * Memories scoring below this threshold are NOT injected, implementing

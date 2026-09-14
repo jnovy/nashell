@@ -476,6 +476,73 @@ tool_result_t tool_memory_store(tool_ctx_t *ctx, cJSON *params) {
     }
   }
 
+  /* Pre-store similarity check: prevent near-duplicate entries.
+   * Runs BEFORE the store, unlike the post-store contradiction warning
+   * below which warns after writing. This gate blocks the write entirely
+   * when a different-key entry exceeds the dedup_pre_check_threshold.
+   * Escape hatch: if caller provides 'supersedes', they explicitly know
+   * about the existing entry and want to replace it - skip the check. */
+  {
+    TOOL_OPT_STR(params, "supersedes", supersedes_early);
+    if (!supersedes_early) {
+      memory_t *query_mem = ctx->ws
+                              ? workspace_find_memory(ctx->ws, key)
+                              : ctx->memory;
+      if (!query_mem) query_mem = ctx->memory;
+      if (query_mem) {
+        /* Search using both key and value for broad matching */
+        size_t klen = strlen(key);
+        size_t vlen = strlen(value);
+        size_t qlen = klen + vlen + 4;
+        char *combined_query = xmalloc(qlen);
+        snprintf(combined_query, qlen, "%s %s", key, value);
+
+        memory_results_t similar = memory_query(query_mem, combined_query, 5);
+        free(combined_query);
+
+        float dedup_threshold = ctx->cfg
+            ? ctx->cfg->dedup_pre_check_threshold : 0.85f;
+
+        str_t advisory = str_new(0);
+        int n_similar = 0;
+
+        for (int si = 0; si < similar.count; si++) {
+          if (strcmp(similar.entries[si].key, key) == 0) continue;
+          if (similar.entries[si].raw_relevance >= dedup_threshold) {
+            if (n_similar == 0) {
+              str_append_cstr(&advisory,
+                "BLOCKED: Similar memory already exists. "
+                "To update an existing entry, use the same key. "
+                "To replace, add supersedes parameter. "
+                "Similar entries:\n");
+            }
+            str_appendf(&advisory, "  - %s (%.0f%% similar)\n",
+                        similar.entries[si].key,
+                        similar.entries[si].raw_relevance * 100.0);
+            n_similar++;
+            if (n_similar >= 3) break;
+          }
+        }
+        memory_results_free(&similar);
+
+        if (n_similar > 0) {
+          tool_result_t res = tool_result_ok();
+          cJSON_AddStringToObject(res.meta, "status", "blocked_duplicate");
+          cJSON_AddStringToObject(res.meta, "advisory",
+              str_cstr(&advisory));
+          cJSON_AddStringToObject(res.meta, "key", key);
+          str_free(&advisory);
+          free(refs_copy);
+          tools_inject_thought(ctx, params);
+          tool_journal(ctx, "memory_store", params, NULL, 0, 0,
+              NULL, NULL);
+          return res;
+        }
+        str_free(&advisory);
+      }
+    }
+  }
+
   int rc;
   if (ctx->ws) {
     rc = workspace_store(ctx->ws, key, value, pinned,

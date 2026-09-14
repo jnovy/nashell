@@ -86,6 +86,7 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->prune_min_evidence <= 0) cfg->prune_min_evidence = 3;
   if (cfg->consolidation_threshold <= 0) cfg->consolidation_threshold = 0.82f;
   if (cfg->dedup_threshold <= 0) cfg->dedup_threshold = 0.90f;
+  if (cfg->dedup_pre_check_threshold <= 0) cfg->dedup_pre_check_threshold = 0.85f;
   /* P0: recall_min_score — memories below this composite score are not
      * injected. Formula: composite = relevance × pow(vscore, exponent).
      *
@@ -453,6 +454,7 @@ config_t *config_load(const char *path) {
     cfg->prune_min_evidence = toml_int(limits, "prune_min_evidence", -1);
     cfg->consolidation_threshold = (float)toml_dbl(limits, "consolidation_threshold", 0);
     cfg->dedup_threshold = (float)toml_dbl(limits, "dedup_threshold", 0);
+    cfg->dedup_pre_check_threshold = (float)toml_dbl(limits, "dedup_pre_check_threshold", 0);
     cfg->recall_min_score = toml_dbl(limits, "recall_min_score", 0);
     cfg->error_recall_min_length = toml_int(limits, "error_recall_min_length", -1);
     cfg->error_recall_candidates = toml_int(limits, "error_recall_candidates", -1);
@@ -1485,6 +1487,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "prune_min_evidence = %d\n", cfg->prune_min_evidence);
   fprintf(out, "consolidation_threshold = %.2f\n", cfg->consolidation_threshold);
   fprintf(out, "dedup_threshold = %.2f\n", cfg->dedup_threshold);
+  fprintf(out, "dedup_pre_check_threshold = %.2f\n", cfg->dedup_pre_check_threshold);
   fprintf(out, "dream_reminder_threshold = %d\n", cfg->dream_reminder_threshold);
   fprintf(out, "error_recall_min_length = %d\n", cfg->error_recall_min_length);
   fprintf(out, "error_recall_candidates = %d\n", cfg->error_recall_candidates);
@@ -1895,6 +1898,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
       double d = toml_dbl(limits, "dedup_threshold", 0);
       if (d > 0) cfg->dedup_threshold = (float)d;
     }
+    {
+      double d = toml_dbl(limits, "dedup_pre_check_threshold", 0);
+      if (d > 0) cfg->dedup_pre_check_threshold = (float)d;
+    }
     v = toml_int(limits, "dream_reminder_threshold", 0);
     if (v > 0) cfg->dream_reminder_threshold = v;
     v = toml_int(limits, "error_recall_min_length", 0);
@@ -2184,6 +2191,7 @@ int config_write_default(const char *path) {
     "prune_min_evidence = 3       # minimum recall count before pruning is considered\n"
     "consolidation_threshold = 0.82 # cosine similarity threshold for near-duplicate consolidation\n"
     "dedup_threshold = 0.90       # cosine similarity threshold for reflection deduplication\n"
+    "dedup_pre_check_threshold = 0.85 # pre-store gate: block memory_store if similar entry exists\n"
     "recall_min_score = 0.15      # P0: min composite score for memory injection (empirically calibrated)\n"
     "\n"
     "# Error-triggered reactive retrieval — when a tool fails, query memory\n"
