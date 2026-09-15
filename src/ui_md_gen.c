@@ -2130,7 +2130,7 @@ static char *generate_timeline_md(ui_state_t *ui) {
       double elapsed = (ts > 0 && first_ts > 0) ? (ts - first_ts) : 0;
       int mins = (int)(elapsed / 60);
       int secs = (int)(elapsed) % 60;
-      str_appendf(&md, "`%02d:%02d`  R%d/S%d  %s\n\n",
+      str_appendf(&md, "`%02d:%02d`  R%d/S%d  %s\n",
                   mins, secs, react_loop, step, event_desc);
       event_count++;
     }
